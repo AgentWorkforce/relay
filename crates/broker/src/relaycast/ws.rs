@@ -101,6 +101,30 @@ fn agent_is_live(agent: &relaycast::Agent) -> bool {
     matches!(agent.status.as_str(), "active" | "online")
 }
 
+/// The converse of [`agent_is_live`], but deliberately not `!agent_is_live`:
+/// only the statuses the engine is known to report for a worker with no live
+/// credential are safe to rotate. An unrecognized status is exactly the
+/// uncertainty `RegisterIntent::ImpersonateExisting` exists to refuse on, so
+/// it must fall through to the fail-closed path rather than being treated as
+/// implicitly offline.
+fn agent_is_known_offline(agent: &relaycast::Agent) -> bool {
+    matches!(agent.status.as_str(), "offline" | "released" | "inactive")
+}
+
+/// Bound on the `ImpersonateExisting` presence probe (`relay.get_agent`).
+/// Matches the existing `RELAYCAST_HTTP_TIMEOUT` convention for this same
+/// call in `auth.rs`'s legacy-identity reclaim path — not chosen for snappy
+/// UX, chosen so the call is *guaranteed to return*.
+///
+/// Without this bound, an engine that hangs the request rather than erroring
+/// stalls the caller forever: `send_dm_with_mode`, `send_with_mode`,
+/// `ensure_agent_channels`, and `leave_agent_channels` all await
+/// `registered_agent_client_as` inline on the request path with no outer
+/// timeout of their own. Only `mark_read_as_agent`'s caller
+/// (`runtime/delivery.rs`) wraps the whole call in `tokio::spawn` + a 2s
+/// `timeout`; this bound is what protects every other call site.
+const PRESENCE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl RelaycastHttpClient {
     pub fn new(
         base_url: Option<String>,
@@ -214,11 +238,45 @@ impl RelaycastHttpClient {
     /// worker is holding the credential. See [`RegisterIntent`] and
     /// [`ImpersonationAwareRegistrationError`] for the semantics this closes
     /// (relay#1545).
+    ///
+    /// **`SpawnNew` here is not identical to the standalone
+    /// [`Self::register_agent_token`] wrapper**: both intents share the cache
+    /// fast path below, so `SpawnNew` short-circuits on a cache hit instead
+    /// of always consulting the SDK's register-or-rotate. That is
+    /// deliberate — a cached token means this broker already holds a valid
+    /// credential for the name, so re-registering is wasted network work —
+    /// but it means a caller that needs `SpawnNew`'s collision-rotate to run
+    /// unconditionally (ignoring whatever this broker has cached) must call
+    /// [`Self::forget_agent_registration`] first, or use the standalone
+    /// [`Self::register_agent_token`], which never consults the cache. No
+    /// caller invokes this method with `SpawnNew` today (`maintenance.rs:569`
+    /// and the WS-spawn HTTP fallback both use the standalone wrapper); this
+    /// is the contract for the first one that does.
     pub async fn register_agent_token_with_intent(
         &self,
         agent_name: &str,
         cli_hint: Option<&str>,
         intent: RegisterIntent,
+    ) -> std::result::Result<String, ImpersonationAwareRegistrationError> {
+        self.register_agent_token_with_intent_and_timeout(
+            agent_name,
+            cli_hint,
+            intent,
+            PRESENCE_PROBE_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Test seam for [`Self::register_agent_token_with_intent`]: takes the
+    /// presence-probe bound explicitly so tests can exercise the timeout arm
+    /// in milliseconds instead of waiting out the real
+    /// `PRESENCE_PROBE_TIMEOUT`.
+    async fn register_agent_token_with_intent_and_timeout(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        intent: RegisterIntent,
+        probe_timeout: Duration,
     ) -> std::result::Result<String, ImpersonationAwareRegistrationError> {
         let trimmed_name = agent_name.trim();
         let registration = self
@@ -243,27 +301,55 @@ impl RelaycastHttpClient {
                 let relay = self
                     .relay_client()
                     .ok_or(ImpersonationAwareRegistrationError::ClientUnavailable)?;
-                match relay.get_agent(trimmed_name).await {
-                    Ok(agent) if agent_is_live(&agent) => {
+                // Bounded: an engine that hangs this call rather than
+                // returning an error must not hang the caller. See
+                // `PRESENCE_PROBE_TIMEOUT` for why refusal (not a fallback
+                // rotate) is the defined behaviour on expiry.
+                match tokio::time::timeout(probe_timeout, relay.get_agent(trimmed_name)).await {
+                    Ok(Ok(agent)) if agent_is_live(&agent) => {
                         // The target is holding a working token this broker
                         // does not possess. Silently rotating it would strand
                         // the worker; refuse and let the caller decide.
+                        //
+                        // This check-then-rotate is not atomic with the
+                        // engine: a target that goes live in the gap between
+                        // this probe and `register_agent_token` below can
+                        // still be rotated. Closing that fully needs a
+                        // server-side CAS (probed-status precondition on the
+                        // rotate call); today's version is single-round-trip
+                        // best-effort, same as the presence probe on the
+                        // 404/error arms below. It still closes the actual
+                        // relay#1545 defect: a broker with an empty cache
+                        // rotating a worker that has been live and idle for
+                        // any observable period, which is the case that
+                        // stranded workers in practice.
                         Err(
                             ImpersonationAwareRegistrationError::LiveAgentImpersonation {
                                 agent_name: trimmed_name.to_string(),
                             },
                         )
                     }
-                    Ok(_) => {
-                        // Agent exists but is not currently authenticating —
-                        // no live credential to invalidate, so the SDK's
+                    Ok(Ok(agent)) if agent_is_known_offline(&agent) => {
+                        // Agent exists and is in a status the engine only
+                        // uses for a worker with no live credential — no
+                        // live token to invalidate, so the SDK's
                         // register-or-rotate path is safe to run.
                         registration
                             .register_agent_token(trimmed_name, cli_hint)
                             .await
                             .map_err(ImpersonationAwareRegistrationError::Sdk)
                     }
-                    Err(RelayError::Api { status: 404, .. }) => {
+                    Ok(Ok(agent)) => {
+                        // Neither a known-live nor a known-offline status —
+                        // fail closed. Rotating here would fail open on
+                        // exactly the uncertainty this intent exists to
+                        // refuse on (see the `Err(error)` arm below).
+                        Err(ImpersonationAwareRegistrationError::ProbeFailed {
+                            agent_name: trimmed_name.to_string(),
+                            detail: format!("unrecognized agent status '{}'", agent.status),
+                        })
+                    }
+                    Ok(Err(RelayError::Api { status: 404, .. })) => {
                         // No such agent — impersonation of a non-existent
                         // identity is nonsensical; do not shim it into a
                         // spawn by minting a fresh row.
@@ -271,13 +357,30 @@ impl RelaycastHttpClient {
                             agent_name: trimmed_name.to_string(),
                         })
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         // We could not decide whether the target is live.
                         // Fail closed: the whole point of this intent is that
                         // we do not rotate on uncertainty.
                         Err(ImpersonationAwareRegistrationError::ProbeFailed {
                             agent_name: trimmed_name.to_string(),
                             detail: error.to_string(),
+                        })
+                    }
+                    Err(_elapsed) => {
+                        // The probe never resolved. Fail closed identically
+                        // to the `Ok(Err(error))` arm above rather than
+                        // proceeding to rotate: an unresolved probe is
+                        // uncertainty, and refusing on uncertainty is this
+                        // intent's whole contract. What makes this safe
+                        // rather than a repeat of relay#1541 (recipient
+                        // resolution hanging workspace-wide with every node
+                        // healthy) is that the bound above guarantees this
+                        // refusal always arrives — a fast, local failure for
+                        // one impersonation attempt, not an indefinite hang
+                        // that takes the caller hostage.
+                        Err(ImpersonationAwareRegistrationError::ProbeFailed {
+                            agent_name: trimmed_name.to_string(),
+                            detail: format!("presence probe timed out after {probe_timeout:?}"),
                         })
                     }
                 }
@@ -370,11 +473,24 @@ impl RelaycastHttpClient {
     /// hit and otherwise refuses to rotate a live agent. Callers see an
     /// error on refusal and are expected to fail closed — the correct
     /// degradation for delivery read-acks and similar side-effects.
+    ///
+    /// The broker's own identity is exempt from that refusal: `send_dm` and
+    /// `send` call this with `from = &self.agent_name` for the broker's own
+    /// sends, and the broker holds that credential by definition — it is not
+    /// impersonating itself. If the broker's own token fell out of cache
+    /// (auth-startup seed failure, a `forget_agent_registration` call), the
+    /// presence probe would see the broker as live and refuse, breaking the
+    /// broker's own ability to send. Delegate to [`Self::registered_agent_client`]
+    /// (`SpawnNew` semantics) instead, exactly as if this were the
+    /// unqualified `from`-less send.
     async fn registered_agent_client_as(
         &self,
         agent_name: &str,
         cli_hint: Option<&str>,
     ) -> Result<AgentClient> {
+        if agent_name.trim() == self.agent_name.trim() {
+            return self.registered_agent_client().await;
+        }
         let relay = self
             .relay_client()
             .context("SDK relay client not initialized")?;
@@ -385,7 +501,7 @@ impl RelaycastHttpClient {
                 RegisterIntent::ImpersonateExisting,
             )
             .await
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
+            .map_err(anyhow::Error::from)?;
         relay
             .as_agent(token)
             .map_err(|error| anyhow::anyhow!("{error}"))
@@ -1135,6 +1251,7 @@ mod tests {
     };
     use relaycast::AgentRegistrationError;
     use serde_json::json;
+    use std::time::Duration;
 
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
@@ -1819,6 +1936,171 @@ mod tests {
             .await
             .expect("spawn intent must rotate on collision");
         assert_eq!(token, "at_live_spawned");
+        register.assert_hits(1);
+        rotate.assert_hits(1);
+    }
+
+    /// Must-not-fire: a presence probe that never resolves must not hang the
+    /// caller. The mocked probe delays past the injected bound; the whole
+    /// call is wrapped in a much more generous outer timeout so a regression
+    /// that drops the inner `tokio::time::timeout` fails this assertion
+    /// instead of hanging the test suite. Motivated by chief's review on
+    /// relay#1546: `ws.rs`'s `relay.get_agent` had no timeout at all, a
+    /// distinct failure mode from `ProbeFailed` (which requires the call to
+    /// *return*).
+    #[tokio::test]
+    async fn impersonate_existing_probe_timeout_does_not_hang_caller() {
+        let server = MockServer::start();
+        let presence = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200)
+                .delay(Duration::from_millis(300))
+                .json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent_worker_a",
+                        "name": "worker-a",
+                        "type": "agent",
+                        "status": "active",
+                        "persona": null,
+                        "metadata": {},
+                        "last_seen": "2026-08-16T22:00:00.000Z"
+                    }
+                }));
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            then.status(500);
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.register_agent_token_with_intent_and_timeout(
+                "worker-a",
+                Some("codex"),
+                RegisterIntent::ImpersonateExisting,
+                Duration::from_millis(30),
+            ),
+        )
+        .await
+        .expect(
+            "a 30ms probe bound against a 300ms-delayed probe must return well within a 5s \
+             outer guard; a hang here means the inner timeout regressed",
+        );
+
+        assert!(
+            matches!(
+                outcome,
+                Err(ImpersonationAwareRegistrationError::ProbeFailed { ref agent_name, ref detail })
+                if agent_name == "worker-a" && detail.contains("timed out")
+            ),
+            "expected a timed-out ProbeFailed refusal, got {:?}",
+            outcome,
+        );
+        presence.assert_hits(1);
+        rotate.assert_hits(0);
+    }
+
+    /// Must-fire: an agent status the engine has never been observed to
+    /// report (neither the known-live set nor the known-offline set) must
+    /// refuse, not rotate. The pre-fix `Ok(_)` arm matched everything that
+    /// wasn't live, so an unrecognized status fell through to the
+    /// register-or-rotate path — fail-open on exactly the uncertainty this
+    /// intent exists to fail closed on.
+    #[tokio::test]
+    async fn impersonate_existing_refuses_on_unrecognized_status() {
+        let server = MockServer::start();
+        let presence = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "connecting",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T22:00:00.000Z"
+                }
+            }));
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            then.status(500);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(500);
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let outcome = client
+            .register_agent_token_with_intent(
+                "worker-a",
+                Some("codex"),
+                RegisterIntent::ImpersonateExisting,
+            )
+            .await;
+        assert!(
+            matches!(
+                outcome,
+                Err(ImpersonationAwareRegistrationError::ProbeFailed { ref agent_name, ref detail })
+                if agent_name == "worker-a" && detail.contains("connecting")
+            ),
+            "expected a fail-closed ProbeFailed refusal for an unrecognized status, got {:?}",
+            outcome,
+        );
+        presence.assert_hits(1);
+        rotate.assert_hits(0);
+        register.assert_hits(0);
+    }
+
+    /// Must-fire: the broker's own identity is not impersonation. With an
+    /// empty cache and the broker itself reporting as live, the old
+    /// unconditional `ImpersonateExisting` routing would refuse the broker's
+    /// own send; this must instead bypass the presence probe entirely and
+    /// go through the same register-or-rotate path as before this PR.
+    #[tokio::test]
+    async fn registered_agent_client_as_bypasses_impersonation_for_broker_own_identity() {
+        let server = MockServer::start();
+        // If the self-identity bypass regresses, this call would fire
+        // (broker probes itself) — 500 makes that loud.
+        let presence = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/broker");
+            then.status(500);
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/broker/rotate-token");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "name": "broker", "token": "at_live_broker_self" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        // No seed for "broker" — the exact cache-miss condition the finding
+        // described (auth-startup seed failure, or a `forget_agent_registration`
+        // call against the broker's own name).
+
+        client
+            .registered_agent_client_as("broker", None)
+            .await
+            .expect("broker's own identity must not be refused as a live-agent impersonation");
+        presence.assert_hits(0);
         register.assert_hits(1);
         rotate.assert_hits(1);
     }
