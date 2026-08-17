@@ -770,12 +770,13 @@ impl FleetDeliveryBook {
     /// Reconstruct the received cursor for a post-restart agent from the
     /// withheld fleet deliveries that survived in the pending snapshot.
     ///
-    /// The lowest pending sequence establishes the last safely ACKed position;
-    /// replaying the snapshot in sequence order then restores the received
-    /// frontier. This method only acts while the agent has no sequenced
-    /// position, so a live cursor learned from normal delivery or a resume
-    /// handshake always wins.
-    pub(crate) fn restore_pending_agent(&mut self, deliveries: &[Deliver]) {
+    /// The persisted ACK floor establishes the first still-required sequence,
+    /// even when that lower delivery has already left the pending map after a
+    /// terminal failure. Replaying the remaining snapshot in sequence order
+    /// then restores as much of the received frontier as is contiguous. A live
+    /// cursor learned from normal delivery or a resume handshake is never
+    /// rewound; pending siblings can only extend its received frontier.
+    pub(crate) fn restore_pending_agent(&mut self, deliveries: &[Deliver], ack_floor: Option<u64>) {
         let mut sequenced = deliveries
             .iter()
             .filter(|deliver| deliver.seq > 0)
@@ -784,21 +785,21 @@ impl FleetDeliveryBook {
         let Some(first) = sequenced.first().copied() else {
             return;
         };
-        if self
+        let has_sequenced_position = self
             .agents
             .get(first.agent_id.as_str())
-            .is_some_and(|cursor| cursor.has_sequenced_position)
-        {
-            return;
+            .is_some_and(|cursor| cursor.has_sequenced_position);
+        if !has_sequenced_position {
+            if !self.bind_identity(&first.agent, &first.agent_id, false) {
+                return;
+            }
+            let first_required_seq = ack_floor.unwrap_or(first.seq).min(first.seq);
+            self.seed_cursor(
+                first.agent.clone(),
+                first.agent_id.clone(),
+                first_required_seq.saturating_sub(1),
+            );
         }
-        if !self.bind_identity(&first.agent, &first.agent_id, false) {
-            return;
-        }
-        self.seed_cursor(
-            first.agent.clone(),
-            first.agent_id.clone(),
-            first.seq.saturating_sub(1),
-        );
         for deliver in sequenced {
             self.commit_received(deliver);
         }
@@ -990,10 +991,13 @@ impl FleetDeliveryBook {
             cursor.seen_msg_ids.insert(&deliver.msg_id);
             return Some(cursor.acked_up_to_seq);
         }
-        if deliver.seq <= cursor.acked_up_to_seq || deliver.seq > cursor.received_up_to_seq {
+        if deliver.seq <= cursor.acked_up_to_seq {
             return None;
         }
         cursor.confirmed_delivery_seqs.insert(deliver.seq, ());
+        if deliver.seq > cursor.received_up_to_seq {
+            return None;
+        }
         let before = cursor.acked_up_to_seq;
         loop {
             let next = cursor.acked_up_to_seq.saturating_add(1);
@@ -1041,6 +1045,13 @@ impl FleetDeliveryBook {
         self.agents
             .get(agent_id)
             .map_or(0, |cursor| cursor.acked_up_to_seq)
+    }
+
+    pub(crate) fn next_ack_seq(&self, agent_id: &str) -> Option<u64> {
+        self.agents
+            .get(agent_id)
+            .filter(|cursor| cursor.has_sequenced_position)
+            .map(|cursor| cursor.acked_up_to_seq.saturating_add(1))
     }
 
     #[cfg(test)]

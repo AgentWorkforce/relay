@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet node delivery no longer reports a message as delivered to the engine until the worker actually receives it, instead of at the moment it's handed off.
+- Fleet node delivery acknowledgements now wait for worker receipt and preserve per-agent sequence order across broker restarts, preventing cumulative acknowledgements from covering lower undelivered messages.
 
 ## [11.7.0] - 2026-08-17
 

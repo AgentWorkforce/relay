@@ -211,6 +211,7 @@ pub(crate) fn requeue_dead_letter(
         // dropped when it was dead-lettered — see relay#1310. A requeue is a
         // fresh redelivery attempt, not a continuation of that withheld ack.
         withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
     pending_deliveries.insert(pending.delivery.delivery_id.clone(), pending.clone());
     Some(pending)

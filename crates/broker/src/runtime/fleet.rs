@@ -857,6 +857,9 @@ impl BrokerRuntime {
             // `ListenApiRequest::Send`, so if manual_flush isn't honored
             // here, it's never honored anywhere.
             FleetDeliverySurfacing::Inject => {
+                let withheld_fleet_ack_floor = self
+                    .fleet_delivery_book
+                    .next_ack_seq(deliver.agent_id.as_str());
                 let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
 
                 // Mirror the `relay_inbound` dashboard event that the HTTP
@@ -1005,6 +1008,7 @@ impl BrokerRuntime {
                                 &queued,
                                 self.delivery_retry_interval,
                                 is_current.then(|| deliver.clone()),
+                                is_current.then_some(withheld_fleet_ack_floor).flatten(),
                             )
                             .await
                             {
@@ -1061,6 +1065,7 @@ impl BrokerRuntime {
                             relay_delivery,
                             self.delivery_retry_interval,
                             Some(deliver.clone()),
+                            withheld_fleet_ack_floor,
                         )
                         .await
                         .map(|_delivery_id| FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho)
@@ -1585,7 +1590,17 @@ pub(super) fn confirm_pending_delivery_and_resolve_fleet_ack(
             .filter(|sibling| sibling.agent_id == deliver.agent_id)
             .cloned()
             .collect::<Vec<_>>();
-        fleet_delivery_book.restore_pending_agent(&same_agent_pending);
+        let ack_floor = pending_deliveries
+            .values()
+            .filter(|pending| {
+                pending
+                    .withheld_fleet_ack
+                    .as_ref()
+                    .is_some_and(|sibling| sibling.agent_id == deliver.agent_id)
+            })
+            .filter_map(|pending| pending.withheld_fleet_ack_floor)
+            .min();
+        fleet_delivery_book.restore_pending_agent(&same_agent_pending, ack_floor);
     }
 
     let pending = clear_pending_delivery_if_event_matches(

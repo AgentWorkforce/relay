@@ -1430,6 +1430,7 @@ impl BrokerRuntime {
                                 MessageInjectionMode::Wait,
                                 delivery_retry_interval,
                                 None,
+                                None,
                             )
                             .await
                             {
@@ -1761,6 +1762,7 @@ impl BrokerRuntime {
                                                     2,
                                                     MessageInjectionMode::Wait,
                                                     delivery_retry_interval,
+                                                    None,
                                                     None,
                                                 )
                                                 .await

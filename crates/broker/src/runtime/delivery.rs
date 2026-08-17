@@ -24,6 +24,12 @@ pub(crate) struct PendingDelivery {
     /// construction, instead of needing a matching removal remembered at
     /// every one of those call sites. See relay#1543.
     pub(super) withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    /// Lowest sequenced delivery that must be confirmed before this withheld
+    /// cumulative ACK may advance. Persisted independently of the lower
+    /// delivery entry so a terminal failure followed by another broker
+    /// restart cannot make a higher pending sequence look like a safe new
+    /// baseline.
+    pub(super) withheld_fleet_ack_floor: Option<u64>,
 }
 
 /// Serializable snapshot of pending deliveries for crash recovery.
@@ -45,6 +51,8 @@ pub(crate) struct PersistedPendingDelivery {
     /// fresh delivery. See relay#1543's restart-persistence follow-up.
     #[serde(default)]
     pub(super) withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    #[serde(default)]
+    pub(super) withheld_fleet_ack_floor: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,6 +167,7 @@ pub(crate) fn save_pending_deliveries(
             queued_at_ms: pd.queued_at_ms,
             last_error: pd.last_error.clone(),
             withheld_fleet_ack: pd.withheld_fleet_ack.clone(),
+            withheld_fleet_ack_floor: pd.withheld_fleet_ack_floor,
         })
         .collect();
     crate::util::fs::write_json_atomic(path, &persisted)
@@ -173,7 +182,7 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
         Ok(v) => v,
         Err(_) => return HashMap::new(),
     };
-    persisted
+    let mut loaded = persisted
         .into_iter()
         .map(|p| {
             let id = p.delivery.delivery_id.clone();
@@ -201,10 +210,45 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
                     // snapshot deserialize this as `None`, matching the
                     // "nothing withheld" state those deliveries actually had.
                     withheld_fleet_ack: p.withheld_fleet_ack,
+                    withheld_fleet_ack_floor: p.withheld_fleet_ack_floor,
                 },
             )
         })
-        .collect()
+        .collect();
+    normalize_pending_fleet_ack_floors(&mut loaded);
+    loaded
+}
+
+fn normalize_pending_fleet_ack_floors(deliveries: &mut HashMap<DeliveryId, PendingDelivery>) {
+    let mut floors = HashMap::<String, u64>::new();
+    for pending in deliveries.values() {
+        let Some(deliver) = pending
+            .withheld_fleet_ack
+            .as_ref()
+            .filter(|deliver| deliver.seq > 0)
+        else {
+            continue;
+        };
+        let candidate = pending
+            .withheld_fleet_ack_floor
+            .unwrap_or(deliver.seq)
+            .min(deliver.seq);
+        floors
+            .entry(deliver.agent_id.clone())
+            .and_modify(|floor| *floor = (*floor).min(candidate))
+            .or_insert(candidate);
+    }
+    for pending in deliveries.values_mut() {
+        let Some(deliver) = pending
+            .withheld_fleet_ack
+            .as_ref()
+            .filter(|deliver| deliver.seq > 0)
+        else {
+            pending.withheld_fleet_ack_floor = None;
+            continue;
+        };
+        pending.withheld_fleet_ack_floor = floors.get(&deliver.agent_id).copied();
+    }
 }
 
 // These payload structs were used by the stdio protocol handler (handle_sdk_frame).
@@ -624,6 +668,7 @@ pub(crate) async fn try_inject_pending_relay_message(
     // caller, and the ack is never registered even though the delivery is
     // still very much alive and retryable. See relay#1310 / relay#1543.
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
     let event_id = msg
         .event_id
@@ -650,6 +695,7 @@ pub(crate) async fn try_inject_pending_relay_message(
             msg.mode.clone(),
             retry_interval,
             withheld_fleet_ack,
+            withheld_fleet_ack_floor,
         ),
     )
     .await
@@ -720,6 +766,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
     injection_mode: MessageInjectionMode,
     retry_interval: Duration,
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
     let delivery = RelayDelivery {
         delivery_id: DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())),
@@ -740,6 +787,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
         delivery,
         retry_interval,
         withheld_fleet_ack,
+        withheld_fleet_ack_floor,
     )
     .await
 }
@@ -760,8 +808,31 @@ pub(crate) async fn insert_and_attempt_delivery(
     delivery: RelayDelivery,
     retry_interval: Duration,
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    explicit_withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
     let delivery_id = delivery.delivery_id.clone();
+    let withheld_fleet_ack_floor = withheld_fleet_ack
+        .as_ref()
+        .filter(|deliver| deliver.seq > 0)
+        .map(|deliver| {
+            pending_deliveries
+                .values()
+                .filter_map(|pending| {
+                    let sibling = pending.withheld_fleet_ack.as_ref()?;
+                    (sibling.agent_id == deliver.agent_id && sibling.seq > 0).then_some(
+                        pending
+                            .withheld_fleet_ack_floor
+                            .unwrap_or(sibling.seq)
+                            .min(sibling.seq),
+                    )
+                })
+                .fold(
+                    explicit_withheld_fleet_ack_floor
+                        .unwrap_or(deliver.seq)
+                        .min(deliver.seq),
+                    u64::min,
+                )
+        });
     pending_deliveries.insert(
         delivery_id.clone(),
         PendingDelivery {
@@ -773,6 +844,7 @@ pub(crate) async fn insert_and_attempt_delivery(
             queued_at_ms: unix_timestamp_millis(),
             last_error: None,
             withheld_fleet_ack,
+            withheld_fleet_ack_floor,
         },
     );
 

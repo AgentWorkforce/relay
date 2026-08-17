@@ -266,6 +266,7 @@ fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> Pen
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
         withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     }
 }
 
@@ -559,6 +560,7 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
         withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     }
 }
 
@@ -626,6 +628,7 @@ fn withheld_fleet_ack_survives_a_simulated_restart() {
     let path = dir.path().join("pending-deliveries.json");
     let mut delivery = make_pending_delivery("del_inflight", "worker-a");
     delivery.withheld_fleet_ack = Some(withheld_ack_for("del_inflight"));
+    delivery.withheld_fleet_ack_floor = Some(1);
     let deliveries = HashMap::from([(DeliveryId::new("del_inflight"), delivery)]);
 
     // Shutdown: persist whatever is still pending, exactly as the broker
@@ -647,6 +650,7 @@ fn withheld_fleet_ack_survives_a_simulated_restart() {
          to — otherwise a retried delivery that goes on to land has no ack left to release, \
          and the engine stays permanently unacknowledged for it"
     );
+    assert_eq!(pending.withheld_fleet_ack_floor, Some(1));
 }
 
 // relay#1543 delivery.rs:190 companion: a snapshot written by a broker
@@ -670,6 +674,10 @@ fn legacy_pending_delivery_snapshot_without_withheld_ack_field_loads_as_none() {
         .as_object_mut()
         .expect("pending delivery entry should be an object")
         .remove("withheld_fleet_ack");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("withheld_fleet_ack_floor");
     std::fs::write(
         &path,
         serde_json::to_vec(&json).expect("legacy snapshot encodes"),
@@ -682,6 +690,7 @@ fn legacy_pending_delivery_snapshot_without_withheld_ack_field_loads_as_none() {
         "a pre-relay#1543 snapshot has no withheld_fleet_ack field at all — it must load as \
          None (the same state that delivery actually had), not fail to deserialize"
     );
+    assert_eq!(loaded["del_legacy_ack"].withheld_fleet_ack_floor, None);
 }
 
 #[test]
@@ -1092,6 +1101,7 @@ async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
             &msg,
             Duration::from_millis(20),
             Some(deliver.clone()),
+            Some(deliver.seq),
         ),
     )
     .await
@@ -1271,6 +1281,7 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
             relay_delivery,
             Duration::from_millis(1),
             Some(withheld_ack_for("del_worker_missing")),
+            Some(1),
         )
         .await;
         assert!(
@@ -1350,6 +1361,7 @@ async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
         &msg,
         Duration::from_secs(2),
         Some(deliver.clone()),
+        Some(deliver.seq),
     )
     .await
     .expect("a registered worker should accept the handoff");
@@ -1474,6 +1486,83 @@ fn restored_out_of_order_confirmation_waits_for_the_lower_sequence() {
     assert!(!fleet_delivery_book.is_delivery_confirmation_held(&second));
 }
 
+// The ordering gap itself must survive another restart after the lower entry
+// has left the pending map. Otherwise the remaining higher sequence would be
+// mistaken for a new baseline and could once again cumulatively ACK the
+// dead-lettered lower delivery.
+#[test]
+fn restored_ack_floor_survives_lower_failure_and_a_second_restart() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("pending.json");
+    let first = fleet_deliver(41);
+    let second = fleet_deliver(42);
+    let mut first_pending = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    first_pending.withheld_fleet_ack = Some(first.clone());
+    let mut second_pending = pending_delivery(
+        "worker-a",
+        second.delivery_id.as_str(),
+        second.msg_id.as_str(),
+    );
+    second_pending.withheld_fleet_ack = Some(second.clone());
+    let pending_deliveries = HashMap::from([
+        (DeliveryId::from(&first.delivery_id), first_pending),
+        (DeliveryId::from(&second.delivery_id), second_pending),
+    ]);
+    super::save_pending_deliveries(&path, &pending_deliveries).expect("save first snapshot");
+
+    let mut after_first_restart = load_pending_deliveries(&path);
+    assert_eq!(
+        after_first_restart[second.delivery_id.as_str()].withheld_fleet_ack_floor,
+        Some(first.seq)
+    );
+    after_first_restart.remove(first.delivery_id.as_str());
+    super::save_pending_deliveries(&path, &after_first_restart)
+        .expect("save snapshot after lower terminal failure");
+
+    let mut after_second_restart = load_pending_deliveries(&path);
+    assert_eq!(
+        after_second_restart[second.delivery_id.as_str()].withheld_fleet_ack_floor,
+        Some(first.seq),
+        "the higher entry must retain the failed lower sequence as its ACK floor"
+    );
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let (_, higher_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut after_second_restart,
+        second.delivery_id.as_str(),
+        Some(second.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut fleet_delivery_book,
+    );
+    assert_eq!(
+        higher_ack, None,
+        "seq 42 must still not ACK through the absent, failed seq 41"
+    );
+    assert!(after_second_restart.contains_key(second.delivery_id.as_str()));
+
+    let mut retried_first = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    retried_first.withheld_fleet_ack = Some(first.clone());
+    after_second_restart.insert(DeliveryId::from(&first.delivery_id), retried_first);
+    let (_, released_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut after_second_restart,
+        first.delivery_id.as_str(),
+        Some(first.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut fleet_delivery_book,
+    );
+    assert_eq!(released_ack, Some((first.agent.clone(), second.seq)));
+    assert!(after_second_restart.is_empty());
+}
+
 // The paired happy-path boundary: adding an ordering hold must not turn
 // ordinary in-order worker confirmations into acknowledgements that never
 // fire.
@@ -1583,6 +1672,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("failed writing frame".to_string()),
             withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -1641,6 +1731,7 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         2,
         MessageInjectionMode::Wait,
         Duration::from_millis(1),
+        None,
         None,
     )
     .await
@@ -1702,6 +1793,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
             withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -1843,6 +1935,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("old transient failure".to_string()),
             withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -2754,6 +2847,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
             withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     );
     pending.insert(
@@ -2778,6 +2872,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
             withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     );
 
@@ -2809,6 +2904,7 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: Some("previous blip".to_string()),
         withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
     let mut dead_letters = DeadLetterStore::default();
@@ -2880,6 +2976,7 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
         withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
@@ -2916,6 +3013,7 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
             withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -3334,6 +3432,7 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
         withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
