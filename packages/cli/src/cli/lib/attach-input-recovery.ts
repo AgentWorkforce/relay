@@ -63,8 +63,18 @@ export function isBackpressureRejection(error: unknown): boolean {
  * broker has no other liveness signal to tell them apart. Tearing the whole
  * input stream down and reconnecting over one slow ack is what produced the
  * self-healing "input stream lost / reconnected after 1 attempt(s)" flap
- * reported in relay#1544; the keystroke itself still failed to land (the
- * caller must still roll back its optimistic echo), but the stream survives.
+ * reported in relay#1544.
+ *
+ * Critically, a late ack is not a failed write: the broker's `write_all()`
+ * onto the PTY master is still blocking and pending when the ack times out,
+ * and it very likely completes once the busy child drains its stdin — the
+ * keystroke lands anyway. Rolling back the optimistic echo here would show
+ * the operator input vanishing right before it executes, a UI lie that is
+ * worse than the flap this module exists to fix and that the operator cannot
+ * recover from (they cannot tell whether it is safe to retype). So this code
+ * must NOT roll back the echo. Only a *confirmed* write failure — a different
+ * error code entirely — may roll it back, and that already falls through to
+ * {@link createInputStreamRecovery}'s default `recover()` path below.
  */
 export function isWriteTimeoutRejection(error: unknown): boolean {
   return (
@@ -140,10 +150,13 @@ export interface InputStreamRecovery {
   /** Begin recovery. No-ops if already recovering or settled. */
   recover(reason: string): void;
   /**
-   * Classify a rejected `send()`. Backpressure is flow control on a healthy
-   * stream and only costs the optimistic echo; everything else is treated as
-   * transport loss and enters recovery. Callers route every send rejection
-   * here rather than assuming loss.
+   * Classify a rejected `send()`. Two codes never enter recovery:
+   * `input_backpressure` is flow control on a healthy stream and only costs
+   * the optimistic echo, and `worker_timeout` is a late ack on a write that
+   * may still land, so it costs nothing — no rollback, no recovery. Every
+   * other rejection is treated as transport loss and enters recovery, which
+   * does roll back. Callers route every send rejection here rather than
+   * assuming loss.
    */
   handleSendFailure(error: unknown): void;
   /** Clears the backpressure latch so a later episode reports again. */
@@ -255,14 +268,16 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       // This one write's ack didn't arrive in time — the worker may just be
       // busy, not dead (relay#1544). The transport already kept the socket
       // open for this exact code, so recovering here would manufacture the
-      // reconnect this module exists to avoid. The keystroke still didn't
-      // land, so roll back its optimistic echo same as backpressure.
-      onRollback();
+      // reconnect this module exists to avoid. A late ack is not a failed
+      // write either: the broker's write to the PTY is still pending and
+      // very likely lands once the worker drains its stdin, so do NOT roll
+      // back the optimistic echo — doing so would erase input right before
+      // it executes, with no way for the operator to tell it happened. Only
+      // a confirmed write failure (a distinct error code) may roll it back,
+      // and that already falls through to `recover()` below.
       if (!writeTimeoutReported) {
         writeTimeoutReported = true;
-        log(
-          `[${label}] ${name} did not confirm a keystroke in time (worker busy); dropping it and continuing.`
-        );
+        log(`[${label}] ${name} did not confirm a keystroke in time (worker busy); it may still land.`);
       }
       return;
     }
