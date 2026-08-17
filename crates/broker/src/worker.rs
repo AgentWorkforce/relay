@@ -552,6 +552,34 @@ impl WorkerRegistry {
             "spawning worker"
         );
 
+        // Harness definitions can supply a cwd when the caller did not. Resolve
+        // it before any CLI-specific setup, then validate it explicitly so an
+        // unusable directory is a spawn error rather than an inherited ".".
+        if spec.cwd.is_none() {
+            spec.cwd = match spec.harness_config.as_ref() {
+                Some(ResolvedHarnessConfig::Pty(config)) => config.cwd.clone(),
+                Some(ResolvedHarnessConfig::Native(config)) => config.cwd.clone(),
+                _ => None,
+            };
+        }
+        if let Some(cwd) = spec.cwd.as_deref() {
+            let path = Path::new(cwd);
+            // A relative path resolves against this node process's own launch
+            // directory, which is exactly the per-node non-determinism the
+            // caller asked to escape — reject it here, at the one gate every
+            // spawn path (action.invoke, direct AgentSpec, harness-config
+            // default) funnels through, rather than trusting each caller to
+            // have already enforced it.
+            if !path.is_absolute() {
+                anyhow::bail!("worker cwd must be an absolute path: '{}'", path.display());
+            }
+            let metadata = std::fs::metadata(path)
+                .with_context(|| format!("worker cwd is not resolvable: '{}'", path.display()))?;
+            if !metadata.is_dir() {
+                anyhow::bail!("worker cwd is not a directory: '{}'", path.display());
+            }
+        }
+
         let mut command =
             Command::new(std::env::current_exe().context("failed to locate current executable")?);
         let mut harness_env: Vec<(String, String)> = Vec::new();
@@ -2452,6 +2480,159 @@ mod tests {
             .args(args)
             .output()
             .expect("git should run")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn live_process_cwd(pid: u32) -> PathBuf {
+        std::fs::read_link(format!("/proc/{pid}/cwd")).expect("read live process cwd")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn live_process_cwd(pid: u32) -> PathBuf {
+        let output = std::process::Command::new("lsof")
+            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+            .output()
+            .expect("inspect live process cwd with lsof");
+        assert!(output.status.success(), "lsof failed: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let cwd = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix('n'))
+            .expect("lsof cwd record");
+        PathBuf::from(cwd)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn sleeping_native_worker(name: &str, cwd: Option<String>) -> AgentSpec {
+        AgentSpec {
+            name: WorkerName::from(name),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: Some("sh".to_string()),
+            session_id: None,
+            harness_config: Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 30".to_string()],
+                cwd: None,
+                env: None,
+                session_id: format!("session-{name}"),
+                metadata: None,
+            })),
+            model: None,
+            cwd,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn spawned_worker_process_uses_requested_cwd() {
+        let requested = tempfile::tempdir().expect("requested worker cwd");
+        let requested_cwd = requested.path().to_string_lossy().into_owned();
+        let mut registry = make_registry(Vec::new());
+
+        registry
+            .spawn(
+                sleeping_native_worker("cwd-worker", Some(requested_cwd.clone())),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("worker with an existing cwd should spawn");
+        let pid = registry
+            .worker_pid("cwd-worker")
+            .expect("spawned worker pid");
+        let observed = live_process_cwd(pid)
+            .canonicalize()
+            .expect("canonical observed process cwd");
+        registry
+            .release("cwd-worker")
+            .await
+            .expect("release cwd worker");
+
+        assert_eq!(
+            observed,
+            requested
+                .path()
+                .canonicalize()
+                .expect("canonical requested cwd")
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn spawned_worker_rejects_unresolvable_cwd_without_fallback() {
+        let root = tempfile::tempdir().expect("worker cwd fixture");
+        let missing = root.path().join("missing-checkout");
+        let mut registry = make_registry(Vec::new());
+
+        let error = registry
+            .spawn(
+                sleeping_native_worker(
+                    "missing-cwd-worker",
+                    Some(missing.to_string_lossy().into_owned()),
+                ),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect_err("missing cwd must fail instead of inheriting the broker cwd")
+            .to_string();
+
+        assert!(error.contains("worker cwd is not resolvable"), "{error}");
+        assert!(error.contains("missing-checkout"), "{error}");
+        assert!(!registry.has_worker(&WorkerName::from("missing-cwd-worker")));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn spawned_worker_rejects_relative_cwd() {
+        // A relative cwd resolves against this broker process's own launch
+        // directory, which reintroduces the exact per-node non-determinism
+        // the caller asked to escape by supplying a cwd at all — reject it
+        // at the WorkerRegistry gate regardless of which upstream caller
+        // (action.invoke, direct AgentSpec, harness-config default) supplied
+        // the unqualified path.
+        let mut registry = make_registry(Vec::new());
+
+        let error = registry
+            .spawn(
+                sleeping_native_worker(
+                    "relative-cwd-worker",
+                    Some("relative/checkout".to_string()),
+                ),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect_err("relative cwd must fail instead of resolving against the broker's own cwd")
+            .to_string();
+
+        assert!(
+            error.contains("worker cwd must be an absolute path"),
+            "{error}"
+        );
+        assert!(!registry.has_worker(&WorkerName::from("relative-cwd-worker")));
     }
 
     /// Exercise the production WorkerRegistry process boundary: the broker

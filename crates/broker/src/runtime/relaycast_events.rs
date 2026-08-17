@@ -64,6 +64,49 @@ pub(super) fn relaycast_spawn_session_ref(ws_value: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Resolve the worker process directory from a Fleet spawn request.
+///
+/// `worker_cwd` is the public action field. `cwd` remains accepted on the
+/// flattened `node.spawn` payload produced by `@agent-relay/fleet`, where it is
+/// already an `AgentSpec` working directory. Automatic placement transports
+/// the explicit field inside `metadata`, because the upstream workspace spawn
+/// request has no first-class cwd field.
+pub(super) fn relaycast_spawn_worker_cwd(ws_value: &Value) -> Result<Option<String>> {
+    let candidate = [
+        "/worker_cwd",
+        "/workerCwd",
+        "/metadata/worker_cwd",
+        "/metadata/workerCwd",
+        "/agent/worker_cwd",
+        "/agent/workerCwd",
+        "/agent/metadata/worker_cwd",
+        "/agent/metadata/workerCwd",
+        "/cwd",
+        "/agent/cwd",
+    ]
+    .iter()
+    .find_map(|pointer| ws_value.pointer(pointer));
+
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+    let cwd = candidate
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("worker_cwd must be a non-empty string")?;
+    let path = Path::new(cwd);
+    if !path.is_absolute() {
+        anyhow::bail!("worker_cwd must be an absolute path: '{cwd}'");
+    }
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("worker_cwd is not resolvable: '{}'", path.display()))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("worker_cwd is not a directory: '{}'", path.display());
+    }
+    Ok(Some(cwd.to_string()))
+}
+
 /// Read the dispatcher-issued commit attestation from an active node-control
 /// spawn request. The legacy workspace-stream bridge deserializes the same
 /// field into `SpawnParams`, but node-only `action.invoke` spawns bypass that
@@ -343,7 +386,8 @@ pub(super) async fn release_worker_locally(
 /// directly via `action.invoke`. The spawn fields (`cli`, `task`, `channel`,
 /// `model`) previously came off the typed event payload and are now passed in;
 /// `ws_value` is retained for `harnessConfig`/token extraction exactly as
-/// before. `exit_after_task` carries the resolved task-exit lifecycle so an
+/// before, as well as for the Fleet action's explicit `worker_cwd` transport.
+/// `exit_after_task` carries the resolved task-exit lifecycle so an
 /// engine-dispatched spawn exits after its task identically to a local HTTP
 /// spawn. `control_dedup_key` carries the firehose control dedup key so the
 /// local spawn-echo dedup behaves identically.
@@ -397,6 +441,10 @@ pub(super) async fn spawn_worker_from_request(
         );
         anyhow::bail!("agent '{name}' is the broker self");
     }
+    // Resolve and validate the directory on the selected node, before dedup or
+    // registration side effects. A remote Fleet cwd cannot be validated by the
+    // caller because the path belongs to this node's filesystem.
+    let worker_cwd = relaycast_spawn_worker_cwd(ws_value)?;
     let local_spawn_echo_key = relaycast_spawn_control_dedup_key(workspace_id, &name);
     if relaycast_ws_should_apply_local_spawn_echo_dedup(control_dedup_key, &local_spawn_echo_key)
         && !dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
@@ -486,7 +534,7 @@ pub(super) async fn spawn_worker_from_request(
         session_id,
         harness_config,
         model,
-        cwd: None,
+        cwd: worker_cwd,
         team: None,
         shadow_of: None,
         shadow_mode: None,
@@ -947,6 +995,48 @@ mod tests {
             .expect("inline config should return config");
 
         assert_eq!(config.runtime(), AgentRuntime::Pty);
+    }
+
+    #[test]
+    fn fleet_spawn_worker_cwd_accepts_existing_absolute_directory() {
+        let temp = tempfile::tempdir().expect("worker cwd fixture");
+        let cwd = temp.path().to_string_lossy().into_owned();
+
+        for value in [
+            json!({ "worker_cwd": cwd }),
+            json!({ "metadata": { "worker_cwd": cwd } }),
+            json!({ "agent": { "cwd": cwd } }),
+        ] {
+            assert_eq!(
+                relaycast_spawn_worker_cwd(&value)
+                    .expect("existing worker cwd should resolve")
+                    .as_deref(),
+                Some(cwd.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn fleet_spawn_worker_cwd_rejects_unresolvable_directory() {
+        let temp = tempfile::tempdir().expect("worker cwd fixture");
+        let missing = temp.path().join("missing-checkout");
+        let value = json!({ "worker_cwd": missing });
+
+        let error = relaycast_spawn_worker_cwd(&value)
+            .expect_err("missing worker cwd must reject the spawn")
+            .to_string();
+
+        assert!(error.contains("worker_cwd is not resolvable"), "{error}");
+        assert!(error.contains("missing-checkout"), "{error}");
+    }
+
+    #[test]
+    fn fleet_spawn_worker_cwd_rejects_relative_directory() {
+        let error = relaycast_spawn_worker_cwd(&json!({ "worker_cwd": "../other-repo" }))
+            .expect_err("relative Fleet cwd would depend on the node launch directory")
+            .to_string();
+
+        assert!(error.contains("must be an absolute path"), "{error}");
     }
 
     #[test]

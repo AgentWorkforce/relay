@@ -56,8 +56,8 @@ export interface RelaySpawnAgentInput {
   channel?: string;
   persona?: string;
   /**
-   * Free-form spawn metadata forwarded to the broker (for example `{ model }`,
-   * which the broker extracts to pass `--model` to the launched CLI).
+   * Free-form spawn metadata forwarded to the broker (for example `{ model,
+   * worker_cwd }`, which the broker extracts into launch settings).
    */
   metadata?: Record<string, unknown>;
 }

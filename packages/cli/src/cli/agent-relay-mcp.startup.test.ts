@@ -578,6 +578,7 @@ describe('createAgentRelayMcpServer', () => {
       name: 'FleetWorker',
       cli: 'codex',
       task: 'Implement a fix',
+      worker_cwd: '/workspace/relay',
       channel: 'general',
       target_node: 'node-a',
       organization: 'Agent Workforce',
@@ -592,6 +593,7 @@ describe('createAgentRelayMcpServer', () => {
         name: 'FleetWorker',
         cli: 'codex',
         task: 'Implement a fix',
+        worker_cwd: '/workspace/relay',
         target_node: 'node-a',
         channels: ['general'],
         organization: 'Agent Workforce',
@@ -606,7 +608,8 @@ describe('createAgentRelayMcpServer', () => {
       name: 'IntegrationExpert',
       persona: 'nango-integrations',
       task: 'Fix the sync',
-      cwd: '/workspace/project',
+      persona_cwd: '/workspace/personas',
+      worker_cwd: '/workspace/project',
       target_node: 'node-a',
       organization: 'Agent Workforce',
       project: 'Relay',
@@ -624,7 +627,8 @@ describe('createAgentRelayMcpServer', () => {
       persona: 'nango-integrations',
       capability: 'spawn:persona',
       task: 'Fix the sync',
-      cwd: '/workspace/project',
+      cwd: '/workspace/personas',
+      worker_cwd: '/workspace/project',
       target_node: 'node-a',
       organization: 'Agent Workforce',
       project: 'Relay',
@@ -632,6 +636,13 @@ describe('createAgentRelayMcpServer', () => {
       role: 'integration specialist',
       objective: 'Fix the sync',
     });
+    await expect(
+      server.tools.get('spawn')?.handler({
+        name: 'MisplacedWorker',
+        cli: 'codex',
+        cwd: '/workspace/ambiguous',
+      })
+    ).rejects.toThrow('use `worker_cwd`');
     const toolsList = await server.listToolsHandler?.({}, {});
     // Assert protocol-level tool discovery: the wrapped tools/list response
     // must surface every registered tool (not just post_message) with

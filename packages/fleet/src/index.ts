@@ -146,6 +146,7 @@ const spawnInputSchema = z
     session_ref: z.string().min(1).optional(),
     task: z.string().optional(),
     channels: z.array(z.string().min(1)).optional(),
+    worker_cwd: z.string().min(1).optional(),
     cwd: z.string().min(1).optional(),
     args: z.array(z.string()).optional(),
     team: z.string().min(1).optional(),
@@ -256,7 +257,10 @@ export function spawn(
     }
     const model = input.model ?? options.model;
     const rawArgs = [...(options.args ?? []), ...(input.args ?? [])];
-    const cwd = input.cwd ?? options.cwd ?? definition.cwd;
+    // `worker_cwd` is the unambiguous Fleet action field. Keep `cwd` as the
+    // Fleet DSL's legacy working-directory input, but do not make callers
+    // guess whether it is the MCP persona-registry cwd.
+    const cwd = input.worker_cwd ?? input.cwd ?? options.cwd ?? definition.cwd;
     const channels = input.channels ?? options.channels;
     const task = input.task;
     const metadata = registrationMetadata(input, task);
