@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Live broker workers missing from the Relaycast reconnect inventory are now restored from their existing agent identity, so a node-control reconnect no longer makes a still-running terminal permanently unreachable.
+- Fleet view attach now closes with a code and reason when its target is released instead of remaining silently open like a healthy idle stream.
 
 ## [11.6.10] - 2026-08-17
 

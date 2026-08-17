@@ -218,6 +218,10 @@ impl BrokerRuntime {
                 pending_requests,
                 delivery_states,
                 agent_result_tokens,
+                terminal_control_tx,
+                terminal_sessions,
+                terminal_snapshot_requests,
+                terminal_input_requests,
             )
             .await;
             match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)

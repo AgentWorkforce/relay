@@ -108,6 +108,48 @@ pub(super) fn fail_terminal_session(
     }
 }
 
+/// End every terminal session bound to a worker that has permanently gone away.
+///
+/// A terminal-lane disconnect is intentionally handled elsewhere so Relaycast
+/// can resume the same live session. Worker release is different: there is no
+/// target left for a view or drive client to resume, so every dependent session
+/// must receive a final `terminal.closed` frame.
+pub(super) fn close_terminal_sessions_for_worker(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    agent: &WorkerName,
+    code: &str,
+    message: &str,
+) {
+    let session_ids: Vec<String> = terminal_sessions
+        .iter()
+        .filter(|(_, session)| session.agent == *agent)
+        .map(|(session_id, _)| session_id.clone())
+        .collect();
+    for session_id in session_ids {
+        terminal_sessions.remove(&session_id);
+        terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+        terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+        if !try_send_terminal(
+            terminal_control_tx,
+            TerminalToCloud::Closed {
+                session_id: session_id.clone(),
+                code: Some(code.into()),
+                message: Some(message.into()),
+            },
+        ) {
+            tracing::warn!(
+                target = "relay_broker::terminal",
+                session_id = %session_id,
+                worker = %agent,
+                "terminal queue full or closed while closing disappeared worker session"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PendingVerifiedSpawn {
     pub(super) invocation_id: String,
@@ -1287,6 +1329,10 @@ impl BrokerRuntime {
             &mut self.pending_requests,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,
+            &self.terminal_control_tx,
+            &mut self.terminal_sessions,
+            &mut self.terminal_snapshot_requests,
+            &mut self.terminal_input_requests,
         )
         .await;
 

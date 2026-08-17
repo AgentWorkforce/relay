@@ -1,7 +1,5 @@
-use super::fleet::try_send_terminal;
 use super::*;
 use crate::relaycast::retry_agent_registration;
-use crate::terminal_control::TerminalToCloud;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
@@ -929,28 +927,15 @@ impl BrokerRuntime {
                         fail_pending_requests_for_worker(pending_requests, &name, "agent_released");
                         resize_owners.remove(&name);
                         pty_observability.remove(&name);
-                        let terminal_session_ids: Vec<String> = terminal_sessions
-                            .iter()
-                            .filter(|(_, session)| session.agent == name)
-                            .map(|(session_id, _)| session_id.clone())
-                            .collect();
-                        for session_id in terminal_session_ids {
-                            terminal_sessions.remove(&session_id);
-                            terminal_snapshot_requests
-                                .retain(|_, pending| pending.session_id != session_id);
-                            terminal_input_requests
-                                .retain(|_, pending| pending.session_id != session_id);
-                            if !try_send_terminal(
-                                terminal_control_tx,
-                                TerminalToCloud::Closed {
-                                    session_id: session_id.clone(),
-                                    code: Some("agent_released".into()),
-                                    message: Some("terminal worker was released".into()),
-                                },
-                            ) {
-                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing released worker session");
-                            }
-                        }
+                        super::fleet::close_terminal_sessions_for_worker(
+                            terminal_control_tx,
+                            terminal_sessions,
+                            terminal_snapshot_requests,
+                            terminal_input_requests,
+                            &name,
+                            "agent_released",
+                            "terminal worker was released",
+                        );
                         delivery_states.remove(&name);
                         agent_result_tokens.retain(|_, agent| agent != &name);
                         state.agents.remove(&name);

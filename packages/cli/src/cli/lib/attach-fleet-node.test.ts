@@ -7,7 +7,7 @@
  */
 import type { AddressInfo } from 'node:net';
 
-import { WebSocketServer, type WebSocket as WsSocket } from 'ws';
+import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { startFleetNodeAttachProxy, type FleetNodeAttachProxy } from './attach-fleet-node.js';
@@ -96,6 +96,17 @@ async function putDeliveryMode(
   });
   const body = (await response.json()) as Record<string, unknown>;
   return { status: response.status, body };
+}
+
+async function connectLoopbackEvents(proxy: FleetNodeAttachProxy): Promise<WsClient> {
+  const socket = new WsClient(`${proxy.brokerUrl.replace(/^http/, 'ws')}/ws`, {
+    headers: { Authorization: `Bearer ${proxy.apiKey}` },
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.once('open', resolve);
+    socket.once('error', reject);
+  });
+  return socket;
 }
 
 describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
@@ -326,6 +337,71 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     expect(result.body).toMatchObject({ error: { code: 'closed' } });
     expect(elapsedMs).toBeLessThan(5_000);
   }, 10_000);
+});
+
+describe('startFleetNodeAttachProxy view target lifecycle', () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      const fn = cleanup.pop()!;
+      await fn().catch(() => undefined);
+    }
+  });
+
+  it('keeps a healthy idle view open, then closes it with code and reason when its target disappears', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-target',
+      node: 'view-node',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const remoteSocket = await remote.nextConnection();
+    sendReady(remoteSocket, 'auto_inject');
+    const viewSocket = await connectLoopbackEvents(proxy);
+    const closes: Array<{ code: number; reason: string }> = [];
+    const closed = new Promise<void>((resolve) => {
+      viewSocket.on('close', (code, reason) => {
+        closes.push({ code, reason: reason.toString('utf8') });
+        resolve();
+      });
+    });
+
+    // MUST NOT FIRE: readiness and ordinary output from a healthy target do
+    // not finalize its view. Waiting for the output on the real loopback WS is
+    // the ordering barrier; this is not a fixed-time assertion of silence.
+    const receivedOutput = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
+    remoteSocket.send(
+      JSON.stringify({
+        type: 'terminal.output',
+        session_id: SESSION_ID,
+        chunk: 'healthy target output',
+        offset: 1,
+      })
+    );
+    await receivedOutput;
+    expect(viewSocket.readyState).toBe(WsClient.OPEN);
+    expect(closes).toEqual([]);
+
+    // MUST FIRE: the broker's final target-disappearance frame must reach the
+    // actual view client surface as the same actionable close used by drive.
+    remoteSocket.send(
+      JSON.stringify({
+        type: 'terminal.closed',
+        session_id: SESSION_ID,
+        code: 'agent_released',
+        message: 'terminal worker was released',
+      })
+    );
+    await closed;
+    expect(closes).toEqual([{ code: 1011, reason: 'remote terminal session closed' }]);
+  });
 });
 
 describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
