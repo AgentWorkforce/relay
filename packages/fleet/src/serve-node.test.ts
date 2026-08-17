@@ -234,6 +234,7 @@ describe('serveNode', () => {
       input: {
         name: 'worker-a',
         task: 'Implement fleet metadata',
+        worker_cwd: '/srv/relay',
         organization: 'AgentWorkforce',
         project: 'relay',
         workstream: 'fleet-metadata',
@@ -250,6 +251,7 @@ describe('serveNode', () => {
       name: 'worker-a',
       cli: 'codex',
       capability: 'codex',
+      cwd: '/srv/relay',
       metadata: {
         organization: 'AgentWorkforce',
         project: 'relay',

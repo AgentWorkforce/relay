@@ -424,6 +424,8 @@ describe('fleet command support', () => {
         'general',
         '--model',
         'gpt-5',
+        '--cwd',
+        '/srv/relay',
         '--organization',
         'Agent Workforce',
         '--project',
@@ -461,6 +463,7 @@ describe('fleet command support', () => {
         task: 'ACK and wait',
         channels: ['general'],
         model: 'gpt-5',
+        worker_cwd: '/srv/relay',
         organization: 'Agent Workforce',
         project: 'Relay',
         workstream: 'fleet-metadata',
@@ -489,6 +492,7 @@ describe('fleet command support', () => {
     });
     expect(spawnAgent).toHaveBeenCalledWith(
       expect.objectContaining({
+        agent: expect.objectContaining({ cwd: '/srv/relay' }),
         registrationMetadata: {
           organization: 'Agent Workforce',
           project: 'Relay',
@@ -645,6 +649,8 @@ describe('fleet command support', () => {
         'Reviewer',
         '--model',
         'gpt-5',
+        '--cwd',
+        '/srv/relay',
         '--organization',
         'Agent Workforce',
         '--project',
@@ -674,6 +680,7 @@ describe('fleet command support', () => {
       persona: 'Reviewer',
       metadata: {
         model: 'gpt-5',
+        worker_cwd: '/srv/relay',
         organization: 'Agent Workforce',
         project: 'Relay',
         workstream: 'fleet-metadata',

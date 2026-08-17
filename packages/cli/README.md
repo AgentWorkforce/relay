@@ -133,6 +133,7 @@ agent-relay fleet nodes --name sf-mini --capability spawn:codex
 agent-relay fleet spawn codex \
   --name api-worker \
   --task "Use https://agentrelay.com/skill, ACK over Relay, then wait for details." \
+  --cwd /absolute/path/to/checkout \
   --node sf-mini
 
 # Resume a known Claude/Codex CLI session on its origin node.
@@ -163,6 +164,9 @@ only the workspace key.
 
 `--session-ref` is a real CLI resume, not a logical collaboration label. Pass
 the actual Claude session ID or Codex thread ID and target its origin node.
+`--cwd` must name an absolute directory that exists on the selected node. The
+node rejects the spawn if that directory cannot be resolved; it never falls
+back to the node process's own working directory.
 Omit it to start a new CLI session. The project’s Agent Relay workspace remains
 pinned independently until you explicitly create or select another workspace.
 

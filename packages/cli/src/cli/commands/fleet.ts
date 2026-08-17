@@ -121,6 +121,7 @@ export function registerFleetCommands(
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
       .option('--model <model>', 'Model powering the worker')
+      .option('--cwd <path>', 'Absolute working directory for the spawned worker')
       .option('--organization <organization>', 'Declared organization for workforce reporting')
       .option('--project <project>', 'Declared project for workforce reporting')
       .option('--workstream <workstream>', 'Declared workstream for workforce reporting')
@@ -146,6 +147,7 @@ export function registerFleetCommands(
         optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const channel = optionalText(options.channel, 'Channel');
       const model = optionalText(options.model, 'Model');
+      const workerCwd = optionalText(options.cwd, 'Worker cwd');
       const organization = optionalText(options.organization, 'Organization');
       const project = optionalText(options.project, 'Project');
       const workstream = optionalText(options.workstream, 'Workstream');
@@ -186,6 +188,7 @@ export function registerFleetCommands(
             task,
             ...(channel ? { channels: [channel] } : {}),
             ...(model ? { model } : {}),
+            ...(workerCwd ? { worker_cwd: workerCwd } : {}),
             ...registrationMetadata,
             ...(sessionRef ? { session_ref: sessionRef } : {}),
           },
@@ -205,8 +208,14 @@ export function registerFleetCommands(
         task,
         ...(channel ? { channel } : {}),
         ...(persona ? { persona } : {}),
-        ...(model || Object.keys(registrationMetadata).length > 0
-          ? { metadata: { ...(model ? { model } : {}), ...registrationMetadata } }
+        ...(model || workerCwd || Object.keys(registrationMetadata).length > 0
+          ? {
+              metadata: {
+                ...(model ? { model } : {}),
+                ...(workerCwd ? { worker_cwd: workerCwd } : {}),
+                ...registrationMetadata,
+              },
+            }
           : {}),
       });
       printJson(deps.sdk, { invocation });
