@@ -31,7 +31,7 @@ const FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF: Duration = Duration::from_secs(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FleetInventoryRetry {
-    process_id: u32,
+    generation: Uuid,
     retry_after: Instant,
 }
 // Relaycast currently limits a node to 32 terminal sessions. Keep that many
@@ -1717,13 +1717,13 @@ pub(super) async fn record_fleet_inventory_agent(
 fn schedule_fleet_inventory_retry(
     retry_after: &mut HashMap<WorkerName, FleetInventoryRetry>,
     name: WorkerName,
-    process_id: u32,
+    generation: Uuid,
     now: Instant,
 ) {
     retry_after.insert(
         name,
         FleetInventoryRetry {
-            process_id,
+            generation,
             retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
         },
     );
@@ -1738,15 +1738,15 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
     live_workers: Vec<LiveFleetInventoryCandidate>,
     now: Instant,
 ) -> usize {
-    let live_worker_processes: HashMap<_, _> = live_workers
+    let live_worker_generations: HashMap<_, _> = live_workers
         .iter()
-        .map(|worker| (worker.name.clone(), worker.process_id))
+        .map(|worker| (worker.name.clone(), worker.generation))
         .collect();
     // A worker that exits or has since been restored needs no retained retry
-    // state. A restarted same-name worker has a different PID and must not
+    // state. A restarted same-name worker has a different generation and must not
     // inherit the old process's retry deadline.
     retry_after.retain(|name, retry| {
-        live_worker_processes.get(name) == Some(&retry.process_id)
+        live_worker_generations.get(name) == Some(&retry.generation)
             && !fleet_inventory.contains_key(name)
     });
     let missing_workers: Vec<_> = live_workers
@@ -1773,7 +1773,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
     for LiveFleetInventoryCandidate {
         name,
         session_ref,
-        process_id,
+        generation,
     } in missing_workers
     {
         let agent = match timeout(
@@ -1790,7 +1790,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                     retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                     "could not resolve live worker for fleet inventory reconciliation; will retry later"
                 );
-                schedule_fleet_inventory_retry(retry_after, name, process_id, now);
+                schedule_fleet_inventory_retry(retry_after, name, generation, now);
                 continue;
             }
             Err(_) => {
@@ -1800,7 +1800,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                     retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                     "timed out resolving live worker for fleet inventory reconciliation; will retry later"
                 );
-                schedule_fleet_inventory_retry(retry_after, name, process_id, now);
+                schedule_fleet_inventory_retry(retry_after, name, generation, now);
                 continue;
             }
         };
@@ -1811,7 +1811,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                 retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                 "refusing to reconcile fleet inventory with a mismatched Relaycast identity; will retry later"
             );
-            schedule_fleet_inventory_retry(retry_after, name, process_id, now);
+            schedule_fleet_inventory_retry(retry_after, name, generation, now);
             continue;
         }
 
@@ -1824,7 +1824,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
                     retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
                     "refusing to replace a live worker's authoritative fleet identity; will retry later"
                 );
-                schedule_fleet_inventory_retry(retry_after, name, process_id, now);
+                schedule_fleet_inventory_retry(retry_after, name, generation, now);
                 continue;
             }
         } else {
@@ -2277,12 +2277,12 @@ mod tests {
     fn live_fleet_worker(
         name: &str,
         session_ref: Option<&str>,
-        process_id: u32,
+        generation: u128,
     ) -> LiveFleetInventoryCandidate {
         LiveFleetInventoryCandidate {
             name: WorkerName::from(name),
             session_ref: session_ref.map(ToOwned::to_owned),
-            process_id,
+            generation: Uuid::from_u128(generation),
         }
     }
 
@@ -3409,7 +3409,7 @@ mod tests {
         assert_eq!(
             retry_after.get(&WorkerName::from("live-worker")),
             Some(&FleetInventoryRetry {
-                process_id: 103,
+                generation: Uuid::from_u128(103),
                 retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
             })
         );
@@ -3460,7 +3460,7 @@ mod tests {
             worker_names
                 .iter()
                 .enumerate()
-                .map(|(index, name)| live_fleet_worker(name, None, index as u32 + 1))
+                .map(|(index, name)| live_fleet_worker(name, None, index as u128 + 1))
                 .collect()
         };
         let now = Instant::now();
@@ -3519,7 +3519,7 @@ mod tests {
         let mut inventory = HashMap::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
-        let live_workers = |process_id| vec![live_fleet_worker("missing-worker", None, process_id)];
+        let live_workers = |generation| vec![live_fleet_worker("missing-worker", None, generation)];
         let now = Instant::now();
 
         assert_eq!(
@@ -3539,7 +3539,7 @@ mod tests {
         assert_eq!(
             retry_after.get(&WorkerName::from("missing-worker")),
             Some(&FleetInventoryRetry {
-                process_id: 104,
+                generation: Uuid::from_u128(104),
                 retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
             })
         );
@@ -3580,7 +3580,7 @@ mod tests {
         assert_eq!(
             retry_after.get(&WorkerName::from("missing-worker")),
             Some(&FleetInventoryRetry {
-                process_id: 105,
+                generation: Uuid::from_u128(105),
                 retry_after: now
                     + Duration::from_secs(2)
                     + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
@@ -3649,7 +3649,7 @@ mod tests {
         assert_eq!(
             retry_after.get(&WorkerName::from("slow-worker")),
             Some(&FleetInventoryRetry {
-                process_id: 106,
+                generation: Uuid::from_u128(106),
                 retry_after: now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
             })
         );

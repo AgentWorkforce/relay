@@ -242,9 +242,9 @@ pub(crate) enum WorkerEvent {
 pub(crate) struct LiveFleetInventoryCandidate {
     pub(crate) name: WorkerName,
     pub(crate) session_ref: Option<String>,
-    /// The wrapper PID distinguishes a restarted same-name worker from the
+    /// The process generation distinguishes a restarted same-name worker from the
     /// process whose failed Relaycast lookup is currently being backed off.
-    pub(crate) process_id: u32,
+    pub(crate) generation: Uuid,
 }
 
 pub(crate) struct WorkerRegistry {
@@ -522,7 +522,6 @@ impl WorkerRegistry {
                 if handle.parent.is_none() || !self.is_worker_live(name) {
                     return None;
                 }
-                let process_id = handle.child.id()?;
                 let session_ref = handle.spec.session_id.clone().or_else(|| {
                     handle
                         .spec
@@ -534,7 +533,7 @@ impl WorkerRegistry {
                 Some(LiveFleetInventoryCandidate {
                     name: name.clone(),
                     session_ref,
-                    process_id,
+                    generation: handle.generation,
                 })
             })
             .collect()
