@@ -1782,7 +1782,22 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
             continue;
         }
 
-        fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
+        if let Some(bound_agent_id) = fleet_delivery_book.active_agent_id(name.as_str()) {
+            if bound_agent_id != agent.id {
+                tracing::warn!(
+                    worker = %name,
+                    bound_agent_id,
+                    resolved_agent_id = %agent.id,
+                    retry_after_secs = FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF.as_secs(),
+                    "refusing to replace a live worker's authoritative fleet identity; will retry later"
+                );
+                retry_after.insert(name, now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF);
+                continue;
+            }
+        } else {
+            fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
+        }
+
         retry_after.remove(&name);
         fleet_inventory.insert(
             name,
@@ -3300,6 +3315,62 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "a rejected identity must not publish"
+        );
+        lookup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_does_not_replace_an_existing_authoritative_identity() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/live-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(serde_json::json!({
+                "ok": true,
+                "data": {
+                    "id": "agent-reused-name-id",
+                    "name": "live-worker",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut inventory = HashMap::new();
+        let mut delivery_book = FleetDeliveryBook::default();
+        delivery_book.bind_authoritative_identity("live-worker", "agent-live-id");
+        let mut retry_after = HashMap::new();
+        let now = Instant::now();
+
+        let repaired = reconcile_fleet_inventory_with_live_workers(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            &mut retry_after,
+            vec![(WorkerName::from("live-worker"), None)],
+            now,
+        )
+        .await;
+
+        assert_eq!(repaired, 0, "a reused name must not replace live identity");
+        assert!(inventory.is_empty());
+        assert_eq!(
+            delivery_book.active_agent_id("live-worker"),
+            Some("agent-live-id")
+        );
+        assert_eq!(
+            retry_after.get(&WorkerName::from("live-worker")),
+            Some(&(now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF))
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected replacement must not publish"
         );
         lookup.assert_hits(1);
     }
