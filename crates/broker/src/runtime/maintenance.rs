@@ -218,6 +218,7 @@ impl BrokerRuntime {
                 pending_requests,
                 delivery_states,
                 agent_result_tokens,
+                resize_owners,
                 terminal_control_tx,
                 terminal_sessions,
                 terminal_snapshot_requests,

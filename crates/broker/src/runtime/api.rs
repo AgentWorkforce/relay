@@ -1031,6 +1031,19 @@ impl BrokerRuntime {
                                     Some(error.to_string())
                                 }
                             };
+                            // Idempotent release is still terminal for any stale
+                            // attach state left behind after the process exited.
+                            resize_owners.remove(&name);
+                            pty_observability.remove(&name);
+                            super::fleet::close_terminal_sessions_for_worker(
+                                terminal_control_tx,
+                                terminal_sessions,
+                                terminal_snapshot_requests,
+                                terminal_input_requests,
+                                &name,
+                                "agent_released",
+                                "terminal worker was released",
+                            );
                             state.agents.remove(&name);
                             if paths.persist {
                                 let _ = state.save(&paths.state);

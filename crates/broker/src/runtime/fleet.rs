@@ -9,7 +9,7 @@ use crate::{
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
-        TerminalToCloud,
+        TerminalToCloud, TERMINAL_CLOSE_RESERVE,
     },
     worker::LiveFleetInventoryCandidate,
 };
@@ -34,11 +34,6 @@ pub(super) struct FleetInventoryRetry {
     generation: Uuid,
     retry_after: Instant,
 }
-// Relaycast currently limits a node to 32 terminal sessions. Keep that many
-// slots free from high-volume frames so every affected session can still get a
-// terminal.closed notification when the output lane applies backpressure.
-const TERMINAL_CLOSE_RESERVE: usize = 32;
-
 pub(super) fn try_send_terminal(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     message: TerminalToCloud,
@@ -1329,6 +1324,7 @@ impl BrokerRuntime {
             &mut self.pending_requests,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,
+            &mut self.resize_owners,
             &self.terminal_control_tx,
             &mut self.terminal_sessions,
             &mut self.terminal_snapshot_requests,
@@ -1336,9 +1332,6 @@ impl BrokerRuntime {
         )
         .await;
 
-        // Drop any resize ownership for the released worker so a later worker
-        // reusing the name isn't rejected by a stale single-resizer entry.
-        self.resize_owners.remove(&name);
         self.pty_observability.remove(&name);
 
         let mut deregistration_failed = false;

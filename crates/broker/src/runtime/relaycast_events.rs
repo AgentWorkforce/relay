@@ -290,6 +290,7 @@ pub(super) async fn release_worker_locally(
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
+    resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     terminal_sessions: &mut HashMap<String, TerminalSession>,
     terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
@@ -382,6 +383,9 @@ pub(super) async fn release_worker_locally(
         }
     };
     if outcome == ReleaseOutcome::Released {
+        // Worker disappearance invalidates every resize lease for that target,
+        // including a stale lease whose session was already pruned.
+        resize_owners.remove(&name);
         super::fleet::close_terminal_sessions_for_worker(
             terminal_control_tx,
             terminal_sessions,
@@ -1006,10 +1010,31 @@ mod tests {
             ),
         ]);
         let mut terminal_input_requests = HashMap::new();
+        let now = Instant::now();
+        let mut resize_owners = HashMap::from([
+            (
+                released_agent.clone(),
+                ResizeOwner {
+                    session_id: released_session_id.clone(),
+                    last_seen: now,
+                    rows: 24,
+                    cols: 80,
+                },
+            ),
+            (
+                WorkerName::from("healthy-idle-view-target"),
+                ResizeOwner {
+                    session_id: healthy_session_id.clone(),
+                    last_seen: now,
+                    rows: 30,
+                    cols: 100,
+                },
+            ),
+        ]);
         let (terminal_control_tx, mut terminal_control_rx) = mpsc::channel(8);
 
         let outcome = release_worker_locally(
-            released_agent,
+            released_agent.clone(),
             &workspace,
             &mut workers,
             &mut state,
@@ -1021,6 +1046,7 @@ mod tests {
             &mut pending_requests,
             &mut delivery_states,
             &mut agent_result_tokens,
+            &mut resize_owners,
             &terminal_control_tx,
             &mut terminal_sessions,
             &mut terminal_snapshot_requests,
@@ -1045,10 +1071,12 @@ mod tests {
         )));
         assert!(!terminal_sessions.contains_key(&released_session_id));
         assert!(!terminal_snapshot_requests.contains_key("released-snapshot"));
+        assert!(!resize_owners.contains_key(&released_agent));
 
         // MUST NOT FIRE: an unrelated healthy view may be legitimately idle.
         assert!(terminal_sessions.contains_key(&healthy_session_id));
         assert!(terminal_snapshot_requests.contains_key("healthy-snapshot"));
+        assert!(resize_owners.contains_key(&WorkerName::from("healthy-idle-view-target")));
         assert!(
             !terminal_messages.iter().any(|message| matches!(
                 message,

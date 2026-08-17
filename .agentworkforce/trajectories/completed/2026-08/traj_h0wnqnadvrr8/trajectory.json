@@ -1,0 +1,70 @@
+{
+  "id": "traj_h0wnqnadvrr8",
+  "version": 1,
+  "task": {
+    "title": "Harden relay#1548 release teardown after review",
+    "source": {
+      "system": "plain",
+      "id": "relay#1548-review"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-17T10:21:45.810Z",
+  "completedAt": "2026-08-17T10:21:47.401Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-17T10:21:46.698Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_d07hc2jdhbls",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-17T10:21:46.698Z",
+      "endedAt": "2026-08-17T10:21:47.401Z",
+      "events": [
+        {
+          "ts": 1786962106698,
+          "type": "decision",
+          "content": "Give terminal.closed a dedicated bounded writer lane: Give terminal.closed a dedicated bounded writer lane",
+          "raw": {
+            "question": "Give terminal.closed a dedicated bounded writer lane",
+            "chosen": "Give terminal.closed a dedicated bounded writer lane",
+            "alternatives": [
+              {
+                "option": "Increase the shared writer queue",
+                "reason": ""
+              },
+              {
+                "option": "Block all output writes",
+                "reason": ""
+              },
+              {
+                "option": "Ignore the saturated-writer case",
+                "reason": ""
+              }
+            ],
+            "reasoning": "The outer queue reserved close capacity, but the inner WebSocket writer still shed every Send frame when bulk output filled its queue. A final-frame lane prioritized ahead of output preserves teardown without making output unbounded."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Addressed PR review by preserving terminal close frames through writer backpressure, clearing resize leases in the shared release lifecycle, and closing stale sessions on idempotent HTTP release.",
+    "approach": "Verified each review finding against the transport and repo rules, added a dedicated final-frame queue with deterministic mutation-backed coverage, kept the required patch changelog heading, and reran the full broker and attach suites.",
+    "confidence": 0.97
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8391b6b6800a771ffabe8adccfa1015b98ae9e34",
+    "endRef": "8391b6b6800a771ffabe8adccfa1015b98ae9e34"
+  }
+}
