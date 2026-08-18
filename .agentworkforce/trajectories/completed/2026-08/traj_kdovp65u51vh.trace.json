@@ -1,0 +1,91 @@
+{
+  "version": "1.0.0",
+  "id": "c82c472b-713a-4c23-96a8-4b5e4e0ff311",
+  "timestamp": "2026-08-18T21:46:53.626Z",
+  "trajectory": "traj_kdovp65u51vh",
+  "files": [
+    {
+      "path": "packages/cli/src/cli/lib/attach-drive.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 745,
+              "end_line": 766,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-drive.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 83,
+              "end_line": 89,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            },
+            {
+              "start_line": 1467,
+              "end_line": 1473,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            },
+            {
+              "start_line": 1568,
+              "end_line": 1574,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-fleet-node.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 291,
+              "end_line": 298,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            },
+            {
+              "start_line": 301,
+              "end_line": 340,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-fleet-node.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 314,
+              "end_line": 334,
+              "revision": "1b4b7f578849486e135bb68a6cb54ef5d197d588"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
