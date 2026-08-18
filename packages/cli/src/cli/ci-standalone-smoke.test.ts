@@ -15,16 +15,26 @@ function makeExecutable(directory: string, name: string, contents: string): stri
   return path;
 }
 
-function createFakeBinaries(): { cli: string; broker: string } {
+function createFakeBinaries(): { cli: string; broker: string; invocationLog: string } {
   const directory = mkdtempSync(join(tmpdir(), 'relay-standalone-smoke-test-'));
   temporaryDirectories.push(directory);
 
-  const broker = makeExecutable(directory, 'broker', '#!/usr/bin/env bash\nexit 0\n');
+  const invocationLog = join(directory, 'invocations.log');
+  writeFileSync(invocationLog, '');
+  const broker = makeExecutable(
+    directory,
+    'broker',
+    `#!/usr/bin/env bash
+printf 'broker\\n' >> ${JSON.stringify(invocationLog)}
+exit 0
+`
+  );
   const cli = makeExecutable(
     directory,
     'relay',
     `#!/usr/bin/env bash
 set -euo pipefail
+printf 'cli\\n' >> ${JSON.stringify(invocationLog)}
 
 if [ "\${1:-}" != "node" ]; then
   exit 64
@@ -65,7 +75,7 @@ esac
 `
   );
 
-  return { cli, broker };
+  return { cli, broker, invocationLog };
 }
 
 afterEach(() => {
@@ -92,6 +102,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
     ];
 
     for (const [label, value] of unusableKeys) {
+      const { cli, broker, invocationLog } = createFakeBinaries();
       const env = { ...process.env };
       if (value === undefined) {
         delete env.RELAY_WORKSPACE_KEY;
@@ -99,7 +110,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
         env.RELAY_WORKSPACE_KEY = value;
       }
 
-      const result = spawnSync('bash', [smokeScript, '/missing/cli', '/missing/broker'], {
+      const result = spawnSync('bash', [smokeScript, cli, broker], {
         encoding: 'utf8',
         env,
       });
@@ -108,6 +119,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
       expect(result.stderr, label).toContain('Refusing to start');
       expect(result.stderr, label).toContain('throwaway workspace');
       expect(result.stderr, label).not.toContain('binary not found');
+      expect(readFileSync(invocationLog, 'utf8'), label).toBe('');
     }
   });
 
