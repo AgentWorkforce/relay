@@ -598,6 +598,11 @@ struct AgentDeliveryCursor {
     acked_up_to_seq: u64,
     received_up_to_seq: u64,
     seen_msg_ids: SeenMsgIds,
+    /// Worker-confirmed sequenced deliveries that cannot advance the
+    /// cumulative ACK yet because a lower sequence is still unconfirmed.
+    /// Kept on the per-agent cursor so confirmations can be released in order
+    /// without letting one agent block another.
+    confirmed_delivery_seqs: BTreeMap<u64, ()>,
     /// Whether a sequenced (`seq >= 1`) position has been established for this
     /// identity, either by a resume handshake seeding the cursor or by adopting
     /// the first sequenced delivery. Tracked separately from the cursor's
@@ -756,9 +761,53 @@ impl FleetDeliveryBook {
                 acked_up_to_seq: up_to_seq,
                 received_up_to_seq: up_to_seq,
                 seen_msg_ids: SeenMsgIds::default(),
+                confirmed_delivery_seqs: BTreeMap::new(),
                 has_sequenced_position: true,
             },
         );
+    }
+
+    /// Reconstruct the received cursor for a post-restart agent from the
+    /// withheld fleet deliveries that survived in the pending snapshot.
+    ///
+    /// The persisted ACK floor establishes the first still-required sequence,
+    /// even when that lower delivery has already left the pending map after a
+    /// terminal failure. Replaying the remaining snapshot in sequence order
+    /// then restores as much of the received frontier as is contiguous. A live
+    /// cursor learned from normal delivery or a resume handshake is never
+    /// rewound; pending siblings can only extend its received frontier.
+    pub(crate) fn restore_pending_agent(
+        &mut self,
+        deliveries: &[&Deliver],
+        ack_floor: Option<u64>,
+    ) {
+        let mut sequenced = deliveries
+            .iter()
+            .copied()
+            .filter(|deliver| deliver.seq > 0)
+            .collect::<Vec<_>>();
+        sequenced.sort_by_key(|deliver| deliver.seq);
+        let Some(first) = sequenced.first().copied() else {
+            return;
+        };
+        let has_sequenced_position = self
+            .agents
+            .get(first.agent_id.as_str())
+            .is_some_and(|cursor| cursor.has_sequenced_position);
+        if !has_sequenced_position {
+            if !self.bind_identity(&first.agent, &first.agent_id, false) {
+                return;
+            }
+            let first_required_seq = ack_floor.unwrap_or(first.seq).min(first.seq);
+            self.seed_cursor(
+                first.agent.clone(),
+                first.agent_id.clone(),
+                first_required_seq.saturating_sub(1),
+            );
+        }
+        for deliver in sequenced {
+            self.commit_received(deliver);
+        }
     }
 
     fn active_up_to_seq(&self, agent: &str) -> u64 {
@@ -932,7 +981,47 @@ impl FleetDeliveryBook {
             return None;
         }
         cursor.acked_up_to_seq = receipt.seq;
+        cursor.confirmed_delivery_seqs.remove(&receipt.seq);
         Some(cursor.acked_up_to_seq)
+    }
+
+    /// Record worker confirmation of a surfaced fleet delivery, advancing the
+    /// cumulative ACK only across a contiguous confirmed prefix. An
+    /// out-of-order confirmation stays held on this agent's cursor until every
+    /// lower received sequence has also confirmed.
+    pub(crate) fn commit_confirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
+        self.commit_received(deliver);
+        let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
+        if deliver.seq == 0 {
+            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            return Some(cursor.acked_up_to_seq);
+        }
+        if deliver.seq <= cursor.acked_up_to_seq {
+            return None;
+        }
+        cursor.confirmed_delivery_seqs.insert(deliver.seq, ());
+        if deliver.seq > cursor.received_up_to_seq {
+            return None;
+        }
+        let before = cursor.acked_up_to_seq;
+        loop {
+            let next = cursor.acked_up_to_seq.saturating_add(1);
+            if next > cursor.received_up_to_seq
+                || cursor.confirmed_delivery_seqs.remove(&next).is_none()
+            {
+                break;
+            }
+            cursor.acked_up_to_seq = next;
+        }
+        (cursor.acked_up_to_seq > before).then_some(cursor.acked_up_to_seq)
+    }
+
+    pub(crate) fn is_delivery_confirmation_held(&self, deliver: &Deliver) -> bool {
+        deliver.seq > 0
+            && self
+                .agents
+                .get(deliver.agent_id.as_str())
+                .is_some_and(|cursor| cursor.confirmed_delivery_seqs.contains_key(&deliver.seq))
     }
 
     pub(crate) fn can_ack_receipt(&self, receipt: &RelaycastDeliveryReceipt) -> bool {
@@ -961,6 +1050,13 @@ impl FleetDeliveryBook {
         self.agents
             .get(agent_id)
             .map_or(0, |cursor| cursor.acked_up_to_seq)
+    }
+
+    pub(crate) fn next_ack_seq(&self, agent_id: &str) -> Option<u64> {
+        self.agents
+            .get(agent_id)
+            .filter(|cursor| cursor.has_sequenced_position)
+            .map(|cursor| cursor.acked_up_to_seq.saturating_add(1))
     }
 
     #[cfg(test)]

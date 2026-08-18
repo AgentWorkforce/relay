@@ -14,9 +14,10 @@ use crate::ids::{
 use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
-    HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, RelayDelivery,
-    ResolvedHarnessConfig,
+    HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, ProtocolEnvelope,
+    RelayDelivery, ResolvedHarnessConfig,
 };
+use crate::telemetry::TelemetryClient;
 use crate::worker::{
     spawn_worker_writer, AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry,
 };
@@ -50,10 +51,11 @@ use super::{
     relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
     requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retry_pending_delivery,
     save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason, AgentRuntime,
+    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason,
+    take_pending_for_worker, try_inject_pending_relay_message, AgentRuntime, BrokerRuntime,
     DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
     ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
-    ProtocolHeadlessProvider, RelayWorkspace, TypedThreadMessage, MAX_DEAD_LETTERS,
+    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage, MAX_DEAD_LETTERS,
     MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
@@ -126,10 +128,213 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     registry
 }
 
+/// A worker whose command channel accepts frames but never completes them —
+/// no writer task ever drains `command_rx`, so `deliver()` hangs forever.
+/// Models a handoff that outlives `retry_interval` deterministically (no
+/// timing race): the receiver stays alive (a dropped one would fail the
+/// send instead of hanging it), so the send always succeeds and the
+/// subsequent completion wait never returns on its own.
+async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let child = tokio::process::Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("test worker process should spawn");
+    let generation = Uuid::new_v4();
+    let (command_tx, command_rx) = mpsc::channel(128);
+    // Deliberately leaked, not spawned as a writer: keeps the receiver alive
+    // (so sends succeed) without anything ever draining it.
+    std::mem::forget(command_rx);
+    registry.workers.insert(
+        WorkerName::from(name),
+        WorkerHandle {
+            generation,
+            spec: AgentSpec {
+                name: WorkerName::from(name),
+                runtime: AgentRuntime::Pty,
+                provider: None,
+                cli: Some("cat".to_string()),
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            child,
+            command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+        },
+    );
+    registry
+}
+
 async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
     for handle in registry.workers.values_mut() {
         let _ = handle.child.start_kill();
         let _ = handle.child.wait().await;
+    }
+}
+
+struct WorkerEventRuntimeFixture {
+    runtime: BrokerRuntime,
+    fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
+    _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
+    _temp_dir: tempfile::TempDir,
+}
+
+fn worker_event_runtime_fixture(
+    workers: WorkerRegistry,
+    pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
+) -> WorkerEventRuntimeFixture {
+    let temp_dir = tempfile::tempdir().expect("runtime fixture temp dir");
+    let paths = RuntimePaths {
+        persist: false,
+        state: temp_dir.path().join("state.json"),
+        pending: temp_dir.path().join("pending.json"),
+        dead_letters: temp_dir.path().join("dead-letters.json"),
+        dedup: temp_dir.path().join("dedup.json"),
+        _lock: None,
+    };
+    let default_workspace = test_relay_workspace("ws_demo", Some("demo"));
+    let default_workspace_id = Some(default_workspace.workspace_id.clone());
+    let workspace_lookup = HashMap::from([(
+        default_workspace.workspace_id.clone(),
+        default_workspace.clone(),
+    )]);
+    let self_names = default_workspace.self_names.clone();
+    let ws_control_tx = default_workspace.ws_control_tx.clone();
+    let relaycast_http = default_workspace.http_client.clone();
+    let (_api_tx, api_rx) = mpsc::channel(4);
+    let (_ws_inbound_tx, ws_inbound_rx) = mpsc::channel(4);
+    let (fleet_control_tx, fleet_control_rx) = mpsc::channel(16);
+    let (_fleet_event_tx, fleet_event_rx) = mpsc::channel(4);
+    let (terminal_control_tx, _terminal_control_rx) = mpsc::channel(4);
+    let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
+    let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
+    let (_worker_event_tx, worker_event_rx) = mpsc::channel(4);
+    let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
+    let mut reap_tick = tokio::time::interval(Duration::from_secs(60));
+    reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut lease_check = tokio::time::interval(Duration::from_secs(60));
+    lease_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    #[cfg(unix)]
+    let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install test SIGTERM listener");
+    #[cfg(windows)]
+    let sigterm =
+        tokio::signal::windows::ctrl_shutdown().expect("install test Ctrl+Shutdown listener");
+
+    let runtime = BrokerRuntime {
+        persist: false,
+        broker_start: Instant::now(),
+        agent_spawn_count: 0,
+        paths,
+        state: crate::broker::BrokerState::default(),
+        workspaces: vec![default_workspace.clone()],
+        workspace_lookup,
+        default_workspace,
+        default_workspace_id,
+        self_names,
+        ws_control_tx,
+        relaycast_http,
+        hosted_agent_event_tx,
+        pty_observability: HashMap::new(),
+        api_rx,
+        api_open: true,
+        ws_inbound_rx,
+        relaycast_open: true,
+        fleet_control_tx,
+        fleet_node_name: "test-node".to_string(),
+        node_delivery_token_present: true,
+        node_delivery_connected: true,
+        fleet_event_rx,
+        fleet_control_open: true,
+        terminal_control_tx,
+        terminal_event_rx,
+        terminal_control_open: true,
+        terminal_sessions: HashMap::new(),
+        terminal_snapshot_requests: HashMap::new(),
+        terminal_input_requests: HashMap::new(),
+        fleet_delivery_book: FleetDeliveryBook::default(),
+        fleet_max_agents: 0,
+        fleet_inventory: HashMap::new(),
+        fleet_inventory_reconcile_retry_after: HashMap::new(),
+        sdk_out_tx,
+        worker_event_rx,
+        worker_events_open: true,
+        workers,
+        crash_insights: crate::crash_insights::CrashInsights::default(),
+        crash_insights_path: temp_dir.path().join("crash-insights.json"),
+        sdk_lines: tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(tokio::io::stdin())),
+        stdin_open: false,
+        reap_tick,
+        dedup: DedupCache::new(Duration::from_secs(60), 16),
+        delivery_retry_interval: Duration::from_millis(10),
+        pending_deliveries: PendingDeliveryStore::new(pending_deliveries),
+        dead_letters: DeadLetterStore::default(),
+        terminal_failed_deliveries: HashSet::new(),
+        pending_requests: HashMap::new(),
+        pending_verified_spawns: HashMap::new(),
+        resize_owners: HashMap::new(),
+        delivery_states: HashMap::new(),
+        agent_result_tokens: HashMap::new(),
+        recent_thread_messages: std::collections::VecDeque::new(),
+        shutdown: false,
+        lease_duration: None,
+        last_lease_renewal: Instant::now(),
+        lease_check,
+        sigterm,
+        telemetry: TelemetryClient::default(),
+        obligation_store: crate::obligation::ObligationStore::default(),
+    };
+
+    WorkerEventRuntimeFixture {
+        runtime,
+        fleet_control_rx,
+        _sdk_out_rx: sdk_out_rx,
+        _temp_dir: temp_dir,
+    }
+}
+
+fn delivery_lifecycle_worker_event(
+    name: &str,
+    generation: Uuid,
+    event_type: &str,
+    delivery_id: &str,
+    event_id: &str,
+) -> WorkerEvent {
+    WorkerEvent::Message {
+        name: WorkerName::from(name),
+        generation,
+        value: json!({
+            "type": event_type,
+            "payload": {
+                "delivery_id": delivery_id,
+                "event_id": event_id,
+                "reason": "test terminal disposition",
+            },
+        }),
     }
 }
 
@@ -203,6 +408,8 @@ fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> Pen
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
+        withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     }
 }
 
@@ -495,6 +702,8 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
+        withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     }
 }
 
@@ -542,6 +751,89 @@ fn pending_delivery_load_defaults_legacy_failure_count() {
 
     let loaded = load_pending_deliveries(&path);
     assert_eq!(loaded["del_legacy"].failed_attempts, 0);
+}
+
+// relay#1543 delivery.rs:190 MUST-FIRE (P1, blocker): a withheld fleet
+// (engine-facing) ack must survive a broker restart along with the delivery
+// it belongs to. Before this fix, `load_pending_deliveries` unconditionally
+// reset `withheld_fleet_ack` to `None` on every reload — so a delivery that
+// was persisted mid-flight (worker handed the injection but hadn't confirmed
+// yet) came back after restart with its ack silently dropped. The retried
+// delivery could still reach the worker and get echo-confirmed, but
+// `resolve_pending_fleet_ack` would then have nothing to release: the engine
+// stays unacknowledged and may redeliver a message the worker already has.
+// This simulates a real restart end-to-end — shutdown persist, then startup
+// load — rather than asserting on the intermediate `PersistedPendingDelivery`
+// struct, so it catches a regression anywhere in that round trip.
+#[test]
+fn withheld_fleet_ack_survives_a_simulated_restart() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let mut delivery = make_pending_delivery("del_inflight", "worker-a");
+    delivery.withheld_fleet_ack = Some(withheld_ack_for("del_inflight"));
+    delivery.withheld_fleet_ack_floor = Some(1);
+    let deliveries = HashMap::from([(DeliveryId::new("del_inflight"), delivery)]);
+
+    // Shutdown: persist whatever is still pending, exactly as the broker
+    // does before exiting.
+    persist_pending_on_shutdown(&path, true, &deliveries);
+
+    // Startup: reload from disk, exactly as the broker does on the next boot.
+    let reloaded = load_pending_deliveries(&path);
+    let pending = reloaded
+        .get("del_inflight")
+        .expect("the in-flight delivery must survive the restart");
+    assert_eq!(
+        pending
+            .withheld_fleet_ack
+            .as_ref()
+            .map(|d| d.msg_id.as_str()),
+        Some("evt_del_inflight"),
+        "the withheld fleet ack must survive the restart along with the delivery it belongs \
+         to — otherwise a retried delivery that goes on to land has no ack left to release, \
+         and the engine stays permanently unacknowledged for it"
+    );
+    assert_eq!(pending.withheld_fleet_ack_floor, Some(1));
+}
+
+// relay#1543 delivery.rs:190 companion: a snapshot written by a broker
+// version that predates `withheld_fleet_ack` (or a fresh delivery that never
+// had one) must still load cleanly with the field defaulted to `None`,
+// mirroring `pending_delivery_load_defaults_legacy_failure_count` above for
+// `failed_attempts`. This is the other half of the P1 fix — `#[serde(default)]`
+// must actually work, not just be present in the struct definition.
+#[test]
+fn legacy_pending_delivery_snapshot_without_withheld_ack_field_loads_as_none() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let delivery = make_pending_delivery("del_legacy_ack", "worker-a");
+    let deliveries = HashMap::from([(DeliveryId::new("del_legacy_ack"), delivery)]);
+    super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
+    let mut json: Value = serde_json::from_slice(
+        &std::fs::read(&path).expect("pending delivery snapshot should read"),
+    )
+    .expect("pending delivery snapshot should parse");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("withheld_fleet_ack");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("withheld_fleet_ack_floor");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("legacy snapshot encodes"),
+    )
+    .expect("legacy pending snapshot should write");
+
+    let loaded = load_pending_deliveries(&path);
+    assert_eq!(
+        loaded["del_legacy_ack"].withheld_fleet_ack, None,
+        "a pre-relay#1543 snapshot has no withheld_fleet_ack field at all — it must load as \
+         None (the same state that delivery actually had), not fail to deserialize"
+    );
+    assert_eq!(loaded["del_legacy_ack"].withheld_fleet_ack_floor, None);
 }
 
 #[test]
@@ -913,6 +1205,895 @@ async fn retry_exhaustion_dead_letters_instead_of_discarding() {
     assert_eq!(dead_frame.payload["reason"], "failed writing frame");
 }
 
+fn withheld_ack_for(delivery_id: &str) -> Deliver {
+    Deliver {
+        v: FLEET_WIRE_VERSION,
+        agent: "agent-a".to_string(),
+        agent_id: "agent-a-id".to_string(),
+        delivery_id: delivery_id.to_string(),
+        msg_id: format!("evt_{delivery_id}"),
+        seq: 1,
+        mode: DeliveryMode::Wait,
+        payload: json!({}),
+    }
+}
+
+// relay#1543 delivery.rs:588 MUST-FIRE (P1, blocker): when the initial
+// worker handoff outlives `retry_interval`, the withheld fleet ack must
+// already be registered on the `PendingDelivery` — not dependent on the
+// timed-out call's `Ok(DeliveryId)` ever reaching the caller. Before the
+// fix, `try_inject_pending_relay_message` returned only a bare `Result`
+// derived from the timed-out future, and the fleet caller registered the
+// withheld ack as a *separate* follow-up step keyed off that return value;
+// a handoff that timed out returned `Err`, so the ack was simply never
+// registered even though the delivery itself remained alive and retryable —
+// a later successful retry's echo would then have had nothing to resolve.
+#[tokio::test]
+async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
+    let mut registry = make_worker_registry_with_stalled_worker("worker-a").await;
+    let deliver = fleet_deliver(1);
+    let msg = held_fleet_message(&deliver);
+    let mut pending_deliveries = HashMap::new();
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        try_inject_pending_relay_message(
+            &mut registry,
+            &mut pending_deliveries,
+            "worker-a",
+            &msg,
+            Duration::from_millis(20),
+            Some(deliver.clone()),
+            Some(deliver.seq),
+        ),
+    )
+    .await
+    .expect(
+        "the test's own generous bound must never fire — only the short \
+         retry_interval passed to try_inject_pending_relay_message should",
+    );
+
+    assert!(
+        outcome.is_err(),
+        "a handoff that never completes must time out, not hang forever"
+    );
+    assert_eq!(
+        pending_deliveries.len(),
+        1,
+        "the delivery must remain registered and retryable even though the initial handoff timed out"
+    );
+    let registered = pending_deliveries
+        .values()
+        .next()
+        .expect("checked len() == 1 above");
+    assert_eq!(
+        registered
+            .withheld_fleet_ack
+            .as_ref()
+            .map(|d| d.msg_id.as_str()),
+        Some(deliver.msg_id.as_str()),
+        "the withheld fleet ack must be registered before the timeout can expire, so a later \
+         successful retry can still resolve it"
+    );
+
+    cleanup_worker_registry(registry).await;
+}
+
+// relay#1543 helper-level companion (parameterised over every terminal
+// disposition): a
+// `PendingDelivery`'s withheld fleet ack must never survive the delivery it
+// belongs to. Before the structural fix, `pending_fleet_acks` was a second
+// map that none of these dispositions — except one very manually-threaded
+// retry-exhaustion call site — knew to clean up. The ack now lives on
+// `PendingDelivery` itself, so every path that disposes of the delivery
+// disposes of the ack with it, by construction.
+#[tokio::test]
+async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
+    // Disposition 1: retry-exhaustion dead-letter (delivery.rs:816's thread)
+    // — the `emit_delivery_attempt_outcome` `Failed` arm.
+    {
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut workers = WorkerRegistry::new(
+            tx,
+            Vec::new(),
+            PathBuf::from("/tmp/agent-relay-broker-tests"),
+            Instant::now(),
+        );
+        let mut exhausted = make_pending_delivery("del_exhausted_ack", "ghost");
+        exhausted.attempts = MAX_DELIVERY_RETRIES;
+        exhausted.failed_attempts = MAX_DELIVERY_RETRIES;
+        exhausted.withheld_fleet_ack = Some(withheld_ack_for("del_exhausted_ack"));
+        let mut pending_deliveries =
+            HashMap::from([(DeliveryId::new("del_exhausted_ack"), exhausted)]);
+
+        let outcome = retry_pending_delivery(
+            &DeliveryId::new("del_exhausted_ack"),
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("exhausted retries should classify as terminal failure");
+        match &outcome {
+            DeliveryAttemptOutcome::Failed { pending, .. } => assert!(
+                pending.withheld_fleet_ack.is_some(),
+                "fixture must carry a withheld ack for this case to be meaningful"
+            ),
+            other => panic!("expected terminal failure, got {other:?}"),
+        }
+
+        let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+        let mut dead_letters = DeadLetterStore::default();
+        emit_delivery_attempt_outcome(
+            &sdk_out_tx,
+            &mut dead_letters,
+            &DeliveryId::new("del_exhausted_ack"),
+            true,
+            outcome,
+        )
+        .await
+        .expect("terminal outcome should emit");
+
+        assert!(!pending_deliveries.contains_key("del_exhausted_ack"));
+        let mut book = FleetDeliveryBook::default();
+        assert_eq!(
+            super::fleet::resolve_pending_fleet_ack(
+                pending_deliveries.get("del_exhausted_ack"),
+                &mut book
+            ),
+            None,
+            "a retry-exhausted delivery must never resolve into an engine ack"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+    }
+
+    // Dispositions 2 & 3: worker-exit and `delivery_failed` both dispose of a
+    // `PendingDelivery` via `emit_dropped_delivery_failures` — the single
+    // choke point every worker-teardown path (`take_pending_for_worker`,
+    // maintenance.rs:26 / event_loop.rs:255's threads) and the
+    // `delivery_failed` worker-event path share. This is driven through a
+    // real `pending_deliveries` map (via `take_pending_for_worker`, the same
+    // removal every one of those call sites uses) so the final assertion
+    // observes state the code under test actually produced, mirroring
+    // dispositions 1 and 4 below — not a hardcoded `None` that would pass
+    // for any implementation. See relay#1543 tests.rs:1142's review thread.
+    for reason in ["worker_exited", "delivery_failed"] {
+        let mut pending = make_pending_delivery("del_dropped_ack", "ghost");
+        pending.withheld_fleet_ack = Some(withheld_ack_for("del_dropped_ack"));
+        let mut pending_deliveries = HashMap::from([(DeliveryId::new("del_dropped_ack"), pending)]);
+
+        let dropped = take_pending_for_worker(&mut pending_deliveries, "ghost");
+        assert_eq!(
+            dropped.len(),
+            1,
+            "fixture must carry exactly the one delivery being torn down for {reason}"
+        );
+
+        let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+        let mut dead_letters = DeadLetterStore::default();
+        emit_dropped_delivery_failures(&sdk_out_tx, &mut dead_letters, &dropped, reason)
+            .await
+            .expect("dropped delivery outcome should emit");
+
+        let mut book = FleetDeliveryBook::default();
+        assert_eq!(
+            super::fleet::resolve_pending_fleet_ack(
+                pending_deliveries.get("del_dropped_ack"),
+                &mut book
+            ),
+            None,
+            "a delivery dropped for {reason} must never resolve into an engine ack"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+    }
+
+    // Disposition 4: a `WorkerMissing` fleet injection whose recipient never
+    // existed (fleet.rs:741's thread) — before the fix this injected via a
+    // bare `workers.deliver` call outside `pending_deliveries`, so nothing
+    // ever tracked its withheld ack at all. Routed through
+    // `insert_and_attempt_delivery` like `DrainNow`, it is tracked from the
+    // first attempt and reaches the exact same terminal cleanup as every
+    // other disposition above.
+    {
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut workers = WorkerRegistry::new(
+            tx,
+            Vec::new(),
+            PathBuf::from("/tmp/agent-relay-broker-tests"),
+            Instant::now(),
+        ); // no worker ever registered
+        let relay_delivery = RelayDelivery {
+            delivery_id: DeliveryId::new("del_worker_missing"),
+            event_id: EventId::new("evt_worker_missing"),
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Alice".to_string(),
+            target: MessageTarget::new("ghost"),
+            body: "hello".to_string(),
+            thread_id: None,
+            priority: Some(2),
+            injection_mode: MessageInjectionMode::Wait,
+        };
+        let mut pending_deliveries = HashMap::new();
+
+        let first_attempt = super::insert_and_attempt_delivery(
+            &mut workers,
+            &mut pending_deliveries,
+            "ghost",
+            relay_delivery,
+            Duration::from_millis(1),
+            Some(withheld_ack_for("del_worker_missing")),
+            Some(1),
+        )
+        .await;
+        assert!(
+            first_attempt.is_err(),
+            "a missing recipient must fail the handoff"
+        );
+        let tracked = pending_deliveries.get("del_worker_missing").expect(
+            "the delivery must remain tracked for the terminal-failure path to dead-letter it, \
+             not vanish silently",
+        );
+        assert!(
+            tracked.withheld_fleet_ack.is_some(),
+            "the withheld ack must have survived the failed first attempt"
+        );
+
+        // The next retry attempt (e.g. the maintenance sweep) observes the
+        // same missing recipient and reaches the terminal `Failed` outcome
+        // that `emit_delivery_attempt_outcome` dead-letters and drops the
+        // ack for — same as every other disposition in this test.
+        let outcome = retry_pending_delivery(
+            &DeliveryId::new("del_worker_missing"),
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("a still-missing recipient should classify as terminal failure");
+
+        let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+        let mut dead_letters = DeadLetterStore::default();
+        emit_delivery_attempt_outcome(
+            &sdk_out_tx,
+            &mut dead_letters,
+            &DeliveryId::new("del_worker_missing"),
+            true,
+            outcome,
+        )
+        .await
+        .expect("terminal outcome should emit");
+
+        assert!(!pending_deliveries.contains_key("del_worker_missing"));
+        let mut book = FleetDeliveryBook::default();
+        assert_eq!(
+            super::fleet::resolve_pending_fleet_ack(
+                pending_deliveries.get("del_worker_missing"),
+                &mut book
+            ),
+            None,
+            "a delivery to a permanently missing worker must never resolve into an engine ack"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
+    }
+}
+
+// Full runtime/channel companion for the terminal-disposition coverage above.
+// Each real disposal path removes the pending delivery first; a late matching
+// worker `delivery_ack` is then driven through `BrokerRuntime::handle_worker_event`.
+// None may produce a fleet-control Send, even though the event reaches the same
+// branch that releases a successful withheld ACK.
+#[tokio::test]
+async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    // Retry exhaustion.
+    let exhausted_id = DeliveryId::new("del_runtime_exhausted");
+    let mut exhausted = make_pending_delivery(exhausted_id.as_str(), worker_name);
+    exhausted.attempts = MAX_DELIVERY_RETRIES;
+    exhausted.failed_attempts = MAX_DELIVERY_RETRIES;
+    exhausted.withheld_fleet_ack = Some(withheld_ack_for(exhausted_id.as_str()));
+    fixture
+        .runtime
+        .pending_deliveries
+        .insert(exhausted_id.clone(), exhausted);
+    let exhausted_outcome = retry_pending_delivery(
+        &exhausted_id,
+        &mut fixture.runtime.workers,
+        &mut fixture.runtime.pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("retry exhaustion should classify as terminal");
+    emit_delivery_attempt_outcome(
+        &fixture.runtime.sdk_out_tx,
+        &mut fixture.runtime.dead_letters,
+        &exhausted_id,
+        true,
+        exhausted_outcome,
+    )
+    .await
+    .expect("retry exhaustion should be emitted");
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_ack",
+            exhausted_id.as_str(),
+            format!("evt_{}", exhausted_id.as_str()).as_str(),
+        ))
+        .await;
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "retry exhaustion must not release a withheld fleet ack"
+    );
+
+    // Worker teardown (`take_pending_for_worker` is the shared release/reap
+    // choke point).
+    let exited_id = DeliveryId::new("del_runtime_worker_exited");
+    let mut exited = make_pending_delivery(exited_id.as_str(), worker_name);
+    exited.withheld_fleet_ack = Some(withheld_ack_for(exited_id.as_str()));
+    fixture
+        .runtime
+        .pending_deliveries
+        .insert(exited_id.clone(), exited);
+    let dropped = take_pending_for_worker(&mut fixture.runtime.pending_deliveries, worker_name);
+    emit_dropped_delivery_failures(
+        &fixture.runtime.sdk_out_tx,
+        &mut fixture.runtime.dead_letters,
+        &dropped,
+        "worker_exited",
+    )
+    .await
+    .expect("worker teardown should be emitted");
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_ack",
+            exited_id.as_str(),
+            format!("evt_{}", exited_id.as_str()).as_str(),
+        ))
+        .await;
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "worker teardown must not release a withheld fleet ack"
+    );
+
+    // Worker-reported terminal injection failure, driven wholly through the
+    // runtime handler for both the failure and the late confirmation.
+    let failed_id = DeliveryId::new("del_runtime_delivery_failed");
+    let mut failed = make_pending_delivery(failed_id.as_str(), worker_name);
+    failed.withheld_fleet_ack = Some(withheld_ack_for(failed_id.as_str()));
+    fixture
+        .runtime
+        .pending_deliveries
+        .insert(failed_id.clone(), failed);
+    let failed_event_id = format!("evt_{}", failed_id.as_str());
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_failed",
+            failed_id.as_str(),
+            &failed_event_id,
+        ))
+        .await;
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_ack",
+            failed_id.as_str(),
+            &failed_event_id,
+        ))
+        .await;
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "delivery_failed must not release a withheld fleet ack"
+    );
+
+    // Permanently missing worker. Register a same-name replacement only after
+    // the real WorkerMissing path dead-letters the delivery, so the late event
+    // is current and reaches the runtime ACK branch instead of being discarded
+    // by the stale-generation guard.
+    let missing_id = DeliveryId::new("del_runtime_worker_missing");
+    let relay_delivery = RelayDelivery {
+        delivery_id: missing_id.clone(),
+        event_id: EventId::new(format!("evt_{}", missing_id.as_str())),
+        workspace_id: None,
+        workspace_alias: None,
+        from: "Alice".to_string(),
+        target: MessageTarget::new("ghost"),
+        body: "hello".to_string(),
+        thread_id: None,
+        priority: Some(2),
+        injection_mode: MessageInjectionMode::Wait,
+    };
+    let first_attempt = super::insert_and_attempt_delivery(
+        &mut fixture.runtime.workers,
+        &mut fixture.runtime.pending_deliveries,
+        "ghost",
+        relay_delivery,
+        Duration::from_millis(1),
+        Some(withheld_ack_for(missing_id.as_str())),
+        Some(1),
+    )
+    .await;
+    assert!(first_attempt.is_err());
+    let missing_outcome = retry_pending_delivery(
+        &missing_id,
+        &mut fixture.runtime.workers,
+        &mut fixture.runtime.pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("missing worker retry should classify as terminal");
+    emit_delivery_attempt_outcome(
+        &fixture.runtime.sdk_out_tx,
+        &mut fixture.runtime.dead_letters,
+        &missing_id,
+        true,
+        missing_outcome,
+    )
+    .await
+    .expect("missing worker failure should be emitted");
+
+    let mut replacement_registry = make_worker_registry_with_worker("ghost").await;
+    let replacement = replacement_registry
+        .workers
+        .remove("ghost")
+        .expect("replacement worker handle");
+    let replacement_generation = replacement.generation;
+    fixture
+        .runtime
+        .workers
+        .workers
+        .insert(WorkerName::from("ghost"), replacement);
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            "ghost",
+            replacement_generation,
+            "delivery_ack",
+            missing_id.as_str(),
+            format!("evt_{}", missing_id.as_str()).as_str(),
+        ))
+        .await;
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "WorkerMissing must not release a withheld fleet ack"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+// relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
+// (echo-verified, or its bounded timeout fallback — pty_worker.rs sends the
+// same internal `delivery_ack` event either way), the engine ack must still
+// fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
+// unchanged, just correctly gated on confirmation instead of write-enqueue.
+// Exercises the full wiring: a real handoff through
+// `try_inject_pending_relay_message`, followed by a matching worker event
+// through `BrokerRuntime::handle_worker_event`, with the assertion made on the
+// fleet-control receiver rather than on an extracted helper's return value.
+#[tokio::test]
+async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let deliver = fleet_deliver(1);
+    let msg = held_fleet_message(&deliver);
+
+    let delivery_id = try_inject_pending_relay_message(
+        &mut fixture.runtime.workers,
+        &mut fixture.runtime.pending_deliveries,
+        worker_name,
+        &msg,
+        Duration::from_secs(2),
+        Some(deliver.clone()),
+        Some(deliver.seq),
+    )
+    .await
+    .expect("a registered worker should accept the handoff");
+
+    assert!(
+        fixture
+            .runtime
+            .pending_deliveries
+            .get(&delivery_id)
+            .expect("the delivery must be tracked pending the worker's confirmation")
+            .withheld_fleet_ack
+            .is_some(),
+        "a successful handoff must still withhold the ack pending echo confirmation"
+    );
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_ack",
+            delivery_id.as_str(),
+            deliver.msg_id.as_str(),
+        ))
+        .await;
+
+    match tokio::time::timeout(Duration::from_secs(1), fixture.fleet_control_rx.recv()).await {
+        Ok(Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack)))) => {
+            assert_eq!(ack.agent, deliver.agent);
+            assert_eq!(ack.up_to_seq, deliver.seq);
+        }
+        other => {
+            panic!("expected worker confirmation to emit the withheld fleet ack, got {other:?}")
+        }
+    }
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+// relay#1543 restart-ordering MUST-NOT-FIRE / MUST-FIRE boundary. The
+// confirmation order is explicit: HashMap iteration never decides which
+// delivery lands first. With both restored sequences pending, confirming seq
+// 42 first must not emit a cumulative ack that lies about seq 41. Once seq 41
+// confirms, the held seq 42 confirmation must be released by one cumulative
+// ack through seq 42.
+#[test]
+fn restored_out_of_order_confirmation_waits_for_the_lower_sequence() {
+    // Use a mid-stream cursor to exercise the restart-only "adopt first
+    // position" branch rather than accidentally relying on a fresh seq-1
+    // stream.
+    let first = fleet_deliver(41);
+    let second = fleet_deliver(42);
+    let mut first_pending = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    first_pending.withheld_fleet_ack = Some(first.clone());
+    let mut second_pending = pending_delivery(
+        "worker-a",
+        second.delivery_id.as_str(),
+        second.msg_id.as_str(),
+    );
+    second_pending.withheld_fleet_ack = Some(second.clone());
+    let mut pending_deliveries = HashMap::from([
+        (DeliveryId::from(&first.delivery_id), first_pending),
+        (DeliveryId::from(&second.delivery_id), second_pending),
+    ]);
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+
+    let (confirmed_second, second_ack) =
+        super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+            &mut pending_deliveries,
+            second.delivery_id.as_str(),
+            Some(second.msg_id.as_str()),
+            "worker-a",
+            "delivery_ack",
+            &mut fleet_delivery_book,
+        );
+    assert!(confirmed_second.is_some());
+    assert_eq!(
+        second_ack, None,
+        "seq 42 must remain withheld while restored seq 41 is still unconfirmed"
+    );
+    assert!(
+        pending_deliveries.contains_key(second.delivery_id.as_str()),
+        "the held seq 42 confirmation must remain durable until seq 41 confirms"
+    );
+    assert!(
+        fleet_delivery_book.is_delivery_confirmation_held(&second),
+        "maintenance must be able to distinguish the confirmed hold from a retryable delivery"
+    );
+    assert_eq!(
+        fleet_delivery_book.acked_up_to_seq(first.agent_id.as_str()),
+        first.seq - 1,
+        "the restored cursor must remain immediately below the lowest pending sequence"
+    );
+
+    let (confirmed_first, first_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut pending_deliveries,
+        first.delivery_id.as_str(),
+        Some(first.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut fleet_delivery_book,
+    );
+    assert!(confirmed_first.is_some());
+    assert_eq!(
+        first_ack,
+        Some((first.agent.clone(), second.seq)),
+        "confirming seq 41 must release its already-confirmed seq 42 sibling"
+    );
+    assert!(
+        pending_deliveries.is_empty(),
+        "the cumulative seq 42 ack must release both pending entries"
+    );
+    assert_eq!(
+        fleet_delivery_book.acked_up_to_seq(first.agent_id.as_str()),
+        second.seq
+    );
+    assert!(!fleet_delivery_book.is_delivery_confirmation_held(&second));
+}
+
+// relay#1543 restart-ordering MUST-NOT-FIRE / MUST-FIRE boundary across a
+// second restart. Once seq 41 is worker-confirmed and cumulatively acked, the
+// surviving seq 42 entry must no longer persist 41 as its first required
+// sequence. Otherwise a fresh delivery book after the next restart waits for
+// an already-acked confirmation that can never arrive and withholds seq 42
+// forever.
+#[test]
+fn confirmed_lower_sequence_advances_surviving_ack_floor_before_restart() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("pending.json");
+    let first = fleet_deliver(41);
+    let second = fleet_deliver(42);
+    let mut first_pending = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    first_pending.withheld_fleet_ack = Some(first.clone());
+    let mut second_pending = pending_delivery(
+        "worker-a",
+        second.delivery_id.as_str(),
+        second.msg_id.as_str(),
+    );
+    second_pending.withheld_fleet_ack = Some(second.clone());
+    let pending_deliveries = HashMap::from([
+        (DeliveryId::from(&first.delivery_id), first_pending),
+        (DeliveryId::from(&second.delivery_id), second_pending),
+    ]);
+    super::save_pending_deliveries(&path, &pending_deliveries).expect("save first snapshot");
+
+    let mut after_first_restart = load_pending_deliveries(&path);
+    assert_eq!(
+        after_first_restart[second.delivery_id.as_str()].withheld_fleet_ack_floor,
+        Some(first.seq),
+        "the first restart must preserve the lowest still-unconfirmed sequence"
+    );
+    let mut first_delivery_book = FleetDeliveryBook::default();
+    let (_, first_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut after_first_restart,
+        first.delivery_id.as_str(),
+        Some(first.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut first_delivery_book,
+    );
+    assert_eq!(first_ack, Some((first.agent.clone(), first.seq)));
+    assert_eq!(
+        after_first_restart[second.delivery_id.as_str()].withheld_fleet_ack_floor,
+        Some(second.seq),
+        "acking seq 41 must advance the surviving entry's persisted floor to seq 42"
+    );
+    super::save_pending_deliveries(&path, &after_first_restart)
+        .expect("save snapshot after lower confirmation");
+
+    let mut after_second_restart = load_pending_deliveries(&path);
+    let mut second_delivery_book = FleetDeliveryBook::default();
+    let (_, second_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut after_second_restart,
+        second.delivery_id.as_str(),
+        Some(second.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut second_delivery_book,
+    );
+    assert_eq!(
+        second_ack,
+        Some((second.agent.clone(), second.seq)),
+        "seq 42 must ack normally after restart instead of waiting forever for acked seq 41"
+    );
+    assert!(after_second_restart.is_empty());
+}
+
+// The ordering gap itself must survive another restart after the lower entry
+// has left the pending map. Otherwise the remaining higher sequence would be
+// mistaken for a new baseline and could once again cumulatively ACK the
+// dead-lettered lower delivery.
+#[tokio::test]
+async fn restored_ack_floor_survives_lower_failure_and_a_second_restart() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("pending.json");
+    let first = fleet_deliver(41);
+    let second = fleet_deliver(42);
+    let mut first_pending = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    first_pending.withheld_fleet_ack = Some(first.clone());
+    let mut second_pending = pending_delivery(
+        "worker-a",
+        second.delivery_id.as_str(),
+        second.msg_id.as_str(),
+    );
+    second_pending.withheld_fleet_ack = Some(second.clone());
+    let pending_deliveries = HashMap::from([
+        (DeliveryId::from(&first.delivery_id), first_pending),
+        (DeliveryId::from(&second.delivery_id), second_pending),
+    ]);
+    super::save_pending_deliveries(&path, &pending_deliveries).expect("save first snapshot");
+
+    let mut after_first_restart = load_pending_deliveries(&path);
+    assert_eq!(
+        after_first_restart[second.delivery_id.as_str()].withheld_fleet_ack_floor,
+        Some(first.seq)
+    );
+
+    // Drive the actual retry-exhaustion/dead-letter path. Removing seq 41
+    // directly would not prove that the terminal path preserves seq 42's
+    // persisted floor.
+    let first_id = DeliveryId::from(&first.delivery_id);
+    let first_pending = after_first_restart
+        .get_mut(&first_id)
+        .expect("restored lower delivery");
+    first_pending.attempts = MAX_DELIVERY_RETRIES;
+    first_pending.failed_attempts = MAX_DELIVERY_RETRIES;
+    first_pending.last_error = Some("failed writing frame".to_string());
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+    let mut workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        dir.path().join("worker-logs"),
+        Instant::now(),
+    );
+    let outcome = retry_pending_delivery(
+        &first_id,
+        &mut workers,
+        &mut after_first_restart,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("exhausted lower delivery should classify as terminal");
+    let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(&sdk_out_tx, &mut dead_letters, &first_id, true, outcome)
+        .await
+        .expect("terminal lower delivery should enter the dead-letter store");
+    assert!(
+        dead_letters.get(first.delivery_id.as_str()).is_some(),
+        "the real terminal path must dead-letter seq 41"
+    );
+    assert!(!after_first_restart.contains_key(&first_id));
+    super::save_pending_deliveries(&path, &after_first_restart)
+        .expect("save snapshot after lower terminal failure");
+
+    let mut after_second_restart = load_pending_deliveries(&path);
+    assert_eq!(
+        after_second_restart[second.delivery_id.as_str()].withheld_fleet_ack_floor,
+        Some(first.seq),
+        "the higher entry must retain the failed lower sequence as its ACK floor"
+    );
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let (_, higher_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut after_second_restart,
+        second.delivery_id.as_str(),
+        Some(second.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut fleet_delivery_book,
+    );
+    assert_eq!(
+        higher_ack, None,
+        "seq 42 must still not ACK through the absent, failed seq 41"
+    );
+    assert!(after_second_restart.contains_key(second.delivery_id.as_str()));
+
+    let mut retried_first = pending_delivery(
+        "worker-a",
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    retried_first.withheld_fleet_ack = Some(first.clone());
+    after_second_restart.insert(DeliveryId::from(&first.delivery_id), retried_first);
+    let (_, released_ack) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut after_second_restart,
+        first.delivery_id.as_str(),
+        Some(first.msg_id.as_str()),
+        "worker-a",
+        "delivery_ack",
+        &mut fleet_delivery_book,
+    );
+    assert_eq!(released_ack, Some((first.agent.clone(), second.seq)));
+    assert!(after_second_restart.is_empty());
+}
+
+// The paired happy-path boundary: adding an ordering hold must not turn
+// ordinary in-order worker confirmations into acknowledgements that never
+// fire.
+#[test]
+fn in_order_confirmation_still_acknowledges_each_sequence_immediately() {
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let mut pending_deliveries = HashMap::new();
+
+    for expected_seq in [1, 2] {
+        let deliver = fleet_deliver(expected_seq);
+        let mut pending = pending_delivery(
+            "worker-a",
+            deliver.delivery_id.as_str(),
+            deliver.msg_id.as_str(),
+        );
+        pending.withheld_fleet_ack = Some(deliver.clone());
+        pending_deliveries.insert(DeliveryId::from(&deliver.delivery_id), pending);
+
+        let (confirmed, resolved) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+            &mut pending_deliveries,
+            deliver.delivery_id.as_str(),
+            Some(deliver.msg_id.as_str()),
+            "worker-a",
+            "delivery_ack",
+            &mut fleet_delivery_book,
+        );
+        assert!(confirmed.is_some());
+        assert_eq!(
+            resolved,
+            Some((deliver.agent.clone(), expected_seq)),
+            "an in-order confirmation must ack without waiting for another event"
+        );
+        assert!(pending_deliveries.is_empty());
+    }
+}
+
+// A worker delivery_ack whose event_id doesn't match the withheld delivery's
+// event_id (stale or reused delivery_id) must not resolve into an engine
+// ack. The matching itself is `clear_pending_delivery_if_event_matches`'s
+// job (see `clear_pending_delivery_returns_none_for_stale_event_id` below)
+// — this exercises that guard against a real pending delivery that actually
+// carries a withheld ack, then feeds its *return value* into
+// `resolve_pending_fleet_ack` exactly as `handle_worker_event`'s
+// `delivery_ack` arm does, so a regression that made the guard incorrectly
+// clear on a mismatch would surface here as a resolved ack. See relay#1543
+// tests.rs:1309's review thread — the prior version passed a hardcoded
+// `None` straight to `resolve_pending_fleet_ack`, which is `None` for every
+// implementation and never exercised the guard at all.
+#[tokio::test]
+async fn mismatched_event_id_leaves_nothing_for_resolve_pending_fleet_ack() {
+    let mut pending = make_pending_delivery("del_reused", "worker-a");
+    pending.withheld_fleet_ack = Some(withheld_ack_for("del_reused"));
+    let mut pending_deliveries = HashMap::from([(DeliveryId::new("del_reused"), pending)]);
+
+    let cleared = clear_pending_delivery_if_event_matches(
+        &mut pending_deliveries,
+        "del_reused",
+        Some("evt_stale_reused_id"),
+        "worker-a",
+        "delivery_ack",
+    );
+    assert!(
+        cleared.is_none(),
+        "a mismatched event_id must not clear the pending delivery"
+    );
+    assert!(
+        pending_deliveries.contains_key("del_reused"),
+        "a mismatched event must not consume the withheld entry"
+    );
+
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    assert_eq!(
+        super::fleet::resolve_pending_fleet_ack(cleared.as_ref(), &mut fleet_delivery_book),
+        None,
+        "no pending delivery (because the event_id guard declined to clear one) means nothing to resolve"
+    );
+}
+
 #[tokio::test]
 async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -943,6 +2124,8 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("failed writing frame".to_string()),
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -1001,6 +2184,8 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         2,
         MessageInjectionMode::Wait,
         Duration::from_millis(1),
+        None,
+        None,
     )
     .await
     .expect_err("missing recipient should fail the initial handoff");
@@ -1060,6 +2245,8 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -1200,6 +2387,8 @@ async fn delivery_retry_success_clears_stale_last_error() {
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: Some("old transient failure".to_string()),
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -2110,6 +3299,8 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     );
     pending.insert(
@@ -2133,6 +3324,8 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     );
 
@@ -2163,6 +3356,8 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: Some("previous blip".to_string()),
+        withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
     let mut dead_letters = DeadLetterStore::default();
@@ -2233,6 +3428,8 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
+        withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
@@ -2268,6 +3465,8 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
             last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
         },
     )]);
 
@@ -2685,6 +3884,8 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
         last_error: None,
+        withheld_fleet_ack: None,
+        withheld_fleet_ack_floor: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(

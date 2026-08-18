@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay session replay <id>` reconstructs a completed Relay-emitted session as attributed Relayhistory context without minting a new session or attaching to the original harness.
 
+### Fixed
+
+- Fleet node delivery acknowledgements now wait for worker receipt instead of firing when the message is handed off.
+- Fleet node delivery acknowledgements preserve per-agent sequence order across broker restarts.
+
 ## [11.7.0] - 2026-08-17
 
 ### Added
