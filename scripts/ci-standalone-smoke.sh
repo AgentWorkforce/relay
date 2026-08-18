@@ -6,8 +6,20 @@ if [ "$#" -ne 2 ]; then
   exit 2
 fi
 
+if [ -z "${RELAY_WORKSPACE_KEY:-}" ]; then
+  echo "ERROR: RELAY_WORKSPACE_KEY must name the dedicated standalone-smoke CI workspace." >&2
+  echo "Refusing to start without it because node up would create an undeletable throwaway workspace." >&2
+  exit 2
+fi
+
+# The broker gives a multi-workspace session higher precedence than the single
+# key. This smoke intentionally exercises one dedicated workspace, so do not
+# let an ambient developer/runner session silently replace the CI credential.
+unset RELAY_WORKSPACES_JSON
+
 CLI_BIN="$1"
 BROKER_BIN="$2"
+BROKER_NAME="${AGENT_RELAY_STANDALONE_BROKER_NAME:-relay-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-${GITHUB_JOB:-standalone}-$$}"
 
 validate_binary() {
   local label="$1"
@@ -120,7 +132,7 @@ assert_exact_count "$DOWN_OUTPUT" '^Cleaned up \(was not running\)$' 1 'down cle
 
 echo "=== Smoke: standalone up ==="
 UP_LOG="$TMP_ROOT/up.log"
-run_cli node up >"$UP_LOG" 2>&1 &
+run_cli node up --broker-name "$BROKER_NAME" >"$UP_LOG" 2>&1 &
 UP_PID=$!
 
 UP_EXIT=""
@@ -176,6 +188,17 @@ if [ "$UP_READY" != true ]; then
 fi
 
 assert_exact_count "$UP_OUTPUT" 'Broker started\.' 1 'broker start line'
+# The literal dollar sign proves which environment variable won selection.
+# shellcheck disable=SC2016
+assert_exact_count "$UP_OUTPUT" 'Workspace source: environment \(\$RELAY_WORKSPACE_KEY\)' 1 'workspace source line'
+
+if printf '%s\n' "$UP_OUTPUT" | grep -q 'Workspace: created new workspace'; then
+  echo "Standalone smoke created a workspace instead of reusing the dedicated CI workspace" >&2
+  print_output_excerpt "$UP_OUTPUT"
+  exit 1
+fi
+
+assert_exact_count "$UP_OUTPUT" '^Workspace: joined ' 1 'workspace joined line'
 
 if printf '%s\n' "$UP_OUTPUT" | grep -q 'Broker already running for this project'; then
   echo "Standalone CLI reported a false already-running error" >&2

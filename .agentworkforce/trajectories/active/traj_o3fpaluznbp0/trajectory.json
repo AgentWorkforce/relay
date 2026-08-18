@@ -1,0 +1,69 @@
+{
+  "id": "traj_o3fpaluznbp0",
+  "version": 1,
+  "task": {
+    "title": "Stop standalone smoke CI from creating throwaway Relaycast workspaces"
+  },
+  "status": "active",
+  "startedAt": "2026-08-18T09:34:00.831Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T09:39:45.723Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vrkts5t6qnlp",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T09:39:45.723Z",
+      "events": [
+        {
+          "ts": 1787045985724,
+          "type": "decision",
+          "content": "Reuse one secret-backed CI workspace and give every smoke process a unique broker name: Reuse one secret-backed CI workspace and give every smoke process a unique broker name",
+          "raw": {
+            "question": "Reuse one secret-backed CI workspace and give every smoke process a unique broker name",
+            "chosen": "Reuse one secret-backed CI workspace and give every smoke process a unique broker name",
+            "alternatives": [],
+            "reasoning": "The smoke asserts local status/down/up/readiness behavior; fresh workspace provisioning is incidental. A committed pin would expose a credential and create-and-delete is unavailable (relaycast#336). Temporary HOME/project directories isolate local state, while unique broker names and derived node identities prevent concurrent runs from colliding in the shared workspace. Missing credentials fail closed; fork PRs skip the live-cloud job because GitHub withholds repository secrets."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787046771418,
+          "type": "reflection",
+          "content": "The shared-workspace design is behaving as intended: two concurrent real brokers and a follow-up all completed, with unique broker names preventing collision and temp HOME/project roots isolating state. One initial verification harness used relative binary paths and failed before startup; correcting to absolute paths proved the target behavior without creating another workspace.",
+          "raw": {
+            "focalPoints": [
+              "concurrency",
+              "isolation",
+              "credential-safety",
+              "ci"
+            ],
+            "adjustments": "Cleared ambient RELAY_WORKSPACES_JSON so the dedicated single key cannot be shadowed; added fork/Dependabot skip because GitHub withholds Actions secrets.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:concurrency",
+            "focal:isolation",
+            "focal:credential-safety",
+            "focal:ci",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "61da735c1bbb4a23678b91cd6dacd8ab7bafbed1",
+    "endRef": "61da735c1bbb4a23678b91cd6dacd8ab7bafbed1"
+  }
+}

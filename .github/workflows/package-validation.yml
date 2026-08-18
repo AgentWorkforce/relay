@@ -235,7 +235,14 @@ jobs:
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    # Fork and Dependabot pull requests cannot receive Actions repository
+    # secrets. Skip this live-cloud smoke there instead of falling back to
+    # provisioning an undeletable workspace; other same-repository PRs and
+    # main pushes must reuse the CI workspace.
+    if: >-
+      needs.changes.outputs.node_changed == 'true' &&
+      github.actor != 'dependabot[bot]' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
@@ -339,4 +346,5 @@ jobs:
       - name: Smoke standalone lifecycle
         env:
           AGENT_RELAY_STARTUP_DEBUG: 1
+          RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}
         run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$STANDALONE_BROKER"

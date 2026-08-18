@@ -1480,6 +1480,8 @@ jobs:
           echo "✓ Uncompressed binary verified"
 
       - name: Smoke standalone lifecycle
+        env:
+          RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}
         run: |
           if [ "$(uname -m)" != "${{ matrix.expected_arch }}" ]; then
             echo "Skipping lifecycle smoke for ${{ matrix.expected_arch }} on $(uname -m) host"
