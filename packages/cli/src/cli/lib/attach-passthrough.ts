@@ -879,11 +879,11 @@ export async function runPassthroughSession(
       await initialResize;
       if (settled) return;
       await correctSetupResize(initialAgentSize);
-      const snapshot = await deps.captureAndRenderSnapshot(
-        { url: connection.url, apiKey: connection.apiKey },
-        name,
-        { fetch: deps.fetch, writeChunk: captureWrite, fleetHint: deps.fleetHint }
-      );
+      const snapshot = await deps.captureAndRenderSnapshot(connection, name, {
+        fetch: deps.fetch,
+        writeChunk: captureWrite,
+        fleetHint: deps.fleetHint,
+      });
       if (settled) return;
       switch (snapshot.status) {
         case 'ok':
@@ -982,7 +982,7 @@ export async function runPassthroughSession(
 /** Run a passthrough session with default dependencies. Used by `runtime agent attach --mode passthrough`. */
 export function attachPassthrough(
   name: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   overrides: Partial<PassthroughDependencies> = {}
 ): Promise<number> {
   return runPassthroughSession(name, options, withDefaults(overrides));

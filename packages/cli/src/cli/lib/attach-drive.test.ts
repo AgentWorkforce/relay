@@ -745,6 +745,22 @@ describe('renderStatusLine', () => {
 });
 
 describe('runDriveSession', () => {
+  it('propagates the bounded proxy request timeout through drive mode', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const { deps, sockets, stdin } = createHarness();
+
+    try {
+      const sessionPromise = runDriveSession('Alice', { requestTimeoutMs: 162_500 }, deps);
+      await openSocket(sockets);
+      stdin.type(Buffer.from([0x03]));
+      await expect(sessionPromise).resolves.toBe(0);
+
+      expect(timeout).toHaveBeenCalledWith(162_500);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
   it('asserts auto_inject delivery mode, renders snapshot, opens WS, then restores prior mode on detach', async () => {
     // Pre-attach hold, so the detach restore has something to put back.
     // Attaching still goes live: watching an agent never pauses its intake.

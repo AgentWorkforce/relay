@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -111,6 +111,47 @@ describe('ci-standalone-smoke workspace reuse', () => {
     }
   });
 
+  it('keeps the outer startup deadline above the broker aggregate handshake budget', () => {
+    const script = readFileSync(smokeScript, 'utf8');
+    const brokerSession = readFileSync(resolve('crates/broker/src/runtime/session.rs'), 'utf8');
+    const minimumSeconds = Number(script.match(/MIN_STARTUP_TIMEOUT_SECONDS=([0-9]+)/)?.[1]);
+    const smokeSeconds = Number(
+      script.match(/AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-([0-9]+)}/)?.[1]
+    );
+    const brokerSeconds = Number(
+      brokerSession.match(/const HANDSHAKE_TOTAL_TIMEOUT:[^=]+=[\s\n]*Duration::from_secs\(([0-9]+)\);/)?.[1]
+    );
+
+    expect(minimumSeconds).toBeGreaterThanOrEqual(brokerSeconds + 10);
+    expect(smokeSeconds).toBeGreaterThanOrEqual(minimumSeconds);
+  });
+
+  it('rejects unsafe startup-timeout overrides before invoking binaries', () => {
+    for (const [override, expectedMessage] of [
+      ['49', 'must be at least 50s'],
+      ['050', 'without leading zeros'],
+      ['060', 'without leading zeros'],
+      ['08', 'without leading zeros'],
+      ['99999', 'must be no more than 86400s'],
+      ['9223372036854775808', 'between 50s and 86400s'],
+    ]) {
+      const { cli, broker, invocationLog } = createFakeBinaries();
+      const result = spawnSync('bash', [smokeScript, cli, broker], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          RELAY_WORKSPACE_KEY: 'rk_live_test_only',
+          AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: override,
+          INVOCATION_LOG: invocationLog,
+        },
+      });
+
+      expect(result.status, `${override}: ${result.stderr}`).toBe(2);
+      expect(result.stderr, override).toContain(expectedMessage);
+      expect(readFileSync(invocationLog, 'utf8'), override).toBe('');
+    }
+  });
+
   it('fails closed before invoking binaries when the dedicated key is missing or whitespace-only', () => {
     const unusableKeys: Array<[label: string, value: string | undefined]> = [
       ['unset', undefined],
@@ -182,15 +223,21 @@ describe('ci-standalone-smoke workspace reuse', () => {
 
   it('rejects readiness written after the startup deadline', () => {
     const { cli, broker, invocationLog } = createFakeBinaries();
+    const bashEnv = join(dirname(invocationLog), 'accelerated-clock.sh');
+    writeFileSync(
+      bashEnv,
+      'sleep() { if [ "${1:-}" = "0.25" ]; then SECONDS=$((SECONDS + 60)); command sleep 0.01; else command sleep "$@"; fi; }\nexport -f sleep\n'
+    );
     const result = spawnSync('bash', [smokeScript, cli, broker], {
       encoding: 'utf8',
       env: {
         ...process.env,
         RELAY_WORKSPACE_KEY: 'rk_live_test_only',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-c',
-        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '0',
+        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '50',
         FAKE_READY_AFTER_SECOND_DOWN: '1',
         INVOCATION_LOG: invocationLog,
+        BASH_ENV: bashEnv,
       },
       timeout: 10_000,
     });

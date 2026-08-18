@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay node agent attach --node` now retries transient control-plane reachability failures up to three attempts.
-- `agent-relay node agent attach --node` errors now report the resolved node, redacted endpoint, timeout, and attempt count.
+- `agent-relay node agent attach --node` now tolerates 30-second control-plane responses and retries transient reachability failures inside a 90-second overall budget.
+- `agent-relay node agent attach --node` errors now report the node reference, resolved node ID when available, redacted endpoint, timeout, and attempt count.
 - `agent-relay node agent attach --node` now keeps established sessions alive through the node transport's reconnect window.
 
 ## [11.7.1] - 2026-08-18

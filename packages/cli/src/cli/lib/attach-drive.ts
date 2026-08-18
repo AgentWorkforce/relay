@@ -83,6 +83,7 @@ import {
   readConnectionFileFromDisk,
   toWsUrl,
   type BrokerConnection,
+  type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 import { resolveFleetHint } from '../lib/fleet-hint.js';
@@ -1339,11 +1340,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       await initialResize;
       if (settled) return;
       await correctSetupResize(initialAgentSize);
-      const snapshot = await deps.captureAndRenderSnapshot(
-        { url: connection.url, apiKey: connection.apiKey },
-        name,
-        { fetch: deps.fetch, writeChunk: captureWrite, fleetHint: deps.fleetHint }
-      );
+      const snapshot = await deps.captureAndRenderSnapshot(connection, name, {
+        fetch: deps.fetch,
+        writeChunk: captureWrite,
+        fleetHint: deps.fleetHint,
+      });
       if (settled) return;
       switch (snapshot.status) {
         case 'ok':
@@ -1466,7 +1467,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
  */
 export async function runDriveSession(
   agentName: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: BrokerConnectionOptions,
   deps: DriveDependencies
 ): Promise<number> {
   const target = prepareAttachTarget(agentName, options, deps);
@@ -1567,7 +1568,7 @@ export async function runDriveSession(
 /** Run a drive session with default dependencies. Used by `runtime agent attach --mode drive`. */
 export function attachDrive(
   name: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: BrokerConnectionOptions,
   overrides: Partial<DriveDependencies> = {}
 ): Promise<number> {
   return runDriveSession(name, options, withDefaults(overrides));

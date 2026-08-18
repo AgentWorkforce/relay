@@ -313,6 +313,16 @@ describe('toWsUrl', () => {
 });
 
 describe('resolveViewBrokerConnection', () => {
+  it('preserves an internal per-request timeout override', () => {
+    const { deps } = createHarness();
+    const conn = resolveViewBrokerConnection(
+      { brokerUrl: 'http://loopback:3889', requestTimeoutMs: 162_500 },
+      deps
+    );
+
+    expect(conn).toEqual({ url: 'http://loopback:3889', apiKey: undefined, requestTimeoutMs: 162_500 });
+  });
+
   it('prefers --broker-url over env and connection.json', () => {
     const { deps } = createHarness({
       env: { RELAY_BROKER_URL: 'http://env-host:1234' },

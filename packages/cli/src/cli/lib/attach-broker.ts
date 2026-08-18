@@ -25,7 +25,12 @@ export function createBrokerClient(
   connection: BrokerConnection,
   fetchFn?: typeof globalThis.fetch
 ): HarnessDriverClient {
-  return new HarnessDriverClient({ baseUrl: connection.url, apiKey: connection.apiKey, fetch: fetchFn });
+  return new HarnessDriverClient({
+    baseUrl: connection.url,
+    apiKey: connection.apiKey,
+    fetch: fetchFn,
+    requestTimeoutMs: connection.requestTimeoutMs,
+  });
 }
 
 export interface BrokerSdkFailure {

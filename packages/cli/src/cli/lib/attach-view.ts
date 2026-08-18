@@ -48,6 +48,7 @@ export interface ViewableWorkerStreamEvent {
 export interface ViewBrokerConnection {
   url: string;
   apiKey?: string;
+  requestTimeoutMs?: number;
 }
 
 export interface ViewWebSocket {
@@ -196,7 +197,7 @@ function readString(obj: unknown, key: string): string | undefined {
  * don't have to learn two patterns.
  */
 export function resolveViewBrokerConnection(
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   deps: ViewDependencies
 ): ViewBrokerConnection | null {
   const explicitUrl = trimOrUndefined(options.brokerUrl);
@@ -219,6 +220,7 @@ export function resolveViewBrokerConnection(
   return {
     url: url.replace(/\/+$/, ''),
     apiKey: resolveApiKey(),
+    ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
   };
 }
 
@@ -525,11 +527,11 @@ export async function runViewSession(
       if (!settled) writeAgentOutput(chunk);
     };
     const paintSnapshotAndReconcile = async (): Promise<void> => {
-      const snapshot = await deps.captureAndRenderSnapshot(
-        { url: connection.url, apiKey: connection.apiKey },
-        name,
-        { fetch: deps.fetch, writeChunk: guardedWrite, fleetHint: deps.fleetHint }
-      );
+      const snapshot = await deps.captureAndRenderSnapshot(connection, name, {
+        fetch: deps.fetch,
+        writeChunk: guardedWrite,
+        fleetHint: deps.fleetHint,
+      });
       if (settled) return;
       switch (snapshot.status) {
         case 'ok':
@@ -613,7 +615,7 @@ export async function runViewSession(
 /** Run a view session with default dependencies. Used by `runtime agent attach --mode view`. */
 export function attachView(
   name: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   overrides: Partial<ViewDependencies> = {}
 ): Promise<number> {
   return runViewSession(name, options, withDefaults(overrides));
