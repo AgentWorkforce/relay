@@ -194,6 +194,8 @@ describe('ci-standalone-smoke workspace reuse', () => {
       .map((invocation, index) => (invocation === 'cli node down' ? index : -1))
       .filter((index) => index >= 0);
     expect(invocations).toContain('up-waiting');
+    // Preflight cleanup, deadline teardown, and one EXIT cleanup are distinct;
+    // an adjacent fourth call means the EXIT cleanup re-entered from its subshell.
     expect(downIndexes).toHaveLength(3);
     expect(invocations.indexOf('up-ready')).toBeGreaterThan(downIndexes[1]);
   });

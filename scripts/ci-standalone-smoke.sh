@@ -57,7 +57,15 @@ PROJECT_DIR="$TMP_ROOT/project"
 
 mkdir -p "$HOME_DIR" "$PROJECT_DIR"
 
+CLEANUP_STARTED=false
 cleanup() {
+  if [ "$CLEANUP_STARTED" = true ]; then
+    return
+  fi
+  CLEANUP_STARTED=true
+  # Disarm before entering the cleanup subshell. Some Bash exit paths can
+  # otherwise inherit this EXIT trap and recursively run node down again.
+  trap - EXIT
   (
     cd "$PROJECT_DIR"
     HOME="$HOME_DIR" \
