@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet node delivery acknowledgements now wait for worker receipt and preserve per-agent sequence order across broker restarts, preventing cumulative acknowledgements from covering lower undelivered messages.
+- Fleet node delivery acknowledgements now wait for worker receipt instead of firing when the message is handed off.
+- Fleet node delivery acknowledgements preserve per-agent sequence order across broker restarts.
 
 ## [11.7.0] - 2026-08-17
 

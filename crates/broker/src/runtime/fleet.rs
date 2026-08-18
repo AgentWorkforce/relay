@@ -1584,23 +1584,8 @@ pub(super) fn confirm_pending_delivery_and_resolve_fleet_ack(
         .get(delivery_id)
         .and_then(|pending| pending.withheld_fleet_ack.as_ref())
     {
-        let same_agent_pending = pending_deliveries
-            .values()
-            .filter_map(|pending| pending.withheld_fleet_ack.as_ref())
-            .filter(|sibling| sibling.agent_id == deliver.agent_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        let ack_floor = pending_deliveries
-            .values()
-            .filter(|pending| {
-                pending
-                    .withheld_fleet_ack
-                    .as_ref()
-                    .is_some_and(|sibling| sibling.agent_id == deliver.agent_id)
-            })
-            .filter_map(|pending| pending.withheld_fleet_ack_floor)
-            .min();
-        fleet_delivery_book.restore_pending_agent(&same_agent_pending, ack_floor);
+        let group = pending_fleet_ack_group(pending_deliveries.values(), &deliver.agent_id);
+        fleet_delivery_book.restore_pending_agent(&group.deliveries, group.floor);
     }
 
     let pending = clear_pending_delivery_if_event_matches(
@@ -1621,6 +1606,7 @@ pub(super) fn confirm_pending_delivery_and_resolve_fleet_ack(
 
     match (&pending.withheld_fleet_ack, &resolved) {
         (Some(deliver), Some((_, up_to_seq))) if deliver.seq > 0 => {
+            advance_pending_fleet_ack_floors(pending_deliveries, &deliver.agent_id, *up_to_seq);
             pending_deliveries.retain(|_, sibling| {
                 !sibling.withheld_fleet_ack.as_ref().is_some_and(|sibling| {
                     sibling.agent_id == deliver.agent_id

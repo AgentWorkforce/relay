@@ -776,9 +776,14 @@ impl FleetDeliveryBook {
     /// then restores as much of the received frontier as is contiguous. A live
     /// cursor learned from normal delivery or a resume handshake is never
     /// rewound; pending siblings can only extend its received frontier.
-    pub(crate) fn restore_pending_agent(&mut self, deliveries: &[Deliver], ack_floor: Option<u64>) {
+    pub(crate) fn restore_pending_agent(
+        &mut self,
+        deliveries: &[&Deliver],
+        ack_floor: Option<u64>,
+    ) {
         let mut sequenced = deliveries
             .iter()
+            .copied()
             .filter(|deliver| deliver.seq > 0)
             .collect::<Vec<_>>();
         sequenced.sort_by_key(|deliver| deliver.seq);

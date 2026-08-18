@@ -55,6 +55,78 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) withheld_fleet_ack_floor: Option<u64>,
 }
 
+/// Return the immutable fleet identity and the earliest sequence this pending
+/// delivery can safely acknowledge. A missing persisted floor falls back to
+/// the delivery's own sequence, and a corrupt floor above that sequence is
+/// clamped so it can never skip the delivery itself.
+pub(super) fn pending_fleet_ack_floor_candidate(
+    pending: &PendingDelivery,
+) -> Option<(&crate::fleet_wire::Deliver, u64)> {
+    let deliver = pending
+        .withheld_fleet_ack
+        .as_ref()
+        .filter(|deliver| deliver.seq > 0)?;
+    Some((
+        deliver,
+        pending
+            .withheld_fleet_ack_floor
+            .unwrap_or(deliver.seq)
+            .min(deliver.seq),
+    ))
+}
+
+/// Lightweight same-agent view used to rebuild the delivery cursor without
+/// cloning full JSON payloads. The floor is reduced in the same pass so every
+/// caller shares the exact fallback/minimum invariant above.
+pub(super) struct PendingFleetAckGroup<'a> {
+    pub(super) deliveries: Vec<&'a crate::fleet_wire::Deliver>,
+    pub(super) floor: Option<u64>,
+}
+
+pub(super) fn pending_fleet_ack_group<'a>(
+    deliveries: impl IntoIterator<Item = &'a PendingDelivery>,
+    agent_id: &str,
+) -> PendingFleetAckGroup<'a> {
+    let mut group = PendingFleetAckGroup {
+        deliveries: Vec::new(),
+        floor: None,
+    };
+    for pending in deliveries {
+        let Some((deliver, candidate)) = pending_fleet_ack_floor_candidate(pending) else {
+            continue;
+        };
+        if deliver.agent_id != agent_id {
+            continue;
+        }
+        group.deliveries.push(deliver);
+        group.floor = Some(group.floor.map_or(candidate, |floor| floor.min(candidate)));
+    }
+    group
+}
+
+/// A cumulative ACK through `acked_up_to_seq` proves every lower sequence is
+/// complete. Raise only the surviving same-agent floors to the next required
+/// sequence so a later broker restart cannot wait forever for an already
+/// acknowledged confirmation. Terminal failures never call this helper
+/// because they do not advance the cumulative ACK.
+pub(super) fn advance_pending_fleet_ack_floors(
+    deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    agent_id: &str,
+    acked_up_to_seq: u64,
+) {
+    let next_required_seq = acked_up_to_seq.saturating_add(1);
+    for pending in deliveries.values_mut() {
+        let Some(deliver) = pending
+            .withheld_fleet_ack
+            .as_ref()
+            .filter(|deliver| deliver.agent_id == agent_id && deliver.seq > acked_up_to_seq)
+        else {
+            continue;
+        };
+        pending.withheld_fleet_ack_floor = Some(next_required_seq.min(deliver.seq));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DeliveryAttemptOutcome {
     Attempted {
@@ -222,17 +294,9 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
 fn normalize_pending_fleet_ack_floors(deliveries: &mut HashMap<DeliveryId, PendingDelivery>) {
     let mut floors = HashMap::<String, u64>::new();
     for pending in deliveries.values() {
-        let Some(deliver) = pending
-            .withheld_fleet_ack
-            .as_ref()
-            .filter(|deliver| deliver.seq > 0)
-        else {
+        let Some((deliver, candidate)) = pending_fleet_ack_floor_candidate(pending) else {
             continue;
         };
-        let candidate = pending
-            .withheld_fleet_ack_floor
-            .unwrap_or(deliver.seq)
-            .min(deliver.seq);
         floors
             .entry(deliver.agent_id.clone())
             .and_modify(|floor| *floor = (*floor).min(candidate))
@@ -815,23 +879,12 @@ pub(crate) async fn insert_and_attempt_delivery(
         .as_ref()
         .filter(|deliver| deliver.seq > 0)
         .map(|deliver| {
-            pending_deliveries
-                .values()
-                .filter_map(|pending| {
-                    let sibling = pending.withheld_fleet_ack.as_ref()?;
-                    (sibling.agent_id == deliver.agent_id && sibling.seq > 0).then_some(
-                        pending
-                            .withheld_fleet_ack_floor
-                            .unwrap_or(sibling.seq)
-                            .min(sibling.seq),
-                    )
-                })
-                .fold(
-                    explicit_withheld_fleet_ack_floor
-                        .unwrap_or(deliver.seq)
-                        .min(deliver.seq),
-                    u64::min,
-                )
+            let requested_floor = explicit_withheld_fleet_ack_floor
+                .unwrap_or(deliver.seq)
+                .min(deliver.seq);
+            pending_fleet_ack_group(pending_deliveries.values(), &deliver.agent_id)
+                .floor
+                .map_or(requested_floor, |floor| floor.min(requested_floor))
         });
     pending_deliveries.insert(
         delivery_id.clone(),
