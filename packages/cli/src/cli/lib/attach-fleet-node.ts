@@ -21,10 +21,22 @@ import { resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
-const SNAPSHOT_WAIT_MS = 10_000;
-const SESSION_REQUEST_TIMEOUT_MS = 5_000;
-const SESSION_REQUEST_RETRIES = 2;
-const SESSION_REQUEST_RETRY_DELAY_MS = 2_000;
+// Use the same finite 30s request window as the broker's Relaycast HTTP calls.
+// Terminal-session creation can exceed the shorter startup-handshake latency
+// under load, and this POST cannot be replayed safely after an ambiguous client
+// timeout because allocation may have completed server-side.
+const SESSION_REQUEST_TIMEOUT_MS = 30_000;
+// Immediate structured reachability failures still receive the complete
+// five-attempt/31.2s retry schedule, while slow responses cannot multiply the
+// per-attempt timeout into a roughly three-minute CLI hang.
+const SESSION_REQUEST_TOTAL_TIMEOUT_MS = 90_000;
+const SESSION_REQUEST_RETRIES = 4;
+// The fleet node publishes liveness every 12s. With four retries, the helper's
+// deterministic delays are 6s, 7.2s, 8.4s, and 9.6s: 31.2s total. That spans
+// more than two heartbeat intervals and matches the established terminal
+// transport's bounded recovery window instead of exhausting every retry inside
+// the same stale control-plane read.
+const SESSION_REQUEST_RETRY_DELAY_MS = 6_000;
 const TERMINAL_CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -64,12 +76,16 @@ export interface FleetNodeAttachOptions {
   /** Deterministic test seam for the bounded session-request retry delay. */
   sessionRequest?: {
     timeoutMs?: number;
+    totalTimeoutMs?: number;
     sleep?: (ms: number) => Promise<void>;
   };
-  /** Deterministic test seam for the established-session reconnect delays. */
+  /** Deterministic test seam for established-session reconnect timing. */
   reconnectDelay?: {
     initialMs?: number;
     maxMs?: number;
+    handshakeTimeoutMs?: number;
+    readyTimeoutMs?: number;
+    beforeReadyTimeoutTerminate?: (socket: WebSocket) => void;
   };
 }
 
@@ -273,18 +289,36 @@ export async function startFleetNodeAttachProxy(
   const nodePath = safeNodePath(options.node);
   const sessionEndpoint = `${baseUrl}/v1/nodes/${nodePath}/terminal/sessions`;
   const sessionRequestTimeoutMs = options.sessionRequest?.timeoutMs ?? SESSION_REQUEST_TIMEOUT_MS;
+  const sessionRequestTotalTimeoutMs =
+    options.sessionRequest?.totalTimeoutMs ?? SESSION_REQUEST_TOTAL_TIMEOUT_MS;
+  const sessionRequestDeadline = Date.now() + sessionRequestTotalTimeoutMs;
+  const sessionRequestSleep =
+    options.sessionRequest?.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let sessionRequestAttempts = 0;
   let lastSessionError: TerminalSessionAttemptError | undefined;
   const sessionResult = await collectWithRetry(
     'terminal session request',
     async () => {
+      const remainingRequestBudgetMs = sessionRequestDeadline - Date.now();
+      if (remainingRequestBudgetMs <= 0) {
+        lastSessionError = new TerminalSessionAttemptError(
+          'overall terminal-session request deadline exhausted',
+          'control_plane_timeout',
+          undefined,
+          false,
+          false
+        );
+        throw lastSessionError;
+      }
       sessionRequestAttempts += 1;
       const controller = new AbortController();
       let timedOut = false;
+      const attemptTimeoutMs = Math.min(sessionRequestTimeoutMs, remainingRequestBudgetMs);
       const timeout = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, sessionRequestTimeoutMs);
+      }, attemptTimeoutMs);
       let ticketResponse: Response;
       let ticketPayload: FleetSessionResponse;
       try {
@@ -334,7 +368,11 @@ export async function startFleetNodeAttachProxy(
     {
       retries: SESSION_REQUEST_RETRIES,
       baseDelayMs: SESSION_REQUEST_RETRY_DELAY_MS,
-      sleep: options.sessionRequest?.sleep,
+      sleep: async (delayMs) => {
+        const remainingRequestBudgetMs = sessionRequestDeadline - Date.now();
+        if (remainingRequestBudgetMs <= 0) return;
+        await sessionRequestSleep(Math.min(delayMs, remainingRequestBudgetMs));
+      },
       shouldRetry: (error) => error instanceof TerminalSessionAttemptError && error.retryable,
     }
   );
@@ -344,7 +382,10 @@ export async function startFleetNodeAttachProxy(
     const code = failure?.code === undefined ? '' : ` code ${failure.code};`;
     const retryNote =
       sessionRequestAttempts > 1
-        ? `retried ${sessionRequestAttempts - 1} time${sessionRequestAttempts === 2 ? '' : 's'}`
+        ? `retried ${sessionRequestAttempts - 1} time${sessionRequestAttempts === 2 ? '' : 's'}` +
+          (failure?.completionUnknown
+            ? '; final POST not retried because it may have completed server-side'
+            : '')
         : failure?.completionUnknown
           ? 'not retried because the POST may have completed server-side'
           : 'not retried because the failure was terminal';
@@ -353,7 +394,8 @@ export async function startFleetNodeAttachProxy(
       `Error: ${failure ? terminalSessionFailureSummary(failure) : 'Terminal-session request failed'}.` +
         `${upstream} Node ref ${diagnosticValue(options.node.trim())}, resolved node id unavailable (session creation did not complete);` +
         ` endpoint ${diagnosticValue(diagnosticEndpoint(sessionEndpoint))};${status}${code}` +
-        ` timeout ${sessionRequestTimeoutMs}ms per attempt; attempts ${sessionRequestAttempts} (${retryNote}).`,
+        ` timeout ${sessionRequestTimeoutMs}ms per attempt; overall budget ${sessionRequestTotalTimeoutMs}ms;` +
+        ` attempts ${sessionRequestAttempts} (${retryNote}).`,
       failure?.code
     );
   }
@@ -362,6 +404,15 @@ export async function startFleetNodeAttachProxy(
   const remoteEndpoint = diagnosticEndpoint(terminalUrl);
   const reconnectInitialDelayMs = options.reconnectDelay?.initialMs ?? INITIAL_RECONNECT_DELAY_MS;
   const reconnectMaxDelayMs = options.reconnectDelay?.maxMs ?? MAX_RECONNECT_DELAY_MS;
+  const terminalHandshakeTimeoutMs =
+    options.reconnectDelay?.handshakeTimeoutMs ?? TERMINAL_CONNECT_TIMEOUT_MS;
+  const terminalReadyTimeoutMs = options.reconnectDelay?.readyTimeoutMs ?? TERMINAL_CONNECT_TIMEOUT_MS;
+  // A readiness-gated local request follows activeReadiness across reconnect
+  // generations. Its own deadline therefore has to cover the same complete,
+  // finite recovery path: every backoff plus every handshake/readiness pair.
+  const terminalWaitTimeoutMs =
+    retryDelayBudgetMs(MAX_RECONNECT_ATTEMPTS, reconnectInitialDelayMs, reconnectMaxDelayMs) +
+    MAX_RECONNECT_ATTEMPTS * (terminalHandshakeTimeoutMs + terminalReadyTimeoutMs);
 
   let connectionGeneration = 0;
   const createReadiness = (): TerminalReadiness => {
@@ -395,7 +446,8 @@ export async function startFleetNodeAttachProxy(
     }
   };
   /**
-   * Await the live readiness generation, bounded by {@link SNAPSHOT_WAIT_MS}.
+   * Await the live readiness generation through both the WebSocket handshake
+   * and the post-open terminal.ready allowance.
    * Every handler that must not run before `terminal.ready` — snapshot,
    * delivery-mode PUT, resize — goes through this one helper so the
    * timer/clearTimeout/settle logic cannot diverge between copies.
@@ -406,7 +458,7 @@ export async function startFleetNodeAttachProxy(
    */
   const waitForTerminalReady = (timeoutMessage: string): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(timeoutMessage)), SNAPSHOT_WAIT_MS);
+      const timer = setTimeout(() => reject(new Error(timeoutMessage)), terminalWaitTimeoutMs);
       void waitForCurrentReadiness().then(
         () => {
           clearTimeout(timer);
@@ -435,6 +487,7 @@ export async function startFleetNodeAttachProxy(
   let reconnecting = false;
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  const terminalReadinessTimers = new Set<ReturnType<typeof setTimeout>>();
   /** Locally-tracked delivery mode, kept in sync with each broker reply. */
   let loopbackDeliveryMode: 'manual_flush' | 'auto_inject' =
     options.mode === 'drive' ? 'manual_flush' : 'auto_inject';
@@ -753,6 +806,8 @@ export async function startFleetNodeAttachProxy(
       clearTimeout(reconnectTimer);
       reconnectTimer = undefined;
     }
+    for (const timer of terminalReadinessTimers) clearTimeout(timer);
+    terminalReadinessTimers.clear();
     rejectPendingDeliveryMode(error);
     const activeRemote = remote;
     remote = undefined;
@@ -772,15 +827,53 @@ export async function startFleetNodeAttachProxy(
   };
   const connect = (url: string, readiness: TerminalReadiness) => {
     if (stopped || terminalEnded) return;
-    const socket = new WebSocket(asWsUrl(url), { handshakeTimeout: TERMINAL_CONNECT_TIMEOUT_MS });
+    const socket = new WebSocket(asWsUrl(url), { handshakeTimeout: terminalHandshakeTimeoutMs });
     remote = socket;
+    let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+    let readinessExpired = false;
+    const clearReadinessTimer = () => {
+      if (!readinessTimer) return;
+      clearTimeout(readinessTimer);
+      terminalReadinessTimers.delete(readinessTimer);
+      readinessTimer = undefined;
+    };
+    socket.on('open', () => {
+      // `handshakeTimeout` independently bounds the HTTP upgrade. Start the
+      // terminal.ready allowance only after that upgrade succeeds so a slow
+      // but valid handshake cannot consume the readiness window.
+      readinessTimer = setTimeout(() => {
+        const expiredTimer = readinessTimer;
+        readinessTimer = undefined;
+        if (expiredTimer) terminalReadinessTimers.delete(expiredTimer);
+        if (remote !== socket || stopped || terminalEnded || readiness.settled) return;
+        // Mark this generation stale before terminating. The ws receiver may
+        // still deliver data already buffered on the socket while close is
+        // propagating; none of it may restore readiness or reset retry state.
+        readinessExpired = true;
+        if (!terminalEverReady) {
+          failRemote(
+            `terminal transport connected but did not become ready (node ref ${diagnosticValue(options.node.trim())},` +
+              ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+              ` readiness timeout ${terminalReadyTimeoutMs}ms, attempts 1; not retried because no terminal session became ready)`
+          );
+          return;
+        }
+        // A successful WebSocket upgrade is not sufficient: Relaycast may
+        // accept a resume lane that never produces terminal.ready. Terminating
+        // it drives the same bounded close/retry path as a transport failure.
+        options.reconnectDelay?.beforeReadyTimeoutTerminate?.(socket);
+        socket.terminate();
+      }, terminalReadyTimeoutMs);
+      terminalReadinessTimers.add(readinessTimer);
+    });
     socket.on('message', (data) => {
       // A late frame from a transport superseded during reconnect must never
       // overwrite the fresh snapshot or end the replacement session.
-      if (remote !== socket || stopped || terminalEnded) return;
+      if (remote !== socket || stopped || terminalEnded || readinessExpired) return;
       const frame = parseFrame(data);
       if (!frame || frame.session_id !== sessionId) return;
       if (frame.type === 'terminal.ready') {
+        clearReadinessTimer();
         snapshot.screen = typeof frame.screen === 'string' ? frame.screen : '';
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
@@ -857,6 +950,8 @@ export async function startFleetNodeAttachProxy(
       }
     });
     socket.on('error', () => {
+      readinessExpired = true;
+      clearReadinessTimer();
       // Initial connection failure has no terminal state worth preserving.
       // Fail promptly with the canonical unavailable-node error instead of
       // letting the HTTP snapshot timeout mask it. Once Ready has been seen,
@@ -865,11 +960,13 @@ export async function startFleetNodeAttachProxy(
         failRemote(
           `terminal transport could not connect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
             ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
-            ` handshake budget ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts 1; not retried because no terminal session became ready)`
+            ` handshake budget ${terminalHandshakeTimeoutMs}ms, attempts 1; not retried because no terminal session became ready)`
         );
       }
     });
     socket.on('close', () => {
+      readinessExpired = true;
+      clearReadinessTimer();
       if (remote !== socket || stopped || terminalEnded || reconnecting) return;
       // Relaycast drops the old lane's terminal session state on disconnect,
       // so a set_delivery_mode frame already sent on this dying socket is
@@ -896,7 +993,8 @@ export async function startFleetNodeAttachProxy(
         const message =
           `terminal transport could not reconnect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
           ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
-          ` handshake timeout ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts ${reconnectAttempts},` +
+          ` handshake timeout ${terminalHandshakeTimeoutMs}ms, readiness timeout ${terminalReadyTimeoutMs}ms,` +
+          ` attempts ${reconnectAttempts},` +
           ` backoff budget ${backoffBudgetMs}ms)`;
         failRemote(
           message,
@@ -929,6 +1027,8 @@ export async function startFleetNodeAttachProxy(
         clearTimeout(reconnectTimer);
         reconnectTimer = undefined;
       }
+      for (const timer of terminalReadinessTimers) clearTimeout(timer);
+      terminalReadinessTimers.clear();
       rejectReadiness(activeReadiness, new FleetNodeAttachError('terminal attach closed', 'closed'));
       rejectPendingDeliveryMode(new FleetNodeAttachError('terminal attach closed', 'closed'));
       const activeRemote = remote;

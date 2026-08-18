@@ -8,7 +8,7 @@
 import type { AddressInfo } from 'node:net';
 
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startFleetNodeAttachProxy, type FleetNodeAttachProxy } from './attach-fleet-node.js';
 
@@ -23,8 +23,18 @@ type FakeRemoteHandle = {
   close: () => Promise<void>;
 };
 
-async function startFakeRemote(): Promise<FakeRemoteHandle> {
-  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+async function startFakeRemote(upgradeDelayMs = 0): Promise<FakeRemoteHandle> {
+  const wss = new WebSocketServer({
+    host: '127.0.0.1',
+    port: 0,
+    ...(upgradeDelayMs > 0
+      ? {
+          verifyClient: (_info, done) => {
+            setTimeout(() => done(true), upgradeDelayMs);
+          },
+        }
+      : {}),
+  });
   await new Promise<void>((resolve) => wss.once('listening', resolve));
   const { port } = wss.address() as AddressInfo;
   const connections: WsSocket[] = [];
@@ -124,6 +134,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
   const cleanup: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
     while (cleanup.length > 0) {
       const fn = cleanup.pop()!;
       await fn().catch(() => undefined);
@@ -137,6 +148,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
     cleanup.push(remote.close);
     const success = fakeTicketFetch(remote.url);
     let calls = 0;
+    const retryDelays: number[] = [];
     const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
       calls += 1;
       if (calls === 1) {
@@ -152,19 +164,133 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       baseUrl: 'https://fake.example',
       workspaceKey: 'wk',
       fetch: fetchFn,
-      sessionRequest: { sleep: async () => undefined },
+      sessionRequest: {
+        sleep: async (ms) => {
+          retryDelays.push(ms);
+        },
+      },
     });
     cleanup.push(proxy.close);
 
     expect(calls).toBe(2);
+    expect(retryDelays).toEqual([6_000]);
     const socket = await remote.nextConnection();
     sendReady(socket);
+  });
+
+  // MUST FIRE: the earlier 5s and 12s client deadlines both aborted live
+  // control-plane requests under load. A response just inside the repository's
+  // standard 30s Relay HTTP window must not be cut off by this caller.
+  it('keeps the default terminal-session request alive through the bounded 30s window', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    let aborted = false;
+    const fetchFn = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        const responseTimer = setTimeout(() => {
+          resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({
+              ok: true,
+              data: {
+                session_id: SESSION_ID,
+                terminal_url: `${remote.url}?ticket=abc`,
+                resume_token: RESUME_TOKEN,
+              },
+            }),
+          } as Response);
+        }, 29_000);
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            aborted = true;
+            clearTimeout(responseTimer);
+            reject(new Error('request aborted'));
+          },
+          { once: true }
+        );
+      })) as typeof globalThis.fetch;
+
+    vi.useFakeTimers();
+    const proxyPromise = startFleetNodeAttachProxy({
+      agent: 'agent-slow-healthy',
+      node: 'node-slow-healthy',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fetchFn,
+    });
+    void proxyPromise.catch(() => undefined);
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    vi.useRealTimers();
+    const proxy = await proxyPromise;
+    cleanup.push(proxy.close);
+
+    expect(aborted).toBe(false);
+    const socket = await remote.nextConnection();
+    sendReady(socket);
+  });
+
+  // MUST FIRE: five slow responses plus all retry delays would otherwise keep
+  // this interactive command pending for roughly three minutes. The aggregate
+  // deadline must abort the in-flight third request at exactly 90s.
+  it('caps slow terminal-session retries with the 90s overall request budget', async () => {
+    let calls = 0;
+    let aborts = 0;
+    const fetchFn = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        calls += 1;
+        const responseTimer = setTimeout(() => {
+          resolve(terminalSessionErrorResponse('node_unreachable', "Node 'node-slow-dead' is not reachable"));
+        }, 29_000);
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            aborts += 1;
+            clearTimeout(responseTimer);
+            reject(new Error('request aborted'));
+          },
+          { once: true }
+        );
+      })) as typeof globalThis.fetch;
+
+    vi.useFakeTimers();
+    let settled = false;
+    const rejectedPromise = startFleetNodeAttachProxy({
+      agent: 'agent-slow-dead',
+      node: 'node-slow-dead',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fetchFn,
+    }).catch((error: unknown) => error);
+    void rejectedPromise.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(89_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    const rejected = await rejectedPromise;
+    vi.useRealTimers();
+
+    expect(calls).toBe(3);
+    expect(aborts).toBe(1);
+    expect(rejected).toMatchObject({ code: 'control_plane_timeout' });
+    expect((rejected as Error).message).toContain('overall budget 90000ms');
+    expect((rejected as Error).message).toContain(
+      'attempts 3 (retried 2 times; final POST not retried because it may have completed server-side)'
+    );
   });
 
   // MUST NOT FIRE: exhausting the bounded retry budget must remain a hard,
   // diagnostic failure rather than opening a false-success proxy or looping.
   it('still fails a genuinely unreachable node after the bounded attempts', async () => {
     let calls = 0;
+    const retryDelays: number[] = [];
     const fetchFn = (async () => {
       calls += 1;
       return terminalSessionErrorResponse('node_unreachable', "Node 'node-dead' is not reachable");
@@ -177,15 +303,21 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       baseUrl: 'https://fake.example',
       workspaceKey: 'wk',
       fetch: fetchFn,
-      sessionRequest: { sleep: async () => undefined },
+      sessionRequest: {
+        sleep: async (ms) => {
+          retryDelays.push(ms);
+        },
+      },
     }).catch((error: unknown) => error);
 
-    expect(calls).toBe(3);
+    expect(calls).toBe(5);
+    expect(retryDelays).toEqual([6_000, 7_200, 8_400, 9_600]);
+    expect(retryDelays.reduce((total, delay) => total + delay, 0)).toBeGreaterThan(30_000);
     expect(rejected).toBeInstanceOf(Error);
     expect(rejected).toMatchObject({ code: 'node_unreachable' });
     expect((rejected as Error).message).toContain('control plane classified the node as unreachable');
     expect((rejected as Error).message).toContain('resolved node id unavailable');
-    expect((rejected as Error).message).toContain('attempts 3 (retried 2 times)');
+    expect((rejected as Error).message).toContain('attempts 5 (retried 4 times)');
     expect((rejected as Error).message).toContain(
       'endpoint "https://fake.example/v1/nodes/node-dead/terminal/sessions"'
     );
@@ -507,6 +639,77 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     }
   });
 
+  // MUST NOT FIRE: the HTTP upgrade and terminal.ready are independently
+  // bounded. This crosses the old fixed 10s local readiness gate while staying
+  // within the 10s handshake plus 3s post-open readiness allowances.
+  it('starts the terminal.ready timeout after a delayed WebSocket upgrade completes', async () => {
+    const remote = await startFakeRemote(8_000);
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-delayed-upgrade',
+      node: 'node-delayed-upgrade',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      reconnectDelay: { readyTimeoutMs: 3_000 },
+    });
+    cleanup.push(proxy.close);
+
+    void remote.nextConnection().then(
+      (socket) =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            sendReady(socket);
+            resolve();
+          }, 2_500);
+        })
+    );
+    const response = await fetch(`${proxy.brokerUrl}/api/spawned/view-delayed-upgrade/snapshot`, {
+      headers: { Authorization: `Bearer ${proxy.apiKey}` },
+    });
+
+    expect(response.status).toBe(200);
+  }, 15_000);
+
+  // MUST NOT FIRE: a readiness-gated request created during reconnect backoff
+  // must follow the next generation instead of expiring after only one
+  // handshake/readiness allowance.
+  it('keeps a snapshot request pending through bounded reconnect backoff', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-backoff-snapshot',
+      node: 'node-backoff-snapshot',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      reconnectDelay: {
+        initialMs: 150,
+        maxMs: 150,
+        handshakeTimeoutMs: 50,
+        readyTimeoutMs: 50,
+      },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    initial.terminate();
+    await new Promise<void>((resolve) => initial.once('close', () => resolve()));
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    const responsePromise = fetch(`${proxy.brokerUrl}/api/spawned/view-backoff-snapshot/snapshot`, {
+      headers: { Authorization: `Bearer ${proxy.apiKey}` },
+    });
+    const resumed = await remote.nextConnection();
+    sendReady(resumed);
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+  });
+
   it('keeps a healthy idle view open, then closes it with code and reason when its target disappears', async () => {
     const remote = await startFakeRemote();
     cleanup.push(remote.close);
@@ -646,6 +849,74 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     expect(result.reason).toContain('attempts=6');
     expect(result.reason).toContain('budget=6ms');
     expect(result.reason).not.toContain('�');
+  });
+
+  // MUST FIRE: a successful WebSocket upgrade without terminal.ready used to
+  // bypass both the ws handshake timeout and the close-driven retry loop,
+  // leaving an established local view falsely open forever.
+  it('times out accepted-but-stalled resumes and exhausts the bounded retry path', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    let injectedLateReady = false;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-stalled-resume',
+      node: 'node-stalled-resume',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      reconnectDelay: {
+        initialMs: 1,
+        maxMs: 1,
+        readyTimeoutMs: 20,
+        beforeReadyTimeoutTerminate: (socket) => {
+          if (injectedLateReady) return;
+          injectedLateReady = true;
+          // Simulate terminal.ready already buffered in ws when the deadline
+          // fires. The expired generation must ignore it before termination.
+          socket.emit(
+            'message',
+            Buffer.from(
+              JSON.stringify({
+                type: 'terminal.ready',
+                session_id: SESSION_ID,
+                screen: 'late stale screen',
+                rows: 24,
+                cols: 80,
+                offset: 0,
+              })
+            )
+          );
+        },
+      },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      viewSocket.once('close', (code, reason) => resolve({ code, reason: reason.toString('utf8') }));
+    });
+
+    initial.terminate();
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const stalledResume = await remote.nextConnection();
+      await new Promise<void>((resolve) => {
+        if (stalledResume.readyState === WsClient.CLOSED) {
+          resolve();
+          return;
+        }
+        stalledResume.once('close', () => resolve());
+      });
+    }
+
+    const result = await closed;
+    expect(injectedLateReady).toBe(true);
+    expect(result.code).toBe(1011);
+    expect(result.reason).toContain('terminal reconnect failed');
+    expect(result.reason).toContain('attempts=6');
+    expect(result.reason).toContain('budget=6ms');
   });
 });
 
