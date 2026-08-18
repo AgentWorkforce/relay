@@ -162,6 +162,11 @@ const HANDSHAKE_MAX_ATTEMPTS: u32 = 3;
 /// Base backoff between handshake attempts; doubles each retry, capped.
 const HANDSHAKE_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
+/// Aggregate ceiling for every handshake attempt and backoff. The harness SDK
+/// stops polling after 45s, so keeping the broker one second inside that limit
+/// lets it surface the specific handshake error first. This also bounds
+/// membership-scaled deadlines and oversized environment overrides.
+const HANDSHAKE_TOTAL_TIMEOUT: Duration = Duration::from_secs(44);
 
 /// Per-attempt handshake timeout, overridable via
 /// `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` (must be > 0).
@@ -211,17 +216,33 @@ fn parse_handshake_attempts(raw: Option<&str>) -> u32 {
         .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
 }
 
+/// Cap the next attempt to the aggregate handshake time that remains. Returning
+/// `None` means the broker has no time left to start another request.
+fn handshake_attempt_timeout_within_budget(
+    attempt_timeout: Duration,
+    elapsed: Duration,
+) -> Option<Duration> {
+    let remaining = HANDSHAKE_TOTAL_TIMEOUT.saturating_sub(elapsed);
+    (!remaining.is_zero()).then_some(attempt_timeout.min(remaining))
+}
+
+fn handshake_retry_fits_within_budget(elapsed: Duration, backoff: Duration) -> bool {
+    HANDSHAKE_TOTAL_TIMEOUT.saturating_sub(elapsed) > backoff
+}
+
 fn format_handshake_timeout_error(
     attempts: u32,
     attempt_timeout: Duration,
     elapsed: Duration,
 ) -> String {
     format!(
-        "relaycast startup handshake received no response before the per-attempt deadline after \
-         {attempts} attempt(s) of {}ms each ({}ms total elapsed); registration was not confirmed \
-         and may still have completed server-side after the client stopped waiting",
+        "relaycast startup handshake received no response before its deadlines after {attempts} \
+         attempt(s) (up to {}ms per attempt, {}ms total elapsed; {}ms aggregate limit); \
+         registration was not confirmed and may still have completed server-side after the client \
+         stopped waiting",
         attempt_timeout.as_millis(),
-        elapsed.as_millis()
+        elapsed.as_millis(),
+        HANDSHAKE_TOTAL_TIMEOUT.as_millis()
     )
 }
 
@@ -293,11 +314,14 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     // completed the request AND failed to answer within the deadline); the
     // per-attempt deadline is scaled by the configured workspace count so a
     // healthy multi-workspace startup, which registers each membership serially,
-    // is not cut off mid-flight.
+    // is not cut off mid-flight. The final attempt is shortened to whatever
+    // remains of HANDSHAKE_TOTAL_TIMEOUT so membership scaling and environment
+    // overrides cannot move exhaustion past the SDK startup deadline.
     let membership_count = configured_membership_count();
     let attempt_timeout = handshake_attempt_timeout().saturating_mul(membership_count);
     let max_attempts = handshake_max_attempts();
     let mut backoff = HANDSHAKE_BACKOFF_BASE;
+    let handshake_started = Instant::now();
     // Prove this is the SAME node restarting, not a different one squatting
     // the name: honor an explicit override, else fall back to a value stable
     // across restarts of this node's own persisted state directory. Without
@@ -310,9 +334,19 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     let sessions = {
         let mut attempt: u32 = 0;
         loop {
+            let Some(current_attempt_timeout) = handshake_attempt_timeout_within_budget(
+                attempt_timeout,
+                handshake_started.elapsed(),
+            ) else {
+                anyhow::bail!(format_handshake_timeout_error(
+                    attempt,
+                    attempt_timeout,
+                    handshake_started.elapsed()
+                ));
+            };
             attempt += 1;
             match timeout(
-                attempt_timeout,
+                current_attempt_timeout,
                 auth.startup_session_set_with_identity(
                     Some(opts.requested_name),
                     opts.strict_name,
@@ -328,17 +362,20 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
                     break result.context("failed to initialize relaycast session")?;
                 }
                 Err(_elapsed) => {
-                    if attempt >= max_attempts {
+                    let handshake_elapsed = handshake_started.elapsed();
+                    if attempt >= max_attempts
+                        || !handshake_retry_fits_within_budget(handshake_elapsed, backoff)
+                    {
                         anyhow::bail!(format_handshake_timeout_error(
                             attempt,
                             attempt_timeout,
-                            connect_started.elapsed()
+                            handshake_elapsed
                         ));
                     }
                     tracing::warn!(
                         attempt,
                         max_attempts,
-                        timeout_ms = attempt_timeout.as_millis() as u64,
+                        timeout_ms = current_attempt_timeout.as_millis() as u64,
                         "relaycast startup handshake received no response before deadline; retrying"
                     );
                     log_startup_phase(
@@ -346,7 +383,7 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
                         connect_started,
                         format!(
                             "handshake attempt {attempt}/{max_attempts} received no response within {}ms; retrying in {}ms",
-                            attempt_timeout.as_millis(),
+                            current_attempt_timeout.as_millis(),
                             backoff.as_millis()
                         ),
                     );
@@ -529,9 +566,47 @@ mod tests {
             backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
         }
         let sdk_startup_budget = Duration::from_secs(45);
+        assert!(never_responds_budget < HANDSHAKE_TOTAL_TIMEOUT);
         assert!(
             never_responds_budget < sdk_startup_budget,
             "a backend that never responds must exhaust the default handshake budget before the SDK's 45s deadline"
+        );
+    }
+
+    #[test]
+    fn multi_membership_default_budget_stays_inside_sdk_deadline() {
+        let membership_count = 2;
+        let attempt_timeout = parse_handshake_timeout(None).saturating_mul(membership_count);
+        let max_attempts = parse_handshake_attempts(None);
+        let mut never_responds_budget = Duration::ZERO;
+        let mut backoff = HANDSHAKE_BACKOFF_BASE;
+        let mut attempt_deadlines = Vec::new();
+        for attempt in 0..max_attempts {
+            let Some(current_attempt_timeout) =
+                handshake_attempt_timeout_within_budget(attempt_timeout, never_responds_budget)
+            else {
+                break;
+            };
+            attempt_deadlines.push(current_attempt_timeout);
+            never_responds_budget = never_responds_budget.saturating_add(current_attempt_timeout);
+            if attempt + 1 >= max_attempts
+                || !handshake_retry_fits_within_budget(never_responds_budget, backoff)
+            {
+                break;
+            }
+            never_responds_budget = never_responds_budget.saturating_add(backoff);
+            backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+        }
+
+        assert_eq!(
+            attempt_deadlines,
+            vec![Duration::from_secs(24), Duration::from_millis(19_750)],
+            "the second attempt uses the aggregate budget remaining after the first timeout and backoff"
+        );
+        assert_eq!(never_responds_budget, HANDSHAKE_TOTAL_TIMEOUT);
+        assert!(
+            never_responds_budget < Duration::from_secs(45),
+            "membership-scaled retries must still exhaust before the SDK deadline"
         );
     }
 
@@ -542,7 +617,8 @@ mod tests {
             Duration::from_secs(12),
             Duration::from_millis(36_750),
         );
-        assert!(message.contains("received no response before the per-attempt deadline"));
+        assert!(message.contains("received no response before its deadlines"));
+        assert!(message.contains("44000ms aggregate limit"));
         assert!(message.contains("may still have completed server-side"));
         assert!(
             !message.contains("was unreachable"),
