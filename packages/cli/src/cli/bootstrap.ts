@@ -48,6 +48,7 @@ import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
 import { registerFleetCommands } from './commands/fleet.js';
 import { registerSkillsCommands } from './commands/skills.js';
+import { registerSessionCommands } from './commands/session.js';
 
 dotenvConfig({ quiet: true });
 
@@ -419,6 +420,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
+  registerSessionCommands(program);
 
   program
     .command('mcp')
