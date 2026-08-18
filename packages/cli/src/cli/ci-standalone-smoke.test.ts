@@ -100,6 +100,19 @@ describe('ci-standalone-smoke workspace reuse', () => {
     }
   });
 
+  it('keeps the outer startup deadline above the broker aggregate handshake budget', () => {
+    const script = readFileSync(smokeScript, 'utf8');
+    const brokerSession = readFileSync(resolve('crates/broker/src/runtime/session.rs'), 'utf8');
+    const smokeSeconds = Number(
+      script.match(/AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-([0-9]+)}/)?.[1]
+    );
+    const brokerSeconds = Number(
+      brokerSession.match(/const HANDSHAKE_TOTAL_TIMEOUT:[^=]+=[\s\n]*Duration::from_secs\(([0-9]+)\);/)?.[1]
+    );
+
+    expect(smokeSeconds).toBeGreaterThanOrEqual(brokerSeconds + 10);
+  });
+
   it('fails closed before invoking binaries when the dedicated key is missing or whitespace-only', () => {
     const unusableKeys: Array<[label: string, value: string | undefined]> = [
       ['unset', undefined],

@@ -1,0 +1,77 @@
+{
+  "id": "traj_3qqulp5ylsgz",
+  "version": 1,
+  "task": {
+    "title": "Align standalone smoke deadline with broker handshake budget",
+    "source": {
+      "system": "plain",
+      "id": "PR-1573"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-18T20:10:27.862Z",
+  "completedAt": "2026-08-18T20:18:53.665Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T20:10:28.396Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0vi0bsvwq49c",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T20:10:28.396Z",
+      "endedAt": "2026-08-18T20:18:53.665Z",
+      "events": [
+        {
+          "ts": 1787083828397,
+          "type": "decision",
+          "content": "Set standalone smoke default to 60 seconds and test it against the broker aggregate: Set standalone smoke default to 60 seconds and test it against the broker aggregate",
+          "raw": {
+            "question": "Set standalone smoke default to 60 seconds and test it against the broker aggregate",
+            "chosen": "Set standalone smoke default to 60 seconds and test it against the broker aggregate",
+            "alternatives": [],
+            "reasoning": "The broker explicitly owns a 40-second aggregate handshake plus post-announcement setup reserve; a 30-second supervisor kills a valid retry in flight and masks the specific broker error. Sixty seconds leaves deterministic headroom while still bounding the job."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787084333183,
+          "type": "reflection",
+          "content": "GitHub macOS package validation failed at the smoke wrapper's 30-second deadline while the broker's third handshake attempt was still valid under its 40-second aggregate budget. Raised the wrapper default to 60 seconds, added a source-coupling regression test, reproduced the slow path with a deterministic 36-second exact-binary smoke, passed 49 focused tests and type/lint/syntax/diff gates, and received sequential fresh Claude and Codex signoff.",
+          "raw": {
+            "focalPoints": [
+              "ci-timeout-contract",
+              "deterministic-reproduction",
+              "review-signoff"
+            ],
+            "confidence": 0.97
+          },
+          "significance": "high",
+          "tags": [
+            "focal:ci-timeout-contract",
+            "focal:deterministic-reproduction",
+            "focal:review-signoff",
+            "confidence:0.97"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Aligned the standalone package smoke supervisor with the broker handshake contract by raising its default deadline from 30 to 60 seconds and adding a regression test that enforces at least ten seconds of headroom over the broker aggregate timeout.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "c5a3379e8fdddf9a0c9a1faeedede34a685074fe",
+    "endRef": "c5a3379e8fdddf9a0c9a1faeedede34a685074fe"
+  }
+}

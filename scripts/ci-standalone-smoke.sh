@@ -138,10 +138,11 @@ UP_PID=$!
 UP_EXIT=""
 UP_READY=false
 UP_EXITED_BEFORE_READY=false
-# Startup can legitimately need to retry a Relaycast handshake on a loaded
-# macOS runner. Do not begin teardown on a fixed timer while that retry is in
-# flight; wait for the CLI's explicit readiness line instead.
-STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-30}"
+# Startup can legitimately consume the broker's 40-second aggregate Relaycast
+# handshake budget on a loaded macOS runner. Keep the outer supervisor above
+# that bound (with setup/teardown headroom) so it does not kill a valid final
+# attempt in flight; still wait for the CLI's explicit readiness line.
+STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-60}"
 STARTUP_DEADLINE=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
 while true; do
   if grep -q 'Broker started\.' "$UP_LOG"; then
