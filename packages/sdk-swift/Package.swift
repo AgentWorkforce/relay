@@ -26,7 +26,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/AgentWorkforce/relaycast.git",
-            from: "6.0.5"
+            from: "8.0.4"
         )
     ],
     targets: [
