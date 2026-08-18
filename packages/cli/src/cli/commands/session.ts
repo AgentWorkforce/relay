@@ -5,9 +5,13 @@ import path from 'node:path';
 import { SessionClient, type ReplaySessionResult } from '@agent-relay/session';
 import { Command, InvalidArgumentError } from 'commander';
 
+import { defaultExit } from '../lib/exit.js';
+
 /** The durable reference is Relay's ai-hist session UUID, never a local alias. */
 const SESSION_REF_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_RELAYHISTORY_HOST = 'history.agentrelay.com';
+/** Same fallback chain `@agent-relay/session`'s `SessionClient` resolves a token from. */
+const RELAYHISTORY_TOKEN_ENV_VARS = ['RELAYHISTORY_TOKEN', 'RELAYHISTORY_ACCESS_TOKEN', 'RELAY_AGENT_TOKEN'];
 
 export interface SessionReplayClient {
   replaySession(sessionId: string): Promise<ReplaySessionResult>;
@@ -22,6 +26,8 @@ export interface SessionCommandDependencies {
   createClient: (storedAuth: StoredRelayhistoryAuth | null) => SessionReplayClient;
   readStoredAuth: () => StoredRelayhistoryAuth | null;
   log: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+  exit: (code: number) => never;
 }
 
 function readStoredRelayhistoryAuth(): StoredRelayhistoryAuth | null {
@@ -42,10 +48,12 @@ function readStoredRelayhistoryAuth(): StoredRelayhistoryAuth | null {
   }
 }
 
-function trustedStoredBaseUrl(value: string): string | undefined {
+/** Exported for direct unit coverage of the local-vs-production host allowlist. */
+export function trustedStoredBaseUrl(value: string): string | undefined {
   try {
     const url = new URL(value.trim());
-    const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+    const local =
+      url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
     if (
       (url.protocol === 'https:' && url.hostname === ALLOWED_RELAYHISTORY_HOST) ||
       (local && url.protocol === 'http:')
@@ -58,12 +66,43 @@ function trustedStoredBaseUrl(value: string): string | undefined {
   return undefined;
 }
 
+function nonBlankEnv(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Explicit `RELAYHISTORY_*`/`RELAY_AGENT_TOKEN` environment configuration
+ * must win over whatever is cached in `auth.json` — otherwise a developer
+ * pointing at a local Relayhistory instance can never override stored
+ * production credentials. `SessionClient` itself prefers its constructor
+ * options over its own env fallback, so the stored value can only be handed
+ * to it when the corresponding environment variable is absent.
+ */
+/** Exported for direct unit coverage of the explicit-env-over-stored-auth precedence. */
+export function resolveRelayhistoryConfig(storedAuth: StoredRelayhistoryAuth | null): {
+  baseUrl: string | undefined;
+  token: string | undefined;
+} {
+  return {
+    baseUrl: nonBlankEnv('RELAYHISTORY_URL') ?? storedAuth?.baseUrl,
+    token: nonBlankEnv(...RELAYHISTORY_TOKEN_ENV_VARS) ?? storedAuth?.token,
+  };
+}
+
 function withDefaults(overrides: Partial<SessionCommandDependencies> = {}): SessionCommandDependencies {
   return {
-    createClient: (storedAuth) =>
-      new SessionClient({ baseUrl: storedAuth?.baseUrl, token: storedAuth?.token }),
+    createClient: (storedAuth) => {
+      const config = resolveRelayhistoryConfig(storedAuth);
+      return new SessionClient({ baseUrl: config.baseUrl, token: config.token });
+    },
     readStoredAuth: readStoredRelayhistoryAuth,
     log: (...args: unknown[]) => console.log(...args),
+    error: (...args: unknown[]) => console.error(...args),
+    exit: defaultExit,
     ...overrides,
   };
 }
@@ -89,7 +128,26 @@ export function registerSessionCommands(
     .description('Reconstruct a completed Relay session as attributed Relayhistory context')
     .argument('<id>', 'Relay-emitted session UUID', parseSessionRef)
     .action(async (sessionId: string) => {
-      const replay = await deps.createClient(deps.readStoredAuth()).replaySession(sessionId);
+      const storedAuth = deps.readStoredAuth();
+      const config = resolveRelayhistoryConfig(storedAuth);
+      if (!config.baseUrl) {
+        deps.error(
+          'No Relayhistory endpoint is configured. Set RELAYHISTORY_URL, or sign in so ' +
+            '~/.agentworkforce/relayhistory/auth.json has a base_url.'
+        );
+        deps.exit(1);
+        return;
+      }
+      if (!config.token) {
+        deps.error(
+          'No Relayhistory credential is configured. Set RELAYHISTORY_TOKEN ' +
+            '(or RELAYHISTORY_ACCESS_TOKEN/RELAY_AGENT_TOKEN), or sign in so ' +
+            '~/.agentworkforce/relayhistory/auth.json has an access_token.'
+        );
+        deps.exit(1);
+        return;
+      }
+      const replay = await deps.createClient(storedAuth).replaySession(sessionId);
       deps.log(replay.contextPrompt);
     });
 }

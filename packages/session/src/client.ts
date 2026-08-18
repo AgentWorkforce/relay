@@ -201,14 +201,20 @@ export class SessionClient {
   }
 
   async resumeSession(sessionId: string): Promise<ResumeSessionResult> {
-    const replay = await this.replaySession(sessionId);
+    // Fetch state directly rather than through `replaySession` — that
+    // builds a `contextPrompt` unconditionally, which `determineResumeMode`
+    // duplicates below for an inject resume and a native resume discards
+    // outright. Serializing the journal at most once here avoids both.
+    const state = await this.#fetchState(sessionId);
+    const session = cloneSession(state.session);
+    const turns = state.turns.map(cloneTurn);
     return {
-      session: replay.session,
-      turns: replay.turns,
+      session,
+      turns,
       resume: determineResumeMode({
-        session: replay.session,
-        turns: replay.turns,
-        targetCli: this.#cli ?? replay.session.originCli,
+        session,
+        turns,
+        targetCli: this.#cli ?? session.originCli,
       }),
     };
   }
