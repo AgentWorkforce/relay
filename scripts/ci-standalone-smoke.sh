@@ -6,7 +6,7 @@ if [ "$#" -ne 2 ]; then
   exit 2
 fi
 
-if [ -z "${RELAY_WORKSPACE_KEY:-}" ]; then
+if [[ -z "${RELAY_WORKSPACE_KEY:-}" || "${RELAY_WORKSPACE_KEY:-}" =~ ^[[:space:]]+$ ]]; then
   echo "ERROR: RELAY_WORKSPACE_KEY must name the dedicated standalone-smoke CI workspace." >&2
   echo "Refusing to start without it because node up would create an undeletable throwaway workspace." >&2
   exit 2

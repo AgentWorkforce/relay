@@ -83,16 +83,32 @@ describe('ci-standalone-smoke workspace reuse', () => {
     }
   });
 
-  it('fails closed before invoking binaries when the dedicated key is missing', () => {
-    const result = spawnSync('bash', [smokeScript, '/missing/cli', '/missing/broker'], {
-      encoding: 'utf8',
-      env: { ...process.env, RELAY_WORKSPACE_KEY: '' },
-    });
+  it('fails closed before invoking binaries when the dedicated key is missing or whitespace-only', () => {
+    const unusableKeys: Array<[label: string, value: string | undefined]> = [
+      ['unset', undefined],
+      ['empty', ''],
+      ['single space', ' '],
+      ['tab', '\t'],
+    ];
 
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain('Refusing to start');
-    expect(result.stderr).toContain('throwaway workspace');
-    expect(result.stderr).not.toContain('binary not found');
+    for (const [label, value] of unusableKeys) {
+      const env = { ...process.env };
+      if (value === undefined) {
+        delete env.RELAY_WORKSPACE_KEY;
+      } else {
+        env.RELAY_WORKSPACE_KEY = value;
+      }
+
+      const result = spawnSync('bash', [smokeScript, '/missing/cli', '/missing/broker'], {
+        encoding: 'utf8',
+        env,
+      });
+
+      expect(result.status, `${label}: ${result.stderr}`).toBe(2);
+      expect(result.stderr, label).toContain('Refusing to start');
+      expect(result.stderr, label).toContain('throwaway workspace');
+      expect(result.stderr, label).not.toContain('binary not found');
+    }
   });
 
   it('passes the shared key through the isolated lifecycle and joins its workspace', () => {
