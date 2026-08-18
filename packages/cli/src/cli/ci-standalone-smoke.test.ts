@@ -94,7 +94,13 @@ afterEach(() => {
 describe('ci-standalone-smoke workspace reuse', () => {
   it('disarms the EXIT trap before entering the cleanup subshell', () => {
     const script = readFileSync(smokeScript, 'utf8');
-    expect(script).toMatch(/cleanup\(\) \{[\s\S]*?trap - EXIT\n\s*\(/);
+    const cleanupBody = script.match(/^cleanup\(\) \{\n([\s\S]*?)^\}$/m)?.[1];
+    expect(cleanupBody).toBeDefined();
+
+    const trapDisarmIndex = cleanupBody!.indexOf('trap - EXIT');
+    const cleanupSubshellIndex = cleanupBody!.search(/^\s*\($/m);
+    expect(trapDisarmIndex).toBeGreaterThanOrEqual(0);
+    expect(cleanupSubshellIndex).toBeGreaterThan(trapDisarmIndex);
   });
 
   it('injects the same dedicated secret at every workflow call site', () => {
