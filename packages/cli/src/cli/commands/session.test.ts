@@ -71,9 +71,9 @@ describe('registerSessionCommands', () => {
     program.exitOverride();
     registerSessionCommands(program, { createClient, readStoredAuth, error, exit });
 
-    await expect(
-      program.parseAsync(['node', 'relay', 'session', 'replay', SESSION_REF])
-    ).rejects.toThrow('exit:1');
+    await expect(program.parseAsync(['node', 'relay', 'session', 'replay', SESSION_REF])).rejects.toThrow(
+      'exit:1'
+    );
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('RELAYHISTORY_URL'));
     expect(exit).toHaveBeenCalledWith(1);
@@ -93,9 +93,9 @@ describe('registerSessionCommands', () => {
     program.exitOverride();
     registerSessionCommands(program, { createClient, readStoredAuth, error, exit });
 
-    await expect(
-      program.parseAsync(['node', 'relay', 'session', 'replay', SESSION_REF])
-    ).rejects.toThrow('exit:1');
+    await expect(program.parseAsync(['node', 'relay', 'session', 'replay', SESSION_REF])).rejects.toThrow(
+      'exit:1'
+    );
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('RELAYHISTORY_TOKEN'));
     expect(exit).toHaveBeenCalledWith(1);

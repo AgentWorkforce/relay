@@ -52,8 +52,7 @@ function readStoredRelayhistoryAuth(): StoredRelayhistoryAuth | null {
 export function trustedStoredBaseUrl(value: string): string | undefined {
   try {
     const url = new URL(value.trim());
-    const local =
-      url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+    const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
     if (
       (url.protocol === 'https:' && url.hostname === ALLOWED_RELAYHISTORY_HOST) ||
       (local && url.protocol === 'http:')
