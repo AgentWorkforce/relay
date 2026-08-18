@@ -291,6 +291,8 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
   // code, and upstream message with a generic timeout sentinel.
   it('preserves the last classified failure when the overall budget expires between attempts', async () => {
     let calls = 0;
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
     const fetchFn = (async () => {
       calls += 1;
       return terminalSessionErrorResponse(
@@ -299,30 +301,40 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       );
     }) as typeof globalThis.fetch;
 
-    vi.useFakeTimers();
-    const rejectedPromise = startFleetNodeAttachProxy({
-      agent: 'agent-budget-expired',
-      node: 'node-budget-expired',
-      mode: 'view',
-      baseUrl: 'https://fake.example',
-      workspaceKey: 'wk',
-      fetch: fetchFn,
-      sessionRequest: { totalTimeoutMs: 10 },
-    }).catch((error: unknown) => error);
+    try {
+      const rejectedPromise = startFleetNodeAttachProxy({
+        agent: 'agent-budget-expired',
+        node: 'node-budget-expired',
+        mode: 'view',
+        baseUrl: 'https://fake.example',
+        workspaceKey: 'wk',
+        fetch: fetchFn,
+        sessionRequest: {
+          totalTimeoutMs: 10,
+          sleep: async (delayMs) => {
+            now += delayMs;
+          },
+        },
+      }).catch((error: unknown) => error);
 
-    await vi.advanceTimersByTimeAsync(10);
-    const rejected = await rejectedPromise;
-    vi.useRealTimers();
+      const rejected = await rejectedPromise;
 
-    expect(calls).toBe(1);
-    expect(rejected).toMatchObject({ code: 'node_unreachable' });
-    expect((rejected as Error).message).toContain('terminal transport was unavailable');
-    expect((rejected as Error).message).toContain("Node 'node-budget-expired' has no terminal transport");
-    expect((rejected as Error).message).toContain('HTTP 503');
-    expect((rejected as Error).message).toContain('overall budget 10ms');
-    expect((rejected as Error).message).toContain(
-      'attempts 1 (not retried because the overall budget was exhausted before the next attempt)'
-    );
+      expect(calls).toBe(1);
+      // Deadline exhaustion gets one final callback so it can annotate the
+      // diagnostic, then the non-retryable clone stops collectWithRetry instead
+      // of spinning through the remaining retry slots.
+      expect(nowSpy).toHaveBeenCalledTimes(4);
+      expect(rejected).toMatchObject({ code: 'node_unreachable' });
+      expect((rejected as Error).message).toContain('terminal transport was unavailable');
+      expect((rejected as Error).message).toContain("Node 'node-budget-expired' has no terminal transport");
+      expect((rejected as Error).message).toContain('HTTP 503');
+      expect((rejected as Error).message).toContain('overall budget 10ms');
+      expect((rejected as Error).message).toContain(
+        'attempts 1 (not retried because the overall budget was exhausted before the next attempt)'
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   // MUST NOT FIRE: exhausting the bounded retry budget must remain a hard,

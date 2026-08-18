@@ -314,14 +314,21 @@ export async function startFleetNodeAttachProxy(
       if (remainingRequestBudgetMs <= 0) {
         sessionRequestBudgetExhaustedBetweenAttempts = true;
         const exhausted =
-          lastSessionError ??
-          new TerminalSessionAttemptError(
-            'overall terminal-session request deadline exhausted',
-            'control_plane_timeout',
-            undefined,
-            false,
-            false
-          );
+          lastSessionError === undefined
+            ? new TerminalSessionAttemptError(
+                'overall terminal-session request deadline exhausted',
+                'control_plane_timeout',
+                undefined,
+                false,
+                false
+              )
+            : new TerminalSessionAttemptError(
+                lastSessionError.message,
+                lastSessionError.code,
+                lastSessionError.status,
+                false,
+                lastSessionError.completionUnknown
+              );
         lastSessionError = exhausted;
         throw exhausted;
       }
