@@ -1,0 +1,57 @@
+{
+  "version": "1.0.0",
+  "id": "921448c0-2f4e-470b-8a3d-1d11916af6fd",
+  "timestamp": "2026-08-18T11:19:19.407Z",
+  "trajectory": "traj_vo8x942jy3x7",
+  "files": [
+    {
+      "path": "packages/cli/src/cli/ci-standalone-smoke.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 15,
+              "end_line": 40,
+              "revision": "9117f803cba24230003efa94fddc27b629557dd0"
+            },
+            {
+              "start_line": 75,
+              "end_line": 81,
+              "revision": "9117f803cba24230003efa94fddc27b629557dd0"
+            },
+            {
+              "start_line": 93,
+              "end_line": 126,
+              "revision": "9117f803cba24230003efa94fddc27b629557dd0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci-standalone-smoke.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 6,
+              "end_line": 12,
+              "revision": "9117f803cba24230003efa94fddc27b629557dd0"
+            },
+            {
+              "start_line": 173,
+              "end_line": 184,
+              "revision": "9117f803cba24230003efa94fddc27b629557dd0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
