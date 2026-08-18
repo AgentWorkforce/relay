@@ -39,6 +39,7 @@ const expectedLeafCommands = [
   'reflex on',
   'reflex off',
   'reflex status',
+  'session replay',
   // fleet (serve is a hidden error stub, filtered out below)
   'fleet agent list',
   'fleet config',
@@ -215,6 +216,7 @@ describe('bootstrap CLI', () => {
         'capabilities',
         'fleet',
         'reflex',
+        'session',
         'status',
         'version',
         'update',

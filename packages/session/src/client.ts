@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { determineResumeMode } from './resume.js';
+import { buildContextPrompt, determineResumeMode } from './resume.js';
 import type {
+  ReplaySessionResult,
   RelaySession,
   ResumeSessionResult,
   SessionActor,
@@ -200,16 +201,30 @@ export class SessionClient {
   }
 
   async resumeSession(sessionId: string): Promise<ResumeSessionResult> {
+    // Fetch state directly rather than through `replaySession` — that
+    // builds a `contextPrompt` unconditionally, which `determineResumeMode`
+    // duplicates below for an inject resume and a native resume discards
+    // outright. Serializing the journal at most once here avoids both.
     const state = await this.#fetchState(sessionId);
+    const session = cloneSession(state.session);
+    const turns = state.turns.map(cloneTurn);
     return {
-      session: cloneSession(state.session),
-      turns: state.turns.map(cloneTurn),
+      session,
+      turns,
       resume: determineResumeMode({
-        session: state.session,
-        turns: state.turns,
-        targetCli: this.#cli ?? state.session.originCli,
+        session,
+        turns,
+        targetCli: this.#cli ?? session.originCli,
       }),
     };
+  }
+
+  /** Reconstruct a completed session as Relayhistory context without mutating its harness. */
+  async replaySession(sessionId: string): Promise<ReplaySessionResult> {
+    const state = await this.#fetchState(sessionId);
+    const session = cloneSession(state.session);
+    const turns = state.turns.map(cloneTurn);
+    return { session, turns, contextPrompt: buildContextPrompt(session, turns) };
   }
 
   async recordSteering(input: RecordSteeringInput): Promise<void> {

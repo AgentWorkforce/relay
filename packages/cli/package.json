@@ -49,6 +49,7 @@
     "@agent-relay/harness-driver": "11.7.0",
     "@agent-relay/harnesses": "11.7.0",
     "@agent-relay/sdk": "11.7.0",
+    "@agent-relay/session": "11.7.0",
     "@agent-relay/utils": "11.7.0",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@relayfile/client": "^0.10.27",
