@@ -163,10 +163,14 @@ const HANDSHAKE_MAX_ATTEMPTS: u32 = 3;
 const HANDSHAKE_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
 /// Aggregate ceiling for every handshake attempt and backoff. The harness SDK
-/// stops polling after 45s, so keeping the broker one second inside that limit
-/// lets it surface the specific handshake error first. This also bounds
-/// membership-scaled deadlines and oversized environment overrides.
-const HANDSHAKE_TOTAL_TIMEOUT: Duration = Duration::from_secs(44);
+/// starts its 45s polling deadline when the broker announces its bound API port,
+/// before connection-file and startup-listener setup reaches `connect_relay`.
+/// Reserving five seconds for that post-announcement work lets the broker surface
+/// the specific handshake error first. This also bounds membership-scaled
+/// deadlines and oversized environment overrides.
+const HANDSHAKE_TOTAL_TIMEOUT: Duration = Duration::from_secs(40);
+#[cfg(test)]
+const HANDSHAKE_POST_ANNOUNCEMENT_RESERVE: Duration = Duration::from_secs(5);
 
 /// Per-attempt handshake timeout, overridable via
 /// `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` (must be > 0).
@@ -600,13 +604,27 @@ mod tests {
 
         assert_eq!(
             attempt_deadlines,
-            vec![Duration::from_secs(24), Duration::from_millis(19_750)],
+            vec![Duration::from_secs(24), Duration::from_millis(15_750)],
             "the second attempt uses the aggregate budget remaining after the first timeout and backoff"
         );
         assert_eq!(never_responds_budget, HANDSHAKE_TOTAL_TIMEOUT);
         assert!(
             never_responds_budget < Duration::from_secs(45),
             "membership-scaled retries must still exhaust before the SDK deadline"
+        );
+    }
+
+    #[test]
+    fn aggregate_budget_reserves_post_announcement_setup_time() {
+        // The SDK starts its 45s polling deadline as soon as the broker prints
+        // the bound API port. A small amount of connection-file and startup API
+        // setup happens before connect_relay starts its own clock, so the
+        // handshake cannot consume all but one second of the outer deadline.
+        let sdk_startup_budget = Duration::from_secs(45);
+        assert!(
+            HANDSHAKE_TOTAL_TIMEOUT
+                <= sdk_startup_budget.saturating_sub(HANDSHAKE_POST_ANNOUNCEMENT_RESERVE),
+            "the aggregate handshake limit must leave explicit time for setup after API announcement"
         );
     }
 
@@ -618,7 +636,7 @@ mod tests {
             Duration::from_millis(36_750),
         );
         assert!(message.contains("received no response before its deadlines"));
-        assert!(message.contains("44000ms aggregate limit"));
+        assert!(message.contains("40000ms aggregate limit"));
         assert!(message.contains("may still have completed server-side"));
         assert!(
             !message.contains("was unreachable"),
