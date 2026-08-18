@@ -137,6 +137,7 @@ UP_PID=$!
 
 UP_EXIT=""
 UP_READY=false
+UP_EXITED_BEFORE_READY=false
 # Startup can legitimately need to retry a Relaycast handshake on a loaded
 # macOS runner. Do not begin teardown on a fixed timer while that retry is in
 # flight; wait for the CLI's explicit readiness line instead.
@@ -148,6 +149,7 @@ while true; do
     break
   fi
   if ! kill -0 "$UP_PID" 2>/dev/null; then
+    UP_EXITED_BEFORE_READY=true
     break
   fi
   if [ "$SECONDS" -ge "$STARTUP_DEADLINE" ]; then
@@ -160,7 +162,7 @@ done
 if kill -0 "$UP_PID" 2>/dev/null; then
   run_cli node down --force --timeout 5000 >/dev/null 2>&1 || true
   # Hard-kill after 15s if down --force didn't terminate the process (e.g. macOS 26 hang)
-  ( sleep 15 && kill -9 "$UP_PID" 2>/dev/null || true ) &
+  ( sleep 15 && kill -9 "$UP_PID" 2>/dev/null || true ) >/dev/null 2>&1 &
   KILLER_PID=$!
   wait "$UP_PID" || true
   kill "$KILLER_PID" 2>/dev/null || true
@@ -174,9 +176,9 @@ fi
 
 UP_OUTPUT="$(cat "$UP_LOG")"
 # A short-lived CLI can write readiness and exit between the polling loop's
-# log check and process-liveness check. Re-read the completed log before
-# reporting a false startup failure.
-if [ "$UP_READY" != true ] && grep -q 'Broker started\.' "$UP_LOG"; then
+# log check and process-liveness check. Re-read the completed log only for
+# that exit race; never accept readiness written after the startup deadline.
+if [ "$UP_READY" != true ] && [ "$UP_EXITED_BEFORE_READY" = true ] && grep -q 'Broker started\.' "$UP_LOG"; then
   UP_READY=true
 fi
 if [ -n "$UP_EXIT" ] && [ "$UP_EXIT" -ne 0 ]; then

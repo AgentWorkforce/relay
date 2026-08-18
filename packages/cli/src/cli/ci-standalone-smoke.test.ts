@@ -25,7 +25,7 @@ function createFakeBinaries(): { cli: string; broker: string; invocationLog: str
     directory,
     'broker',
     `#!/usr/bin/env bash
-printf 'broker\\n' >> ${JSON.stringify(invocationLog)}
+printf 'broker\\n' >> "$INVOCATION_LOG"
 exit 0
 `
   );
@@ -34,7 +34,7 @@ exit 0
     'relay',
     `#!/usr/bin/env bash
 set -euo pipefail
-printf 'cli\\n' >> ${JSON.stringify(invocationLog)}
+printf 'cli\\n' >> "$INVOCATION_LOG"
 
 if [ "\${1:-}" != "node" ]; then
   exit 64
@@ -59,6 +59,9 @@ case "\${2:-}" in
     if [ "\${3:-}" != "--broker-name" ] || [ -z "\${4:-}" ]; then
       echo "unique broker name missing" >&2
       exit 66
+    fi
+    if [ -n "\${FAKE_STARTUP_DELAY_SECONDS:-}" ]; then
+      sleep "$FAKE_STARTUP_DELAY_SECONDS"
     fi
     echo 'Workspace source: environment ($RELAY_WORKSPACE_KEY)'
     if [ "\${FAKE_WORKSPACE_MODE:-joined}" = "created" ]; then
@@ -109,6 +112,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
       } else {
         env.RELAY_WORKSPACE_KEY = value;
       }
+      env.INVOCATION_LOG = invocationLog;
 
       const result = spawnSync('bash', [smokeScript, cli, broker], {
         encoding: 'utf8',
@@ -124,7 +128,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
   });
 
   it('passes the shared key through the isolated lifecycle and joins its workspace', () => {
-    const { cli, broker } = createFakeBinaries();
+    const { cli, broker, invocationLog } = createFakeBinaries();
     const result = spawnSync('bash', [smokeScript, cli, broker], {
       encoding: 'utf8',
       env: {
@@ -132,6 +136,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
         RELAY_WORKSPACE_KEY: 'rk_live_test_only',
         RELAY_WORKSPACES_JSON: '[{"workspace_id":"rw_wrong","api_key":"rk_wrong"}]',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-a',
+        INVOCATION_LOG: invocationLog,
       },
       timeout: 10_000,
     });
@@ -142,7 +147,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
   });
 
   it('rejects a lifecycle that reports a newly created workspace', () => {
-    const { cli, broker } = createFakeBinaries();
+    const { cli, broker, invocationLog } = createFakeBinaries();
     const result = spawnSync('bash', [smokeScript, cli, broker], {
       encoding: 'utf8',
       env: {
@@ -150,6 +155,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
         RELAY_WORKSPACE_KEY: 'rk_live_test_only',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-b',
         FAKE_WORKSPACE_MODE: 'created',
+        INVOCATION_LOG: invocationLog,
       },
       timeout: 10_000,
     });
@@ -157,5 +163,26 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('created a workspace instead of reusing');
     expect(result.stderr).toContain('Workspace: created new workspace rw_throwaway');
+  });
+
+  it('rejects readiness written after the startup deadline', () => {
+    const { cli, broker, invocationLog } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELAY_WORKSPACE_KEY: 'rk_live_test_only',
+        AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-c',
+        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '0',
+        FAKE_STARTUP_DELAY_SECONDS: '0.1',
+        INVOCATION_LOG: invocationLog,
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('did not become ready');
+    expect(result.stderr).toContain('Broker started.');
+    expect(result.stdout).not.toContain('Standalone smoke passed');
   });
 });
