@@ -92,6 +92,11 @@ afterEach(() => {
 });
 
 describe('ci-standalone-smoke workspace reuse', () => {
+  it('disarms the EXIT trap before entering the cleanup subshell', () => {
+    const script = readFileSync(smokeScript, 'utf8');
+    expect(script).toMatch(/cleanup\(\) \{[\s\S]*?trap - EXIT\n\s*\(/);
+  });
+
   it('injects the same dedicated secret at every workflow call site', () => {
     for (const workflow of ['.github/workflows/package-validation.yml', '.github/workflows/publish.yml']) {
       expect(readFileSync(resolve(workflow), 'utf8')).toContain(
@@ -194,8 +199,8 @@ describe('ci-standalone-smoke workspace reuse', () => {
       .map((invocation, index) => (invocation === 'cli node down' ? index : -1))
       .filter((index) => index >= 0);
     expect(invocations).toContain('up-waiting');
-    // Preflight cleanup, deadline teardown, and one EXIT cleanup are distinct;
-    // an adjacent fourth call means the EXIT cleanup re-entered from its subshell.
+    // Document the intended sequence: preflight cleanup, deadline teardown,
+    // and one EXIT cleanup. The source contract above covers the re-entry guard.
     expect(downIndexes).toHaveLength(3);
     expect(invocations.indexOf('up-ready')).toBeGreaterThan(downIndexes[1]);
   });
