@@ -173,6 +173,12 @@ else
 fi
 
 UP_OUTPUT="$(cat "$UP_LOG")"
+# A short-lived CLI can write readiness and exit between the polling loop's
+# log check and process-liveness check. Re-read the completed log before
+# reporting a false startup failure.
+if [ "$UP_READY" != true ] && grep -q 'Broker started\.' "$UP_LOG"; then
+  UP_READY=true
+fi
 if [ -n "$UP_EXIT" ] && [ "$UP_EXIT" -ne 0 ]; then
   echo "Standalone broker startup command exited early with status $UP_EXIT" >&2
   echo "AGENT_RELAY_STARTUP_DEBUG=1 was enabled for startup diagnostics." >&2
