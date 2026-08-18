@@ -29,5 +29,5 @@ Reproduced relay#1571's intermittent fleet-node attach failure, traced the initi
 ### 1. Work
 *Agent: default*
 
-- Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause: Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause
+- Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause
 - Reproduced the live flake twice in 20 pre-fix attaches; the scoped retry/diagnostic fix is implemented and 20/20 post-fix live attaches stayed connected. Targeted tests and typecheck pass. The full suite has one origin-main-confirmed unrelated Reflex log-format expectation failure.

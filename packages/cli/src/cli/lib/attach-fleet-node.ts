@@ -20,6 +20,7 @@ import { collectWithRetry } from './collect-with-retry.js';
 import { resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
+const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
 const SNAPSHOT_WAIT_MS = 10_000;
 const SESSION_REQUEST_TIMEOUT_MS = 5_000;
 const SESSION_REQUEST_RETRIES = 2;
@@ -192,6 +193,26 @@ function diagnosticEndpoint(value: string): string {
   }
 }
 
+function diagnosticEndpointOrigin(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return '(invalid endpoint)';
+  }
+}
+
+function boundedWebSocketCloseReason(reason: string): string {
+  const encoded = Buffer.from(reason, 'utf8');
+  if (encoded.length <= MAX_WEBSOCKET_CLOSE_REASON_BYTES) return reason;
+
+  const suffix = Buffer.from('…', 'utf8');
+  let end = MAX_WEBSOCKET_CLOSE_REASON_BYTES - suffix.length;
+  // Do not cut through a UTF-8 continuation sequence. Excluding the leading
+  // byte at this boundary also excludes the incomplete code point.
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end -= 1;
+  return Buffer.concat([encoded.subarray(0, end), suffix]).toString('utf8');
+}
+
 function diagnosticValue(value: string): string {
   // JSON quoting keeps node names and upstream text from injecting terminal
   // control characters into the operator-facing error.
@@ -273,7 +294,11 @@ export async function startFleetNodeAttachProxy(
           body: JSON.stringify({ agent: options.agent, mode: options.mode }),
           signal: controller.signal,
         });
-        ticketPayload = (await ticketResponse.json()) as FleetSessionResponse;
+        const parsedPayload = (await ticketResponse.json()) as unknown;
+        ticketPayload =
+          parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload)
+            ? (parsedPayload as FleetSessionResponse)
+            : {};
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         lastSessionError = new TerminalSessionAttemptError(
@@ -601,7 +626,7 @@ export async function startFleetNodeAttachProxy(
 
   const closeSocket = (socket: WebSocket, code: number, reason: string) => {
     try {
-      socket.close(code, reason);
+      socket.close(code, boundedWebSocketCloseReason(reason));
     } catch {
       /* connection already gone */
     }
@@ -721,7 +746,7 @@ export async function startFleetNodeAttachProxy(
     clearTimeout(pending.timer);
     pending.reject(error);
   };
-  const endTerminal = (error: FleetNodeAttachError) => {
+  const endTerminal = (error: FleetNodeAttachError, eventCloseReason = error.message) => {
     if (terminalEnded) return;
     terminalEnded = true;
     if (reconnectTimer) {
@@ -733,7 +758,7 @@ export async function startFleetNodeAttachProxy(
     remote = undefined;
     rejectReadiness(activeReadiness, error);
     broadcast(inputSockets, { type: 'pty_input_error', code: error.code, message: error.message });
-    for (const socket of eventSockets) closeSocket(socket, 1011, error.message);
+    for (const socket of eventSockets) closeSocket(socket, 1011, eventCloseReason);
     if (activeRemote && activeRemote.readyState !== WebSocket.CLOSED) {
       try {
         activeRemote.terminate();
@@ -742,8 +767,8 @@ export async function startFleetNodeAttachProxy(
       }
     }
   };
-  const failRemote = (message: string) => {
-    endTerminal(new FleetNodeAttachError(message, 'node_unreachable'));
+  const failRemote = (message: string, eventCloseReason?: string) => {
+    endTerminal(new FleetNodeAttachError(message, 'node_unreachable'), eventCloseReason);
   };
   const connect = (url: string, readiness: TerminalReadiness) => {
     if (stopped || terminalEnded) return;
@@ -840,7 +865,7 @@ export async function startFleetNodeAttachProxy(
         failRemote(
           `terminal transport could not connect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
             ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
-            ` handshake timeout ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts 1; not retried because no terminal session became ready)`
+            ` handshake budget ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts 1; not retried because no terminal session became ready)`
         );
       }
     });
@@ -868,11 +893,16 @@ export async function startFleetNodeAttachProxy(
           reconnectInitialDelayMs,
           reconnectMaxDelayMs
         );
-        failRemote(
+        const message =
           `terminal transport could not reconnect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
-            ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
-            ` handshake timeout ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts ${reconnectAttempts},` +
-            ` backoff budget ${backoffBudgetMs}ms)`
+          ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+          ` handshake timeout ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts ${reconnectAttempts},` +
+          ` backoff budget ${backoffBudgetMs}ms)`;
+        failRemote(
+          message,
+          `terminal reconnect failed; attempts=${reconnectAttempts}; budget=${backoffBudgetMs}ms;` +
+            ` endpoint=${diagnosticValue(diagnosticEndpointOrigin(terminalUrl))};` +
+            ` node=${diagnosticValue(resolvedNodeId ?? options.node.trim())}`
         );
         return;
       }

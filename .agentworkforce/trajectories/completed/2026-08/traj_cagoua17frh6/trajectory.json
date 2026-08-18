@@ -29,7 +29,7 @@
         {
           "ts": 1787064844811,
           "type": "decision",
-          "content": "Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause: Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause",
+          "content": "Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause",
           "raw": {
             "question": "Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause",
             "chosen": "Treat the two symptoms as one transport-resilience fix but not one immediate code-path root cause",

@@ -30,9 +30,12 @@ async function startFakeRemote(): Promise<FakeRemoteHandle> {
   const connections: WsSocket[] = [];
   const waiters: Array<(socket: WsSocket) => void> = [];
   wss.on('connection', (socket) => {
-    connections.push(socket);
     const waiter = waiters.shift();
-    if (waiter) waiter(socket);
+    if (waiter) {
+      waiter(socket);
+    } else {
+      connections.push(socket);
+    }
   });
   return {
     wss,
@@ -234,6 +237,33 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
     expect((rejected as Error).message).toContain(
       'attempts 1 (not retried because the POST may have completed server-side)'
     );
+  });
+
+  it('normalizes a non-object JSON response without retaining a prior retryable error', async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return terminalSessionErrorResponse('node_unreachable', "Node 'node-malformed' is not reachable");
+      }
+      return { ok: false, status: 502, json: async () => null } as unknown as Response;
+    }) as typeof globalThis.fetch;
+
+    const rejected = await startFleetNodeAttachProxy({
+      agent: 'agent-malformed',
+      node: 'node-malformed',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fetchFn,
+      sessionRequest: { sleep: async () => undefined },
+    }).catch((error: unknown) => error);
+
+    expect(calls).toBe(2);
+    expect(rejected).toMatchObject({ code: undefined });
+    expect((rejected as Error).message).toContain('terminal session request failed (HTTP 502)');
+    expect((rejected as Error).message).toContain('attempts 2 (retried 1 time)');
+    expect((rejected as Error).message).not.toContain('classified the node as unreachable');
   });
 });
 
@@ -579,6 +609,44 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     await output;
     expect(viewSocket.readyState).toBe(WsClient.OPEN);
   });
+
+  it('closes the local view with a bounded diagnostic after resume attempts are exhausted', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-exhaust',
+      // Force the compact diagnostic through the RFC 6455 123-byte truncation
+      // path, including a multi-byte UTF-8 boundary.
+      node: `node-exhaust-${'é'.repeat(100)}`,
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      viewSocket.once('close', (code, reason) => resolve({ code, reason: reason.toString('utf8') }));
+    });
+
+    initial.terminate();
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const failedResume = await remote.nextConnection();
+      failedResume.terminate();
+    }
+
+    const result = await closed;
+    expect(result.code).toBe(1011);
+    expect(Buffer.byteLength(result.reason, 'utf8')).toBeLessThanOrEqual(123);
+    expect(result.reason).toContain('terminal reconnect failed');
+    expect(result.reason).toContain('attempts=6');
+    expect(result.reason).toContain('budget=6ms');
+    expect(result.reason).not.toContain('�');
+  });
 });
 
 describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
@@ -680,7 +748,7 @@ describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
         code: 'node_unreachable',
         message:
           'terminal transport could not connect to the fleet node (node ref "node-mapping",' +
-          ` resolved node id "node-resolved", endpoint "${deadUrl}", handshake timeout 10000ms,` +
+          ` resolved node id "node-resolved", endpoint "${deadUrl}", handshake budget 10000ms,` +
           ' attempts 1; not retried because no terminal session became ready)',
       },
     });
