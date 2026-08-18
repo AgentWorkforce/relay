@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fleet node delivery acknowledgements now wait for worker receipt instead of firing when the message is handed off.
 - Fleet node delivery acknowledgements preserve per-agent sequence order across broker restarts.
+- Broker startup now accepts Relaycast registration responses taking up to 12 seconds per attempt, accommodating slower backends.
+- Broker startup now reports handshake deadline exhaustion as an unconfirmed response that may have completed server-side, instead of declaring the backend unreachable.
 
 ## [11.7.0] - 2026-08-17
 

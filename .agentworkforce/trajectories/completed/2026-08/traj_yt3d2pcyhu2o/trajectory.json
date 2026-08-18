@@ -1,0 +1,57 @@
+{
+  "id": "traj_yt3d2pcyhu2o",
+  "version": 1,
+  "task": {
+    "title": "Reserve SDK startup time before Relaycast handshake",
+    "source": {
+      "system": "plain",
+      "id": "relay#1562 review follow-up"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-18T10:44:38.244Z",
+  "completedAt": "2026-08-18T10:47:43.395Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T10:46:32.388Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pmr761zk0oqg",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T10:46:32.388Z",
+      "endedAt": "2026-08-18T10:47:43.395Z",
+      "events": [
+        {
+          "ts": 1787049992389,
+          "type": "decision",
+          "content": "Reserve five seconds between API announcement and handshake exhaustion: Reserve five seconds between API announcement and handshake exhaustion",
+          "raw": {
+            "question": "Reserve five seconds between API announcement and handshake exhaustion",
+            "chosen": "Reserve five seconds between API announcement and handshake exhaustion",
+            "alternatives": [],
+            "reasoning": "The SDK starts its 45-second polling clock when the broker prints the bound port, before connection-file and startup-listener setup. A 40-second aggregate handshake cap preserves the one-membership 36.75-second schedule, still accepts measured 9.5-second responses, bounds multi-membership retries, and leaves an explicit five-second preparation and error-propagation reserve without changing the SDK."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reduced the aggregate Relaycast handshake cap from 44 seconds to 40 seconds, reserving five seconds for post-port-announcement setup inside the SDK 45-second clock. Added a failing-then-passing reserve regression; 7 scoped tests, 1,014 broker tests, formatting, diff check, and scoped Clippy pass.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7e0edc4e260fd2f403aaaf48a5b9d4b56799bf71",
+    "endRef": "7e0edc4e260fd2f403aaaf48a5b9d4b56799bf71"
+  }
+}
