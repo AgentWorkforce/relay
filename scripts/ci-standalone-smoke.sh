@@ -199,6 +199,7 @@ if printf '%s\n' "$UP_OUTPUT" | grep -q 'Workspace: created new workspace'; then
 fi
 
 assert_exact_count "$UP_OUTPUT" '^Workspace: joined ' 1 'workspace joined line'
+echo "Workspace reuse verified: joined the dedicated CI workspace"
 
 if printf '%s\n' "$UP_OUTPUT" | grep -q 'Broker already running for this project'; then
   echo "Standalone CLI reported a false already-running error" >&2

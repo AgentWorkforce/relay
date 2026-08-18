@@ -109,6 +109,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Workspace reuse verified');
     expect(result.stdout).toContain('Standalone smoke passed');
   });
 
