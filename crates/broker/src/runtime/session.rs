@@ -149,12 +149,16 @@ pub(crate) struct RelaySessionOptions<'a> {
 /// startup indefinitely — long enough for an external supervisor (the CLI's
 /// `down --force`, a test watchdog) to reap the broker, which surfaces to the
 /// SDK as an opaque "broker exited with code null during initial handshake".
-/// Bounding each attempt turns that hang into a fast, retryable error.
-const HANDSHAKE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounding each attempt turns that hang into a retryable error. Production
+/// workspace creation has returned successfully in 7.4-9.5s, so the default
+/// leaves headroom above that measured latency instead of abandoning a request
+/// the backend is about to answer.
+const HANDSHAKE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(12);
 /// Default number of handshake attempts (initial try + retries) before giving
-/// up. Kept well within the SDK's 45s startup budget at the default timeout so
-/// a transient blip recovers in-process instead of failing startup.
-const HANDSHAKE_MAX_ATTEMPTS: u32 = 4;
+/// up. Three 12s attempts plus the default 250ms and 500ms backoffs take at
+/// most 36.75s, inside the harness SDK's 45s startup budget, so a transient
+/// blip can still recover in-process without moving the timeout into the SDK.
+const HANDSHAKE_MAX_ATTEMPTS: u32 = 3;
 /// Base backoff between handshake attempts; doubles each retry, capped.
 const HANDSHAKE_BACKOFF_BASE: Duration = Duration::from_millis(250);
 const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
@@ -205,6 +209,20 @@ fn parse_handshake_attempts(raw: Option<&str>) -> u32 {
     raw.and_then(|value| value.trim().parse::<u32>().ok())
         .filter(|&attempts| attempts >= 1)
         .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
+}
+
+fn format_handshake_timeout_error(
+    attempts: u32,
+    attempt_timeout: Duration,
+    elapsed: Duration,
+) -> String {
+    format!(
+        "relaycast startup handshake received no response before the per-attempt deadline after \
+         {attempts} attempt(s) of {}ms each ({}ms total elapsed); registration was not confirmed \
+         and may still have completed server-side after the client stopped waiting",
+        attempt_timeout.as_millis(),
+        elapsed.as_millis()
+    )
 }
 
 /// Parse the number of configured memberships from an optional
@@ -311,23 +329,23 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
                 }
                 Err(_elapsed) => {
                     if attempt >= max_attempts {
-                        anyhow::bail!(
-                            "relaycast startup handshake timed out after {attempt} attempt(s) of {}ms each; \
-                             the relay backend was unreachable or too slow to complete registration",
-                            attempt_timeout.as_millis()
-                        );
+                        anyhow::bail!(format_handshake_timeout_error(
+                            attempt,
+                            attempt_timeout,
+                            connect_started.elapsed()
+                        ));
                     }
                     tracing::warn!(
                         attempt,
                         max_attempts,
                         timeout_ms = attempt_timeout.as_millis() as u64,
-                        "relaycast startup handshake timed out; retrying"
+                        "relaycast startup handshake received no response before deadline; retrying"
                     );
                     log_startup_phase(
                         startup_debug,
                         connect_started,
                         format!(
-                            "handshake attempt {attempt}/{max_attempts} timed out after {}ms; retrying in {}ms",
+                            "handshake attempt {attempt}/{max_attempts} received no response within {}ms; retrying in {}ms",
                             attempt_timeout.as_millis(),
                             backoff.as_millis()
                         ),
@@ -484,6 +502,51 @@ mod tests {
         assert_eq!(
             parse_handshake_timeout(Some("1234")),
             Duration::from_millis(1234)
+        );
+    }
+
+    #[test]
+    fn default_handshake_budget_accepts_measured_latency_and_stays_inside_sdk_deadline() {
+        // Production returned successful workspace creates in as much as 9.5s.
+        // A default below that latency abandons a request the backend is about
+        // to answer, so the first attempt must still be alive at that point.
+        let attempt_timeout = parse_handshake_timeout(None);
+        let measured_success_latency = Duration::from_millis(9_500);
+        assert!(
+            measured_success_latency < attempt_timeout,
+            "a backend responding successfully in 9.5s must beat the default per-attempt deadline"
+        );
+
+        // packages/harness-driver/src/spawn-config.ts defaults
+        // startupTimeoutMs to 45_000, and client.ts uses that as the post-bind
+        // handshake polling budget. Include every retry backoff so a backend
+        // that never responds still fails before the SDK gives up.
+        let max_attempts = parse_handshake_attempts(None);
+        let mut never_responds_budget = attempt_timeout.saturating_mul(max_attempts);
+        let mut backoff = HANDSHAKE_BACKOFF_BASE;
+        for _ in 1..max_attempts {
+            never_responds_budget = never_responds_budget.saturating_add(backoff);
+            backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+        }
+        let sdk_startup_budget = Duration::from_secs(45);
+        assert!(
+            never_responds_budget < sdk_startup_budget,
+            "a backend that never responds must exhaust the default handshake budget before the SDK's 45s deadline"
+        );
+    }
+
+    #[test]
+    fn handshake_timeout_diagnostic_reports_an_unconfirmed_response() {
+        let message = format_handshake_timeout_error(
+            3,
+            Duration::from_secs(12),
+            Duration::from_millis(36_750),
+        );
+        assert!(message.contains("received no response before the per-attempt deadline"));
+        assert!(message.contains("may still have completed server-side"));
+        assert!(
+            !message.contains("was unreachable"),
+            "deadline exhaustion cannot prove that the backend was unreachable"
         );
     }
 
