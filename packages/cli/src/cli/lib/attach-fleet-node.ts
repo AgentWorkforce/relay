@@ -16,13 +16,22 @@ import { randomBytes } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
 import type { AttachMode } from './attach-mode.js';
+import { collectWithRetry } from './collect-with-retry.js';
 import { resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
+const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
 const SNAPSHOT_WAIT_MS = 10_000;
+const SESSION_REQUEST_TIMEOUT_MS = 5_000;
+const SESSION_REQUEST_RETRIES = 2;
+const SESSION_REQUEST_RETRY_DELAY_MS = 2_000;
+const TERMINAL_CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 30_000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+// Six delays (0.5s + 1s + 2s + 4s + 8s + 16s) cover the node terminal
+// transport's independent 30s maximum reconnect backoff without leaving this
+// client unbounded. Five attempts previously stopped after only 15.5s.
+const MAX_RECONNECT_ATTEMPTS = 6;
 
 type FleetSessionResponse = {
   ok?: boolean;
@@ -52,6 +61,16 @@ export interface FleetNodeAttachOptions {
   baseUrl?: string;
   workspaceKey?: string;
   fetch?: typeof globalThis.fetch;
+  /** Deterministic test seam for the bounded session-request retry delay. */
+  sessionRequest?: {
+    timeoutMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  };
+  /** Deterministic test seam for the established-session reconnect delays. */
+  reconnectDelay?: {
+    initialMs?: number;
+    maxMs?: number;
+  };
 }
 
 export interface FleetNodeAttachProxy {
@@ -67,6 +86,18 @@ export class FleetNodeAttachError extends Error {
   ) {
     super(message);
     this.name = 'FleetNodeAttachError';
+  }
+}
+
+class TerminalSessionAttemptError extends FleetNodeAttachError {
+  constructor(
+    message: string,
+    code: string | undefined,
+    readonly status: number | undefined,
+    readonly retryable: boolean,
+    readonly completionUnknown: boolean
+  ) {
+    super(message, code);
   }
 }
 
@@ -149,6 +180,85 @@ function rawDataToString(data: WebSocket.RawData): string {
   return String(data);
 }
 
+function diagnosticEndpoint(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '(invalid endpoint)';
+  }
+}
+
+function diagnosticEndpointOrigin(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return '(invalid endpoint)';
+  }
+}
+
+function boundedWebSocketCloseReason(reason: string): string {
+  const encoded = Buffer.from(reason, 'utf8');
+  if (encoded.length <= MAX_WEBSOCKET_CLOSE_REASON_BYTES) return reason;
+
+  const suffix = Buffer.from('…', 'utf8');
+  let end = MAX_WEBSOCKET_CLOSE_REASON_BYTES - suffix.length;
+  // Do not cut through a UTF-8 continuation sequence. Excluding the leading
+  // byte at this boundary also excludes the incomplete code point.
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end -= 1;
+  return Buffer.concat([encoded.subarray(0, end), suffix]).toString('utf8');
+}
+
+function diagnosticValue(value: string): string {
+  // JSON quoting keeps node names and upstream text from injecting terminal
+  // control characters into the operator-facing error.
+  return JSON.stringify(value);
+}
+
+function resolvedNodeIdFromTerminalUrl(value: string): string | undefined {
+  try {
+    const match = /^\/v1\/nodes\/([^/]+)\/terminal\/connect$/.exec(new URL(value).pathname);
+    return match?.[1] ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function retryDelayBudgetMs(attempts: number, initialMs: number, maxMs: number): number {
+  let total = 0;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    total += Math.min(initialMs * 2 ** attempt, maxMs);
+  }
+  return total;
+}
+
+function terminalSessionFailureSummary(error: TerminalSessionAttemptError): string {
+  if (error.code === 'node_not_found') return 'Control-plane node lookup found no matching record';
+  if (error.code === 'node_unreachable') {
+    return /no terminal transport/i.test(error.message)
+      ? 'The node record was found, but its terminal transport was unavailable'
+      : 'The control plane classified the node as unreachable';
+  }
+  if (error.code === 'terminal_session_unavailable') {
+    return 'The control plane could not allocate a terminal session';
+  }
+  if (error.code === 'control_plane_timeout') return 'Control-plane terminal-session lookup timed out';
+  if (error.code === 'control_plane_unavailable') return 'Control-plane terminal-session lookup failed';
+  return 'The terminal-session request was rejected';
+}
+
+function isRetryableTerminalSessionFailure(code: string | undefined): boolean {
+  // These structured responses are emitted before a session is returned, so
+  // retrying cannot duplicate a successful allocation. A fetch timeout,
+  // network failure, or unclassified 5xx is different: this POST may already
+  // have completed server-side, and retrying it could create a second session.
+  return code === 'node_unreachable' || code === 'terminal_session_unavailable';
+}
+
 /** Start a broker-compatible loopback proxy for one remote terminal session. */
 export async function startFleetNodeAttachProxy(
   options: FleetNodeAttachOptions
@@ -161,21 +271,97 @@ export async function startFleetNodeAttachProxy(
     ''
   );
   const nodePath = safeNodePath(options.node);
-  const ticketResponse = await fetchFn(`${baseUrl}/v1/nodes/${nodePath}/terminal/sessions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${workspaceKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent: options.agent, mode: options.mode }),
-  });
-  const ticketPayload = (await ticketResponse.json().catch(() => ({}))) as FleetSessionResponse;
-  const terminalUrl = ticketPayload.data?.terminal_url;
-  const sessionId = ticketPayload.data?.session_id;
-  const resumeToken = ticketPayload.data?.resume_token;
-  if (!ticketResponse.ok || !terminalUrl || !sessionId || !resumeToken) {
-    const code = ticketPayload.error?.code;
-    const message =
-      ticketPayload.error?.message ?? `terminal session request failed (HTTP ${ticketResponse.status})`;
-    throw new FleetNodeAttachError(`Error: ${message}`, code);
+  const sessionEndpoint = `${baseUrl}/v1/nodes/${nodePath}/terminal/sessions`;
+  const sessionRequestTimeoutMs = options.sessionRequest?.timeoutMs ?? SESSION_REQUEST_TIMEOUT_MS;
+  let sessionRequestAttempts = 0;
+  let lastSessionError: TerminalSessionAttemptError | undefined;
+  const sessionResult = await collectWithRetry(
+    'terminal session request',
+    async () => {
+      sessionRequestAttempts += 1;
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, sessionRequestTimeoutMs);
+      let ticketResponse: Response;
+      let ticketPayload: FleetSessionResponse;
+      try {
+        ticketResponse = await fetchFn(sessionEndpoint, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${workspaceKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: options.agent, mode: options.mode }),
+          signal: controller.signal,
+        });
+        const parsedPayload = (await ticketResponse.json()) as unknown;
+        ticketPayload =
+          parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload)
+            ? (parsedPayload as FleetSessionResponse)
+            : {};
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        lastSessionError = new TerminalSessionAttemptError(
+          timedOut ? 'request exceeded its deadline' : detail,
+          timedOut ? 'control_plane_timeout' : 'control_plane_unavailable',
+          undefined,
+          false,
+          true
+        );
+        throw lastSessionError;
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const terminalUrl = ticketPayload.data?.terminal_url;
+      const sessionId = ticketPayload.data?.session_id;
+      const resumeToken = ticketPayload.data?.resume_token;
+      if (!ticketResponse.ok || !terminalUrl || !sessionId || !resumeToken) {
+        const code = ticketPayload.error?.code;
+        const message =
+          ticketPayload.error?.message ?? `terminal session request failed (HTTP ${ticketResponse.status})`;
+        lastSessionError = new TerminalSessionAttemptError(
+          message,
+          code,
+          ticketResponse.status,
+          isRetryableTerminalSessionFailure(code),
+          false
+        );
+        throw lastSessionError;
+      }
+      return { terminalUrl, sessionId, resumeToken };
+    },
+    {
+      retries: SESSION_REQUEST_RETRIES,
+      baseDelayMs: SESSION_REQUEST_RETRY_DELAY_MS,
+      sleep: options.sessionRequest?.sleep,
+      shouldRetry: (error) => error instanceof TerminalSessionAttemptError && error.retryable,
+    }
+  );
+  if (!sessionResult.ok) {
+    const failure = lastSessionError;
+    const status = failure?.status === undefined ? '' : ` HTTP ${failure.status};`;
+    const code = failure?.code === undefined ? '' : ` code ${failure.code};`;
+    const retryNote =
+      sessionRequestAttempts > 1
+        ? `retried ${sessionRequestAttempts - 1} time${sessionRequestAttempts === 2 ? '' : 's'}`
+        : failure?.completionUnknown
+          ? 'not retried because the POST may have completed server-side'
+          : 'not retried because the failure was terminal';
+    const upstream = failure?.message ? ` Upstream message ${diagnosticValue(failure.message)}.` : '';
+    throw new FleetNodeAttachError(
+      `Error: ${failure ? terminalSessionFailureSummary(failure) : 'Terminal-session request failed'}.` +
+        `${upstream} Node ref ${diagnosticValue(options.node.trim())}, resolved node id unavailable (session creation did not complete);` +
+        ` endpoint ${diagnosticValue(diagnosticEndpoint(sessionEndpoint))};${status}${code}` +
+        ` timeout ${sessionRequestTimeoutMs}ms per attempt; attempts ${sessionRequestAttempts} (${retryNote}).`,
+      failure?.code
+    );
   }
+  const { terminalUrl, sessionId, resumeToken } = sessionResult.value;
+  const resolvedNodeId = resolvedNodeIdFromTerminalUrl(terminalUrl);
+  const remoteEndpoint = diagnosticEndpoint(terminalUrl);
+  const reconnectInitialDelayMs = options.reconnectDelay?.initialMs ?? INITIAL_RECONNECT_DELAY_MS;
+  const reconnectMaxDelayMs = options.reconnectDelay?.maxMs ?? MAX_RECONNECT_DELAY_MS;
 
   let connectionGeneration = 0;
   const createReadiness = (): TerminalReadiness => {
@@ -440,7 +626,7 @@ export async function startFleetNodeAttachProxy(
 
   const closeSocket = (socket: WebSocket, code: number, reason: string) => {
     try {
-      socket.close(code, reason);
+      socket.close(code, boundedWebSocketCloseReason(reason));
     } catch {
       /* connection already gone */
     }
@@ -560,7 +746,7 @@ export async function startFleetNodeAttachProxy(
     clearTimeout(pending.timer);
     pending.reject(error);
   };
-  const endTerminal = (error: FleetNodeAttachError) => {
+  const endTerminal = (error: FleetNodeAttachError, eventCloseReason = error.message) => {
     if (terminalEnded) return;
     terminalEnded = true;
     if (reconnectTimer) {
@@ -572,7 +758,7 @@ export async function startFleetNodeAttachProxy(
     remote = undefined;
     rejectReadiness(activeReadiness, error);
     broadcast(inputSockets, { type: 'pty_input_error', code: error.code, message: error.message });
-    for (const socket of eventSockets) closeSocket(socket, 1011, error.message);
+    for (const socket of eventSockets) closeSocket(socket, 1011, eventCloseReason);
     if (activeRemote && activeRemote.readyState !== WebSocket.CLOSED) {
       try {
         activeRemote.terminate();
@@ -581,12 +767,12 @@ export async function startFleetNodeAttachProxy(
       }
     }
   };
-  const failRemote = (message: string) => {
-    endTerminal(new FleetNodeAttachError(message, 'node_unreachable'));
+  const failRemote = (message: string, eventCloseReason?: string) => {
+    endTerminal(new FleetNodeAttachError(message, 'node_unreachable'), eventCloseReason);
   };
   const connect = (url: string, readiness: TerminalReadiness) => {
     if (stopped || terminalEnded) return;
-    const socket = new WebSocket(asWsUrl(url));
+    const socket = new WebSocket(asWsUrl(url), { handshakeTimeout: TERMINAL_CONNECT_TIMEOUT_MS });
     remote = socket;
     socket.on('message', (data) => {
       // A late frame from a transport superseded during reconnect must never
@@ -676,7 +862,11 @@ export async function startFleetNodeAttachProxy(
       // letting the HTTP snapshot timeout mask it. Once Ready has been seen,
       // the close handler retains the bounded resume/backoff behaviour.
       if (remote === socket && readiness === activeReadiness && !readiness.settled && !terminalEverReady) {
-        failRemote('terminal transport could not connect to the fleet node');
+        failRemote(
+          `terminal transport could not connect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
+            ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+            ` handshake budget ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts 1; not retried because no terminal session became ready)`
+        );
       }
     });
     socket.on('close', () => {
@@ -698,11 +888,26 @@ export async function startFleetNodeAttachProxy(
       const nextReadiness = createReadiness();
       activeReadiness = nextReadiness;
       if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        failRemote('terminal transport could not reconnect to the fleet node');
+        const backoffBudgetMs = retryDelayBudgetMs(
+          MAX_RECONNECT_ATTEMPTS,
+          reconnectInitialDelayMs,
+          reconnectMaxDelayMs
+        );
+        const message =
+          `terminal transport could not reconnect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
+          ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+          ` handshake timeout ${TERMINAL_CONNECT_TIMEOUT_MS}ms, attempts ${reconnectAttempts},` +
+          ` backoff budget ${backoffBudgetMs}ms)`;
+        failRemote(
+          message,
+          `terminal reconnect failed; attempts=${reconnectAttempts}; budget=${backoffBudgetMs}ms;` +
+            ` endpoint=${diagnosticValue(diagnosticEndpointOrigin(terminalUrl))};` +
+            ` node=${diagnosticValue(resolvedNodeId ?? options.node.trim())}`
+        );
         return;
       }
       reconnecting = true;
-      const delay = Math.min(INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempts, MAX_RECONNECT_DELAY_MS);
+      const delay = Math.min(reconnectInitialDelayMs * 2 ** reconnectAttempts, reconnectMaxDelayMs);
       reconnectAttempts += 1;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = undefined;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { buildRows, collectWithRetry, formatPretty, readLocalBrokerMaps } from './fleet-agent.js';
 import type { FleetInventoryAgent, ListAgent } from '@agent-relay/harness-driver';
@@ -533,5 +533,22 @@ describe('collectWithRetry — a transient failure retries once', () => {
       expect(result.error).toContain('test: permanent');
       expect(result.retried).toBe(true);
     }
+  });
+
+  it('does not retry a terminal failure rejected by shouldRetry', async () => {
+    let calls = 0;
+    const sleep = vi.fn(async () => undefined);
+    const result = await collectWithRetry(
+      'test',
+      async () => {
+        calls += 1;
+        throw new Error('terminal');
+      },
+      { retries: 3, baseDelayMs: 0, sleep, shouldRetry: () => false }
+    );
+
+    expect(result).toEqual({ ok: false, error: 'test: terminal', retried: false });
+    expect(calls).toBe(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
