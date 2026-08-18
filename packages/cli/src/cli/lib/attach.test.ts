@@ -893,10 +893,12 @@ describe('guarded delivery-mode compatibility', () => {
       })) as unknown as typeof globalThis.fetch;
     const client = createBrokerClient({ url: 'http://localhost:3889', requestTimeoutMs: 162_500 }, fetch);
 
-    await client.getInboundDeliveryMode('A');
-
-    expect(timeout).toHaveBeenCalledWith(162_500);
-    timeout.mockRestore();
+    try {
+      await client.getInboundDeliveryMode('A');
+      expect(timeout).toHaveBeenCalledWith(162_500);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it('treats an omitted matched field as a failed guard', async () => {
