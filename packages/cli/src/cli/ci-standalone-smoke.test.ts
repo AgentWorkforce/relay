@@ -34,7 +34,7 @@ exit 0
     'relay',
     `#!/usr/bin/env bash
 set -euo pipefail
-printf 'cli\\n' >> "$INVOCATION_LOG"
+printf 'cli %s %s\\n' "\${1:-}" "\${2:-}" >> "$INVOCATION_LOG"
 
 if [ "\${1:-}" != "node" ]; then
   exit 64
@@ -60,8 +60,12 @@ case "\${2:-}" in
       echo "unique broker name missing" >&2
       exit 66
     fi
-    if [ -n "\${FAKE_STARTUP_DELAY_SECONDS:-}" ]; then
-      sleep "$FAKE_STARTUP_DELAY_SECONDS"
+    if [ "\${FAKE_READY_AFTER_SECOND_DOWN:-}" = "1" ]; then
+      printf 'up-waiting\\n' >> "$INVOCATION_LOG"
+      while [ "$(grep -c '^cli node down$' "$INVOCATION_LOG" || true)" -lt 2 ]; do
+        sleep 0.01
+      done
+      printf 'up-ready\\n' >> "$INVOCATION_LOG"
     fi
     echo 'Workspace source: environment ($RELAY_WORKSPACE_KEY)'
     if [ "\${FAKE_WORKSPACE_MODE:-joined}" = "created" ]; then
@@ -174,7 +178,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
         RELAY_WORKSPACE_KEY: 'rk_live_test_only',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-c',
         AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '0',
-        FAKE_STARTUP_DELAY_SECONDS: '0.1',
+        FAKE_READY_AFTER_SECOND_DOWN: '1',
         INVOCATION_LOG: invocationLog,
       },
       timeout: 10_000,
@@ -184,5 +188,13 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(result.stderr).toContain('did not become ready');
     expect(result.stderr).toContain('Broker started.');
     expect(result.stdout).not.toContain('Standalone smoke passed');
+
+    const invocations = readFileSync(invocationLog, 'utf8').trim().split('\n');
+    const downIndexes = invocations
+      .map((invocation, index) => (invocation === 'cli node down' ? index : -1))
+      .filter((index) => index >= 0);
+    expect(invocations).toContain('up-waiting');
+    expect(downIndexes).toHaveLength(3);
+    expect(invocations.indexOf('up-ready')).toBeGreaterThan(downIndexes[1]);
   });
 });
