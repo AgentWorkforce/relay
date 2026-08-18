@@ -42,6 +42,14 @@ describe('resolveBrokerConnection', () => {
     expect(resolveBrokerConnection({}, makeDeps())).toBeNull();
   });
 
+  it('preserves an internal per-request timeout override', () => {
+    const conn = resolveBrokerConnection(
+      { brokerUrl: 'http://loopback:3889', requestTimeoutMs: 162_500 },
+      makeDeps()
+    );
+    expect(conn).toEqual({ url: 'http://loopback:3889', apiKey: undefined, requestTimeoutMs: 162_500 });
+  });
+
   // ---- Regression: empty-trim falls through (cubic P2 finding) ----
 
   it('falls through to env URL when --broker-url is blank/whitespace', () => {

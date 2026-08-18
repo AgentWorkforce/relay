@@ -1,0 +1,103 @@
+{
+  "id": "traj_eg8ajjxta0p7",
+  "version": 1,
+  "task": {
+    "title": "Harden fleet-node attach recovery",
+    "source": {
+      "system": "plain",
+      "id": "PR-1573"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-18T20:28:26.985Z",
+  "completedAt": "2026-08-18T20:28:29.349Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T20:28:27.463Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ebjz0w3k5ekl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T20:28:27.463Z",
+      "endedAt": "2026-08-18T20:28:29.349Z",
+      "events": [
+        {
+          "ts": 1787084907463,
+          "type": "decision",
+          "content": "Bound terminal-session creation to a 90-second aggregate deadline: Bound terminal-session creation to a 90-second aggregate deadline",
+          "raw": {
+            "question": "Bound terminal-session creation to a 90-second aggregate deadline",
+            "chosen": "Bound terminal-session creation to a 90-second aggregate deadline",
+            "alternatives": [],
+            "reasoning": "A 30-second per-attempt timeout plus all structured-safe retries could otherwise keep the interactive attach pending for roughly three minutes; the aggregate bound retains safe recovery while ambiguous POST completion is never replayed."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787084907908,
+          "type": "decision",
+          "content": "Separate WebSocket handshake and terminal readiness deadlines: Separate WebSocket handshake and terminal readiness deadlines",
+          "raw": {
+            "question": "Separate WebSocket handshake and terminal readiness deadlines",
+            "chosen": "Separate WebSocket handshake and terminal readiness deadlines",
+            "alternatives": [],
+            "reasoning": "HTTP upgrade and terminal.ready are distinct phases, and late readiness from an expired generation must not revive a stale connection."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787084908366,
+          "type": "decision",
+          "content": "Carry readiness-gated calls across bounded reconnect generations: Carry readiness-gated calls across bounded reconnect generations",
+          "raw": {
+            "question": "Carry readiness-gated calls across bounded reconnect generations",
+            "chosen": "Carry readiness-gated calls across bounded reconnect generations",
+            "alternatives": [],
+            "reasoning": "Snapshot, delivery-mode, and resize requests can begin during reconnect backoff, so both their server wait and caller HTTP deadline must cover the complete finite recovery path."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787084908840,
+          "type": "reflection",
+          "content": "PR 1573 hardened fleet-node attach recovery and diagnostics, then incorporated review fixes that preserve the last structured upstream cause and propagate the full bounded readiness budget through the loopback HTTP client. Exact packaged artifacts passed standalone smoke and live view 20/20 plus drive 10/10; the final focused suite passed 313 tests.",
+          "raw": {
+            "focalPoints": [
+              "fleet-attach",
+              "bounded-recovery",
+              "live-validation",
+              "review-repair"
+            ],
+            "confidence": 0.96
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet-attach",
+            "focal:bounded-recovery",
+            "focal:live-validation",
+            "focal:review-repair",
+            "confidence:0.96"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened fleet-node attach with a 90-second structured-safe session-allocation budget, independently bounded WebSocket handshake and readiness recovery, stale-generation rejection, propagated loopback HTTP deadlines, actionable diagnostics, deterministic tests, exact package smoke, and live view/drive validation.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "cb03c2b77a1f4a7e398792f265bac01f6133da38",
+    "endRef": "cb03c2b77a1f4a7e398792f265bac01f6133da38"
+  }
+}

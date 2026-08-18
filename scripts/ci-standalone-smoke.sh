@@ -17,6 +17,26 @@ fi
 # let an ambient developer/runner session silently replace the CI credential.
 unset RELAY_WORKSPACES_JSON
 
+# Startup can legitimately consume the broker's 40-second aggregate Relaycast
+# handshake budget on a loaded macOS runner. Keep the outer supervisor at
+# least ten seconds above that bound so an override cannot reintroduce the race
+# this smoke is meant to catch.
+MIN_STARTUP_TIMEOUT_SECONDS=50
+MAX_STARTUP_TIMEOUT_SECONDS=86400
+STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-60}"
+if ! [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,4}$ ]]; then
+  echo "ERROR: AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS must be a base-10 integer between ${MIN_STARTUP_TIMEOUT_SECONDS}s and ${MAX_STARTUP_TIMEOUT_SECONDS}s without leading zeros." >&2
+  exit 2
+fi
+if [ "$STARTUP_TIMEOUT_SECONDS" -lt "$MIN_STARTUP_TIMEOUT_SECONDS" ]; then
+  echo "ERROR: AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS must be at least ${MIN_STARTUP_TIMEOUT_SECONDS}s to cover the broker handshake budget." >&2
+  exit 2
+fi
+if [ "$STARTUP_TIMEOUT_SECONDS" -gt "$MAX_STARTUP_TIMEOUT_SECONDS" ]; then
+  echo "ERROR: AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS must be no more than ${MAX_STARTUP_TIMEOUT_SECONDS}s." >&2
+  exit 2
+fi
+
 CLI_BIN="$1"
 BROKER_BIN="$2"
 BROKER_NAME="${AGENT_RELAY_STANDALONE_BROKER_NAME:-relay-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-${GITHUB_JOB:-standalone}-$$}"
@@ -138,11 +158,6 @@ UP_PID=$!
 UP_EXIT=""
 UP_READY=false
 UP_EXITED_BEFORE_READY=false
-# Startup can legitimately consume the broker's 40-second aggregate Relaycast
-# handshake budget on a loaded macOS runner. Keep the outer supervisor above
-# that bound (with setup/teardown headroom) so it does not kill a valid final
-# attempt in flight; still wait for the CLI's explicit readiness line.
-STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-60}"
 STARTUP_DEADLINE=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
 while true; do
   if grep -q 'Broker started\.' "$UP_LOG"; then

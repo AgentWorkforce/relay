@@ -1339,11 +1339,11 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       await initialResize;
       if (settled) return;
       await correctSetupResize(initialAgentSize);
-      const snapshot = await deps.captureAndRenderSnapshot(
-        { url: connection.url, apiKey: connection.apiKey },
-        name,
-        { fetch: deps.fetch, writeChunk: captureWrite, fleetHint: deps.fleetHint }
-      );
+      const snapshot = await deps.captureAndRenderSnapshot(connection, name, {
+        fetch: deps.fetch,
+        writeChunk: captureWrite,
+        fleetHint: deps.fleetHint,
+      });
       if (settled) return;
       switch (snapshot.status) {
         case 'ok':
@@ -1567,7 +1567,7 @@ export async function runDriveSession(
 /** Run a drive session with default dependencies. Used by `runtime agent attach --mode drive`. */
 export function attachDrive(
   name: string,
-  options: { brokerUrl?: string; apiKey?: string; stateDir?: string },
+  options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
   overrides: Partial<DriveDependencies> = {}
 ): Promise<number> {
   return runDriveSession(name, options, withDefaults(overrides));

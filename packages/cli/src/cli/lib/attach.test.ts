@@ -884,6 +884,21 @@ describe('resetLocalTerminalOnDetach', () => {
 });
 
 describe('guarded delivery-mode compatibility', () => {
+  it('propagates a connection-specific request timeout to the SDK transport', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetch = (async () =>
+      new Response(JSON.stringify({ mode: 'auto_inject' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as unknown as typeof globalThis.fetch;
+    const client = createBrokerClient({ url: 'http://localhost:3889', requestTimeoutMs: 162_500 }, fetch);
+
+    await client.getInboundDeliveryMode('A');
+
+    expect(timeout).toHaveBeenCalledWith(162_500);
+    timeout.mockRestore();
+  });
+
   it('treats an omitted matched field as a failed guard', async () => {
     const fetch = (async () =>
       new Response(JSON.stringify({ mode: 'auto_inject', flushed: 0 }), {

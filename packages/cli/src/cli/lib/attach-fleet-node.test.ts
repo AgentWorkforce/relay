@@ -286,6 +286,45 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
     );
   });
 
+  // MUST NOT FIRE: exhausting the aggregate budget during retry backoff must
+  // retain the last structured rejection instead of replacing its status,
+  // code, and upstream message with a generic timeout sentinel.
+  it('preserves the last classified failure when the overall budget expires between attempts', async () => {
+    let calls = 0;
+    const fetchFn = (async () => {
+      calls += 1;
+      return terminalSessionErrorResponse(
+        'node_unreachable',
+        "Node 'node-budget-expired' has no terminal transport"
+      );
+    }) as typeof globalThis.fetch;
+
+    vi.useFakeTimers();
+    const rejectedPromise = startFleetNodeAttachProxy({
+      agent: 'agent-budget-expired',
+      node: 'node-budget-expired',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fetchFn,
+      sessionRequest: { totalTimeoutMs: 10 },
+    }).catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(10);
+    const rejected = await rejectedPromise;
+    vi.useRealTimers();
+
+    expect(calls).toBe(1);
+    expect(rejected).toMatchObject({ code: 'node_unreachable' });
+    expect((rejected as Error).message).toContain('terminal transport was unavailable');
+    expect((rejected as Error).message).toContain("Node 'node-budget-expired' has no terminal transport");
+    expect((rejected as Error).message).toContain('HTTP 503');
+    expect((rejected as Error).message).toContain('overall budget 10ms');
+    expect((rejected as Error).message).toContain(
+      'attempts 1 (not retried because the overall budget was exhausted before the next attempt)'
+    );
+  });
+
   // MUST NOT FIRE: exhausting the bounded retry budget must remain a hard,
   // diagnostic failure rather than opening a false-success proxy or looping.
   it('still fails a genuinely unreachable node after the bounded attempts', async () => {
@@ -421,6 +460,10 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
       fetch: fakeTicketFetch(remote.url),
     });
     cleanup.push(proxy.close);
+
+    // Six complete reconnect generations (151.5s), the post-ready delivery
+    // acknowledgement (10s), and response-delivery headroom (1s).
+    expect(proxy.requestTimeoutMs).toBe(162_500);
 
     const socket = await remote.nextConnection();
     sendReady(socket, 'auto_inject');
@@ -641,7 +684,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
 
   // MUST NOT FIRE: the HTTP upgrade and terminal.ready are independently
   // bounded. This crosses the old fixed 10s local readiness gate while staying
-  // within the 10s handshake plus 3s post-open readiness allowances.
+  // within the 10s handshake plus 4s post-open readiness allowances.
   it('starts the terminal.ready timeout after a delayed WebSocket upgrade completes', async () => {
     const remote = await startFakeRemote(8_000);
     cleanup.push(remote.close);
@@ -652,7 +695,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       baseUrl: 'https://fake.example',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
-      reconnectDelay: { readyTimeoutMs: 3_000 },
+      reconnectDelay: { handshakeTimeoutMs: 10_000, readyTimeoutMs: 4_000 },
     });
     cleanup.push(proxy.close);
 
@@ -688,8 +731,8 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       reconnectDelay: {
         initialMs: 150,
         maxMs: 150,
-        handshakeTimeoutMs: 50,
-        readyTimeoutMs: 50,
+        handshakeTimeoutMs: 500,
+        readyTimeoutMs: 500,
       },
     });
     cleanup.push(proxy.close);

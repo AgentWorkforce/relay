@@ -19,6 +19,8 @@ import { getProjectPaths } from '@agent-relay/config';
 export interface BrokerConnection {
   url: string;
   apiKey?: string;
+  /** Optional per-request deadline for long-lived proxy connections. */
+  requestTimeoutMs?: number;
 }
 
 /** Options the caller may have parsed from CLI flags. */
@@ -26,6 +28,8 @@ export interface BrokerConnectionOptions {
   brokerUrl?: string;
   apiKey?: string;
   stateDir?: string;
+  /** Internal override used by bounded loopback proxies. */
+  requestTimeoutMs?: number;
 }
 
 /** Injectable bits — tests stub these out instead of touching disk / env. */
@@ -102,6 +106,7 @@ export function resolveBrokerConnection(
   return {
     url: url.replace(/\/+$/, ''),
     apiKey,
+    ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
   };
 }
 

@@ -44,6 +44,14 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 // transport's independent 30s maximum reconnect backoff without leaving this
 // client unbounded. Five attempts previously stopped after only 15.5s.
 const MAX_RECONNECT_ATTEMPTS = 6;
+// Bounds the acknowledgement for a delivery-mode command after readiness.
+// The command is not replayable across reconnects, so this is intentionally a
+// separate post-readiness phase rather than another full reconnect window.
+const DELIVERY_MODE_TIMEOUT_MS = 10_000;
+// The caller starts its HTTP deadline before the loopback handler starts its
+// readiness timer. Leave a small response-delivery margin so the proxy's
+// actionable readiness error wins that race.
+const LOOPBACK_REQUEST_TIMEOUT_MARGIN_MS = 1_000;
 
 type FleetSessionResponse = {
   ok?: boolean;
@@ -92,6 +100,7 @@ export interface FleetNodeAttachOptions {
 export interface FleetNodeAttachProxy {
   brokerUrl: string;
   apiKey: string;
+  requestTimeoutMs: number;
   close(): Promise<void>;
 }
 
@@ -296,20 +305,25 @@ export async function startFleetNodeAttachProxy(
     options.sessionRequest?.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let sessionRequestAttempts = 0;
+  let sessionRequestBudgetExhaustedBetweenAttempts = false;
   let lastSessionError: TerminalSessionAttemptError | undefined;
   const sessionResult = await collectWithRetry(
     'terminal session request',
     async () => {
       const remainingRequestBudgetMs = sessionRequestDeadline - Date.now();
       if (remainingRequestBudgetMs <= 0) {
-        lastSessionError = new TerminalSessionAttemptError(
-          'overall terminal-session request deadline exhausted',
-          'control_plane_timeout',
-          undefined,
-          false,
-          false
-        );
-        throw lastSessionError;
+        sessionRequestBudgetExhaustedBetweenAttempts = true;
+        const exhausted =
+          lastSessionError ??
+          new TerminalSessionAttemptError(
+            'overall terminal-session request deadline exhausted',
+            'control_plane_timeout',
+            undefined,
+            false,
+            false
+          );
+        lastSessionError = exhausted;
+        throw exhausted;
       }
       sessionRequestAttempts += 1;
       const controller = new AbortController();
@@ -380,8 +394,12 @@ export async function startFleetNodeAttachProxy(
     const failure = lastSessionError;
     const status = failure?.status === undefined ? '' : ` HTTP ${failure.status};`;
     const code = failure?.code === undefined ? '' : ` code ${failure.code};`;
-    const retryNote =
-      sessionRequestAttempts > 1
+    const retryNote = sessionRequestBudgetExhaustedBetweenAttempts
+      ? sessionRequestAttempts > 1
+        ? `retried ${sessionRequestAttempts - 1} time${sessionRequestAttempts === 2 ? '' : 's'};` +
+          ' overall budget exhausted before the next attempt'
+        : 'not retried because the overall budget was exhausted before the next attempt'
+      : sessionRequestAttempts > 1
         ? `retried ${sessionRequestAttempts - 1} time${sessionRequestAttempts === 2 ? '' : 's'}` +
           (failure?.completionUnknown
             ? '; final POST not retried because it may have completed server-side'
@@ -499,7 +517,6 @@ export async function startFleetNodeAttachProxy(
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   } | null = null;
-  const DELIVERY_MODE_TIMEOUT_MS = 10_000;
   const loopbackApiKey = randomBytes(32).toString('base64url');
   const loopbackAuthorized = (headers: IncomingMessage['headers']) =>
     headers.authorization === `Bearer ${loopbackApiKey}` || headers['x-api-key'] === loopbackApiKey;
@@ -1019,6 +1036,7 @@ export async function startFleetNodeAttachProxy(
   return {
     brokerUrl: `http://127.0.0.1:${address.port}`,
     apiKey: loopbackApiKey,
+    requestTimeoutMs: terminalWaitTimeoutMs + DELIVERY_MODE_TIMEOUT_MS + LOOPBACK_REQUEST_TIMEOUT_MARGIN_MS,
     async close() {
       if (stopped) return;
       stopped = true;

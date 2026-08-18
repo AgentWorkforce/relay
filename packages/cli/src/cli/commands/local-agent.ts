@@ -110,7 +110,11 @@ export async function attachFleetNode(
   });
   const jsonWriter = options.json ? createBackpressureAwareWriter(process.stdout) : undefined;
   try {
-    const connectionOptions = { brokerUrl: proxy.brokerUrl, apiKey: proxy.apiKey };
+    const connectionOptions = {
+      brokerUrl: proxy.brokerUrl,
+      apiKey: proxy.apiKey,
+      requestTimeoutMs: proxy.requestTimeoutMs,
+    };
     // Fleet agents expose a PTY stream rather than native-harness envelopes.
     // In JSON mode retain the machine-readable contract by serializing every
     // rendered stream chunk as NDJSON, including the initial snapshot.

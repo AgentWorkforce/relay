@@ -27,6 +27,8 @@ export interface AttachSnapshotConnection {
   url: string;
   /** Optional API key — added as an `X-API-Key` header if present. */
   apiKey?: string;
+  /** Optional HTTP deadline propagated to the broker SDK transport. */
+  requestTimeoutMs?: number;
 }
 
 /** Dependencies for `captureAndRenderSnapshot` — injected so tests don't hit
@@ -1361,7 +1363,7 @@ export async function captureInitialSnapshot(
   deps: CaptureInitialSnapshotDeps
 ): Promise<{ snapshotRows?: number } | null> {
   const render = deps.captureAndRenderSnapshot ?? captureAndRenderSnapshot;
-  const snapshot = await render({ url: connection.url, apiKey: connection.apiKey }, name, {
+  const snapshot = await render(connection, name, {
     fetch: deps.fetch,
     writeChunk: deps.writeChunk,
     fleetHint: deps.fleetHint,
