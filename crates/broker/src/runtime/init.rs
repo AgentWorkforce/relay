@@ -874,15 +874,46 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         kind: Some("capacity".to_string()),
         metadata: None,
     });
+    // Repository advertisement is what makes a node eligible for repo-based
+    // placement. The CLI reads it from the node definition's `repoPaths` and
+    // hands over the KEYS only (`AGENT_RELAY_NODE_REPO_KEYS`); the checkout
+    // paths stay node-local. Both channels are filled because placement reads
+    // `repo_keys` when the roster row carries it and falls back to `repo:<key>`
+    // tags when it does not.
+    let repo_keys = node_repo_keys();
+    let tags = repo_keys
+        .as_ref()
+        .map(|keys| keys.iter().map(|key| format!("repo:{key}")).collect());
     NodeManifest {
         name: node_name.to_string(),
         node_id: Some(node_id.to_string()),
         capabilities,
         max_agents: node_max_agents(),
-        tags: None,
-        repo_keys: None,
+        tags,
+        repo_keys,
         version: Some(broker_version.to_string()),
     }
+}
+
+/// The placement-safe repository keys this node advertises, from
+/// `AGENT_RELAY_NODE_REPO_KEYS` (comma-separated, order-preserving,
+/// de-duplicated).
+///
+/// Presence is the signal, mirroring the CLI's `nodeRegistrationTags`: an unset
+/// variable yields `None`, leaving registration tags and `repo_keys` untouched
+/// for definitions that declare no `repoPaths`. A set-but-empty value yields
+/// `Some([])`, which authoritatively clears stale repository advertisements on
+/// the control plane.
+fn node_repo_keys() -> Option<Vec<String>> {
+    let raw = std::env::var("AGENT_RELAY_NODE_REPO_KEYS").ok()?;
+    let mut seen = std::collections::HashSet::new();
+    Some(
+        raw.split(',')
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .filter(|entry| seen.insert(entry.clone()))
+            .collect(),
+    )
 }
 
 /// The harness names this broker can spawn, from `AGENT_RELAY_NODE_HARNESSES`
@@ -1040,6 +1071,122 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
+
+    /// Serializes `AGENT_RELAY_NODE_REPO_KEYS` mutations and restores the
+    /// inherited value, so these tests cannot leak into the rest of the binary.
+    static REPO_KEYS_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct RepoKeysEnvGuard {
+        _guard: MutexGuard<'static, ()>,
+        original: Option<OsString>,
+    }
+
+    impl Drop for RepoKeysEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard holds REPO_KEYS_ENV_MUTEX for its whole
+            // lifetime, so AGENT_RELAY_NODE_REPO_KEYS mutations are serialized.
+            unsafe {
+                match &self.original {
+                    Some(value) => std::env::set_var("AGENT_RELAY_NODE_REPO_KEYS", value),
+                    None => std::env::remove_var("AGENT_RELAY_NODE_REPO_KEYS"),
+                }
+            }
+        }
+    }
+
+    fn set_repo_keys_env(value: Option<&str>) -> RepoKeysEnvGuard {
+        let guard = REPO_KEYS_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let original = std::env::var_os("AGENT_RELAY_NODE_REPO_KEYS");
+        // SAFETY: the mutex is held for the returned guard's lifetime.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var("AGENT_RELAY_NODE_REPO_KEYS", value),
+                None => std::env::remove_var("AGENT_RELAY_NODE_REPO_KEYS"),
+            }
+        }
+        RepoKeysEnvGuard {
+            _guard: guard,
+            original,
+        }
+    }
+
+    /// The registration payload the broker actually puts on the Fleet wire,
+    /// built the same way `runtime::init` does: bootstrap manifest -> register.
+    fn bootstrap_node_register() -> crate::fleet_wire::NodeRegister {
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/test");
+        crate::node_control::build_node_register(
+            &manifest,
+            "node-default",
+            "host-default",
+            "relay-broker/test",
+            None,
+        )
+    }
+
+    #[test]
+    fn registration_carries_repo_keys_and_repo_tags_from_the_node_definition() {
+        // MUST FIRE: a node started from a definition WITH `repoPaths` has to
+        // register the derived `repo:<owner/name>` keys, or repo-based placement
+        // can never match it (#1582). Asserted on the wire payload, not on the
+        // env reader in isolation.
+        let _env = set_repo_keys_env(Some(
+            "AgentWorkforce/relay, AgentWorkforce/factory ,AgentWorkforce/relay",
+        ));
+
+        let register = bootstrap_node_register();
+
+        assert_eq!(
+            register.repo_keys,
+            Some(vec![
+                "AgentWorkforce/relay".to_string(),
+                "AgentWorkforce/factory".to_string(),
+            ]),
+            "registration must advertise the definition's repository keys"
+        );
+        assert_eq!(
+            register.tags,
+            vec![
+                "repo:AgentWorkforce/relay".to_string(),
+                "repo:AgentWorkforce/factory".to_string(),
+            ],
+            "registration must also carry repo:<key> tags, which placement reads when the roster row has no dedicated repo field"
+        );
+    }
+
+    #[test]
+    fn registration_leaves_tags_and_repo_keys_untouched_without_repo_paths() {
+        // MUST NOT FIRE: a definition without `repoPaths` leaves the broker's
+        // registration exactly as it was before #1582 — no repo keys, no tags.
+        let _env = set_repo_keys_env(None);
+
+        let register = bootstrap_node_register();
+
+        assert_eq!(register.repo_keys, None);
+        assert!(
+            register.tags.is_empty(),
+            "a definition without repoPaths must not gain tags, got {:?}",
+            register.tags
+        );
+    }
+
+    #[test]
+    fn an_empty_repo_key_list_clears_stale_repository_advertisements() {
+        // `repoPaths: {}` is an authoritative empty declaration, distinct from
+        // absent: it must serialize as `[]` so the control plane drops keys the
+        // node advertised on a previous start.
+        let _env = set_repo_keys_env(Some(""));
+
+        let register = bootstrap_node_register();
+
+        assert_eq!(register.repo_keys, Some(Vec::new()));
+        assert!(register.tags.is_empty());
+        assert_eq!(
+            serde_json::to_value(&register).unwrap().get("repo_keys"),
+            Some(&serde_json::json!([]))
+        );
     }
 
     #[test]

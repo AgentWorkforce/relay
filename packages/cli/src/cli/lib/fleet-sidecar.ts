@@ -1,5 +1,5 @@
 import { AgentRelay } from '@agent-relay/sdk';
-import type { FleetTriggerSyncClient } from '@agent-relay/fleet';
+import { nodeRepoKeys, type FleetTriggerSyncClient } from '@agent-relay/fleet';
 
 import type { CoreTeamsConfig } from '../commands/core.js';
 
@@ -62,6 +62,46 @@ export function resolveNodeCapacityHarnesses(
     return trimmed;
   }
   return nodeCapacityHarnesses(teamsConfig, definition).join(',');
+}
+
+/** Env var carrying the node's placement-safe repository keys to the broker. */
+export const NODE_REPO_KEYS_ENV = 'AGENT_RELAY_NODE_REPO_KEYS';
+
+/**
+ * The minimum a node config has to expose to advertise repository placement
+ * keys. A full {@link FleetNodeDefinition} satisfies this, and so does the
+ * descriptor reported by a node definition served out-of-process.
+ */
+export type NodeRepoKeySource = { repoPaths?: Readonly<Record<string, string>> };
+
+/**
+ * Resolve the `AGENT_RELAY_NODE_REPO_KEYS` CSV the native broker registers
+ * `repo_keys` (and the matching `repo:<owner/name>` tags) from.
+ *
+ * Only the map's KEYS travel: the absolute checkout paths stay node-local, so
+ * the Fleet wire never carries a filesystem layout.
+ *
+ * Presence is the signal, mirroring `nodeRegistrationTags`:
+ * - no `repoPaths` in the definition -> `undefined`, and the broker leaves its
+ *   registration tags/`repo_keys` exactly as before (backward compatible).
+ * - `repoPaths` present -> the sorted keys, possibly the empty string, which
+ *   authoritatively clears stale repository advertisements on the control plane.
+ *
+ * A pre-set value is the operator's authoritative declaration and wins verbatim,
+ * matching {@link resolveNodeCapacityHarnesses}.
+ */
+export function resolveNodeRepoKeys(
+  preset: string | undefined,
+  definition?: NodeRepoKeySource
+): string | undefined {
+  const trimmed = preset?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  if (!definition || definition.repoPaths === undefined) {
+    return undefined;
+  }
+  return nodeRepoKeys(definition).join(',');
 }
 
 /**
