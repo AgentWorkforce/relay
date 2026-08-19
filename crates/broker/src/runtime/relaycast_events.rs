@@ -46,27 +46,19 @@ impl<'de> serde::Deserialize<'de> for UniqueRepoPaths {
 /// Existence and directory checks happen at spawn time because a checkout can
 /// disappear after the broker has registered the key. Requiring absolute paths
 /// here ensures a map entry can never fall back to the broker process cwd.
-pub(super) fn load_node_repo_paths_from_env() -> Result<BTreeMap<String, PathBuf>> {
+pub(super) fn load_node_repo_paths_from_env() -> Result<Option<BTreeMap<String, PathBuf>>> {
     let raw = std::env::var_os(NODE_REPO_PATHS_ENV);
     // The map is broker-private runtime state. Clear the startup bridge before
     // any workers launch so absolute checkout paths cannot be inherited.
     std::env::remove_var(NODE_REPO_PATHS_ENV);
-    let raw = raw
-        .map(|value| {
-            value.into_string().map_err(|_| {
-                anyhow::anyhow!("{NODE_REPO_PATHS_ENV} must contain valid Unicode JSON")
-            })
-        })
-        .transpose()?;
-    let Some(raw) = raw
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(BTreeMap::new());
+    let Some(raw) = raw else {
+        return Ok(None);
     };
+    let raw = raw
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("{NODE_REPO_PATHS_ENV} must contain valid Unicode JSON"))?;
 
-    parse_node_repo_paths(raw)
+    parse_node_repo_paths(raw.trim()).map(Some)
 }
 
 fn parse_node_repo_paths(raw: &str) -> Result<BTreeMap<String, PathBuf>> {
@@ -1484,12 +1476,41 @@ mod tests {
             r#"{"AgentWorkforce/factory":"/srv/factory"}"#,
         );
 
-        let paths = load_node_repo_paths_from_env().expect("valid node-local map");
+        let paths = load_node_repo_paths_from_env()
+            .expect("valid node-local map")
+            .expect("map was explicitly configured");
 
         assert_eq!(
             paths.get("AgentWorkforce/factory"),
             Some(&PathBuf::from("/srv/factory"))
         );
+        assert_eq!(std::env::var_os(NODE_REPO_PATHS_ENV), None);
+    }
+
+    #[test]
+    fn node_repo_paths_env_absence_remains_unconfigured() {
+        let _lock = NODE_REPO_PATHS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = RepoPathsEnvRestore(std::env::var_os(NODE_REPO_PATHS_ENV));
+        std::env::remove_var(NODE_REPO_PATHS_ENV);
+
+        let paths = load_node_repo_paths_from_env().expect("absent map is valid");
+
+        assert_eq!(paths, None);
+    }
+
+    #[test]
+    fn node_repo_paths_env_preserves_explicit_empty_configuration() {
+        let _lock = NODE_REPO_PATHS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = RepoPathsEnvRestore(std::env::var_os(NODE_REPO_PATHS_ENV));
+        std::env::set_var(NODE_REPO_PATHS_ENV, "{}");
+
+        let paths = load_node_repo_paths_from_env().expect("empty configured map is valid");
+
+        assert_eq!(paths, Some(BTreeMap::new()));
         assert_eq!(std::env::var_os(NODE_REPO_PATHS_ENV), None);
     }
 

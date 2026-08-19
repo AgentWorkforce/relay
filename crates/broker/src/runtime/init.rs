@@ -276,8 +276,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // A placement only carries a repository key. Checkout paths are local node
     // configuration, so keep them in the broker and resolve the key immediately
     // before every spawn rather than trusting a dispatcher-supplied cwd.
-    let node_repo_paths = super::relaycast_events::load_node_repo_paths_from_env()?;
-    let node_repo_keys = super::relaycast_events::node_repo_keys(&node_repo_paths);
+    let configured_node_repo_paths = super::relaycast_events::load_node_repo_paths_from_env()?;
+    let node_repo_keys = configured_node_repo_paths
+        .as_ref()
+        .map(super::relaycast_events::node_repo_keys);
+    let node_repo_paths = configured_node_repo_paths.unwrap_or_default();
     let node_manifest =
         bootstrap_node_manifest(&node_name, &node_id, &broker_version, node_repo_keys);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
@@ -871,7 +874,7 @@ fn bootstrap_node_manifest(
     node_name: &str,
     node_id: &str,
     broker_version: &str,
-    repo_keys: Vec<String>,
+    repo_keys: Option<Vec<String>>,
 ) -> NodeManifest {
     let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
         .into_iter()
@@ -892,10 +895,10 @@ fn bootstrap_node_manifest(
         capabilities,
         max_agents: node_max_agents(),
         tags: None,
-        // The same locally parsed map drives this keys-only registration and
-        // spawn-time checkout resolution. Keep Some([]) authoritative so a
-        // removed mapping clears stale control-plane advertisements.
-        repo_keys: Some(repo_keys),
+        // Preserve whether the local map was configured. Legacy brokers omit
+        // repo_keys when the environment bridge is absent, while an explicit
+        // empty map advertises Some([]) to clear stale placement state.
+        repo_keys,
         version: Some(broker_version.to_string()),
     }
 }
@@ -1021,8 +1024,7 @@ mod tests {
         // all `kind: "capacity"`. It must never advertise a bare `"spawn"`, which
         // the engine would materialize as a generic action pinned to this node,
         // hijacking capability-based spawn placement for the whole workspace.
-        let manifest =
-            bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", Vec::new());
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", None);
         assert!(
             !manifest.capabilities.is_empty(),
             "broker manifest must advertise its capacity"
@@ -1057,7 +1059,26 @@ mod tests {
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
         assert_eq!(manifest.tags, None);
+        assert_eq!(manifest.repo_keys, None);
+    }
+
+    #[test]
+    fn bootstrap_node_manifest_preserves_explicit_empty_repo_keys() {
+        let manifest =
+            bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", Some(Vec::new()));
+        let register = crate::node_control::build_node_register(
+            &manifest,
+            "node-default",
+            "host-default",
+            "relay-broker/default",
+            None,
+        );
+        let wire =
+            serde_json::to_value(crate::fleet_wire::BrokerToRelaycast::NodeRegister(register))
+                .expect("serialize node.register");
+
         assert_eq!(manifest.repo_keys, Some(Vec::new()));
+        assert_eq!(wire.get("repo_keys"), Some(&serde_json::json!([])));
     }
 
     #[test]
@@ -1122,7 +1143,7 @@ mod tests {
             "node-a",
             "node_a",
             "relay-broker/9.1.1",
-            super::relaycast_events::node_repo_keys(&repo_paths),
+            Some(super::relaycast_events::node_repo_keys(&repo_paths)),
         );
         let register = crate::node_control::build_node_register(
             &manifest,
