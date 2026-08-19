@@ -892,7 +892,10 @@ fn bootstrap_node_manifest(
         capabilities,
         max_agents: node_max_agents(),
         tags: None,
-        repo_keys: (!repo_keys.is_empty()).then_some(repo_keys),
+        // The same locally parsed map drives this keys-only registration and
+        // spawn-time checkout resolution. Keep Some([]) authoritative so a
+        // removed mapping clears stale control-plane advertisements.
+        repo_keys: Some(repo_keys),
         version: Some(broker_version.to_string()),
     }
 }
@@ -1053,6 +1056,7 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+        assert_eq!(manifest.repo_keys, Some(Vec::new()));
     }
 
     #[test]

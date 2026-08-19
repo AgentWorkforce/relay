@@ -1145,7 +1145,11 @@ pub(crate) fn build_node_register(
         capabilities,
         max_agents: manifest.max_agents.unwrap_or(0),
         tags: manifest.tags.clone().unwrap_or_default(),
-        repo_keys: manifest.repo_keys.clone().unwrap_or_default(),
+        // NodeRegister performs the final placement-key validation in both
+        // serde directions. Preserve presence, including Some([]), so the
+        // control plane can distinguish legacy omission from an authoritative
+        // empty repository map.
+        repo_keys: manifest.repo_keys.clone(),
         version: manifest
             .version
             .as_deref()
@@ -3145,7 +3149,10 @@ mod tests {
         assert_eq!(register.name, "builder");
         assert_eq!(register.node_id, "node-manifest");
         assert_eq!(register.max_agents, 8);
-        assert_eq!(register.repo_keys, vec!["AgentWorkforce/relay"]);
+        assert_eq!(
+            register.repo_keys,
+            Some(vec!["AgentWorkforce/relay".to_string()])
+        );
         assert_eq!(
             register.capabilities[0].metadata,
             Some(BTreeMap::from([(
@@ -3162,6 +3169,30 @@ mod tests {
                 queue: None,
                 metadata: None,
             })
+        );
+    }
+
+    #[test]
+    fn build_node_register_preserves_repo_key_presence_for_wire_validation() {
+        let mut manifest = test_manifest();
+        let private_path = "/private/node/relay";
+        manifest.repo_keys = Some(vec![private_path.to_string()]);
+
+        let register =
+            build_node_register(&manifest, "node-default", "host-default", "broker/1", None);
+        let error = serde_json::to_value(register)
+            .expect_err("path-shaped keys must fail at the wire boundary")
+            .to_string();
+        assert!(error.contains("placement-safe owner/repo"), "{error}");
+        assert!(!error.contains(private_path), "{error}");
+
+        manifest.repo_keys = Some(Vec::new());
+        let clear =
+            build_node_register(&manifest, "node-default", "host-default", "broker/1", None);
+        assert_eq!(clear.repo_keys, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(clear).unwrap().get("repo_keys"),
+            Some(&json!([]))
         );
     }
 

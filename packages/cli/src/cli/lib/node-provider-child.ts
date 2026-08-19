@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { normalizeFleetRepoPaths } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
@@ -290,24 +291,7 @@ export function parseNodeDescriptor(stdout: string): NodeDefinitionDescriptor | 
 }
 
 function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, string>> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Fleet node descriptor repoPaths must be an object keyed by owner/repo');
-  }
-  const repoPaths: Record<string, string> = {};
-  for (const [key, repoPath] of Object.entries(value)) {
-    const segments = key.split('/');
-    const placementSafeKey =
-      segments.length === 2 &&
-      segments.every((segment) => segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/.test(segment));
-    if (!placementSafeKey || typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) {
-      throw new Error('Fleet node descriptor repoPaths must map owner/repo keys to absolute paths');
-    }
-    repoPaths[key] = repoPath;
-  }
-  return repoPaths;
+  return normalizeFleetRepoPaths(value);
 }
 
 /**

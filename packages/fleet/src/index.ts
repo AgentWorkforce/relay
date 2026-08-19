@@ -191,7 +191,7 @@ export interface SpawnHandlerOptions {
 
 export function defineNode(input: FleetNodeDefinitionInput): FleetNodeDefinition {
   const name = nonEmpty(input.name, 'node name');
-  const repoPaths = normalizeRepoPaths(input.repoPaths);
+  const repoPaths = normalizeFleetRepoPaths(input.repoPaths);
   const capabilityEntries = Object.entries(input.capabilities ?? {});
   if (capabilityEntries.length === 0) {
     throw new Error('defineNode requires at least one capability');
@@ -506,7 +506,11 @@ function nonEmpty(value: string | undefined, label: string): string {
   return trimmed;
 }
 
-function normalizeRepoPaths(repoPaths: FleetRepoPaths | undefined): FleetRepoPaths | undefined {
+/**
+ * Validate and normalize the node-private repository map used by both direct
+ * definitions and the compiled child descriptor bridge.
+ */
+export function normalizeFleetRepoPaths(repoPaths: unknown): FleetRepoPaths | undefined {
   if (repoPaths === undefined) {
     return undefined;
   }

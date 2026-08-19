@@ -127,11 +127,11 @@ pub struct NodeRegister {
     /// Placement-safe repository keys; absolute node-local paths are forbidden.
     #[serde(
         default,
-        deserialize_with = "deserialize_repo_keys",
-        serialize_with = "serialize_repo_keys",
-        skip_serializing_if = "Vec::is_empty"
+        deserialize_with = "deserialize_optional_repo_keys",
+        serialize_with = "serialize_optional_repo_keys",
+        skip_serializing_if = "Option::is_none"
     )]
-    pub repo_keys: Vec<String>,
+    pub repo_keys: Option<Vec<String>>,
     pub version: String,
     #[serde(
         default,
@@ -447,19 +447,25 @@ fn validate_repo_keys(repo_keys: &[String]) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn deserialize_repo_keys<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+fn deserialize_optional_repo_keys<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let repo_keys = Vec::<String>::deserialize(deserializer)?;
     validate_repo_keys(&repo_keys).map_err(de::Error::custom)?;
-    Ok(repo_keys)
+    Ok(Some(repo_keys))
 }
 
-fn serialize_repo_keys<S>(repo_keys: &[String], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_optional_repo_keys<S>(
+    repo_keys: &Option<Vec<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
+    let Some(repo_keys) = repo_keys else {
+        return serializer.serialize_none();
+    };
     validate_repo_keys(repo_keys).map_err(ser::Error::custom)?;
     repo_keys.serialize(serializer)
 }
@@ -1236,7 +1242,7 @@ mod tests {
         let BrokerToRelaycast::NodeRegister(register) = &mut outbound else {
             unreachable!("fixture is node.register");
         };
-        register.repo_keys = vec![invalid_key.to_string()];
+        register.repo_keys = Some(vec![invalid_key.to_string()]);
         let error = serde_json::to_value(outbound)
             .expect_err("invalid keys must never serialize into registration")
             .to_string();
