@@ -9,7 +9,6 @@ import {
   describeErrorWithCause,
   getBrokerStatusWithRetry,
   isBundledBunExecutableEntrypoint,
-  nodeRepoPathsForBroker,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
@@ -33,19 +32,6 @@ describe('isBundledBunExecutableEntrypoint', () => {
         cliScript: '/project/cli.js',
       } as CoreDependencies)
     ).toBe(false);
-  });
-});
-
-describe('nodeRepoPathsForBroker', () => {
-  it('serializes the definition map for the local broker process', () => {
-    expect(
-      nodeRepoPathsForBroker({ repoPaths: { 'AgentWorkforce/relay': '/srv/checkouts/relay' } })
-    ).toBe('{"AgentWorkforce/relay":"/srv/checkouts/relay"}');
-  });
-
-  it('keeps an explicit empty map authoritative and leaves an absent map unset', () => {
-    expect(nodeRepoPathsForBroker({ repoPaths: {} })).toBe('{}');
-    expect(nodeRepoPathsForBroker({})).toBeUndefined();
   });
 });
 
@@ -314,7 +300,7 @@ vi.mock('@agent-relay/harness-driver', () => ({
 import fsReal from 'node:fs';
 import os from 'node:os';
 import pathReal from 'node:path';
-import { startServeNode } from '@agent-relay/fleet';
+import { startServeNode, type FleetNodeDefinition } from '@agent-relay/fleet';
 import { setWorkspaceKey } from '@agent-relay/cloud';
 import { runUpCommand } from './broker-lifecycle.js';
 import { startReflexCapture } from './reflex-capture.js';
@@ -534,6 +520,53 @@ describe('runUpCommand node-config gating', () => {
     expect(served.providerName).toBe('from-config');
   });
 
+  it('feeds one private repoPaths map to the broker while the provider retains the same source', async () => {
+    const { deps, projectRoot, createRelay, log, warn, error } = createUpHarness();
+    const privateCheckout = '/node-private/checkouts/factory';
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      `export default {
+        __agentRelayFleetNode: true,
+        name: 'from-config',
+        capabilities: {},
+        triggers: [],
+        repoPaths: { 'AgentWorkforce/factory': ${JSON.stringify(privateCheckout)} }
+      };\n`
+    );
+    let brokerRepoPaths: string | undefined;
+    createRelay.mockImplementationOnce(async () => {
+      brokerRepoPaths = deps.env.AGENT_RELAY_NODE_REPO_PATHS;
+      return {
+        spawn: vi.fn(async () => undefined),
+        getStatus: vi.fn(async () => ({})),
+        shutdown: vi.fn(async () => undefined),
+        workspaceKey: 'rk_test',
+        workspaceId: 'rw_test',
+      } as unknown as CoreRelay;
+    });
+
+    await runUpCommand({ discoverConfig: true, verbose: true }, deps);
+
+    expect(JSON.parse(brokerRepoPaths ?? '{}')).toEqual({
+      'AgentWorkforce/factory': privateCheckout,
+    });
+    expect(deps.env.AGENT_RELAY_NODE_REPO_PATHS).toBeUndefined();
+    expect(
+      (
+        vi.mocked(startServeNode).mock.calls[0]![0].definition as FleetNodeDefinition & {
+          repoPaths?: Readonly<Record<string, string>>;
+        }
+      ).repoPaths
+    ).toEqual({
+      'AgentWorkforce/factory': privateCheckout,
+    });
+    const output = [log, warn, error]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.flat())
+      .map(String)
+      .join('\n');
+    expect(output).not.toContain(privateCheckout);
+  });
+
   it('never prints the node token or workspace key from the session in --verbose output', async () => {
     const { deps, projectRoot, log, warn, error } = createUpHarness();
     fsReal.writeFileSync(
@@ -550,6 +583,57 @@ describe('runUpCommand node-config gating', () => {
       .map((arg) => String(arg))
       .join('\n');
     expect(output).not.toMatch(/rk_live_|nt_live_/);
+  });
+
+  it('feeds compiled-child descriptor repoPaths to the broker without leaking them to the provider child', async () => {
+    const { deps, projectRoot, createRelay } = createUpHarness();
+    const config = pathReal.join(projectRoot, 'agent-relay.mjs');
+    const privateCheckout = '/node-private/checkouts/factory';
+    fsReal.writeFileSync(
+      config,
+      "export default { __agentRelayFleetNode: true, name: 'child', capabilities: {}, triggers: [] };\n"
+    );
+    deps.argv = ['bun', '/$bunfs/root/agent-relay', 'node', 'up'];
+    deps.cliScript = '/$bunfs/root/agent-relay';
+    deps.execCommand = vi.fn(async (command: string) => ({
+      stdout: command.includes('--describe')
+        ? `__AGENT_RELAY_NODE_DESCRIPTOR__${JSON.stringify({
+            name: 'child',
+            capabilities: [],
+            repoPaths: { 'AgentWorkforce/factory': privateCheckout },
+          })}\n`
+        : '',
+      stderr: '',
+    }));
+    let brokerRepoPaths: string | undefined;
+    createRelay.mockImplementationOnce(async () => {
+      brokerRepoPaths = deps.env.AGENT_RELAY_NODE_REPO_PATHS;
+      return {
+        spawn: vi.fn(async () => undefined),
+        getStatus: vi.fn(async () => ({})),
+        shutdown: vi.fn(async () => undefined),
+        workspaceKey: 'rk_test',
+        workspaceId: 'rw_test',
+      } as unknown as CoreRelay;
+    });
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42,
+      killed: false,
+      kill: vi.fn(),
+    });
+    const providerEnvs: NodeJS.ProcessEnv[] = [];
+    deps.spawnProcess = vi.fn((_command, _args, options) => {
+      providerEnvs.push(options.env ?? {});
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    });
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(JSON.parse(brokerRepoPaths ?? '{}')).toEqual({
+      'AgentWorkforce/factory': privateCheckout,
+    });
+    expect(providerEnvs[0]?.AGENT_RELAY_NODE_REPO_PATHS).toBeUndefined();
   });
 
   it('shuts the broker down when its compiled-binary node provider exits', async () => {

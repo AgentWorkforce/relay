@@ -53,6 +53,27 @@ agent-relay fleet nodes      # list registered nodes
 agent-relay fleet status     # show node + capability health
 ```
 
+### Repository placement
+
+A node can declare the checkouts it can serve with an `owner/repo` keyed map:
+
+```ts
+export default defineNode({
+  name: 'builder',
+  repoPaths: {
+    'AgentWorkforce/factory': '/srv/repos/factory',
+    'AgentWorkforce/relay': '/srv/repos/relay',
+  },
+  capabilities: {
+    /* … */
+  },
+});
+```
+
+Each value must be an absolute path on that node. Registration derives the
+placement-safe `AgentWorkforce/factory` and `AgentWorkforce/relay` keys; the
+absolute values are never sent to Relaycast, exposed in the roster, or logged.
+
 ### Serving a node programmatically
 
 `@agent-relay/fleet` also ships the node runtime, so you can start a node in

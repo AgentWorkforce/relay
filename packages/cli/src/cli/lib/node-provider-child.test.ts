@@ -53,6 +53,41 @@ describe('parseNodeDescriptor', () => {
     expect(parseNodeDescriptor(stdout)).toEqual({ name: 'n', capabilities: ['spawn:claude'] });
   });
 
+  it('carries node-private repo paths across the local describe IPC', () => {
+    const repoPath = path.resolve('private-checkouts', 'relay');
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: ['spawn:codex'],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    })}\n`;
+
+    expect(parseNodeDescriptor(stdout)).toEqual({
+      name: 'n',
+      capabilities: ['spawn:codex'],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    });
+  });
+
+  it.each(['./repo', '../repo'])('rejects relative repo path %s from local describe IPC', (repoPath) => {
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    })}\n`;
+
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/absolute paths/);
+  });
+
+  it.each(['./repo', '../repo'])('rejects path-shaped repo key %s from local describe IPC', (repoKey) => {
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { [repoKey]: path.resolve('private-checkouts', 'relay') },
+    })}\n`;
+
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/owner\/repo keys/);
+  });
+
   it('ignores output the config printed on import', () => {
     const stdout = [
       'booting my node...',

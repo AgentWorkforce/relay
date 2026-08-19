@@ -193,7 +193,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     nodeName,
     provider: { name: providerName },
     ...(maxAgents !== undefined ? { maxAgents } : {}),
-    ...(registrationTags ? { tags: registrationTags } : {}),
+    ...(registrationTags !== undefined ? { tags: registrationTags } : {}),
     ...(options.definition.version ? { version: options.definition.version } : {}),
     // A drop during shutdown is expected; only surface a real error otherwise.
     ...(reconnect ? {} : { maxReconnectAttempts: 0 }),

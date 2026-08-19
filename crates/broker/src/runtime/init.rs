@@ -1,8 +1,5 @@
 use super::*;
-use std::{
-    collections::BTreeMap,
-    net::{IpAddr, SocketAddr},
-};
+use std::net::{IpAddr, SocketAddr};
 
 pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
@@ -280,8 +277,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // configuration, so keep them in the broker and resolve the key immediately
     // before every spawn rather than trusting a dispatcher-supplied cwd.
     let node_repo_paths = super::relaycast_events::load_node_repo_paths_from_env()?;
+    let node_repo_keys = super::relaycast_events::node_repo_keys(&node_repo_paths);
     let node_manifest =
-        bootstrap_node_manifest(&node_name, &node_id, &broker_version, &node_repo_paths);
+        bootstrap_node_manifest(&node_name, &node_id, &broker_version, node_repo_keys);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -873,7 +871,7 @@ fn bootstrap_node_manifest(
     node_name: &str,
     node_id: &str,
     broker_version: &str,
-    node_repo_paths: &BTreeMap<String, PathBuf>,
+    repo_keys: Vec<String>,
 ) -> NodeManifest {
     let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
         .into_iter()
@@ -893,14 +891,8 @@ fn bootstrap_node_manifest(
         node_id: Some(node_id.to_string()),
         capabilities,
         max_agents: node_max_agents(),
-        // A node map is private configuration. Publish only its placement keys,
-        // never the checkout paths, through the existing public tag contract.
-        tags: (!node_repo_paths.is_empty()).then(|| {
-            node_repo_paths
-                .keys()
-                .map(|repo_key| format!("repo:{repo_key}"))
-                .collect()
-        }),
+        tags: None,
+        repo_keys: (!repo_keys.is_empty()).then_some(repo_keys),
         version: Some(broker_version.to_string()),
     }
 }
@@ -1027,7 +1019,7 @@ mod tests {
         // the engine would materialize as a generic action pinned to this node,
         // hijacking capability-based spawn placement for the whole workspace.
         let manifest =
-            bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", &BTreeMap::new());
+            bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", Vec::new());
         assert!(
             !manifest.capabilities.is_empty(),
             "broker manifest must advertise its capacity"
@@ -1062,47 +1054,6 @@ mod tests {
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
         assert_eq!(manifest.tags, None);
-    }
-
-    #[test]
-    fn bootstrap_node_manifest_advertises_only_local_repo_keys() {
-        let local_checkout = PathBuf::from("/private/node/checkouts/relay");
-        let node_repo_paths = BTreeMap::from([
-            ("AgentWorkforce/relay".to_string(), local_checkout.clone()),
-            (
-                "AgentWorkforce/factory".to_string(),
-                PathBuf::from("/private/node/checkouts/factory"),
-            ),
-        ]);
-
-        let manifest =
-            bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", &node_repo_paths);
-
-        assert_eq!(
-            manifest.tags,
-            Some(vec![
-                "repo:AgentWorkforce/factory".to_string(),
-                "repo:AgentWorkforce/relay".to_string(),
-            ])
-        );
-        let register = crate::node_control::build_node_register(
-            &manifest,
-            "default-node-id",
-            "default-node-name",
-            "default-version",
-            None,
-        );
-        assert_eq!(register.tags, manifest.tags.clone().unwrap_or_default());
-        let serialized =
-            serde_json::to_string(&register).expect("node registration should serialize");
-        assert!(
-            !serialized.contains(&local_checkout.display().to_string()),
-            "node registration must not leak local checkout paths: {serialized}"
-        );
-        assert!(
-            !serialized.contains("/private/node/checkouts/factory"),
-            "node registration must not leak local checkout paths: {serialized}"
-        );
     }
 
     #[test]
@@ -1154,6 +1105,36 @@ mod tests {
             callback_host_for_url("::", SocketAddr::from((Ipv6Addr::UNSPECIFIED, 3889))),
             "[::1]"
         );
+    }
+
+    #[test]
+    fn bootstrap_node_manifest_advertises_only_keys_from_the_runtime_map() {
+        let private_path = "/node-private/checkouts/factory";
+        let repo_paths = BTreeMap::from([(
+            "AgentWorkforce/factory".to_string(),
+            PathBuf::from(private_path),
+        )]);
+        let manifest = bootstrap_node_manifest(
+            "node-a",
+            "node_a",
+            "relay-broker/9.1.1",
+            super::relaycast_events::node_repo_keys(&repo_paths),
+        );
+        let register = crate::node_control::build_node_register(
+            &manifest,
+            "node-default",
+            "host-default",
+            "relay-broker/default",
+            None,
+        );
+        let wire = serde_json::to_string(&crate::fleet_wire::BrokerToRelaycast::NodeRegister(
+            register,
+        ))
+        .expect("serialize node.register");
+
+        assert!(wire.contains("AgentWorkforce/factory"), "{wire}");
+        assert!(!wire.contains(private_path), "{wire}");
+        assert!(!wire.contains("repo_paths"), "{wire}");
     }
 
     #[test]

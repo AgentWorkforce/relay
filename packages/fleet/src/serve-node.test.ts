@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -120,17 +122,17 @@ describe('serveNode', () => {
     await running.stop();
   });
 
-  it('advertises repo keys from the node-local map without serializing absolute paths', async () => {
-    const privateFactoryPath = '/srv/private/checkouts/factory';
-    const privateRelayPath = 'C:\\private\\relay';
+  it('serializes only placement-safe repo keys and never node-local paths', async () => {
+    const factoryPath = resolve('private-checkouts', 'factory');
+    const relayPath = resolve('private-checkouts', 'relay');
     const node = defineNode({
       name: 'repo-builder',
-      tags: ['arm64', 'repo:legacy/ignored'],
-      repoPaths: {
-        'AgentWorkforce/factory': privateFactoryPath,
-        'AgentWorkforce/relay': privateRelayPath,
-      },
       capabilities: { ping: async () => 'pong' },
+      tags: ['arm64', 'repo:stale/manual-tag'],
+      repoPaths: {
+        'AgentWorkforce/relay': relayPath,
+        'AgentWorkforce/factory': factoryPath,
+      },
     });
     const running = startServeNode({ definition: node, connection, reconnect: false });
 
@@ -140,11 +142,9 @@ describe('serveNode', () => {
     expect(register.tags).toEqual(['arm64', 'repo:AgentWorkforce/factory', 'repo:AgentWorkforce/relay']);
     expect(register).not.toHaveProperty('repoPaths');
     expect(register).not.toHaveProperty('repo_paths');
-    expect(register).not.toHaveProperty('repoKeys');
-    expect(register).not.toHaveProperty('repo_keys');
     const serialized = JSON.stringify(register);
-    expect(serialized).not.toContain(privateFactoryPath);
-    expect(serialized).not.toContain(privateRelayPath);
+    expect(serialized).not.toContain(factoryPath);
+    expect(serialized).not.toContain(relayPath);
 
     sock.emit(acceptAll(register));
     await flush();
