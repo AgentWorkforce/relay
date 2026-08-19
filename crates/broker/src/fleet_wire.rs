@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{
     de::{self, Deserializer},
@@ -125,7 +125,12 @@ pub struct NodeRegister {
     pub max_agents: u32,
     pub tags: Vec<String>,
     /// Placement-safe repository keys; absolute node-local paths are forbidden.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_repo_keys",
+        serialize_with = "serialize_repo_keys",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub repo_keys: Vec<String>,
     pub version: String,
     #[serde(
@@ -413,6 +418,50 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
+}
+
+pub(crate) fn is_placement_repo_key(value: &str) -> bool {
+    let Some((owner, repo)) = value.split_once('/') else {
+        return false;
+    };
+    fn valid_segment(segment: &str) -> bool {
+        !segment.is_empty()
+            && segment != "."
+            && segment != ".."
+            && segment.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+            })
+    }
+
+    valid_segment(owner) && valid_segment(repo) && !repo.contains('/')
+}
+
+fn validate_repo_keys(repo_keys: &[String]) -> Result<(), &'static str> {
+    let mut seen = BTreeSet::new();
+    if repo_keys
+        .iter()
+        .any(|key| !is_placement_repo_key(key) || !seen.insert(key))
+    {
+        return Err("repo_keys must contain unique placement-safe owner/repo keys");
+    }
+    Ok(())
+}
+
+fn deserialize_repo_keys<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let repo_keys = Vec::<String>::deserialize(deserializer)?;
+    validate_repo_keys(&repo_keys).map_err(de::Error::custom)?;
+    Ok(repo_keys)
+}
+
+fn serialize_repo_keys<S>(repo_keys: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    validate_repo_keys(repo_keys).map_err(ser::Error::custom)?;
+    repo_keys.serialize(serializer)
 }
 
 fn deserialize_optional_finite_nonnegative_f64<'de, D>(
@@ -1148,6 +1197,51 @@ mod tests {
             "resume_cursor": null
         });
         assert!(serde_json::from_value::<BrokerToRelaycast>(private).is_err());
+    }
+
+    #[test]
+    fn node_register_rejects_invalid_repo_keys_on_both_wire_directions() {
+        let invalid_key = "/node-private/checkouts/factory";
+        let invalid_wire = json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "repo_keys": [invalid_key],
+            "version": "relay-broker/test",
+            "resume_cursor": null
+        });
+        let error = serde_json::from_value::<BrokerToRelaycast>(invalid_wire)
+            .expect_err("path-shaped repository keys must be rejected")
+            .to_string();
+        assert!(error.contains("placement-safe owner/repo"), "{error}");
+        assert!(!error.contains("node-private"), "{error}");
+
+        let mut outbound: BrokerToRelaycast = serde_json::from_value(json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "repo_keys": ["AgentWorkforce/factory"],
+            "version": "relay-broker/test",
+            "resume_cursor": null
+        }))
+        .unwrap();
+        let BrokerToRelaycast::NodeRegister(register) = &mut outbound else {
+            unreachable!("fixture is node.register");
+        };
+        register.repo_keys = vec![invalid_key.to_string()];
+        let error = serde_json::to_value(outbound)
+            .expect_err("invalid keys must never serialize into registration")
+            .to_string();
+        assert!(error.contains("placement-safe owner/repo"), "{error}");
+        assert!(!error.contains("node-private"), "{error}");
     }
 
     #[test]

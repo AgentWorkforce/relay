@@ -78,7 +78,7 @@ fn parse_node_repo_paths(raw: &str) -> Result<BTreeMap<String, PathBuf>> {
     let mut repo_paths = BTreeMap::new();
     for (raw_repo, raw_path) in configured {
         let repo = raw_repo.trim();
-        if !is_repo_key(repo) {
+        if !crate::fleet_wire::is_placement_repo_key(repo) {
             anyhow::bail!("{NODE_REPO_PATHS_ENV} keys must use owner/repo format");
         }
         let path = PathBuf::from(raw_path.trim());
@@ -101,22 +101,6 @@ fn parse_node_repo_paths(raw: &str) -> Result<BTreeMap<String, PathBuf>> {
 
 pub(super) fn node_repo_keys(repo_paths: &BTreeMap<String, PathBuf>) -> Vec<String> {
     repo_paths.keys().cloned().collect()
-}
-
-fn is_repo_key(value: &str) -> bool {
-    let Some((owner, repo)) = value.split_once('/') else {
-        return false;
-    };
-    fn valid_segment(segment: &str) -> bool {
-        !segment.is_empty()
-            && segment != "."
-            && segment != ".."
-            && segment.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-            })
-    }
-
-    valid_segment(owner) && valid_segment(repo) && !repo.contains('/')
 }
 
 impl BrokerRuntime {
@@ -239,6 +223,24 @@ fn relaycast_assignment_repo(ws_value: &Value) -> Result<Option<String>> {
         "/agent/metadata/repo",
         "/agent/metadata/assignment/repo",
     ];
+    const ASSIGNMENT_POINTERS: &[&str] = &[
+        "/assignment",
+        "/metadata/assignment",
+        "/agent/metadata/assignment",
+    ];
+
+    for pointer in ASSIGNMENT_POINTERS {
+        let Some(assignment) = ws_value.pointer(pointer) else {
+            continue;
+        };
+        let assignment = assignment
+            .as_object()
+            .context("assignment must be an object containing repo")?;
+        anyhow::ensure!(
+            assignment.contains_key("repo"),
+            "assignment must include repo"
+        );
+    }
 
     let mut resolved: Option<String> = None;
     for pointer in REPO_POINTERS {
@@ -251,7 +253,7 @@ fn relaycast_assignment_repo(ws_value: &Value) -> Result<Option<String>> {
             .filter(|repo| !repo.is_empty())
             .context("repo assignment must be a non-empty string")?;
         anyhow::ensure!(
-            is_repo_key(repo),
+            crate::fleet_wire::is_placement_repo_key(repo),
             "repo assignment must use owner/repo format"
         );
         if let Some(existing) = resolved.as_deref() {
@@ -1560,6 +1562,24 @@ mod tests {
         .to_string();
 
         assert!(error.contains("conflicting repo assignments"), "{error}");
+        assert!(!error.contains(&cwd.path().display().to_string()));
+    }
+
+    #[test]
+    fn assignment_without_repo_fails_closed_before_cwd_fallback() {
+        let cwd = tempfile::tempdir().expect("cwd fixture");
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({
+                "assignment": {},
+                "cwd": cwd.path(),
+                "worker_cwd": cwd.path(),
+            }),
+            &BTreeMap::new(),
+        )
+        .expect_err("malformed assignment must not restore remote cwd fallback")
+        .to_string();
+
+        assert!(error.contains("assignment must include repo"), "{error}");
         assert!(!error.contains(&cwd.path().display().to_string()));
     }
 
