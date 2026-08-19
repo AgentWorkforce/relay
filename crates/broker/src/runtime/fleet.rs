@@ -1255,6 +1255,7 @@ impl BrokerRuntime {
             model,
             exit_after_task,
             &ws_value,
+            &self.node_repo_paths,
             &workspace_id,
             Some(&action_control_dedup_key),
             &workspace_state,

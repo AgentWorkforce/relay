@@ -273,6 +273,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // online without gating startup on it.
     let node_token =
         resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref());
+    // A placement only carries a repository key. Checkout paths are local node
+    // configuration, so keep them in the broker and resolve the key immediately
+    // before every spawn rather than trusting a dispatcher-supplied cwd.
+    let node_repo_paths = super::relaycast_events::load_node_repo_paths_from_env()?;
     let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
@@ -680,6 +684,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
+        node_repo_paths,
         fleet_node_name,
         node_delivery_token_present,
         node_delivery_connected: false,
