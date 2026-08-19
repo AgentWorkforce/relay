@@ -1927,7 +1927,6 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       teamsConfig,
       planCapacitySource(nodePlan)
     );
-
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');

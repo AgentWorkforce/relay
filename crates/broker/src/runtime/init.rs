@@ -1056,6 +1056,7 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+        assert_eq!(manifest.tags, None);
         assert_eq!(manifest.repo_keys, Some(Vec::new()));
     }
 

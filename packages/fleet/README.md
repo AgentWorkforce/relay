@@ -25,6 +25,11 @@ import { z } from 'zod';
 
 export default defineNode({
   name: 'builder',
+  // Absolute checkout paths stay on this node. Registration exposes only the
+  // owner/name keys so placement can route work without learning local paths.
+  repoPaths: {
+    'your-org/service': '/srv/checkouts/service',
+  },
   capabilities: {
     'run:test': action({ input: z.object({ suite: z.string() }) }, async ({ input }) => {
       // ...run the suite...
