@@ -3,6 +3,7 @@ import { NodeProviderClient, type NodeCapabilityHandler, type NodeHandlerContext
 import {
   invokeNodeHandler,
   nodeInfo,
+  nodeRegistrationTags,
   triggerSyncInputs,
   type FleetActionContext,
   type FleetNodeDefinition,
@@ -183,6 +184,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
   const maxAgents = options.maxAgentsOverride ?? options.definition.maxAgents;
   const reconnect = options.reconnect ?? true;
   const logger = resolveLogger(options);
+  const registrationTags = nodeRegistrationTags(options.definition);
 
   const client = new NodeProviderClient({
     ...(options.connection.baseUrl ? { baseUrl: options.connection.baseUrl } : {}),
@@ -191,7 +193,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     nodeName,
     provider: { name: providerName },
     ...(maxAgents !== undefined ? { maxAgents } : {}),
-    ...(options.definition.tags ? { tags: [...options.definition.tags] } : {}),
+    ...(registrationTags ? { tags: registrationTags } : {}),
     ...(options.definition.version ? { version: options.definition.version } : {}),
     // A drop during shutdown is expected; only surface a real error otherwise.
     ...(reconnect ? {} : { maxReconnectAttempts: 0 }),

@@ -120,6 +120,37 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it('advertises repo keys from the node-local map without serializing absolute paths', async () => {
+    const privateFactoryPath = '/srv/private/checkouts/factory';
+    const privateRelayPath = 'C:\\private\\relay';
+    const node = defineNode({
+      name: 'repo-builder',
+      tags: ['arm64', 'repo:legacy/ignored'],
+      repoPaths: {
+        'AgentWorkforce/factory': privateFactoryPath,
+        'AgentWorkforce/relay': privateRelayPath,
+      },
+      capabilities: { ping: async () => 'pong' },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+
+    const sock = socket();
+    sock.open();
+    const register = sock.lastRegister();
+    expect(register.tags).toEqual(['arm64', 'repo:AgentWorkforce/factory', 'repo:AgentWorkforce/relay']);
+    expect(register).not.toHaveProperty('repoPaths');
+    expect(register).not.toHaveProperty('repo_paths');
+    expect(register).not.toHaveProperty('repoKeys');
+    expect(register).not.toHaveProperty('repo_keys');
+    const serialized = JSON.stringify(register);
+    expect(serialized).not.toContain(privateFactoryPath);
+    expect(serialized).not.toContain(privateRelayPath);
+
+    sock.emit(acceptAll(register));
+    await flush();
+    await running.stop();
+  });
+
   it('runs a handler and replies action.result with its output', async () => {
     const node = defineNode({
       name: 'p',

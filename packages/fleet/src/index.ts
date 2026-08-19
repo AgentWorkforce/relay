@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { z } from 'zod';
 import { claude, codex, definePtyHarness, gemini, type PtyHarness } from '@agent-relay/harnesses';
 import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
@@ -91,6 +93,12 @@ export interface FleetNodeDefinitionInput {
   capabilities: Record<string, FleetCapabilityValue>;
   triggers?: FleetTriggerDescriptor[];
   tags?: string[];
+  /**
+   * Node-local checkout map keyed by placement-safe `owner/name` repository
+   * identities. Values never leave the node; registration advertises only the
+   * keys as `repo:<owner/name>` tags.
+   */
+  repoPaths?: Record<string, string>;
   version?: string;
 }
 
@@ -101,6 +109,8 @@ export interface FleetNodeDefinition {
   readonly capabilities: Record<string, FleetCapability>;
   readonly triggers: FleetTriggerDescriptor[];
   readonly tags?: string[];
+  /** Node-private checkout paths. Never include these values in wire or log payloads. */
+  readonly repoPaths?: Readonly<Record<string, string>>;
   readonly version?: string;
 }
 
@@ -210,15 +220,36 @@ export function defineNode(input: FleetNodeDefinitionInput): FleetNodeDefinition
     }
   }
 
+  const tags = normalizeNodeTags(input.tags);
+  const repoPaths = normalizeRepoPaths(input.repoPaths);
+
   return {
     __agentRelayFleetNode: true,
     name,
     ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
     capabilities,
     triggers: [...triggers],
-    ...(input.tags ? { tags: [...input.tags] } : {}),
+    ...(tags ? { tags } : {}),
+    ...(repoPaths ? { repoPaths } : {}),
     ...(input.version ? { version: input.version } : {}),
   };
+}
+
+/**
+ * Build the public registration tags for a node definition.
+ *
+ * A configured repo map is authoritative: caller-supplied `repo:*` tags are
+ * replaced with keys derived from that node-local map. The absolute values are
+ * never returned, so callers can pass this result directly to a wire client.
+ */
+export function nodeRegistrationTags(definition: FleetNodeDefinition): string[] | undefined {
+  if (!definition.repoPaths) {
+    return definition.tags ? [...definition.tags] : undefined;
+  }
+  return [
+    ...(definition.tags ?? []).filter((tag) => !tag.startsWith('repo:')),
+    ...Object.keys(definition.repoPaths).map((repoKey) => `repo:${repoKey}`),
+  ];
 }
 
 export function isFleetNodeDefinition(value: unknown): value is FleetNodeDefinition {
@@ -437,6 +468,54 @@ function isFleetActionDefinition(value: FleetCapabilityValue): value is FleetAct
 
 function isFleetSpawnDefinition(value: FleetActionDefinition): boolean {
   return (value as FleetSpawnDefinition).fleetKind === 'spawn';
+}
+
+const REPO_KEY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+function normalizeNodeTags(tags: string[] | undefined): string[] | undefined {
+  if (!tags) return undefined;
+  const normalized = [...tags];
+  for (const tag of normalized) {
+    if (tag.startsWith('repo:')) {
+      assertRepoKey(tag.slice('repo:'.length), 'repo tag');
+    }
+  }
+  return normalized;
+}
+
+function normalizeRepoPaths(
+  repoPaths: Record<string, string> | undefined
+): Readonly<Record<string, string>> | undefined {
+  if (repoPaths === undefined) return undefined;
+  const normalized: Record<string, string> = {};
+  for (const [rawKey, rawRepoPath] of Object.entries(repoPaths)) {
+    const repoKey = rawKey.trim();
+    assertRepoKey(repoKey, 'repoPaths key');
+    if (Object.prototype.hasOwnProperty.call(normalized, repoKey)) {
+      throw new Error(`defineNode requires unique repoPaths keys; duplicate "${repoKey}" after trimming`);
+    }
+    if (
+      typeof rawRepoPath !== 'string' ||
+      !rawRepoPath.trim() ||
+      (!path.isAbsolute(rawRepoPath) && !path.win32.isAbsolute(rawRepoPath))
+    ) {
+      throw new Error(`repoPaths["${repoKey}"] must be an absolute path`);
+    }
+    normalized[repoKey] = rawRepoPath;
+  }
+  return Object.freeze(normalized);
+}
+
+function assertRepoKey(repoKey: string, label: string): void {
+  const segments = repoKey.split('/');
+  if (
+    repoKey.length < 3 ||
+    repoKey.length > 201 ||
+    !REPO_KEY_PATTERN.test(repoKey) ||
+    segments.some((segment) => segment === '.' || segment === '..')
+  ) {
+    throw new Error(`${label} must use owner/name with no filesystem path or URL`);
+  }
 }
 
 function normalizePtyHarness(harness: StaticPtyHarnessDefinition | PtyHarness): StaticPtyHarnessDefinition {
