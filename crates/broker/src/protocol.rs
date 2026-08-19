@@ -287,6 +287,9 @@ pub struct NodeManifest {
     pub max_agents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Placement-safe repository keys. Absolute checkout paths remain node-local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_keys: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }

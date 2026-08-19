@@ -124,6 +124,9 @@ pub struct NodeRegister {
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub tags: Vec<String>,
+    /// Placement-safe repository keys; absolute node-local paths are forbidden.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repo_keys: Vec<String>,
     pub version: String,
     #[serde(
         default,
@@ -1111,6 +1114,40 @@ mod tests {
                 "resume_cursor": null
             })
         );
+        assert_eq!(encoded.get("repo_keys"), None);
+    }
+
+    #[test]
+    fn node_register_accepts_public_repo_keys_and_rejects_private_repo_paths() {
+        let public = json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "repo_keys": ["AgentWorkforce/factory", "AgentWorkforce/relay"],
+            "version": "relay-broker/test",
+            "resume_cursor": null
+        });
+        let decoded: BrokerToRelaycast = serde_json::from_value(public.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), public);
+
+        let private = json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "repo_keys": ["AgentWorkforce/factory"],
+            "repo_paths": {"AgentWorkforce/factory": "/private/node/factory"},
+            "version": "relay-broker/test",
+            "resume_cursor": null
+        });
+        assert!(serde_json::from_value::<BrokerToRelaycast>(private).is_err());
     }
 
     #[test]

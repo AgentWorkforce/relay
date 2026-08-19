@@ -1145,6 +1145,7 @@ pub(crate) fn build_node_register(
         capabilities,
         max_agents: manifest.max_agents.unwrap_or(0),
         tags: manifest.tags.clone().unwrap_or_default(),
+        repo_keys: manifest.repo_keys.clone().unwrap_or_default(),
         version: manifest
             .version
             .as_deref()
@@ -3135,6 +3136,7 @@ mod tests {
             }],
             max_agents: Some(8),
             tags: Some(vec!["local".to_string()]),
+            repo_keys: Some(vec!["AgentWorkforce/relay".to_string()]),
             version: Some("sidecar/1".to_string()),
         };
 
@@ -3143,6 +3145,7 @@ mod tests {
         assert_eq!(register.name, "builder");
         assert_eq!(register.node_id, "node-manifest");
         assert_eq!(register.max_agents, 8);
+        assert_eq!(register.repo_keys, vec!["AgentWorkforce/relay"]);
         assert_eq!(
             register.capabilities[0].metadata,
             Some(BTreeMap::from([(
@@ -4085,6 +4088,7 @@ mod tests {
             }],
             max_agents: Some(4),
             tags: Some(vec!["test".to_string()]),
+            repo_keys: None,
             version: Some("sidecar/test".to_string()),
         }
     }
