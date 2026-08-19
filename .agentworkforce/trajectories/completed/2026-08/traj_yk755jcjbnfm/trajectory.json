@@ -8,8 +8,9 @@
       "id": "1582"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-08-19T13:51:50.554Z",
+  "completedAt": "2026-08-19T14:16:56.237Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-08-19T13:52:00.064Z",
+      "endedAt": "2026-08-19T14:16:56.237Z",
       "events": [
         {
           "ts": 1787147520065,
@@ -63,12 +65,27 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Forwarded node definition repoPaths keys to the native broker via AGENT_RELAY_NODE_REPO_KEYS so nodes register repo_keys and repo:<owner/name> tags and repo-based placement can match. Validated placement-safe keys once at the env boundary so neither the repo_keys nor the repo: tag channel can carry a path-shaped value, and honored an explicitly empty operator preset so operators can clear stale advertisements.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "11f97cbe4",
+    "525560c8f"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_yk755jcjbnfm/trajectory.json",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/runtime/init.rs",
+    "packages/cli/src/cli/lib/broker-lifecycle.test.ts",
+    "packages/cli/src/cli/lib/fleet-sidecar.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "931bc38d6185c1b1e233f4d32c67e09cd0f9815d",
-    "endRef": "931bc38d6185c1b1e233f4d32c67e09cd0f9815d"
+    "endRef": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697",
+    "traceId": "2fac979c-be70-4e49-a0b3-acbd1d739f98"
   }
 }
