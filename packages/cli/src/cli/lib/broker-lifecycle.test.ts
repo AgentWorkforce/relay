@@ -9,6 +9,7 @@ import {
   describeErrorWithCause,
   getBrokerStatusWithRetry,
   isBundledBunExecutableEntrypoint,
+  nodeRepoPathsForBroker,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
@@ -32,6 +33,19 @@ describe('isBundledBunExecutableEntrypoint', () => {
         cliScript: '/project/cli.js',
       } as CoreDependencies)
     ).toBe(false);
+  });
+});
+
+describe('nodeRepoPathsForBroker', () => {
+  it('serializes the definition map for the local broker process', () => {
+    expect(
+      nodeRepoPathsForBroker({ repoPaths: { 'AgentWorkforce/relay': '/srv/checkouts/relay' } })
+    ).toBe('{"AgentWorkforce/relay":"/srv/checkouts/relay"}');
+  });
+
+  it('keeps an explicit empty map authoritative and leaves an absent map unset', () => {
+    expect(nodeRepoPathsForBroker({ repoPaths: {} })).toBe('{}');
+    expect(nodeRepoPathsForBroker({})).toBeUndefined();
   });
 });
 

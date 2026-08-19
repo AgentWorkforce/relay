@@ -77,6 +77,8 @@ const DEFAULT_BROKER_BASE_PORT = 3888;
 const CONNECTION_FILENAME = 'connection.json';
 const BACKGROUND_START_ERROR_FILENAME = 'background-start-error.log';
 export const WORKSPACE_BINDING_SOURCE_ENV = 'AGENT_RELAY_WORKSPACE_SOURCE';
+/** Local-only node repository map inherited by the native broker. */
+export const NODE_REPO_PATHS_ENV = 'AGENT_RELAY_NODE_REPO_PATHS';
 const STATUS_POLL_INTERVAL_MS = 500;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
 const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
@@ -1513,6 +1515,10 @@ type NodeDefinitionPlan =
   | { mode: 'in-process'; definition: FleetNodeDefinition }
   | { mode: 'child-node'; configPath: string; descriptor: NodeDefinitionDescriptor };
 
+type NodeRepoPathsSource = {
+  repoPaths?: Readonly<Record<string, string>>;
+};
+
 /**
  * Decide how to serve `configPath` and gather what the broker needs before it
  * starts (capacity, and a hard failure on a bad explicit --config).
@@ -1538,6 +1544,24 @@ function planCapacitySource(
     return undefined;
   }
   return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
+}
+
+/**
+ * Serialize a definition's node-local checkout map for the broker child.
+ *
+ * This never reaches a Fleet registration frame: the broker only receives it
+ * through its inherited environment, while the definition registration emits
+ * the corresponding repository keys separately.
+ */
+export function nodeRepoPathsForBroker(source: NodeRepoPathsSource | undefined): string | undefined {
+  return source?.repoPaths === undefined ? undefined : JSON.stringify(source.repoPaths);
+}
+
+function planRepoPathsForBroker(plan: NodeDefinitionPlan | undefined): string | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  return nodeRepoPathsForBroker(plan.mode === 'in-process' ? plan.definition : plan.descriptor);
 }
 
 /**
@@ -1890,6 +1914,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       teamsConfig,
       planCapacitySource(nodePlan)
     );
+    // Keep checkout paths on the receiving machine. The native broker resolves
+    // assignment.repo against this map immediately before spawning; registration
+    // only receives the key-derived data provided by the node definition.
+    const nodeRepoPaths = planRepoPathsForBroker(nodePlan);
+    if (nodeRepoPaths !== undefined) {
+      deps.env[NODE_REPO_PATHS_ENV] = nodeRepoPaths;
+    }
 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).

@@ -115,6 +115,7 @@ if (describeOnly) {
     name: definition.name,
     capabilities: Object.keys(definition.capabilities || {}),
     ...(typeof definition.maxAgents === 'number' ? { maxAgents: definition.maxAgents } : {}),
+    ...(definition.repoPaths ? { repoPaths: definition.repoPaths } : {}),
   };
   console.log('__AGENT_RELAY_NODE_DESCRIPTOR__' + JSON.stringify(descriptor));
   return;
@@ -256,6 +257,8 @@ export type NodeDefinitionDescriptor = {
   name: string;
   capabilities: string[];
   maxAgents?: number;
+  /** Local-only map relayed to the broker process, never to the Fleet wire. */
+  repoPaths?: Record<string, string>;
 };
 
 /**
@@ -273,11 +276,24 @@ export function parseNodeDescriptor(stdout: string): NodeDefinitionDescriptor | 
     return undefined;
   }
   const parsed = JSON.parse(last.slice(NODE_DESCRIPTOR_MARKER.length)) as NodeDefinitionDescriptor;
+  const repoPaths = stringRecord(parsed.repoPaths);
   return {
     name: parsed.name,
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
     ...(typeof parsed.maxAgents === 'number' ? { maxAgents: parsed.maxAgents } : {}),
+    ...(repoPaths ? { repoPaths } : {}),
   };
+}
+
+function stringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value);
+  if (!entries.every(([key, entry]) => Boolean(key) && typeof entry === 'string')) {
+    return undefined;
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /**
