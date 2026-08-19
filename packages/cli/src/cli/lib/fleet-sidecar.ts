@@ -87,16 +87,18 @@ export type NodeRepoKeySource = { repoPaths?: Readonly<Record<string, string>> }
  * - `repoPaths` present -> the sorted keys, possibly the empty string, which
  *   authoritatively clears stale repository advertisements on the control plane.
  *
- * A pre-set value is the operator's authoritative declaration and wins verbatim,
- * matching {@link resolveNodeCapacityHarnesses}.
+ * A pre-set value is the operator's authoritative declaration and wins verbatim.
+ * Unlike {@link resolveNodeCapacityHarnesses}, an explicitly EMPTY preset is
+ * honored rather than treated as unset: it is how an operator clears a
+ * configured node's stale advertisements, so falling through to the definition
+ * there would silently re-publish the keys they just cleared.
  */
 export function resolveNodeRepoKeys(
   preset: string | undefined,
   definition?: NodeRepoKeySource
 ): string | undefined {
-  const trimmed = preset?.trim();
-  if (trimmed) {
-    return trimmed;
+  if (preset !== undefined) {
+    return preset.trim();
   }
   if (!definition || definition.repoPaths === undefined) {
     return undefined;

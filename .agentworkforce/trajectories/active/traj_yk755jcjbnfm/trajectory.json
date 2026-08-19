@@ -1,0 +1,74 @@
+{
+  "id": "traj_yk755jcjbnfm",
+  "version": 1,
+  "task": {
+    "title": "Fix #1582: repoPaths never reaches native-broker node registration",
+    "source": {
+      "system": "plain",
+      "id": "1582"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-08-19T13:51:50.554Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-19T13:52:00.064Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_032fxb0984sd",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-19T13:52:00.064Z",
+      "events": [
+        {
+          "ts": 1787147520065,
+          "type": "decision",
+          "content": "Carried repo keys to the native broker via AGENT_RELAY_NODE_REPO_KEYS env, not a new IPC or wire field: Carried repo keys to the native broker via AGENT_RELAY_NODE_REPO_KEYS env, not a new IPC or wire field",
+          "raw": {
+            "question": "Carried repo keys to the native broker via AGENT_RELAY_NODE_REPO_KEYS env, not a new IPC or wire field",
+            "chosen": "Carried repo keys to the native broker via AGENT_RELAY_NODE_REPO_KEYS env, not a new IPC or wire field",
+            "alternatives": [],
+            "reasoning": "The broker builds its own registration manifest in Rust; the only existing CLI->broker channel into that manifest is env (AGENT_RELAY_NODE_HARNESSES, AGENT_RELAY_NODE_MAX_AGENTS). Reusing that seam keeps the change symmetric with existing capacity plumbing, works identically for the in-process and compiled-binary (--describe child) serving modes, and needs no @relaycast/sdk or protocol version bump."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787147520573,
+          "type": "decision",
+          "content": "Broker emits BOTH repo_keys and repo:<owner/name> tags: Broker emits BOTH repo_keys and repo:<owner/name> tags",
+          "raw": {
+            "question": "Broker emits BOTH repo_keys and repo:<owner/name> tags",
+            "chosen": "Broker emits BOTH repo_keys and repo:<owner/name> tags",
+            "alternatives": [],
+            "reasoning": "packages/sdk relaycast-translate readRepoKeys reads repoKeys/repo_keys first but falls back to repo: tags because the engine roster row has no dedicated repo field. Emitting only repo_keys would leave placement unable to match on rosters that drop the field."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787147521108,
+          "type": "decision",
+          "content": "Presence of repoPaths is the signal; absent env leaves registration untouched: Presence of repoPaths is the signal; absent env leaves registration untouched",
+          "raw": {
+            "question": "Presence of repoPaths is the signal; absent env leaves registration untouched",
+            "chosen": "Presence of repoPaths is the signal; absent env leaves registration untouched",
+            "alternatives": [],
+            "reasoning": "Mirrors nodeRegistrationTags' documented backward-compat contract. Set-but-empty maps to repo_keys: [] which build_node_register deliberately preserves so a node can clear stale advertisements."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "931bc38d6185c1b1e233f4d32c67e09cd0f9815d",
+    "endRef": "931bc38d6185c1b1e233f4d32c67e09cd0f9815d"
+  }
+}

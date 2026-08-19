@@ -672,6 +672,24 @@ describe('runUpCommand repoPaths registration keys', () => {
     expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('Operator/override');
   });
 
+  it('honors an explicitly empty operator preset over a definition that declares repoPaths', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    // How an operator clears a CONFIGURED node's stale advertisements. Falling
+    // through to the definition here would silently re-publish what they cleared.
+    (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_REPO_KEYS = '';
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      `export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [], repoPaths: ${JSON.stringify(
+        { 'AgentWorkforce/relay': pathReal.join(projectRoot, 'checkouts', 'relay') }
+      )} };\n`
+    );
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('');
+  });
+
   it('clears stale advertisements with an explicit empty repoPaths map', async () => {
     const { deps, projectRoot } = createUpHarness();
     fsReal.writeFileSync(

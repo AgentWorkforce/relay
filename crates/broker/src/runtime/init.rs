@@ -904,13 +904,18 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
 /// for definitions that declare no `repoPaths`. A set-but-empty value yields
 /// `Some([])`, which authoritatively clears stale repository advertisements on
 /// the control plane.
+///
+/// Validation happens HERE rather than only in `build_node_register`, because
+/// the derived `repo:<key>` tags are copied to the wire verbatim. Filtering one
+/// channel and not the other would publish a path-shaped operator typo as a tag
+/// and leave the node's two repository advertisements disagreeing.
 fn node_repo_keys() -> Option<Vec<String>> {
     let raw = std::env::var("AGENT_RELAY_NODE_REPO_KEYS").ok()?;
     let mut seen = std::collections::HashSet::new();
     Some(
         raw.split(',')
             .map(|entry| entry.trim().to_string())
-            .filter(|entry| !entry.is_empty())
+            .filter(|entry| crate::node_control::is_placement_repo_key(entry))
             .filter(|entry| seen.insert(entry.clone()))
             .collect(),
     )
@@ -1153,6 +1158,31 @@ mod tests {
                 "repo:AgentWorkforce/factory".to_string(),
             ],
             "registration must also carry repo:<key> tags, which placement reads when the roster row has no dedicated repo field"
+        );
+    }
+
+    #[test]
+    fn a_path_shaped_repo_key_never_reaches_either_wire_channel() {
+        // `build_node_register` filters `repo_keys` but copies `tags` verbatim,
+        // so validating only there would publish an operator's path-shaped typo
+        // as a `repo:/srv/...` tag -- placement falls back to those tags, and
+        // the node's local checkout layout is exactly what the Fleet wire's
+        // privacy boundary exists to keep off the control plane.
+        let _env = set_repo_keys_env(Some(
+            "AgentWorkforce/relay,/srv/repos/relay,../relay,AgentWorkforce/relay/extra",
+        ));
+
+        let register = bootstrap_node_register();
+
+        assert_eq!(
+            register.repo_keys,
+            Some(vec!["AgentWorkforce/relay".to_string()])
+        );
+        assert_eq!(register.tags, vec!["repo:AgentWorkforce/relay".to_string()]);
+        let encoded = serde_json::to_string(&register).unwrap();
+        assert!(
+            !encoded.contains("/srv/repos/relay"),
+            "a path-shaped key must not be serialized on any channel: {encoded}"
         );
     }
 
