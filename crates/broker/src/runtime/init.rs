@@ -277,7 +277,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // configuration, so keep them in the broker and resolve the key immediately
     // before every spawn rather than trusting a dispatcher-supplied cwd.
     let node_repo_paths = super::relaycast_events::load_node_repo_paths_from_env()?;
-    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    let node_repo_keys = super::relaycast_events::node_repo_keys(&node_repo_paths);
+    let node_manifest =
+        bootstrap_node_manifest(&node_name, &node_id, &broker_version, node_repo_keys);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -865,7 +867,12 @@ const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode
 /// placement for the whole workspace. The harness set comes from the
 /// `AGENT_RELAY_NODE_HARNESSES` CSV (the CLI sets it from the project's
 /// teams.json / node definition), falling back to a built-in default.
-fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
+fn bootstrap_node_manifest(
+    node_name: &str,
+    node_id: &str,
+    broker_version: &str,
+    repo_keys: Vec<String>,
+) -> NodeManifest {
     let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
         .into_iter()
         .map(|harness| crate::protocol::NodeCapabilityManifest {
@@ -885,7 +892,7 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         capabilities,
         max_agents: node_max_agents(),
         tags: None,
-        repo_keys: None,
+        repo_keys: (!repo_keys.is_empty()).then_some(repo_keys),
         version: Some(broker_version.to_string()),
     }
 }
@@ -1011,7 +1018,8 @@ mod tests {
         // all `kind: "capacity"`. It must never advertise a bare `"spawn"`, which
         // the engine would materialize as a generic action pinned to this node,
         // hijacking capability-based spawn placement for the whole workspace.
-        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        let manifest =
+            bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1", Vec::new());
         assert!(
             !manifest.capabilities.is_empty(),
             "broker manifest must advertise its capacity"
@@ -1096,6 +1104,36 @@ mod tests {
             callback_host_for_url("::", SocketAddr::from((Ipv6Addr::UNSPECIFIED, 3889))),
             "[::1]"
         );
+    }
+
+    #[test]
+    fn bootstrap_node_manifest_advertises_only_keys_from_the_runtime_map() {
+        let private_path = "/node-private/checkouts/factory";
+        let repo_paths = BTreeMap::from([(
+            "AgentWorkforce/factory".to_string(),
+            PathBuf::from(private_path),
+        )]);
+        let manifest = bootstrap_node_manifest(
+            "node-a",
+            "node_a",
+            "relay-broker/9.1.1",
+            super::relaycast_events::node_repo_keys(&repo_paths),
+        );
+        let register = crate::node_control::build_node_register(
+            &manifest,
+            "node-default",
+            "host-default",
+            "relay-broker/default",
+            None,
+        );
+        let wire = serde_json::to_string(&crate::fleet_wire::BrokerToRelaycast::NodeRegister(
+            register,
+        ))
+        .expect("serialize node.register");
+
+        assert!(wire.contains("AgentWorkforce/factory"), "{wire}");
+        assert!(!wire.contains(private_path), "{wire}");
+        assert!(!wire.contains("repo_paths"), "{wire}");
     }
 
     #[test]
