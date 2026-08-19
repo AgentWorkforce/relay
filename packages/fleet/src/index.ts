@@ -99,10 +99,10 @@ export interface FleetNodeDefinitionInput {
   triggers?: FleetTriggerDescriptor[];
   tags?: string[];
   /**
-    * Node-local absolute checkout paths keyed by `owner/repo`.
-    * Registration advertises only the keys; path values remain node-private.
-    */
-   repoPaths?: FleetRepoPaths;
+   * Node-local absolute checkout paths keyed by `owner/repo`.
+   * Registration advertises only the keys; path values remain node-private.
+   */
+  repoPaths?: FleetRepoPaths;
   version?: string;
 }
 
