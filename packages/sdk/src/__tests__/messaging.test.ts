@@ -5,6 +5,8 @@ import {
   normalizeInbox,
   normalizeMessagingEvent,
   normalizeThread,
+  replayMessageMetadata,
+  resolveReplaySessionRef,
   type RelayMessagingEvent,
 } from '../messaging/index.js';
 import { toRelayNode } from '../messaging/relaycast-translate.js';
@@ -280,6 +282,18 @@ function createAgentClient() {
 }
 
 describe('RelaycastMessagingClient', () => {
+  it('normalizes inherited replay ids and preserves an explicit message session reference', () => {
+    expect(resolveReplaySessionRef('  session-current  ')).toBe('session-current');
+    expect(resolveReplaySessionRef('x'.repeat(256))).toBeUndefined();
+    expect(replayMessageMetadata({ work_unit_id: 'relay#1522' }, 'session-current')).toEqual({
+      work_unit_id: 'relay#1522',
+      session_ref: 'session-current',
+    });
+    expect(replayMessageMetadata({ session_ref: 'session-explicit' }, 'session-current')).toEqual({
+      session_ref: 'session-explicit',
+    });
+  });
+
   it('publishes canonical session events to local listeners and Relaycast storage', async () => {
     const workspace = createWorkspace();
     const messaging = new RelaycastMessagingClient({ relaycast: workspace });
@@ -528,7 +542,11 @@ describe('RelaycastMessagingClient', () => {
   it('delegates write operations through an agent client and normalizes responses', async () => {
     const workspace = createWorkspace();
     const { client: agentClient } = createAgentClient();
-    const client = new RelaycastMessagingClient({ relaycast: workspace, agentClient });
+    const client = new RelaycastMessagingClient({
+      relaycast: workspace,
+      agentClient,
+      sessionRef: 'session-replay-1',
+    });
 
     const sent = await client.messages.send({
       channel: '#general',
@@ -536,16 +554,20 @@ describe('RelaycastMessagingClient', () => {
       attachments: [{ type: 'link', url: 'https://example.com/repro', label: 'repro' }],
       mode: 'steer',
       idempotencyKey: 'idem-1',
+      metadata: { work_unit_id: 'relay#1522' },
     });
     expect(agentClient.send).toHaveBeenCalledWith('#general', 'sent', {
       attachments: ['{"type":"link","url":"https://example.com/repro","label":"repro"}'],
+      data: { work_unit_id: 'relay#1522', session_ref: 'session-replay-1' },
       mode: 'steer',
       idempotencyKey: 'idem-1',
     });
     expect(sent).toMatchObject({ id: 'm-send', kind: 'channel', channel: { name: 'general' } });
 
     const direct = await client.messages.direct({ to: 'Lead', text: 'direct' });
-    expect(agentClient.dm).toHaveBeenCalledWith('Lead', 'direct', {});
+    expect(agentClient.dm).toHaveBeenCalledWith('Lead', 'direct', {
+      data: { session_ref: 'session-replay-1' },
+    });
     expect(direct).toMatchObject({
       id: 'dm-send',
       kind: 'dm',
@@ -562,8 +584,15 @@ describe('RelaycastMessagingClient', () => {
       { participants: ['Lead', 'WorkerB'], name: 'team' },
       {}
     );
-    expect(agentClient.dms.sendMessage).toHaveBeenCalledWith('gdm-1', 'group direct', {});
+    expect(agentClient.dms.sendMessage).toHaveBeenCalledWith('gdm-1', 'group direct', {
+      data: { session_ref: 'session-replay-1' },
+    });
     expect(groupDirect).toMatchObject({ id: 'gdm-send', kind: 'group_dm', conversationId: 'gdm-1' });
+
+    await client.messages.reply({ messageId: 'm-1', text: 'thread reply' });
+    expect(agentClient.reply).toHaveBeenCalledWith('m-1', 'thread reply', {
+      data: { session_ref: 'session-replay-1' },
+    });
   });
 
   it('normalizes threads and inbox payloads', async () => {

@@ -113,6 +113,7 @@ export interface RelaySendMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayReplyInput {
@@ -122,6 +123,7 @@ export interface RelayReplyInput {
   text: string;
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayReactInput {
@@ -138,6 +140,7 @@ export interface RelayDirectInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 /** Messaging surface plus the high-level overloads documented in the README. */
@@ -263,6 +266,7 @@ export function createEnrichedMessages(
         attachments: sendInput.attachments,
         mode: sendInput.mode,
         idempotencyKey: sendInput.idempotencyKey,
+        metadata: sendInput.metadata,
       });
     }
     if (isChannelTarget(sendInput.to)) {
@@ -273,6 +277,7 @@ export function createEnrichedMessages(
         attachments: sendInput.attachments,
         mode: sendInput.mode,
         idempotencyKey: sendInput.idempotencyKey,
+        metadata: sendInput.metadata,
       });
     }
     return messages.direct({
@@ -281,6 +286,7 @@ export function createEnrichedMessages(
       attachments: sendInput.attachments,
       mode: sendInput.mode,
       idempotencyKey: sendInput.idempotencyKey,
+      metadata: sendInput.metadata,
     });
   };
 
@@ -291,6 +297,7 @@ export function createEnrichedMessages(
       text: input.text,
       blocks: input.blocks,
       idempotencyKey: input.idempotencyKey,
+      metadata: input.metadata,
     });
   };
 
@@ -311,6 +318,7 @@ export function createEnrichedMessages(
       attachments: input.attachments,
       mode: input.mode,
       idempotencyKey: input.idempotencyKey,
+      metadata: input.metadata,
     });
   };
 

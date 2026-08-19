@@ -101,15 +101,27 @@ export interface RelayAgentThinClient {
   send(
     channel: string,
     text: string,
-    options?: { attachments?: string[]; mode?: RelayMessageMode }
+    options?: {
+      attachments?: string[];
+      data?: Record<string, unknown> | null;
+      mode?: RelayMessageMode;
+    }
   ): Promise<unknown>;
   messages(channel: string, options?: RelayMessageListOptions): Promise<unknown[]>;
-  reply(messageId: string, text: string): Promise<unknown>;
+  reply(
+    messageId: string,
+    text: string,
+    options?: { data?: Record<string, unknown> | null }
+  ): Promise<unknown>;
   thread(messageId: string, options?: { limit?: number }): Promise<unknown>;
   dm(
     to: string,
     text: string,
-    options?: { mode?: RelayMessageMode; attachments?: string[] }
+    options?: {
+      mode?: RelayMessageMode;
+      attachments?: string[];
+      data?: Record<string, unknown> | null;
+    }
   ): Promise<unknown>;
   readonly dms: {
     conversations(): Promise<unknown[]>;
@@ -118,7 +130,11 @@ export interface RelayAgentThinClient {
     sendMessage(
       conversationId: string,
       text: string,
-      options?: { attachments?: string[]; mode?: RelayMessageMode }
+      options?: {
+        attachments?: string[];
+        data?: Record<string, unknown> | null;
+        mode?: RelayMessageMode;
+      }
     ): Promise<unknown>;
   };
   readonly channels: {

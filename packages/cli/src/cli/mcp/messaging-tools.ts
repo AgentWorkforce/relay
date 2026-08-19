@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { replayMessageMetadata } from '@agent-relay/sdk';
 import { z } from 'zod';
 
 import {
@@ -233,7 +234,13 @@ export function registerMessagingTools(
       },
     },
     async ({ channel, text, attachments, mode, as }) =>
-      jsonContent(await getAgentClient(as).send(channel, text, { attachments, mode }))
+      jsonContent(
+        await getAgentClient(as).send(channel, text, {
+          attachments,
+          data: replayMessageMetadata(),
+          mode,
+        })
+      )
   );
 
   server.registerTool(
@@ -281,7 +288,8 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ message_id, text, as }) => jsonContent(await getAgentClient(as).reply(message_id, text))
+    async ({ message_id, text, as }) =>
+      jsonContent(await getAgentClient(as).reply(message_id, text, { data: replayMessageMetadata() }))
   );
 
   server.registerTool(
@@ -337,7 +345,11 @@ export function registerMessagingTools(
     async ({ to, text, mode, attachments, as }) => {
       const agents = await listAgentsForRecipientResolution?.();
       const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
-      const message = await getAgentClient(as).dm(to, text, { mode, attachments });
+      const message = await getAgentClient(as).dm(to, text, {
+        mode,
+        attachments,
+        data: replayMessageMetadata(),
+      });
       const receipt = directMessageReceipt(message, to, mode, resolvedRecipient);
       const result = jsonContent(receipt);
       return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
@@ -386,7 +398,9 @@ export function registerMessagingTools(
     async ({ participants, name, text, as }) => {
       const client = getAgentClient(as);
       const conversation = await client.dms.createGroup({ participants, name });
-      const message = await client.dms.sendMessage(conversation.id, text);
+      const message = await client.dms.sendMessage(conversation.id, text, {
+        data: replayMessageMetadata(),
+      });
       return jsonContent({ conversation, message });
     }
   );

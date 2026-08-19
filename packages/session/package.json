@@ -40,5 +40,8 @@
     "url": "git+https://github.com/AgentWorkforce/relay.git",
     "directory": "packages/session"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@relaycast/sdk": "^8.0.7"
+  }
 }

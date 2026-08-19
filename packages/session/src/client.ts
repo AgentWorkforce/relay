@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
+import { RelayCast, type SessionMessagesResult } from '@relaycast/sdk';
+
+import { buildReplayContextPrompt, buildReplayTimeline } from './replay.js';
 import { buildContextPrompt, determineResumeMode } from './resume.js';
 import type {
+  ReplayConversationResult,
   ReplaySessionResult,
   RelaySession,
   ResumeSessionResult,
@@ -29,6 +33,19 @@ export interface SessionClientOptions {
   onWriteError?: (error: Error) => void;
   /** Bound on a single Relayhistory HTTP round trip, in milliseconds. Defaults to 15000. */
   timeoutMs?: number;
+  /** Relaycast workspace key used for the workspace-wide replay join. */
+  workspaceKey?: string;
+  /** Relaycast HTTP base URL. Defaults to RELAY_BASE_URL or the Relaycast SDK default. */
+  relaycastBaseUrl?: string;
+  /** Injectable Relaycast session reader, primarily for adapters and tests. */
+  relaycast?: RelaycastSessionReader | null;
+}
+
+export interface RelaycastSessionReader {
+  bySessionRef(
+    sessionRef: string,
+    options?: { limit?: number; after?: string }
+  ): Promise<SessionMessagesResult>;
 }
 
 export interface CreateSessionInput {
@@ -80,6 +97,7 @@ const STEERING_ACTIONS = new Set<SteeringEvent['action']>(['session_started', 't
 const SLASH_CHAR_CODE = '/'.charCodeAt(0);
 /** Default bound on a single Relayhistory HTTP round trip. */
 const DEFAULT_TIMEOUT_MS = 15_000;
+const RELAYCAST_SESSION_PAGE_LIMIT = 500;
 /** Retries for a turn-index write that a concurrent writer clobbered. See `#postTurnAtNextIndex`. */
 const MAX_WRITE_CONFLICT_RETRIES = 3;
 
@@ -94,6 +112,7 @@ export class SessionClient {
   readonly #randomUUID: () => string;
   readonly #onWriteError: ((error: Error) => void) | undefined;
   readonly #timeoutMs: number;
+  readonly #relaycast: RelaycastSessionReader | undefined;
   readonly #queues = new Map<string, Promise<void>>();
 
   constructor(options: SessionClientOptions = {}) {
@@ -122,6 +141,22 @@ export class SessionClient {
     this.#randomUUID = options.randomUUID ?? randomUUID;
     this.#onWriteError = options.onWriteError;
     this.#timeoutMs = normalizeTimeoutMs(options.timeoutMs);
+    const workspaceKey =
+      trimOrUndefined(options.workspaceKey) ??
+      trimOrUndefined(process.env.RELAY_WORKSPACE_KEY) ??
+      trimOrUndefined(process.env.AGENT_RELAY_WORKSPACE_KEY);
+    const relaycastBaseUrl =
+      trimOrUndefined(options.relaycastBaseUrl) ?? trimOrUndefined(process.env.RELAY_BASE_URL);
+    this.#relaycast =
+      options.relaycast === null
+        ? undefined
+        : (options.relaycast ??
+          (workspaceKey
+            ? new RelayCast({
+                apiKey: workspaceKey,
+                ...(relaycastBaseUrl ? { baseUrl: relaycastBaseUrl } : {}),
+              }).messages
+            : undefined));
   }
 
   async createSession(input: CreateSessionInput): Promise<RelaySession> {
@@ -219,12 +254,22 @@ export class SessionClient {
     };
   }
 
-  /** Reconstruct a completed session as Relayhistory context without mutating its harness. */
+  /** Reconstruct a completed session across Relayhistory and Relaycast without mutating its harness. */
   async replaySession(sessionId: string): Promise<ReplaySessionResult> {
-    const state = await this.#fetchState(sessionId);
+    const [state, conversation] = await Promise.all([
+      this.#fetchState(sessionId),
+      this.#fetchConversation(sessionId),
+    ]);
     const session = cloneSession(state.session);
     const turns = state.turns.map(cloneTurn);
-    return { session, turns, contextPrompt: buildContextPrompt(session, turns) };
+    const timeline = buildReplayTimeline(turns, conversation);
+    return {
+      session,
+      turns,
+      conversation,
+      timeline,
+      contextPrompt: buildReplayContextPrompt(session, timeline, conversation),
+    };
   }
 
   async recordSteering(input: RecordSteeringInput): Promise<void> {
@@ -384,6 +429,86 @@ export class SessionClient {
     });
   }
 
+  async #fetchConversation(sessionId: string): Promise<ReplayConversationResult> {
+    if (!this.#relaycast) {
+      return unavailableConversation(sessionId, 'workspace_key_unavailable');
+    }
+
+    const seenCursors = new Set<string>();
+    const seenMessages = new Set<string>();
+    const messages: SessionMessagesResult['messages'] = [];
+    let after: string | undefined;
+    let first: SessionMessagesResult | undefined;
+    let latest: SessionMessagesResult | undefined;
+    let availability: SessionMessagesResult['availability'] = 'retained';
+    let reason: SessionMessagesResult['reason'];
+
+    try {
+      for (;;) {
+        const page = await this.#relaycast.bySessionRef(sessionId, {
+          limit: RELAYCAST_SESSION_PAGE_LIMIT,
+          ...(after ? { after } : {}),
+        });
+        if (page.sessionRef !== sessionId) {
+          return unavailableConversation(sessionId, 'response_invalid');
+        }
+        if (page.availability === 'unknown') {
+          return {
+            ...structuredClone(page),
+            messages: [],
+            page: { nextCursor: null, hasMore: false },
+          };
+        }
+        if (page.availability === 'aged_out') {
+          return {
+            ...structuredClone(page),
+            messages: [],
+            page: { nextCursor: null, hasMore: false },
+          };
+        }
+
+        first ??= page;
+        latest = page;
+        if (availabilityRank(page.availability) > availabilityRank(availability)) {
+          availability = page.availability;
+          reason = page.reason;
+        } else if (!reason && page.reason) {
+          reason = page.reason;
+        }
+        for (const message of page.messages) {
+          if (!seenMessages.has(message.id)) {
+            seenMessages.add(message.id);
+            messages.push(structuredClone(message));
+          }
+        }
+
+        if (!page.page.hasMore) break;
+        const cursor = page.page.nextCursor;
+        if (!cursor || seenCursors.has(cursor)) {
+          return unavailableConversation(sessionId, 'pagination_incomplete');
+        }
+        seenCursors.add(cursor);
+        after = cursor;
+      }
+    } catch {
+      return unavailableConversation(sessionId, 'query_failed');
+    }
+
+    if (!first || !latest) {
+      return unavailableConversation(sessionId, 'response_invalid');
+    }
+    return {
+      sessionRef: sessionId,
+      availability,
+      ...(reason ? { reason } : {}),
+      retention: structuredClone(latest.retention),
+      sessionStartedAt: first.sessionStartedAt,
+      sessionLastMessageAt: latest.sessionLastMessageAt,
+      messages,
+      page: { nextCursor: null, hasMore: false },
+    };
+  }
+
   async #request(path: string, init: RequestInit = {}): Promise<unknown> {
     if (!this.#baseUrl) {
       throw new Error('RELAYHISTORY_URL is required to use @agent-relay/session');
@@ -428,6 +553,41 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   const baseUrl = stripTrailingSlashes(value?.trim());
   if (!baseUrl) return undefined;
   return baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
+}
+
+function unavailableConversation(
+  sessionRef: string,
+  reason: 'workspace_key_unavailable' | 'pagination_incomplete' | 'query_failed' | 'response_invalid'
+): ReplayConversationResult {
+  return {
+    sessionRef,
+    availability: 'unknown',
+    reason,
+    retention: {
+      policy: 'unknown',
+      messageTtlDays: null,
+      retainedSince: null,
+      source: 'unknown',
+      reason: 'boundary_unavailable',
+    },
+    sessionStartedAt: null,
+    sessionLastMessageAt: null,
+    messages: [],
+    page: { nextCursor: null, hasMore: false },
+  };
+}
+
+function availabilityRank(value: SessionMessagesResult['availability']): number {
+  switch (value) {
+    case 'retained':
+      return 0;
+    case 'partial':
+      return 1;
+    case 'aged_out':
+      return 2;
+    case 'unknown':
+      return 3;
+  }
 }
 
 /** A blank or whitespace-only string is treated as absent, not as a value. */

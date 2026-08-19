@@ -119,7 +119,7 @@
     "@agentworkforce/delivery": "^4.1.23",
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
-    "@relaycast/sdk": "^8.0.0",
+    "@relaycast/sdk": "^8.0.7",
     "@relayfile/relay-helpers": "^0.4.6",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/better-sqlite3": "^7.6.13",

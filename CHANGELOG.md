@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `relay session replay <id>` now joins Relayhistory turns with the cross-node Relaycast conversation and displays its effective retention boundary and incomplete-coverage warnings.
+- Relay channel, thread, direct, and group-message writes now stamp the current `RELAY_ATTEST_SESSION_ID` as replay metadata.
 
 ## [11.8.1] - 2026-08-20
 
