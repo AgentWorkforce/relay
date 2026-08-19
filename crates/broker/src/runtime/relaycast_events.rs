@@ -154,18 +154,22 @@ pub(super) fn relaycast_spawn_worker_cwd(ws_value: &Value) -> Result<Option<Stri
 }
 
 /// Resolve the repository key carried by a Factory placement. A present
-/// assignment is authoritative even when it is malformed: treating an empty or
-/// invalid key as absent would re-enable fallback to a remotely supplied cwd.
-fn relaycast_assignment_repo(ws_value: &Value) -> Result<Option<&str>> {
-    let Some(assignment) = ws_value.get("assignment") else {
+/// placement field is authoritative even when it is malformed: treating an
+/// empty or invalid key as absent would re-enable fallback to a remotely
+/// supplied cwd.
+fn relaycast_placement_repo(ws_value: &Value) -> Result<Option<&str>> {
+    let Some(candidate) = ws_value
+        .get("assignment")
+        .and_then(|assignment| assignment.get("repo"))
+        .or_else(|| ws_value.get("repo"))
+    else {
         return Ok(None);
     };
-    let repo = assignment
-        .get("repo")
-        .and_then(Value::as_str)
+    let repo = candidate
+        .as_str()
         .map(str::trim)
         .filter(|repo| !repo.is_empty())
-        .context("assignment.repo must be a non-empty string")?;
+        .context("assignment.repo or repo must be a non-empty string")?;
     Ok(Some(repo))
 }
 
@@ -179,7 +183,7 @@ pub(super) fn relaycast_spawn_worker_cwd_for_node(
     ws_value: &Value,
     node_repo_paths: &BTreeMap<String, PathBuf>,
 ) -> Result<Option<String>> {
-    let Some(repo) = relaycast_assignment_repo(ws_value)? else {
+    let Some(repo) = relaycast_placement_repo(ws_value)? else {
         return relaycast_spawn_worker_cwd(ws_value);
     };
 
@@ -1376,6 +1380,26 @@ mod tests {
         .expect("mapped repository assignment should resolve");
 
         assert_eq!(cwd.as_deref(), checkout.path().to_str());
+    }
+
+    #[test]
+    fn top_level_repo_resolves_to_the_node_local_checkout() {
+        let checkout = tempfile::tempdir().expect("local checkout fixture");
+        let remote_cwd = tempfile::tempdir().expect("remote cwd fixture");
+        let paths = node_repo_paths("AgentWorkforce/relay", checkout.path());
+
+        let cwd = relaycast_spawn_worker_cwd_for_node(
+            &json!({
+                "assignment": { "project": "factory" },
+                "repo": "AgentWorkforce/relay",
+                "worker_cwd": remote_cwd.path(),
+            }),
+            &paths,
+        )
+        .expect("top-level repository placement should resolve locally");
+
+        assert_eq!(cwd.as_deref(), checkout.path().to_str());
+        assert_ne!(cwd.as_deref(), remote_cwd.path().to_str());
     }
 
     #[test]
