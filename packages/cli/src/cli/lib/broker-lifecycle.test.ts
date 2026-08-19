@@ -672,6 +672,19 @@ describe('runUpCommand repoPaths registration keys', () => {
     expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('Operator/override');
   });
 
+  it('sets nothing when the project has no node definition at all', async () => {
+    // The common case, and what CI's standalone smoke exercises: plain `up` in a
+    // project with no agent-relay.* file. There is no node plan, so the broker
+    // must inherit exactly the environment it did before repo keys existed.
+    const { deps } = createUpHarness();
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env).toBeDefined();
+    expect(captured.env).not.toHaveProperty('AGENT_RELAY_NODE_REPO_KEYS');
+  });
+
   it('honors an explicitly empty operator preset over a definition that declares repoPaths', async () => {
     const { deps, projectRoot } = createUpHarness();
     // How an operator clears a CONFIGURED node's stale advertisements. Falling
