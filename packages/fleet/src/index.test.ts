@@ -6,6 +6,8 @@ import {
   defineDefaultLocalNode,
   defineNode,
   invokeNodeHandler,
+  nodeInfo,
+  nodeRegistrationTags,
   onMessage,
   spawn,
   triggerSyncInputs,
@@ -25,6 +27,33 @@ describe('@agent-relay/fleet', () => {
     expect(node.name).toBe('builder-1');
     expect(node.maxAgents).toBe(3);
     expect(node.capabilities['run:build']).toMatchObject({ name: 'run:build', kind: 'action' });
+  });
+
+  it('normalizes node-local repo paths without exposing values through node info', () => {
+    const node = defineNode({
+      name: 'builder-1',
+      repoPaths: {
+        ' AgentWorkforce/relay ': '/srv/checkouts/relay',
+        'AgentWorkforce/factory': 'C:\\work\\factory',
+      },
+      capabilities: { ping: async () => 'pong' },
+    });
+
+    expect(node.repoPaths).toEqual({
+      'AgentWorkforce/relay': '/srv/checkouts/relay',
+      'AgentWorkforce/factory': 'C:\\work\\factory',
+    });
+    expect(JSON.stringify(nodeInfo(node))).not.toContain('/srv/checkouts/relay');
+  });
+
+  it('preserves compatible repo tags when no local repo map is configured', () => {
+    const node = defineNode({
+      name: 'legacy-builder',
+      tags: ['arm64', 'repo:AgentWorkforce/relay'],
+      capabilities: { ping: async () => 'pong' },
+    });
+
+    expect(nodeRegistrationTags(node)).toEqual(['arm64', 'repo:AgentWorkforce/relay']);
   });
 
   it('accepts a plain async handler as an escape hatch', async () => {
@@ -234,6 +263,27 @@ describe('@agent-relay/fleet', () => {
         triggers: [onMessage({ match: /ship/i }, 'run')],
       })
     ).toThrow(/trigger regex flags are not supported yet/);
+    expect(() =>
+      defineNode({
+        name: 'x',
+        capabilities: { run: async () => undefined },
+        repoPaths: { '/Users/alice/relay': '/srv/relay' },
+      })
+    ).toThrow(/owner\/name/);
+    expect(() =>
+      defineNode({
+        name: 'x',
+        capabilities: { run: async () => undefined },
+        repoPaths: { 'AgentWorkforce/relay': 'relative/relay' },
+      })
+    ).toThrow(/absolute path/);
+    expect(() =>
+      defineNode({
+        name: 'x',
+        capabilities: { run: async () => undefined },
+        tags: ['repo:/Users/alice/relay'],
+      })
+    ).toThrow(/owner\/name/);
   });
 });
 
