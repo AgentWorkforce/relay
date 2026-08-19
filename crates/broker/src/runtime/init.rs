@@ -880,6 +880,7 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         capabilities,
         max_agents: node_max_agents(),
         tags: None,
+        repo_keys: None,
         version: Some(broker_version.to_string()),
     }
 }

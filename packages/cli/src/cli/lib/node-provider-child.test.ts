@@ -53,6 +53,63 @@ describe('parseNodeDescriptor', () => {
     expect(parseNodeDescriptor(stdout)).toEqual({ name: 'n', capabilities: ['spawn:claude'] });
   });
 
+  it('carries node-private repo paths across the local describe IPC', () => {
+    const repoPath = path.resolve('private-checkouts', 'relay');
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: ['spawn:codex'],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    })}\n`;
+
+    expect(parseNodeDescriptor(stdout)).toEqual({
+      name: 'n',
+      capabilities: ['spawn:codex'],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    });
+  });
+
+  it.each(['./repo', '../repo'])('rejects relative repo path %s from local describe IPC', (repoPath) => {
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { 'AgentWorkforce/relay': repoPath },
+    })}\n`;
+
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/absolute path/);
+  });
+
+  it.each(['./repo', '../repo'])('rejects path-shaped repo key %s from local describe IPC', (repoKey) => {
+    const stdout = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { [repoKey]: path.resolve('private-checkouts', 'relay') },
+    })}\n`;
+
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/owner\/repo format/);
+  });
+
+  it('uses the fleet validator for trimmed and duplicate repo keys', () => {
+    const repoPath = path.resolve('private-checkouts', 'relay');
+    const normalized = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { ' AgentWorkforce/relay ': repoPath },
+    })}\n`;
+    expect(parseNodeDescriptor(normalized)?.repoPaths).toEqual({
+      'AgentWorkforce/relay': repoPath,
+    });
+
+    const duplicate = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: {
+        'AgentWorkforce/relay': repoPath,
+        ' AgentWorkforce/relay ': path.resolve('private-checkouts', 'other'),
+      },
+    })}\n`;
+    expect(() => parseNodeDescriptor(duplicate)).toThrow(/duplicate key/);
+  });
+
   it('ignores output the config printed on import', () => {
     const stdout = [
       'booting my node...',

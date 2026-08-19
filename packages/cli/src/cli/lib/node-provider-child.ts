@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { normalizeFleetRepoPaths } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
@@ -115,6 +116,11 @@ if (describeOnly) {
     name: definition.name,
     capabilities: Object.keys(definition.capabilities || {}),
     ...(typeof definition.maxAgents === 'number' ? { maxAgents: definition.maxAgents } : {}),
+    // Local child -> CLI IPC only. The parent passes these values directly to
+    // its native broker; serveNode registration independently emits keys only.
+    ...(definition.repoPaths && typeof definition.repoPaths === 'object'
+      ? { repoPaths: definition.repoPaths }
+      : {}),
   };
   console.log('__AGENT_RELAY_NODE_DESCRIPTOR__' + JSON.stringify(descriptor));
   return;
@@ -256,6 +262,8 @@ export type NodeDefinitionDescriptor = {
   name: string;
   capabilities: string[];
   maxAgents?: number;
+  /** Node-private map carried only across local child-to-CLI IPC. */
+  repoPaths?: Readonly<Record<string, string>>;
 };
 
 /**
@@ -273,11 +281,17 @@ export function parseNodeDescriptor(stdout: string): NodeDefinitionDescriptor | 
     return undefined;
   }
   const parsed = JSON.parse(last.slice(NODE_DESCRIPTOR_MARKER.length)) as NodeDefinitionDescriptor;
+  const repoPaths = parseDescriptorRepoPaths(parsed.repoPaths);
   return {
     name: parsed.name,
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
     ...(typeof parsed.maxAgents === 'number' ? { maxAgents: parsed.maxAgents } : {}),
+    ...(repoPaths !== undefined ? { repoPaths } : {}),
   };
+}
+
+function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, string>> | undefined {
+  return normalizeFleetRepoPaths(value);
 }
 
 /**

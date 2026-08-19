@@ -204,6 +204,8 @@ export interface NodeManifest {
   capabilities: NodeCapabilityManifest[];
   max_agents?: number;
   tags?: string[];
+  /** Placement-safe repository keys. Absolute checkout paths never enter this manifest. */
+  repo_keys?: string[];
   version?: string;
 }
 
