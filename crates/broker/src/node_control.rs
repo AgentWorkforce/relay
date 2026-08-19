@@ -1145,11 +1145,19 @@ pub(crate) fn build_node_register(
         capabilities,
         max_agents: manifest.max_agents.unwrap_or(0),
         tags: manifest.tags.clone().unwrap_or_default(),
-        // NodeRegister performs the final placement-key validation in both
-        // serde directions. Preserve presence, including Some([]), so the
-        // control plane can distinguish legacy omission from an authoritative
-        // empty repository map.
-        repo_keys: manifest.repo_keys.clone(),
+        // Treat the Fleet wire as a privacy boundary: even an unvalidated
+        // manifest must never serialize a path-shaped or malformed value.
+        // Preserve Some([]) so an updated node can authoritatively clear stale
+        // repository advertisements on the control plane.
+        repo_keys: manifest.repo_keys.as_ref().map(|repo_keys| {
+            let mut seen = HashSet::new();
+            repo_keys
+                .iter()
+                .filter(|repo_key| is_placement_repo_key(repo_key))
+                .filter(|repo_key| seen.insert((*repo_key).clone()))
+                .cloned()
+                .collect()
+        }),
         version: manifest
             .version
             .as_deref()
@@ -1159,6 +1167,25 @@ pub(crate) fn build_node_register(
         machine_id: None,
         resume_cursor,
     }
+}
+
+fn is_placement_repo_key(value: &str) -> bool {
+    let mut segments = value.split('/');
+    let Some(owner) = segments.next() else {
+        return false;
+    };
+    let Some(repo) = segments.next() else {
+        return false;
+    };
+    segments.next().is_none()
+        && [owner, repo].into_iter().all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
 }
 
 /// The broker's stable provider name. The broker attaches to its node as one
@@ -3173,18 +3200,22 @@ mod tests {
     }
 
     #[test]
-    fn build_node_register_preserves_repo_key_presence_for_wire_validation() {
+    fn build_node_register_keeps_only_placement_safe_repo_keys() {
         let mut manifest = test_manifest();
-        let private_path = "/private/node/relay";
-        manifest.repo_keys = Some(vec![private_path.to_string()]);
+        manifest.repo_keys = Some(vec![
+            "AgentWorkforce/relay".to_string(),
+            "/private/node/relay".to_string(),
+            "AgentWorkforce/relay/extra".to_string(),
+            "AgentWorkforce/relay".to_string(),
+            "../relay".to_string(),
+        ]);
 
         let register =
             build_node_register(&manifest, "node-default", "host-default", "broker/1", None);
-        let error = serde_json::to_value(register)
-            .expect_err("path-shaped keys must fail at the wire boundary")
-            .to_string();
-        assert!(error.contains("placement-safe owner/repo"), "{error}");
-        assert!(!error.contains(private_path), "{error}");
+        assert_eq!(
+            register.repo_keys,
+            Some(vec!["AgentWorkforce/relay".to_string()])
+        );
 
         manifest.repo_keys = Some(Vec::new());
         let clear =
