@@ -125,8 +125,8 @@ pub struct NodeRegister {
     pub max_agents: u32,
     pub tags: Vec<String>,
     /// Placement-safe repository keys; absolute node-local paths are forbidden.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub repo_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_keys: Option<Vec<String>>,
     pub version: String,
     #[serde(
         default,

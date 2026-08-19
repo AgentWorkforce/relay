@@ -75,7 +75,7 @@ describe('parseNodeDescriptor', () => {
       repoPaths: { 'AgentWorkforce/relay': repoPath },
     })}\n`;
 
-    expect(() => parseNodeDescriptor(stdout)).toThrow(/absolute paths/);
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/absolute path/);
   });
 
   it.each(['./repo', '../repo'])('rejects path-shaped repo key %s from local describe IPC', (repoKey) => {
@@ -85,7 +85,29 @@ describe('parseNodeDescriptor', () => {
       repoPaths: { [repoKey]: path.resolve('private-checkouts', 'relay') },
     })}\n`;
 
-    expect(() => parseNodeDescriptor(stdout)).toThrow(/owner\/repo keys/);
+    expect(() => parseNodeDescriptor(stdout)).toThrow(/owner\/repo format/);
+  });
+
+  it('uses the fleet validator for trimmed and duplicate repo keys', () => {
+    const repoPath = path.resolve('private-checkouts', 'relay');
+    const normalized = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: { ' AgentWorkforce/relay ': repoPath },
+    })}\n`;
+    expect(parseNodeDescriptor(normalized)?.repoPaths).toEqual({
+      'AgentWorkforce/relay': repoPath,
+    });
+
+    const duplicate = `${MARKER}${JSON.stringify({
+      name: 'n',
+      capabilities: [],
+      repoPaths: {
+        'AgentWorkforce/relay': repoPath,
+        ' AgentWorkforce/relay ': path.resolve('private-checkouts', 'other'),
+      },
+    })}\n`;
+    expect(() => parseNodeDescriptor(duplicate)).toThrow(/duplicate key/);
   });
 
   it('ignores output the config printed on import', () => {
