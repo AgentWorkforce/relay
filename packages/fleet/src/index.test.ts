@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -6,6 +8,8 @@ import {
   defineDefaultLocalNode,
   defineNode,
   invokeNodeHandler,
+  nodeInfo,
+  nodeRegistrationTags,
   onMessage,
   spawn,
   triggerSyncInputs,
@@ -43,6 +47,73 @@ describe('@agent-relay/fleet', () => {
         stubContext(node.name, Object.keys(node.capabilities))
       )
     ).resolves.toEqual({ input: { hello: 'world' } });
+  });
+
+  it('normalizes node-local repo paths and exposes only deterministic placement keys', () => {
+    const factoryPath = resolve('node-private', 'factory');
+    const relayPath = resolve('node-private', 'relay');
+    const configured = {
+      ' AgentWorkforce/relay ': relayPath,
+      'AgentWorkforce/factory': factoryPath,
+    };
+    const node = defineNode({
+      name: 'repo-builder',
+      capabilities: { ping: async () => 'pong' },
+      tags: ['arm64', 'repo:legacy/manual-tag'],
+      repoPaths: configured,
+    });
+
+    configured[' AgentWorkforce/relay '] = resolve('different-private-path');
+
+    expect(node.repoPaths).toEqual({
+      'AgentWorkforce/relay': relayPath,
+      'AgentWorkforce/factory': factoryPath,
+    });
+    expect(Object.isFrozen(node.repoPaths)).toBe(true);
+    expect(nodeInfo(node)).toEqual({
+      name: 'repo-builder',
+      capabilities: ['ping'],
+      repoKeys: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+    });
+    expect(nodeRegistrationTags(node)).toEqual([
+      'arm64',
+      'repo:AgentWorkforce/factory',
+      'repo:AgentWorkforce/relay',
+    ]);
+    expect(JSON.stringify(nodeInfo(node))).not.toContain(factoryPath);
+    expect(JSON.stringify(nodeInfo(node))).not.toContain(relayPath);
+  });
+
+  it('preserves legacy repo tags when repoPaths is not configured', () => {
+    const node = defineNode({
+      name: 'legacy-builder',
+      capabilities: { ping: async () => 'pong' },
+      tags: ['arm64', 'repo:legacy'],
+    });
+
+    expect(nodeRegistrationTags(node)).toEqual(['arm64', 'repo:legacy']);
+  });
+
+  it('rejects non-placement keys and relative checkout paths', () => {
+    const absolute = resolve('node-private', 'factory');
+    for (const invalidKey of ['/private/node/factory', './repo', '../repo']) {
+      expect(() =>
+        defineNode({
+          name: 'bad-key',
+          capabilities: { ping: async () => 'pong' },
+          repoPaths: { [invalidKey]: absolute },
+        })
+      ).toThrow(/owner\/repo format/);
+    }
+    for (const relativePath of ['relative/factory', './repo', '../repo']) {
+      expect(() =>
+        defineNode({
+          name: 'bad-path',
+          capabilities: { ping: async () => 'pong' },
+          repoPaths: { 'AgentWorkforce/factory': relativePath },
+        })
+      ).toThrow(/must be an absolute path/);
+    }
   });
 
   it('builds spawn_agent payloads from a PTY harness', async () => {

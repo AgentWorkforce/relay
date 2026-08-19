@@ -1,0 +1,73 @@
+{
+  "id": "traj_8xylo1e6uc4z",
+  "version": 1,
+  "task": {
+    "title": "Add privacy-safe repository registration contract"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-19T07:04:08.402Z",
+  "completedAt": "2026-08-19T07:30:42.191Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-19T07:14:40.829Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ibagoj6gc7rf",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-19T07:14:40.829Z",
+      "endedAt": "2026-08-19T07:30:42.191Z",
+      "events": [
+        {
+          "ts": 1787123680829,
+          "type": "decision",
+          "content": "Used repo:<owner/repo> tags for JS provider compatibility while adding explicit repo_keys to the TypeScript/Rust broker wire mirror: Used repo:<owner/repo> tags for JS provider compatibility while adding explicit repo_keys to the TypeScript/Rust broker wire mirror",
+          "raw": {
+            "question": "Used repo:<owner/repo> tags for JS provider compatibility while adding explicit repo_keys to the TypeScript/Rust broker wire mirror",
+            "chosen": "Used repo:<owner/repo> tags for JS provider compatibility while adding explicit repo_keys to the TypeScript/Rust broker wire mirror",
+            "alternatives": [],
+            "reasoning": "The relay repository consumes @relaycast/sdk 8.0.0, whose strict node.register shape cannot emit a new repo_keys option yet. Existing tags are already accepted and placement reads them, so deriving authoritative tags from the node-local repoPaths map keeps this PR independently landable. The Rust field remains empty until the node-resolution lane supplies keys from its validated local map."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787124151246,
+          "type": "reflection",
+          "content": "Wire contract is complete and green; security review caught that owner/repo shape must reject dot path segments, so both fleet config and compiled-child IPC now enforce exactly two allowlisted non-dot segments and absolute values.",
+          "raw": {
+            "focalPoints": [
+              "privacy",
+              "validation",
+              "compatibility"
+            ],
+            "confidence": 0.95
+          },
+          "significance": "high",
+          "tags": [
+            "focal:privacy",
+            "focal:validation",
+            "focal:compatibility",
+            "confidence:0.95"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added validated node-local repoPaths, privacy-safe registration keys/tags, TypeScript and Rust repo_keys wire plumbing, compiled-child local descriptor handoff, compatibility tests, and documentation.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "286467e936bb3efbd415ed233d416e59cd390c05",
+    "endRef": "286467e936bb3efbd415ed233d416e59cd390c05"
+  }
+}

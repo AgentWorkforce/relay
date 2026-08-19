@@ -115,6 +115,11 @@ if (describeOnly) {
     name: definition.name,
     capabilities: Object.keys(definition.capabilities || {}),
     ...(typeof definition.maxAgents === 'number' ? { maxAgents: definition.maxAgents } : {}),
+    // Local child -> CLI IPC only. The parent passes these values directly to
+    // its native broker; serveNode registration independently emits keys only.
+    ...(definition.repoPaths && typeof definition.repoPaths === 'object'
+      ? { repoPaths: definition.repoPaths }
+      : {}),
   };
   console.log('__AGENT_RELAY_NODE_DESCRIPTOR__' + JSON.stringify(descriptor));
   return;
@@ -256,6 +261,8 @@ export type NodeDefinitionDescriptor = {
   name: string;
   capabilities: string[];
   maxAgents?: number;
+  /** Node-private map carried only across local child-to-CLI IPC. */
+  repoPaths?: Readonly<Record<string, string>>;
 };
 
 /**
@@ -273,11 +280,34 @@ export function parseNodeDescriptor(stdout: string): NodeDefinitionDescriptor | 
     return undefined;
   }
   const parsed = JSON.parse(last.slice(NODE_DESCRIPTOR_MARKER.length)) as NodeDefinitionDescriptor;
+  const repoPaths = parseDescriptorRepoPaths(parsed.repoPaths);
   return {
     name: parsed.name,
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
     ...(typeof parsed.maxAgents === 'number' ? { maxAgents: parsed.maxAgents } : {}),
+    ...(repoPaths !== undefined ? { repoPaths } : {}),
   };
+}
+
+function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Fleet node descriptor repoPaths must be an object keyed by owner/repo');
+  }
+  const repoPaths: Record<string, string> = {};
+  for (const [key, repoPath] of Object.entries(value)) {
+    const segments = key.split('/');
+    const placementSafeKey =
+      segments.length === 2 &&
+      segments.every((segment) => segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/.test(segment));
+    if (!placementSafeKey || typeof repoPath !== 'string' || !path.isAbsolute(repoPath)) {
+      throw new Error('Fleet node descriptor repoPaths must map owner/repo keys to absolute paths');
+    }
+    repoPaths[key] = repoPath;
+  }
+  return repoPaths;
 }
 
 /**

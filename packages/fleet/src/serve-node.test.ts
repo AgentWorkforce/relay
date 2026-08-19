@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -114,6 +116,35 @@ describe('serveNode', () => {
     expect(register).toMatchObject({ type: 'node.register', name: 'data-pipeline', node_id: 'node_a' });
     expect(register.provider).toMatchObject({ name: 'data-pipeline' });
     expect(register.capabilities).toEqual([{ name: 'run-etl', kind: 'action' }]);
+
+    sock.emit(acceptAll(register));
+    await flush();
+    await running.stop();
+  });
+
+  it('serializes only placement-safe repo keys and never node-local paths', async () => {
+    const factoryPath = resolve('private-checkouts', 'factory');
+    const relayPath = resolve('private-checkouts', 'relay');
+    const node = defineNode({
+      name: 'repo-builder',
+      capabilities: { ping: async () => 'pong' },
+      tags: ['arm64', 'repo:stale/manual-tag'],
+      repoPaths: {
+        'AgentWorkforce/relay': relayPath,
+        'AgentWorkforce/factory': factoryPath,
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+
+    const sock = socket();
+    sock.open();
+    const register = sock.lastRegister();
+    expect(register.tags).toEqual(['arm64', 'repo:AgentWorkforce/factory', 'repo:AgentWorkforce/relay']);
+    expect(register).not.toHaveProperty('repoPaths');
+    expect(register).not.toHaveProperty('repo_paths');
+    const serialized = JSON.stringify(register);
+    expect(serialized).not.toContain(factoryPath);
+    expect(serialized).not.toContain(relayPath);
 
     sock.emit(acceptAll(register));
     await flush();
