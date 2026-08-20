@@ -80,6 +80,18 @@
             "focal:degraded-state",
             "confidence:0.94"
           ]
+        },
+        {
+          "ts": 1787226256409,
+          "type": "decision",
+          "content": "Extended the existing real two-node E2E capability contract for relay:live-agents:v1: Extended the existing real two-node E2E capability contract for relay:live-agents:v1",
+          "raw": {
+            "question": "Extended the existing real two-node E2E capability contract for relay:live-agents:v1",
+            "chosen": "Extended the existing real two-node E2E capability contract for relay:live-agents:v1",
+            "alternatives": [],
+            "reasoning": "Fleet E2E correctly caught the new heartbeat capability as an unacknowledged protocol surface; asserting metadata.names is initially empty turns the repair into end-to-end coverage rather than merely loosening the expected array"
+          },
+          "significance": "high"
         }
       ]
     }
