@@ -91,6 +91,10 @@ const expectedLeafCommands = [
   'workspace switch',
   'workspace restore',
   'workspace rebind',
+  // observer (the bare `observer` mint action is asserted separately — it is a
+  // group with a default action, so the leaf walk does not reach it)
+  'observer list',
+  'observer revoke',
   // workspace agents
   'agent register',
   'agent rotate',
@@ -218,6 +222,7 @@ describe('bootstrap CLI', () => {
         'reflex',
         'session',
         'status',
+        'observer',
         'version',
         'update',
         'uninstall',
@@ -246,6 +251,24 @@ describe('bootstrap CLI', () => {
         'on',
         'rm',
       ])
+    );
+  });
+
+  it('registers `observer` as a runnable command, not just a group', () => {
+    // `observer` carries both a default action (mint a link) and subcommands
+    // (list/revoke), so the leaf-path walk in the inventory test below skips
+    // it. Assert the action directly — otherwise the primary command could be
+    // dropped and every other assertion would still pass.
+    // The action's behaviour is covered in commands/observer.test.ts, which
+    // parses a bare `observer` and asserts a token is minted.
+    const program = createProgram();
+    const observer = program.commands.find((command) => command.name() === 'observer');
+    expect(observer).toBeDefined();
+    expect(observer?.commands.map((command) => command.name()).sort()).toEqual(['list', 'revoke']);
+    // The mint options live on the group itself, which is what makes a bare
+    // `agent-relay observer` runnable.
+    expect(observer?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining(['--channels', '--include-dms', '--expires'])
     );
   });
 
