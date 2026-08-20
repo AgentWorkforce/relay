@@ -1,4 +1,12 @@
+import { randomUUID } from 'node:crypto';
+
 import { InvalidArgumentError, type Command } from 'commander';
+import {
+  CloudFleetSandboxProvisionError,
+  deleteCloudFleetSandbox,
+  ensureCloudFleetSandbox,
+  type EnsureCloudFleetSandboxResult,
+} from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { createWorkspaceClient, type RelayWorkspaceThinClient, type RelayNode } from '@agent-relay/sdk';
 
@@ -41,6 +49,8 @@ export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;
   createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
+  ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
+  deleteCloudFleetSandbox: typeof deleteCloudFleetSandbox;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -58,6 +68,8 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
         workspaceKey: resolveWorkspaceKey(options),
         baseUrl: resolveBaseUrl(options),
       }),
+    ensureCloudFleetSandbox,
+    deleteCloudFleetSandbox,
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -142,6 +154,12 @@ export function registerFleetCommands(
       .requiredOption('--task <text>', 'Initial task instructions')
       .option('--node <name>', 'Target a specific fleet node')
       .option('--target-node <name>', 'Alias for --node')
+      .option(
+        '--sandbox',
+        'Provision a fresh Cloud Daytona node, mount this Relayfile workspace, and spawn there'
+      )
+      .option('--sandbox-name <name>', 'Name for the provisioned Daytona fleet node')
+      .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
       .option('--model <model>', 'Model powering the worker')
@@ -167,11 +185,22 @@ export function registerFleetCommands(
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
       const task = requiredText(options.task, 'Task');
-      const targetNode =
-        optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
+      let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
+      const useSandbox = options.sandbox === true;
+      const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
+      const mountSandboxRelayfile = options.sandboxRelayfile !== false;
+      if (useSandbox && targetNode) {
+        throw new Error('--sandbox cannot be combined with --node or --target-node.');
+      }
+      if (!useSandbox && sandboxName) {
+        throw new Error('--sandbox-name requires --sandbox.');
+      }
+      if (!useSandbox && options.sandboxRelayfile === false) {
+        throw new Error('--no-sandbox-relayfile requires --sandbox.');
+      }
       const channel = optionalText(options.channel, 'Channel');
       const model = optionalText(options.model, 'Model');
-      const workerCwd = optionalText(options.cwd, 'Worker cwd');
+      let workerCwd = optionalText(options.cwd, 'Worker cwd');
       const organization = optionalText(options.organization, 'Organization');
       const project = optionalText(options.project, 'Project');
       const workstream = optionalText(options.workstream, 'Workstream');
@@ -188,36 +217,184 @@ export function registerFleetCommands(
         throw new Error('--confirm-timeout must be a positive number of milliseconds.');
       }
 
+      let sandbox: EnsureCloudFleetSandboxResult | undefined;
+      let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
+      if (useSandbox) {
+        workspaceRelay = deps.sdk.createWorkspaceRelay(clientOptions);
+        const workspaceInfo = await workspaceRelay.workspace.info();
+        const relayWorkspaceId = workspaceInfo.id?.trim();
+        if (!relayWorkspaceId) {
+          throw new Error('The current Relay workspace did not report an ID for Cloud provisioning.');
+        }
+        const requestedSandboxName = sandboxName ?? `fleet-sandbox-${randomUUID().slice(0, 8)}`;
+        try {
+          sandbox = await deps.ensureCloudFleetSandbox({
+            workspaceId: relayWorkspaceId,
+            requiredCapability: `spawn:${cli}`,
+            maxAgents: 1,
+            mountRelayfile: mountSandboxRelayfile,
+            forceProvision: true,
+            waitTimeoutMs: 90_000,
+            name: requestedSandboxName,
+          });
+        } catch (error) {
+          if (error instanceof CloudFleetSandboxProvisionError && error.cloudWorkspaceId && error.sandboxId) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: error.cloudWorkspaceId,
+                sandboxId: error.sandboxId,
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Provisioning failed after Daytona created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
+            deps.warn(
+              `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
+                error.nodeName ?? requestedSandboxName
+              }' before retrying so a Daytona sandbox is not left running.`
+            );
+          }
+          throw error;
+        }
+        if (sandbox.outcome === 'provisioning_timeout') {
+          await deps
+            .deleteCloudFleetSandbox({
+              cloudWorkspaceId: sandbox.cloudWorkspaceId,
+              sandboxId: sandbox.sandboxId,
+            })
+            .catch((error) => {
+              deps.warn(
+                `The timed-out sandbox could not be cleaned up automatically: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+            });
+          throw new Error(
+            `Daytona node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
+          );
+        }
+        if (
+          mountSandboxRelayfile &&
+          (sandbox.outcome !== 'provisioned' || sandbox.relayfileMounted !== true)
+        ) {
+          if (sandbox.outcome === 'provisioned') {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+              })
+              .catch((error) => {
+                deps.warn(
+                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+          }
+          throw new Error('Cloud returned a Daytona node without the required Relayfile mount.');
+        }
+        targetNode = sandbox.nodeName;
+        if (!workerCwd && sandbox.outcome === 'provisioned' && sandbox.relayfileMounted) {
+          workerCwd = sandbox.relayfileMountPath ?? '/workspace';
+        }
+      }
+
       if (targetNode) {
-        if (!resolveAgentToken(clientOptions)) {
+        if (!useSandbox && !resolveAgentToken(clientOptions)) {
           throw new Error(
             'Targeted Fleet spawn requires an agent token. Pass --token or set RELAY_AGENT_TOKEN.'
           );
         }
-        const relay = deps.sdk.createAgentRelay(clientOptions);
-        // Placement alone only proves the node accepted the dispatch. A node
-        // running an obsolete broker advertises `spawn:<cli>` capacity, acks
-        // the invocation and launches nothing, which is indistinguishable from
-        // success here — so wait for the node to confirm unless asked not to.
-        const confirm = options.confirm !== false;
-        const invocation = await relay.messaging.placement.spawn({
-          capability: `spawn:${cli}`,
-          node: targetNode,
-          failFast: true,
-          confirm,
-          ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
-          input: {
-            name,
-            cli,
-            task,
-            ...(channel ? { channels: [channel] } : {}),
-            ...(model ? { model } : {}),
-            ...(workerCwd ? { worker_cwd: workerCwd } : {}),
-            ...registrationMetadata,
-            ...(sessionRef ? { session_ref: sessionRef } : {}),
-          },
-        });
-        printJson(deps.sdk, { invocation });
+        let launcherName: string | undefined;
+        try {
+          let agentToken = resolveAgentToken(clientOptions);
+          if (!agentToken) {
+            workspaceRelay ??= deps.sdk.createWorkspaceRelay(clientOptions);
+            launcherName = `fleet-sandbox-launcher-${randomUUID().slice(0, 8)}`;
+            const launcher = await workspaceRelay.workspace.register(
+              {
+                name: launcherName,
+                metadata: { purpose: 'fleet-sandbox-launcher' },
+              },
+              { strict: true }
+            );
+            agentToken = launcher.token;
+            if (!agentToken) {
+              throw new Error('The temporary fleet sandbox launcher did not receive an agent token.');
+            }
+          }
+
+          const relay = deps.sdk.createAgentRelay({ ...clientOptions, token: agentToken });
+          // Placement alone only proves the node accepted the dispatch. A node
+          // running an obsolete broker advertises `spawn:<cli>` capacity, acks
+          // the invocation and launches nothing, which is indistinguishable from
+          // success here — so wait for the node to confirm unless asked not to.
+          const confirm = options.confirm !== false;
+          const invocation = await relay.messaging.placement.spawn({
+            capability: `spawn:${cli}`,
+            node: targetNode,
+            failFast: true,
+            confirm,
+            ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
+            input: {
+              name,
+              cli,
+              task,
+              ...(channel ? { channels: [channel] } : {}),
+              ...(model ? { model } : {}),
+              ...(workerCwd ? { worker_cwd: workerCwd } : {}),
+              ...registrationMetadata,
+              ...(sessionRef ? { session_ref: sessionRef } : {}),
+            },
+          });
+          printJson(deps.sdk, {
+            ...(sandbox
+              ? {
+                  sandbox,
+                  attachCommand:
+                    `agent-relay node agent attach ${shellQuote(name)} ` +
+                    `--node ${shellQuote(targetNode)} --mode drive`,
+                }
+              : {}),
+            invocation,
+          });
+        } catch (error) {
+          if (sandbox?.outcome === 'provisioned') {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Spawn failed and the sandbox could not be cleaned up automatically: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          }
+          throw error;
+        } finally {
+          if (launcherName && workspaceRelay) {
+            await workspaceRelay.workspace
+              .release({
+                name: launcherName,
+                reason: 'Temporary fleet sandbox launcher completed',
+                deleteAgent: true,
+              })
+              .catch((error) => {
+                deps.warn(
+                  `Temporary launcher cleanup failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+          }
+        }
         return;
       }
 
@@ -353,6 +530,11 @@ function requiredText(value: unknown, label: string): string {
 function optionalText(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   return requiredText(value, label);
+}
+
+/** Quote untrusted names in the copy-pasteable attach command printed on success. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**

@@ -77,6 +77,18 @@ export {
 
 export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
 export { redactCredentialValues } from './redact.js';
+export {
+  ensureCloudFleetSandbox,
+  deleteCloudFleetSandbox,
+  CloudFleetSandboxProvisionError,
+  type EnsureCloudFleetSandboxInput,
+  type EnsureCloudFleetSandboxResult,
+  type CloudFleetSandboxReady,
+  type CloudFleetSandboxReused,
+  type CloudFleetSandboxProvisioningTimeout,
+  type DeleteCloudFleetSandboxInput,
+  type CloudFleetSandboxRequestOptions,
+} from './fleet-sandbox.js';
 
 export {
   acknowledgeCloudWorkerAssignment,
