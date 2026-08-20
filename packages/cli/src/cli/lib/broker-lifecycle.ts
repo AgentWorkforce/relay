@@ -1541,6 +1541,18 @@ function planCapacitySource(
 }
 
 /**
+ * Derive the placement-safe repository keys for the native broker registration.
+ * The node definition's absolute checkout paths never leave the local process.
+ */
+export function planRepoKeys(plan: NodeDefinitionPlan | undefined): string[] | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  const repoPaths = plan.mode === 'in-process' ? plan.definition.repoPaths : plan.descriptor.repoPaths;
+  return repoPaths === undefined ? undefined : Object.keys(repoPaths).sort();
+}
+
+/**
  * Apply the resolved workspace to the environment the broker (and any detached
  * child) inherits, and report which source won. Returns the pinned project
  * session when the repository pin supplied the selection.
@@ -1890,6 +1902,15 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       teamsConfig,
       planCapacitySource(nodePlan)
     );
+
+    // A configured repoPaths map is authoritative for native-broker registration.
+    // Forward only its owner/repo keys; absolute checkout paths remain node-local.
+    const repoKeys = planRepoKeys(nodePlan);
+    if (repoKeys !== undefined) {
+      deps.env.AGENT_RELAY_NODE_REPO_KEYS = repoKeys.join(',');
+    } else {
+      delete deps.env.AGENT_RELAY_NODE_REPO_KEYS;
+    }
 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
