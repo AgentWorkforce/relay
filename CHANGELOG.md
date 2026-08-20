@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay fleet agent list` now names remote-node agents from each broker's live worker map, makes `--node` exclude other nodes and roster-only records, and labels unavailable or inconsistent inventory as degraded.
+- `agent-relay fleet agent list` names live agents on remote fleet nodes instead of dropping their rows.
+- `agent-relay fleet agent list --node <name>` is now an exact local filter that excludes other nodes and roster-only records.
+- `agent-relay fleet agent list` labels missing, malformed, or count-mismatched remote inventory as `count only (degraded)` rather than rendering a bare count.
 
 ## [11.8.0] - 2026-08-19
 

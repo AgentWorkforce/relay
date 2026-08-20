@@ -246,6 +246,7 @@ describe('fleet command support', () => {
       ]),
     };
     const logs: string[] = [];
+    const warnings: string[] = [];
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
@@ -262,7 +263,7 @@ describe('fleet command support', () => {
         exit: vi.fn() as never,
       },
       log: () => undefined,
-      warn: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
       error: () => undefined,
     });
 
@@ -277,6 +278,9 @@ describe('fleet command support', () => {
     expect(output.perNode.map((row: { node: string }) => row.node)).toEqual(['finn-mini']);
     expect(output.perNode.map((row: { name: string }) => row.name)).toEqual(['finn-mini-worker']);
     expect(output.unplacedRoster).toEqual([]);
+    // A targeted --node listing skips the roster fetch. Label that skip so
+    // the reader does not read the missing roster check as a negative result.
+    expect(warnings.join('\n')).toMatch(/roster not queried for a targeted --node listing/);
   });
 
   it('fleet nodes hides offline and direct pseudo-nodes by default', async () => {

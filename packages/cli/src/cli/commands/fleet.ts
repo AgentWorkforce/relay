@@ -477,6 +477,16 @@ async function runFleetAgentList(
             'PRESENCE column will not report roster membership.'
         );
       }
+    } else {
+      // A targeted `--node` listing intentionally skips the workspace roster
+      // fetch, so the PRESENCE column cannot label roster membership on the
+      // returned rows. Say so explicitly; a silent absence would look like a
+      // confirmed negative result and let the same agent appear with
+      // different PRESENCE values across `--node` and non-`--node` runs.
+      deps.warn(
+        'roster not queried for a targeted --node listing; PRESENCE reports node-local liveness only ' +
+          'and does not prove absence from the workspace roster.'
+      );
     }
 
     // Local broker (this machine): read /api/spawned and /api/fleet-inventory.
