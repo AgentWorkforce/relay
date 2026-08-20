@@ -19,12 +19,26 @@ export function currentReplaySessionRef(): string | undefined {
  * Add the stable replay key unless the caller deliberately supplied one.
  * Relaycast validates explicit values; this helper only suppresses unusable
  * inherited environment values so they cannot break unrelated message sends.
+ *
+ * Call arity is load-bearing: with no second argument the current process's
+ * `RELAY_ATTEST_SESSION_ID` is used. Passing `sessionRef` explicitly — even as
+ * `undefined` — opts out of that fallback, so a caller that supplied an
+ * unusable ref cannot silently be re-attributed to the ambient environment
+ * session.
  */
 export function replayMessageMetadata(
+  metadata?: Record<string, unknown> | null
+): Record<string, unknown> | null | undefined;
+export function replayMessageMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+  sessionRef: string | undefined
+): Record<string, unknown> | null | undefined;
+export function replayMessageMetadata(
   metadata?: Record<string, unknown> | null,
-  sessionRef: string | undefined = currentReplaySessionRef()
+  ...rest: [string | undefined?]
 ): Record<string, unknown> | null | undefined {
   if (metadata && Object.hasOwn(metadata, 'session_ref')) return metadata;
+  const sessionRef = rest.length === 0 ? currentReplaySessionRef() : rest[0];
   const normalized = resolveReplaySessionRef(sessionRef);
   if (!normalized) return metadata;
   return { ...(metadata ?? {}), session_ref: normalized };

@@ -292,6 +292,25 @@ describe('RelaycastMessagingClient', () => {
     expect(replayMessageMetadata({ session_ref: 'session-explicit' }, 'session-current')).toEqual({
       session_ref: 'session-explicit',
     });
+    // Passing an explicit sessionRef that resolves to undefined must opt
+    // out of the RELAY_ATTEST_SESSION_ID fallback — otherwise a client
+    // that supplied a broken ref would be silently re-attributed to the
+    // inherited environment session.
+    const previous = process.env.RELAY_ATTEST_SESSION_ID;
+    process.env.RELAY_ATTEST_SESSION_ID = 'ambient-session';
+    try {
+      expect(replayMessageMetadata({ work_unit_id: 'relay#1522' }, undefined)).toEqual({
+        work_unit_id: 'relay#1522',
+      });
+      // No sessionRef argument at all: the ambient env session is stamped.
+      expect(replayMessageMetadata({ work_unit_id: 'relay#1522' })).toEqual({
+        work_unit_id: 'relay#1522',
+        session_ref: 'ambient-session',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.RELAY_ATTEST_SESSION_ID;
+      else process.env.RELAY_ATTEST_SESSION_ID = previous;
+    }
   });
 
   it('publishes canonical session events to local listeners and Relaycast storage', async () => {

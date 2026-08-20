@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SessionMessagesResult } from '@relaycast/sdk';
 
 import { SessionClient } from './client.js';
+import { buildReplayContextPrompt, buildReplayTimeline } from './replay.js';
 import { buildContextPrompt } from './resume.js';
-import type { SessionActor, Turn } from './types.js';
+import type { RelaySession, ReplayConversationResult, SessionActor, Turn } from './types.js';
 
 const OWNER: SessionActor = {
   userId: 'usr_danny',
@@ -163,6 +164,57 @@ describe('SessionClient', () => {
     expect(bySessionRef).toHaveBeenNthCalledWith(2, session.sessionId, {
       limit: 500,
       after: '101',
+    });
+  });
+
+  it('preserves earlier Relaycast pages when a later page fails or repeats its cursor', async () => {
+    const backend = relayhistoryBackend();
+    const bySessionRef = vi.fn(async (_sessionRef: string, options?: { after?: string }) => {
+      if (!options?.after) {
+        return retainedConversationPage({
+          messages: [
+            relaycastMessage({
+              id: '201',
+              agentId: 'agent_chief',
+              agentName: 'chief-on-chief-broker',
+              text: 'First page landed.',
+              createdAt: '2026-08-13T08:01:00.000Z',
+            }),
+          ],
+          page: { nextCursor: '201', hasMore: true },
+        });
+      }
+      throw new Error('relaycast bySessionRef failed for later page');
+    });
+    const client = testClient(backend.fetch, { relaycast: { bySessionRef } });
+    const session = await client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER });
+
+    const replay = await client.replaySession(session.sessionId);
+
+    expect(replay.conversation).toMatchObject({
+      availability: 'unknown',
+      reason: 'query_failed',
+    });
+    expect(replay.conversation.messages.map((message) => message.id)).toEqual(['201']);
+    expect(replay.contextPrompt).toContain('First page landed.');
+    expect(replay.contextPrompt).toContain('INCOMPLETE/UNKNOWN');
+  });
+
+  it('bounds a Relaycast page read on a slow injected reader instead of hanging forever', async () => {
+    const backend = relayhistoryBackend();
+    const bySessionRef = vi.fn((): Promise<SessionMessagesResult> => new Promise(() => undefined));
+    const client = testClient(backend.fetch, {
+      relaycast: { bySessionRef },
+      timeoutMs: 5,
+    });
+    const session = await client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER });
+
+    const replay = await client.replaySession(session.sessionId);
+
+    expect(replay.conversation).toMatchObject({
+      availability: 'unknown',
+      reason: 'query_failed',
+      messages: [],
     });
   });
 
@@ -377,6 +429,113 @@ describe('SessionClient', () => {
     await expect(client.getGitTrailers(created.sessionId)).rejects.toThrow(
       'is missing Relay identity metadata'
     );
+  });
+
+  it('buildReplayContextPrompt strips terminal-control characters from Relaycast-derived header fields', () => {
+    const ESC = '\x1b';
+    const session: RelaySession = {
+      sessionId: 'sess-1',
+      owner: OWNER,
+      activeActor: OWNER,
+      steeringLog: [],
+      originCli: 'claude',
+      originNode: 'danny-mac',
+      createdAt: '2026-08-13T08:00:00.000Z',
+    };
+    const conversation: ReplayConversationResult = {
+      sessionRef: 'sess-1',
+      availability: 'unknown',
+      reason: `boundary_unavailable${ESC}[2Jinjected` as ReplayConversationResult['reason'],
+      retention: {
+        policy: 'unknown',
+        messageTtlDays: null,
+        retainedSince: null,
+        source: 'unknown',
+        reason: `line_injection\n; drop headers` as string,
+      },
+      sessionStartedAt: null,
+      sessionLastMessageAt: null,
+      messages: [],
+      page: { nextCursor: null, hasMore: false },
+    };
+    const timeline = buildReplayTimeline([], conversation);
+
+    const prompt = buildReplayContextPrompt(session, timeline, conversation);
+    const header = prompt.split('<relay-session-replay-json>')[0]!;
+    for (const line of header.split('\n')) {
+      // eslint-disable-next-line no-control-regex
+      expect(/[\x00-\x1f\x7f]/u.test(line)).toBe(false);
+    }
+    // The sanitized text keeps the printable payload minus the control bytes.
+    expect(header).toContain('reason=boundary_unavailable[2Jinjected');
+    expect(header).toContain('unknown (line_injection; drop headers)');
+
+    // The retention.source lands in the header under 'never_prune' /
+    // 'window' policies; verify sanitization there too.
+    const neverPrune: ReplayConversationResult = {
+      ...conversation,
+      retention: {
+        policy: 'never_prune',
+        messageTtlDays: null,
+        retainedSince: null,
+        source: `spoofed${ESC}]0;pwned${ESC}\\` as string,
+      },
+    };
+    const neverPromptHeader = buildReplayContextPrompt(session, timeline, neverPrune).split(
+      '<relay-session-replay-json>'
+    )[0]!;
+    for (const line of neverPromptHeader.split('\n')) {
+      // eslint-disable-next-line no-control-regex
+      expect(/[\x00-\x1f\x7f]/u.test(line)).toBe(false);
+    }
+    expect(neverPromptHeader).toContain('never prune (spoofed]0;pwned\\)');
+  });
+
+  it('buildReplayContextPrompt still retains the newest replay entry when it alone exceeds the char budget', () => {
+    const session: RelaySession = {
+      sessionId: 'sess-1',
+      owner: OWNER,
+      activeActor: OWNER,
+      steeringLog: [],
+      originCli: 'claude',
+      originNode: 'danny-mac',
+      createdAt: '2026-08-13T08:00:00.000Z',
+    };
+    const turns: Turn[] = Array.from({ length: 3 }, (_, index) => ({
+      turnIndex: index,
+      role: 'assistant',
+      content: `entry-${index}-` + 'x'.repeat(400),
+      actor: OWNER,
+      actorRole: 'owner',
+      timestamp: `2026-08-13T08:00:0${index}.000Z`,
+    }));
+    const conversation: ReplayConversationResult = {
+      sessionRef: 'sess-1',
+      availability: 'retained',
+      retention: {
+        policy: 'window',
+        messageTtlDays: 30,
+        retainedSince: '2026-07-14T08:00:00.000Z',
+        source: 'deployment_default',
+      },
+      sessionStartedAt: '2026-08-13T08:00:00.000Z',
+      sessionLastMessageAt: '2026-08-13T08:00:02.000Z',
+      messages: [],
+      page: { nextCursor: null, hasMore: false },
+    };
+    const timeline = buildReplayTimeline(turns, conversation);
+
+    // Budget below the size of a single entry: prior behavior emitted `[]`
+    // while still instructing the reader to continue from the latest entry.
+    const prompt = buildReplayContextPrompt(session, timeline, conversation, { maxReplayChars: 40 });
+    const journal = prompt.match(
+      /<relay-session-replay-json>\n\n([\s\S]*?)\n\n<\/relay-session-replay-json>/u
+    )?.[1];
+
+    expect(journal).toBeDefined();
+    expect(journal).not.toBe('[]');
+    expect(journal).toContain('entry-2-');
+    expect(prompt).toContain('2 replay entries omitted below');
   });
 
   it('buildContextPrompt escapes journal content that would otherwise close the fence early', () => {

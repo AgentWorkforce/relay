@@ -69,7 +69,9 @@ export type RelaycastSessionMessage = SessionMessagesResult['messages'][number];
 export type ReplayConversationReason =
   | NonNullable<SessionMessagesResult['reason']>
   | 'workspace_key_unavailable'
-  | 'pagination_incomplete';
+  | 'pagination_incomplete'
+  | 'query_failed'
+  | 'response_invalid';
 
 /** Workspace-wide Relaycast conversation slice joined by the stable Relay session id. */
 export type ReplayConversationResult = Omit<SessionMessagesResult, 'reason'> & {

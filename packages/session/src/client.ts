@@ -154,6 +154,12 @@ export class SessionClient {
           (workspaceKey
             ? new RelayCast({
                 apiKey: workspaceKey,
+                // Cap the SDK's own HTTP round-trip at the same budget
+                // `#request` uses for Relayhistory. Without this the SDK
+                // would default to its own (longer) timeout, and a stalled
+                // Relaycast HTTP call would still be bounded only by the
+                // local race in `#fetchConversation`.
+                requestTimeoutMs: this.#timeoutMs,
                 ...(relaycastBaseUrl ? { baseUrl: relaycastBaseUrl } : {}),
               }).messages
             : undefined));
@@ -445,12 +451,9 @@ export class SessionClient {
 
     try {
       for (;;) {
-        const page = await this.#relaycast.bySessionRef(sessionId, {
-          limit: RELAYCAST_SESSION_PAGE_LIMIT,
-          ...(after ? { after } : {}),
-        });
+        const page = await this.#readConversationPage(sessionId, after);
         if (page.sessionRef !== sessionId) {
-          return unavailableConversation(sessionId, 'response_invalid');
+          return this.#partialConversation(sessionId, 'response_invalid', messages, first, latest);
         }
         if (page.availability === 'unknown') {
           return {
@@ -485,13 +488,16 @@ export class SessionClient {
         if (!page.page.hasMore) break;
         const cursor = page.page.nextCursor;
         if (!cursor || seenCursors.has(cursor)) {
-          return unavailableConversation(sessionId, 'pagination_incomplete');
+          // Preserve everything fetched so far: an incomplete paginator
+          // must not silently discard the earlier valid pages, or replay
+          // becomes empty for a session that partially came back.
+          return this.#partialConversation(sessionId, 'pagination_incomplete', messages, first, latest);
         }
         seenCursors.add(cursor);
         after = cursor;
       }
     } catch {
-      return unavailableConversation(sessionId, 'query_failed');
+      return this.#partialConversation(sessionId, 'query_failed', messages, first, latest);
     }
 
     if (!first || !latest) {
@@ -501,6 +507,64 @@ export class SessionClient {
       sessionRef: sessionId,
       availability,
       ...(reason ? { reason } : {}),
+      retention: structuredClone(latest.retention),
+      sessionStartedAt: first.sessionStartedAt,
+      sessionLastMessageAt: latest.sessionLastMessageAt,
+      messages,
+      page: { nextCursor: null, hasMore: false },
+    };
+  }
+
+  /**
+   * Bound a single Relaycast page read at the same budget `#request` uses
+   * for Relayhistory. Without this a `RelaycastSessionReader.bySessionRef`
+   * implementation that never resolves would leave `replaySession` pending
+   * forever — the SDK's own `requestTimeoutMs` covers HTTP, not injected
+   * readers, and the surrounding `catch` cannot run for a promise that
+   * never settles.
+   */
+  async #readConversationPage(sessionId: string, after: string | undefined): Promise<SessionMessagesResult> {
+    if (!this.#relaycast) {
+      throw new Error('Relaycast session reader is not configured');
+    }
+    const options = { limit: RELAYCAST_SESSION_PAGE_LIMIT, ...(after ? { after } : {}) };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.#relaycast.bySessionRef(sessionId, options),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Relaycast bySessionRef timed out after ${this.#timeoutMs}ms`)),
+            this.#timeoutMs
+          );
+        }),
+      ]);
+    } finally {
+      // Leaving this pending would keep the harness process alive for the
+      // full timeout after every successful page read.
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Emit an incomplete-but-partial conversation so a later page failure
+   * cannot erase every valid earlier page. Falls back to a fully
+   * unavailable result when nothing was fetched at all.
+   */
+  #partialConversation(
+    sessionId: string,
+    reason: 'pagination_incomplete' | 'query_failed' | 'response_invalid',
+    messages: SessionMessagesResult['messages'],
+    first: SessionMessagesResult | undefined,
+    latest: SessionMessagesResult | undefined
+  ): ReplayConversationResult {
+    if (!first || !latest || messages.length === 0) {
+      return unavailableConversation(sessionId, reason);
+    }
+    return {
+      sessionRef: sessionId,
+      availability: 'unknown',
+      reason,
       retention: structuredClone(latest.retention),
       sessionStartedAt: first.sessionStartedAt,
       sessionLastMessageAt: latest.sessionLastMessageAt,

@@ -76,7 +76,13 @@ export function buildReplayContextPrompt(
     `Session ID: ${sanitizeHeaderText(session.sessionId)}`,
     `Owner: ${sanitizeHeaderText(session.owner.displayName)} (${sanitizeHeaderText(session.owner.userId)})`,
     `Relayhistory journal: ${timeline.filter((entry) => entry.source === 'relayhistory').length} turn(s) returned by the configured Relayhistory endpoint. Relayhistory is per-node; this count does not prove cross-node turn completeness.`,
-    `Relaycast conversation: ${conversation.messages.length} message(s); availability=${conversation.availability}${conversation.reason ? `; reason=${conversation.reason}` : ''}.`,
+    // `availability` / `reason` come off the wire from Relaycast and land
+    // in terminal-facing headers here — a malformed or hostile response
+    // with a newline or terminal-control character would otherwise inject
+    // it into the outer header block, so every interpolated
+    // Relaycast-derived string is sanitized the same way as the session
+    // header fields above.
+    `Relaycast conversation: ${conversation.messages.length} message(s); availability=${sanitizeHeaderText(conversation.availability)}${conversation.reason ? `; reason=${sanitizeHeaderText(conversation.reason)}` : ''}.`,
     `Effective Relaycast retention boundary: ${boundary}.`,
     coverage,
     ...(omittedCount > 0
@@ -120,11 +126,11 @@ function serializeEntry(entry: ReplayTimelineEntry): SerializableReplayEntry {
 function describeRetentionBoundary(conversation: ReplayConversationResult): string {
   switch (conversation.retention.policy) {
     case 'window':
-      return `${sanitizeHeaderText(conversation.retention.retainedSince)} (${conversation.retention.messageTtlDays}-day ${conversation.retention.source} window)`;
+      return `${sanitizeHeaderText(conversation.retention.retainedSince)} (${conversation.retention.messageTtlDays}-day ${sanitizeHeaderText(conversation.retention.source)} window)`;
     case 'never_prune':
-      return `never prune (${conversation.retention.source})`;
+      return `never prune (${sanitizeHeaderText(conversation.retention.source)})`;
     case 'unknown':
-      return `unknown (${conversation.retention.reason})`;
+      return `unknown (${sanitizeHeaderText(conversation.retention.reason)})`;
   }
 }
 
@@ -154,6 +160,13 @@ function boundEntries(
     if (nextSize > maxChars) break;
     kept.unshift(value);
     size = nextSize;
+  }
+  // Mirror `boundTranscript` in resume.ts: if the single newest entry alone
+  // is larger than the budget, still keep it. Otherwise the prompt's JSON is
+  // `[]` while the outer instruction still tells the reader to "Continue
+  // from the latest retained entry", which reads as an inconsistent replay.
+  if (kept.length === 0 && serialized.length > 0) {
+    kept.push(serialized[serialized.length - 1]!);
   }
   return { entries: kept, omittedCount: serialized.length - kept.length };
 }
