@@ -154,12 +154,6 @@ export class SessionClient {
           (workspaceKey
             ? new RelayCast({
                 apiKey: workspaceKey,
-                // Cap the SDK's own HTTP round-trip at the same budget
-                // `#request` uses for Relayhistory. Without this the SDK
-                // would default to its own (longer) timeout, and a stalled
-                // Relaycast HTTP call would still be bounded only by the
-                // local race in `#fetchConversation`.
-                requestTimeoutMs: this.#timeoutMs,
                 ...(relaycastBaseUrl ? { baseUrl: relaycastBaseUrl } : {}),
               }).messages
             : undefined));

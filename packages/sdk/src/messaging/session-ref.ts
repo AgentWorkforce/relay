@@ -35,10 +35,10 @@ export function replayMessageMetadata(
 ): Record<string, unknown> | null | undefined;
 export function replayMessageMetadata(
   metadata?: Record<string, unknown> | null,
-  ...rest: [string | undefined?]
+  ...rest: [] | [string | undefined]
 ): Record<string, unknown> | null | undefined {
   if (metadata && Object.hasOwn(metadata, 'session_ref')) return metadata;
-  const sessionRef = rest.length === 0 ? currentReplaySessionRef() : rest[0];
+  const sessionRef: string | undefined = rest.length === 0 ? currentReplaySessionRef() : rest[0];
   const normalized = resolveReplaySessionRef(sessionRef);
   if (!normalized) return metadata;
   return { ...(metadata ?? {}), session_ref: normalized };
