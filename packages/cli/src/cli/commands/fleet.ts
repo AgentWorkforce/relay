@@ -310,14 +310,15 @@ export function registerFleetCommands(
           let agentToken = resolveAgentToken(clientOptions);
           if (!agentToken) {
             workspaceRelay ??= deps.sdk.createWorkspaceRelay(clientOptions);
-            launcherName = `fleet-spawn-launcher-${randomUUID().slice(0, 8)}`;
+            const pendingLauncherName = `fleet-spawn-launcher-${randomUUID().slice(0, 8)}`;
             const launcher = await workspaceRelay.workspace.register(
               {
-                name: launcherName,
+                name: pendingLauncherName,
                 metadata: { purpose: 'fleet-spawn-launcher' },
               },
               { strict: true }
             );
+            launcherName = pendingLauncherName;
             agentToken = launcher.token;
             if (!agentToken) {
               throw new Error('The temporary fleet spawn launcher did not receive an agent token.');

@@ -1268,6 +1268,72 @@ describe('fleet command support', () => {
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
   });
 
+  it('fleet spawn does not release an existing agent when temporary launcher registration fails', async () => {
+    const previousToken = process.env.RELAY_AGENT_TOKEN;
+    delete process.env.RELAY_AGENT_TOKEN;
+    const registrationError = new Error('Agent already exists');
+    const register = vi.fn(async () => {
+      throw registrationError;
+    });
+    const release = vi.fn();
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { register, release },
+    }));
+    const createAgentRelay = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    try {
+      await expect(
+        program.parseAsync(
+          [
+            'fleet',
+            'spawn',
+            'codex',
+            '--name',
+            'api-worker',
+            '--task',
+            'ACK',
+            '--node',
+            'sf-mini',
+            '--workspace-key',
+            'rk_live_test',
+          ],
+          { from: 'user' }
+        )
+      ).rejects.toThrow('__exit__');
+    } finally {
+      if (previousToken === undefined) delete process.env.RELAY_AGENT_TOKEN;
+      else process.env.RELAY_AGENT_TOKEN = previousToken;
+    }
+
+    expect(register).toHaveBeenCalledWith(
+      {
+        name: expect.stringMatching(/^fleet-spawn-launcher-[a-f0-9]{8}$/),
+        metadata: { purpose: 'fleet-spawn-launcher' },
+      },
+      { strict: true }
+    );
+    expect(release).not.toHaveBeenCalled();
+    expect(createAgentRelay).not.toHaveBeenCalled();
+  });
+
   it('fleet release delegates to the workspace lifecycle API with a default reason and actor', async () => {
     const release = vi.fn(async () => ({
       name: 'api-worker',
