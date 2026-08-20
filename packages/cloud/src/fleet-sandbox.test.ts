@@ -127,6 +127,51 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('starts a fresh request budget after a delayed workspace resolution', async () => {
+    const signals: AbortSignal[] = [];
+    mocks.authorizedApiFetch
+      .mockImplementationOnce(async (_auth, _path, init) => {
+        signals.push(init.signal as AbortSignal);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return {
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        };
+      })
+      .mockImplementationOnce(async (_auth, _path, init) => {
+        signals.push(init.signal as AbortSignal);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return {
+          response: Response.json(
+            {
+              outcome: 'provisioned',
+              nodeId: 'node-1',
+              nodeName: 'daytona-codex',
+              sandboxId: 'sandbox-1',
+              relayWorkspaceId: 'rw_abc',
+              relayfileMounted: true,
+            },
+            { status: 201 }
+          ),
+          auth,
+        };
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+        },
+        { timeoutMs: 100 }
+      )
+    ).resolves.toMatchObject({ outcome: 'provisioned', sandboxId: 'sandbox-1' });
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0]).not.toBe(signals[1]);
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
   it('turns Cloud authorization failures into actionable errors', async () => {
     mocks.authorizedApiFetch.mockResolvedValueOnce({
       response: Response.json({ error: 'Forbidden' }, { status: 403 }),

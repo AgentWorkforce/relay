@@ -250,8 +250,9 @@ export async function ensureCloudFleetSandbox(
     apiUrl: options.apiUrl || defaultApiUrl(),
     interactive: false,
   });
+  const resolutionSignal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
   const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
-  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, signal);
   let response: Response;
   try {
     ({ response } = await authorizedApiFetch(
