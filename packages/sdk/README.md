@@ -95,6 +95,11 @@ await lead.react({
 const thread = await lead.threads.get(messageId, { limit: 50 });
 ```
 
+When `RELAY_ATTEST_SESSION_ID` is present, channel posts, thread replies, direct
+messages, and group messages automatically persist it as `metadata.session_ref`
+so completed-session replay can recover the cross-agent conversation. Passing
+an explicit `metadata.session_ref` on a send or reply preserves that value.
+
 ## Actions
 
 Actions are **fire-and-forget**: invoking returns an acknowledgement immediately, the handler runs in the SDK process that registered it, and the relay emits `action.completed` (or `action.failed`) to listeners — not inline to the invoking agent. Registered actions are exposed as typed MCP tools to agents automatically.

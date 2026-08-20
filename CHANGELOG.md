@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `relay session replay <id>` and `@agent-relay/session`'s `SessionClient.replaySession()` now include the cross-node Relaycast conversation for the session, report the effective retention boundary, and flag incomplete coverage.
+- Relay channel, thread, direct, and group messages now carry their originating session so they can be recovered in later session replays.
 
 ## [11.8.1] - 2026-08-20
 

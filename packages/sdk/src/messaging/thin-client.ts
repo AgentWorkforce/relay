@@ -21,6 +21,7 @@ import {
   relaycastWorkspaceTelemetryOptions,
   type RelaycastTelemetryOptions,
 } from '../relaycast-telemetry.js';
+import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type {
   RelayCreateChannelInput,
   RelayListAgentsOptions,
@@ -101,15 +102,27 @@ export interface RelayAgentThinClient {
   send(
     channel: string,
     text: string,
-    options?: { attachments?: string[]; mode?: RelayMessageMode }
+    options?: {
+      attachments?: string[];
+      data?: Record<string, unknown> | null;
+      mode?: RelayMessageMode;
+    }
   ): Promise<unknown>;
   messages(channel: string, options?: RelayMessageListOptions): Promise<unknown[]>;
-  reply(messageId: string, text: string): Promise<unknown>;
+  reply(
+    messageId: string,
+    text: string,
+    options?: { data?: Record<string, unknown> | null }
+  ): Promise<unknown>;
   thread(messageId: string, options?: { limit?: number }): Promise<unknown>;
   dm(
     to: string,
     text: string,
-    options?: { mode?: RelayMessageMode; attachments?: string[] }
+    options?: {
+      mode?: RelayMessageMode;
+      attachments?: string[];
+      data?: Record<string, unknown> | null;
+    }
   ): Promise<unknown>;
   readonly dms: {
     conversations(): Promise<unknown[]>;
@@ -118,7 +131,11 @@ export interface RelayAgentThinClient {
     sendMessage(
       conversationId: string,
       text: string,
-      options?: { attachments?: string[]; mode?: RelayMessageMode }
+      options?: {
+        attachments?: string[];
+        data?: Record<string, unknown> | null;
+        mode?: RelayMessageMode;
+      }
     ): Promise<unknown>;
   };
   readonly channels: {
@@ -168,6 +185,13 @@ export interface RelayAgentClientOptions extends RelaycastTelemetryOptions {
    * Disabled by default so request-scoped clients spawn no background timers.
    */
   autoHeartbeatMs?: number | false;
+  /**
+   * Stable replay key stamped on `send`, `reply`, `dm`, and
+   * `dms.sendMessage` writes so completed-session replay can rejoin them.
+   * Defaults to the current process's `RELAY_ATTEST_SESSION_ID`. Passing
+   * an unresolvable value opts out — no ambient environment fallback runs.
+   */
+  sessionRef?: string;
 }
 
 export interface RelayRealtimeClientOptions extends RelaycastTelemetryOptions {
@@ -358,14 +382,92 @@ export function createWorkspaceClient(options: RelayWorkspaceClientOptions): Rel
 
 /**
  * Create an agent-token scoped thin client.
- * @param options - Agent token, optional base URL, heartbeat, and telemetry overrides
- * @returns Raw pass-through client for agent-scoped operations
+ *
+ * The returned client stamps `data.session_ref` on `send`, `reply`, `dm`,
+ * and `dms.sendMessage` writes whenever a replay session is resolvable, so
+ * a session's Relaycast collaboration survives into a later `session replay
+ * <id>` join. Callers that already set `data.session_ref` explicitly keep
+ * their value; callers with no replay session get the raw client back
+ * untouched.
+ *
+ * @param options - Agent token, optional base URL, heartbeat, session key, and telemetry overrides
+ * @returns Pass-through client for agent-scoped operations
  */
 export function createAgentClient(options: RelayAgentClientOptions): RelayAgentThinClient {
   const relay = new RelayCast(clientConfig(options.agentToken, options));
-  return relay.as(options.agentToken, {
+  const raw = relay.as(options.agentToken, {
     autoHeartbeatMs: options.autoHeartbeatMs ?? false,
   }) as unknown as RelayAgentThinClient;
+  const sessionRef =
+    options.sessionRef === undefined
+      ? currentReplaySessionRef()
+      : resolveReplaySessionRef(options.sessionRef);
+  if (!sessionRef) return raw;
+  return stampAgentClientWithReplaySession(raw, sessionRef);
+}
+
+type WriteOptions = { data?: Record<string, unknown> | null } & Record<string, unknown>;
+
+function stampAgentClientWithReplaySession(
+  client: RelayAgentThinClient,
+  sessionRef: string
+): RelayAgentThinClient {
+  const stampData = (data?: Record<string, unknown> | null): Record<string, unknown> | null | undefined =>
+    replayMessageMetadata(data, sessionRef);
+
+  const withStampedData = <T>(options: WriteOptions | undefined, invoke: (opts: WriteOptions) => T): T => {
+    const merged: WriteOptions = { ...(options ?? {}) };
+    const stamped = stampData(options?.data);
+    if (stamped === undefined) delete merged.data;
+    else merged.data = stamped;
+    return invoke(merged);
+  };
+
+  // Proxy the raw client so nested surfaces (`channels`, `actions`, `on`,
+  // `dms.conversations`, ...) stay live on the underlying SDK instance while
+  // only the writes that need `session_ref` stamping intercept the call.
+  // `receiver` is deliberately the raw target on `Reflect.get`, not the
+  // proxy: a getter or method on the SDK class that reads `this.foo` must
+  // resolve against the raw instance, otherwise re-entering the proxy loops
+  // or hides SDK-private fields.
+  let wrappedDms: RelayAgentThinClient['dms'] | undefined;
+  const dmsProxy = (): RelayAgentThinClient['dms'] => {
+    const target = client.dms;
+    if (!target) return target;
+    wrappedDms ??= new Proxy(target, {
+      get(dms, prop) {
+        if (prop === 'sendMessage') {
+          return (conversationId: string, text: string, options?: WriteOptions) =>
+            withStampedData(options, (opts) => dms.sendMessage(conversationId, text, opts));
+        }
+        const value = Reflect.get(dms, prop, dms);
+        return typeof value === 'function' ? value.bind(dms) : value;
+      },
+    });
+    return wrappedDms;
+  };
+
+  return new Proxy(client, {
+    get(target, prop) {
+      switch (prop) {
+        case 'send':
+          return (channel: string, text: string, options?: WriteOptions) =>
+            withStampedData(options, (opts) => target.send(channel, text, opts));
+        case 'reply':
+          return (messageId: string, text: string, options?: WriteOptions) =>
+            withStampedData(options, (opts) => target.reply(messageId, text, opts));
+        case 'dm':
+          return (to: string, text: string, options?: WriteOptions) =>
+            withStampedData(options, (opts) => target.dm(to, text, opts));
+        case 'dms':
+          return dmsProxy();
+        default: {
+          const value = Reflect.get(target, prop, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        }
+      }
+    },
+  });
 }
 
 /**

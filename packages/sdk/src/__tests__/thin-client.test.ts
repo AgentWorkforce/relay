@@ -14,6 +14,13 @@ const relaycastMocks = vi.hoisted(() => {
 
   const makeAgentClient = () => ({
     send: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+    reply: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+    dm: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+    dms: {
+      sendMessage: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+      conversations: vi.fn(async () => []),
+      createGroup: vi.fn(async () => ({ id: 'conv_1' })),
+    },
     inbox: vi.fn(async () => ({ unread_channels: [] })),
     markRead: vi.fn(async () => ({})),
     channels: {
@@ -98,6 +105,9 @@ beforeEach(() => {
   vi.stubEnv('RELAYCAST_HARNESS', '');
   vi.stubEnv('X_RELAYCAST_HARNESS', '');
   vi.stubEnv('AGENT_RELAY_DISTINCT_ID', '');
+  // Keeps write-stamping tests deterministic across dev machines that may
+  // export RELAY_ATTEST_SESSION_ID in the shell for orchestration work.
+  vi.stubEnv('RELAY_ATTEST_SESSION_ID', '');
 });
 
 afterEach(() => {
@@ -215,6 +225,63 @@ describe('createAgentClient', () => {
     const failure = new Error('Invalid agent token');
     agent.inbox.mockRejectedValueOnce(failure);
     await expect(client.inbox()).rejects.toBe(failure);
+  });
+
+  it('stamps the current replay session on send, reply, dm, and group sendMessage writes', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    const agent = relaycastMocks.agentClients[0] as {
+      send: ReturnType<typeof vi.fn>;
+      reply: ReturnType<typeof vi.fn>;
+      dm: ReturnType<typeof vi.fn>;
+      dms: { sendMessage: ReturnType<typeof vi.fn> };
+    };
+
+    await client.send('general', 'hello');
+    await client.reply('msg_parent', 'reply');
+    await client.dm('chief', 'dm');
+    await client.dms.sendMessage('conv_group', 'group');
+
+    const replayData = { session_ref: '11111111-1111-4111-8111-111111111111' };
+    expect(agent.send).toHaveBeenCalledWith('general', 'hello', { data: replayData });
+    expect(agent.reply).toHaveBeenCalledWith('msg_parent', 'reply', { data: replayData });
+    expect(agent.dm).toHaveBeenCalledWith('chief', 'dm', { data: replayData });
+    expect(agent.dms.sendMessage).toHaveBeenCalledWith('conv_group', 'group', { data: replayData });
+  });
+
+  it('does not require the unchecked upstream dms surface until a caller accesses it', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
+    const send = vi.fn(async (...args: unknown[]) => ({ raw: true, args }));
+    relaycastMocks.relayCast.mockImplementationOnce(function () {
+      return { as: vi.fn(() => ({ send })) };
+    });
+
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    await client.send('general', 'hello');
+
+    expect(send).toHaveBeenCalledWith('general', 'hello', {
+      data: { session_ref: '11111111-1111-4111-8111-111111111111' },
+    });
+  });
+
+  it('respects an explicit data.session_ref instead of overwriting it with the replay session', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', 'ambient-session');
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+
+    await client.send('general', 'hello', { data: { session_ref: 'caller-owned' } });
+    expect(agent.send).toHaveBeenCalledWith('general', 'hello', { data: { session_ref: 'caller-owned' } });
+  });
+
+  it('does not fall back to RELAY_ATTEST_SESSION_ID when sessionRef is passed but unresolvable', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', 'ambient-session');
+    // An explicit sessionRef that resolves to undefined (blank, or too long)
+    // must not silently be re-attributed to the ambient environment session.
+    const client = createAgentClient({ agentToken: 'at_live_test', sessionRef: '   ' });
+    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+
+    await client.send('general', 'hello', { mode: 'wait' });
+    expect(agent.send).toHaveBeenCalledWith('general', 'hello', { mode: 'wait' });
   });
 });
 

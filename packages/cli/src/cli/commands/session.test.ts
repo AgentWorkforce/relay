@@ -1,7 +1,12 @@
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { registerSessionCommands, resolveRelayhistoryConfig, trustedStoredBaseUrl } from './session.js';
+import {
+  registerSessionCommands,
+  resolveRelaycastConfig,
+  resolveRelayhistoryConfig,
+  trustedStoredBaseUrl,
+} from './session.js';
 
 const SESSION_REF = '11111111-1111-4111-8111-111111111111';
 const RELAYHISTORY_ENV_VARS = [
@@ -10,10 +15,11 @@ const RELAYHISTORY_ENV_VARS = [
   'RELAYHISTORY_ACCESS_TOKEN',
   'RELAY_AGENT_TOKEN',
 ];
+const RELAYCAST_ENV_VARS = ['RELAY_BASE_URL', 'RELAY_WORKSPACE_KEY', 'AGENT_RELAY_WORKSPACE_KEY'];
 
 describe('registerSessionCommands', () => {
   afterEach(() => {
-    for (const name of RELAYHISTORY_ENV_VARS) delete process.env[name];
+    for (const name of [...RELAYHISTORY_ENV_VARS, ...RELAYCAST_ENV_VARS]) delete process.env[name];
   });
 
   it('replays a Relay-emitted reference with the authenticated user’s existing Relayhistory credential', async () => {
@@ -28,6 +34,21 @@ describe('registerSessionCommands', () => {
         createdAt: '2026-08-17T09:00:00.000Z',
       },
       turns: [],
+      conversation: {
+        sessionRef: sessionId,
+        availability: 'retained' as const,
+        retention: {
+          policy: 'never_prune' as const,
+          messageTtlDays: null,
+          retainedSince: null,
+          source: 'workspace_override' as const,
+        },
+        sessionStartedAt: null,
+        sessionLastMessageAt: null,
+        messages: [],
+        page: { nextCursor: null, hasMore: false },
+      },
+      timeline: [],
       contextPrompt: `Continue the Relay session.\n\nSession ID: ${sessionId}`,
     }));
     const createClient = vi.fn(() => ({ replaySession }));
@@ -127,6 +148,29 @@ describe('resolveRelayhistoryConfig', () => {
     });
 
     expect(config).toEqual({ baseUrl: 'https://history.agentrelay.com', token: 'rth_at_production' });
+  });
+});
+
+describe('resolveRelaycastConfig', () => {
+  afterEach(() => {
+    for (const name of RELAYCAST_ENV_VARS) delete process.env[name];
+  });
+
+  it('uses the explicit Relaycast environment before a persisted workspace selection', () => {
+    process.env.RELAY_BASE_URL = 'https://relay.example.com';
+    process.env.RELAY_WORKSPACE_KEY = 'rk_live_explicit';
+
+    expect(resolveRelaycastConfig('rk_live_persisted')).toEqual({
+      baseUrl: 'https://relay.example.com',
+      workspaceKey: 'rk_live_explicit',
+    });
+  });
+
+  it('falls back to the persisted workspace selection used by other Relay commands', () => {
+    expect(resolveRelaycastConfig(' rk_live_persisted ')).toEqual({
+      baseUrl: undefined,
+      workspaceKey: 'rk_live_persisted',
+    });
   });
 });
 

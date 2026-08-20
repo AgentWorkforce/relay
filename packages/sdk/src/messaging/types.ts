@@ -363,6 +363,7 @@ export interface RelaySendChannelMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayReplyMessageInput {
@@ -370,6 +371,7 @@ export interface RelayReplyMessageInput {
   text: string;
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelaySendDirectMessageInput {
@@ -378,6 +380,7 @@ export interface RelaySendDirectMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelaySendGroupDirectMessageInput {
@@ -388,6 +391,7 @@ export interface RelaySendGroupDirectMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayListDirectMessagesInput extends RelayMessageListOptions {

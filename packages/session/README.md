@@ -21,6 +21,12 @@ export RELAYHISTORY_TOKEN=...
 `RELAYHISTORY_ACCESS_TOKEN` and `RELAY_AGENT_TOKEN` are supported as token
 fallbacks.
 
+Completed-session replay also joins the workspace-wide Relaycast conversation.
+Set `RELAY_WORKSPACE_KEY` (or `AGENT_RELAY_WORKSPACE_KEY`) and, for a non-default
+deployment, `RELAY_BASE_URL`. The `relay session replay` CLI uses the workspace
+already selected for the current project when neither workspace-key variable is
+set.
+
 ## Start and journal a session
 
 ```ts
@@ -67,6 +73,29 @@ if (resume.mode === 'native') {
 The injected prompt contains the ordered, attributed Relayhistory journal and
 marks it as quoted prior context. Codex sessions are journal-only, including
 Codex-to-Codex handoffs.
+
+## Replay a completed multi-agent session
+
+```ts
+const replay = await sessions.replaySession(relaySessionId);
+
+console.log(replay.contextPrompt);
+console.log(replay.conversation.availability);
+console.log(replay.conversation.retention);
+```
+
+`replaySession` joins Relayhistory turns with Relaycast messages stamped with
+the same session reference, fetches every Relaycast page, and orders the joined
+timeline by timestamp. Relaycast is workspace-wide, so the conversation slice
+continues across nodes even though Relayhistory journals are per-node. A missing
+node journal can still omit that node's private harness turns; the replay labels
+that limitation and does not infer cross-node Relayhistory completeness.
+
+Every replay prints the effective Relaycast retention boundary. `partial`,
+`aged_out`, missing credentials, and unknown/query-failure results are marked
+`INCOMPLETE` rather than presenting an empty conversation as proof that agents
+did not communicate. The reachable conversation therefore extends only as far
+back as the workspace plan's effective retention policy.
 
 ## Record steering and attribute commits
 

@@ -50,6 +50,7 @@ import {
   normalizeSearchResult,
   normalizeThread,
 } from './normalize.js';
+import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type { AgentSessionEvent } from '../session/index.js';
 import type {
   RelayActionInvocation,
@@ -189,6 +190,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   private readonly placementTtlMs: number;
   private readonly maxQueuedPlacements: number;
   private readonly placementLog?: (message: string) => void;
+  private readonly sessionRef?: string;
   private queuedPlacements = 0;
   private readonly eventHandlers = new Map<
     keyof RelayMessagingEventMap,
@@ -205,6 +207,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
     this.maxQueuedPlacements = options.maxQueuedPlacements ?? 100;
     this.placementLog = options.placementLog;
+    this.sessionRef =
+      options.sessionRef === undefined
+        ? currentReplaySessionRef()
+        : resolveReplaySessionRef(options.sessionRef);
     // Durable delivery state is agent-scoped: it requires an agent client that
     // exposes the relaycast delivery ledger (deliveries list + transitions).
     const durable = this.deliverySurface() !== undefined;
@@ -313,6 +319,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         definedOptions({
           attachments: serializeAttachmentInputs(input.attachments),
           blocks: input.blocks,
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
           mode: input.mode,
           idempotencyKey: input.idempotencyKey,
         })
@@ -329,7 +336,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       const message = await this.requireAgentClient('messages.reply').reply(
         input.messageId,
         input.text,
-        definedOptions({ blocks: input.blocks, idempotencyKey: input.idempotencyKey })
+        definedOptions({
+          blocks: input.blocks,
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
+          idempotencyKey: input.idempotencyKey,
+        })
       );
       return normalizeMessage(message, {
         kind: 'thread_reply',
@@ -343,6 +354,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         input.text,
         definedOptions({
           attachments: serializeAttachmentInputs(input.attachments),
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
           mode: input.mode,
           idempotencyKey: input.idempotencyKey,
         })
@@ -371,6 +383,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         input.text,
         definedOptions({
           attachments: serializeAttachmentInputs(input.attachments),
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
           mode: input.mode,
           idempotencyKey: input.idempotencyKey,
         })

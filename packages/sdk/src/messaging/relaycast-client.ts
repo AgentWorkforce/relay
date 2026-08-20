@@ -117,6 +117,7 @@ export type RelaycastAgentLike = {
     options?: {
       attachments?: string[];
       blocks?: RelayMessageBlock[];
+      data?: Record<string, unknown> | null;
       mode?: 'wait' | 'steer';
       idempotencyKey?: string;
     }
@@ -126,7 +127,11 @@ export type RelaycastAgentLike = {
   reply(
     id: string,
     text: string,
-    options?: { blocks?: RelayMessageBlock[]; idempotencyKey?: string }
+    options?: {
+      blocks?: RelayMessageBlock[];
+      data?: Record<string, unknown> | null;
+      idempotencyKey?: string;
+    }
   ): Promise<unknown>;
   thread(id: string, options?: RelayMessageListOptions): Promise<unknown>;
   dm(
@@ -135,6 +140,7 @@ export type RelaycastAgentLike = {
     options?: {
       mode?: 'wait' | 'steer';
       attachments?: string[];
+      data?: Record<string, unknown> | null;
       idempotencyKey?: string;
     }
   ): Promise<unknown>;
@@ -150,6 +156,7 @@ export type RelaycastAgentLike = {
       text: string,
       options?: {
         attachments?: string[];
+        data?: Record<string, unknown> | null;
         mode?: 'wait' | 'steer';
         idempotencyKey?: string;
       }
@@ -207,6 +214,8 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
   agentToken?: string;
   agentClient?: RelaycastAgentLike;
   agentClientOptions?: AgentClientOptions;
+  /** Stable replay key stamped onto message metadata. Defaults to RELAY_ATTEST_SESSION_ID. */
+  sessionRef?: string;
   /** Local node name used to resolve placement requests with `node: "self"`. */
   selfNodeName?: string;
   /** Default bounded placement queue TTL. RFC placeholder default is one hour. */
