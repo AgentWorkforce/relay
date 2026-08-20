@@ -1,0 +1,25 @@
+{
+  "id": "traj_tfkp7ubijvma",
+  "version": 1,
+  "task": {
+    "title": "Repair agent-facing skill credential safety gate"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-20T22:24:58.716Z",
+  "completedAt": "2026-08-20T22:27:25.374Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Removed orchestrator-only broker lifecycle commands from both mirrored participant skills, restoring the credential-safety gate.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "02f3df9d235e5df4bd7e763465392e16d8170b5a",
+    "endRef": "02f3df9d235e5df4bd7e763465392e16d8170b5a"
+  }
+}

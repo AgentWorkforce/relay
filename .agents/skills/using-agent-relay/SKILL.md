@@ -235,31 +235,14 @@ agent-relay agent register Worker
 agent-relay agent list
 ```
 
-Local broker lifecycle and debug (lifecycle only — read replies through the
-`message` group above, never `node tail`):
-
-```bash
-agent-relay status                       # workspace + cloud + broker overview
-agent-relay node up --background --verbose
-agent-relay node status --wait-for 10
-agent-relay node agent list
-agent-relay node agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
-agent-relay node agent attach Worker --mode view
-agent-relay node agent release Worker
-agent-relay node tail --agent Worker    # worker output/TTY, not durable messages
-agent-relay node tail                   # broker debug events (unfiltered), not messages
-```
-
-These lifecycle commands live under `agent-relay node …`. The old flat
-`agent-relay local …` group still works as a hidden, deprecated alias (it prints
-a removal warning) — prefer `node`.
+Broker lifecycle, local worker spawning, terminal attachment, and debug tails
+belong to the outside orchestrator. Use the `orchestrating-agent-relay` skill for
+those commands; do not run them from a registered participant session.
 
 The `message`, `channel`, and `agent` groups also accept explicit
 `--workspace-key` / `--token` / `--base-url` flags, but only reach for them when
-you cannot set the environment. The `node` group does **not** take those — it
-talks to the local broker over its own `--broker-url` / `--api-key` /
-`--state-dir` flags (`RELAY_BROKER_URL`, `RELAY_BROKER_API_KEY`), and the
-`--workspace-key` on `node up` is a different flag with a different meaning.
+you cannot set the environment. Broker lifecycle options are documented in the
+orchestrator skill.
 
 ## Common Mistakes
 
