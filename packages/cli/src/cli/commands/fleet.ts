@@ -261,7 +261,13 @@ export function registerFleetCommands(
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
                 sandboxId: sandbox.sandboxId,
               })
-              .catch(() => undefined);
+              .catch((error) => {
+                deps.warn(
+                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
           }
           throw new Error('Cloud returned a Daytona node without the required Relayfile mount.');
         }

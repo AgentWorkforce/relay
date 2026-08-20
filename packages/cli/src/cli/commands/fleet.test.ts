@@ -742,6 +742,65 @@ describe('fleet command support', () => {
     });
   });
 
+  it('warns when an unmounted sandbox cannot be cleaned up automatically', async () => {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'provisioned' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-1',
+        nodeName: 'daytona-codex',
+        sandboxId: 'sandbox-1',
+        relayWorkspaceId: 'rw_abc',
+        relayfileMounted: false,
+      })),
+      deleteCloudFleetSandbox: vi.fn(async () => Promise.reject(new Error('delete failed'))),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(errors.join('\n')).toContain('without the required Relayfile mount');
+    expect(warnings.join('\n')).toContain('may still be running');
+    expect(warnings.join('\n')).toContain('delete failed');
+  });
+
   it('fleet spawn --no-confirm accepts an unconfirmed targeted dispatch', async () => {
     const placement = {
       spawn: vi.fn(async () => ({
