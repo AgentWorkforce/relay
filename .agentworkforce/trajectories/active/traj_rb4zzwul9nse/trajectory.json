@@ -1,0 +1,95 @@
+{
+  "id": "traj_rb4zzwul9nse",
+  "version": 1,
+  "task": {
+    "title": "Fix relay#1585 fleet agent list remote names and node filtering",
+    "source": {
+      "system": "plain",
+      "id": "relay#1585"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-08-20T10:27:01.836Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-20T10:30:50.236Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_np8mxgbaxt1p",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-20T10:30:50.236Z",
+      "events": [
+        {
+          "ts": 1787221850240,
+          "type": "decision",
+          "content": "Use Relaycast node-agent bindings as the remote-name source: Use Relaycast node-agent bindings as the remote-name source",
+          "raw": {
+            "question": "Use Relaycast node-agent bindings as the remote-name source",
+            "chosen": "Use Relaycast node-agent bindings as the remote-name source",
+            "alternatives": [],
+            "reasoning": "Brokers already publish inventory.sync on connect, inventory change, and every 60s; Relaycast exposes active bindings through nodes.listAgents(name). Relay currently omits this facade method and therefore degrades every remote node to count-only. The workspace roster is neither necessary nor trustworthy for liveness."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787223225407,
+          "type": "decision",
+          "content": "Use the existing authenticated terminal tunnel for a node-local live inventory snapshot: Use the existing authenticated terminal tunnel for a node-local live inventory snapshot",
+          "raw": {
+            "question": "Use the existing authenticated terminal tunnel for a node-local live inventory snapshot",
+            "chosen": "Use the existing authenticated terminal tunnel for a node-local live inventory snapshot",
+            "alternatives": [],
+            "reasoning": "Live proof falsified node-agent bindings: sf-mini has 231 historical bindings and one of four current PTYs is absent because provider identity reconciliation depends on overloaded D1. A reserved read-only terminal session can carry workers.list directly from the broker through the already-authenticated node tunnel, requiring neither SSH, a public broker port, registry reads, nor an engine API change."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787224407608,
+          "type": "decision",
+          "content": "Publish live worker names in reserved heartbeat capabilities: Publish live worker names in reserved heartbeat capabilities",
+          "raw": {
+            "question": "Publish live worker names in reserved heartbeat capabilities",
+            "chosen": "Publish live worker names in reserved heartbeat capabilities",
+            "alternatives": [],
+            "reasoning": "A real temporary sf-mini broker proved Relaycast terminal session creation pre-validates an active agent binding, so the terminal tunnel cannot bootstrap node inventory independently. Heartbeats already carry node capabilities and activeAgents; encoding the broker-owned WorkerName set there adds no request, registry read, or provider registration dependency, and nodes.list already returns the data."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787225814887,
+          "type": "reflection",
+          "content": "Mechanism investigation falsified both the workspace roster and existing node-agent bindings as live truth. A reserved live-name capability on the normal broker heartbeat proved exact against sf-mini OS PTYs through spawn and release, while count/name transition skew was rendered explicitly degraded.",
+          "raw": {
+            "focalPoints": [
+              "mechanism",
+              "remote-proof",
+              "degraded-state"
+            ],
+            "adjustments": "Kept names independent of provider registration and D1; added regression coverage for both mismatch directions",
+            "confidence": 0.94
+          },
+          "significance": "high",
+          "tags": [
+            "focal:mechanism",
+            "focal:remote-proof",
+            "focal:degraded-state",
+            "confidence:0.94"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b3339a42f23fe067a488771f70176957161952ed",
+    "endRef": "b3339a42f23fe067a488771f70176957161952ed"
+  }
+}

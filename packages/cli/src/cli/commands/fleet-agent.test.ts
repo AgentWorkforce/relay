@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildRows, collectWithRetry, formatPretty, readLocalBrokerMaps } from './fleet-agent.js';
+import {
+  buildRows,
+  collectWithRetry,
+  formatPretty,
+  LIVE_AGENT_CAPABILITY_NAME,
+  readLocalBrokerMaps,
+  readRemoteLiveAgents,
+  type RemoteLiveAgent,
+} from './fleet-agent.js';
 import type { FleetInventoryAgent, ListAgent } from '@agent-relay/harness-driver';
 import type { RelayNode } from '@agent-relay/sdk';
 
@@ -28,6 +36,56 @@ function liveAgent(name: string, overrides: Partial<ListAgent> = {}): ListAgent 
 function inventoryAgent(name: string): FleetInventoryAgent {
   return { agent_id: `ag_${name}`, name };
 }
+
+function remoteAgent(name: string): RemoteLiveAgent {
+  return { name };
+}
+
+describe('readRemoteLiveAgents', () => {
+  it('decodes the versioned heartbeat marker and exact WorkerNames', () => {
+    const result = readRemoteLiveAgents(
+      node({
+        name: 'sf-mini',
+        capabilities: [
+          {
+            name: LIVE_AGENT_CAPABILITY_NAME,
+            kind: 'capacity',
+            metadata: { names: ['worker-z', 'å-worker'] },
+          },
+        ],
+      })
+    );
+
+    expect(result).toEqual({
+      supported: true,
+      agents: [{ name: 'å-worker' }, { name: 'worker-z' }],
+    });
+  });
+
+  it('treats an absent marker as an unsupported old broker', () => {
+    expect(readRemoteLiveAgents(node({ name: 'sf-mini', capabilities: [] }))).toEqual({
+      supported: false,
+      agents: [],
+    });
+  });
+
+  it('reports malformed names instead of decoding them authoritatively', () => {
+    expect(
+      readRemoteLiveAgents(
+        node({
+          name: 'sf-mini',
+          capabilities: [
+            {
+              name: LIVE_AGENT_CAPABILITY_NAME,
+              kind: 'capacity',
+              metadata: { names: [null] },
+            },
+          ],
+        })
+      )
+    ).toMatchObject({ supported: true, agents: [], warning: expect.stringContaining('1 malformed') });
+  });
+});
 
 describe('buildRows — the diagnostic column exists', () => {
   it('flags a live+inventory+roster row when all three surfaces agree', () => {
@@ -180,20 +238,14 @@ describe('buildRows — the diagnostic column exists', () => {
     expect(rendered).toContain('not reachable');
   });
 
-  it('remote nodes render as count-only rows and never as fake per-agent rows', () => {
-    // The exact defect #1553 exists to prevent. `chief-broker` reporting
-    // `activeAgents=0` while agents are alive on it is a known engine gap;
-    // this test proves we do not silently accept the count as reality.
+  it('remote nodes render names from their heartbeat-published live WorkerName set', () => {
     const out = buildRows(
       {
         contributions: [
           {
-            node: node({ name: 'finn-mini', activeAgents: 33 }),
+            node: node({ name: 'finn-mini', activeAgents: 2, lastHeartbeatAt: NOW.toISOString() }),
             isLocal: false,
-          },
-          {
-            node: node({ name: 'chief-broker', activeAgents: 0 }),
-            isLocal: false,
+            remoteAgents: [remoteAgent('worker-b'), remoteAgent('worker-a')],
           },
         ],
         roster: [],
@@ -201,18 +253,83 @@ describe('buildRows — the diagnostic column exists', () => {
       NOW
     );
 
-    const finn = out.perNode.find((r) => r.node === 'finn-mini');
-    expect(finn?.presence).toBe('count only');
-    expect(finn?.name).toContain('33 agents');
-    expect(finn?.name).toContain('names unavailable');
+    expect(out.perNode.map((row) => row.name)).toEqual(['worker-a', 'worker-b']);
+    expect(out.perNode.every((row) => row.presence === 'remote live')).toBe(true);
+    expect(formatPretty(out)).not.toContain('names unavailable');
+  });
 
-    const chief = out.perNode.find((r) => r.node === 'chief-broker');
-    expect(chief?.presence).toBe('count only');
-    expect(chief?.name).toContain('0 agents');
-    // Zero agents from the workspace API is not evidence the node is empty.
-    // The label must still say "names unavailable" so a reader cannot mistake
-    // this for a confirmed empty node.
-    expect(chief?.name).toContain('names unavailable');
+  it('labels a failed remote inventory query as degraded rather than authoritative count-only output', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'finn-mini', activeAgents: 2 }),
+            isLocal: false,
+            remoteError: 'remote broker does not support live inventory snapshots',
+            retried: true,
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    expect(out.perNode[0]).toMatchObject({
+      node: 'finn-mini',
+      state: '· remote degraded',
+      presence: 'count only (degraded)',
+    });
+    expect(out.perNode[0]?.name).toContain('names unavailable: live-name heartbeat unavailable');
+    expect(formatPretty(out)).toContain('names may be incomplete');
+  });
+
+  it('keeps known remote names but exposes a heartbeat/inventory count mismatch', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'finn-mini', activeAgents: 2, lastHeartbeatAt: NOW.toISOString() }),
+            isLocal: false,
+            remoteAgents: [remoteAgent('worker-a')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    expect(out.perNode.map((row) => row.name)).toEqual([
+      '<1 additional agent — names unavailable: broker/heartbeat mismatch>',
+      'worker-a',
+    ]);
+    expect(out.perNode.find((row) => row.name === 'worker-a')?.note).toContain(
+      'heartbeat reports 2, broker returned 1'
+    );
+    expect(out.perNode.find((row) => row.name.startsWith('<'))?.state).toBe('· remote degraded');
+  });
+
+  it('labels names as degraded when the control-plane count updates before the next broker heartbeat', () => {
+    const out = buildRows(
+      {
+        contributions: [
+          {
+            node: node({ name: 'sf-mini', activeAgents: 0, lastHeartbeatAt: NOW.toISOString() }),
+            isLocal: false,
+            remoteAgents: [remoteAgent('worker-releasing')],
+          },
+        ],
+        roster: [],
+      },
+      NOW
+    );
+
+    expect(out.perNode).toHaveLength(1);
+    expect(out.perNode[0]).toMatchObject({
+      name: 'worker-releasing',
+      presence: 'remote live',
+      note: 'degraded: heartbeat reports 0, broker returned 1',
+    });
+    expect(formatPretty(out)).toContain('degraded: heartbeat reports 0, broker returned 1');
   });
 
   it('roster-only identities land in a distinct unplaced section', () => {
@@ -257,6 +374,7 @@ describe('buildRows — the diagnostic column exists', () => {
           {
             node: node({ name: 'finn-mini', activeAgents: 2 }),
             isLocal: false,
+            remoteAgents: [remoteAgent('a-remote'), remoteAgent('b-remote')],
           },
         ],
         roster: [],
@@ -266,7 +384,8 @@ describe('buildRows — the diagnostic column exists', () => {
 
     const order = out.perNode.map((r) => `${r.node}:${r.name}`);
     expect(order).toEqual([
-      'finn-mini:<2 agents — names unavailable>',
+      'finn-mini:a-remote',
+      'finn-mini:b-remote',
       'sf-mini:a-worker',
       'sf-mini:b-worker',
     ]);

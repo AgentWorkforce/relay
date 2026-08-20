@@ -43,6 +43,15 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
 import { registerFleetCommands } from './fleet.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
+const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
+const liveAgentCapabilities = (...names: string[]) => [
+  {
+    name: LIVE_AGENT_CAPABILITY_NAME,
+    kind: 'capacity',
+    metadata: { names },
+  },
+];
+
 describe('fleet command support', () => {
   it.each([
     ['config', 'get', undefined],
@@ -157,7 +166,7 @@ describe('fleet command support', () => {
     });
   });
 
-  it('fleet agent list --node does not synthesize the local broker for a remote target', async () => {
+  it('must-fire: fleet agent list --node returns the named remote node agents', async () => {
     const nodes = {
       list: vi.fn(async () => [
         {
@@ -165,7 +174,8 @@ describe('fleet command support', () => {
           status: 'online',
           live: true,
           handlersLive: true,
-          capabilities: [],
+          activeAgents: 1,
+          capabilities: liveAgentCapabilities('finn-worker'),
           tags: [],
         },
       ]),
@@ -193,14 +203,80 @@ describe('fleet command support', () => {
     });
 
     await program.parseAsync(
-      ['fleet', 'agent', 'list', '--node', 'finn-mini', '--workspace-key', 'rk_live_test'],
+      ['fleet', 'agent', 'list', '--node', 'finn-mini', '--json', '--workspace-key', 'rk_live_test'],
       { from: 'user' }
     );
 
     expect(nodes.list).toHaveBeenCalledWith({ name: 'finn-mini' });
     const output = JSON.parse(logs[0]!);
     expect(output.perNode.map((row: { node: string }) => row.node)).toEqual(['finn-mini']);
+    expect(output.perNode.map((row: { name: string }) => row.name)).toEqual(['finn-worker']);
     expect(output.perNode.some((row: { node: string }) => row.node === 'live-node')).toBe(false);
+  });
+
+  it('must-not-fire: fleet agent list --node excludes other nodes and roster-only rows', async () => {
+    const nodes = {
+      // Deliberately return an extra node even though the query names finn-mini:
+      // the CLI must enforce the filter rather than trust a remote API to do it.
+      list: vi.fn(async () => [
+        {
+          name: 'finn-mini',
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          activeAgents: 1,
+          capabilities: liveAgentCapabilities('finn-mini-worker'),
+          tags: [],
+        },
+        {
+          name: 'sf-mini',
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          activeAgents: 1,
+          capabilities: liveAgentCapabilities('sf-mini-worker'),
+          tags: [],
+        },
+      ]),
+    };
+    const agents = {
+      list: vi.fn(async () => [
+        { name: 'sf-mini-worker', status: 'online' },
+        { name: 'historical-roster-sediment', status: 'online' },
+      ]),
+    };
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      core: {
+        getProjectPaths: () => ({ projectRoot: '/p', dataDir: '/p/.agentworkforce/relay', teamDir: '/p' }),
+        exit: vi.fn(),
+      } as never,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes, agents })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', 'agent', 'list', '--node', 'finn-mini', '--workspace-key', 'rk_live_test'],
+      { from: 'user' }
+    );
+
+    expect(nodes.list).toHaveBeenCalledWith({ name: 'finn-mini' });
+    expect(agents.list).not.toHaveBeenCalled();
+    const output = JSON.parse(logs[0]!);
+    expect(output.perNode.map((row: { node: string }) => row.node)).toEqual(['finn-mini']);
+    expect(output.perNode.map((row: { name: string }) => row.name)).toEqual(['finn-mini-worker']);
+    expect(output.unplacedRoster).toEqual([]);
   });
 
   it('fleet nodes hides offline and direct pseudo-nodes by default', async () => {

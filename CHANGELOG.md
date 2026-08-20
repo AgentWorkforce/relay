@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_observer_url` MCP tool does the same for an orchestrating agent, so a lead can hand the user a follow-along link without shelling out.
 - `@agent-relay/sdk` exports `createObserverToken`, `listObserverTokens`, and `revokeObserverToken`.
 
+### Fixed
+
+- `agent-relay fleet agent list` now names remote-node agents from each broker's live worker map, makes `--node` exclude other nodes and roster-only records, and labels unavailable or inconsistent inventory as degraded.
+
 ## [11.8.0] - 2026-08-19
 
 ### Added
