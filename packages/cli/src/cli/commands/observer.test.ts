@@ -144,10 +144,9 @@ describe('agent-relay observer', () => {
       listObserverTokens: vi.fn(async () => [createdToken({ token: undefined })]) as never,
     });
 
-    await program.parseAsync(
-      ['observer', 'list', '--json', '--workspace-key', 'rk_live_explicitkey00000'],
-      { from: 'user' }
-    );
+    await program.parseAsync(['observer', 'list', '--json', '--workspace-key', 'rk_live_explicitkey00000'], {
+      from: 'user',
+    });
 
     const [call] = listObserverTokens.mock.calls as unknown as [[Record<string, unknown>]];
     expect(call[0].workspaceKey).toBe('rk_live_explicitkey00000');
@@ -213,9 +212,7 @@ describe('observer URL construction', () => {
 
   it('rejects non-http(s) schemes, which would carry the token somewhere unintended', () => {
     for (const bad of ['data:text/html,x', 'javascript:alert(1)', 'file:///etc/passwd', 'ftp://h/p']) {
-      expect(() => resolveObserverBaseUrl(bad, {} as NodeJS.ProcessEnv)).toThrow(
-        /must be http or https/
-      );
+      expect(() => resolveObserverBaseUrl(bad, {} as NodeJS.ProcessEnv)).toThrow(/must be http or https/);
     }
     expect(resolveObserverBaseUrl('http://localhost:3000/observer', {} as NodeJS.ProcessEnv)).toBe(
       'http://localhost:3000/observer'
