@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay fleet spawn <cli> --sandbox` now provisions a fresh Cloud Daytona node, requires the current Relayfile workspace to mount, waits for node readiness, and spawns the agent in `/workspace` in one command. Workspace-only shells automatically use and remove a short-lived launcher identity, so `--token` is no longer required for this path.
+- `agent-relay fleet spawn <cli> --sandbox` now spawns an agent in a fresh Cloud Daytona node in one command, with no `--token` required in workspace-only shells. It mounts the current Relayfile workspace at `/workspace` by default; pass `--no-sandbox-relayfile` for a deliberately bare sandbox.
 - `agent-relay observer` mints a scoped, read-only observer token and prints the observer URL built from it, so sharing a live follow-along view no longer requires hand-rolling a `POST /v1/observer-tokens` call. Defaults to a 24-hour token with agent DMs excluded; `--channels`, `--include-dms`, and `--expires` widen it, and `observer list` / `observer revoke <id>` manage existing tokens.
 - `get_observer_url` MCP tool does the same for an orchestrating agent, so a lead can hand the user a follow-along link without shelling out.
 - `@agent-relay/sdk` exports `createObserverToken`, `listObserverTokens`, and `revokeObserverToken`.

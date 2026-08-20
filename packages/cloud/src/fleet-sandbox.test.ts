@@ -10,7 +10,11 @@ vi.mock('./auth.js', () => ({
   authorizedApiFetch: mocks.authorizedApiFetch,
 }));
 
-import { deleteCloudFleetSandbox, ensureCloudFleetSandbox } from './fleet-sandbox.js';
+import {
+  CloudFleetSandboxProvisionError,
+  deleteCloudFleetSandbox,
+  ensureCloudFleetSandbox,
+} from './fleet-sandbox.js';
 
 const auth = {
   accessToken: 'access',
@@ -19,6 +23,7 @@ const auth = {
   apiUrl: 'https://agentrelay.test/cloud',
 };
 const refreshedAuth = { ...auth, accessToken: 'refreshed' };
+const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
 
 describe('Cloud fleet sandbox client', () => {
   beforeEach(() => {
@@ -29,7 +34,7 @@ describe('Cloud fleet sandbox client', () => {
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
-        response: Response.json({ cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }),
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
         auth: refreshedAuth,
       })
       .mockResolvedValueOnce({
@@ -62,14 +67,14 @@ describe('Cloud fleet sandbox client', () => {
       1,
       auth,
       '/api/v1/workspaces/rw_abc/resolve',
-      { method: 'GET' },
+      { method: 'GET', signal: expect.any(AbortSignal) },
       { interactive: false }
     );
     const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
     expect(ensureCall?.[0]).toEqual(refreshedAuth);
     expect(ensureCall?.[1]).toBe('/api/v1/fleet/nodes/sandbox/ensure');
     expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual({
-      workspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      workspaceId: CLOUD_WORKSPACE_ID,
       name: 'daytona-codex',
       requiredCapability: 'spawn:codex',
       maxAgents: 1,
@@ -79,7 +84,7 @@ describe('Cloud fleet sandbox client', () => {
     });
     expect(result).toEqual({
       outcome: 'provisioned',
-      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       nodeId: 'node-1',
       nodeName: 'daytona-codex',
       sandboxId: 'sandbox-1',
@@ -92,7 +97,7 @@ describe('Cloud fleet sandbox client', () => {
   it('preserves a bounded provisioning timeout so the CLI can report it', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
-        response: Response.json({ cloudWorkspaceId: 'cloud-workspace' }),
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
         auth,
       })
       .mockResolvedValueOnce({
@@ -136,6 +141,82 @@ describe('Cloud fleet sandbox client', () => {
     ).rejects.toThrow('owner or admin');
   });
 
+  it('rejects a malformed Cloud workspace identity before provisioning', async () => {
+    mocks.authorizedApiFetch.mockResolvedValueOnce({
+      response: Response.json({ cloudWorkspaceId: 'not-a-uuid' }),
+      auth,
+    });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+      })
+    ).rejects.toThrow('invalid cloudWorkspaceId');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the sandbox identity from a malformed successful response', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeName: 'daytona-codex',
+            sandboxId: 'sandbox-1',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      sandboxId: 'sandbox-1',
+      nodeName: 'daytona-codex',
+      outcomeUnknown: true,
+    });
+  });
+
+  it('rejects a timeout response that omits waitedMs', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioning_timeout',
+            sandboxId: 'sandbox-1',
+            relayWorkspaceId: 'rw_abc',
+            nodeName: 'daytona-codex',
+          },
+          { status: 202 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+      })
+    ).rejects.toThrow('missing waitedMs');
+  });
+
   it('deletes only the named sandbox in the resolved Cloud workspace', async () => {
     mocks.authorizedApiFetch.mockResolvedValueOnce({
       response: Response.json({ sandboxId: 'sandbox-1', deleted: true }),
@@ -143,7 +224,7 @@ describe('Cloud fleet sandbox client', () => {
     });
 
     await deleteCloudFleetSandbox({
-      cloudWorkspaceId: 'cloud-workspace',
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       sandboxId: 'sandbox-1',
     });
 
@@ -152,7 +233,8 @@ describe('Cloud fleet sandbox client', () => {
       '/api/v1/fleet/nodes/sandbox/sandbox-1',
       {
         method: 'DELETE',
-        body: JSON.stringify({ workspaceId: 'cloud-workspace' }),
+        signal: expect.any(AbortSignal),
+        body: JSON.stringify({ workspaceId: CLOUD_WORKSPACE_ID }),
       },
       { interactive: false }
     );

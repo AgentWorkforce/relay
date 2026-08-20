@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { InvalidArgumentError, type Command } from 'commander';
 import {
+  CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
   type EnsureCloudFleetSandboxResult,
@@ -225,15 +226,40 @@ export function registerFleetCommands(
         if (!relayWorkspaceId) {
           throw new Error('The current Relay workspace did not report an ID for Cloud provisioning.');
         }
-        sandbox = await deps.ensureCloudFleetSandbox({
-          workspaceId: relayWorkspaceId,
-          requiredCapability: `spawn:${cli}`,
-          maxAgents: 1,
-          mountRelayfile: mountSandboxRelayfile,
-          forceProvision: true,
-          waitTimeoutMs: 90_000,
-          ...(sandboxName ? { name: sandboxName } : {}),
-        });
+        const requestedSandboxName = sandboxName ?? `fleet-sandbox-${randomUUID().slice(0, 8)}`;
+        try {
+          sandbox = await deps.ensureCloudFleetSandbox({
+            workspaceId: relayWorkspaceId,
+            requiredCapability: `spawn:${cli}`,
+            maxAgents: 1,
+            mountRelayfile: mountSandboxRelayfile,
+            forceProvision: true,
+            waitTimeoutMs: 90_000,
+            name: requestedSandboxName,
+          });
+        } catch (error) {
+          if (error instanceof CloudFleetSandboxProvisionError && error.cloudWorkspaceId && error.sandboxId) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: error.cloudWorkspaceId,
+                sandboxId: error.sandboxId,
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Provisioning failed after Daytona created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
+            deps.warn(
+              `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
+                error.nodeName ?? requestedSandboxName
+              }' before retrying so a Daytona sandbox is not left running.`
+            );
+          }
+          throw error;
+        }
         if (sandbox.outcome === 'provisioning_timeout') {
           await deps
             .deleteCloudFleetSandbox({

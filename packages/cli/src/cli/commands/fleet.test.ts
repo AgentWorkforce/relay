@@ -3,8 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { Command } from 'commander';
+import { CloudFleetSandboxProvisionError } from '@agent-relay/cloud';
 import { defineNode, invokeNodeHandler, spawn as fleetSpawn } from '@agent-relay/fleet';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+afterEach(() => vi.unstubAllEnvs());
 
 // `fleet status` fetches the broker session (which carries the node token and
 // workspace key) and queries the engine nodes API; stub both so the redaction
@@ -561,8 +564,7 @@ describe('fleet command support', () => {
   });
 
   it('fleet spawn --sandbox provisions Daytona, mounts Relayfile, and uses a temporary launcher', async () => {
-    const previousToken = process.env.RELAY_AGENT_TOKEN;
-    delete process.env.RELAY_AGENT_TOKEN;
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const placement = {
       spawn: vi.fn(async () => ({
         invocationId: 'inv_sandbox',
@@ -610,29 +612,23 @@ describe('fleet command support', () => {
       error: () => undefined,
     });
 
-    try {
-      await program.parseAsync(
-        [
-          'fleet',
-          'spawn',
-          'codex',
-          '--sandbox',
-          '--sandbox-name',
-          'daytona-codex',
-          '--name',
-          'sandbox-worker',
-          '--task',
-          'Wait for VERIFY',
-          '--workspace-key',
-          'rk_live_test',
-        ],
-        { from: 'user' }
-      );
-    } finally {
-      if (previousToken === undefined) delete process.env.RELAY_AGENT_TOKEN;
-      else process.env.RELAY_AGENT_TOKEN = previousToken;
-    }
-
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-name',
+        'daytona-codex',
+        '--name',
+        'sandbox-worker',
+        '--task',
+        'Wait for VERIFY',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith({
       workspaceId: 'rw_abc',
       requiredCapability: 'spawn:codex',
@@ -740,6 +736,124 @@ describe('fleet command support', () => {
       cloudWorkspaceId: 'cloud-workspace',
       sandboxId: 'sandbox-1',
     });
+  });
+
+  it('cleans up when Cloud reports a post-provision response failure with a sandbox ID', async () => {
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => {
+        throw new CloudFleetSandboxProvisionError('malformed response', {
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          sandboxId: 'sandbox-1',
+          nodeName: 'daytona-codex',
+          outcomeUnknown: true,
+        });
+      }),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-name',
+          'daytona-codex',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      sandboxId: 'sandbox-1',
+    });
+  });
+
+  it('identifies the requested node when the provisioning response is interrupted', async () => {
+    const warnings: string[] = [];
+    const deleteCloudFleetSandbox = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => {
+        throw new CloudFleetSandboxProvisionError('request interrupted', {
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          nodeName: 'daytona-codex',
+          outcomeUnknown: true,
+        });
+      }),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-name',
+          'daytona-codex',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(warnings.join('\n')).toContain("check Cloud Fleet for node 'daytona-codex'");
   });
 
   it('warns when an unmounted sandbox cannot be cleaned up automatically', async () => {

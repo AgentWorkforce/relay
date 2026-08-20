@@ -4,6 +4,45 @@ import { defaultApiUrl } from './types.js';
 
 type JsonRecord = Record<string, unknown>;
 
+const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_ENSURE_TIMEOUT_MS = 120_000;
+const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
+
+export type CloudFleetSandboxRequestOptions = {
+  apiUrl?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+/**
+ * Carries every safe identifier Cloud returned when provisioning failed after
+ * the request may have created a billable sandbox.
+ */
+export class CloudFleetSandboxProvisionError extends Error {
+  readonly cloudWorkspaceId?: string;
+  readonly sandboxId?: string;
+  readonly nodeName?: string;
+  readonly outcomeUnknown: boolean;
+
+  constructor(
+    message: string,
+    identity: {
+      cloudWorkspaceId?: string;
+      sandboxId?: string;
+      nodeName?: string;
+      outcomeUnknown?: boolean;
+      cause?: unknown;
+    } = {}
+  ) {
+    super(message, identity.cause === undefined ? undefined : { cause: identity.cause });
+    this.name = 'CloudFleetSandboxProvisionError';
+    this.cloudWorkspaceId = identity.cloudWorkspaceId;
+    this.sandboxId = identity.sandboxId;
+    this.nodeName = identity.nodeName;
+    this.outcomeUnknown = identity.outcomeUnknown === true;
+  }
+}
+
 export type EnsureCloudFleetSandboxInput = {
   /** Cloud UUID or unified rw_* workspace id. */
   workspaceId: string;
@@ -69,6 +108,21 @@ function readNumber(payload: JsonRecord, key: string): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function requiredNumber(payload: JsonRecord, key: string, context: string): number {
+  const value = readNumber(payload, key);
+  if (value === undefined) throw new Error(`${context} response is missing ${key}.`);
+  return value;
+}
+
+function boundedSignal(options: CloudFleetSandboxRequestOptions, defaultTimeoutMs: number): AbortSignal {
+  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('Cloud fleet sandbox request timeout must be a positive number of milliseconds.');
+  }
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+}
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -108,7 +162,8 @@ function requiredString(payload: JsonRecord, key: string, context: string): stri
 
 async function resolveCloudWorkspaceId(
   workspaceId: string,
-  auth: Awaited<ReturnType<typeof ensureCloudSession>>['auth']
+  auth: Awaited<ReturnType<typeof ensureCloudSession>>['auth'],
+  signal: AbortSignal
 ): Promise<{
   cloudWorkspaceId: string;
   auth: Awaited<ReturnType<typeof ensureCloudSession>>['auth'];
@@ -116,14 +171,18 @@ async function resolveCloudWorkspaceId(
   const { response, auth: activeAuth } = await authorizedApiFetch(
     auth,
     `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/resolve`,
-    { method: 'GET' },
+    { method: 'GET', signal },
     { interactive: false }
   );
   const payload = await readJson(response);
   if (!response.ok) throw endpointError('resolve the Cloud workspace', response, payload);
   if (!isObject(payload)) throw new Error('Cloud workspace resolver returned an invalid response.');
+  const cloudWorkspaceId = requiredString(payload, 'cloudWorkspaceId', 'Cloud workspace resolver');
+  if (!CLOUD_WORKSPACE_ID_PATTERN.test(cloudWorkspaceId)) {
+    throw new Error('Cloud workspace resolver returned an invalid cloudWorkspaceId.');
+  }
   return {
-    cloudWorkspaceId: requiredString(payload, 'cloudWorkspaceId', 'Cloud workspace resolver'),
+    cloudWorkspaceId,
     auth: activeAuth,
   };
 }
@@ -170,7 +229,7 @@ function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): Ensu
       sandboxId: requiredString(payload, 'sandboxId', 'Cloud fleet sandbox'),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       nodeName,
-      waitedMs: readNumber(payload, 'waitedMs') ?? 0,
+      waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
     };
   }
 
@@ -180,7 +239,7 @@ function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): Ensu
 /** Resolve a Relay workspace in Cloud, provision/reuse a node, and wait for readiness. */
 export async function ensureCloudFleetSandbox(
   input: EnsureCloudFleetSandboxInput,
-  options: { apiUrl?: string } = {}
+  options: CloudFleetSandboxRequestOptions = {}
 ): Promise<EnsureCloudFleetSandboxResult> {
   const workspaceId = input.workspaceId.trim();
   const requiredCapability = input.requiredCapability.trim();
@@ -191,33 +250,80 @@ export async function ensureCloudFleetSandbox(
     apiUrl: options.apiUrl || defaultApiUrl(),
     interactive: false,
   });
-  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth);
-  const { response } = await authorizedApiFetch(
-    resolved.auth,
-    '/api/v1/fleet/nodes/sandbox/ensure',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        workspaceId: resolved.cloudWorkspaceId,
-        requiredCapability,
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
-        ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
-        ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
-        ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
-      }),
-    },
-    { interactive: false }
-  );
+  const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, signal);
+  let response: Response;
+  try {
+    ({ response } = await authorizedApiFetch(
+      resolved.auth,
+      '/api/v1/fleet/nodes/sandbox/ensure',
+      {
+        method: 'POST',
+        signal,
+        body: JSON.stringify({
+          workspaceId: resolved.cloudWorkspaceId,
+          requiredCapability,
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
+          ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
+          ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
+          ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
+        }),
+      },
+      { interactive: false }
+    ));
+  } catch (error) {
+    throw new CloudFleetSandboxProvisionError(
+      redactCredentialValues(
+        `Cloud fleet sandbox request ended without a complete response: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      ),
+      {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(input.name ? { nodeName: input.name } : {}),
+        outcomeUnknown: true,
+        cause: error,
+      }
+    );
+  }
   const payload = await readJson(response);
-  if (!response.ok) throw endpointError('provision the fleet sandbox', response, payload);
-  return normalizeEnsureResult(payload, resolved.cloudWorkspaceId);
+  if (!response.ok) {
+    const error = endpointError('provision the fleet sandbox', response, payload);
+    if (isObject(payload) && readString(payload, 'sandboxId')) {
+      throw new CloudFleetSandboxProvisionError(error.message, {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        sandboxId: readString(payload, 'sandboxId'),
+        nodeName: readString(payload, 'nodeName') ?? input.name,
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  try {
+    return normalizeEnsureResult(payload, resolved.cloudWorkspaceId);
+  } catch (error) {
+    throw new CloudFleetSandboxProvisionError(
+      error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
+      {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(isObject(payload) && readString(payload, 'sandboxId')
+          ? { sandboxId: readString(payload, 'sandboxId') }
+          : {}),
+        ...(isObject(payload) && (readString(payload, 'nodeName') ?? input.name)
+          ? { nodeName: readString(payload, 'nodeName') ?? input.name }
+          : {}),
+        outcomeUnknown: true,
+        cause: error,
+      }
+    );
+  }
 }
 
 /** Best-effort-safe deletion for a Cloud-owned Daytona fleet sandbox. */
 export async function deleteCloudFleetSandbox(
   input: DeleteCloudFleetSandboxInput,
-  options: { apiUrl?: string } = {}
+  options: CloudFleetSandboxRequestOptions = {}
 ): Promise<void> {
   const cloudWorkspaceId = input.cloudWorkspaceId.trim();
   const sandboxId = input.sandboxId.trim();
@@ -227,11 +333,13 @@ export async function deleteCloudFleetSandbox(
     apiUrl: options.apiUrl || defaultApiUrl(),
     interactive: false,
   });
+  const signal = boundedSignal(options, DEFAULT_DELETE_TIMEOUT_MS);
   const { response } = await authorizedApiFetch(
     session.auth,
     `/api/v1/fleet/nodes/sandbox/${encodeURIComponent(sandboxId)}`,
     {
       method: 'DELETE',
+      signal,
       body: JSON.stringify({ workspaceId: cloudWorkspaceId }),
     },
     { interactive: false }
