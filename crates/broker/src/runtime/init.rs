@@ -880,7 +880,7 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         capabilities,
         max_agents: node_max_agents(),
         tags: None,
-        repo_keys: node_repo_keys(),
+        repo_keys: None,
         version: Some(broker_version.to_string()),
     }
 }
@@ -923,23 +923,6 @@ fn node_max_agents() -> Option<u32> {
         .filter(|&max| max > 0)
 }
 
-/// Placement-safe repository keys declared by the CLI from a node definition's
-/// node-local `repoPaths` map. Values are owner/repo keys only; filesystem paths
-/// are never passed to the broker or registered with Relaycast.
-fn node_repo_keys() -> Option<Vec<String>> {
-    std::env::var("AGENT_RELAY_NODE_REPO_KEYS").ok().map(|raw| {
-        let mut keys: Vec<String> = raw
-            .split(',')
-            .map(str::trim)
-            .filter(|key| !key.is_empty())
-            .map(str::to_string)
-            .collect();
-        keys.sort();
-        keys.dedup();
-        keys
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,17 +931,11 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     static NODE_ID_ENV_MUTEX: Mutex<()> = Mutex::new(());
-    static NODE_REPO_KEYS_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     struct NodeIdEnvGuard {
         _guard: MutexGuard<'static, ()>,
         original_node_id: Option<OsString>,
         original_node_token: Option<OsString>,
-    }
-
-    struct NodeRepoKeysEnvGuard {
-        _guard: MutexGuard<'static, ()>,
-        original_repo_keys: Option<OsString>,
     }
 
     impl Drop for NodeIdEnvGuard {
@@ -976,33 +953,6 @@ mod tests {
                     None => std::env::remove_var("RELAY_NODE_TOKEN"),
                 }
             }
-        }
-    }
-
-    impl Drop for NodeRepoKeysEnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: NODE_REPO_KEYS_ENV_MUTEX serializes environment mutations
-            // for AGENT_RELAY_NODE_REPO_KEYS across this test module.
-            unsafe {
-                match &self.original_repo_keys {
-                    Some(value) => std::env::set_var("AGENT_RELAY_NODE_REPO_KEYS", value),
-                    None => std::env::remove_var("AGENT_RELAY_NODE_REPO_KEYS"),
-                }
-            }
-        }
-    }
-
-    fn set_node_repo_keys_env(value: &str) -> NodeRepoKeysEnvGuard {
-        let guard = NODE_REPO_KEYS_ENV_MUTEX.lock().unwrap();
-        let original_repo_keys = std::env::var_os("AGENT_RELAY_NODE_REPO_KEYS");
-        // SAFETY: NODE_REPO_KEYS_ENV_MUTEX serializes environment mutations for
-        // AGENT_RELAY_NODE_REPO_KEYS before code under test reads it.
-        unsafe {
-            std::env::set_var("AGENT_RELAY_NODE_REPO_KEYS", value);
-        }
-        NodeRepoKeysEnvGuard {
-            _guard: guard,
-            original_repo_keys,
         }
     }
 
@@ -1090,22 +1040,6 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
-    }
-
-    #[test]
-    fn bootstrap_node_manifest_registers_placement_safe_repo_keys() {
-        let _env_guard = set_node_repo_keys_env(
-            "AgentWorkforce/relay, AgentWorkforce/factory,AgentWorkforce/relay",
-        );
-
-        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/test");
-        assert_eq!(
-            manifest.repo_keys,
-            Some(vec![
-                "AgentWorkforce/factory".to_string(),
-                "AgentWorkforce/relay".to_string(),
-            ])
-        );
     }
 
     #[test]

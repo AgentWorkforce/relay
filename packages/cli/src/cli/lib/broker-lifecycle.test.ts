@@ -9,42 +9,11 @@ import {
   describeErrorWithCause,
   getBrokerStatusWithRetry,
   isBundledBunExecutableEntrypoint,
-  planRepoKeys,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
-
-describe('planRepoKeys', () => {
-  it('derives sorted public repo keys without exposing checkout paths', () => {
-    const result = planRepoKeys({
-      mode: 'child-node',
-      configPath: '/node/agent-relay.ts',
-      descriptor: {
-        name: 'node',
-        capabilities: [],
-        repoPaths: {
-          'AgentWorkforce/relay': '/private/relay',
-          'AgentWorkforce/factory': '/private/factory',
-        },
-      },
-    });
-
-    expect(result).toEqual(['AgentWorkforce/factory', 'AgentWorkforce/relay']);
-    expect(JSON.stringify(result)).not.toContain('/private');
-  });
-
-  it('leaves registration unchanged when repoPaths is not configured', () => {
-    expect(
-      planRepoKeys({
-        mode: 'child-node',
-        configPath: '/node/agent-relay.ts',
-        descriptor: { name: 'node', capabilities: [] },
-      })
-    ).toBeUndefined();
-  });
-});
 
 describe('isBundledBunExecutableEntrypoint', () => {
   it.each(['/$bunfs/root/agent-relay', 'B:/~BUN/root/agent-relay.exe', 'B:\\~BUN\\root\\agent-relay.exe'])(
