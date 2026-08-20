@@ -254,8 +254,12 @@ These lifecycle commands live under `agent-relay node …`. The old flat
 `agent-relay local …` group still works as a hidden, deprecated alias (it prints
 a removal warning) — prefer `node`.
 
-Every command above accepts explicit `--workspace-key` / `--token` / `--base-url`
-flags too, but only reach for them when you cannot set the environment.
+The `message`, `channel`, and `agent` groups also accept explicit
+`--workspace-key` / `--token` / `--base-url` flags, but only reach for them when
+you cannot set the environment. The `node` group does **not** take those — it
+talks to the local broker over its own `--broker-url` / `--api-key` /
+`--state-dir` flags (`RELAY_BROKER_URL`, `RELAY_BROKER_API_KEY`), and the
+`--workspace-key` on `node up` is a different flag with a different meaning.
 
 ## Common Mistakes
 
