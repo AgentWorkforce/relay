@@ -1,0 +1,132 @@
+{
+  "id": "traj_rb4zzwul9nse",
+  "version": 1,
+  "task": {
+    "title": "Fix relay#1585 fleet agent list remote names and node filtering",
+    "source": {
+      "system": "plain",
+      "id": "relay#1585"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-20T10:27:01.836Z",
+  "completedAt": "2026-08-20T11:58:01.765Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-20T10:30:50.236Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_np8mxgbaxt1p",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-20T10:30:50.236Z",
+      "endedAt": "2026-08-20T11:58:01.765Z",
+      "events": [
+        {
+          "ts": 1787221850240,
+          "type": "decision",
+          "content": "Use Relaycast node-agent bindings as the remote-name source: Use Relaycast node-agent bindings as the remote-name source",
+          "raw": {
+            "question": "Use Relaycast node-agent bindings as the remote-name source",
+            "chosen": "Use Relaycast node-agent bindings as the remote-name source",
+            "alternatives": [],
+            "reasoning": "Brokers already publish inventory.sync on connect, inventory change, and every 60s; Relaycast exposes active bindings through nodes.listAgents(name). Relay currently omits this facade method and therefore degrades every remote node to count-only. The workspace roster is neither necessary nor trustworthy for liveness."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787223225407,
+          "type": "decision",
+          "content": "Use the existing authenticated terminal tunnel for a node-local live inventory snapshot: Use the existing authenticated terminal tunnel for a node-local live inventory snapshot",
+          "raw": {
+            "question": "Use the existing authenticated terminal tunnel for a node-local live inventory snapshot",
+            "chosen": "Use the existing authenticated terminal tunnel for a node-local live inventory snapshot",
+            "alternatives": [],
+            "reasoning": "Live proof falsified node-agent bindings: sf-mini has 231 historical bindings and one of four current PTYs is absent because provider identity reconciliation depends on overloaded D1. A reserved read-only terminal session can carry workers.list directly from the broker through the already-authenticated node tunnel, requiring neither SSH, a public broker port, registry reads, nor an engine API change."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787224407608,
+          "type": "decision",
+          "content": "Publish live worker names in reserved heartbeat capabilities: Publish live worker names in reserved heartbeat capabilities",
+          "raw": {
+            "question": "Publish live worker names in reserved heartbeat capabilities",
+            "chosen": "Publish live worker names in reserved heartbeat capabilities",
+            "alternatives": [],
+            "reasoning": "A real temporary sf-mini broker proved Relaycast terminal session creation pre-validates an active agent binding, so the terminal tunnel cannot bootstrap node inventory independently. Heartbeats already carry node capabilities and activeAgents; encoding the broker-owned WorkerName set there adds no request, registry read, or provider registration dependency, and nodes.list already returns the data."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787225814887,
+          "type": "reflection",
+          "content": "Mechanism investigation falsified both the workspace roster and existing node-agent bindings as live truth. A reserved live-name capability on the normal broker heartbeat proved exact against sf-mini OS PTYs through spawn and release, while count/name transition skew was rendered explicitly degraded.",
+          "raw": {
+            "focalPoints": [
+              "mechanism",
+              "remote-proof",
+              "degraded-state"
+            ],
+            "adjustments": "Kept names independent of provider registration and D1; added regression coverage for both mismatch directions",
+            "confidence": 0.94
+          },
+          "significance": "high",
+          "tags": [
+            "focal:mechanism",
+            "focal:remote-proof",
+            "focal:degraded-state",
+            "confidence:0.94"
+          ]
+        },
+        {
+          "ts": 1787226256409,
+          "type": "decision",
+          "content": "Extended the existing real two-node E2E capability contract for relay:live-agents:v1: Extended the existing real two-node E2E capability contract for relay:live-agents:v1",
+          "raw": {
+            "question": "Extended the existing real two-node E2E capability contract for relay:live-agents:v1",
+            "chosen": "Extended the existing real two-node E2E capability contract for relay:live-agents:v1",
+            "alternatives": [],
+            "reasoning": "Fleet E2E correctly caught the new heartbeat capability as an unacknowledged protocol surface; asserting metadata.names is initially empty turns the repair into end-to-end coverage rather than merely loosening the expected array"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed relay#1585 by publishing exact broker live WorkerNames in the existing node heartbeat, decoding them for remote fleet agent output, enforcing strict targeted filtering without roster reads, and labeling all unavailable or inconsistent states degraded. Proved the mechanism on a disposable real sf-mini broker/PTY and hardened unit plus two-node E2E coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [
+    "eabfba00f",
+    "462325e5f"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_rb4zzwul9nse/trajectory.json",
+    ".gitattributes",
+    "CHANGELOG.md",
+    "crates/broker/src/fleet_wire.rs",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "packages/cli/src/cli/commands/fleet-agent.test.ts",
+    "packages/cli/src/cli/commands/fleet-agent.ts",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "packages/cli/src/cli/commands/fleet.ts",
+    "tests/e2e/fleet/fleet-e2e.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b3339a42f23fe067a488771f70176957161952ed",
+    "endRef": "eabfba00fee66862ae428df9437a5cd116f95184",
+    "traceId": "31716bb0-037d-4446-9b00-e71b9ad7365b"
+  }
+}

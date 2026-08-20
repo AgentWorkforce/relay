@@ -1,0 +1,384 @@
+{
+  "version": "1.0.0",
+  "id": "31716bb0-037d-4446-9b00-e71b9ad7365b",
+  "timestamp": "2026-08-20T11:58:02.171Z",
+  "trajectory": "traj_rb4zzwul9nse",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_rb4zzwul9nse/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 107,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".gitattributes",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 2,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/fleet_wire.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 88,
+              "end_line": 99,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 174,
+              "end_line": 182,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/node_control.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 20,
+              "end_line": 26,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 466,
+              "end_line": 478,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 497,
+              "end_line": 533,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 3744,
+              "end_line": 3750,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 3825,
+              "end_line": 3831,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 4197,
+              "end_line": 4224,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/api.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 965,
+              "end_line": 975,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 1072,
+              "end_line": 1082,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1489,
+              "end_line": 1507,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 1830,
+              "end_line": 1836,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 1840,
+              "end_line": 1846,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 3280,
+              "end_line": 3286,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 4021,
+              "end_line": 4032,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/maintenance.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 729,
+              "end_line": 739,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet-agent.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 14,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 37,
+              "end_line": 92,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 238,
+              "end_line": 321,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 323,
+              "end_line": 335,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 374,
+              "end_line": 380,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 384,
+              "end_line": 391,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet-agent.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 17,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 36,
+              "end_line": 85,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 90,
+              "end_line": 101,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 138,
+              "end_line": 147,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 185,
+              "end_line": 196,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 232,
+              "end_line": 238,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 264,
+              "end_line": 353,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 545,
+              "end_line": 558,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 43,
+              "end_line": 57,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 166,
+              "end_line": 172,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 174,
+              "end_line": 181,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 203,
+              "end_line": 284,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 13,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 128,
+              "end_line": 134,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 424,
+              "end_line": 432,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 439,
+              "end_line": 482,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 522,
+              "end_line": 569,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/e2e/fleet/fleet-e2e.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 251,
+              "end_line": 262,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            },
+            {
+              "start_line": 265,
+              "end_line": 282,
+              "revision": "eabfba00fee66862ae428df9437a5cd116f95184"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

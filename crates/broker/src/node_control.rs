@@ -20,7 +20,7 @@ use crate::{
         ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, AgentRegister,
         BrokerToRelaycast, Deliver, DeliveryAck, FleetCapability, FleetProviderIdentity,
         InventoryAgent, InventorySync, NodeHeartbeat, NodeRegister, RelaycastToBroker,
-        FLEET_WIRE_VERSION,
+        FLEET_WIRE_VERSION, LIVE_AGENT_CAPABILITY_NAME,
     },
     protocol::NodeManifest,
     types::RelaycastDeliveryReceipt,
@@ -466,11 +466,13 @@ pub(crate) struct FleetLoadSnapshot {
     pub(crate) active_agents: u32,
     pub(crate) max_agents: u32,
     pub(crate) handlers_live: bool,
+    pub(crate) active_agent_names: Vec<String>,
 }
 
 impl FleetLoadSnapshot {
-    /// Build a heartbeat carrying the live load/liveness AND the node roster
-    /// snapshot (name/node_id/capabilities/version) so the relaycast engine can
+    /// Build a heartbeat carrying the live load/liveness, the broker-owned
+    /// WorkerName set, AND the node roster snapshot
+    /// (name/node_id/capabilities/version) so the relaycast engine can
     /// keep this node's descriptor fresh from the steady-state heartbeat without
     /// a fresh `node.register`.
     ///
@@ -495,13 +497,37 @@ impl FleetLoadSnapshot {
         } else {
             Some((self.active_agents as f64 / self.max_agents as f64).clamp(0.0, 1.0))
         };
+        let mut capabilities: Vec<_> = node
+            .capabilities
+            .iter()
+            .filter(|capability| capability.name != LIVE_AGENT_CAPABILITY_NAME)
+            .cloned()
+            .collect();
+        let mut active_agent_names = self.active_agent_names.clone();
+        active_agent_names.sort();
+        active_agent_names.dedup();
+        capabilities.push(FleetCapability {
+            name: LIVE_AGENT_CAPABILITY_NAME.to_string(),
+            kind: Some("capacity".to_string()),
+            global: None,
+            queue: None,
+            metadata: Some(BTreeMap::from([(
+                "names".to_string(),
+                serde_json::Value::Array(
+                    active_agent_names
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            )])),
+        });
         NodeHeartbeat {
             v: FLEET_WIRE_VERSION,
             id: None,
             provider: node.provider.clone(),
             name: node.name.clone(),
             node_id: node.node_id.clone(),
-            capabilities: node.capabilities.clone(),
+            capabilities,
             max_agents: self.max_agents,
             version: node.version.clone(),
             load,
@@ -3718,6 +3744,7 @@ mod tests {
             active_agents: 1,
             max_agents: 4,
             handlers_live: true,
+            active_agent_names: vec!["agent-a".to_string()],
         };
 
         let server = tokio::spawn(async move {
@@ -3798,6 +3825,7 @@ mod tests {
             active_agents: 0,
             max_agents: 4,
             handlers_live: true,
+            active_agent_names: Vec::new(),
         };
 
         let server = tokio::spawn(async move {
@@ -4169,14 +4197,28 @@ mod tests {
             active_agents: 3,
             max_agents: 4,
             handlers_live: true,
+            active_agent_names: vec!["worker-b".to_string(), "worker-a".to_string()],
         }
         .heartbeat(&register);
         assert_eq!(measured.load, Some(0.75));
+        let live_agent_capability = measured
+            .capabilities
+            .iter()
+            .find(|capability| capability.name == LIVE_AGENT_CAPABILITY_NAME)
+            .expect("heartbeat should publish live WorkerNames");
+        assert_eq!(
+            live_agent_capability
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("names")),
+            Some(&serde_json::json!(["worker-a", "worker-b"]))
+        );
 
         let unbounded = FleetLoadSnapshot {
             active_agents: 25,
             max_agents: 0,
             handlers_live: true,
+            active_agent_names: Vec::new(),
         }
         .heartbeat(&register);
         assert_eq!(unbounded.load, Some(0.0));

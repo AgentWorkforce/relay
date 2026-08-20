@@ -15,6 +15,7 @@ import {
   buildRows,
   collectWithRetry,
   formatPretty,
+  readRemoteLiveAgents,
   readLocalBrokerMaps,
   type FleetNodeContribution,
   type RosterAgent,
@@ -139,7 +140,7 @@ export function registerFleetCommands(
       .description('List agents on every reachable fleet node, joined against the workspace roster')
       .option('--pretty', 'Render as a human-readable table')
       .option('--json', 'Render JSON output (default; explicit so the flag advertised in --help works)')
-      .option('--node <name>', 'Scope to a single node (still enumerates it via nodes.list())')
+      .option('--node <name>', 'Return only this node and its live broker agents')
       .option('--all', 'Include offline/history nodes the way `fleet nodes --all` does')
   ).action(async (options: Record<string, unknown>) => {
     await runFleetAgentList(deps, options);
@@ -605,9 +606,9 @@ function buildLocalContribution(
  * Fan-out for `fleet agent list`. Reads `nodes.list()` for the roster of
  * reachable fleet nodes, `agents.list()` for the workspace agent registry,
  * and — when this machine has a running local broker — both the live worker
- * map and the fleet_inventory snapshot from it. Each per-node call is
- * retried once with jitter before being rendered as an error; a node is
- * never dropped from the output.
+ * map and the fleet_inventory snapshot from it. Remote live names arrive in
+ * the node heartbeat capabilities returned by the same `nodes.list()` call.
+ * A node is never dropped from the output.
  *
  * The pure join lives in {@link ./fleet-agent.ts} so it can be tested against
  * fixtures without wiring up the SDK.
@@ -620,35 +621,53 @@ async function runFleetAgentList(
     warnIfInferredFromProjectSession(options, deps.warn);
     const clientOptions = sdkOptionsFromOpts(options);
     const relay = deps.sdk.createWorkspaceRelay(clientOptions);
+    const requestedNodeName = typeof options.node === 'string' && options.node ? options.node : undefined;
 
     // Enumerate fleet nodes exactly the way `fleet nodes` does. `nodes.list()`
     // failure is fatal — nothing to reconcile against.
     const nodes = await relay.nodes.list({
-      ...(typeof options.node === 'string' && options.node ? { name: options.node } : {}),
+      ...(requestedNodeName ? { name: requestedNodeName } : {}),
     });
     const includeAll = options.all === true;
-    const visibleNodes = includeAll ? nodes : nodes.filter(isAvailableFleetNode);
+    const visibleNodes = (includeAll ? nodes : nodes.filter(isAvailableFleetNode)).filter(
+      (node) => !requestedNodeName || node.name === requestedNodeName
+    );
 
     // The workspace roster is separately fetched; a failure here is degraded
     // rather than fatal — the presence column just marks fewer rows as
     // roster-matched and warns.
     let roster: RosterAgent[] = [];
-    try {
-      // Default to online-only. `--all` opens it up to the workspace's
-      // full record set (>1600 today, most stale/offline) so a scripted diff
-      // has the option, without making the default output unreadable. This
-      // mirrors what `fleet nodes` does with node history.
-      const relayAgents = await relay.agents.list(includeAll ? {} : { status: 'online' });
-      roster = relayAgents.map((entry) => ({
-        name: entry.name,
-        ...(entry.status ? { status: entry.status } : {}),
-        ...(entry.lastSeenAt ? { lastSeenAt: entry.lastSeenAt } : {}),
-        ...(entry.metadata ? { metadata: entry.metadata } : {}),
-      }));
-    } catch (error) {
+    // A targeted query must be a real filter, not a node row followed by
+    // unrelated workspace sediment. It also avoids an unnecessary D1 roster
+    // read on the path operators use to inspect one remote node.
+    if (!requestedNodeName) {
+      try {
+        // Default to online-only. `--all` opens it up to the workspace's
+        // full record set (>1600 today, most stale/offline) so a scripted diff
+        // has the option, without making the default output unreadable. This
+        // mirrors what `fleet nodes` does with node history.
+        const relayAgents = await relay.agents.list(includeAll ? {} : { status: 'online' });
+        roster = relayAgents.map((entry) => ({
+          name: entry.name,
+          ...(entry.status ? { status: entry.status } : {}),
+          ...(entry.lastSeenAt ? { lastSeenAt: entry.lastSeenAt } : {}),
+          ...(entry.metadata ? { metadata: entry.metadata } : {}),
+        }));
+      } catch (error) {
+        deps.warn(
+          `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
+            'PRESENCE column will not report roster membership.'
+        );
+      }
+    } else {
+      // A targeted `--node` listing intentionally skips the workspace roster
+      // fetch, so the PRESENCE column cannot label roster membership on the
+      // returned rows. Say so explicitly; a silent absence would look like a
+      // confirmed negative result and let the same agent appear with
+      // different PRESENCE values across `--node` and non-`--node` runs.
       deps.warn(
-        `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
-          'PRESENCE column will not report roster membership.'
+        'roster not queried for a targeted --node listing; PRESENCE reports node-local liveness only ' +
+          'and does not prove absence from the workspace roster.'
       );
     }
 
@@ -695,27 +714,48 @@ async function runFleetAgentList(
       }
     }
 
-    // Assemble per-node contributions. Every visible node produces one.
-    const contributions: FleetNodeContribution[] = visibleNodes.map((node) => {
+    // Assemble per-node contributions. Brokers encode the live WorkerName set
+    // in reserved heartbeat capabilities. This path is independent of agent
+    // registration and adds no API call beyond nodes.list(): no workspace
+    // roster and no node-binding read.
+    const contributions: FleetNodeContribution[] = [];
+    for (const node of visibleNodes) {
       if (localNodeName && node.name === localNodeName) {
-        return buildLocalContribution(node, {
-          liveAgents: localLive,
-          liveError: localLiveError,
-          inventoryAgents: localInventory,
-          inventoryError: localInventoryError,
-          sessionError: localSessionError,
-          retried: localRetried,
+        contributions.push(
+          buildLocalContribution(node, {
+            liveAgents: localLive,
+            liveError: localLiveError,
+            inventoryAgents: localInventory,
+            inventoryError: localInventoryError,
+            sessionError: localSessionError,
+            retried: localRetried,
+          })
+        );
+        continue;
+      }
+
+      const remote = readRemoteLiveAgents(node);
+      if (remote.supported) {
+        contributions.push({
+          node,
+          isLocal: false,
+          remoteAgents: remote.agents,
+          ...(remote.warning ? { remoteWarning: remote.warning } : {}),
+        });
+      } else {
+        contributions.push({
+          node,
+          isLocal: false,
+          remoteError: 'broker heartbeat does not publish live agent names',
         });
       }
-      return { node, isLocal: false };
-    });
+    }
 
     // Guarantee the local machine appears somewhere in the output even if
     // `nodes.list()` filtered its record out or the workspace never saw it.
     // Dropping the local machine's contribution silently was one of the
     // review findings on the first pass — this is the third-state discipline
     // applied to the local node itself, not just to per-agent rows.
-    const requestedNodeName = typeof options.node === 'string' && options.node ? options.node : undefined;
     const localNodeIsInScope =
       requestedNodeName === undefined || (localNodeName !== undefined && requestedNodeName === localNodeName);
     if (
