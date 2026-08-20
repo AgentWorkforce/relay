@@ -8,10 +8,12 @@ Never print a workspace key or construct an observer URL from one. Workspace
 keys have administrative authority and do not belong in terminal transcripts
 or URL query strings.
 
-If the user asks to follow the conversation, explain that observation requires
-a separately provisioned, read-only observer token (`ot_live_...`). The token
-must be delivered through an explicit secret handoff, not printed by the agent.
-When no scoped observer token has been provisioned, omit the observer link.
+When the user asks to follow the conversation, run `agent-relay observer` and
+print the URL it returns. It mints a scoped, read-only observer token
+(`ot_live_...`) — expiring in 24 hours and excluding agent DMs by default — and
+builds the link from that instead of the workspace key. Use `--channels` to
+narrow the view, `--include-dms` or `--expires` to widen it, and
+`agent-relay observer revoke <id>` to cut it off early.
 
 ## Delegating to Sub-Agents
 
