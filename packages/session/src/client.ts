@@ -449,17 +449,10 @@ export class SessionClient {
         if (page.sessionRef !== sessionId) {
           return this.#partialConversation(sessionId, 'response_invalid', messages, first, latest);
         }
-        if (page.availability === 'unknown') {
+        if (page.availability === 'unknown' || page.availability === 'aged_out') {
           return {
             ...structuredClone(page),
-            messages: [],
-            page: { nextCursor: null, hasMore: false },
-          };
-        }
-        if (page.availability === 'aged_out') {
-          return {
-            ...structuredClone(page),
-            messages: [],
+            messages,
             page: { nextCursor: null, hasMore: false },
           };
         }

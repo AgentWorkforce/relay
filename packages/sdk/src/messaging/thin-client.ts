@@ -430,16 +430,22 @@ function stampAgentClientWithReplaySession(
   // proxy: a getter or method on the SDK class that reads `this.foo` must
   // resolve against the raw instance, otherwise re-entering the proxy loops
   // or hides SDK-private fields.
-  const wrappedDms = new Proxy(client.dms, {
-    get(target, prop) {
-      if (prop === 'sendMessage') {
-        return (conversationId: string, text: string, options?: WriteOptions) =>
-          withStampedData(options, (opts) => target.sendMessage(conversationId, text, opts));
-      }
-      const value = Reflect.get(target, prop, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
+  let wrappedDms: RelayAgentThinClient['dms'] | undefined;
+  const dmsProxy = (): RelayAgentThinClient['dms'] => {
+    const target = client.dms;
+    if (!target) return target;
+    wrappedDms ??= new Proxy(target, {
+      get(dms, prop) {
+        if (prop === 'sendMessage') {
+          return (conversationId: string, text: string, options?: WriteOptions) =>
+            withStampedData(options, (opts) => dms.sendMessage(conversationId, text, opts));
+        }
+        const value = Reflect.get(dms, prop, dms);
+        return typeof value === 'function' ? value.bind(dms) : value;
+      },
+    });
+    return wrappedDms;
+  };
 
   return new Proxy(client, {
     get(target, prop) {
@@ -454,7 +460,7 @@ function stampAgentClientWithReplaySession(
           return (to: string, text: string, options?: WriteOptions) =>
             withStampedData(options, (opts) => target.dm(to, text, opts));
         case 'dms':
-          return wrappedDms;
+          return dmsProxy();
         default: {
           const value = Reflect.get(target, prop, target);
           return typeof value === 'function' ? value.bind(target) : value;

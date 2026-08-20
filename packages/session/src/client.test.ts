@@ -200,6 +200,41 @@ describe('SessionClient', () => {
     expect(replay.contextPrompt).toContain('INCOMPLETE/UNKNOWN');
   });
 
+  it('preserves earlier Relaycast pages when a later page reports an unavailable boundary', async () => {
+    const backend = relayhistoryBackend();
+    const bySessionRef = vi.fn(async (_sessionRef: string, options?: { after?: string }) => {
+      if (!options?.after) {
+        return retainedConversationPage({
+          messages: [
+            relaycastMessage({
+              id: '201',
+              agentId: 'agent_chief',
+              agentName: 'chief-on-chief-broker',
+              text: 'First page landed.',
+            }),
+          ],
+          page: { nextCursor: '201', hasMore: true },
+        });
+      }
+      return retainedConversationPage({
+        availability: 'aged_out',
+        reason: 'outside_retention_window',
+        messages: [relaycastMessage({ id: '202', text: 'Unavailable page payload.' })],
+      });
+    });
+    const client = testClient(backend.fetch, { relaycast: { bySessionRef } });
+    const session = await client.createSession({ cli: 'claude', node: 'node-a', owner: OWNER });
+
+    const replay = await client.replaySession(session.sessionId);
+
+    expect(replay.conversation).toMatchObject({
+      availability: 'aged_out',
+      reason: 'outside_retention_window',
+    });
+    expect(replay.conversation.messages.map((message) => message.id)).toEqual(['201']);
+    expect(replay.contextPrompt).toContain('First page landed.');
+  });
+
   it('bounds a Relaycast page read on a slow injected reader instead of hanging forever', async () => {
     const backend = relayhistoryBackend();
     const bySessionRef = vi.fn((): Promise<SessionMessagesResult> => new Promise(() => undefined));

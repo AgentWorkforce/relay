@@ -249,6 +249,21 @@ describe('createAgentClient', () => {
     expect(agent.dms.sendMessage).toHaveBeenCalledWith('conv_group', 'group', { data: replayData });
   });
 
+  it('does not require the unchecked upstream dms surface until a caller accesses it', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
+    const send = vi.fn(async (...args: unknown[]) => ({ raw: true, args }));
+    relaycastMocks.relayCast.mockImplementationOnce(function () {
+      return { as: vi.fn(() => ({ send })) };
+    });
+
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    await client.send('general', 'hello');
+
+    expect(send).toHaveBeenCalledWith('general', 'hello', {
+      data: { session_ref: '11111111-1111-4111-8111-111111111111' },
+    });
+  });
+
   it('respects an explicit data.session_ref instead of overwriting it with the replay session', async () => {
     vi.stubEnv('RELAY_ATTEST_SESSION_ID', 'ambient-session');
     const client = createAgentClient({ agentToken: 'at_live_test' });
