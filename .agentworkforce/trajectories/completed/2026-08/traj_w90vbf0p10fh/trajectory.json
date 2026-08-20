@@ -1,0 +1,53 @@
+{
+  "id": "traj_w90vbf0p10fh",
+  "version": 1,
+  "task": {
+    "title": "Remove targeted fleet spawn token friction"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-20T21:27:23.751Z",
+  "completedAt": "2026-08-20T21:36:44.389Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-20T21:34:24.162Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_r27i856k1tod",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-20T21:34:24.162Z",
+      "endedAt": "2026-08-20T21:36:44.389Z",
+      "events": [
+        {
+          "ts": 1787261664162,
+          "type": "decision",
+          "content": "Reuse workspace-scoped temporary launcher identity for every tokenless targeted spawn: Reuse workspace-scoped temporary launcher identity for every tokenless targeted spawn",
+          "raw": {
+            "question": "Reuse workspace-scoped temporary launcher identity for every tokenless targeted spawn",
+            "chosen": "Reuse workspace-scoped temporary launcher identity for every tokenless targeted spawn",
+            "alternatives": [],
+            "reasoning": "The Daytona path already proves this authorization model and cleans up the identity in finally; extending it to named physical nodes removes the explicit token requirement without widening placement authority beyond the active workspace."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Targeted fleet spawn now mints and deletes a short-lived workspace launcher when no agent token is present; added CLI coverage and changelog entry.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "9c55dbaa1c2673de87b3aa9142dec79ab349fec9",
+    "endRef": "9c55dbaa1c2673de87b3aa9142dec79ab349fec9"
+  }
+}

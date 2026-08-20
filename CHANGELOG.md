@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Fixed
+
+- `agent-relay fleet spawn --node <name>` now uses the active workspace to mint and clean up a short-lived launcher identity when no agent token is present.
+
 ### Added
 
 - `relay session replay <id>` and `@agent-relay/session`'s `SessionClient.replaySession()` now include the cross-node Relaycast conversation for the session, report the effective retention boundary, and flag incomplete coverage.

@@ -720,8 +720,8 @@ describe('fleet command support', () => {
     });
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: expect.stringMatching(/^fleet-sandbox-launcher-[a-f0-9]{8}$/),
-        metadata: { purpose: 'fleet-sandbox-launcher' },
+        name: expect.stringMatching(/^fleet-spawn-launcher-[a-f0-9]{8}$/),
+        metadata: { purpose: 'fleet-spawn-launcher' },
       }),
       { strict: true }
     );
@@ -743,7 +743,7 @@ describe('fleet command support', () => {
     );
     expect(release).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: expect.stringMatching(/^fleet-sandbox-launcher-/),
+        name: expect.stringMatching(/^fleet-spawn-launcher-/),
         deleteAgent: true,
       })
     );
@@ -1180,24 +1180,33 @@ describe('fleet command support', () => {
     });
   });
 
-  it('fleet spawn rejects targeted placement without an agent token before dispatch', async () => {
+  it('fleet spawn mints and removes a temporary launcher for tokenless targeted placement', async () => {
     const previousToken = process.env.RELAY_AGENT_TOKEN;
     delete process.env.RELAY_AGENT_TOKEN;
-    const createAgentRelay = vi.fn();
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_targeted_tokenless',
+        actionName: 'spawn',
+        node: { name: 'sf-mini' },
+      })),
+    };
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const register = vi.fn(async () => ({ token: 'at_live_temporary_launcher' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { register, release },
+    }));
     const createFleetWorkspaceClient = vi.fn();
-    const errors: string[] = [];
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
       sdk: {
         createAgentRelay: createAgentRelay as never,
-        createWorkspaceRelay: vi.fn() as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
         createWorkspace: vi.fn() as never,
         log: vi.fn(),
-        error: (...args: unknown[]) => errors.push(args.join(' ')),
-        exit: (() => {
-          throw new Error('__exit__');
-        }) as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
       },
       createFleetWorkspaceClient: createFleetWorkspaceClient as never,
       log: () => undefined,
@@ -1206,31 +1215,56 @@ describe('fleet command support', () => {
     });
 
     try {
-      await expect(
-        program.parseAsync(
-          [
-            'fleet',
-            'spawn',
-            'codex',
-            '--name',
-            'api-worker',
-            '--task',
-            'ACK',
-            '--node',
-            'sf-mini',
-            '--workspace-key',
-            'rk_live_test',
-          ],
-          { from: 'user' }
-        )
-      ).rejects.toThrow('__exit__');
+      await program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          'api-worker',
+          '--task',
+          'ACK',
+          '--node',
+          'sf-mini',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      );
     } finally {
       if (previousToken === undefined) delete process.env.RELAY_AGENT_TOKEN;
       else process.env.RELAY_AGENT_TOKEN = previousToken;
     }
 
-    expect(errors.join('\n')).toMatch(/requires an agent token/);
-    expect(createAgentRelay).not.toHaveBeenCalled();
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: undefined,
+      baseUrl: undefined,
+    });
+    expect(register).toHaveBeenCalledWith(
+      {
+        name: expect.stringMatching(/^fleet-spawn-launcher-[a-f0-9]{8}$/),
+        metadata: { purpose: 'fleet-spawn-launcher' },
+      },
+      { strict: true }
+    );
+    expect(createAgentRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: 'at_live_temporary_launcher',
+      baseUrl: undefined,
+    });
+    expect(placement.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capability: 'spawn:codex',
+        node: 'sf-mini',
+        confirm: true,
+      })
+    );
+    expect(release).toHaveBeenCalledWith({
+      name: expect.stringMatching(/^fleet-spawn-launcher-[a-f0-9]{8}$/),
+      reason: 'Temporary fleet spawn launcher completed',
+      deleteAgent: true,
+    });
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
   });
 
