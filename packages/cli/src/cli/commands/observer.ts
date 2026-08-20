@@ -84,10 +84,14 @@ function parseChannels(value: string): string[] {
   if (names.length === 0) {
     throw new InvalidArgumentError('Expected at least one channel name.');
   }
-  if (names.length > MAX_CHANNEL_FILTERS) {
+  // Collapse duplicates before enforcing the cap: `--channels a,a,a` is one
+  // filter, and rejecting it for exceeding a limit it never reaches would be
+  // surprising.
+  const unique = [...new Set(names)];
+  if (unique.length > MAX_CHANNEL_FILTERS) {
     throw new InvalidArgumentError(`Expected at most ${MAX_CHANNEL_FILTERS} channel names.`);
   }
-  return [...new Set(names)];
+  return unique;
 }
 
 /**
@@ -148,6 +152,12 @@ export function registerObserverCommands(
         const lifetimeMs = (options.expires as number | undefined) ?? parseDuration(DEFAULT_OBSERVER_EXPIRES);
         const name = (options.name as string | undefined)?.trim() || `observer-cli-${deps.randomSuffix()}`;
 
+        // Resolve the dashboard URL BEFORE minting. A bad `--observer-url` or
+        // `RELAY_OBSERVER_URL` would otherwise mint a live 24-hour token and
+        // then throw before printing it, leaving an active credential the
+        // caller never saw.
+        const observerBase = resolveObserverBaseUrl(options.observerUrl as string | undefined, env);
+
         const token = await deps.createObserverToken({
           ...connection(options),
           name,
@@ -163,10 +173,7 @@ export function registerObserverCommands(
           throw new Error('Observer token created, but the response did not include token material.');
         }
 
-        const url = observerUrl(
-          resolveObserverBaseUrl(options.observerUrl as string | undefined, env),
-          token.token
-        );
+        const url = observerUrl(observerBase, token.token);
 
         if (options.json) {
           printJson(deps, { ...describeToken(token), url });
@@ -192,7 +199,12 @@ export function registerObserverCommands(
     )
     .option('--base-url <url>', 'Override the engine API base URL')
     .option('--json', 'Output as JSON')
-    .action(async (options: Record<string, unknown>) => {
+    .action(async (_options: Record<string, unknown>, command: Command) => {
+      // The parent `observer` group declares the same flag names, and Commander
+      // resolves a repeated option onto the ancestor that declared it first — so
+      // the local opts object here is empty and `--json` / `--workspace-key`
+      // would be silently dropped. Read the merged view instead.
+      const options = command.optsWithGlobals() as Record<string, unknown>;
       await runSdk(deps, async () => {
         const tokens = await deps.listObserverTokens(connection(options));
 
@@ -220,7 +232,9 @@ export function registerObserverCommands(
       'Workspace key (defaults to RELAY_WORKSPACE_KEY or the active workspace)'
     )
     .option('--base-url <url>', 'Override the engine API base URL')
-    .action(async (id: string, options: Record<string, unknown>) => {
+    .action(async (id: string, _options: Record<string, unknown>, command: Command) => {
+      // See the note on `observer list` — read merged options, not local ones.
+      const options = command.optsWithGlobals() as Record<string, unknown>;
       await runSdk(deps, async () => {
         await deps.revokeObserverToken({ ...connection(options), id });
         deps.log(`Revoked ${id}.`);

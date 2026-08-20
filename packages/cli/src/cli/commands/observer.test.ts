@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerObserverCommands, type ObserverCommandDependencies } from './observer.js';
 import { observerUrl, resolveObserverBaseUrl } from '../lib/observer-url.js';
@@ -33,9 +33,10 @@ function setup(overrides: Partial<ObserverCommandDependencies> = {}) {
   const listObserverTokens = vi.fn(async () => []);
   const revokeObserverToken = vi.fn(async () => {});
 
-  const program = new Command();
-  program.exitOverride();
-  registerObserverCommands(program, {
+  // Build the dep set once and hand back exactly what was registered, so a test
+  // that overrides a mock inspects the same instance the command called rather
+  // than the untouched default.
+  const deps = {
     log: (...args: unknown[]) => logs.push(args.join(' ')),
     error: (...args: unknown[]) => errors.push(args.join(' ')),
     exit: (code: number) => {
@@ -47,16 +48,33 @@ function setup(overrides: Partial<ObserverCommandDependencies> = {}) {
     now: () => FIXED_NOW,
     randomSuffix: () => 'deadbeef',
     ...overrides,
-  });
+  };
 
-  return { program, logs, errors, createObserverToken, listObserverTokens, revokeObserverToken };
+  const program = new Command();
+  program.exitOverride();
+  registerObserverCommands(program, deps);
+
+  return {
+    program,
+    logs,
+    errors,
+    createObserverToken: deps.createObserverToken as unknown as ReturnType<typeof vi.fn>,
+    listObserverTokens: deps.listObserverTokens as unknown as ReturnType<typeof vi.fn>,
+    revokeObserverToken: deps.revokeObserverToken as unknown as ReturnType<typeof vi.fn>,
+  };
 }
 
 describe('agent-relay observer', () => {
   beforeEach(() => {
-    process.env.RELAY_WORKSPACE_KEY = WORKSPACE_KEY;
-    delete process.env.RELAY_OBSERVER_URL;
-    delete process.env.RELAY_BASE_URL;
+    // Stub rather than assign: a direct `process.env` mutation outlives this
+    // suite and leaks a workspace key into every test file that runs after it.
+    vi.stubEnv('RELAY_WORKSPACE_KEY', WORKSPACE_KEY);
+    vi.stubEnv('RELAY_OBSERVER_URL', '');
+    vi.stubEnv('RELAY_BASE_URL', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('mints a scoped token and prints an observer URL carrying the token, not the workspace key', async () => {
@@ -118,6 +136,46 @@ describe('agent-relay observer', () => {
     expect(logs.join('\n')).not.toContain('ot_live_');
   });
 
+  it('honours flags on subcommands even though the parent declares the same names', async () => {
+    // Regression: Commander binds a repeated option to the ancestor that
+    // declared it first, so reading the subcommand's local opts returned {} and
+    // silently dropped both --json and --workspace-key.
+    const { program, logs, listObserverTokens } = setup({
+      listObserverTokens: vi.fn(async () => [createdToken({ token: undefined })]) as never,
+    });
+
+    await program.parseAsync(
+      ['observer', 'list', '--json', '--workspace-key', 'rk_live_explicitkey00000'],
+      { from: 'user' }
+    );
+
+    const [call] = listObserverTokens.mock.calls as unknown as [[Record<string, unknown>]];
+    expect(call[0].workspaceKey).toBe('rk_live_explicitkey00000');
+    expect(() => JSON.parse(logs.join('\n'))).not.toThrow();
+  });
+
+  it('validates the observer URL before minting, so a bad config leaves no live token', async () => {
+    const { program, errors, createObserverToken } = setup();
+
+    await expect(
+      program.parseAsync(['observer', '--observer-url', 'data:text/html,x'], { from: 'user' })
+    ).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(errors.join('\n')).toContain('must be http or https');
+    // The important half: no token was created before the failure.
+    expect(createObserverToken).not.toHaveBeenCalled();
+  });
+
+  it('collapses duplicate channels before applying the cap', async () => {
+    const { program, createObserverToken } = setup();
+    const many = Array.from({ length: 60 }, () => 'general').join(',');
+
+    await program.parseAsync(['observer', '--channels', many], { from: 'user' });
+
+    const [call] = createObserverToken.mock.calls as unknown as [[Record<string, unknown>]];
+    expect(call[0].filters).toEqual({ includeDms: false, channelNames: ['general'] });
+  });
+
   it('revokes by id', async () => {
     const { program, revokeObserverToken, logs } = setup();
 
@@ -150,6 +208,17 @@ describe('observer URL construction', () => {
   it('rejects a malformed observer URL instead of emitting a broken link', () => {
     expect(() => resolveObserverBaseUrl('not-a-url', {} as NodeJS.ProcessEnv)).toThrow(
       /Invalid observer URL/
+    );
+  });
+
+  it('rejects non-http(s) schemes, which would carry the token somewhere unintended', () => {
+    for (const bad of ['data:text/html,x', 'javascript:alert(1)', 'file:///etc/passwd', 'ftp://h/p']) {
+      expect(() => resolveObserverBaseUrl(bad, {} as NodeJS.ProcessEnv)).toThrow(
+        /must be http or https/
+      );
+    }
+    expect(resolveObserverBaseUrl('http://localhost:3000/observer', {} as NodeJS.ProcessEnv)).toBe(
+      'http://localhost:3000/observer'
     );
   });
 });

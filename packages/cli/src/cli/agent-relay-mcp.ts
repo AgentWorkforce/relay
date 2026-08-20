@@ -1008,6 +1008,9 @@ function registerAgentRelayTools(
       const session = getSession();
       requireWorkspaceKey(session);
       const lifetimeHours = expires_in_hours ?? 24;
+      // Resolve the dashboard URL BEFORE minting: an invalid RELAY_OBSERVER_URL
+      // would otherwise leave a live token behind that this call never returns.
+      const observerBase = resolveObserverBaseUrl(undefined);
       const token = await createObserverToken({
         workspaceKey: session.workspaceKey as string,
         name: `observer-mcp-${Math.random().toString(36).slice(2, 10)}`,
@@ -1023,7 +1026,7 @@ function registerAgentRelayTools(
         throw new Error('Observer token created, but the response did not include token material.');
       }
       return jsonContent({
-        url: observerUrl(resolveObserverBaseUrl(undefined), token.token),
+        url: observerUrl(observerBase, token.token),
         tokenId: token.id,
         expiresAt: token.expiresAt,
         includesDms: include_dms === true,

@@ -28,12 +28,21 @@ export function resolveObserverBaseUrl(
   env: NodeJS.ProcessEnv = process.env
 ): string {
   const value = explicit?.trim() || env.RELAY_OBSERVER_URL?.trim() || DEFAULT_OBSERVER_URL;
+  let parsed: URL;
   try {
     // Fail here rather than emitting a malformed link the caller only discovers
     // after pasting it somewhere public.
-    new URL(value);
+    parsed = new URL(value);
   } catch {
     throw new Error(`Invalid observer URL: ${value}`);
+  }
+  // The token is appended to this URL's query string, so the scheme decides
+  // where a live credential ends up. `new URL` happily accepts `data:`,
+  // `javascript:`, and arbitrary custom schemes; restrict to the two that
+  // actually address an observer dashboard so a bad `RELAY_OBSERVER_URL`
+  // cannot turn the generated link into a token-exfiltration vector.
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error(`Observer URL must be http or https: ${value}`);
   }
   return value;
 }
