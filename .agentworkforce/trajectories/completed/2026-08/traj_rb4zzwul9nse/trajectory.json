@@ -8,8 +8,9 @@
       "id": "relay#1585"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-08-20T10:27:01.836Z",
+  "completedAt": "2026-08-20T11:58:01.765Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-08-20T10:30:50.236Z",
+      "endedAt": "2026-08-20T11:58:01.765Z",
       "events": [
         {
           "ts": 1787221850240,
@@ -96,12 +98,35 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Fixed relay#1585 by publishing exact broker live WorkerNames in the existing node heartbeat, decoding them for remote fleet agent output, enforcing strict targeted filtering without roster reads, and labeling all unavailable or inconsistent states degraded. Proved the mechanism on a disposable real sf-mini broker/PTY and hardened unit plus two-node E2E coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [
+    "eabfba00f",
+    "462325e5f"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_rb4zzwul9nse/trajectory.json",
+    ".gitattributes",
+    "CHANGELOG.md",
+    "crates/broker/src/fleet_wire.rs",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "packages/cli/src/cli/commands/fleet-agent.test.ts",
+    "packages/cli/src/cli/commands/fleet-agent.ts",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "packages/cli/src/cli/commands/fleet.ts",
+    "tests/e2e/fleet/fleet-e2e.test.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "b3339a42f23fe067a488771f70176957161952ed",
-    "endRef": "b3339a42f23fe067a488771f70176957161952ed"
+    "endRef": "eabfba00fee66862ae428df9437a5cd116f95184",
+    "traceId": "31716bb0-037d-4446-9b00-e71b9ad7365b"
   }
 }
