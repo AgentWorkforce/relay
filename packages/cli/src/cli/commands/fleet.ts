@@ -305,27 +305,23 @@ export function registerFleetCommands(
       }
 
       if (targetNode) {
-        if (!useSandbox && !resolveAgentToken(clientOptions)) {
-          throw new Error(
-            'Targeted Fleet spawn requires an agent token. Pass --token or set RELAY_AGENT_TOKEN.'
-          );
-        }
         let launcherName: string | undefined;
         try {
           let agentToken = resolveAgentToken(clientOptions);
           if (!agentToken) {
             workspaceRelay ??= deps.sdk.createWorkspaceRelay(clientOptions);
-            launcherName = `fleet-sandbox-launcher-${randomUUID().slice(0, 8)}`;
+            const pendingLauncherName = `fleet-spawn-launcher-${randomUUID().slice(0, 8)}`;
             const launcher = await workspaceRelay.workspace.register(
               {
-                name: launcherName,
-                metadata: { purpose: 'fleet-sandbox-launcher' },
+                name: pendingLauncherName,
+                metadata: { purpose: 'fleet-spawn-launcher' },
               },
               { strict: true }
             );
+            launcherName = pendingLauncherName;
             agentToken = launcher.token;
             if (!agentToken) {
-              throw new Error('The temporary fleet sandbox launcher did not receive an agent token.');
+              throw new Error('The temporary fleet spawn launcher did not receive an agent token.');
             }
           }
 
@@ -384,7 +380,7 @@ export function registerFleetCommands(
             await workspaceRelay.workspace
               .release({
                 name: launcherName,
-                reason: 'Temporary fleet sandbox launcher completed',
+                reason: 'Temporary fleet spawn launcher completed',
                 deleteAgent: true,
               })
               .catch((error) => {
