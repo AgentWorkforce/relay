@@ -101,10 +101,14 @@ export async function resolveFleetHint(
         // running at all, which is worse than no hint.
         if (!isAvailableFleetNode(node)) continue;
         if (!readRemoteLiveAgents(node).agents.some((live) => live.name === agentName)) continue;
-        const label = node.name ?? node.nodeId ?? node.id;
-        // A node with no usable identifier is worse than no hint: "on node
-        // 'undefined'" tells the operator nothing and looks like a bug.
-        if (typeof label === 'string' && label) return `on node '${label}'`;
+        // First NON-EMPTY identifier, not first non-nullish: `??` would select
+        // an empty `name` and strand a node that has a perfectly good id.
+        const label = [node.name, node.nodeId, node.id].find(
+          (candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0
+        );
+        // A node with no usable identifier at all is worse than no hint: "on
+        // node 'undefined'" tells the operator nothing and looks like a bug.
+        if (label) return `on node '${label}'`;
       }
     } catch {
       // Roster lookup failed — fall back to whatever the registry gave us.

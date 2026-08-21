@@ -245,3 +245,31 @@ describe('resolveFleetHint — only live nodes can answer', () => {
     expect(result).toBe("on node 'sf-mini'");
   });
 });
+
+describe('resolveFleetHint — identifier and failure-mode edges', () => {
+  it('uses the node id when the node name is an empty string', async () => {
+    // `node.name ?? node.nodeId` selects '' — `??` only falls through on
+    // null/undefined — which stranded a node that had a perfectly good id.
+    const result = await resolveFleetHint(
+      'worker',
+      makeRelayRejectingAgent(new Error('404'), [nodeRunning('', ['worker'])])
+    );
+    expect(result).toBe("on node 'node_live'");
+  });
+
+  it('still lets the roster answer when the registry lookup fails for a non-404 reason', async () => {
+    // Deliberate: the fallback is NOT gated on a confirmed not-found. A node's
+    // heartbeat is independent evidence of where a worker is running, so if
+    // `agents.get` fails transiently (network, auth, a slow registry) and the
+    // roster can still answer, the hint it produces is true — and gating on a
+    // 404 would withhold a correct answer in exactly the case the operator is
+    // already having a bad time. The wrong-hint risk lives in stale roster
+    // data, which the `isAvailableFleetNode` filter above addresses and which
+    // is identical either way.
+    const result = await resolveFleetHint(
+      'worker',
+      makeRelayRejectingAgent(new Error('502 Bad Gateway'), [nodeRunning('sf-mini', ['worker'])])
+    );
+    expect(result).toBe("on node 'sf-mini'");
+  });
+});
