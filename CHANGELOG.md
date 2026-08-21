@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay fleet spawn --node <name>` now uses the active workspace to mint and clean up a short-lived launcher identity when no agent token is present.
+- The `send_dm` MCP tool returns a compact, fixed-size delivery receipt instead of echoing the sent message body back twice, cutting the context a sending agent spends per DM by roughly two-thirds. The `agent-relay message dm --json` output is unchanged.
 
 ### Added
 
