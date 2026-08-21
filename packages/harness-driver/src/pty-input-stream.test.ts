@@ -340,7 +340,6 @@ describe('PtyInputStream keepalive (relay#1597)', () => {
     expect(socket.pings).toBe(1);
     await vi.advanceTimersByTimeAsync(40_000);
     expect(socket.pings).toBe(3);
-    void stream;
   });
 
   it('relay#1597 MUST-NOT-FIRE: stops pinging once the stream is closed', async () => {
