@@ -354,9 +354,7 @@ export function registerMessagingTools(
         attachments,
         data: replayMessageMetadata(),
       });
-      const receipt = compactDirectMessageReceipt(
-        directMessageReceipt(message, to, mode, resolvedRecipient)
-      );
+      const receipt = compactDirectMessageReceipt(directMessageReceipt(message, to, mode, resolvedRecipient));
       const result = jsonContent(receipt);
       return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
     }

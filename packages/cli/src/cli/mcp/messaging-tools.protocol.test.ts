@@ -93,7 +93,11 @@ describe('messaging delivery receipts over MCP', () => {
       message: { id: 'msg_1', text: body },
     }));
     const server = new McpServer({ name: 'messaging-echo-test', version: '1.0.0' });
-    registerMessagingTools(server, () => ({ dm }) as never, async () => [{ name: 'chief' }]);
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'chief' }]
+    );
 
     const client = new Client({ name: 'messaging-echo-client', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

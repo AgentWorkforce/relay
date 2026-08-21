@@ -250,9 +250,7 @@ describe('compact direct message receipts', () => {
     const resolved = compactDirectMessageReceipt(
       directMessageReceipt(sentMessageResponse(body), 'chief', 'wait', 'chief')
     );
-    const unresolved = compactDirectMessageReceipt(
-      directMessageReceipt(sentMessageResponse(body), 'chief')
-    );
+    const unresolved = compactDirectMessageReceipt(directMessageReceipt(sentMessageResponse(body), 'chief'));
 
     expect(resolved.target).toEqual({ kind: 'agent', agentName: 'chief' });
     expect(unresolved).not.toHaveProperty('target');
