@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay fleet spawn --node <name>` now uses the active workspace to mint and clean up a short-lived launcher identity when no agent token is present.
+- Attaching to an agent that lives on another fleet node without `--node` now names the node to run the command on, instead of reporting `no agent named '<name>'` for an agent that is running.
 
 ### Added
 

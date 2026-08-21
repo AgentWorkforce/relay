@@ -30,6 +30,7 @@
 import type { AgentRelay } from '@agent-relay/sdk';
 
 import { createWorkspaceRelay } from './sdk-client.js';
+import { readRemoteLiveAgents } from './fleet-live-agents.js';
 
 /**
  * Injectable factory — lets callers (and tests) substitute a workspace
@@ -63,33 +64,48 @@ export async function resolveFleetHint(
       return null;
     }
 
-    let agent: { metadata?: Record<string, unknown> };
+    let agent: { metadata?: Record<string, unknown> } | null = null;
     try {
       agent = await relay.agents.get(agentName);
     } catch {
-      // 404 from the workspace registry (or any network error) — the agent
-      // truly does not exist anywhere, or we can't tell. Original message.
-      return null;
+      // Not in the workspace agent registry (404), or we could not reach it.
+      // This is the COMMON case for the agents this hint exists to describe:
+      // a broker-spawned worker on a fleet node is not a workspace-registered
+      // agent at all, so this lookup 404s for exactly the names an operator
+      // most often mistypes into a cross-node attach. Fall through to the
+      // roster scan below rather than giving up here (relay#1597).
     }
 
-    const fleet = (agent.metadata as Record<string, unknown> | undefined)?.fleet;
+    const fleet = (agent?.metadata as Record<string, unknown> | undefined)?.fleet;
     const nodeId =
       typeof fleet === 'object' && fleet !== null ? (fleet as Record<string, unknown>).nodeId : undefined;
-    if (typeof nodeId !== 'string' || !nodeId) return null;
 
     // Resolve the node's human-readable name by looking it up in the roster.
-    // A failure here is non-fatal — we still emit a hint with the raw ID.
+    // The same call also answers placement for a worker the agent registry
+    // does not know about: every node advertises the set of workers it is
+    // currently running on its heartbeat, so one `nodes.list()` covers both
+    // paths with no extra round-trip.
     try {
       const nodes = await relay.nodes.list();
-      const node = nodes.find((n) => n.nodeId === nodeId || n.id === nodeId);
-      if (node?.name) {
-        return `on node '${node.name}'`;
+      if (typeof nodeId === 'string' && nodeId) {
+        const node = nodes.find((n) => n.nodeId === nodeId || n.id === nodeId);
+        if (node?.name) return `on node '${node.name}'`;
+        // Registry knew the placement but the roster could not name the node.
+        return `on node '${nodeId}'`;
+      }
+      for (const node of nodes) {
+        if (!readRemoteLiveAgents(node).agents.some((live) => live.name === agentName)) continue;
+        const label = node.name ?? node.nodeId ?? node.id;
+        // A node with no usable identifier is worse than no hint: "on node
+        // 'undefined'" tells the operator nothing and looks like a bug.
+        if (typeof label === 'string' && label) return `on node '${label}'`;
       }
     } catch {
-      // Node lookup failed — fall back to the raw ID hint.
+      // Roster lookup failed — fall back to whatever the registry gave us.
     }
 
-    return `on node '${nodeId}'`;
+    if (typeof nodeId === 'string' && nodeId) return `on node '${nodeId}'`;
+    return null;
   } catch {
     // Unexpected error in the outer try — never propagate.
     return null;
