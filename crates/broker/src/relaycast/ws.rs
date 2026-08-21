@@ -6,9 +6,8 @@ use relaycast::{
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
     AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
     CompleteInvocationRequest, CreateObserverTokenRequest, EmitSessionEventRequest,
-    TakeOverAgentRequest,
     MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast, RelayCastOptions,
-    RelayError, ReleaseAgentRequest, UpdateAgentRequest,
+    RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 
@@ -228,7 +227,10 @@ impl RelaycastHttpClient {
                 detail: "SDK relay client not initialized".to_string(),
             }
         })?;
-        match registration.register_agent_token(trimmed_name, cli_hint).await {
+        match registration
+            .register_agent_token(trimmed_name, cli_hint)
+            .await
+        {
             Ok(token) => Ok(token),
             // Registration is create-only as of relaycast 8.2.0 / SDK 7.0.0, so
             // a name the broker already owns can no longer be re-registered and
@@ -253,12 +255,13 @@ impl RelaycastHttpClient {
         agent_name: &str,
         known_agent_id: Option<&str>,
     ) -> std::result::Result<String, RelaycastRegistrationError> {
-        let relay = (*self.relay).as_ref().ok_or_else(|| {
-            RelaycastRegistrationError::Transport {
-                agent_name: agent_name.to_string(),
-                detail: "SDK relay client not initialized".to_string(),
-            }
-        })?;
+        let relay =
+            (*self.relay)
+                .as_ref()
+                .ok_or_else(|| RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: "SDK relay client not initialized".to_string(),
+                })?;
 
         // Callers that already resolved the incumbent (the impersonation
         // presence probe does) pass its id through rather than paying a second
@@ -411,15 +414,16 @@ impl RelaycastHttpClient {
                         // to strand, which is exactly the condition that makes
                         // an audited takeover safe here. Reuse the agent the
                         // probe already fetched instead of looking it up again.
-                        match registration.register_agent_token(trimmed_name, cli_hint).await {
+                        match registration
+                            .register_agent_token(trimmed_name, cli_hint)
+                            .await
+                        {
                             Ok(token) => Ok(token),
                             Err(AgentRegistrationError::AlreadyExists { .. }) => self
                                 .take_over_agent_identity(trimmed_name, Some(&agent.id))
                                 .await
                                 .map_err(ImpersonationAwareRegistrationError::Sdk),
-                            Err(other) => {
-                                Err(ImpersonationAwareRegistrationError::Sdk(other))
-                            }
+                            Err(other) => Err(ImpersonationAwareRegistrationError::Sdk(other)),
                         }
                     }
                     Ok(Ok(agent)) => {
