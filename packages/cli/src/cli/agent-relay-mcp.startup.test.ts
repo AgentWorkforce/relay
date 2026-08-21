@@ -553,10 +553,15 @@ describe('createAgentRelayMcpServer', () => {
     // it's given, but a correct handler resolves the recipient independently
     // (and reports `recipient_unresolved` when it can't). Asserting `to`
     // would encode that passthrough as expected behavior.
+    //
+    // Nor `text`: the receipt deliberately drops the body rather than echoing
+    // it back to the agent that just wrote it. Asserting `text` here would
+    // likewise re-freeze the echo as expected behavior.
     expect(dmResult.structuredContent).toMatchObject({
       id: 'dm_1',
-      text: 'MCP startup check',
+      delivery: { status: 'recipient_unresolved', readConfirmed: false },
     });
+    expect(dmResult.structuredContent).not.toHaveProperty('text');
     const inboxResult = await server.tools.get('check_inbox')?.handler({});
     expect(inboxResult.structuredContent).toEqual({
       unreadChannels: [],
