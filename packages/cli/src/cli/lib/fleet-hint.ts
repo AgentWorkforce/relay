@@ -30,7 +30,7 @@
 import type { AgentRelay } from '@agent-relay/sdk';
 
 import { createWorkspaceRelay } from './sdk-client.js';
-import { readRemoteLiveAgents } from './fleet-live-agents.js';
+import { isAvailableFleetNode, readRemoteLiveAgents } from './fleet-live-agents.js';
 
 /**
  * Injectable factory — lets callers (and tests) substitute a workspace
@@ -94,6 +94,12 @@ export async function resolveFleetHint(
         return `on node '${nodeId}'`;
       }
       for (const node of nodes) {
+        // Only nodes that can currently host work. `nodes.list()` also returns
+        // history, and an offline record still carries the live-agent names
+        // from its last heartbeat — scanning those would point the operator at
+        // a machine that stopped running the agent hours ago, or is not
+        // running at all, which is worse than no hint.
+        if (!isAvailableFleetNode(node)) continue;
         if (!readRemoteLiveAgents(node).agents.some((live) => live.name === agentName)) continue;
         const label = node.name ?? node.nodeId ?? node.id;
         // A node with no usable identifier is worse than no hint: "on node

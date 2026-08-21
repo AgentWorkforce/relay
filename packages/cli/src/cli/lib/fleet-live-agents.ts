@@ -57,3 +57,25 @@ export function readRemoteLiveAgents(node: RelayNode): RemoteLiveAgentRead {
       : {}),
   };
 }
+
+/**
+ * Whether a roster entry can currently accept Fleet work.
+ *
+ * `nodes.list()` returns history as well as live nodes, and an offline
+ * record still carries the live-agent capability from its last heartbeat —
+ * so a name that node was running hours ago is still listed there. Callers
+ * that answer "where is agent X *now*" must filter with this first, or they
+ * will confidently point an operator at a machine that is not running the
+ * agent (or is not running at all).
+ */
+export function isAvailableFleetNode(node: {
+  live?: boolean;
+  status?: string;
+  handlersLive?: boolean;
+  tags?: unknown;
+}): boolean {
+  const tags = Array.isArray(node.tags) ? node.tags : [];
+  const isDirectPseudoNode = tags.includes('direct');
+  const isLive = node.live === undefined ? node.status === 'online' : node.live === true;
+  return isLive && node.handlersLive !== false && !isDirectPseudoNode;
+}

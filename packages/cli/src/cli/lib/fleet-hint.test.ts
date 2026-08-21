@@ -27,11 +27,14 @@ function makeRelayRejectingAgent(err: Error = new Error('not found'), nodes: unk
     }) as never;
 }
 
-/** A roster node advertising the worker names its broker is running. */
+/** A roster node advertising the worker names its broker is running.
+ *  Online by default; pass `{ status: 'offline' }` (or `live: false`) for a
+ *  history record, which still carries its last heartbeat's worker names. */
 function nodeRunning(name: string | undefined, workers: string[], extra: Record<string, unknown> = {}) {
   return {
     name,
     nodeId: 'node_live',
+    status: 'online',
     capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: workers } }],
     ...extra,
   };
@@ -190,5 +193,55 @@ describe('resolveFleetHint — workers that are not workspace-registered (relay#
         nodes: { list: vi.fn(async () => Promise.reject(new Error('network'))) },
       }) as never;
     await expect(resolveFleetHint('worker', relay)).resolves.toBeNull();
+  });
+});
+
+describe('resolveFleetHint — only live nodes can answer', () => {
+  it('MUST-NOT-FIRE: ignores an offline node still advertising the worker', () => {
+    // `nodes.list()` returns history too, and an offline record keeps the
+    // live-agent names from its last heartbeat. Naming that machine would tell
+    // the operator to go run a command somewhere the agent is not — a
+    // confidently wrong answer, which is worse than the plain message.
+    return expect(
+      resolveFleetHint(
+        'worker',
+        makeRelayRejectingAgent(new Error('404'), [
+          nodeRunning('dead-node', ['worker'], { status: 'offline' }),
+        ])
+      )
+    ).resolves.toBeNull();
+  });
+
+  it('MUST-NOT-FIRE: ignores a node whose handlers are not live', async () => {
+    expect(
+      await resolveFleetHint(
+        'worker',
+        makeRelayRejectingAgent(new Error('404'), [
+          nodeRunning('half-up', ['worker'], { handlersLive: false }),
+        ])
+      )
+    ).toBeNull();
+  });
+
+  it("MUST-NOT-FIRE: ignores a 'direct' pseudo-node", async () => {
+    expect(
+      await resolveFleetHint(
+        'worker',
+        makeRelayRejectingAgent(new Error('404'), [nodeRunning('pseudo', ['worker'], { tags: ['direct'] })])
+      )
+    ).toBeNull();
+  });
+
+  it('picks the live node when a stale record lists the same worker', async () => {
+    // Ordering must not decide this: a stale record appearing first in the
+    // roster must not win over the machine actually running the agent.
+    const result = await resolveFleetHint(
+      'worker',
+      makeRelayRejectingAgent(new Error('404'), [
+        nodeRunning('stale-node', ['worker'], { status: 'offline', nodeId: 'node_stale' }),
+        nodeRunning('sf-mini', ['worker']),
+      ])
+    );
+    expect(result).toBe("on node 'sf-mini'");
   });
 });

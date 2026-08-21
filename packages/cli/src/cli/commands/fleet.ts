@@ -21,6 +21,7 @@ import {
   type RosterAgent,
 } from './fleet-agent.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
+import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
@@ -491,19 +492,6 @@ export function registerFleetCommands(
       deps.exit(1);
     }
   });
-}
-
-/** Return whether a roster entry can currently accept Fleet work. */
-function isAvailableFleetNode(node: {
-  live?: boolean;
-  status?: string;
-  handlersLive?: boolean;
-  tags?: unknown;
-}): boolean {
-  const tags = Array.isArray(node.tags) ? node.tags : [];
-  const isDirectPseudoNode = tags.includes('direct');
-  const isLive = node.live === undefined ? node.status === 'online' : node.live === true;
-  return isLive && node.handlersLive !== false && !isDirectPseudoNode;
 }
 
 function parseFleetCli(value: string): string {
