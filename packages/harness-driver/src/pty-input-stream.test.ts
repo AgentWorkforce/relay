@@ -43,6 +43,13 @@ class FakeWebSocket {
     this.sends.push({ data, cb });
   }
 
+  /** Application-level keepalive pings (see INPUT_KEEPALIVE_INTERVAL_MS). */
+  pings = 0;
+
+  ping(): void {
+    this.pings += 1;
+  }
+
   close(): void {
     this.closed = true;
   }
@@ -264,5 +271,92 @@ describe('PtyInputStream after its socket closes', () => {
     // Nothing was put back on the wire, and no replacement socket was opened.
     expect(socket.sends).toHaveLength(0);
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+});
+
+describe('PtyInputStream refused writes (relay#1597)', () => {
+  it('relay#1597 MUST-FIRE: a full PTY write queue rejects one write and keeps the stream', async () => {
+    // `pty_write_queue_full` means the worker refused THIS write because its
+    // bounded drainer queue is full — it answered, so it is alive, and the
+    // broker deliberately keeps the socket open for this code. Closing here
+    // (as the old `every code except worker_timeout is fatal` rule did) forced
+    // the CLI into a reconnect per keystroke against any busy agent. Remove
+    // `pty_write_queue_full` from the non-fatal list in `handleMessage` and the
+    // `stream.closed` assertion goes red.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p1 = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame(
+      'pty_write_queue_full',
+      'pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)'
+    );
+
+    await expect(p1).rejects.toMatchObject({ code: 'pty_write_queue_full' });
+    expect(stream.closed).toBe(false);
+
+    // Still usable for the next keystroke once the child drains.
+    const p2 = stream.send('y');
+    await Promise.resolve();
+    socket.ack(1);
+    await expect(p2).resolves.toMatchObject({ bytes_written: 1 });
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: a non-queue write failure still closes the stream', async () => {
+    // `pty_write_failed` is the other worker write error: a confirmed I/O
+    // failure or an exited drainer. It must stay fatal, so the exemption
+    // cannot be widened to "any pty_write_* code" without going red here.
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    const p = stream.send('x');
+    await Promise.resolve();
+    socket.errorFrame('pty_write_failed', 'pty write queue is closed (drainer exited)');
+
+    await expect(p).rejects.toMatchObject({ code: 'pty_write_failed' });
+    expect(stream.closed).toBe(true);
+  });
+});
+
+describe('PtyInputStream keepalive (relay#1597)', () => {
+  it('relay#1597 MUST-FIRE: pings an idle input socket so it cannot die silently', async () => {
+    // The broker pings the events WS every 30s but never the input WS, so an
+    // input socket carrying no keystrokes was invisible to every idle timeout
+    // between client and broker — the screen stayed live while input was dead.
+    // Remove `startKeepalive()` and this goes red.
+    vi.useFakeTimers();
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    expect(socket.pings).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.pings).toBe(1);
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(socket.pings).toBe(3);
+    void stream;
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: stops pinging once the stream is closed', async () => {
+    // A keepalive that outlives its socket would keep a torn-down session
+    // referenced (and, unref aside, keep firing forever).
+    vi.useFakeTimers();
+    const stream = new PtyInputStream({ url: 'ws://x/api/input/agent/stream' });
+    const socket = lastSocket();
+    socket.open();
+    await stream.waitUntilOpen();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.pings).toBe(1);
+
+    stream.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(socket.pings).toBe(1);
   });
 });

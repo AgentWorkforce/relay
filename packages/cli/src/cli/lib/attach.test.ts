@@ -37,6 +37,26 @@ describe('reserveStatusLineRow', () => {
     expect(reserveStatusLineRow({ rows: 2, cols: 80 })).toEqual({ rows: 2, cols: 80 });
     expect(reserveStatusLineRow(null)).toBeNull();
   });
+
+  it('relay#1597 MUST-FIRE: a zero-size TTY is treated as no size, not forwarded', () => {
+    // `script(1)` with no winsize, a minimized window, or a size not yet
+    // reported gives `{rows: 0, cols: 0}` while `stdout.isTTY` is still true.
+    // Returning it unchanged made every attach mode POST `{rows: 0, cols: 0}`
+    // and collect `rows and cols must be positive integers` from the broker.
+    // Callers already treat null as "skip the resize", which is the honest
+    // answer. Delete the `< 1` guard and these go red.
+    expect(reserveStatusLineRow({ rows: 0, cols: 0 })).toBeNull();
+    expect(reserveStatusLineRow({ rows: 0, cols: 80 })).toBeNull();
+    expect(reserveStatusLineRow({ rows: 40, cols: 0 })).toBeNull();
+    expect(reserveStatusLineRow({ rows: -1, cols: -1 })).toBeNull();
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: a 1x1 terminal is still a real size', () => {
+    // The guard must reject only non-positive dimensions. A genuinely tiny
+    // terminal is still something the operator is looking at, and skipping its
+    // resize would leave the agent rendering at the wrong width.
+    expect(reserveStatusLineRow({ rows: 1, cols: 1 })).toEqual({ rows: 1, cols: 1 });
+  });
 });
 
 describe('fitStatusLineText', () => {

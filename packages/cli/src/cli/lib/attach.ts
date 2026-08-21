@@ -520,6 +520,15 @@ export function reserveStatusLineRow(
   localSize: { rows: number; cols: number } | null
 ): { rows: number; cols: number } | null {
   if (!localSize) return null;
+  // A terminal can report a degenerate size: `script(1)` with no winsize, a
+  // minimized window, a size not yet reported after attach, or a teardown race
+  // all surface as 0 (or worse) rows/cols while `stdout.isTTY` is still true.
+  // Forwarding that verbatim made every attach mode POST `{rows: 0, cols: 0}`
+  // and collect `rows and cols must be positive integers` from the broker —
+  // harmless but alarming noise that has sent more than one investigation down
+  // the wrong path (relay#1597). Treat it the same as "no local size": skip the
+  // resize entirely rather than inventing dimensions the operator never had.
+  if (localSize.rows < 1 || localSize.cols < 1) return null;
   if (localSize.rows < 3 || localSize.cols < 2) return localSize;
   return {
     rows: localSize.rows - 1,
