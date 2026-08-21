@@ -246,6 +246,38 @@ describe('compact direct message receipts', () => {
     expect(directMessageDeliveryFailure(compact)).toBeUndefined();
   });
 
+  it('surfaces a messageId-only upstream response under the documented id field', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt(
+        { messageId: 'msg_alias', conversationId: 'dm_alias', text: body },
+        'chief',
+        'wait',
+        'chief'
+      )
+    );
+
+    // The output schema advertises `id`; a caller told to follow up with
+    // get_message_readers must find it there whichever alias upstream used.
+    expect(compact.id).toBe('msg_alias');
+    expect(compact).not.toHaveProperty('messageId');
+    expect(JSON.stringify(compact)).not.toContain(body);
+    expect(
+      directMessageDeliveryFailure({
+        ...compact,
+        delivery: { ...compact.delivery, status: 'recipient_unresolved' },
+      })
+    ).toContain('message msg_alias was enqueued');
+  });
+
+  it('prefers a real id over a messageId alias when both are present', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt({ id: 'msg_real', messageId: 'msg_alias' }, 'chief', 'wait', 'chief')
+    );
+
+    expect(compact.id).toBe('msg_real');
+    expect(compact).not.toHaveProperty('messageId');
+  });
+
   it('preserves the resolved-versus-unresolved recipient signal that target carries', () => {
     const resolved = compactDirectMessageReceipt(
       directMessageReceipt(sentMessageResponse(body), 'chief', 'wait', 'chief')

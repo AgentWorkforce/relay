@@ -133,13 +133,18 @@ export function messageReadersReceipt(readers: unknown[]): {
 export function compactDirectMessageReceipt(
   receipt: DirectMessageDeliveryReceipt
 ): DirectMessageDeliveryReceipt {
-  const keepString = (key: 'id' | 'messageId' | 'conversationId') =>
-    typeof receipt[key] === 'string' ? { [key]: receipt[key] } : {};
+  // The upstream response names the identifier `id` or `messageId` depending on
+  // the endpoint — `directMessageDeliveryFailure` already reads both. Collapse
+  // them to the single `id` the tool's output schema advertises, so a caller
+  // told to follow up with `get_message_readers` always finds it under the
+  // documented name rather than under whichever alias the endpoint happened to
+  // use. An existing `id` wins; `messageId` is a fallback, never an extra field.
+  const id = typeof receipt.id === 'string' ? receipt.id : receipt.messageId;
+  const conversationId = receipt.conversationId;
 
   return {
-    ...keepString('id'),
-    ...keepString('messageId'),
-    ...keepString('conversationId'),
+    ...(typeof id === 'string' ? { id } : {}),
+    ...(typeof conversationId === 'string' ? { conversationId } : {}),
     ...(receipt.target ? { target: receipt.target } : {}),
     delivery: receipt.delivery,
   };
