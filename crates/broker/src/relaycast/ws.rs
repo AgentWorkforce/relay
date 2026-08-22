@@ -1,13 +1,17 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
-    AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, CreateObserverTokenRequest, EmitSessionEventRequest,
-    MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast, RelayCastOptions,
-    RelayError, ReleaseAgentRequest, UpdateAgentRequest,
+    AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient, AgentRegistrationError,
+    AgentRegistrationRetryOutcome, CompleteInvocationRequest, CreateObserverTokenRequest,
+    EmitSessionEventRequest, MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast,
+    RelayCastOptions, RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 
@@ -34,6 +38,11 @@ pub struct RelaycastHttpClient {
     pub api_key: String,
     relay: Arc<Option<RelayCast>>,
     registration: Arc<Option<AgentRegistrationClient>>,
+    /// One lock per agent name, guarding collision recovery. Takeover keeps the
+    /// same agent id, so `expected_agent_id` cannot stop two concurrent
+    /// cache-miss registrations from both taking the name over — the second
+    /// response would invalidate the token handed to the first caller.
+    takeover_locks: Arc<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     pub agent_name: String,
     pub default_cli: String,
 }
@@ -146,6 +155,7 @@ impl RelaycastHttpClient {
             api_key,
             relay,
             registration,
+            takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli,
         }
@@ -227,9 +237,154 @@ impl RelaycastHttpClient {
                 detail: "SDK relay client not initialized".to_string(),
             }
         })?;
-        registration
+        match registration
             .register_agent_token(trimmed_name, cli_hint)
             .await
+        {
+            Ok(token) => Ok(token),
+            // Registration is create-only as of relaycast 8.2.0 / SDK 7.0.0, so
+            // a name the broker already owns can no longer be re-registered and
+            // rotation is self-rollover the broker cannot perform. The broker
+            // holds the workspace key, which makes reclaiming one of its own
+            // agents a `takeover` — the explicit, audited operation #349 built
+            // for exactly this — rather than the silent identity replacement it
+            // removed. Callers that must not seize a live agent go through
+            // `register_agent_token_with_intent`, whose presence probe runs
+            // first.
+            Err(AgentRegistrationError::AlreadyExists { .. }) => {
+                self.take_over_agent_identity(trimmed_name, None).await
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Reclaim an agent name this workspace already owns, leaving an audit
+    /// record. Used when create-only registration reports the name is taken.
+    async fn take_over_agent_identity(
+        &self,
+        agent_name: &str,
+        known_agent_id: Option<&str>,
+    ) -> std::result::Result<String, RelaycastRegistrationError> {
+        // Singleflight per agent name. Two concurrent cache misses would
+        // otherwise both take the name over, and the second response would
+        // invalidate the token already returned to the first caller —
+        // `expected_agent_id` cannot catch that, because takeover preserves the
+        // agent id.
+        let lock = {
+            let mut locks = self
+                .takeover_locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(
+                locks
+                    .entry(agent_name.to_string())
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        let _guard = lock.lock().await;
+
+        // Re-check after acquiring: a concurrent caller may have completed the
+        // takeover while we waited, in which case its token is the live one and
+        // taking over again would invalidate it.
+        if let Some(registration) = self.registration.as_ref().as_ref() {
+            if let Some(cached) = registration.cached_agent_token(agent_name) {
+                return Ok(cached);
+            }
+        }
+
+        let relay =
+            (*self.relay)
+                .as_ref()
+                .ok_or_else(|| RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: "SDK relay client not initialized".to_string(),
+                })?;
+
+        // Callers that already resolved the incumbent (the impersonation
+        // presence probe does) pass its id through rather than paying a second
+        // lookup on every registration.
+        let existing_id = match known_agent_id {
+            Some(id) => id.to_string(),
+            None => {
+                relay
+                    .get_agent(agent_name)
+                    .await
+                    .map_err(|error| RelaycastRegistrationError::Transport {
+                        agent_name: agent_name.to_string(),
+                        detail: format!("failed to resolve existing agent for takeover: {error}"),
+                    })?
+                    .id
+            }
+        };
+
+        let response = match relay
+            .take_over_agent(
+                agent_name,
+                TakeOverAgentRequest {
+                    expected_agent_id: existing_id.clone(),
+                    actor: self.agent_name.clone(),
+                    reason: "broker reclaimed an agent name it owns after create-only registration reported a collision".to_string(),
+                    session_ref: existing_id.clone(),
+                    node_id: self.agent_name.clone(),
+                },
+            )
+            .await
+        {
+            Ok(response) => response,
+            // Engines before 8.2.0 have no `/takeover` route — the whole
+            // identity-recovery surface arrived with it. Those engines still
+            // allow the workspace key to rotate an agent's token, which is what
+            // this path did before, so fall back rather than stranding every
+            // self-hosted deployment that has not upgraded yet.
+            //
+            // The code, not just the status, decides. 8.2.0 also answers 404
+            // with `agent_not_found` when the agent itself is gone (it looks the
+            // target up before taking over), and a vanished agent is a real
+            // failure that must surface as one — falling back there would send a
+            // workspace key at a `requireAgentToken` route and report the 401 as
+            // "takeover unavailable on this engine", which is exactly the kind
+            // of misdirecting error this whole change exists to remove.
+            Err(RelayError::Api { status: 404, ref code, .. })
+                if code != "agent_not_found" =>
+            {
+                let rotated = relay
+                    .rotate_agent_token(agent_name, self.api_key.clone())
+                    .await
+                    .map_err(|error| RelaycastRegistrationError::Transport {
+                        agent_name: agent_name.to_string(),
+                        detail: format!(
+                            "takeover unavailable on this engine and the legacy rotate fallback failed: {error}"
+                        ),
+                    })?;
+                AgentIdentityRecoveryResponse {
+                    agent_id: existing_id,
+                    name: agent_name.to_string(),
+                    token: rotated.token,
+                    audit_id: String::new(),
+                }
+            }
+            Err(error) => {
+                return Err(RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: format!("takeover failed: {error}"),
+                })
+            }
+        };
+
+        if response.token.trim().is_empty() {
+            return Err(RelaycastRegistrationError::MissingToken {
+                agent_name: agent_name.to_string(),
+            });
+        }
+
+        // Seed the credential the SDK cache would have held had registration
+        // succeeded. Without this, the next call re-registers, collides, takes
+        // over again and invalidates the token just handed out — and eventually
+        // meets the agent this broker itself brought online and refuses to
+        // impersonate it.
+        self.seed_agent_token(agent_name, &response.token);
+
+        Ok(response.token)
     }
 
     /// Intent-aware token acquisition. `SpawnNew` preserves the existing
@@ -293,7 +448,10 @@ impl RelaycastHttpClient {
         }
 
         match intent {
-            RegisterIntent::SpawnNew => registration
+            // `self.register_agent_token` rather than the SDK directly: it adds
+            // the audited takeover fallback that create-only registration now
+            // requires when the broker is reclaiming a name it owns.
+            RegisterIntent::SpawnNew => self
                 .register_agent_token(trimmed_name, cli_hint)
                 .await
                 .map_err(ImpersonationAwareRegistrationError::Sdk),
@@ -334,10 +492,21 @@ impl RelaycastHttpClient {
                         // uses for a worker with no live credential — no
                         // live token to invalidate, so the SDK's
                         // register-or-rotate path is safe to run.
-                        registration
+                        // The probe has established there is no live credential
+                        // to strand, which is exactly the condition that makes
+                        // an audited takeover safe here. Reuse the agent the
+                        // probe already fetched instead of looking it up again.
+                        match registration
                             .register_agent_token(trimmed_name, cli_hint)
                             .await
-                            .map_err(ImpersonationAwareRegistrationError::Sdk)
+                        {
+                            Ok(token) => Ok(token),
+                            Err(AgentRegistrationError::AlreadyExists { .. }) => self
+                                .take_over_agent_identity(trimmed_name, Some(&agent.id))
+                                .await
+                                .map_err(ImpersonationAwareRegistrationError::Sdk),
+                            Err(other) => Err(ImpersonationAwareRegistrationError::Sdk(other)),
+                        }
                     }
                     Ok(Ok(agent)) => {
                         // Neither a known-live nor a known-offline status —
@@ -446,15 +615,16 @@ impl RelaycastHttpClient {
     }
 
     async fn registered_agent_client(&self) -> Result<AgentClient> {
-        let registration = self
-            .registration
-            .as_ref()
-            .as_ref()
-            .context("SDK relay client not initialized")?;
-        registration
-            .registered_agent_client(&self.agent_name, Some(&self.default_cli))
+        // Build the client from `register_agent_token` rather than the SDK's
+        // `registered_agent_client`, so this path inherits the audited takeover
+        // fallback create-only registration now requires. The SDK helper is
+        // exactly `register_agent_token` + `as_agent`, so this is the same
+        // composition with the collision case handled.
+        let token = self
+            .register_agent_token(&self.agent_name.clone(), Some(&self.default_cli.clone()))
             .await
-            .map_err(|error| anyhow::anyhow!("{error}"))
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        AgentClient::new(token, self.base_url.clone()).map_err(|error| anyhow::anyhow!("{error}"))
     }
 
     /// Authenticate as `agent_name` rather than this broker's own identity.
@@ -1676,7 +1846,7 @@ mod tests {
     /// broker restart.
     ///
     /// **Must-fire**: without the fix, this test hits
-    /// `POST /v1/agents/worker-a/rotate-token` (mounted below with a
+    /// `POST /v1/agents/worker-a/takeover` (mounted below with a
     /// deliberate 500 so a rotation would obviously fail the test) and
     /// invalidates the running worker. With the fix, the rotate mock is
     /// never called.
@@ -1706,7 +1876,7 @@ mod tests {
         // well, instead of quietly returning a token that the test would
         // then have to explicitly assert against.
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            when.method(POST).path("/v1/agents/worker-a/takeover");
             then.status(500).json_body(json!({
                 "ok": false,
                 "error": { "code": "must_not_rotate", "message": "must not rotate a live agent" }
@@ -1757,7 +1927,7 @@ mod tests {
             then.status(500);
         });
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            when.method(POST).path("/v1/agents/worker-a/takeover");
             then.status(500);
         });
 
@@ -1809,10 +1979,10 @@ mod tests {
             }));
         });
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            when.method(POST).path("/v1/agents/worker-a/takeover");
             then.status(200).json_body(json!({
                 "ok": true,
-                "data": { "name": "worker-a", "token": "at_live_rotated_ok" }
+                "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_rotated_ok", "audit_id": "aud_1" }
             }));
         });
 
@@ -1864,7 +2034,7 @@ mod tests {
         });
         // Any rotate is a regression. 500 makes it obvious.
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            when.method(POST).path("/v1/agents/worker-a/takeover");
             then.status(500).json_body(json!({
                 "ok": false,
                 "error": { "code": "must_not_rotate", "message": "must not rotate a live worker" }
@@ -1900,6 +2070,251 @@ mod tests {
         mark_read.assert_hits(0);
     }
 
+    /// Engines before 8.2.0 have no `/takeover`. The broker must fall back to
+    /// the legacy workspace-key rotate rather than stranding the agent — this
+    /// is the path the fleet e2e exercises, and every self-hosted deployment
+    /// that has not upgraded.
+    #[tokio::test]
+    async fn takeover_falls_back_to_legacy_rotate_on_older_engines() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        // Older engine: the route simply is not there.
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": { "code": "not_found", "message": "no such route" }
+            }));
+        });
+        // ...and rotate still accepts the workspace key there.
+        let legacy_rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/worker-a/rotate-token")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "name": "worker-a", "token": "at_live_legacy" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let token = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect("an older engine must still be able to reclaim the name");
+        assert_eq!(token, "at_live_legacy");
+        takeover.assert_hits(1);
+        legacy_rotate.assert_hits(1);
+    }
+
+    /// A 404 that means "this agent is gone" must NOT be treated as "this
+    /// engine is old". Falling back there would send a workspace key at a
+    /// `requireAgentToken` route and report the resulting 401 as an engine
+    /// capability problem — the misdirecting error this change exists to remove.
+    #[tokio::test]
+    async fn agent_not_found_does_not_trigger_the_legacy_fallback() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        // Modern engine, but the agent vanished between the lookup and the
+        // takeover — 404 with the agent-specific code.
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_not_found", "message": "Agent \"worker-a\" not found" }
+            }));
+        });
+        // Must never be reached.
+        let legacy_rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "name": "worker-a", "token": "at_live_should_not_be_used" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let error = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect_err("a vanished agent is a real failure, not an old engine");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("agent_not_found") || rendered.contains("not found"),
+            "the error must name the real cause; got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("takeover unavailable on this engine"),
+            "must not be misreported as an engine capability problem; got: {rendered}"
+        );
+        legacy_rotate.assert_hits(0);
+    }
+
+    /// Two concurrent cache-miss registrations for the same name must produce
+    /// exactly ONE takeover. Without singleflight both fire, and the second
+    /// response invalidates the token already returned to the first caller —
+    /// `expected_agent_id` cannot catch it, because takeover preserves the id.
+    #[tokio::test]
+    async fn concurrent_collisions_take_over_once() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200)
+                // A slow response widens the window both callers would race in.
+                .delay(std::time::Duration::from_millis(150))
+                .json_body(json!({
+                    "ok": true,
+                    "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_taken", "audit_id": "aud_1" }
+                }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let a = client.clone();
+        let b = client.clone();
+        let (first, second) = tokio::join!(
+            async move { a.register_agent_token("worker-a", Some("codex")).await },
+            async move { b.register_agent_token("worker-a", Some("codex")).await },
+        );
+
+        let first = first.expect("first concurrent caller succeeds");
+        let second = second.expect("second concurrent caller succeeds");
+        assert_eq!(first, "at_live_taken");
+        assert_eq!(
+            second, first,
+            "both callers must hold the same live token, not one invalidated by the other"
+        );
+        takeover.assert_hits(1);
+    }
+
+    /// A takeover token must land in the registration cache. Without it the
+    /// next call re-registers, collides, takes over again, and invalidates the
+    /// token just handed out.
+    #[tokio::test]
+    async fn takeover_seeds_the_registration_cache() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        let lookup = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_taken", "audit_id": "aud_1" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let first = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect("first call takes the name over");
+        assert_eq!(first, "at_live_taken");
+
+        let second = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect("second call is served from cache");
+        assert_eq!(
+            second, "at_live_taken",
+            "the token must not be rotated out from under the caller"
+        );
+
+        register.assert_hits(1);
+        lookup.assert_hits(1);
+        takeover.assert_hits(1);
+    }
+
     /// Must-not-fire: the existing `register_agent_token` API keeps its
     /// spawn-time behaviour (register or rotate on collision) so
     /// supervisor-driven worker restart at maintenance.rs:569 continues to
@@ -1914,11 +2329,27 @@ mod tests {
                 "error": { "code": "agent_already_exists", "message": "exists" }
             }));
         });
-        let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+        // Takeover resolves the incumbent first so it can pin expected_agent_id.
+        let lookup = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
             then.status(200).json_body(json!({
                 "ok": true,
-                "data": { "name": "worker-a", "token": "at_live_spawned" }
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        let rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_spawned", "audit_id": "aud_1" }
             }));
         });
 
@@ -1930,6 +2361,7 @@ mod tests {
             .expect("spawn intent must rotate on collision");
         assert_eq!(token, "at_live_spawned");
         register.assert_hits(1);
+        lookup.assert_hits(1);
         rotate.assert_hits(1);
     }
 
@@ -1962,7 +2394,7 @@ mod tests {
                 }));
         });
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            when.method(POST).path("/v1/agents/worker-a/takeover");
             then.status(500);
         });
 
@@ -2022,7 +2454,7 @@ mod tests {
             }));
         });
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            when.method(POST).path("/v1/agents/worker-a/takeover");
             then.status(500);
         });
         let register = server.mock(|when, then| {
@@ -2062,11 +2494,27 @@ mod tests {
     #[tokio::test]
     async fn registered_agent_client_as_bypasses_impersonation_for_broker_own_identity() {
         let server = MockServer::start();
-        // If the self-identity bypass regresses, this call would fire
-        // (broker probes itself) — 500 makes that loud.
+        // This endpoint now serves two different purposes: the presence probe
+        // (which the self-identity bypass must skip) and pinning
+        // `expected_agent_id` for an audited takeover (which is legitimate).
+        // A hit count alone can no longer tell them apart, so the guarantee is
+        // asserted by the call succeeding below: were the bypass to regress,
+        // the broker would refuse its own identity as a live-agent
+        // impersonation and the `expect` would fail.
         let presence = server.mock(|when, then| {
             when.method(GET).path("/v1/agents/broker");
-            then.status(500);
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_broker",
+                    "name": "broker",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
         });
         let register = server.mock(|when, then| {
             when.method(POST).path("/v1/agents");
@@ -2076,10 +2524,10 @@ mod tests {
             }));
         });
         let rotate = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/broker/rotate-token");
+            when.method(POST).path("/v1/agents/broker/takeover");
             then.status(200).json_body(json!({
                 "ok": true,
-                "data": { "name": "broker", "token": "at_live_broker_self" }
+                "data": { "agent_id": "a_broker", "name": "broker", "token": "at_live_broker_self", "audit_id": "aud_1" }
             }));
         });
 
@@ -2093,7 +2541,9 @@ mod tests {
             .registered_agent_client_as("broker", None)
             .await
             .expect("broker's own identity must not be refused as a live-agent impersonation");
-        presence.assert_hits(0);
+        // One lookup, for the takeover's expected_agent_id — not a presence
+        // probe loop.
+        presence.assert_hits(1);
         register.assert_hits(1);
         rotate.assert_hits(1);
     }

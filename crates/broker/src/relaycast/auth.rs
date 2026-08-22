@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use relaycast::{CreateAgentRequest, RelayCast, RelayCastOptions, RelayError};
+use relaycast::{
+    CreateAgentRequest, RecoverAgentRequest, RelayCast, RelayCastOptions, RelayError,
+    WorkspaceProvenance,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -458,9 +461,16 @@ impl AuthClient {
         let api_key = normalize_workspace_key(&cached.api_key)
             .context("cached api_key is not a valid workspace key")?;
 
+        // Rotation is authenticated as the agent itself (relaycast 7.0.0): it
+        // needs this agent's current token, not the workspace key. Without a
+        // cached token there is nothing to roll over, and silently falling back
+        // to the workspace key is what used to fail as an opaque 401.
+        let agent_token = cached.agent_token.as_deref().context(
+            "cannot rotate token without the agent's current token; re-register or recover the identity",
+        )?;
         let relay = build_relay_client(&api_key, self.base_url.as_deref())?;
         let result = relay
-            .rotate_agent_token(agent_name)
+            .rotate_agent_token(agent_name, agent_token)
             .await
             .map_err(relay_error_to_anyhow)?;
         let token = result.token;
@@ -696,7 +706,13 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        match RelayCast::create_workspace(name, self.base_url.as_deref()).await {
+        match RelayCast::create_workspace(
+            name,
+            self.base_url.as_deref(),
+            WorkspaceProvenance::sdk(),
+        )
+        .await
+        {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
             Err(error) if is_workspace_name_conflict(&error) => {
                 let suffix = Uuid::new_v4().simple().to_string();
@@ -706,9 +722,13 @@ impl AuthClient {
                     fallback_name = %fallback_name,
                     "workspace already exists; retrying with a fresh fallback name"
                 );
-                let result = RelayCast::create_workspace(&fallback_name, self.base_url.as_deref())
-                    .await
-                    .map_err(relay_error_to_anyhow)?;
+                let result = RelayCast::create_workspace(
+                    &fallback_name,
+                    self.base_url.as_deref(),
+                    WorkspaceProvenance::sdk(),
+                )
+                .await
+                .map_err(relay_error_to_anyhow)?;
                 Ok((result.workspace_id, result.api_key))
             }
             Err(error) => Err(relay_error_to_anyhow(error)),
@@ -735,7 +755,7 @@ impl AuthClient {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, &name, agent_type, identity_key).await
+        admit_agent_registration(&relay, workspace_key, &name, agent_type, identity_key).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -984,6 +1004,9 @@ pub(crate) fn identity_key_fingerprint(raw: &str) -> String {
 /// collision is rejected.
 async fn admit_agent_registration(
     relay: &RelayCast,
+    // Needed only for the pre-8.2.0 rotate fallback below, where the workspace
+    // key is still an accepted credential for reclaiming an agent's token.
+    workspace_key: &str,
     name: &str,
     agent_type: Option<&str>,
     identity_key: Option<&str>,
@@ -1031,14 +1054,58 @@ async fn admit_agent_registration(
                 }));
             }
 
+            // Reclaiming a crashed work unit's identity. We have just proven
+            // ownership via the work-unit identity key but do not hold the
+            // agent's token — which is precisely the case `recover` exists for
+            // (relaycast 7.0.0). Rotation is self-rollover only and cannot serve
+            // this path: attempting it with the workspace key is what produced
+            // an opaque `401 Agent token required` here.
             let token_response = relay
-                .rotate_agent_token(&existing.name)
-                .await
-                .map_err(relay_error_to_anyhow)?;
+                .recover_agent(
+                    &existing.name,
+                    RecoverAgentRequest {
+                        expected_agent_id: existing.id.clone(),
+                        recovery_proof: None,
+                        reason: Some(
+                            "work-unit identity key proved ownership after a crash".to_string(),
+                        ),
+                        // Hashed, never raw: the identity key is a replayable
+                        // credential and the surrounding code hashes it before
+                        // anything workspace-readable. An audit record is
+                        // workspace-readable, so it gets the same treatment —
+                        // still correlatable, not replayable.
+                        session_ref: identity_key.map(hash_identity_key),
+                        node_id: None,
+                    },
+                )
+                .await;
+            // Engines before 8.2.0 have no `/recover` route — the identity
+            // recovery surface arrived with it — and answer "Route not found".
+            // Those engines still let the workspace key rotate an agent's
+            // token, which is what this path did before, so fall back rather
+            // than failing every node restart against an older engine. The
+            // agent-specific 404 (`agent_not_found`) is a real failure and is
+            // deliberately excluded.
+            let token_response = match token_response {
+                Ok(response) => response.token,
+                Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                }) if code != "agent_not_found" => relay
+                    .rotate_agent_token(&existing.name, workspace_key)
+                    .await
+                    .map_err(relay_error_to_anyhow)
+                    .context(
+                        "recover unavailable on this engine and the legacy rotate fallback failed",
+                    )?
+                    .token,
+                Err(error) => return Err(relay_error_to_anyhow(error)),
+            };
             Ok((
                 existing.id,
                 existing.name,
-                token_response.token,
+                token_response,
                 existing.workspace_id,
             ))
         }
@@ -1620,13 +1687,16 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
+        // Identity reclaim uses `recover`, not rotation (relaycast 7.0.0).
         let rotate = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/lead/rotate-token")
+                .path("/v1/agents/lead/recover")
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
+                .body(
+                    r#"{"ok":true,"data":{"agent_id":"a_existing","name":"lead","token":"at_live_rotated","audit_id":"aud_1"}}"#,
+                );
         });
 
         let client = AuthClient::new(Some(server.base_url()));
@@ -1650,6 +1720,64 @@ mod tests {
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
         }
+    }
+
+    /// Engines before 8.2.0 have no `/recover`. A node restarting against one
+    /// must still reclaim its identity via the legacy workspace-key rotate —
+    /// this is the exact path the two-node fleet e2e drives, against a pinned
+    /// v7.0.0 engine.
+    #[tokio::test]
+    async fn identity_reclaim_falls_back_to_legacy_rotate_on_older_engines() {
+        let _env_guard = clear_relay_env();
+        let identity = "work-unit-42";
+        let identity_hash = hash_identity_key(identity);
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", identity);
+        }
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/lead");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                ));
+        });
+        // Older engine: the recovery surface simply is not mounted.
+        let recover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/lead/recover");
+            then.status(404)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"Route not found"}}"#);
+        });
+        let legacy_rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_legacy_reclaim"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let session = client
+            .startup_session_set_with_identity(Some("lead"), true, None, Some(identity))
+            .await
+            .expect("an older engine must still let a restarting node reclaim its name")
+            .default_session()
+            .cloned()
+            .expect("a session was registered");
+
+        assert_eq!(session.token, "at_live_legacy_reclaim");
+        recover.assert_hits(1);
+        legacy_rotate.assert_hits(1);
     }
 
     #[tokio::test]
@@ -1691,13 +1819,16 @@ mod tests {
                     r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
+        // Identity reclaim uses `recover`, not rotation (relaycast 7.0.0).
         let rotate = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/lead/rotate-token")
+                .path("/v1/agents/lead/recover")
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_rotated"}}"#);
+                .body(
+                    r#"{"ok":true,"data":{"agent_id":"a_existing","name":"lead","token":"at_live_rotated","audit_id":"aud_1"}}"#,
+                );
         });
 
         let client = AuthClient::new(Some(server.base_url()));
@@ -1780,13 +1911,18 @@ mod tests {
                     r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
+        // Reclaiming a crashed identity goes through `recover`, not rotation:
+        // rotation is self-rollover only and this path holds the work-unit
+        // identity proof rather than the agent's token (relaycast 7.0.0).
         let rotate = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/node-a/rotate-token")
+                .path("/v1/agents/node-a/recover")
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
-                .body(r#"{"ok":true,"data":{"name":"node-a","token":"at_live_rotated"}}"#);
+                .body(
+                    r#"{"ok":true,"data":{"agent_id":"a_existing","name":"node-a","token":"at_live_rotated","audit_id":"aud_1"}}"#,
+                );
         });
 
         let client = AuthClient::new(Some(server.base_url()));
@@ -2415,7 +2551,11 @@ mod tests {
         let first_conflict = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/workspaces")
-                .json_body(json!({ "name": workspace_name }));
+                // `body_contains` rather than an exact `json_body`: the request
+                // now also carries workspace provenance (relaycast 7.0.0), and
+                // this mock only cares that the first attempt uses the
+                // deterministic name.
+                .body_contains(format!("\"name\":\"{workspace_name}\""));
             then.status(409)
                 .header("content-type", "application/json")
                 .body(
@@ -2457,7 +2597,8 @@ mod tests {
         let rotate = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents/lead/rotate-token")
-                .header("authorization", "Bearer rk_live_cached");
+                // Self-rollover authenticates as the agent, not the workspace.
+                .header("authorization", "Bearer at_live_current");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"token":"at_live_rotated","name":"lead"}}"#);
@@ -2471,7 +2612,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
-            agent_token: None,
+            agent_token: Some("at_live_current".into()),
             updated_at: chrono::Utc::now(),
         };
 
@@ -2490,7 +2631,8 @@ mod tests {
         let rotate_404 = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents/lead/rotate-token")
-                .header("authorization", "Bearer rk_live_cached");
+                // Self-rollover authenticates as the agent, not the workspace.
+                .header("authorization", "Bearer at_live_current");
             then.status(404)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"not_found","message":"not found"}}"#);
@@ -2512,7 +2654,7 @@ mod tests {
             agent_id: "a_old".into(),
             api_key: "rk_live_cached".into(),
             agent_name: Some("lead".into()),
-            agent_token: None,
+            agent_token: Some("at_live_current".into()),
             updated_at: chrono::Utc::now(),
         };
 
