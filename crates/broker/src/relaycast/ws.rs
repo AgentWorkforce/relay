@@ -302,6 +302,14 @@ impl RelaycastHttpClient {
                 agent_name: agent_name.to_string(),
             });
         }
+
+        // Seed the credential the SDK cache would have held had registration
+        // succeeded. Without this, the next call re-registers, collides, takes
+        // over again and invalidates the token just handed out — and eventually
+        // meets the agent this broker itself brought online and refuses to
+        // impersonate it.
+        self.seed_agent_token(agent_name, &response.token);
+
         Ok(response.token)
     }
 
@@ -1986,6 +1994,65 @@ mod tests {
         );
         rotate.assert_hits(0);
         mark_read.assert_hits(0);
+    }
+
+    /// A takeover token must land in the registration cache. Without it the
+    /// next call re-registers, collides, takes over again, and invalidates the
+    /// token just handed out.
+    #[tokio::test]
+    async fn takeover_seeds_the_registration_cache() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        let lookup = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_taken", "audit_id": "aud_1" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let first = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect("first call takes the name over");
+        assert_eq!(first, "at_live_taken");
+
+        let second = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect("second call is served from cache");
+        assert_eq!(
+            second, "at_live_taken",
+            "the token must not be rotated out from under the caller"
+        );
+
+        register.assert_hits(1);
+        lookup.assert_hits(1);
+        takeover.assert_hits(1);
     }
 
     /// Must-not-fire: the existing `register_agent_token` API keeps its

@@ -1066,7 +1066,12 @@ async fn admit_agent_registration(
                         reason: Some(
                             "work-unit identity key proved ownership after a crash".to_string(),
                         ),
-                        session_ref: identity_key.map(str::to_string),
+                        // Hashed, never raw: the identity key is a replayable
+                        // credential and the surrounding code hashes it before
+                        // anything workspace-readable. An audit record is
+                        // workspace-readable, so it gets the same treatment —
+                        // still correlatable, not replayable.
+                        session_ref: identity_key.map(hash_identity_key),
                         node_id: None,
                     },
                 )
