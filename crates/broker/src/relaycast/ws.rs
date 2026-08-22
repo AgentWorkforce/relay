@@ -335,10 +335,18 @@ impl RelaycastHttpClient {
             // identity-recovery surface arrived with it. Those engines still
             // allow the workspace key to rotate an agent's token, which is what
             // this path did before, so fall back rather than stranding every
-            // self-hosted deployment that has not upgraded yet. On 8.2.0+ this
-            // arm is unreachable: the route exists, so a failure there is a
-            // real failure and propagates.
-            Err(RelayError::Api { status: 404, .. }) => {
+            // self-hosted deployment that has not upgraded yet.
+            //
+            // The code, not just the status, decides. 8.2.0 also answers 404
+            // with `agent_not_found` when the agent itself is gone (it looks the
+            // target up before taking over), and a vanished agent is a real
+            // failure that must surface as one — falling back there would send a
+            // workspace key at a `requireAgentToken` route and report the 401 as
+            // "takeover unavailable on this engine", which is exactly the kind
+            // of misdirecting error this whole change exists to remove.
+            Err(RelayError::Api { status: 404, ref code, .. })
+                if code != "agent_not_found" =>
+            {
                 let rotated = relay
                     .rotate_agent_token(agent_name, self.api_key.clone())
                     .await
@@ -2120,6 +2128,72 @@ mod tests {
         assert_eq!(token, "at_live_legacy");
         takeover.assert_hits(1);
         legacy_rotate.assert_hits(1);
+    }
+
+    /// A 404 that means "this agent is gone" must NOT be treated as "this
+    /// engine is old". Falling back there would send a workspace key at a
+    /// `requireAgentToken` route and report the resulting 401 as an engine
+    /// capability problem — the misdirecting error this change exists to remove.
+    #[tokio::test]
+    async fn agent_not_found_does_not_trigger_the_legacy_fallback() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        // Modern engine, but the agent vanished between the lookup and the
+        // takeover — 404 with the agent-specific code.
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_not_found", "message": "Agent \"worker-a\" not found" }
+            }));
+        });
+        // Must never be reached.
+        let legacy_rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/rotate-token");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "name": "worker-a", "token": "at_live_should_not_be_used" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let error = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect_err("a vanished agent is a real failure, not an old engine");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("agent_not_found") || rendered.contains("not found"),
+            "the error must name the real cause; got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("takeover unavailable on this engine"),
+            "must not be misreported as an engine capability problem; got: {rendered}"
+        );
+        legacy_rotate.assert_hits(0);
     }
 
     /// Two concurrent cache-miss registrations for the same name must produce
