@@ -68,6 +68,23 @@ interface PendingPtyInput {
 
 const DEFAULT_INPUT_HIGH_WATER_MARK_BYTES = 1024 * 1024;
 const DEFAULT_INPUT_OPEN_TIMEOUT_MS = 10_000;
+/**
+ * Keepalive interval for the PTY input WebSocket.
+ *
+ * The broker pings the *events* WebSocket every 30s but has never pinged the
+ * input one, and this client never did either — so an input socket carrying no
+ * keystrokes was completely silent on the wire and died to any idle timeout
+ * between client and broker (a cloud edge on `--node` attaches, NAT, a proxy).
+ * The screen kept updating on the still-pinged events socket, so the seat
+ * looked alive with dead input until the next keystroke reported the loss
+ * (relay#1597).
+ *
+ * Pinging from the client fixes this against every broker version: the broker
+ * has always answered a `Ping` with a `Pong` (`listen_api.rs`), and `ws`
+ * handles pongs internally, so no protocol change is needed. 20s stays under
+ * the common 30s/60s idle windows.
+ */
+const INPUT_KEEPALIVE_INTERVAL_MS = 20_000;
 
 /** Initial delay before retrying a dropped events-WS connection. */
 const INITIAL_RECONNECT_DELAY_MS = 2_000;
@@ -95,6 +112,8 @@ export class PtyInputStream {
   private flushing = false;
   /** EWMA of input→ack round-trip in ms, or null before the first ack. */
   private _srttMs: number | null = null;
+  /** Keepalive timer; see {@link INPUT_KEEPALIVE_INTERVAL_MS}. */
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: { url: string; apiKey?: string } & PtyInputStreamOptions) {
     this.highWaterMarkBytes = normalizePositiveIntegerOption(
@@ -133,6 +152,7 @@ export class PtyInputStream {
     this.ws.on('open', () => {
       // The broker sends pty_input_ready after it verifies the agent exists
       // and is PTY-backed. Keep queued writes blocked until that handshake.
+      this.startKeepalive();
     });
 
     this.ws.on('message', (data) => {
@@ -142,6 +162,7 @@ export class PtyInputStream {
     this.ws.on('close', (code, reason) => {
       this._closed = true;
       this.clearOpenTimer();
+      this.stopKeepalive();
       const detail = reason.length > 0 ? `: ${reason.toString()}` : '';
       const error = new HarnessDriverProtocolError({
         code: 'input_stream_closed',
@@ -231,6 +252,7 @@ export class PtyInputStream {
     if (this._closed) return;
     this._closed = true;
     this.clearOpenTimer();
+    this.stopKeepalive();
     if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
       this.ws.close(code, reason);
     }
@@ -241,6 +263,31 @@ export class PtyInputStream {
     });
     this.rejectOpen(error);
     this.failAll(error);
+  }
+
+  /**
+   * Start the application-level keepalive. Failure to ping is not escalated
+   * here: the socket's own `error`/`close` handlers already own transport
+   * death, and throwing out of a timer would take the process down.
+   */
+  private startKeepalive(): void {
+    if (this.keepaliveTimer || this._closed) return;
+    this.keepaliveTimer = setInterval(() => {
+      if (this._closed || this.ws.readyState !== WebSocket.OPEN) return;
+      try {
+        this.ws.ping();
+      } catch {
+        // best effort — close/error handling owns transport death
+      }
+    }, INPUT_KEEPALIVE_INTERVAL_MS);
+    // Never hold the event loop open on a keepalive alone.
+    this.keepaliveTimer.unref?.();
+  }
+
+  private stopKeepalive(): void {
+    if (!this.keepaliveTimer) return;
+    clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = null;
   }
 
   private async flush(): Promise<void> {
@@ -326,15 +373,24 @@ export class PtyInputStream {
         data: message,
       });
 
-      // `worker_timeout` means the ONE write this error correlates to
-      // didn't get an ack in time — the worker may simply be busy, not
-      // dead (relay#1544). The broker keeps the socket open for exactly
-      // this code (see `pty_input_error_is_connection_fatal` on the
-      // broker side); settle only the write it belongs to and leave the
-      // stream usable for the next one. Every other code means the broker
-      // is closing (or refused to open) the connection, so it's still
-      // fatal to the whole stream.
-      if (error.code === 'worker_timeout') {
+      // Two codes are per-WRITE failures on a stream that stays open, so
+      // they settle only the write they belong to and leave the stream
+      // usable for the next one. Every other code means the broker is
+      // closing (or refused to open) the connection, so it's still fatal to
+      // the whole stream. Both are mirrored by
+      // `pty_input_error_is_connection_fatal` on the broker side; the two
+      // lists must agree, or one side silently tears down a socket the other
+      // is still holding open.
+      //
+      // - `worker_timeout`: the ONE write this error correlates to didn't get
+      //   an ack in time. The worker may simply be busy, not dead
+      //   (relay#1544), and the write may still land.
+      // - `pty_write_queue_full`: the worker refused this ONE write because
+      //   its bounded PTY drainer queue is full — a child that has
+      //   momentarily stopped reading stdin, which is the normal state of a
+      //   TUI harness mid-tool-call. The worker answering at all proves it is
+      //   alive; the write is confirmed not to have landed (relay#1597).
+      if (error.code === 'worker_timeout' || error.code === 'pty_write_queue_full') {
         const current = this.inFlight.shift();
         if (current) this.settle(current, error);
         return;

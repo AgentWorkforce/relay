@@ -11,7 +11,7 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use crate::{
     ids::{DeliveryId, RequestId},
     protocol::{MessageInjectionMode, ProtocolEnvelope, RelayDelivery},
-    pty::PtySession,
+    pty::{PtySession, PtyWriteSubmitError},
 };
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -990,9 +990,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                                 // Surface the enqueue failure on the correlated
                                                 // response so the client's send() rejects instead
                                                 // of resolving on a write that never happened.
+                                                //
+                                                // A full drainer queue gets its own code. The child
+                                                // is alive and the transport is healthy — it is only
+                                                // momentarily not draining its stdin — so an attach
+                                                // client must be able to tell this apart from a
+                                                // genuinely broken write and keep its input stream
+                                                // open (see `pty_input_error_is_connection_fatal`).
+                                                let code = match e
+                                                    .downcast_ref::<PtyWriteSubmitError>()
+                                                {
+                                                    Some(PtyWriteSubmitError::QueueFull { .. }) => {
+                                                        "pty_write_queue_full"
+                                                    }
+                                                    _ => "pty_write_failed",
+                                                };
                                                 let _ = send_frame(&out_tx, "write_pty_response", frame.request_id, json!({
                                                     "error": {
-                                                        "code": "pty_write_failed",
+                                                        "code": code,
                                                         "message": e.to_string(),
                                                     }
                                                 })).await;

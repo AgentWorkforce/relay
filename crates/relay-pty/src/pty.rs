@@ -30,6 +30,34 @@ use tokio::sync::{mpsc, oneshot};
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
 
+/// Why [`PtySession::submit_write`] refused to enqueue.
+///
+/// Typed — not a bare string — because the two cases mean opposite things to a
+/// caller serving an interactive attach session. [`QueueFull`] says the child
+/// is alive but momentarily not draining its stdin, so the write is the only
+/// thing that failed and the caller should keep its transport open and retry.
+/// [`DrainerExited`] says the PTY is gone. Callers recover the variant with
+/// `anyhow::Error::downcast_ref::<PtyWriteSubmitError>()`; `submit_write` keeps
+/// returning `anyhow::Result` so existing call sites are unaffected.
+///
+/// [`QueueFull`]: PtyWriteSubmitError::QueueFull
+/// [`DrainerExited`]: PtyWriteSubmitError::DrainerExited
+#[derive(Debug, thiserror::Error)]
+pub enum PtyWriteSubmitError {
+    /// The bounded drainer queue is full. Retryable: the drainer is blocked in
+    /// `write_all` behind a child that has stopped reading its stdin, and drains
+    /// as soon as it resumes.
+    #[error("pty write queue full ({depth} writes pending; drainer wedged behind child not reading stdin)")]
+    QueueFull {
+        /// Queue capacity, which is also the number of writes pending.
+        depth: usize,
+    },
+
+    /// The drainer thread is gone (PTY teardown). Not retryable.
+    #[error("pty write queue is closed (drainer exited)")]
+    DrainerExited,
+}
+
 /// Single FIFO command for the PTY write drainer. Both query-reply
 /// writebacks (from `RelayEventListener`) and user-input/injection
 /// writes (from `PtySession::write_all`) go through the same queue so
@@ -498,13 +526,14 @@ fn enqueue_user_write(
         ack: ack_tx,
     }) {
         Ok(()) => Ok(ack_rx),
-        Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
-            "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
-            WRITE_QUEUE_DEPTH
-        )),
-        Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
-            "pty write queue is closed (drainer exited)"
-        )),
+        Err(std_mpsc::TrySendError::Full(_)) => {
+            Err(anyhow::Error::new(PtyWriteSubmitError::QueueFull {
+                depth: WRITE_QUEUE_DEPTH,
+            }))
+        }
+        Err(std_mpsc::TrySendError::Disconnected(_)) => {
+            Err(anyhow::Error::new(PtyWriteSubmitError::DrainerExited))
+        }
     }
 }
 
@@ -1048,7 +1077,7 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_command_path, resolve_command_path_with, GridSize, PtySession,
+        resolve_command_path, resolve_command_path_with, GridSize, PtySession, PtyWriteSubmitError,
         DEFAULT_NO_PID_EXIT_THRESHOLD,
     };
     use crate::snapshot::Snapshot;
@@ -1613,6 +1642,45 @@ mod tests {
             flooded,
             Ok(true),
             "submit_write must return an error when the queue fills, never block"
+        );
+        let _ = pty.shutdown();
+    }
+
+    /// relay#1597 MUST-FIRE: the full-queue rejection must be recoverable as a
+    /// *typed* variant, not only as prose.
+    ///
+    /// The broker turns this into the wire code an attach client uses to decide
+    /// whether its input stream is dead (`pty_write_queue_full`) or merely
+    /// refused one write. Matching on the message text there would silently
+    /// start closing healthy sessions the first time this wording changed, so
+    /// the type is the contract. Revert `enqueue_user_write` to
+    /// `anyhow::anyhow!("pty write queue full …")` and the downcast goes None.
+    #[tokio::test]
+    async fn full_write_queue_reports_a_typed_queue_full_error() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+
+        let err = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Err(err) = pty.submit_write(vec![b'x'; 8192]) {
+                    return err;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("submit_write must fail promptly, never block");
+
+        match err.downcast_ref::<PtyWriteSubmitError>() {
+            Some(PtyWriteSubmitError::QueueFull { depth }) => {
+                assert_eq!(*depth, WRITE_QUEUE_DEPTH);
+            }
+            other => panic!("expected a typed QueueFull error, got {other:?}"),
+        }
+        // The operator-facing text still has to explain itself.
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("pty write queue full") && rendered.contains("128"),
+            "queue-full error lost its explanation: {rendered}"
         );
         let _ = pty.shutdown();
     }
