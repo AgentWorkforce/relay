@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use relaycast::{
@@ -34,6 +38,11 @@ pub struct RelaycastHttpClient {
     pub api_key: String,
     relay: Arc<Option<RelayCast>>,
     registration: Arc<Option<AgentRegistrationClient>>,
+    /// One lock per agent name, guarding collision recovery. Takeover keeps the
+    /// same agent id, so `expected_agent_id` cannot stop two concurrent
+    /// cache-miss registrations from both taking the name over — the second
+    /// response would invalidate the token handed to the first caller.
+    takeover_locks: Arc<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     pub agent_name: String,
     pub default_cli: String,
 }
@@ -146,6 +155,7 @@ impl RelaycastHttpClient {
             api_key,
             relay,
             registration,
+            takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli,
         }
@@ -255,6 +265,33 @@ impl RelaycastHttpClient {
         agent_name: &str,
         known_agent_id: Option<&str>,
     ) -> std::result::Result<String, RelaycastRegistrationError> {
+        // Singleflight per agent name. Two concurrent cache misses would
+        // otherwise both take the name over, and the second response would
+        // invalidate the token already returned to the first caller —
+        // `expected_agent_id` cannot catch that, because takeover preserves the
+        // agent id.
+        let lock = {
+            let mut locks = self
+                .takeover_locks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(
+                locks
+                    .entry(agent_name.to_string())
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        let _guard = lock.lock().await;
+
+        // Re-check after acquiring: a concurrent caller may have completed the
+        // takeover while we waited, in which case its token is the live one and
+        // taking over again would invalidate it.
+        if let Some(registration) = self.registration.as_ref().as_ref() {
+            if let Some(cached) = registration.cached_agent_token(agent_name) {
+                return Ok(cached);
+            }
+        }
+
         let relay =
             (*self.relay)
                 .as_ref()
@@ -1994,6 +2031,66 @@ mod tests {
         );
         rotate.assert_hits(0);
         mark_read.assert_hits(0);
+    }
+
+    /// Two concurrent cache-miss registrations for the same name must produce
+    /// exactly ONE takeover. Without singleflight both fire, and the second
+    /// response invalidates the token already returned to the first caller —
+    /// `expected_agent_id` cannot catch it, because takeover preserves the id.
+    #[tokio::test]
+    async fn concurrent_collisions_take_over_once() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200)
+                // A slow response widens the window both callers would race in.
+                .delay(std::time::Duration::from_millis(150))
+                .json_body(json!({
+                    "ok": true,
+                    "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_taken", "audit_id": "aud_1" }
+                }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let a = client.clone();
+        let b = client.clone();
+        let (first, second) = tokio::join!(
+            async move { a.register_agent_token("worker-a", Some("codex")).await },
+            async move { b.register_agent_token("worker-a", Some("codex")).await },
+        );
+
+        let first = first.expect("first concurrent caller succeeds");
+        let second = second.expect("second concurrent caller succeeds");
+        assert_eq!(first, "at_live_taken");
+        assert_eq!(
+            second, first,
+            "both callers must hold the same live token, not one invalidated by the other"
+        );
+        takeover.assert_hits(1);
     }
 
     /// A takeover token must land in the registration cache. Without it the
