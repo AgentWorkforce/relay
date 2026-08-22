@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Agent names that had already been registered can be reclaimed again. Relaycast made registration create-only, so the broker's register-or-rotate paths failed with an opaque `401 Agent token required`; supervisor restart, offline-agent attach and the broker's own reconnect now reclaim the name through an audited takeover instead, and crash recovery uses the explicit recover route.
 - `agent-relay fleet spawn --node <name>` now uses the active workspace to mint and clean up a short-lived launcher identity when no agent token is present.
+- The `send_dm` MCP tool returns a compact, fixed-size delivery receipt instead of echoing the sent message body back twice, cutting the context a sending agent spends per DM by roughly two-thirds. The `agent-relay message dm --json` output is unchanged.
 - `agent-relay node agent attach --mode drive` no longer drops and reopens its input stream when the agent is busy. A full PTY write queue now reports `pty_write_queue_full`, which the broker and SDK treat as a refusal of that one keystroke instead of transport death, replacing the repeating `input stream lost … / reconnected after 1 attempt(s)` flap with a single line that says the session is still attached.
 - Attach input streams send a keepalive ping, so an idle input socket can no longer be closed by a network idle timeout while the screen keeps updating.
 - Attach no longer sends `rows: 0, cols: 0` to the broker when the terminal reports no size, removing the spurious `rows and cols must be positive integers` warning.

@@ -1,11 +1,39 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  compactDirectMessageReceipt,
   directMessageDeliveryFailure,
   directMessageReceipt,
   messageReadersReceipt,
   resolveExactAgentName,
 } from '../lib/message-delivery-receipts.js';
+
+/**
+ * Shape of the upstream create-message response, which carries the body twice:
+ * once at `text` and once at the nested `message.text`.
+ */
+function sentMessageResponse(body: string) {
+  return {
+    conversationId: 'dm_abc123',
+    message: {
+      id: 'msg_1',
+      agentId: 'agent_sender',
+      agentName: 'sender',
+      text: body,
+      injectionMode: 'wait',
+      attachments: [],
+      metadata: { injection_mode: 'wait' },
+    },
+    createdAt: '2026-08-21T18:37:00.000Z',
+    id: 'msg_1',
+    fromAgentId: 'agent_sender',
+    to: 'chief',
+    text: body,
+    injectionMode: 'wait',
+    attachments: [],
+    metadata: { injection_mode: 'wait' },
+  };
+}
 
 describe('exact agent-name resolution', () => {
   it('chooses the full hyphenated name instead of an existing strict prefix', () => {
@@ -136,5 +164,129 @@ describe('direct message delivery receipts', () => {
         signal: 'At least one agent has read this message.',
       },
     });
+  });
+});
+
+describe('compact direct message receipts', () => {
+  const body = 'x'.repeat(4000);
+
+  it('keeps the identifiers and the full delivery verdict', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt(sentMessageResponse(body), 'chief', 'wait', 'chief')
+    );
+
+    expect(compact).toEqual({
+      id: 'msg_1',
+      conversationId: 'dm_abc123',
+      target: { kind: 'agent', agentName: 'chief' },
+      delivery: {
+        status: 'queued_unconfirmed',
+        mode: 'wait',
+        requestedRecipient: 'chief',
+        resolvedRecipient: 'chief',
+        recipientMatched: true,
+        readConfirmed: false,
+        note: "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id.",
+      },
+    });
+  });
+
+  it('does not echo the message body anywhere in the serialised receipt', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt(sentMessageResponse(body), 'chief', 'wait', 'chief')
+    );
+
+    expect(JSON.stringify(compact)).not.toContain(body);
+  });
+
+  it('drops every body-bearing field the upstream response spreads in', () => {
+    const full = directMessageReceipt(sentMessageResponse(body), 'chief', 'wait', 'chief');
+    const compact = compactDirectMessageReceipt(full);
+
+    // The defect: the uncompacted receipt carries the body twice.
+    expect(JSON.stringify(full).split(body).length - 1).toBe(2);
+    for (const dropped of ['text', 'message', 'metadata', 'attachments', 'fromAgentId', 'to', 'createdAt']) {
+      expect(compact).not.toHaveProperty(dropped);
+    }
+  });
+
+  it('keeps the receipt bounded no matter how large the message body is', () => {
+    const short = compactDirectMessageReceipt(
+      directMessageReceipt(sentMessageResponse('hi'), 'chief', 'wait', 'chief')
+    );
+    const long = compactDirectMessageReceipt(
+      directMessageReceipt(sentMessageResponse('y'.repeat(50_000)), 'chief', 'wait', 'chief')
+    );
+
+    expect(JSON.stringify(long).length).toBe(JSON.stringify(short).length);
+    expect(JSON.stringify(long).length).toBeLessThan(500);
+  });
+
+  it('still reports a recipient mismatch, including the message reference', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt(sentMessageResponse(body), 'chief-khaliq', 'wait', 'chief')
+    );
+
+    expect(compact.delivery.status).toBe('recipient_mismatch');
+    const failure = directMessageDeliveryFailure(compact);
+    expect(failure).toContain('recipient_mismatch');
+    expect(failure).toContain('message msg_1 was enqueued');
+    expect(failure).not.toContain(body);
+  });
+
+  it('omits identifiers that the upstream response did not provide', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt({ text: 'no id here' }, 'chief', 'wait', 'chief')
+    );
+
+    expect(compact).toEqual({
+      target: { kind: 'agent', agentName: 'chief' },
+      delivery: expect.objectContaining({ status: 'queued_unconfirmed' }),
+    });
+    expect(directMessageDeliveryFailure(compact)).toBeUndefined();
+  });
+
+  it('surfaces a messageId-only upstream response under the documented id field', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt(
+        { messageId: 'msg_alias', conversationId: 'dm_alias', text: body },
+        'chief',
+        'wait',
+        'chief'
+      )
+    );
+
+    // The output schema advertises `id`; a caller told to follow up with
+    // get_message_readers must find it there whichever alias upstream used.
+    expect(compact.id).toBe('msg_alias');
+    expect(compact).not.toHaveProperty('messageId');
+    expect(JSON.stringify(compact)).not.toContain(body);
+    expect(
+      directMessageDeliveryFailure({
+        ...compact,
+        delivery: { ...compact.delivery, status: 'recipient_unresolved' },
+      })
+    ).toContain('message msg_alias was enqueued');
+  });
+
+  it('prefers a real id over a messageId alias when both are present', () => {
+    const compact = compactDirectMessageReceipt(
+      directMessageReceipt({ id: 'msg_real', messageId: 'msg_alias' }, 'chief', 'wait', 'chief')
+    );
+
+    expect(compact.id).toBe('msg_real');
+    expect(compact).not.toHaveProperty('messageId');
+  });
+
+  it('preserves the resolved-versus-unresolved recipient signal that target carries', () => {
+    const resolved = compactDirectMessageReceipt(
+      directMessageReceipt(sentMessageResponse(body), 'chief', 'wait', 'chief')
+    );
+    const unresolved = compactDirectMessageReceipt(directMessageReceipt(sentMessageResponse(body), 'chief'));
+
+    expect(resolved.target).toEqual({ kind: 'agent', agentName: 'chief' });
+    expect(unresolved).not.toHaveProperty('target');
+    expect(unresolved.delivery.status).toBe('recipient_unresolved');
+    expect(JSON.stringify(unresolved)).not.toContain(body);
   });
 });

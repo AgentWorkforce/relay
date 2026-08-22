@@ -3,6 +3,7 @@ import { replayMessageMetadata } from '@agent-relay/sdk';
 import { z } from 'zod';
 
 import {
+  compactDirectMessageReceipt,
   directMessageDeliveryFailure,
   directMessageReceipt,
   messageReadersReceipt,
@@ -13,6 +14,8 @@ import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
 import type { AgentClientLike } from './types.js';
 
 const directMessageResult = z.looseObject({
+  id: z.string().optional().describe('Message ID, for "get_message_readers"'),
+  conversationId: z.string().optional().describe('DM conversation ID, addressing relay://dm/{id}'),
   target: z.object({ kind: z.literal('agent'), agentName: z.string() }).optional(),
   delivery: z.object({
     status: z.enum(['queued_unconfirmed', 'recipient_mismatch', 'recipient_unresolved']),
@@ -317,7 +320,8 @@ export function registerMessagingTools(
       title: 'Send Direct Message',
       description:
         'Send a private direct message visible only to the recipient and this agent. ' +
-        'Returns the created message and an explicit queued/unconfirmed delivery receipt. ' +
+        'Returns a compact delivery receipt — the message ID, the conversation ID, and an explicit queued/unconfirmed delivery status. ' +
+        'The receipt deliberately does not echo the message body back; you already have the text you sent. ' +
         'Returns a tool error while preserving that receipt when the recipient cannot be resolved exactly. ' +
         'A message ID confirms enqueue, not injection or reading; use "get_message_readers" to confirm consumption. ' +
         'Mode "wait" (the default) waits for the recipient\'s next safe idle boundary and can remain unread while they are busy. ' +
@@ -350,7 +354,7 @@ export function registerMessagingTools(
         attachments,
         data: replayMessageMetadata(),
       });
-      const receipt = directMessageReceipt(message, to, mode, resolvedRecipient);
+      const receipt = compactDirectMessageReceipt(directMessageReceipt(message, to, mode, resolvedRecipient));
       const result = jsonContent(receipt);
       return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
     }
