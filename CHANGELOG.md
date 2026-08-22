@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Agent names that had already been registered can be reclaimed again. Relaycast made registration create-only, so the broker's register-or-rotate paths failed with an opaque `401 Agent token required`; supervisor restart, offline-agent attach and the broker's own reconnect now reclaim the name through an audited takeover instead, and crash recovery uses the explicit recover route.
 - `agent-relay fleet spawn --node <name>` now uses the active workspace to mint and clean up a short-lived launcher identity when no agent token is present.
+- The `send_dm` MCP tool returns a compact, fixed-size delivery receipt instead of echoing the sent message body back twice, cutting the context a sending agent spends per DM by roughly two-thirds. The `agent-relay message dm --json` output is unchanged.
 - Attaching to an agent that lives on another fleet node without `--node` now names the node to run the command on, instead of reporting `no agent named '<name>'` for an agent that is running.
 
 ### Added

@@ -83,6 +83,54 @@ describe('messaging delivery receipts over MCP', () => {
     }
   });
 
+  it('does not echo the sent body back across the MCP boundary', async () => {
+    const body = 'CANARY-BODY-'.repeat(400);
+    const dm = vi.fn(async () => ({
+      // The upstream create-message response carries the body twice.
+      conversationId: 'dm_1',
+      id: 'msg_1',
+      text: body,
+      message: { id: 'msg_1', text: body },
+    }));
+    const server = new McpServer({ name: 'messaging-echo-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'chief' }]
+    );
+
+    const client = new Client({ name: 'messaging-echo-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const sent = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: body },
+      });
+
+      // Neither the rendered content block nor the structured payload may
+      // carry the body the caller already holds in its tool_use parameter.
+      expect(JSON.stringify(sent.content)).not.toContain('CANARY-BODY');
+      expect(JSON.stringify(sent.structuredContent)).not.toContain('CANARY-BODY');
+
+      // The receipt stays small no matter how large the message was.
+      expect(JSON.stringify(sent.structuredContent).length).toBeLessThan(600);
+
+      // ...and still says everything the caller needs to act on it.
+      expect(sent.structuredContent).toMatchObject({
+        id: 'msg_1',
+        conversationId: 'dm_1',
+        delivery: { status: 'queued_unconfirmed', resolvedRecipient: 'chief' },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('stamps the current replay session on channel, thread, direct, and group messages', async () => {
     vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
     const send = vi.fn(async () => ({ id: 'msg_channel', text: 'channel' }));
