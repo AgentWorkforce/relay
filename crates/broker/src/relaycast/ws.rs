@@ -8,10 +8,10 @@ use anyhow::{Context, Result};
 use relaycast::{
     agent::DmOptions, format_registration_error,
     retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
-    AgentClient, AgentRegistrationClient, AgentRegistrationError, AgentRegistrationRetryOutcome,
-    CompleteInvocationRequest, CreateObserverTokenRequest, EmitSessionEventRequest,
-    MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast, RelayCastOptions,
-    RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
+    AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient, AgentRegistrationError,
+    AgentRegistrationRetryOutcome, CompleteInvocationRequest, CreateObserverTokenRequest,
+    EmitSessionEventRequest, MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast,
+    RelayCastOptions, RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 
@@ -317,22 +317,51 @@ impl RelaycastHttpClient {
             }
         };
 
-        let response = relay
+        let response = match relay
             .take_over_agent(
                 agent_name,
                 TakeOverAgentRequest {
                     expected_agent_id: existing_id.clone(),
                     actor: self.agent_name.clone(),
                     reason: "broker reclaimed an agent name it owns after create-only registration reported a collision".to_string(),
-                    session_ref: existing_id,
+                    session_ref: existing_id.clone(),
                     node_id: self.agent_name.clone(),
                 },
             )
             .await
-            .map_err(|error| RelaycastRegistrationError::Transport {
-                agent_name: agent_name.to_string(),
-                detail: format!("takeover failed: {error}"),
-            })?;
+        {
+            Ok(response) => response,
+            // Engines before 8.2.0 have no `/takeover` route — the whole
+            // identity-recovery surface arrived with it. Those engines still
+            // allow the workspace key to rotate an agent's token, which is what
+            // this path did before, so fall back rather than stranding every
+            // self-hosted deployment that has not upgraded yet. On 8.2.0+ this
+            // arm is unreachable: the route exists, so a failure there is a
+            // real failure and propagates.
+            Err(RelayError::Api { status: 404, .. }) => {
+                let rotated = relay
+                    .rotate_agent_token(agent_name, self.api_key.clone())
+                    .await
+                    .map_err(|error| RelaycastRegistrationError::Transport {
+                        agent_name: agent_name.to_string(),
+                        detail: format!(
+                            "takeover unavailable on this engine and the legacy rotate fallback failed: {error}"
+                        ),
+                    })?;
+                AgentIdentityRecoveryResponse {
+                    agent_id: existing_id,
+                    name: agent_name.to_string(),
+                    token: rotated.token,
+                    audit_id: String::new(),
+                }
+            }
+            Err(error) => {
+                return Err(RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: format!("takeover failed: {error}"),
+                })
+            }
+        };
 
         if response.token.trim().is_empty() {
             return Err(RelaycastRegistrationError::MissingToken {
@@ -2031,6 +2060,66 @@ mod tests {
         );
         rotate.assert_hits(0);
         mark_read.assert_hits(0);
+    }
+
+    /// Engines before 8.2.0 have no `/takeover`. The broker must fall back to
+    /// the legacy workspace-key rotate rather than stranding the agent — this
+    /// is the path the fleet e2e exercises, and every self-hosted deployment
+    /// that has not upgraded.
+    #[tokio::test]
+    async fn takeover_falls_back_to_legacy_rotate_on_older_engines() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        // Older engine: the route simply is not there.
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": { "code": "not_found", "message": "no such route" }
+            }));
+        });
+        // ...and rotate still accepts the workspace key there.
+        let legacy_rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/worker-a/rotate-token")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "name": "worker-a", "token": "at_live_legacy" }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let token = client
+            .register_agent_token("worker-a", Some("codex"))
+            .await
+            .expect("an older engine must still be able to reclaim the name");
+        assert_eq!(token, "at_live_legacy");
+        takeover.assert_hits(1);
+        legacy_rotate.assert_hits(1);
     }
 
     /// Two concurrent cache-miss registrations for the same name must produce
