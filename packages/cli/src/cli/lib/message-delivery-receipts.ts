@@ -106,3 +106,46 @@ export function messageReadersReceipt(readers: unknown[]): {
     },
   };
 }
+
+/**
+ * Project a direct-message send receipt down to what the caller needs to act on
+ * it, dropping the echoed message body.
+ *
+ * The upstream create-message response carries the body twice — once at `text`
+ * and once at the nested `message.text` — and `directMessageReceipt` spreads
+ * that response wholesale. On the MCP path that puts two further copies of a DM
+ * into the *sender's* own context window, on top of the `tool_use` parameter
+ * that already holds it. The sender wrote the text; echoing it back informs no
+ * decision, and it is charged against the context budget of exactly the
+ * long-lived resident agents that send the most DMs.
+ *
+ * The projection is an allowlist rather than a denylist on purpose: deleting
+ * known body fields would start leaking the body again the first time the
+ * upstream response grows another text-bearing field.
+ *
+ * Everything kept is fixed-size, so the receipt no longer grows with the
+ * message. `delivery` is kept whole because it is the part that stops an agent
+ * reporting an enqueue as a confirmed delivery; `id` because it is how the
+ * caller follows up with `get_message_readers`; and `target` because its
+ * presence — versus its absence on an unresolved recipient — is an existing
+ * signal that the directory independently confirmed who was addressed.
+ */
+export function compactDirectMessageReceipt(
+  receipt: DirectMessageDeliveryReceipt
+): DirectMessageDeliveryReceipt {
+  // The upstream response names the identifier `id` or `messageId` depending on
+  // the endpoint — `directMessageDeliveryFailure` already reads both. Collapse
+  // them to the single `id` the tool's output schema advertises, so a caller
+  // told to follow up with `get_message_readers` always finds it under the
+  // documented name rather than under whichever alias the endpoint happened to
+  // use. An existing `id` wins; `messageId` is a fallback, never an extra field.
+  const id = typeof receipt.id === 'string' ? receipt.id : receipt.messageId;
+  const conversationId = receipt.conversationId;
+
+  return {
+    ...(typeof id === 'string' ? { id } : {}),
+    ...(typeof conversationId === 'string' ? { conversationId } : {}),
+    ...(receipt.target ? { target: receipt.target } : {}),
+    delivery: receipt.delivery,
+  };
+}
