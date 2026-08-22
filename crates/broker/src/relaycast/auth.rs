@@ -755,7 +755,7 @@ impl AuthClient {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, &name, agent_type, identity_key).await
+        admit_agent_registration(&relay, workspace_key, &name, agent_type, identity_key).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -1004,6 +1004,9 @@ pub(crate) fn identity_key_fingerprint(raw: &str) -> String {
 /// collision is rejected.
 async fn admit_agent_registration(
     relay: &RelayCast,
+    // Needed only for the pre-8.2.0 rotate fallback below, where the workspace
+    // key is still an accepted credential for reclaiming an agent's token.
+    workspace_key: &str,
     name: &str,
     agent_type: Option<&str>,
     identity_key: Option<&str>,
@@ -1075,12 +1078,34 @@ async fn admit_agent_registration(
                         node_id: None,
                     },
                 )
-                .await
-                .map_err(relay_error_to_anyhow)?;
+                .await;
+            // Engines before 8.2.0 have no `/recover` route — the identity
+            // recovery surface arrived with it — and answer "Route not found".
+            // Those engines still let the workspace key rotate an agent's
+            // token, which is what this path did before, so fall back rather
+            // than failing every node restart against an older engine. The
+            // agent-specific 404 (`agent_not_found`) is a real failure and is
+            // deliberately excluded.
+            let token_response = match token_response {
+                Ok(response) => response.token,
+                Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                }) if code != "agent_not_found" => relay
+                    .rotate_agent_token(&existing.name, workspace_key)
+                    .await
+                    .map_err(relay_error_to_anyhow)
+                    .context(
+                        "recover unavailable on this engine and the legacy rotate fallback failed",
+                    )?
+                    .token,
+                Err(error) => return Err(relay_error_to_anyhow(error)),
+            };
             Ok((
                 existing.id,
                 existing.name,
-                token_response.token,
+                token_response,
                 existing.workspace_id,
             ))
         }
@@ -1695,6 +1720,64 @@ mod tests {
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
         }
+    }
+
+    /// Engines before 8.2.0 have no `/recover`. A node restarting against one
+    /// must still reclaim its identity via the legacy workspace-key rotate —
+    /// this is the exact path the two-node fleet e2e drives, against a pinned
+    /// v7.0.0 engine.
+    #[tokio::test]
+    async fn identity_reclaim_falls_back_to_legacy_rotate_on_older_engines() {
+        let _env_guard = clear_relay_env();
+        let identity = "work-unit-42";
+        let identity_hash = hash_identity_key(identity);
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", identity);
+        }
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/lead");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                ));
+        });
+        // Older engine: the recovery surface simply is not mounted.
+        let recover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/lead/recover");
+            then.status(404)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"not_found","message":"Route not found"}}"#);
+        });
+        let legacy_rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/lead/rotate-token")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":true,"data":{"name":"lead","token":"at_live_legacy_reclaim"}}"#);
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let session = client
+            .startup_session_set_with_identity(Some("lead"), true, None, Some(identity))
+            .await
+            .expect("an older engine must still let a restarting node reclaim its name")
+            .default_session()
+            .cloned()
+            .expect("a session was registered");
+
+        assert_eq!(session.token, "at_live_legacy_reclaim");
+        recover.assert_hits(1);
+        legacy_rotate.assert_hits(1);
     }
 
     #[tokio::test]
