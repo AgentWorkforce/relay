@@ -36,49 +36,10 @@ export interface RosterAgent {
   metadata?: Record<string, unknown> | null;
 }
 
-export interface RemoteLiveAgent {
-  name: string;
-}
+import type { RemoteLiveAgent } from '../lib/fleet-live-agents.js';
 
-export const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
-
-export interface RemoteLiveAgentRead {
-  supported: boolean;
-  agents: RemoteLiveAgent[];
-  warning?: string;
-}
-
-/** Decode the broker-owned WorkerName set carried by a node heartbeat. */
-export function readRemoteLiveAgents(node: RelayNode): RemoteLiveAgentRead {
-  let supported = false;
-  let malformed = 0;
-  const names = new Set<string>();
-  for (const capability of node.capabilities) {
-    if (capability.name !== LIVE_AGENT_CAPABILITY_NAME) continue;
-    supported = true;
-    const rawNames = capability.metadata?.names;
-    if (!Array.isArray(rawNames)) {
-      malformed += 1;
-      continue;
-    }
-    for (const rawName of rawNames) {
-      if (typeof rawName !== 'string' || !rawName || names.has(rawName)) {
-        malformed += 1;
-        continue;
-      }
-      names.add(rawName);
-    }
-  }
-  return {
-    supported,
-    agents: Array.from(names, (name) => ({ name })).sort((a, b) => a.name.localeCompare(b.name)),
-    ...(malformed > 0
-      ? {
-          warning: `${malformed} malformed or duplicate live-agent heartbeat capabilit${malformed === 1 ? 'y' : 'ies'}`,
-        }
-      : {}),
-  };
-}
+export type { RemoteLiveAgent, RemoteLiveAgentRead } from '../lib/fleet-live-agents.js';
+export { LIVE_AGENT_CAPABILITY_NAME, readRemoteLiveAgents } from '../lib/fleet-live-agents.js';
 
 /** What each fleet node contributed to the render. */
 export interface FleetNodeContribution {
