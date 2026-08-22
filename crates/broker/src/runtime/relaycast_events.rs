@@ -1,5 +1,100 @@
 use super::*;
 
+/// JSON object environment variable holding this node's repository key to
+/// checkout-path map. It is intentionally local configuration: only its keys
+/// may be advertised to the control plane.
+const NODE_REPO_PATHS_ENV: &str = "AGENT_RELAY_NODE_REPO_PATHS";
+
+struct UniqueRepoPaths(BTreeMap<String, String>);
+
+impl<'de> serde::Deserialize<'de> for UniqueRepoPaths {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct UniqueRepoPathsVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for UniqueRepoPathsVisitor {
+            type Value = UniqueRepoPaths;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON object of repository keys to paths")
+            }
+
+            fn visit_map<A>(self, mut entries: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut paths = BTreeMap::new();
+                while let Some((repo, path)) = entries.next_entry::<String, String>()? {
+                    if paths.insert(repo, path).is_some() {
+                        return Err(serde::de::Error::custom(
+                            "repo_paths contains a duplicate repository key",
+                        ));
+                    }
+                }
+                Ok(UniqueRepoPaths(paths))
+            }
+        }
+
+        deserializer.deserialize_map(UniqueRepoPathsVisitor)
+    }
+}
+
+/// Load this node's repository checkout map without touching the filesystem.
+///
+/// Existence and directory checks happen at spawn time because a checkout can
+/// disappear after the broker has registered the key. Requiring absolute paths
+/// here ensures a map entry can never fall back to the broker process cwd.
+pub(super) fn load_node_repo_paths_from_env() -> Result<Option<BTreeMap<String, PathBuf>>> {
+    let raw = std::env::var_os(NODE_REPO_PATHS_ENV);
+    // The map is broker-private runtime state. Clear the startup bridge before
+    // any workers launch so absolute checkout paths cannot be inherited.
+    std::env::remove_var(NODE_REPO_PATHS_ENV);
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let raw = raw
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("{NODE_REPO_PATHS_ENV} must contain valid Unicode JSON"))?;
+
+    parse_node_repo_paths(raw.trim()).map(Some)
+}
+
+fn parse_node_repo_paths(raw: &str) -> Result<BTreeMap<String, PathBuf>> {
+    let UniqueRepoPaths(configured) = serde_json::from_str(raw).map_err(|error| {
+        anyhow::anyhow!(
+            "{NODE_REPO_PATHS_ENV} must be a JSON object of repo keys to paths: {error}"
+        )
+    })?;
+    let mut repo_paths = BTreeMap::new();
+    for (raw_repo, raw_path) in configured {
+        let repo = raw_repo.trim();
+        if !crate::fleet_wire::is_placement_repo_key(repo) {
+            anyhow::bail!("{NODE_REPO_PATHS_ENV} keys must use owner/repo format");
+        }
+        let path = PathBuf::from(raw_path.trim());
+        if path.as_os_str().is_empty() {
+            anyhow::bail!(
+                "{NODE_REPO_PATHS_ENV} has an empty checkout path for repository '{repo}'"
+            );
+        }
+        if !path.is_absolute() {
+            anyhow::bail!(
+                "{NODE_REPO_PATHS_ENV} checkout path for repository '{repo}' must be absolute"
+            );
+        }
+        if repo_paths.insert(repo.to_string(), path).is_some() {
+            anyhow::bail!("{NODE_REPO_PATHS_ENV} contains duplicate repository key '{repo}'");
+        }
+    }
+    Ok(repo_paths)
+}
+
+pub(super) fn node_repo_keys(repo_paths: &BTreeMap<String, PathBuf>) -> Vec<String> {
+    repo_paths.keys().cloned().collect()
+}
+
 impl BrokerRuntime {
     /// Drain a workspace-firehose event for the broker runtime.
     ///
@@ -105,6 +200,95 @@ pub(super) fn relaycast_spawn_worker_cwd(ws_value: &Value) -> Result<Option<Stri
         anyhow::bail!("worker_cwd is not a directory: '{}'", path.display());
     }
     Ok(Some(cwd.to_string()))
+}
+
+/// Resolve the repository key carried by a Factory placement. A present
+/// assignment is authoritative even when it is malformed: treating an empty or
+/// invalid key as absent would re-enable fallback to a remotely supplied cwd.
+fn relaycast_assignment_repo(ws_value: &Value) -> Result<Option<String>> {
+    const REPO_POINTERS: &[&str] = &[
+        "/repo",
+        "/assignment/repo",
+        "/metadata/repo",
+        "/metadata/assignment/repo",
+        "/agent/repo",
+        "/agent/metadata/repo",
+        "/agent/metadata/assignment/repo",
+    ];
+    const ASSIGNMENT_POINTERS: &[&str] = &[
+        "/assignment",
+        "/metadata/assignment",
+        "/agent/metadata/assignment",
+    ];
+
+    for pointer in ASSIGNMENT_POINTERS {
+        let Some(assignment) = ws_value.pointer(pointer) else {
+            continue;
+        };
+        let assignment = assignment
+            .as_object()
+            .context("assignment must be an object containing repo")?;
+        anyhow::ensure!(
+            assignment.contains_key("repo"),
+            "assignment must include repo"
+        );
+    }
+
+    let mut resolved: Option<String> = None;
+    for pointer in REPO_POINTERS {
+        let Some(value) = ws_value.pointer(pointer) else {
+            continue;
+        };
+        let repo = value
+            .as_str()
+            .map(str::trim)
+            .filter(|repo| !repo.is_empty())
+            .context("repo assignment must be a non-empty string")?;
+        anyhow::ensure!(
+            crate::fleet_wire::is_placement_repo_key(repo),
+            "repo assignment must use owner/repo format"
+        );
+        if let Some(existing) = resolved.as_deref() {
+            anyhow::ensure!(
+                existing == repo,
+                "spawn input contains conflicting repo assignments"
+            );
+        } else {
+            resolved = Some(repo.to_string());
+        }
+    }
+    Ok(resolved)
+}
+
+/// Resolve a spawn working directory on this node.
+///
+/// Repository assignments are mapped only through the node-local repo map.
+/// In that mode every remote cwd variant is deliberately ignored, including
+/// legacy Factory fields. A missing key or unusable local checkout fails the
+/// spawn instead of inheriting the broker cwd or accepting a caller path.
+pub(super) fn relaycast_spawn_worker_cwd_for_node(
+    ws_value: &Value,
+    node_repo_paths: &BTreeMap<String, PathBuf>,
+) -> Result<Option<String>> {
+    let Some(repo) = relaycast_assignment_repo(ws_value)? else {
+        return relaycast_spawn_worker_cwd(ws_value);
+    };
+
+    let path = node_repo_paths
+        .get(&repo)
+        .with_context(|| format!("no local checkout configured for assignment.repo '{repo}'"))?;
+    if !path.is_absolute() {
+        anyhow::bail!("local checkout configured for assignment.repo '{repo}' must be absolute");
+    }
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("local checkout for assignment.repo '{repo}' is unavailable"))?;
+    if !metadata.is_dir() {
+        anyhow::bail!("local checkout for assignment.repo '{repo}' is not a directory");
+    }
+    let path = path.to_str().context(
+        "local checkout configured for assignment.repo contains unsupported path characters",
+    )?;
+    Ok(Some(path.to_string()))
 }
 
 /// Read the dispatcher-issued commit attestation from an active node-control
@@ -422,6 +606,7 @@ pub(super) async fn spawn_worker_from_request(
     model: Option<String>,
     exit_after_task: bool,
     ws_value: &Value,
+    node_repo_paths: &BTreeMap<String, PathBuf>,
     workspace_id: &WorkspaceId,
     control_dedup_key: Option<&str>,
     workspace_state: &RelayWorkspace,
@@ -462,9 +647,9 @@ pub(super) async fn spawn_worker_from_request(
         anyhow::bail!("agent '{name}' is the broker self");
     }
     // Resolve and validate the directory on the selected node, before dedup or
-    // registration side effects. A remote Fleet cwd cannot be validated by the
-    // caller because the path belongs to this node's filesystem.
-    let worker_cwd = relaycast_spawn_worker_cwd(ws_value)?;
+    // registration side effects. A repository placement can only use this
+    // node's locally configured checkout; remote cwd fields are ignored.
+    let worker_cwd = relaycast_spawn_worker_cwd_for_node(ws_value, node_repo_paths)?;
     let local_spawn_echo_key = relaycast_spawn_control_dedup_key(workspace_id, &name);
     if relaycast_ws_should_apply_local_spawn_echo_dedup(control_dedup_key, &local_spawn_echo_key)
         && !dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
@@ -882,6 +1067,20 @@ mod tests {
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
 
+    static NODE_REPO_PATHS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct RepoPathsEnvRestore(Option<std::ffi::OsString>);
+
+    impl Drop for RepoPathsEnvRestore {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.take() {
+                std::env::set_var(NODE_REPO_PATHS_ENV, value);
+            } else {
+                std::env::remove_var(NODE_REPO_PATHS_ENV);
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn released_view_target_emits_close_while_healthy_idle_view_stays_open() {
@@ -1157,6 +1356,7 @@ mod tests {
             None,
             false,
             &ws_value,
+            &BTreeMap::new(),
             &workspace_id,
             Some(&control_key),
             &workspace,
@@ -1263,6 +1463,260 @@ mod tests {
             .to_string();
 
         assert!(error.contains("must be an absolute path"), "{error}");
+    }
+
+    #[test]
+    fn node_repo_paths_env_is_consumed_before_workers_can_inherit_it() {
+        let _lock = NODE_REPO_PATHS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = RepoPathsEnvRestore(std::env::var_os(NODE_REPO_PATHS_ENV));
+        std::env::set_var(
+            NODE_REPO_PATHS_ENV,
+            r#"{"AgentWorkforce/factory":"/srv/factory"}"#,
+        );
+
+        let paths = load_node_repo_paths_from_env()
+            .expect("valid node-local map")
+            .expect("map was explicitly configured");
+
+        assert_eq!(
+            paths.get("AgentWorkforce/factory"),
+            Some(&PathBuf::from("/srv/factory"))
+        );
+        assert_eq!(std::env::var_os(NODE_REPO_PATHS_ENV), None);
+    }
+
+    #[test]
+    fn node_repo_paths_env_absence_remains_unconfigured() {
+        let _lock = NODE_REPO_PATHS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = RepoPathsEnvRestore(std::env::var_os(NODE_REPO_PATHS_ENV));
+        std::env::remove_var(NODE_REPO_PATHS_ENV);
+
+        let paths = load_node_repo_paths_from_env().expect("absent map is valid");
+
+        assert_eq!(paths, None);
+    }
+
+    #[test]
+    fn node_repo_paths_env_preserves_explicit_empty_configuration() {
+        let _lock = NODE_REPO_PATHS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = RepoPathsEnvRestore(std::env::var_os(NODE_REPO_PATHS_ENV));
+        std::env::set_var(NODE_REPO_PATHS_ENV, "{}");
+
+        let paths = load_node_repo_paths_from_env().expect("empty configured map is valid");
+
+        assert_eq!(paths, Some(BTreeMap::new()));
+        assert_eq!(std::env::var_os(NODE_REPO_PATHS_ENV), None);
+    }
+
+    #[test]
+    fn node_repo_paths_parser_rejects_duplicate_json_keys() {
+        let error = parse_node_repo_paths(
+            r#"{"AgentWorkforce/factory":"/srv/first","AgentWorkforce/factory":"/srv/second"}"#,
+        )
+        .expect_err("repeated JSON keys must not use last-value-wins behavior")
+        .to_string();
+
+        assert!(error.contains("duplicate repository key"), "{error}");
+    }
+
+    #[test]
+    fn node_repo_paths_parser_rejects_path_shaped_keys_without_echoing_them() {
+        let error = parse_node_repo_paths(r#"{"/node-private/checkouts/factory":"/srv/factory"}"#)
+            .expect_err("private paths cannot masquerade as registration keys")
+            .to_string();
+
+        assert!(error.contains("owner/repo format"), "{error}");
+        assert!(!error.contains("node-private"), "{error}");
+    }
+
+    fn node_repo_paths(repo: &str, path: &Path) -> BTreeMap<String, PathBuf> {
+        BTreeMap::from([(repo.to_string(), path.to_path_buf())])
+    }
+
+    #[test]
+    fn assignment_repo_resolves_to_the_node_local_checkout() {
+        let checkout = tempfile::tempdir().expect("local checkout fixture");
+        let paths = node_repo_paths("AgentWorkforce/relay", checkout.path());
+
+        let cwd = relaycast_spawn_worker_cwd_for_node(
+            &json!({ "assignment": { "repo": "AgentWorkforce/relay" } }),
+            &paths,
+        )
+        .expect("mapped repository assignment should resolve");
+
+        assert_eq!(cwd.as_deref(), checkout.path().to_str());
+    }
+
+    #[test]
+    fn top_level_placement_repo_resolves_to_the_node_local_checkout() {
+        let checkout = tempfile::tempdir().expect("local checkout fixture");
+        let paths = node_repo_paths("AgentWorkforce/factory", checkout.path());
+
+        let cwd = relaycast_spawn_worker_cwd_for_node(
+            &json!({ "repo": "AgentWorkforce/factory" }),
+            &paths,
+        )
+        .expect("SDK top-level placement repo should resolve");
+
+        assert_eq!(cwd.as_deref(), checkout.path().to_str());
+    }
+
+    #[test]
+    fn conflicting_repo_shapes_fail_closed_before_cwd_fallback() {
+        let cwd = tempfile::tempdir().expect("cwd fixture");
+        let paths = node_repo_paths("AgentWorkforce/factory", cwd.path());
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({
+                "repo": "AgentWorkforce/factory",
+                "assignment": {"repo": "AgentWorkforce/relay"},
+                "worker_cwd": cwd.path(),
+            }),
+            &paths,
+        )
+        .expect_err("conflicting repository assignments must not fall back")
+        .to_string();
+
+        assert!(error.contains("conflicting repo assignments"), "{error}");
+        assert!(!error.contains(&cwd.path().display().to_string()));
+    }
+
+    #[test]
+    fn assignment_without_repo_fails_closed_before_cwd_fallback() {
+        let cwd = tempfile::tempdir().expect("cwd fixture");
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({
+                "assignment": {},
+                "cwd": cwd.path(),
+                "worker_cwd": cwd.path(),
+            }),
+            &BTreeMap::new(),
+        )
+        .expect_err("malformed assignment must not restore remote cwd fallback")
+        .to_string();
+
+        assert!(error.contains("assignment must include repo"), "{error}");
+        assert!(!error.contains(&cwd.path().display().to_string()));
+    }
+
+    #[test]
+    fn assignment_repo_rejects_a_missing_local_key() {
+        let checkout = tempfile::tempdir().expect("local checkout fixture");
+        let paths = node_repo_paths("AgentWorkforce/factory", checkout.path());
+
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({ "assignment": { "repo": "AgentWorkforce/relay" } }),
+            &paths,
+        )
+        .expect_err("unknown repository key must fail closed")
+        .to_string();
+
+        assert!(
+            error.contains(
+                "no local checkout configured for assignment.repo 'AgentWorkforce/relay'"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn assignment_repo_rejects_a_missing_local_directory() {
+        let root = tempfile::tempdir().expect("local checkout fixture");
+        let paths = node_repo_paths("AgentWorkforce/relay", &root.path().join("missing"));
+
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({ "assignment": { "repo": "AgentWorkforce/relay" } }),
+            &paths,
+        )
+        .expect_err("missing mapped checkout must fail closed")
+        .to_string();
+
+        assert!(
+            error.contains(
+                "local checkout for assignment.repo 'AgentWorkforce/relay' is unavailable"
+            ),
+            "{error}"
+        );
+        assert!(
+            !error.contains(&root.path().display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn assignment_repo_rejects_a_file_local_path() {
+        let root = tempfile::tempdir().expect("local checkout fixture");
+        let checkout_file = root.path().join("not-a-directory");
+        std::fs::write(&checkout_file, "fixture").expect("write checkout file fixture");
+        let paths = node_repo_paths("AgentWorkforce/relay", &checkout_file);
+
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({ "assignment": { "repo": "AgentWorkforce/relay" } }),
+            &paths,
+        )
+        .expect_err("file mapped as a checkout must fail closed")
+        .to_string();
+
+        assert!(
+            error.contains(
+                "local checkout for assignment.repo 'AgentWorkforce/relay' is not a directory"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn assignment_repo_ignores_remote_cwd_variants() {
+        let checkout = tempfile::tempdir().expect("local checkout fixture");
+        let remote_cwd = tempfile::tempdir().expect("remote cwd fixture");
+        let paths = node_repo_paths("AgentWorkforce/relay", checkout.path());
+
+        let cwd = relaycast_spawn_worker_cwd_for_node(
+            &json!({
+                "assignment": { "repo": "AgentWorkforce/relay" },
+                "cwd": remote_cwd.path(),
+                "worker_cwd": remote_cwd.path(),
+                "clone_path": remote_cwd.path(),
+                "clonePath": remote_cwd.path(),
+            }),
+            &paths,
+        )
+        .expect("a mapped assignment must ignore all remote cwd variants");
+
+        assert_eq!(cwd.as_deref(), checkout.path().to_str());
+        assert_ne!(cwd.as_deref(), remote_cwd.path().to_str());
+    }
+
+    #[test]
+    fn assignment_repo_has_no_remote_or_broker_cwd_fallback() {
+        let remote_cwd = tempfile::tempdir().expect("remote cwd fixture");
+
+        let error = relaycast_spawn_worker_cwd_for_node(
+            &json!({
+                "assignment": { "repo": "AgentWorkforce/relay" },
+                "worker_cwd": remote_cwd.path(),
+            }),
+            &BTreeMap::new(),
+        )
+        .expect_err("an unmapped assignment must not fall back to remote or broker cwd")
+        .to_string();
+
+        assert!(
+            error.contains(
+                "no local checkout configured for assignment.repo 'AgentWorkforce/relay'"
+            ),
+            "{error}"
+        );
+        assert!(!error.contains("worker_cwd"), "{error}");
+        assert!(
+            !error.contains(&remote_cwd.path().display().to_string()),
+            "{error}"
+        );
     }
 
     #[test]

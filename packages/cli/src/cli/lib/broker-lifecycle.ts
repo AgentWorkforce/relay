@@ -77,6 +77,7 @@ const DEFAULT_BROKER_BASE_PORT = 3888;
 const CONNECTION_FILENAME = 'connection.json';
 const BACKGROUND_START_ERROR_FILENAME = 'background-start-error.log';
 export const WORKSPACE_BINDING_SOURCE_ENV = 'AGENT_RELAY_WORKSPACE_SOURCE';
+const NODE_REPO_PATHS_ENV = 'AGENT_RELAY_NODE_REPO_PATHS';
 const STATUS_POLL_INTERVAL_MS = 500;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
 const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
@@ -1540,6 +1541,42 @@ function planCapacitySource(
   return plan.mode === 'in-process' ? plan.definition : descriptorCapacitySource(plan.descriptor);
 }
 
+/** Read the node-private repository map from either definition execution mode. */
+function planRepoPaths(plan: NodeDefinitionPlan | undefined): Readonly<Record<string, string>> | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  const source = plan.mode === 'in-process' ? plan.definition : plan.descriptor;
+  return (source as { repoPaths?: Readonly<Record<string, string>> }).repoPaths;
+}
+
+/**
+ * Expose one local-only serialized map while the native broker process starts.
+ * The child captures its environment at spawn; restoring the CLI environment
+ * immediately afterward prevents the private paths from reaching capability
+ * provider children or unrelated processes started later.
+ */
+function applyNodeRepoPathsEnv(
+  env: NodeJS.ProcessEnv,
+  repoPaths: Readonly<Record<string, string>> | undefined
+): () => void {
+  if (repoPaths === undefined) {
+    return () => undefined;
+  }
+  const previous = env[NODE_REPO_PATHS_ENV];
+  const sorted = Object.fromEntries(
+    Object.entries(repoPaths).sort(([left], [right]) => left.localeCompare(right))
+  );
+  env[NODE_REPO_PATHS_ENV] = JSON.stringify(sorted);
+  return () => {
+    if (previous === undefined) {
+      delete env[NODE_REPO_PATHS_ENV];
+    } else {
+      env[NODE_REPO_PATHS_ENV] = previous;
+    }
+  };
+}
+
 /**
  * Apply the resolved workspace to the environment the broker (and any detached
  * child) inherits, and report which source won. Returns the pinned project
@@ -1890,34 +1927,39 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       teamsConfig,
       planCapacitySource(nodePlan)
     );
-
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
     await killOrphanedBrokerProcesses(paths.projectRoot, deps);
 
-    const started = await startBrokerWithPortFallback(
-      paths,
-      basePort,
-      deps,
-      options.brokerName,
-      options.verbose,
-      // Assign `relay` as soon as the broker child process exists, not only
-      // once the handshake/status-check retries above also succeed. A
-      // SIGTERM/SIGINT arriving during that check window otherwise finds
-      // `relay` still null, so `shutdownOnce()` no-ops and leaks the broker
-      // child instead of shutting it down.
-      (candidate) => {
-        relay = candidate;
-      }
-    ).catch((err: unknown) => {
-      // On failure, `startBrokerWithPortFallback` has already shut down any
-      // candidate it created before rethrowing. Clear the early handle too
-      // so the outer catch's `shutdownOnce()` does not call `shutdown()` a
-      // second time on it.
-      relay = null;
-      throw err;
-    });
+    const restoreRepoPathsEnv = applyNodeRepoPathsEnv(deps.env, planRepoPaths(nodePlan));
+    let started: Awaited<ReturnType<typeof startBrokerWithPortFallback>>;
+    try {
+      started = await startBrokerWithPortFallback(
+        paths,
+        basePort,
+        deps,
+        options.brokerName,
+        options.verbose,
+        // Assign `relay` as soon as the broker child process exists, not only
+        // once the handshake/status-check retries above also succeed. A
+        // SIGTERM/SIGINT arriving during that check window otherwise finds
+        // `relay` still null, so `shutdownOnce()` no-ops and leaks the broker
+        // child instead of shutting it down.
+        (candidate) => {
+          relay = candidate;
+        }
+      ).catch((err: unknown) => {
+        // On failure, `startBrokerWithPortFallback` has already shut down any
+        // candidate it created before rethrowing. Clear the early handle too
+        // so the outer catch's `shutdownOnce()` does not call `shutdown()` a
+        // second time on it.
+        relay = null;
+        throw err;
+      });
+    } finally {
+      restoreRepoPathsEnv();
+    }
     relay = started.relay;
 
     try {

@@ -209,6 +209,10 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
+    /// Local checkout paths keyed by the repository identities this node serves.
+    /// These are loaded when the broker starts and never accepted from a remote
+    /// placement request.
+    pub(super) node_repo_paths: BTreeMap<String, PathBuf>,
     /// This broker's relaycast node name, used to bind agents to the node over
     /// HTTP when the node-control `agent.register` path is unavailable.
     pub(super) fleet_node_name: String,

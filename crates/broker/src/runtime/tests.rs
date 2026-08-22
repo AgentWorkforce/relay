@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     process::Stdio,
     sync::{Mutex, OnceLock},
@@ -265,6 +265,7 @@ fn worker_event_runtime_fixture(
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
+        node_repo_paths: BTreeMap::new(),
         fleet_node_name: "test-node".to_string(),
         node_delivery_token_present: true,
         node_delivery_connected: true,

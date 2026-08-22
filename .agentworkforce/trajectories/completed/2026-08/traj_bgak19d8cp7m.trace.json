@@ -1,0 +1,245 @@
+{
+  "version": "1.0.0",
+  "id": "6719de3e-e2f6-4c3a-81a3-2e62d82a5e6d",
+  "timestamp": "2026-08-19T08:07:14.777Z",
+  "trajectory": "traj_bgak19d8cp7m",
+  "files": [
+    {
+      "path": "crates/broker/src/runtime/event_loop.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 209,
+              "end_line": 217,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1255,
+              "end_line": 1261,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/init.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 273,
+              "end_line": 279,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 681,
+              "end_line": 687,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/mod.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 83,
+              "end_line": 89,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/relaycast_events.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 71,
+              "end_line": 83,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 428,
+              "end_line": 434,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 471,
+              "end_line": 477,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 1164,
+              "end_line": 1170,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 1242,
+              "end_line": 1248,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 1256,
+              "end_line": 1265,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 1267,
+              "end_line": 1278,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/repo_placement.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 285,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/tests.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 265,
+              "end_line": 271,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/broker-lifecycle.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 520,
+              "end_line": 541,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/broker-lifecycle.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1513,
+              "end_line": 1527,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 1889,
+              "end_line": 1902,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/node-provider-child.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 177,
+              "end_line": 214,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/node-provider-child.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 115,
+              "end_line": 123,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 259,
+              "end_line": 266,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            },
+            {
+              "start_line": 278,
+              "end_line": 296,
+              "revision": "f57210bd016748099d7505ff6d59e68d61c3cad3"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

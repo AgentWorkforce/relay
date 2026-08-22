@@ -119,6 +119,13 @@ describe('parseNodeDescriptor', () => {
     expect(parseNodeDescriptor(stdout)).toEqual({ name: 'real', capabilities: [], maxAgents: 3 });
   });
 
+  it('preserves the local repo path map for the broker child only', () => {
+    const repoPaths = { 'AgentWorkforce/relay': '/srv/checkouts/relay' };
+    const stdout = `${MARKER}${JSON.stringify({ name: 'real', capabilities: [], repoPaths })}\n`;
+
+    expect(parseNodeDescriptor(stdout)).toEqual({ name: 'real', capabilities: [], repoPaths });
+  });
+
   it('returns undefined when the child produced no descriptor', () => {
     expect(parseNodeDescriptor('some unrelated output\n')).toBeUndefined();
   });
