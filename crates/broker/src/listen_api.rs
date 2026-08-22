@@ -1761,6 +1761,17 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
         // `pty_input_error_is_connection_fatal`, which callers on the PTY
         // input path use to avoid treating this code as transport death.
         (axum::http::StatusCode::GATEWAY_TIMEOUT, "worker_timeout")
+    } else if err.starts_with("pty_write_queue_full") {
+        // The worker refused ONE write because its bounded drainer queue is
+        // full — the child is alive but momentarily not draining its stdin
+        // (a TUI harness mid-tool-call, whose terminal-query replies and
+        // injected messages share the same queue). Flow control, not
+        // transport death: 503 with a distinct code so the PTY input path can
+        // keep the connection open (`pty_input_error_is_connection_fatal`).
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "pty_write_queue_full",
+        )
     } else if err.starts_with("internal_error") {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1785,8 +1796,18 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
 /// connection-fatal. Closing the connection on a mere timeout manufactures a
 /// transport failure out of a healthy-but-slow worker, which is exactly what
 /// forced the client-side reconnect loop in relay#1544.
+///
+/// `pty_write_queue_full` is exempt for the same reason and is strictly
+/// stronger evidence of liveness: the worker answered, and its answer was "I
+/// refused this one write because my drainer queue is full". Nothing about the
+/// socket is broken. Tearing it down produced the `input stream lost … /
+/// reconnected after 1 attempt(s)` flap operators hit when driving a busy
+/// agent, and reconnecting cannot help — the queue drains when the child
+/// resumes reading, not when a new socket opens. Note the queue is shared with
+/// terminal-query replies, injected messages and auto-responder writes, so the
+/// human whose keystroke is refused is usually not the one who filled it.
 fn pty_input_error_is_connection_fatal(code: &str) -> bool {
-    code != "worker_timeout"
+    !matches!(code, "worker_timeout" | "pty_write_queue_full")
 }
 
 fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
@@ -5415,6 +5436,50 @@ mod auth_tests {
         assert!(!super::pty_input_error_is_connection_fatal(
             "worker_timeout"
         ));
+    }
+
+    #[test]
+    fn queue_full_does_not_close_the_pty_input_connection() {
+        // relay#1597 MUST-FIRE: a worker that answers "my drainer queue is
+        // full" has proved it is alive, and the write it refused is the only
+        // casualty. Closing the socket here produced one
+        // `input stream lost … / reconnected after 1 attempt(s)` flap per
+        // keystroke against any busy agent, and reconnecting cannot help — the
+        // queue drains when the child resumes reading, not when a new socket
+        // opens. Revert to `code != "worker_timeout"` and this fails.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "pty_write_queue_full"
+        ));
+        // The client is told the stream is still usable.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "worker_timeout"
+        ));
+    }
+
+    #[test]
+    fn queue_full_is_classified_as_its_own_retryable_code() {
+        // The code must survive classification intact: `classify_error` used to
+        // collapse it into the catch-all `request_failed`, which is fatal, so
+        // the exemption above could never be reached from a real worker error.
+        let (status, code) = super::classify_error(
+            "pty_write_queue_full: pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)",
+        );
+        assert_eq!(code, "pty_write_queue_full");
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn a_broken_pty_write_is_still_fatal() {
+        // relay#1597 MUST-NOT-FIRE: only the queue-full code is exempt.
+        // `pty_write_failed` covers a confirmed I/O error or an exited drainer
+        // — real loss, which must still close the socket so the client's
+        // reconnect-and-verify recovery runs.
+        assert!(super::pty_input_error_is_connection_fatal(
+            "pty_write_failed"
+        ));
+        let (status, code) = super::classify_error("pty_write_failed: broken pipe");
+        assert_eq!(code, "request_failed");
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 
     #[test]

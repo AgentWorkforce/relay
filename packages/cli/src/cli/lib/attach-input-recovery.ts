@@ -82,6 +82,36 @@ export function isWriteTimeoutRejection(error: unknown): boolean {
   );
 }
 
+/**
+ * `PtyInputStream.send()` rejects with `pty_write_queue_full` when the worker
+ * refused THAT ONE write because relay-pty's bounded drainer queue is full
+ * (`WRITE_QUEUE_DEPTH`, `crates/relay-pty/src/pty.rs`). The child is alive and
+ * the socket is healthy — the drainer is parked in `write_all` behind a child
+ * that has momentarily stopped reading its stdin, which is the normal state of
+ * a TUI harness mid-tool-call.
+ *
+ * This must not enter recovery. Reconnecting cannot drain the queue — it
+ * empties when the child resumes reading, not when a new socket opens — so a
+ * teardown here produced exactly one flap per keystroke for as long as the
+ * agent stayed busy (`input stream lost … / reconnected after 1 attempt(s)`,
+ * relay#1597). The broker keeps the connection open for this code for the same
+ * reason (`pty_input_error_is_connection_fatal`, `listen_api.rs`).
+ *
+ * Unlike {@link isWriteTimeoutRejection} this IS a confirmed refusal: the byte
+ * was never enqueued and will never reach the child, so the optimistic echo has
+ * to come back off the screen. Note the queue is shared with terminal-query
+ * replies, injected messages and auto-responder writes, so the operator whose
+ * keystroke is refused is usually not the one who filled it — the message must
+ * not blame their typing speed.
+ */
+export function isWriteRefusedRejection(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'pty_write_queue_full'
+  );
+}
+
 export interface InputStreamRecoveryOptions {
   /** Log prefix tag — `drive` or `passthrough`. */
   label: string;
@@ -150,13 +180,14 @@ export interface InputStreamRecovery {
   /** Begin recovery. No-ops if already recovering or settled. */
   recover(reason: string): void;
   /**
-   * Classify a rejected `send()`. Two codes never enter recovery:
+   * Classify a rejected `send()`. Three codes never enter recovery:
    * `input_backpressure` is flow control on a healthy stream and only costs
-   * the optimistic echo, and `worker_timeout` is a late ack on a write that
-   * may still land, so it costs nothing — no rollback, no recovery. Every
-   * other rejection is treated as transport loss and enters recovery, which
-   * does roll back. Callers route every send rejection here rather than
-   * assuming loss.
+   * the optimistic echo; `pty_write_queue_full` is the worker refusing one
+   * write while its drainer queue is full, which also only costs the echo; and
+   * `worker_timeout` is a late ack on a write that may still land, so it costs
+   * nothing — no rollback, no recovery. Every other rejection is treated as
+   * transport loss and enters recovery, which does roll back. Callers route
+   * every send rejection here rather than assuming loss.
    */
   handleSendFailure(error: unknown): void;
   /** Clears the backpressure latch so a later episode reports again. */
@@ -197,6 +228,8 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
   let backpressureReported = false;
   /** True once a write-timeout episode has been reported; reset on the next good send. */
   let writeTimeoutReported = false;
+  /** True once a write-refused episode has been reported; reset on the next good send. */
+  let writeRefusedReported = false;
 
   const cancel = (): void => {
     if (timer) {
@@ -246,6 +279,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
   const noteSendSuccess = (): void => {
     backpressureReported = false;
     writeTimeoutReported = false;
+    writeRefusedReported = false;
   };
 
   const handleSendFailure = (sendError: unknown): void => {
@@ -260,6 +294,21 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
         backpressureReported = true;
         log(
           `[${label}] input is arriving faster than ${name} can accept it; dropping keystrokes until it catches up.`
+        );
+      }
+      return;
+    }
+    if (isWriteRefusedRejection(sendError)) {
+      // Confirmed refusal on a healthy stream: roll the optimistic echo back
+      // (the byte will never reach the child) but keep the socket. Report once
+      // per episode — the cause persists for as long as the agent is busy, so
+      // per-keystroke reporting would rebuild the flood this module removes.
+      onRollback();
+      if (!writeRefusedReported) {
+        writeRefusedReported = true;
+        log(
+          `[${label}] ${name} is not reading input right now (busy); that keystroke was dropped. ` +
+            `The session is still attached — retry once it is idle.`
         );
       }
       return;
@@ -390,7 +439,14 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       }
 
       setStream(replacement);
-      log(`[${label}] input stream reconnected after ${attempt} attempt(s)`);
+      // Say plainly that the session survived. A recovered flap and a fatal
+      // disconnect previously read the same to a human — both were red lines
+      // that named a failure and stopped — so operators read a working session
+      // as a crash (relay#1597).
+      log(
+        `[${label}] input stream reconnected after ${attempt} attempt(s) — ${name} is still attached ` +
+          `and usable. Keystrokes typed during the outage were dropped, not queued; retype them.`
+      );
       return 'opened';
     };
 

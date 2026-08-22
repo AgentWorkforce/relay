@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createInputStreamRecovery,
   isBackpressureRejection,
+  isWriteRefusedRejection,
   isWriteTimeoutRejection,
   type InputStreamRecoveryOptions,
 } from './attach-input-recovery.js';
@@ -364,5 +365,88 @@ describe('recover', () => {
     expect(verify).toHaveBeenCalledTimes(1);
     expect(h.logs.filter((l) => l.includes('reconnected'))).toHaveLength(1);
     expect(h.first.closed).toBe(true); // the dead handle was released
+  });
+});
+
+describe('isWriteRefusedRejection', () => {
+  it('matches only the queue-full code, and only as a structured code', () => {
+    expect(isWriteRefusedRejection(Object.assign(new Error('x'), { code: 'pty_write_queue_full' }))).toBe(
+      true
+    );
+    // `pty_write_failed` is the *other* worker write error — a confirmed I/O
+    // failure or a dead drainer. It must stay fatal.
+    expect(isWriteRefusedRejection(Object.assign(new Error('x'), { code: 'pty_write_failed' }))).toBe(false);
+    expect(isWriteRefusedRejection(Object.assign(new Error('x'), { code: 'worker_timeout' }))).toBe(false);
+    expect(isWriteRefusedRejection(new Error('pty write queue full (128 writes pending)'))).toBe(false);
+    expect(isWriteRefusedRejection(null)).toBe(false);
+  });
+});
+
+describe('handleSendFailure — refused write (relay#1597)', () => {
+  it('relay#1597 MUST-FIRE: a full PTY write queue does not tear down the input stream', () => {
+    // The worker refusing one write because its drainer queue is full proves
+    // it is ALIVE — it answered. Reconnecting cannot drain that queue (it
+    // empties when the child resumes reading, not when a new socket opens), so
+    // recovering here produced one `input stream lost … / reconnected after 1
+    // attempt(s)` flap per keystroke for as long as the agent stayed busy.
+    // Delete the `isWriteRefusedRejection` branch in `handleSendFailure` and
+    // this goes red on `isRecovering()` and on the `input stream lost` line.
+    const h = harness();
+    const queueFull = Object.assign(
+      new Error('pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)'),
+      { code: 'pty_write_queue_full' }
+    );
+
+    for (let i = 0; i < 50; i++) h.recovery.handleSendFailure(queueFull);
+
+    expect(h.recovery.isRecovering()).toBe(false);
+    expect(h.getCurrent()).toBe(h.first);
+    expect(h.first.closed).toBe(false);
+    expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(false);
+    // One line for the episode, not one per keystroke.
+    expect(h.logs.filter((l) => l.includes('is not reading input right now'))).toHaveLength(1);
+    // The refusal IS confirmed — the byte never reached the child — so unlike
+    // `worker_timeout` every optimistic echo must come back off the screen.
+    expect(h.counts().rollbacks).toBe(50);
+  });
+
+  it('tells the operator the session survived and what to do, without blaming their typing', () => {
+    const h = harness();
+    h.recovery.handleSendFailure(
+      Object.assign(new Error('pty write queue full (128 writes pending)'), {
+        code: 'pty_write_queue_full',
+      })
+    );
+    const line = h.logs.find((l) => l.includes('is not reading input right now'));
+    expect(line).toBeDefined();
+    expect(line).toContain('still attached');
+    // The 128 slots are shared with terminal-query replies, injections and
+    // auto-responder writes, so the operator usually did not fill them.
+    expect(line).not.toContain('faster than');
+  });
+
+  it('reports a second episode after a successful send in between', () => {
+    const h = harness();
+    const queueFull = Object.assign(new Error('full'), { code: 'pty_write_queue_full' });
+    h.recovery.handleSendFailure(queueFull);
+    h.recovery.noteSendSuccess();
+    h.recovery.handleSendFailure(queueFull);
+    expect(h.logs.filter((l) => l.includes('is not reading input right now'))).toHaveLength(2);
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: a confirmed write failure still enters recovery', () => {
+    // The companion guard: only the queue-full code is exempt. `pty_write_failed`
+    // (drainer exited / I/O error) is real transport loss and must still tear
+    // the stream down and reconnect. If a future edit widens the exemption to
+    // every `pty_write_*` code, this goes red — which is the point.
+    const h = harness();
+    h.recovery.handleSendFailure(
+      Object.assign(new Error('pty write queue is closed (drainer exited)'), {
+        code: 'pty_write_failed',
+      })
+    );
+    expect(h.recovery.isRecovering()).toBe(true);
+    expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(true);
+    expect(h.counts().rollbacks).toBe(1);
   });
 });
