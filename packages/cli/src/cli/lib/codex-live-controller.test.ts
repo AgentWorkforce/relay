@@ -1,15 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { LiveTeleportCloudClient } from '@agent-relay/cloud';
+import type { LiveTeleportCloudClient, LiveTeleportLifecycleStatus } from '@agent-relay/cloud';
 
 import {
   CodexLiveController,
   type CodexControllerState,
   type CodexControllerStateStore,
+  type CodexPersistedMountResumeProvider,
+  type CodexWorkspaceSealHandle,
+  type CodexWorkspaceSealProvider,
 } from './codex-live-controller.js';
-import type { CodexAppServerSession } from './codex-app-server.js';
+import type { CodexAppServerSession, CodexTurnResult } from './codex-app-server.js';
 
-const source = { kind: 'relayfile-mount' as const, mountStatePath: '/repo/.relayfile-mount-state.json' };
+const source = {
+  kind: 'relayfile-checkpoint-seal' as const,
+  receipt: { sealId: 'seal-1', sealToken: 'opaque' },
+};
+
+function sealHandle(overrides: Partial<CodexWorkspaceSealHandle> = {}): CodexWorkspaceSealHandle {
+  return {
+    source,
+    restore: { resumeId: 'resume-1', workspaceId: 'workspace-1', localRoot: '/repo' },
+    resumeLocal: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
 const convergence = {
   verdict: 'converged' as const,
   source: {
@@ -45,6 +61,10 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function turnResult(turnId = 'turn-1'): CodexTurnResult {
+  return { turnId, response: {}, completed: { method: 'turn/completed' } };
+}
+
 function memoryStore(initial: CodexControllerState | null = null): CodexControllerStateStore & {
   value: CodexControllerState | null;
 } {
@@ -66,14 +86,17 @@ function appServer(overrides: Partial<CodexAppServerSession> = {}): CodexAppServ
     resumeThread: vi.fn(async () => undefined),
     addEnvironment: vi.fn(async () => undefined),
     environmentStatus: vi.fn(async () => ({ status: 'ready' })),
-    runTurn: vi.fn(async () => ({
-      turnId: 'turn-1',
-      response: {},
-      completed: { method: 'turn/completed' },
-    })),
+    runTurn: vi.fn(async () => turnResult()),
     close: vi.fn(async () => undefined),
     ...overrides,
   };
+}
+
+function lifecycle(
+  input: { sessionId: string; generation: number },
+  status: LiveTeleportLifecycleStatus['status']
+): LiveTeleportLifecycleStatus {
+  return { sessionId: input.sessionId, generation: input.generation, status };
 }
 
 function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCloudClient {
@@ -83,16 +106,18 @@ function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCl
       generation: input.generation,
       status: 'ready' as const,
     })),
+    status: vi.fn(async (input) => lifecycle(input, 'ready')),
     acquire: vi.fn(async (input) => ({
       sessionId: input.sessionId,
       generation: input.generation,
       environmentId: `environment-${input.generation}`,
-      execServerUrl: 'wss://exec.agentrelay.test/ticket',
+      connectPath: `/api/v1/live-teleports/connect/${input.sessionId}/${input.generation}`,
+      execServerUrl: `wss://cloud.agentrelay.test/api/v1/live-teleports/connect/${input.sessionId}/${input.generation}`,
       workspaceCwd: '/workspace',
       expiresAt: '2026-08-23T13:00:00.000Z',
       convergence,
     })),
-    revoke: vi.fn(async () => undefined),
+    revoke: vi.fn(async (input) => ({ ...lifecycle(input, 'revoked'), status: 'revoked' as const })),
     ...overrides,
   };
 }
@@ -103,6 +128,10 @@ function createController(
     cloud?: LiveTeleportCloudClient;
     sessions?: CodexAppServerSession[];
     probe?: () => Promise<void>;
+    checkpointAndSeal?: CodexWorkspaceSealProvider;
+    resumePersistedLocalMount?: CodexPersistedMountResumeProvider;
+    lifecycleDeadlineMs?: number;
+    lifecyclePollIntervalMs?: number;
   } = {}
 ) {
   const store = options.store ?? memoryStore();
@@ -113,23 +142,71 @@ function createController(
     if (!session) throw new Error('no app server');
     return session;
   });
+  const checkpointAndSeal = vi.fn(options.checkpointAndSeal ?? (async () => sealHandle()));
+  const resumePersistedLocalMount = vi.fn(options.resumePersistedLocalMount ?? (async () => undefined));
   const controller = new CodexLiveController(
-    { workspaceRoot: '/repo', source, socketPath: '/state/controller.sock' },
+    {
+      workspaceRoot: '/repo',
+      socketPath: '/state/controller.sock',
+      ...(options.lifecycleDeadlineMs ? { lifecycleDeadlineMs: options.lifecycleDeadlineMs } : {}),
+      ...(options.lifecyclePollIntervalMs
+        ? { lifecyclePollIntervalMs: options.lifecyclePollIntervalMs }
+        : {}),
+    },
     {
       cloud: cloudClient,
       store,
       createAppServer,
       probeCapability: options.probe ?? (async () => undefined),
+      checkpointAndSeal,
+      resumePersistedLocalMount,
+      sleep: async () => undefined,
       now: () => new Date('2026-08-23T12:00:00.000Z'),
       sessionId: () => 'session-1',
       pid: 123,
     }
   );
-  return { controller, store, cloud: cloudClient, createAppServer };
+  return {
+    controller,
+    store,
+    cloud: cloudClient,
+    createAppServer,
+    checkpointAndSeal,
+    resumePersistedLocalMount,
+  };
+}
+
+function persistedRemote(overrides: Partial<CodexControllerState> = {}): CodexControllerState {
+  return {
+    version: 1,
+    sessionId: 'session-1',
+    threadId: 'thread-1',
+    workspaceRoot: '/repo',
+    source,
+    mountRestore: { resumeId: 'resume-7', workspaceId: 'workspace-1', localRoot: '/repo' },
+    generation: 7,
+    phase: 'remote',
+    controllerPid: 99,
+    socketPath: '/old.sock',
+    turnActive: false,
+    remote: {
+      sessionId: 'session-1',
+      generation: 7,
+      environmentId: 'env-7',
+      connectPath: '/api/v1/live-teleports/connect/session-1/7',
+      execServerUrl: 'wss://cloud.agentrelay.test/api/v1/live-teleports/connect/session-1/7',
+      workspaceCwd: '/workspace',
+      expiresAt: '2026-08-23T13:00:00.000Z',
+      attached: true,
+      convergence,
+    },
+    updatedAt: '2026-08-23T11:00:00.000Z',
+    ...overrides,
+  };
 }
 
 describe('CodexLiveController', () => {
-  it('fails closed before starting an app-server when the local experimental capability is unsupported', async () => {
+  it('fails before starting an app-server when the local experimental capability is unsupported', async () => {
     const { controller, createAppServer } = createController({
       probe: async () => {
         throw new Error('environment/status unsupported');
@@ -140,273 +217,429 @@ describe('CodexLiveController', () => {
     expect(createAppServer).not.toHaveBeenCalled();
   });
 
-  it('rejects a stale generation and makes duplicate request ids idempotent', async () => {
-    const { controller } = createController();
+  it('prewarms without stopping or sealing the active local mount', async () => {
+    const cloudClient = cloud();
+    const { controller, checkpointAndSeal } = createController({ cloud: cloudClient });
+
     await controller.initialize();
 
-    expect(() => controller.requestTeleport({ requestId: 'request-stale', expectedGeneration: 0 })).toThrow(
-      'Stale teleport generation'
+    expect(checkpointAndSeal).not.toHaveBeenCalled();
+    expect(cloudClient.prewarm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'session-1',
+        generation: 1,
+        workspaceRoot: '/',
+        idempotencyKey: 'session-1:1:prewarm',
+      })
     );
-    const first = controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-    const duplicate = controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-    expect(first.phase).toBe('teleport_pending');
-    expect(duplicate.pending?.requestId).toBe('request-1');
   });
 
-  it('queues a mid-turn request and applies it only at the following turn boundary', async () => {
-    const firstTurn = deferred<{
-      turnId: string;
-      response: object;
-      completed: { method: string };
-    }>();
-    const session = appServer({
+  it('rejects stale generations and applies a mid-turn teleport only at the next boundary', async () => {
+    const firstTurn = deferred<CodexTurnResult>();
+    const original = appServer({
       runTurn: vi
         .fn()
         .mockImplementationOnce(() => firstTurn.promise)
-        .mockResolvedValueOnce({ turnId: 'turn-2', response: {}, completed: { method: 'turn/completed' } }),
+        .mockResolvedValueOnce(turnResult('turn-2')),
     });
     const cloudClient = cloud();
-    const { controller } = createController({ sessions: [session], cloud: cloudClient });
+    const { controller } = createController({ sessions: [original], cloud: cloudClient });
     await controller.initialize();
 
+    expect(() => controller.requestTeleport({ requestId: 'stale', expectedGeneration: 0 })).toThrow(
+      'Stale teleport generation'
+    );
     const running = controller.runTurn('local turn');
-    await vi.waitFor(() => expect(session.runTurn).toHaveBeenCalledTimes(1));
-    const queued = controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-    expect(queued.turnActive).toBe(true);
-    expect(queued.phase).toBe('teleport_pending');
+    await vi.waitFor(() => expect(original.runTurn).toHaveBeenCalledTimes(1));
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
     expect(cloudClient.acquire).not.toHaveBeenCalled();
 
-    firstTurn.resolve({ turnId: 'turn-1', response: {}, completed: { method: 'turn/completed' } });
+    firstTurn.resolve(turnResult());
     await running;
-    expect(cloudClient.acquire).not.toHaveBeenCalled();
-
     await controller.runTurn('remote turn');
+
+    expect(original.runTurn).toHaveBeenNthCalledWith(1, {
+      threadId: 'thread-1',
+      text: 'local turn',
+      execution: { kind: 'local', workspaceRoot: '/repo' },
+    });
+    expect(original.runTurn).toHaveBeenNthCalledWith(2, {
+      threadId: 'thread-1',
+      text: 'remote turn',
+      execution: {
+        kind: 'remote',
+        environment: { environmentId: 'environment-1', cwd: '/workspace' },
+      },
+    });
+
     expect(cloudClient.acquire).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: 'session-1',
-        threadId: 'thread-1',
         generation: 1,
+        workspaceRoot: '/',
         source,
         prewarmId: 'prewarm-1',
         idempotencyKey: 'session-1:1:acquire',
       })
     );
-    expect(vi.mocked(session.addEnvironment).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(session.runTurn).mock.invocationCallOrder[1]!
-    );
-    expect(session.runTurn).toHaveBeenLastCalledWith({
-      threadId: 'thread-1',
-      text: 'remote turn',
-      environment: { environmentId: 'environment-1', cwd: '/workspace' },
-    });
   });
 
-  it('keeps execution local when Cloud acquisition fails before turn/start', async () => {
-    const session = appServer();
-    const cloudClient = cloud({ acquire: vi.fn(async () => Promise.reject(new Error('Cloud unavailable'))) });
-    const { controller } = createController({ sessions: [session], cloud: cloudClient });
+  it('reports verifying—not remote—until the first Cloud turn completes', async () => {
+    const firstRemoteTurn = deferred<CodexTurnResult>();
+    const original = appServer({ runTurn: vi.fn(() => firstRemoteTurn.promise) });
+    const { controller } = createController({ sessions: [original] });
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('must not run remotely')).rejects.toThrow('execution remains local');
-    expect(session.addEnvironment).not.toHaveBeenCalled();
-    expect(session.runTurn).not.toHaveBeenCalled();
-    expect(controller.status()).toMatchObject({ execution: 'local', phase: 'local', turnActive: false });
-    expect(cloudClient.revoke).toHaveBeenCalled();
-  });
+    const running = controller.runTurn('first remote turn');
+    await vi.waitFor(() => expect(controller.status().phase).toBe('verifying'));
+    expect(controller.status()).toMatchObject({ execution: 'verifying', phase: 'verifying' });
+    expect(controller.status()).not.toHaveProperty('remote');
 
-  it('rejects a stale generation returned by Cloud', async () => {
-    const session = appServer();
-    const cloudClient = cloud({
-      acquire: vi.fn(async (input) => ({
-        sessionId: input.sessionId,
-        generation: input.generation + 1,
-        environmentId: 'stale',
-        execServerUrl: 'wss://exec.agentrelay.test/stale',
-        workspaceCwd: '/workspace',
-        expiresAt: '2026-08-23T13:00:00.000Z',
-        convergence,
-      })),
-    });
-    const { controller } = createController({ sessions: [session], cloud: cloudClient });
-    await controller.initialize();
-    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-
-    await expect(controller.runTurn('no cross-generation execution')).rejects.toThrow(
-      'stale or cross-session'
-    );
-    expect(session.addEnvironment).not.toHaveBeenCalled();
-  });
-
-  it('revokes and stays local when Codex cannot verify the environment ready', async () => {
-    const session = appServer({
-      environmentStatus: vi.fn(async () => ({ status: 'connecting' })),
-    });
-    const cloudClient = cloud();
-    const { controller } = createController({ sessions: [session], cloud: cloudClient });
-    await controller.initialize();
-    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-
-    await expect(controller.runTurn('must stay local')).rejects.toThrow(
-      'did not report the Cloud execution environment ready'
-    );
-    expect(session.runTurn).not.toHaveBeenCalled();
-    expect(cloudClient.revoke).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: 'session-1:1:failed-acquire-revoke' })
-    );
-    expect(controller.status()).toMatchObject({ phase: 'local', execution: 'local' });
-  });
-
-  it('uses Codex stickiness after explicitly attaching the first remote turn', async () => {
-    const session = appServer();
-    const { controller } = createController({ sessions: [session] });
-    await controller.initialize();
-    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-
-    await controller.runTurn('first remote turn');
-    await controller.runTurn('sticky remote turn');
-
-    expect(session.runTurn).toHaveBeenNthCalledWith(1, {
-      threadId: 'thread-1',
-      text: 'first remote turn',
-      environment: { environmentId: 'environment-1', cwd: '/workspace' },
-    });
-    expect(session.runTurn).toHaveBeenNthCalledWith(2, {
-      threadId: 'thread-1',
-      text: 'sticky remote turn',
-    });
+    firstRemoteTurn.resolve(turnResult());
+    await running;
+    expect(controller.status()).toMatchObject({ execution: 'cloud', phase: 'remote' });
+    expect(controller.status().remote).toMatchObject({ attached: true, environmentId: 'environment-1' });
     expect(controller.status().remote).not.toHaveProperty('execServerUrl');
+    expect(controller.status().remote).not.toHaveProperty('connectPath');
+    expect(controller.status()).not.toHaveProperty('source');
+    expect(controller.status()).not.toHaveProperty('mountRestore');
+
+    await controller.runTurn('subsequent remote turn');
+    expect(original.runTurn).toHaveBeenNthCalledWith(2, {
+      threadId: 'thread-1',
+      text: 'subsequent remote turn',
+      execution: { kind: 'remote' },
+    });
   });
 
-  it('rolls back by restarting, initializing, and resuming the same thread locally', async () => {
+  it('confirms revoke, closes the old controller, and resumes the same thread after first-turn failure', async () => {
+    const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
+    const replacement = appServer();
+    const cloudClient = cloud();
+    const sealed = sealHandle();
+    const { controller } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('do not replay me')).rejects.toThrow('resumed locally');
+
+    expect(cloudClient.revoke).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'session-1:1:first-turn-failed-revoke' })
+    );
+    expect(original.close).toHaveBeenCalled();
+    expect(sealed.resumeLocal).toHaveBeenCalled();
+    expect(replacement.initialize).toHaveBeenCalled();
+    expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+    expect(replacement.runTurn).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ generation: 2, phase: 'local', execution: 'local' });
+  });
+
+  it('fails fenced and never resumes locally when first-turn revoke is unconfirmed', async () => {
+    const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
+    const replacement = appServer();
+    const cloudClient = cloud({
+      revoke: vi.fn(async () => Promise.reject(new Error('revoke timeout'))),
+      status: vi.fn(async (input) => lifecycle(input, 'ready')),
+    });
+    const { controller, createAppServer } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('must not run locally')).rejects.toThrow('could not be confirmed');
+
+    expect(original.close).toHaveBeenCalled();
+    expect(createAppServer).toHaveBeenCalledTimes(1);
+    expect(replacement.resumeThread).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'fenced', execution: 'fenced' });
+  });
+
+  it('does not trust a mount state or arbitrary receipt when no real seal provider is available', async () => {
+    const seal = vi
+      .fn<CodexWorkspaceSealProvider>()
+      .mockRejectedValue(new Error('checkpoint-and-seal API unavailable'));
     const original = appServer();
     const replacement = appServer();
     const cloudClient = cloud();
-    const { controller } = createController({ sessions: [original, replacement], cloud: cloudClient });
+    const { controller } = createController({
+      checkpointAndSeal: seal,
+      sessions: [original, replacement],
+      cloud: cloudClient,
+    });
+    await controller.initialize();
+    expect(controller.status()).toMatchObject({ phase: 'local', workspaceSource: 'unavailable' });
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('local only')).rejects.toThrow('checkpoint-and-seal API unavailable');
+
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(cloudClient.revoke).toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+  });
+
+  it('does not persist a seal whose restore identity targets another local root', async () => {
+    const sealed = sealHandle({
+      restore: { resumeId: 'resume-1', workspaceId: 'workspace-1', localRoot: '/other' },
+    });
+    const original = appServer();
+    const replacement = appServer();
+    const cloudClient = cloud();
+    const { controller, store } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+      checkpointAndSeal: async () => sealed,
+    });
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-    await controller.runTurn('remote turn');
+
+    await expect(controller.runTurn('must stay on this mount')).rejects.toThrow('invalid restore identity');
+
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(sealed.resumeLocal).toHaveBeenCalled();
+    expect(store.value?.source).toBeUndefined();
+    expect(store.value?.mountRestore).toBeUndefined();
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+  });
+
+  it('thaws the exact sealed mount after acquire failure before local resume', async () => {
+    const sealed = sealHandle();
+    const original = appServer();
+    const replacement = appServer();
+    const cloudClient = cloud({ acquire: vi.fn(async () => Promise.reject(new Error('acquire failed'))) });
+    const { controller } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('local after abort')).rejects.toThrow('acquire failed');
+
+    expect(sealed.resumeLocal).toHaveBeenCalled();
+    expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+    await controller.runTurn('second input');
+    expect(replacement.runTurn).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      text: 'second input',
+      execution: { kind: 'local', workspaceRoot: '/repo' },
+    });
+  });
+
+  it('does not resume local execution when a fenced mount cannot be thawed', async () => {
+    const sealed = sealHandle({ resumeLocal: vi.fn(async () => Promise.reject(new Error('mount dead'))) });
+    const original = appServer();
+    const replacement = appServer();
+    const cloudClient = cloud({ acquire: vi.fn(async () => Promise.reject(new Error('acquire failed'))) });
+    const { controller, createAppServer } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('must stay fenced')).rejects.toThrow('could not resume');
+
+    expect(createAppServer).toHaveBeenCalledTimes(1);
+    expect(replacement.resumeThread).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'recovery_failed', execution: 'fenced' });
+  });
+
+  it('polls warming lifecycle status to ready before acquisition', async () => {
+    const cloudClient = cloud({
+      prewarm: vi.fn(async (input) => ({
+        prewarmId: `prewarm-${input.generation}`,
+        generation: input.generation,
+        status: 'warming' as const,
+      })),
+      status: vi
+        .fn()
+        .mockImplementationOnce(async (input) => ({
+          ...lifecycle(input, 'warming'),
+          prewarmId: 'prewarm-1',
+          retryAfterMs: 1,
+        }))
+        .mockImplementationOnce(async (input) => ({
+          ...lifecycle(input, 'ready'),
+          prewarmId: 'prewarm-1',
+        })),
+    });
+    const { controller, checkpointAndSeal } = createController({ cloud: cloudClient });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await controller.runTurn('after convergence');
+
+    expect(cloudClient.status).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(cloudClient.status).mock.invocationCallOrder.at(-1)).toBeLessThan(
+      checkpointAndSeal.mock.invocationCallOrder[0]!
+    );
+    expect(cloudClient.acquire).toHaveBeenCalled();
+  });
+
+  it('bounds non-convergence and recovers locally instead of blocking forever', async () => {
+    const cloudClient = cloud({
+      prewarm: vi.fn(async (input) => ({
+        prewarmId: `prewarm-${input.generation}`,
+        generation: input.generation,
+        status: 'warming' as const,
+      })),
+      status: vi.fn(async (input) => ({ ...lifecycle(input, 'warming'), retryAfterMs: 1 })),
+    });
+    const original = appServer();
+    const replacement = appServer();
+    const { controller } = createController({
+      cloud: cloudClient,
+      sessions: [original, replacement],
+      lifecycleDeadlineMs: 5,
+      lifecyclePollIntervalMs: 1,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('bounded')).rejects.toThrow('did not converge');
+
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+  });
+
+  it('polls Codex environment/status until ready', async () => {
+    const original = appServer({
+      environmentStatus: vi
+        .fn()
+        .mockResolvedValueOnce({ status: 'connecting' })
+        .mockResolvedValueOnce({ status: 'ready' }),
+    });
+    const { controller } = createController({ sessions: [original] });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await controller.runTurn('ready after poll');
+
+    expect(original.environmentStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('rolls back only after a confirmed fence and resumes through a fresh app-server', async () => {
+    const original = appServer();
+    const replacement = appServer();
+    const sealed = sealHandle();
+    const { controller } = createController({
+      sessions: [original, replacement],
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+    await controller.runTurn('remote');
 
     const status = await controller.rollback();
 
     expect(original.close).toHaveBeenCalled();
-    expect(replacement.initialize).toHaveBeenCalled();
+    expect(sealed.resumeLocal).toHaveBeenCalled();
     expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
-    expect(status).toMatchObject({ generation: 2, phase: 'local', execution: 'local' });
-    await controller.runTurn('local again');
-    expect(replacement.runTurn).toHaveBeenCalledWith({ threadId: 'thread-1', text: 'local again' });
+    expect(status).toMatchObject({ phase: 'local', generation: 2, execution: 'local' });
   });
 
-  it('fails closed if rollback cannot resume the same thread', async () => {
-    const original = appServer();
-    const replacement = appServer({
-      resumeThread: vi.fn(async () => Promise.reject(new Error('thread missing'))),
+  it('persists fenced on restart and never constructs a local app-server after unconfirmed revoke', async () => {
+    const persisted = persistedRemote();
+    persisted.remote!.expiresAt = '2026-08-23T11:00:00.000Z';
+    const store = memoryStore(persisted);
+    const cloudClient = cloud({
+      revoke: vi.fn(async () => Promise.reject(new Error('timeout'))),
+      status: vi.fn(async (input) => lifecycle(input, 'ready')),
     });
-    const { controller } = createController({ sessions: [original, replacement] });
-    await controller.initialize();
-    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
-    await controller.runTurn('remote turn');
+    const { controller, createAppServer } = createController({ store, cloud: cloudClient });
 
-    await expect(controller.rollback()).rejects.toThrow('Could not resume Codex thread thread-1');
-    expect(controller.status()).toMatchObject({ phase: 'recovery_failed', execution: 'local' });
-    await expect(controller.runTurn('must not continue')).rejects.toThrow('recovery_failed');
+    await expect(controller.initialize()).rejects.toThrow('could not confirm Cloud fencing');
+
+    expect(createAppServer).not.toHaveBeenCalled();
+    expect(store.value).toMatchObject({ phase: 'fenced', generation: 7 });
   });
 
-  it('recovers persisted remote state locally on controller restart', async () => {
-    const store = memoryStore({
-      version: 1,
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      workspaceRoot: '/repo',
-      source,
-      generation: 7,
-      phase: 'remote',
-      controllerPid: 99,
-      socketPath: '/old.sock',
-      turnActive: false,
-      remote: {
-        sessionId: 'session-1',
-        generation: 7,
-        environmentId: 'env-7',
-        execServerUrl: 'wss://exec.agentrelay.test/old',
-        workspaceCwd: '/workspace',
-        expiresAt: '2026-08-23T13:00:00.000Z',
-        attached: true,
-        convergence,
-      },
-      updatedAt: '2026-08-23T11:00:00.000Z',
+  it('resumes locally only after Cloud authoritatively confirms the persisted lease expired', async () => {
+    const expired = persistedRemote({
+      remote: { ...persistedRemote().remote!, expiresAt: '2026-08-23T11:59:59.000Z' },
     });
+    const store = memoryStore(expired);
     const resumed = appServer();
-    const cloudClient = cloud();
-    const { controller } = createController({ store, sessions: [resumed], cloud: cloudClient });
+    const cloudClient = cloud({
+      revoke: vi.fn(async (input) => ({ ...lifecycle(input, 'expired'), status: 'expired' as const })),
+    });
+    const { controller, resumePersistedLocalMount } = createController({
+      store,
+      sessions: [resumed],
+      cloud: cloudClient,
+    });
 
     await expect(controller.initialize()).resolves.toMatchObject({
-      generation: 8,
       phase: 'local',
-      execution: 'local',
+      generation: 8,
       threadId: 'thread-1',
     });
-    expect(cloudClient.revoke).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'session-1', generation: 7 })
-    );
+
+    expect(cloudClient.revoke).toHaveBeenCalled();
+    expect(resumePersistedLocalMount).toHaveBeenCalledWith(expect.objectContaining({ source }));
     expect(resumed.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+    expect(store.value?.source).toBeUndefined();
+    expect(store.value?.mountRestore).toBeUndefined();
   });
 
-  it('persists recovery_failed when restart cannot resume the thread', async () => {
-    const store = memoryStore({
-      version: 1,
-      sessionId: 'session-1',
-      threadId: 'thread-1',
-      workspaceRoot: '/repo',
-      source,
-      generation: 7,
-      phase: 'local',
-      controllerPid: 99,
-      socketPath: '/old.sock',
-      turnActive: false,
-      updatedAt: '2026-08-23T11:00:00.000Z',
-    });
+  it('fails recovery if the same thread cannot be resumed after a confirmed fence', async () => {
+    const store = memoryStore(persistedRemote());
     const resumed = appServer({ resumeThread: vi.fn(async () => Promise.reject(new Error('gone'))) });
     const { controller } = createController({ store, sessions: [resumed] });
 
     await expect(controller.initialize()).rejects.toThrow('Could not resume Codex thread thread-1');
+
     expect(store.value).toMatchObject({ phase: 'recovery_failed', generation: 7 });
   });
 
   it('does not adopt a persisted thread from a different workspace', async () => {
-    const store = memoryStore({
-      version: 1,
-      sessionId: 'session-1',
-      threadId: 'thread-other',
-      workspaceRoot: '/different-repo',
-      source,
-      generation: 3,
-      phase: 'local',
-      controllerPid: 99,
-      socketPath: '/old.sock',
-      turnActive: false,
-      updatedAt: '2026-08-23T11:00:00.000Z',
-    });
-    const session = appServer();
-    const { controller, createAppServer } = createController({ store, sessions: [session] });
+    const store = memoryStore(persistedRemote({ workspaceRoot: '/different-repo' }));
+    const { controller, createAppServer } = createController({ store });
 
     await expect(controller.initialize()).rejects.toThrow('belongs to /different-repo');
     expect(createAppServer).not.toHaveBeenCalled();
   });
 
-  it('revokes the exact generation on shutdown so prewarms and remote boxes cannot leak', async () => {
-    const session = appServer();
-    const cloudClient = cloud();
-    const { controller } = createController({ sessions: [session], cloud: cloudClient });
+  it('marks shutdown fenced when revoke cannot be confirmed', async () => {
+    const original = appServer();
+    const cloudClient = cloud({
+      revoke: vi.fn(async () => Promise.reject(new Error('timeout'))),
+      status: vi.fn(async (input) => lifecycle(input, 'ready')),
+    });
+    const { controller } = createController({ sessions: [original], cloud: cloudClient });
     await controller.initialize();
 
     await controller.close();
 
-    expect(cloudClient.revoke).toHaveBeenCalledWith({
-      sessionId: 'session-1',
-      generation: 1,
-      idempotencyKey: 'session-1:1:shutdown-revoke',
+    expect(original.close).toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'fenced', execution: 'fenced' });
+  });
+
+  it('resumes and verifies the sealed local mount on ordinary shutdown after remote execution', async () => {
+    const sealed = sealHandle();
+    const original = appServer();
+    const { controller } = createController({
+      sessions: [original],
+      checkpointAndSeal: async () => sealed,
     });
-    expect(session.close).toHaveBeenCalled();
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+    await controller.runTurn('remote turn');
+
+    await controller.close();
+
+    expect(original.close).toHaveBeenCalled();
+    expect(sealed.resumeLocal).toHaveBeenCalled();
+    expect(sealed.close).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2, execution: 'local' });
   });
 });

@@ -1,45 +1,45 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { Command } from 'commander';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { registerCodexCommands, resolveLiveTeleportWorkspaceSource } from './codex.js';
+import { CodexTurnRecoveredError } from '../lib/codex-live-controller.js';
+import { registerCodexCommands, runManagedCodexTurn } from './codex.js';
 
-const temporary: string[] = [];
+describe('runManagedCodexTurn', () => {
+  it('reports a recovered acquire failure and accepts the next input on the same controller', async () => {
+    const runTurn = vi
+      .fn()
+      .mockRejectedValueOnce(new CodexTurnRecoveredError('acquire failed but recovered'))
+      .mockResolvedValueOnce({});
+    const controller = {
+      runTurn,
+      status: vi.fn(() => ({
+        phase: 'local' as const,
+        threadId: 'thread-1',
+        generation: 2,
+      })),
+    };
+    const writeError = vi.fn();
 
-afterEach(() => {
-  temporary.splice(0).forEach((directory) => fs.rmSync(directory, { recursive: true, force: true }));
-});
+    await runManagedCodexTurn(controller as never, 'first input', { json: false, writeError });
+    await runManagedCodexTurn(controller as never, 'second input', { json: false, writeError });
 
-describe('resolveLiveTeleportWorkspaceSource', () => {
-  it('fails closed for a plain unmanaged or Git-only cwd', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-codex-unmanaged-'));
-    temporary.push(root);
-    fs.mkdirSync(path.join(root, '.git'));
-
-    expect(() => resolveLiveTeleportWorkspaceSource(root)).toThrow('fails closed for an unmanaged');
+    expect(runTurn).toHaveBeenNthCalledWith(1, 'first input');
+    expect(runTurn).toHaveBeenNthCalledWith(2, 'second input');
+    expect(writeError).toHaveBeenCalledWith(expect.stringContaining('recovered locally'));
   });
 
-  it('recognizes a Relayfile mount', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-codex-relayfile-'));
-    temporary.push(root);
-    const mountStatePath = path.join(root, '.relayfile-mount-state.json');
-    fs.writeFileSync(mountStatePath, '{}');
+  it('fails closed instead of continuing when fencing is unconfirmed', async () => {
+    const controller = {
+      runTurn: vi.fn(async () => Promise.reject(new Error('revoke unconfirmed'))),
+      status: vi.fn(() => ({ phase: 'fenced', threadId: 'thread-1', generation: 1 })),
+    };
 
-    expect(resolveLiveTeleportWorkspaceSource(root)).toEqual({ kind: 'relayfile-mount', mountStatePath });
-  });
-
-  it('accepts an explicit opaque convergence receipt for Cloud verification', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-codex-receipt-'));
-    temporary.push(root);
-    const receipt = path.join(root, 'receipt.jwt');
-    fs.writeFileSync(receipt, 'signed.convergence.receipt\n');
-
-    expect(resolveLiveTeleportWorkspaceSource(root, receipt)).toEqual({
-      kind: 'verified-convergence-receipt',
-      receipt: 'signed.convergence.receipt',
-    });
+    await expect(
+      runManagedCodexTurn(controller as never, 'must not continue', {
+        json: false,
+        writeError: vi.fn(),
+      })
+    ).rejects.toThrow('cannot continue');
   });
 });
 
@@ -62,7 +62,7 @@ describe('registerCodexCommands', () => {
         updatedAt: '2026-08-23T12:00:00.000Z',
         controller: 'local' as const,
         execution: 'local' as const,
-        workspaceSource: 'relayfile-mount' as const,
+        workspaceSource: 'relayfile-checkpoint-seal' as const,
       },
     }));
     const log = vi.fn();

@@ -5,25 +5,24 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-import {
-  CloudLiveTeleportClient,
-  ensureCloudSession,
-  type LiveTeleportWorkspaceSource,
-} from '@agent-relay/cloud';
+import { CloudLiveTeleportClient, ensureCloudSession } from '@agent-relay/cloud';
 import { Command } from 'commander';
 
 import {
-  isRelayfileMount,
   probeCodexEnvironmentCapability,
   StdioCodexAppServerSession,
   type CodexNotification,
 } from '../lib/codex-app-server.js';
 import {
   CodexLiveController,
+  CodexTurnRecoveredError,
   FileCodexControllerStateStore,
   type CodexControllerState,
+  type CodexPersistedMountResumeProvider,
+  type CodexWorkspaceSealProvider,
   type PublicCodexControllerStatus,
 } from '../lib/codex-live-controller.js';
+import { createRelayfileSealLifecycle } from '../lib/codex-relayfile-seal.js';
 
 export type CodexControllerPaths = {
   directory: string;
@@ -39,13 +38,9 @@ type ControlRequest =
 type ControlResponse = { ok: true; status: PublicCodexControllerStatus } | { ok: false; error: string };
 
 export interface CodexCommandDependencies {
-  runManaged(options: {
-    cwd: string;
-    model?: string;
-    receiptFile?: string;
-    prompt?: string;
-    json?: boolean;
-  }): Promise<void>;
+  runManaged(options: { cwd: string; model?: string; prompt?: string; json?: boolean }): Promise<void>;
+  checkpointAndSeal: CodexWorkspaceSealProvider;
+  resumePersistedLocalMount: CodexPersistedMountResumeProvider;
   readState(): CodexControllerState | null;
   sendControl(request: ControlRequest): Promise<ControlResponse>;
   requestId(): string;
@@ -63,23 +58,6 @@ export function codexControllerPaths(env: NodeJS.ProcessEnv = process.env): Code
   };
 }
 
-export function resolveLiveTeleportWorkspaceSource(
-  workspaceRoot: string,
-  receiptFile?: string
-): LiveTeleportWorkspaceSource {
-  if (receiptFile) {
-    const receipt = fs.readFileSync(path.resolve(receiptFile), 'utf8').trim();
-    if (!receipt) throw new Error('The convergence receipt file is empty.');
-    return { kind: 'verified-convergence-receipt', receipt };
-  }
-  const relayfile = isRelayfileMount(workspaceRoot);
-  if (relayfile) return relayfile;
-  throw new Error(
-    'Live Codex teleport fails closed for an unmanaged working directory. ' +
-      'Use a Relayfile-mounted workspace or pass --convergence-receipt with a Cloud-verifiable receipt.'
-  );
-}
-
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -90,6 +68,37 @@ function agentMessageDelta(notification: CodexNotification): string | undefined 
   if (!params || typeof params !== 'object' || Array.isArray(params)) return undefined;
   const delta = (params as Record<string, unknown>).delta;
   return typeof delta === 'string' ? delta : undefined;
+}
+
+export async function runManagedCodexTurn(
+  controller: Pick<CodexLiveController, 'runTurn' | 'status'>,
+  text: string,
+  options: { json: boolean; writeError: (message: string) => void }
+): Promise<void> {
+  try {
+    await controller.runTurn(text);
+  } catch (error) {
+    const status = controller.status();
+    if (error instanceof CodexTurnRecoveredError && status.phase === 'local') {
+      options.writeError(
+        options.json
+          ? `${JSON.stringify({
+              method: 'relay/codexTurnRecovered',
+              params: {
+                code: 'TURN_FAILED_RECOVERED_LOCALLY',
+                threadId: status.threadId,
+                generation: status.generation,
+              },
+            })}\n`
+          : 'Cloud turn failed; Cloud was fenced and the same Codex thread recovered locally. Retry the turn.\n'
+      );
+      return;
+    }
+    throw new Error(
+      'Relay-managed Codex cannot continue because execution fencing or local recovery is unconfirmed.',
+      { cause: error }
+    );
+  }
 }
 
 async function listen(server: net.Server, socketPath: string): Promise<void> {
@@ -177,12 +186,15 @@ async function sendSocketControl(socketPath: string, request: ControlRequest): P
 
 function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexCommandDependencies {
   const paths = codexControllerPaths();
+  const relayfileLifecycle = createRelayfileSealLifecycle();
+  const checkpointAndSeal = overrides.checkpointAndSeal ?? relayfileLifecycle.checkpointAndSeal;
+  const resumePersistedLocalMount =
+    overrides.resumePersistedLocalMount ?? relayfileLifecycle.resumePersistedLocalMount;
   return {
     runManaged:
       overrides.runManaged ??
       (async (options) => {
         const workspaceRoot = fs.realpathSync(path.resolve(options.cwd));
-        const source = resolveLiveTeleportWorkspaceSource(workspaceRoot, options.receiptFile);
         await probeCodexEnvironmentCapability('codex');
         fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
         const store = new FileCodexControllerStateStore(paths.statePath);
@@ -193,14 +205,14 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
           );
         }
         const session = await ensureCloudSession({ interactive: true });
-        const cloud = new CloudLiveTeleportClient((requestPath, init) =>
-          session.client.fetch(requestPath, init)
+        const cloud = new CloudLiveTeleportClient(
+          (requestPath, init) => session.client.fetch(requestPath, init),
+          session.client.snapshot().apiUrl
         );
 
         const controller = new CodexLiveController(
           {
             workspaceRoot,
-            source,
             socketPath: paths.socketPath,
             ...(options.model ? { model: options.model } : {}),
           },
@@ -222,6 +234,9 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
             // the controller seam injectable lets restart/adversarial tests
             // prove an unsupported local binary still fails closed.
             probeCapability: async () => undefined,
+            checkpointAndSeal,
+            resumePersistedLocalMount,
+            sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
             now: () => new Date(),
             sessionId: randomUUID,
             pid: process.pid,
@@ -241,14 +256,22 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
             `Relay-managed Codex ${status.threadId} is ready locally (generation ${status.generation}).\n`
           );
 
-          if (options.prompt) await controller.runTurn(options.prompt);
+          if (options.prompt) {
+            await runManagedCodexTurn(controller, options.prompt, {
+              json: Boolean(options.json),
+              writeError: (message) => process.stderr.write(message),
+            });
+          }
           const input = readline.createInterface({
             input: process.stdin,
             terminal: Boolean(process.stdin.isTTY),
           });
           for await (const line of input) {
             if (!line.trim()) continue;
-            await controller.runTurn(line);
+            await runManagedCodexTurn(controller, line, {
+              json: Boolean(options.json),
+              writeError: (message) => process.stderr.write(message),
+            });
             if (!options.json) process.stdout.write('\n');
           }
         } finally {
@@ -261,6 +284,8 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
           }
         }
       }),
+    checkpointAndSeal,
+    resumePersistedLocalMount,
     readState:
       overrides.readState ??
       (() => {
@@ -313,22 +338,15 @@ export function registerCodexCommands(
     .argument('[prompt...]', 'Optional first turn')
     .option('--cwd <path>', 'Managed workspace root')
     .option('--model <model>', 'Codex model')
-    .option('--convergence-receipt <file>', 'Cloud-verifiable receipt for a non-Relayfile workspace')
     .option('--json', 'Write raw app-server notifications as JSON lines')
-    .action(
-      async (
-        prompt: string[],
-        options: { cwd?: string; model?: string; convergenceReceipt?: string; json?: boolean }
-      ) => {
-        await deps.runManaged({
-          cwd: options.cwd ?? deps.cwd(),
-          ...(options.model ? { model: options.model } : {}),
-          ...(options.convergenceReceipt ? { receiptFile: options.convergenceReceipt } : {}),
-          ...(prompt.length ? { prompt: prompt.join(' ') } : {}),
-          ...(options.json ? { json: true } : {}),
-        });
-      }
-    );
+    .action(async (prompt: string[], options: { cwd?: string; model?: string; json?: boolean }) => {
+      await deps.runManaged({
+        cwd: options.cwd ?? deps.cwd(),
+        ...(options.model ? { model: options.model } : {}),
+        ...(prompt.length ? { prompt: prompt.join(' ') } : {}),
+        ...(options.json ? { json: true } : {}),
+      });
+    });
 
   group
     .command('teleport')

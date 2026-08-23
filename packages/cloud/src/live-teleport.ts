@@ -1,19 +1,14 @@
-export type LiveTeleportWorkspaceSource =
-  | {
-      kind: 'relayfile-mount';
-      mountStatePath: string;
-    }
-  | {
-      kind: 'verified-convergence-receipt';
-      receipt: string;
-    };
+export type LiveTeleportWorkspaceSource = {
+  kind: 'relayfile-checkpoint-seal';
+  receipt: Record<string, unknown>;
+};
 
 export type LiveTeleportPrewarmInput = {
   sessionId: string;
   generation: number;
   workspaceRoot: string;
-  source: LiveTeleportWorkspaceSource;
   idempotencyKey: string;
+  signal?: AbortSignal;
 };
 
 export type LiveTeleportPrewarm = {
@@ -24,6 +19,7 @@ export type LiveTeleportPrewarm = {
 
 export type LiveTeleportAcquireInput = LiveTeleportPrewarmInput & {
   threadId: string;
+  source: LiveTeleportWorkspaceSource;
   prewarmId?: string;
 };
 
@@ -51,6 +47,9 @@ export type LiveTeleportEnvironment = {
   sessionId: string;
   generation: number;
   environmentId: string;
+  /** Relative, provider-neutral path returned by Cloud. */
+  connectPath: string;
+  /** Derived locally from the constructor-pinned Cloud gateway origin. */
   execServerUrl: string;
   workspaceCwd: string;
   expiresAt: string;
@@ -61,12 +60,34 @@ export type LiveTeleportRevokeInput = {
   sessionId: string;
   generation: number;
   idempotencyKey: string;
+  signal?: AbortSignal;
+};
+
+export type LiveTeleportStatusInput = {
+  sessionId: string;
+  generation: number;
+  prewarmId?: string;
+  signal?: AbortSignal;
+};
+
+export type LiveTeleportLifecycleStatus = {
+  sessionId: string;
+  generation: number;
+  status: 'warming' | 'ready' | 'failed' | 'revoked' | 'expired';
+  prewarmId?: string;
+  retryAfterMs?: number;
+  expiresAt?: string;
+};
+
+export type LiveTeleportRevocation = LiveTeleportLifecycleStatus & {
+  status: 'revoked' | 'expired';
 };
 
 export interface LiveTeleportCloudClient {
   prewarm(input: LiveTeleportPrewarmInput): Promise<LiveTeleportPrewarm>;
+  status(input: LiveTeleportStatusInput): Promise<LiveTeleportLifecycleStatus>;
   acquire(input: LiveTeleportAcquireInput): Promise<LiveTeleportEnvironment>;
-  revoke(input: LiveTeleportRevokeInput): Promise<void>;
+  revoke(input: LiveTeleportRevokeInput): Promise<LiveTeleportRevocation>;
 }
 
 type Fetcher = (path: string, init?: RequestInit) => Promise<Response>;
@@ -120,6 +141,11 @@ function requiredGeneration(value: unknown): number {
     throw new Error('Cloud live-teleport response has an invalid generation.');
   }
   return Number(value);
+}
+
+function optionalNonNegativeInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined) return undefined;
+  return requiredNonNegativeInteger(value, field);
 }
 
 function requiredNonNegativeInteger(value: unknown, field: string): number {
@@ -222,13 +248,34 @@ function requiredConvergenceProof(value: unknown): LiveTeleportConvergenceProof 
  * are rejected even if a buggy server includes them in an otherwise-valid body.
  */
 export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
-  constructor(private readonly fetcher: Fetcher) {}
+  private readonly gatewayOrigin: URL;
+
+  constructor(
+    private readonly fetcher: Fetcher,
+    gatewayOrigin: string
+  ) {
+    let parsed: URL;
+    try {
+      parsed = new URL(gatewayOrigin);
+    } catch {
+      throw new Error('Cloud live-teleport requires a valid pinned gateway origin.');
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error('Cloud live-teleport gateway origin must use HTTP or HTTPS.');
+    }
+    if (parsed.username || parsed.password) {
+      throw new Error('Cloud live-teleport gateway origin must not contain credentials.');
+    }
+    this.gatewayOrigin = new URL(parsed.origin);
+  }
 
   async prewarm(input: LiveTeleportPrewarmInput): Promise<LiveTeleportPrewarm> {
+    const { signal, ...request } = input;
     const response = await this.fetcher('/api/v1/live-teleports/prewarm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify(request),
+      signal,
     });
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport prewarm returned an invalid response.');
@@ -244,25 +291,35 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     };
   }
 
+  async status(input: LiveTeleportStatusInput): Promise<LiveTeleportLifecycleStatus> {
+    const { signal, ...request } = input;
+    const response = await this.fetcher('/api/v1/live-teleports/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      signal,
+    });
+    const payload = await readPayload(response);
+    if (!isObject(payload)) throw new Error('Cloud live-teleport status returned an invalid response.');
+    return this.parseLifecycleStatus(payload);
+  }
+
   async acquire(input: LiveTeleportAcquireInput): Promise<LiveTeleportEnvironment> {
+    const { signal, ...request } = input;
     const response = await this.fetcher('/api/v1/live-teleports/acquire', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify(request),
+      signal,
     });
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport acquire returned an invalid response.');
 
-    const execServerUrl = requiredString(payload.execServerUrl, 'execServerUrl');
-    let parsed: URL;
-    try {
-      parsed = new URL(execServerUrl);
-    } catch {
-      throw new Error('Cloud live-teleport acquire returned an invalid execServerUrl.');
+    if ('execServerUrl' in payload) {
+      throw new Error('Cloud live-teleport acquire must not return an arbitrary execServerUrl.');
     }
-    if (parsed.protocol !== 'wss:') {
-      throw new Error('Cloud live-teleport acquire must return a Cloud WSS bridge URL.');
-    }
+    const connectPath = this.requiredConnectPath(payload.connectPath);
+    const execServerUrl = this.execServerUrl(connectPath);
 
     const expiresAt = requiredString(payload.expiresAt, 'expiresAt');
     if (Number.isNaN(Date.parse(expiresAt))) {
@@ -273,6 +330,7 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       sessionId: requiredString(payload.sessionId, 'sessionId'),
       generation: requiredGeneration(payload.generation),
       environmentId: requiredString(payload.environmentId, 'environmentId'),
+      connectPath,
       execServerUrl,
       workspaceCwd: requiredString(payload.workspaceCwd, 'workspaceCwd'),
       expiresAt,
@@ -280,12 +338,76 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     };
   }
 
-  async revoke(input: LiveTeleportRevokeInput): Promise<void> {
+  async revoke(input: LiveTeleportRevokeInput): Promise<LiveTeleportRevocation> {
+    const { signal, ...request } = input;
     const response = await this.fetcher('/api/v1/live-teleports/revoke', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify(request),
+      signal,
     });
-    await readPayload(response);
+    const payload = await readPayload(response);
+    if (!isObject(payload)) throw new Error('Cloud live-teleport revoke returned an invalid response.');
+    const status = this.parseLifecycleStatus(payload);
+    if (status.status !== 'revoked' && status.status !== 'expired') {
+      throw new Error('Cloud live-teleport revoke was not confirmed.');
+    }
+    return { ...status, status: status.status };
+  }
+
+  private parseLifecycleStatus(payload: Record<string, unknown>): LiveTeleportLifecycleStatus {
+    const status = payload.status;
+    if (
+      status !== 'warming' &&
+      status !== 'ready' &&
+      status !== 'failed' &&
+      status !== 'revoked' &&
+      status !== 'expired'
+    ) {
+      throw new Error('Cloud live-teleport status returned an invalid lifecycle state.');
+    }
+    const expiresAt =
+      payload.expiresAt === undefined ? undefined : requiredString(payload.expiresAt, 'expiresAt');
+    if (expiresAt && Number.isNaN(Date.parse(expiresAt))) {
+      throw new Error('Cloud live-teleport status returned an invalid expiresAt.');
+    }
+    return {
+      sessionId: requiredString(payload.sessionId, 'sessionId'),
+      generation: requiredGeneration(payload.generation),
+      status,
+      ...(payload.prewarmId === undefined
+        ? {}
+        : { prewarmId: requiredString(payload.prewarmId, 'prewarmId') }),
+      ...(payload.retryAfterMs === undefined
+        ? {}
+        : { retryAfterMs: optionalNonNegativeInteger(payload.retryAfterMs, 'retryAfterMs')! }),
+      ...(expiresAt ? { expiresAt } : {}),
+    };
+  }
+
+  private requiredConnectPath(value: unknown): string {
+    const connectPath = requiredString(value, 'connectPath');
+    if (
+      !connectPath.startsWith('/api/v1/live-teleports/connect/') ||
+      connectPath.startsWith('//') ||
+      connectPath.includes('\\') ||
+      connectPath.includes('#')
+    ) {
+      throw new Error('Cloud live-teleport acquire returned an invalid connectPath.');
+    }
+    const parsed = new URL(connectPath, this.gatewayOrigin);
+    if (
+      parsed.origin !== this.gatewayOrigin.origin ||
+      !parsed.pathname.startsWith('/api/v1/live-teleports/connect/')
+    ) {
+      throw new Error('Cloud live-teleport acquire returned a cross-origin connectPath.');
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  }
+
+  private execServerUrl(connectPath: string): string {
+    const url = new URL(connectPath, this.gatewayOrigin);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.toString();
   }
 }

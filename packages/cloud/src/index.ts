@@ -64,6 +64,9 @@ export {
   type LiveTeleportConvergenceWatermark,
   type LiveTeleportConvergenceProof,
   type LiveTeleportRevokeInput,
+  type LiveTeleportStatusInput,
+  type LiveTeleportLifecycleStatus,
+  type LiveTeleportRevocation,
 } from './live-teleport.js';
 
 export {
