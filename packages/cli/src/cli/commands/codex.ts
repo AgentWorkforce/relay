@@ -105,6 +105,14 @@ export function surfaceCodexRecordedTerminal(
   error: CodexTurnRecordedError,
   options: { json: boolean; writeError: (message: string) => void }
 ): never {
+  writeCodexRecordedTerminal(error, options);
+  throw error;
+}
+
+function writeCodexRecordedTerminal(
+  error: CodexTurnRecordedError,
+  options: { json: boolean; writeError: (message: string) => void }
+): void {
   options.writeError(
     options.json
       ? `${JSON.stringify({
@@ -113,15 +121,17 @@ export function surfaceCodexRecordedTerminal(
         })}\n`
       : `Codex recorded the turn as ${error.status}; it was not replayed.\n`
   );
-  throw error;
 }
 
 export function surfaceRecoveredCodexTerminal(
-  controller: Pick<CodexLiveController, 'takeRecoveredTerminal'>,
+  controller: Pick<CodexLiveController, 'takeRecoveredTerminal' | 'acknowledgeRecoveredOutcome'>,
   options: { json: boolean; writeError: (message: string) => void }
 ): void {
   const terminal = controller.takeRecoveredTerminal();
-  if (terminal) surfaceCodexRecordedTerminal(terminal, options);
+  if (!terminal) return;
+  writeCodexRecordedTerminal(terminal, options);
+  controller.acknowledgeRecoveredOutcome();
+  throw terminal;
 }
 
 function writeReconciledTurn(
@@ -325,6 +335,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
               json: Boolean(options.json),
               writeOutput: (message) => process.stdout.write(message),
             });
+            controller.acknowledgeRecoveredOutcome();
           }
 
           if (options.prompt) {

@@ -57,6 +57,7 @@ describe('runManagedCodexTurn', () => {
       const terminal = new CodexTurnRecordedError(status, `recorded ${status}`);
       const controller = {
         takeRecoveredTerminal: vi.fn().mockReturnValueOnce(terminal).mockReturnValue(undefined),
+        acknowledgeRecoveredOutcome: vi.fn(),
         runTurn: vi.fn(),
       };
       const writeError = vi.fn();
@@ -66,6 +67,7 @@ describe('runManagedCodexTurn', () => {
       );
 
       expect(writeError).toHaveBeenCalledWith(expect.stringContaining(`turn as ${status}`));
+      expect(controller.acknowledgeRecoveredOutcome).toHaveBeenCalledOnce();
       expect(() =>
         surfaceRecoveredCodexTerminal(controller as never, { json: false, writeError })
       ).not.toThrow();
@@ -73,6 +75,25 @@ describe('runManagedCodexTurn', () => {
       expect(controller.runTurn).not.toHaveBeenCalled();
     }
   );
+
+  it('does not acknowledge durable terminal evidence when rendering fails', () => {
+    const terminal = new CodexTurnRecordedError('failed', 'recorded failed');
+    const controller = {
+      takeRecoveredTerminal: vi.fn(() => terminal),
+      acknowledgeRecoveredOutcome: vi.fn(),
+    };
+    const renderError = new Error('stderr unavailable');
+
+    expect(() =>
+      surfaceRecoveredCodexTerminal(controller as never, {
+        json: false,
+        writeError: () => {
+          throw renderError;
+        },
+      })
+    ).toThrow(renderError);
+    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+  });
 
   it('fails closed instead of continuing when fencing is unconfirmed', async () => {
     const controller = {

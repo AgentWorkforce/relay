@@ -41,6 +41,14 @@ export type CodexTeleportRequest = {
   expectedGeneration: number;
 };
 
+type CodexRecoveredOutcome = {
+  sessionId: string;
+  threadId: string;
+  generation: number;
+  clientUserMessageId: string;
+  turnId: string;
+} & ({ status: 'completed'; result: CodexTurnResult } | { status: 'failed' | 'interrupted' });
+
 export type CodexControllerState = {
   version: 1;
   sessionId: string;
@@ -67,11 +75,16 @@ export type CodexControllerState = {
     clientUserMessageId: string;
     execution: 'local' | 'remote';
   };
+  /** Durable, at-least-once recovery evidence retained until the CLI acknowledges rendering it. */
+  recoveredOutcome?: CodexRecoveredOutcome;
   lastError?: string;
   updatedAt: string;
 };
 
-export type PublicCodexControllerStatus = Omit<CodexControllerState, 'source' | 'remote' | 'mountRestore'> & {
+export type PublicCodexControllerStatus = Omit<
+  CodexControllerState,
+  'source' | 'remote' | 'mountRestore' | 'recoveredOutcome'
+> & {
   execution: 'local' | 'verifying' | 'cloud' | 'fenced';
   controller: 'local';
   remote?: Pick<
@@ -252,6 +265,7 @@ function invalidNestedState(state: Record<string, unknown>): boolean {
   const restore = state.mountRestore === undefined ? undefined : record(state.mountRestore);
   const remote = state.remote === undefined ? undefined : record(state.remote);
   const inFlight = state.inFlightTurn === undefined ? undefined : record(state.inFlightTurn);
+  const recovered = state.recoveredOutcome === undefined ? undefined : record(state.recoveredOutcome);
   const generation = Number(state.generation);
   const workspaceRoot = String(state.workspaceRoot);
   if (
@@ -274,6 +288,18 @@ function invalidNestedState(state: Record<string, unknown>): boolean {
       (!nonEmptyString(inFlight.clientUserMessageId) ||
         (inFlight.execution !== 'local' && inFlight.execution !== 'remote'))) ||
     (state.inFlightTurn !== undefined && !inFlight) ||
+    (state.recoveredOutcome !== undefined && !recovered) ||
+    (inFlight !== undefined && recovered !== undefined) ||
+    (recovered !== undefined && !validRecoveredOutcome(state, recovered)) ||
+    (recovered !== undefined &&
+      (state.phase !== 'local' ||
+        pending !== undefined ||
+        source !== undefined ||
+        restore !== undefined ||
+        remote !== undefined ||
+        state.cloudLifecycle !== 'none' ||
+        state.prewarmId !== undefined ||
+        state.prewarmStatus !== undefined)) ||
     !validOptionalString(state.prewarmId) ||
     (state.prewarmStatus !== undefined &&
       state.prewarmStatus !== 'warming' &&
@@ -320,6 +346,69 @@ function invalidNestedState(state: Record<string, unknown>): boolean {
     health.outboxPending !== 0 ||
     health.outboxNeedsAttention !== false
   );
+}
+
+function validRecoveredOutcome(state: Record<string, unknown>, recovered: Record<string, unknown>): boolean {
+  const commonKeys = [
+    'sessionId',
+    'threadId',
+    'generation',
+    'clientUserMessageId',
+    'turnId',
+    'status',
+  ] as const;
+  const bindingMatches = [
+    recovered.sessionId === state.sessionId,
+    recovered.threadId === state.threadId,
+    recovered.generation === state.generation,
+    nonEmptyString(recovered.clientUserMessageId),
+    nonEmptyString(recovered.turnId),
+  ].every(Boolean);
+  if (!bindingMatches) {
+    return false;
+  }
+  if (recovered.status === 'failed' || recovered.status === 'interrupted') {
+    return hasOnlyKeys(recovered, commonKeys);
+  }
+  if (recovered.status !== 'completed' || !hasOnlyKeys(recovered, [...commonKeys, 'result'])) {
+    return false;
+  }
+  return validRecoveredCompletion(state, recovered);
+}
+
+function validRecoveredCompletion(
+  state: Record<string, unknown>,
+  recovered: Record<string, unknown>
+): boolean {
+  const result = record(recovered.result) ?? {};
+  const response = record(result.response) ?? {};
+  const responseTurn = record(response.turn) ?? {};
+  const completed = record(result.completed) ?? {};
+  const params = record(completed.params) ?? {};
+  const turn = record(params.turn) ?? {};
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  const hasBoundUserMessage = items.some((item) => {
+    const entry = record(item);
+    return entry?.type === 'userMessage' && entry.clientId === recovered.clientUserMessageId;
+  });
+  const hasAssistantAnswer = items.some((item) => {
+    const entry = record(item);
+    return entry?.type === 'agentMessage' && typeof entry.text === 'string';
+  });
+  return [
+    result.reconciled === true,
+    result.turnId === recovered.turnId,
+    responseTurn.id === recovered.turnId,
+    responseTurn.status === 'completed',
+    completed.method === 'turn/completed',
+    params.threadId === state.threadId,
+    turn.id === recovered.turnId,
+    turn.status === 'completed',
+    [undefined, 'full'].includes(turn.itemsView as string | undefined),
+    Array.isArray(turn.items),
+    hasBoundUserMessage,
+    hasAssistantAnswer,
+  ].every(Boolean);
 }
 
 function inferredCloudLifecycle(value: Record<string, unknown>): CodexCloudLifecycleIntent {
@@ -399,8 +488,19 @@ function isReadyStatus(value: unknown): boolean {
   return false;
 }
 
+function sameRecoveredIdentity(left: CodexRecoveredOutcome, right: CodexRecoveredOutcome): boolean {
+  return (
+    left.sessionId === right.sessionId &&
+    left.threadId === right.threadId &&
+    left.generation === right.generation &&
+    left.clientUserMessageId === right.clientUserMessageId &&
+    left.turnId === right.turnId &&
+    left.status === right.status
+  );
+}
+
 function publicStatus(state: CodexControllerState): PublicCodexControllerStatus {
-  const { source, remote, mountRestore: _mountRestore, ...rest } = state;
+  const { source, remote, mountRestore: _mountRestore, recoveredOutcome: _recoveredOutcome, ...rest } = state;
   const execution =
     state.phase === 'remote'
       ? 'cloud'
@@ -444,8 +544,7 @@ export class CodexLiveController {
   private sealedWorkspace: CodexWorkspaceSealHandle | null = null;
   private prewarmPromise: Promise<void> | null = null;
   private prewarmAbort: AbortController | null = null;
-  private recoveredTurn: CodexTurnResult | undefined;
-  private recoveredTerminal: CodexTurnRecordedError | undefined;
+  private recoveredEvidenceTaken: CodexRecoveredOutcome | undefined;
   private closing = false;
 
   constructor(
@@ -454,6 +553,7 @@ export class CodexLiveController {
   ) {}
 
   async initialize(): Promise<PublicCodexControllerStatus> {
+    this.recoveredEvidenceTaken = undefined;
     await this.deps.probeCapability();
     const persisted = this.deps.store.read();
     if (persisted && path.resolve(persisted.workspaceRoot) !== path.resolve(this.options.workspaceRoot)) {
@@ -510,7 +610,16 @@ export class CodexLiveController {
         throw new Error(this.requireState().lastError, { cause: error });
       }
 
-      if (this.requireState().inFlightTurn) {
+      let recovered:
+        | {
+            clientUserMessageId: string;
+            outcome:
+              | Extract<CodexTurnOutcome, { status: 'completed' }>
+              | { status: 'failed' | 'interrupted'; turnId: string };
+          }
+        | undefined;
+      const inFlight = this.requireState().inFlightTurn;
+      if (inFlight) {
         const outcome = await this.reconcileInFlightTurn().catch((error) => {
           this.markOutcomeUncertain('TURN_RECONCILIATION_UNAVAILABLE');
           throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
@@ -520,18 +629,13 @@ export class CodexLiveController {
           throw new CodexTurnOutcomeUncertainError();
         }
         if (outcome.status === 'completed') {
-          this.recoveredTurn = outcome.result;
+          recovered = { clientUserMessageId: inFlight.clientUserMessageId, outcome };
         } else if (outcome.status === 'failed' || outcome.status === 'interrupted') {
-          this.recoveredTerminal = new CodexTurnRecordedError(
-            outcome.status,
-            `Codex recorded the crash-reconciled turn as ${outcome.status}; it was not replayed.`
-          );
+          recovered = {
+            clientUserMessageId: inFlight.clientUserMessageId,
+            outcome: { status: outcome.status, turnId: outcome.turnId },
+          };
         }
-        this.clearInFlightTurn(
-          outcome.status === 'completed'
-            ? 'TURN_COMPLETED_DURING_RECOVERY'
-            : `TURN_${outcome.status.toUpperCase()}`
-        );
       }
 
       const state = this.requireState();
@@ -541,6 +645,20 @@ export class CodexLiveController {
       state.remote = undefined;
       state.source = undefined;
       state.mountRestore = undefined;
+      if (recovered) {
+        const common = {
+          sessionId: state.sessionId,
+          threadId: state.threadId,
+          generation: state.generation,
+          clientUserMessageId: recovered.clientUserMessageId,
+          turnId: recovered.outcome.turnId,
+        };
+        state.recoveredOutcome =
+          recovered.outcome.status === 'completed'
+            ? { ...common, status: 'completed', result: recovered.outcome.result }
+            : { ...common, status: recovered.outcome.status };
+        state.inFlightTurn = undefined;
+      }
       state.lastError = undefined;
       state.updatedAt = this.timestamp();
       this.persist();
@@ -567,7 +685,7 @@ export class CodexLiveController {
       this.persist();
     }
 
-    if (!this.recoveredTerminal) this.schedulePrewarm();
+    if (!this.requireState().recoveredOutcome) this.schedulePrewarm();
     return this.status();
   }
 
@@ -575,18 +693,43 @@ export class CodexLiveController {
     return publicStatus(this.requireState());
   }
 
-  /** Returns a crash-reconciled completion once so the command can render it. */
+  /** Claims crash-reconciled completion evidence in memory without clearing its durable copy. */
   takeRecoveredTurn(): CodexTurnResult | undefined {
-    const recovered = this.recoveredTurn;
-    this.recoveredTurn = undefined;
-    return recovered;
+    const recovered = this.requireState().recoveredOutcome;
+    if (!recovered || recovered.status !== 'completed' || this.recoveredEvidenceTaken) return undefined;
+    this.recoveredEvidenceTaken = recovered;
+    return recovered.result;
   }
 
-  /** Returns a crash-reconciled failed/interrupted terminal once for CLI failure surfacing. */
+  /** Claims terminal recovery evidence in memory without clearing its durable copy. */
   takeRecoveredTerminal(): CodexTurnRecordedError | undefined {
-    const terminal = this.recoveredTerminal;
-    this.recoveredTerminal = undefined;
-    return terminal;
+    const recovered = this.requireState().recoveredOutcome;
+    if (!recovered || recovered.status === 'completed' || this.recoveredEvidenceTaken) return undefined;
+    this.recoveredEvidenceTaken = recovered;
+    return new CodexTurnRecordedError(
+      recovered.status,
+      `Codex recorded the crash-reconciled turn as ${recovered.status}; it was not replayed.`
+    );
+  }
+
+  /** Durably acknowledges successful CLI rendering of the currently claimed recovery evidence. */
+  acknowledgeRecoveredOutcome(): void {
+    const state = this.requireState();
+    const durable = state.recoveredOutcome;
+    const claimed = this.recoveredEvidenceTaken;
+    if (!durable || !claimed || !sameRecoveredIdentity(durable, claimed)) {
+      throw new Error('Recovered Codex turn acknowledgment does not match durable recovery evidence.');
+    }
+    state.recoveredOutcome = undefined;
+    state.updatedAt = this.timestamp();
+    try {
+      this.persist();
+      this.recoveredEvidenceTaken = undefined;
+      if (durable.status === 'completed') this.schedulePrewarm();
+    } catch (error) {
+      state.recoveredOutcome = durable;
+      throw error;
+    }
   }
 
   requestTeleport(request: CodexTeleportRequest): PublicCodexControllerStatus {
@@ -769,6 +912,9 @@ export class CodexLiveController {
       // A confirmed prewarm-only fence consumes this generation's idempotency
       // identity just as surely as acquire/revoke. Never reinitialize and
       // replay a revoked resource under the same generation.
+      // Finalize any queued request in the same durable write so it cannot
+      // retain an expectedGeneration from the consumed identity.
+      state.pending = undefined;
       state.generation += 1;
       state.phase = 'local';
       state.cloudLifecycle = 'none';

@@ -99,8 +99,8 @@ export interface LiveTeleportCloudClient {
 
 type Fetcher = (path: string, init?: RequestInit) => Promise<Response>;
 
-const FORBIDDEN_PROVIDER_FIELD =
-  /(?:provider.*(?:url|token|credential)|trafficAccessToken|signedPreviewUrl|sealToken|^ticket$)/i;
+const SENSITIVE_RESPONSE_FIELD =
+  /(?:api[-_]?key|access[-_]?token|authorization|bearer|credential|password|private[-_]?key|secret|provider.*(?:url|token)|trafficAccessToken|signedPreviewUrl|sealToken|^ticket$)/i;
 const MAX_ACQUIRE_ATTEMPTS = 120;
 const MAX_ACQUIRE_RETRY_AFTER_MS = 1_000;
 /** Remote turns can wait up to 30m for completion; Cloud reserves another 10m for fencing. */
@@ -110,24 +110,35 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function assertNoProviderSecrets(value: unknown, path = 'response'): void {
+function assertNoSensitiveResponseFields(value: unknown, path = 'response'): void {
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => assertNoProviderSecrets(entry, `${path}[${index}]`));
+    value.forEach((entry, index) => assertNoSensitiveResponseFields(entry, `${path}[${index}]`));
     return;
   }
   if (!isObject(value)) return;
 
   for (const [key, entry] of Object.entries(value)) {
-    if (FORBIDDEN_PROVIDER_FIELD.test(key)) {
-      throw new Error(`Cloud live-teleport response exposed forbidden provider field ${path}.${key}.`);
+    if (SENSITIVE_RESPONSE_FIELD.test(key)) {
+      throw new Error(`Cloud live-teleport response exposed forbidden sensitive field ${path}.${key}.`);
     }
-    assertNoProviderSecrets(entry, `${path}.${key}`);
+    assertNoSensitiveResponseFields(entry, `${path}.${key}`);
+  }
+}
+
+function assertAllowedResponseKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  context: string
+): void {
+  const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unexpected) {
+    throw new Error(`Cloud live-teleport ${context} returned unexpected response field ${unexpected}.`);
   }
 }
 
 async function readPayload(response: Response): Promise<unknown> {
   const payload = (await response.json().catch(() => null)) as unknown;
-  assertNoProviderSecrets(payload);
+  assertNoSensitiveResponseFields(payload);
   if (!response.ok) {
     // Cloud error prose can accidentally interpolate an opaque ticket or
     // provider URL. Only a short machine code is safe to relay to callers.
@@ -241,13 +252,42 @@ function requiredReceiptBinding(source: LiveTeleportWorkspaceSource): LiveTelepo
 
 function requiredVerification(
   value: unknown,
-  expected: LiveTeleportReceiptBinding
+  expected: LiveTeleportReceiptBinding & { localRoot: string }
 ): LiveTeleportDestinationVerification {
   if (!isObject(value) || !isObject(value.observed) || !isObject(value.health)) {
     throw new Error('Cloud live-teleport acquire did not return Relayfile destination verification.');
   }
+  assertAllowedResponseKeys(
+    value,
+    [
+      'version',
+      'kind',
+      'verificationId',
+      'workspaceId',
+      'localRoot',
+      'remoteRoot',
+      'sessionId',
+      'generation',
+      'status',
+      'observed',
+      'health',
+      'verifiedAt',
+    ],
+    'verification'
+  );
+  assertAllowedResponseKeys(
+    value.observed,
+    ['digest', 'workspaceRevision', 'eventCursor'],
+    'verification.observed'
+  );
+  assertAllowedResponseKeys(
+    value.health,
+    ['pendingWriteback', 'conflicts', 'outboxPending', 'outboxNeedsAttention'],
+    'verification.health'
+  );
   const verifiedAt = requiredString(value.verifiedAt, 'verification.verifiedAt');
   const workspaceId = requiredString(value.workspaceId, 'verification.workspaceId');
+  const localRoot = requiredString(value.localRoot, 'verification.localRoot');
   const digest = requiredDigest(value.observed.digest, 'verification.observed.digest');
   const workspaceRevision = requiredRelayfilePosition(
     value.observed.workspaceRevision,
@@ -264,6 +304,7 @@ function requiredVerification(
     value.kind !== 'relayfile-destination-verification' ||
     value.status !== 'converged' ||
     workspaceId !== expected.workspaceId ||
+    localRoot !== expected.localRoot ||
     value.remoteRoot !== expected.remoteRoot ||
     value.sessionId !== expected.sessionId ||
     value.generation !== expected.generation ||
@@ -283,7 +324,7 @@ function requiredVerification(
     kind: 'relayfile-destination-verification',
     verificationId: requiredString(value.verificationId, 'verification.verificationId'),
     workspaceId,
-    localRoot: requiredString(value.localRoot, 'verification.localRoot'),
+    localRoot,
     remoteRoot: '/',
     sessionId: expected.sessionId,
     generation: expected.generation,
@@ -357,6 +398,7 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     });
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport prewarm returned an invalid response.');
+    assertAllowedResponseKeys(payload, ['prewarmId', 'generation', 'status'], 'prewarm');
 
     const status = payload.status;
     if (status !== 'warming' && status !== 'ready') {
@@ -406,6 +448,7 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       if (!isObject(payload) || payload.status !== 'verifying') {
         throw new Error('Cloud live-teleport acquire returned an invalid pending response.');
       }
+      assertAllowedResponseKeys(payload, ['status', 'retryAfterMs'], 'pending acquire');
       await wait(
         Math.min(
           optionalNonNegativeInteger(payload.retryAfterMs, 'retryAfterMs') ?? 500,
@@ -422,12 +465,29 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     if ('execServerUrl' in payload) {
       throw new Error('Cloud live-teleport acquire must not return an arbitrary execServerUrl.');
     }
+    assertAllowedResponseKeys(
+      payload,
+      [
+        'sessionId',
+        'generation',
+        'threadId',
+        'status',
+        'environmentId',
+        'connectPath',
+        'workspaceCwd',
+        'connectExpiresAt',
+        'leaseExpiresAt',
+        'verification',
+      ],
+      'acquire'
+    );
     const connectPath = this.requiredConnectPath(payload.connectPath);
     const execServerUrl = this.execServerUrl(connectPath);
 
     const sessionId = requiredString(payload.sessionId, 'sessionId');
     const generation = requiredGeneration(payload.generation);
     const threadId = requiredString(payload.threadId, 'threadId');
+    const workspaceCwd = requiredString(payload.workspaceCwd, 'workspaceCwd');
     const connectExpiresAt = requiredString(payload.connectExpiresAt, 'connectExpiresAt');
     const leaseExpiresAt = requiredString(payload.leaseExpiresAt, 'leaseExpiresAt');
     if (
@@ -448,10 +508,13 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       environmentId: requiredString(payload.environmentId, 'environmentId'),
       connectPath,
       execServerUrl,
-      workspaceCwd: requiredString(payload.workspaceCwd, 'workspaceCwd'),
+      workspaceCwd,
       connectExpiresAt,
       leaseExpiresAt,
-      verification: requiredVerification(payload.verification, receiptBinding),
+      verification: requiredVerification(payload.verification, {
+        ...receiptBinding,
+        localRoot: workspaceCwd,
+      }),
     };
   }
 
@@ -476,6 +539,11 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
   }
 
   private parseLifecycleStatus(payload: Record<string, unknown>): LiveTeleportLifecycleStatus {
+    assertAllowedResponseKeys(
+      payload,
+      ['sessionId', 'generation', 'status', 'prewarmId', 'retryAfterMs', 'expiresAt', 'leaseExpiresAt'],
+      'lifecycle status'
+    );
     const status = payload.status;
     if (
       status !== 'warming' &&

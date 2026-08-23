@@ -99,7 +99,10 @@ function completedOutcome(turnId: string, answer = `answer for ${turnId}`) {
     id: turnId,
     status: 'completed',
     itemsView: 'full',
-    items: [{ id: `answer-${turnId}`, type: 'agentMessage', text: answer }],
+    items: [
+      { id: `user-${turnId}`, type: 'userMessage', clientId: 'client-persisted-1', text: 'prompt' },
+      { id: `answer-${turnId}`, type: 'agentMessage', text: answer },
+    ],
   };
   return {
     status: 'completed' as const,
@@ -399,6 +402,49 @@ describe('CodexLiveController', () => {
         execution: expect.objectContaining({ kind: 'remote' }),
       })
     );
+  });
+
+  it('atomically finalizes a pending teleport when close consumes its prewarm generation', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-close-pending-'));
+    const fileStore = new FileCodexControllerStateStore(path.join(directory, 'state.json'));
+    const store = {
+      value: null as CodexControllerState | null,
+      read() {
+        this.value = fileStore.read();
+        return this.value;
+      },
+      write(state: CodexControllerState) {
+        fileStore.write(state);
+        this.value = structuredClone(state);
+      },
+    };
+    try {
+      const cloudClient = cloud();
+      const first = createController({ store, cloud: cloudClient, sessions: [appServer()] });
+      await first.controller.initialize();
+      await vi.waitFor(() => expect(fileStore.read()?.prewarmStatus).toBe('ready'));
+      first.controller.requestTeleport({ requestId: 'request-consumed-on-close', expectedGeneration: 1 });
+
+      await first.controller.close();
+
+      expect(fileStore.read()).toMatchObject({
+        generation: 2,
+        phase: 'local',
+        cloudLifecycle: 'none',
+        lastRequestId: 'request-consumed-on-close',
+      });
+      expect(fileStore.read()?.pending).toBeUndefined();
+
+      const second = createController({ store, cloud: cloudClient, sessions: [appServer()] });
+      await expect(second.controller.initialize()).resolves.toMatchObject({
+        generation: 2,
+        phase: 'local',
+      });
+      await vi.waitFor(() => expect(fileStore.read()?.prewarmStatus).toBe('ready'));
+      await second.controller.close();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('persists checkpoint lifecycle intent before Relayfile can stop the mount', async () => {
@@ -807,7 +853,9 @@ describe('CodexLiveController', () => {
       turnId: 'turn-remote-1',
       response: {
         turn: {
-          items: [expect.objectContaining({ type: 'agentMessage', text: 'recovered exact answer' })],
+          items: expect.arrayContaining([
+            expect.objectContaining({ type: 'agentMessage', text: 'recovered exact answer' }),
+          ]),
         },
       },
       completed: {
@@ -1254,11 +1302,43 @@ describe('CodexLiveController', () => {
       reconciled: true,
       response: {
         turn: {
-          items: [expect.objectContaining({ type: 'agentMessage', text: 'answer for turn-persisted-1' })],
+          items: expect.arrayContaining([
+            expect.objectContaining({ type: 'agentMessage', text: 'answer for turn-persisted-1' }),
+          ]),
         },
       },
     });
     expect(controller.takeRecoveredTurn()).toBeUndefined();
+    expect(store.value?.recoveredOutcome).toMatchObject({
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      generation: 8,
+      clientUserMessageId: 'client-persisted-1',
+      turnId: 'turn-persisted-1',
+      status: 'completed',
+    });
+
+    const restartedOnce = appServer();
+    const second = createController({ store, sessions: [restartedOnce] });
+    await second.controller.initialize();
+    expect(restartedOnce.turnOutcome).not.toHaveBeenCalled();
+    expect(second.controller.takeRecoveredTurn()).toMatchObject({
+      completed: {
+        params: {
+          turn: {
+            items: expect.arrayContaining([expect.objectContaining({ text: 'answer for turn-persisted-1' })]),
+          },
+        },
+      },
+    });
+
+    const restartedTwice = appServer();
+    const third = createController({ store, sessions: [restartedTwice] });
+    await third.controller.initialize();
+    expect(restartedTwice.turnOutcome).not.toHaveBeenCalled();
+    expect(third.controller.takeRecoveredTurn()).toMatchObject({ turnId: 'turn-persisted-1' });
+    third.controller.acknowledgeRecoveredOutcome();
+    expect(store.value?.recoveredOutcome).toBeUndefined();
   });
 
   it.each(['failed', 'interrupted'] as const)(
@@ -1286,6 +1366,28 @@ describe('CodexLiveController', () => {
       });
       expect(controller.takeRecoveredTerminal()).toBeUndefined();
       expect(controller.takeRecoveredTurn()).toBeUndefined();
+      expect(store.value?.recoveredOutcome).toMatchObject({
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        generation: 8,
+        clientUserMessageId: `client-persisted-${status}`,
+        turnId: `turn-persisted-${status}`,
+        status,
+      });
+
+      const restartedOnce = appServer();
+      const second = createController({ store, cloud: cloudClient, sessions: [restartedOnce] });
+      await second.controller.initialize();
+      expect(restartedOnce.turnOutcome).not.toHaveBeenCalled();
+      expect(second.controller.takeRecoveredTerminal()).toMatchObject({ status });
+
+      const restartedTwice = appServer();
+      const third = createController({ store, cloud: cloudClient, sessions: [restartedTwice] });
+      await third.controller.initialize();
+      expect(restartedTwice.turnOutcome).not.toHaveBeenCalled();
+      expect(third.controller.takeRecoveredTerminal()).toMatchObject({ status });
+      third.controller.acknowledgeRecoveredOutcome();
+      expect(store.value?.recoveredOutcome).toBeUndefined();
     }
   );
 
@@ -1437,6 +1539,21 @@ describe('FileCodexControllerStateStore', () => {
     [
       'malformed in-flight turn',
       { ...persistedLocal(), inFlightTurn: { clientUserMessageId: '', execution: 'remote' } },
+    ],
+    [
+      'cross-session recovered outcome',
+      {
+        ...persistedLocal(),
+        recoveredOutcome: {
+          sessionId: 'other-session',
+          threadId: 'thread-1',
+          generation: 3,
+          clientUserMessageId: 'client-recovered',
+          turnId: 'turn-recovered',
+          status: 'completed',
+          result: completedOutcome('turn-recovered').result,
+        },
+      },
     ],
   ])('rejects %s instead of adopting malformed controller state', (_name, value) => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-state-'));

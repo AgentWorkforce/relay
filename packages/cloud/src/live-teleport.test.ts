@@ -32,6 +32,7 @@ function verification(
     workspaceRevision?: string;
     eventCursor?: string;
     workspaceId?: string;
+    localRoot?: string;
     remoteRoot?: string;
     sessionId?: string;
     generation?: number;
@@ -43,7 +44,7 @@ function verification(
     kind: 'relayfile-destination-verification',
     verificationId: 'verify-2',
     workspaceId: overrides.workspaceId ?? 'workspace-1',
-    localRoot: '/workspace',
+    localRoot: overrides.localRoot ?? '/workspace',
     remoteRoot: overrides.remoteRoot ?? '/',
     sessionId: overrides.sessionId ?? 'session-1',
     generation: overrides.generation ?? 2,
@@ -138,7 +139,93 @@ describe('CloudLiveTeleportClient', () => {
       'https://cloud.agentrelay.test'
     );
 
-    await expect(client.acquire(input)).rejects.toThrow('forbidden provider field');
+    await expect(client.acquire(input)).rejects.toThrow('forbidden sensitive field');
+  });
+
+  it('recursively rejects credential-shaped fields at every remote response boundary', async () => {
+    const active = {
+      sessionId: 'session-1',
+      generation: 2,
+      threadId: 'thread-1',
+      status: 'active',
+      environmentId: 'env-2',
+      connectPath: '/api/v1/live-teleports/connect/ticket',
+      workspaceCwd: '/workspace',
+      connectExpiresAt: '2026-08-23T12:00:00.000Z',
+      leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+      verification: verification(),
+    };
+    const cases = [
+      {
+        response: { prewarmId: 'prewarm-2', generation: 2, status: 'ready', nested: { daytonaApiKey: 'x' } },
+        invoke: (client: CloudLiveTeleportClient) =>
+          client.prewarm({
+            sessionId: 'session-1',
+            generation: 2,
+            workspaceRoot: '/',
+            idempotencyKey: 'session-1:2:prewarm',
+          }),
+      },
+      {
+        response: {
+          sessionId: 'session-1',
+          generation: 2,
+          status: 'active',
+          metadata: { e2bApiKey: 'x' },
+        },
+        invoke: (client: CloudLiveTeleportClient) => client.status({ sessionId: 'session-1', generation: 2 }),
+      },
+      {
+        response: { ...active, metadata: { child: { accessToken: 'x' } } },
+        invoke: (client: CloudLiveTeleportClient) => client.acquire(input),
+      },
+      {
+        response: {
+          sessionId: 'session-1',
+          generation: 2,
+          status: 'revoked',
+          metadata: { authorization: 'Bearer x' },
+        },
+        invoke: (client: CloudLiveTeleportClient) =>
+          client.revoke({ sessionId: 'session-1', generation: 2, idempotencyKey: 'session-1:2:revoke' }),
+      },
+      {
+        response: {
+          sessionId: 'session-1',
+          generation: 2,
+          status: 'revoked',
+          metadata: { nested: { secret: 'x' } },
+        },
+        invoke: (client: CloudLiveTeleportClient) =>
+          client.revoke({ sessionId: 'session-1', generation: 2, idempotencyKey: 'session-1:2:revoke' }),
+      },
+    ];
+
+    for (const scenario of cases) {
+      const client = new CloudLiveTeleportClient(
+        async () => Response.json(scenario.response),
+        'https://cloud.agentrelay.test'
+      );
+      await expect(scenario.invoke(client)).rejects.toThrow('forbidden sensitive field');
+    }
+  });
+
+  it('rejects unknown non-sensitive fields instead of retaining unparsed remote response data', async () => {
+    const client = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          status: 'active',
+          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+          metadata: { region: 'unknown' },
+        }),
+      'https://cloud.agentrelay.test'
+    );
+
+    await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+      'unexpected response field metadata'
+    );
   });
 
   it('rejects an arbitrary execution URL even when it points at Cloud', async () => {
@@ -267,6 +354,27 @@ describe('CloudLiveTeleportClient', () => {
     expect(String(error)).not.toContain(receipt.sealToken);
   });
 
+  it('rejects destination verification for a different acquired workspace cwd', async () => {
+    const client = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          threadId: 'thread-1',
+          status: 'active',
+          environmentId: 'env-2',
+          connectPath: '/api/v1/live-teleports/connect/ticket',
+          workspaceCwd: '/workspace',
+          connectExpiresAt: '2026-08-23T12:00:00.000Z',
+          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+          verification: verification({ localRoot: '/different-workspace' }),
+        }),
+      'https://cloud.agentrelay.test'
+    );
+
+    await expect(client.acquire(input)).rejects.toThrow('mismatched Relayfile verification');
+  });
+
   it('rejects any response that echoes the one-use checkpoint capability', async () => {
     const client = new CloudLiveTeleportClient(
       async () =>
@@ -286,7 +394,7 @@ describe('CloudLiveTeleportClient', () => {
     );
 
     const error = await client.acquire(input).catch((caught: unknown) => caught);
-    expect(String(error)).toContain('forbidden provider field');
+    expect(String(error)).toContain('forbidden sensitive field');
     expect(String(error)).not.toContain(receipt.sealToken);
   });
 
