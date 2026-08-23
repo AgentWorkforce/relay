@@ -19,6 +19,8 @@ import {
   CodexTurnOutcomeUncertainError,
   CodexTurnRecordedError,
   FileCodexControllerStateStore,
+  codexControllerStateMayOwnCloudResources,
+  isCodexLiveTeleportEnabled,
   type CodexControllerState,
   type CodexPersistedMountResumeProvider,
   type CodexWorkspaceSealProvider,
@@ -323,7 +325,8 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
       overrides.runManaged ??
       (async (options) => {
         const workspaceRoot = fs.realpathSync(path.resolve(options.cwd));
-        await probeCodexEnvironmentCapability('codex');
+        const liveTeleportEnabled = isCodexLiveTeleportEnabled();
+        if (liveTeleportEnabled) await probeCodexEnvironmentCapability('codex');
         fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
         const store = new FileCodexControllerStateStore(paths.statePath);
         const prior = store.read();
@@ -332,20 +335,27 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
             `Relay-managed Codex thread ${prior.threadId} is already controlled by process ${prior.controllerPid}.`
           );
         }
-        const session = await ensureCloudSession({ interactive: true });
-        const cloud = new CloudLiveTeleportClient(
-          (requestPath, init) => session.client.fetch(requestPath, init),
-          session.client.snapshot().apiUrl
-        );
+        const needsCloud =
+          liveTeleportEnabled || Boolean(prior && codexControllerStateMayOwnCloudResources(prior));
+        const cloud = needsCloud
+          ? await (async () => {
+              const session = await ensureCloudSession({ interactive: true });
+              return new CloudLiveTeleportClient(
+                (requestPath, init) => session.client.fetch(requestPath, init),
+                session.client.snapshot().apiUrl
+              );
+            })()
+          : undefined;
 
         const controller = new CodexLiveController(
           {
             workspaceRoot,
             socketPath: paths.socketPath,
+            liveTeleportEnabled,
             ...(options.model ? { model: options.model } : {}),
           },
           {
-            cloud,
+            ...(cloud ? { cloud } : {}),
             store,
             createAppServer: async () =>
               StdioCodexAppServerSession.spawn({
@@ -363,9 +373,10 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
                   }
                 },
               }),
-            // Production already probed before interactive Cloud login. Keeping
-            // the controller seam injectable lets restart/adversarial tests
-            // prove an unsupported local binary still fails closed.
+            // Enabled startup probes before interactive Cloud login. Disabled
+            // recovery only fences prior ownership and does not need Codex's
+            // environment-add schema. Keeping this seam injectable lets
+            // restart/adversarial tests prove enabled startup fails closed.
             probeCapability: async () => undefined,
             checkpointAndSeal,
             resumePersistedLocalMount,

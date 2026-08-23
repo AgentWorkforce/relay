@@ -8,6 +8,7 @@ import type { LiveTeleportCloudClient, LiveTeleportLifecycleStatus } from '@agen
 import {
   CodexLiveController,
   FileCodexControllerStateStore,
+  isCodexLiveTeleportEnabled,
   type CodexControllerState,
   type CodexControllerStateStore,
   type CodexPersistedMountResumeProvider,
@@ -204,18 +205,19 @@ function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCl
 function createController(
   options: {
     store?: ReturnType<typeof memoryStore>;
-    cloud?: LiveTeleportCloudClient;
+    cloud?: LiveTeleportCloudClient | null;
     sessions?: CodexAppServerSession[];
     probe?: () => Promise<void>;
     checkpointAndSeal?: CodexWorkspaceSealProvider;
     resumePersistedLocalMount?: CodexPersistedMountResumeProvider;
     lifecycleDeadlineMs?: number;
     lifecyclePollIntervalMs?: number;
+    liveTeleportEnabled?: boolean;
     now?: () => Date;
   } = {}
 ) {
   const store = options.store ?? memoryStore();
-  const cloudClient = options.cloud ?? cloud();
+  const cloudClient = options.cloud === null ? undefined : (options.cloud ?? cloud());
   const sessions = options.sessions ?? [appServer()];
   const createAppServer = vi.fn(async () => {
     const session = sessions.shift();
@@ -240,13 +242,14 @@ function createController(
     {
       workspaceRoot: '/repo',
       socketPath: '/state/controller.sock',
+      liveTeleportEnabled: options.liveTeleportEnabled ?? true,
       ...(options.lifecycleDeadlineMs ? { lifecycleDeadlineMs: options.lifecycleDeadlineMs } : {}),
       ...(options.lifecyclePollIntervalMs
         ? { lifecyclePollIntervalMs: options.lifecyclePollIntervalMs }
         : {}),
     },
     {
-      cloud: cloudClient,
+      ...(cloudClient ? { cloud: cloudClient } : {}),
       store,
       createAppServer,
       probeCapability: options.probe ?? (async () => undefined),
@@ -332,6 +335,138 @@ function persistedLocal(overrides: Partial<CodexControllerState> = {}): CodexCon
 }
 
 describe('CodexLiveController', () => {
+  it.each([
+    ['unset', {}, false],
+    ['false', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: 'false' }, false],
+    ['true', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: 'true' }, true],
+    ['trimmed uppercase true', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: ' TRUE ' }, true],
+    ['noncanonical truthy value', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: '1' }, false],
+  ] as const)('treats the local teleport flag as %s', (_name, env, enabled) => {
+    expect(isCodexLiveTeleportEnabled(env)).toBe(enabled);
+  });
+
+  it('keeps a fresh managed Codex session entirely local when teleport is disabled', async () => {
+    const local = appServer();
+    const cloudClient = cloud();
+    const probe = vi.fn(async () => {
+      throw new Error('teleport capability probe must remain dormant');
+    });
+    const { controller, checkpointAndSeal } = createController({
+      liveTeleportEnabled: false,
+      cloud: cloudClient,
+      sessions: [local],
+      probe,
+    });
+
+    await expect(controller.initialize()).resolves.toMatchObject({
+      phase: 'local',
+      execution: 'local',
+      cloudLifecycle: 'none',
+    });
+    await expect(controller.runTurn('local only')).resolves.toMatchObject({ turnId: 'turn-1' });
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(cloudClient.prewarm).not.toHaveBeenCalled();
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(cloudClient.status).not.toHaveBeenCalled();
+    expect(cloudClient.revoke).not.toHaveBeenCalled();
+    expect(checkpointAndSeal).not.toHaveBeenCalled();
+    expect(local.addEnvironment).not.toHaveBeenCalled();
+    expect(local.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
+    expect(() =>
+      controller.requestTeleport({ requestId: 'disabled-request', expectedGeneration: 1 })
+    ).toThrow('RELAY_LIVE_SESSION_TELEPORT_ENABLED=true');
+  });
+
+  it('starts and runs locally while disabled without any Cloud client', async () => {
+    const local = appServer();
+    const { controller } = createController({
+      liveTeleportEnabled: false,
+      cloud: null,
+      sessions: [local],
+    });
+
+    await expect(controller.initialize()).resolves.toMatchObject({ execution: 'local' });
+    await expect(controller.runTurn('no Cloud login')).resolves.toMatchObject({ turnId: 'turn-1' });
+    expect(local.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
+  });
+
+  it('fences earlier Cloud ownership on disabled startup, then stays local without rewarming', async () => {
+    const store = memoryStore(persistedRemote());
+    const replacement = appServer();
+    const cloudClient = cloud();
+    const probe = vi.fn(async () => undefined);
+    const { controller, resumePersistedLocalMount } = createController({
+      store,
+      cloud: cloudClient,
+      sessions: [replacement],
+      liveTeleportEnabled: false,
+      probe,
+    });
+
+    await expect(controller.initialize()).resolves.toMatchObject({
+      generation: 8,
+      phase: 'local',
+      execution: 'local',
+      cloudLifecycle: 'none',
+    });
+    await controller.runTurn('recovered local turn');
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(cloudClient.revoke).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: 7, idempotencyKey: 'session-1:7:revoke' })
+    );
+    expect(resumePersistedLocalMount).toHaveBeenCalledOnce();
+    expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+    expect(replacement.addEnvironment).not.toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
+    expect(cloudClient.prewarm).not.toHaveBeenCalled();
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(cloudClient.status).not.toHaveBeenCalled();
+    expect(store.value?.pending).toBeUndefined();
+  });
+
+  it('cancels a queued teleport on disabled startup without contacting Cloud', async () => {
+    const store = memoryStore(
+      persistedLocal({
+        phase: 'teleport_pending',
+        pending: { requestId: 'queued-before-disable', expectedGeneration: 3 },
+      })
+    );
+    const replacement = appServer();
+    const cloudClient = cloud();
+    const { controller } = createController({
+      store,
+      cloud: cloudClient,
+      sessions: [replacement],
+      liveTeleportEnabled: false,
+    });
+
+    await expect(controller.initialize()).resolves.toMatchObject({
+      generation: 3,
+      phase: 'local',
+      execution: 'local',
+      cloudLifecycle: 'none',
+    });
+    await controller.runTurn('still local');
+
+    expect(store.value?.pending).toBeUndefined();
+    expect(cloudClient.prewarm).not.toHaveBeenCalled();
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(cloudClient.status).not.toHaveBeenCalled();
+    expect(cloudClient.revoke).not.toHaveBeenCalled();
+    expect(replacement.addEnvironment).not.toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
+  });
+
   it('fails before starting an app-server when the local experimental capability is unsupported', async () => {
     const { controller, createAppServer } = createController({
       probe: async () => {
@@ -345,7 +480,10 @@ describe('CodexLiveController', () => {
 
   it('prewarms without stopping or sealing the active local mount', async () => {
     const cloudClient = cloud();
-    const { controller, checkpointAndSeal } = createController({ cloud: cloudClient });
+    const { controller, checkpointAndSeal } = createController({
+      cloud: cloudClient,
+      liveTeleportEnabled: true,
+    });
 
     await controller.initialize();
 

@@ -41,6 +41,17 @@ export type CodexTeleportRequest = {
   expectedGeneration: number;
 };
 
+export const RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV = 'RELAY_LIVE_SESSION_TELEPORT_ENABLED';
+
+/**
+ * Live execution teleport is a dark-launched, local-only capability. Only the
+ * explicit string `true` enables it; unset, false, and every unknown value
+ * fail closed so merging support code cannot activate remote execution.
+ */
+export function isCodexLiveTeleportEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV]?.trim().toLowerCase() === 'true';
+}
+
 type CodexRecoveredOutcome = {
   sessionId: string;
   threadId: string;
@@ -197,7 +208,7 @@ export type CodexPersistedMountResumeProvider = (
 ) => Promise<void>;
 
 export type CodexLiveControllerDependencies = {
-  cloud: LiveTeleportCloudClient;
+  cloud?: LiveTeleportCloudClient;
   store: CodexControllerStateStore;
   createAppServer: () => Promise<CodexAppServerSession>;
   probeCapability: () => Promise<void>;
@@ -214,6 +225,8 @@ export type CodexLiveControllerOptions = {
   workspaceRoot: string;
   socketPath: string;
   model?: string;
+  /** Defaults off. Enabling must always be an explicit local operator action. */
+  liveTeleportEnabled?: boolean;
   lifecycleDeadlineMs?: number;
   lifecyclePollIntervalMs?: number;
 };
@@ -432,6 +445,11 @@ function inferredCloudLifecycle(value: Record<string, unknown>): CodexCloudLifec
   return 'none';
 }
 
+/** True when startup must contact Cloud to fence an earlier enabled process. */
+export function codexControllerStateMayOwnCloudResources(state: CodexControllerState): boolean {
+  return inferredCloudLifecycle(state as unknown as Record<string, unknown>) !== 'none';
+}
+
 function validatePersistedState(value: unknown): CodexControllerState {
   const state = record(value);
   if (
@@ -566,19 +584,26 @@ export class CodexLiveController {
 
   async initialize(): Promise<PublicCodexControllerStatus> {
     this.recoveredEvidenceTaken = undefined;
-    await this.deps.probeCapability();
     const persisted = this.deps.store.read();
     if (persisted && path.resolve(persisted.workspaceRoot) !== path.resolve(this.options.workspaceRoot)) {
       throw new Error(
         `The persisted managed Codex thread belongs to ${persisted.workspaceRoot}, not ${this.options.workspaceRoot}.`
       );
     }
+    if (this.liveTeleportEnabled() || (persisted && this.cloudMayOwnResources(persisted))) {
+      this.requireCloud();
+    }
+    if (this.liveTeleportEnabled()) await this.deps.probeCapability();
 
     if (persisted) {
       const mustFenceCloud = this.cloudMayOwnResources(persisted);
       const mustRecoverMount = Boolean(persisted.source || persisted.mountRestore || persisted.remote);
       this.state = {
         ...persisted,
+        // Disabling the switch cancels dormant intent before the new process
+        // can observe a turn boundary. Existing Cloud ownership is still
+        // fenced below before local execution is allowed to resume.
+        pending: this.liveTeleportEnabled() ? persisted.pending : undefined,
         controllerPid: this.deps.pid,
         socketPath: this.options.socketPath,
         workspaceRoot: this.options.workspaceRoot,
@@ -644,7 +669,7 @@ export class CodexLiveController {
 
       const state = this.requireState();
       state.generation = persisted.generation + (mustFenceCloud || mustRecoverMount ? 1 : 0);
-      if (state.pending) {
+      if (state.pending && this.liveTeleportEnabled()) {
         // A queued teleport is an accepted durable intent, independent from
         // recovered output delivery. Fencing consumes the old Cloud identity,
         // so rebind the request in the same write that publishes the new
@@ -685,7 +710,7 @@ export class CodexLiveController {
       this.persist();
     }
 
-    if (!this.requireState().recoveredOutcome) this.schedulePrewarm();
+    if (this.liveTeleportEnabled() && !this.requireState().recoveredOutcome) this.schedulePrewarm();
     return this.status();
   }
 
@@ -740,6 +765,11 @@ export class CodexLiveController {
   }
 
   requestTeleport(request: CodexTeleportRequest): PublicCodexControllerStatus {
+    if (!this.liveTeleportEnabled()) {
+      throw new Error(
+        `Codex live session teleport is disabled. Set ${RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV}=true before starting \`relay codex run\`.`
+      );
+    }
     const state = this.requireState();
     this.assertNoUnacknowledgedOutcome('queue a teleport');
     if (request.expectedGeneration !== state.generation) {
@@ -780,9 +810,12 @@ export class CodexLiveController {
     this.persist();
     try {
       if (pendingAtBoundary) await this.applyPendingTeleport(pendingAtBoundary);
-      if (this.requireState().phase === 'remote') await this.ensureRemoteActiveOrRecover();
+      if (this.liveTeleportEnabled() && this.requireState().phase === 'remote') {
+        await this.ensureRemoteActiveOrRecover();
+      }
       const execution =
-        this.requireState().phase === 'remote' || this.requireState().phase === 'verifying'
+        this.liveTeleportEnabled() &&
+        (this.requireState().phase === 'remote' || this.requireState().phase === 'verifying')
           ? 'remote'
           : 'local';
       state.inFlightTurn = {
@@ -806,7 +839,8 @@ export class CodexLiveController {
   private async executeTurn(text: string, clientUserMessageId: string): Promise<CodexTurnResult> {
     const state = this.requireState();
     const phase = state.phase as CodexControllerPhase;
-    const remote = phase === 'verifying' || phase === 'remote' ? state.remote : undefined;
+    const remote =
+      this.liveTeleportEnabled() && (phase === 'verifying' || phase === 'remote') ? state.remote : undefined;
     try {
       const result = await this.requireAppServer().runTurn({
         threadId: state.threadId,
@@ -967,6 +1001,13 @@ export class CodexLiveController {
 
   private async applyPendingTeleport(pendingAtBoundary: CodexTeleportRequest): Promise<void> {
     const state = this.requireState();
+    if (!this.liveTeleportEnabled()) {
+      state.pending = undefined;
+      state.phase = 'local';
+      state.updatedAt = this.timestamp();
+      this.persist();
+      return;
+    }
     const pending = state.pending;
     if (!pending || pending.requestId !== pendingAtBoundary.requestId) return;
     if (pending.expectedGeneration !== state.generation) {
@@ -1014,7 +1055,7 @@ export class CodexLiveController {
       this.persist();
       const environment = await this.withAbortableLifecycleDeadline(
         (signal) =>
-          this.deps.cloud.acquire({
+          this.requireCloud().acquire({
             sessionId: state.sessionId,
             threadId: state.threadId,
             generation: state.generation,
@@ -1170,7 +1211,7 @@ export class CodexLiveController {
     await this.withAbortableLifecycleDeadline(async (signal) => {
       let lastError: unknown;
       try {
-        const revoked = await this.deps.cloud.revoke({
+        const revoked = await this.requireCloud().revoke({
           sessionId: state.sessionId,
           generation: state.generation,
           idempotencyKey: `${state.sessionId}:${state.generation}:revoke`,
@@ -1189,7 +1230,7 @@ export class CodexLiveController {
       }
       for (let attempt = 0; attempt < this.lifecycleAttempts(); attempt += 1) {
         try {
-          const status = await this.deps.cloud.status({
+          const status = await this.requireCloud().status({
             sessionId: state.sessionId,
             generation: state.generation,
             signal,
@@ -1213,7 +1254,7 @@ export class CodexLiveController {
     const attempts = this.lifecycleAttempts();
     await this.withAbortableLifecycleDeadline(async (signal) => {
       for (let attempt = 0; attempt < attempts; attempt += 1) {
-        const status = await this.deps.cloud.status({
+        const status = await this.requireCloud().status({
           sessionId: state.sessionId,
           generation: state.generation,
           prewarmId,
@@ -1256,7 +1297,7 @@ export class CodexLiveController {
   }
 
   private schedulePrewarm(): void {
-    if (this.prewarmPromise || this.closing) return;
+    if (!this.liveTeleportEnabled() || this.prewarmPromise || this.closing) return;
     const state = this.requireState();
     // Recovered output is an independent durable delivery queue. Do not start
     // another lifecycle while it is unacknowledged, and do not duplicate an
@@ -1280,7 +1321,7 @@ export class CodexLiveController {
     try {
       const prewarm = await this.withAbortableLifecycleDeadline(
         (signal) =>
-          this.deps.cloud.prewarm({
+          this.requireCloud().prewarm({
             sessionId: state.sessionId,
             generation,
             workspaceRoot: '/',
@@ -1346,7 +1387,7 @@ export class CodexLiveController {
     try {
       const status = await this.withAbortableLifecycleDeadline(
         (signal) =>
-          this.deps.cloud.status({
+          this.requireCloud().status({
             sessionId: state.sessionId,
             generation: state.generation,
             signal,
@@ -1481,7 +1522,18 @@ export class CodexLiveController {
   }
 
   private cloudMayOwnResources(state = this.requireState()): boolean {
-    return inferredCloudLifecycle(state as unknown as Record<string, unknown>) !== 'none';
+    return codexControllerStateMayOwnCloudResources(state);
+  }
+
+  private liveTeleportEnabled(): boolean {
+    return this.options.liveTeleportEnabled === true;
+  }
+
+  private requireCloud(): LiveTeleportCloudClient {
+    if (!this.deps.cloud) {
+      throw new Error('Codex live session teleport requires an authenticated Cloud client.');
+    }
+    return this.deps.cloud;
   }
 
   private assertNoUnacknowledgedOutcome(operation: string): void {
