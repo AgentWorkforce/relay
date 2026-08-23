@@ -134,6 +134,22 @@ function memoryStore(initial: CodexControllerState | null = null): CodexControll
   };
 }
 
+function fileStore(filePath: string, initial: CodexControllerState) {
+  const durable = new FileCodexControllerStateStore(filePath);
+  durable.write(initial);
+  return {
+    value: structuredClone(initial) as CodexControllerState | null,
+    read() {
+      this.value = durable.read();
+      return this.value ? structuredClone(this.value) : null;
+    },
+    write(state: CodexControllerState) {
+      durable.write(state);
+      this.value = structuredClone(state);
+    },
+  };
+}
+
 function appServer(overrides: Partial<CodexAppServerSession> = {}): CodexAppServerSession {
   return {
     initialize: vi.fn(async () => undefined),
@@ -285,6 +301,16 @@ function persistedRemote(overrides: Partial<CodexControllerState> = {}): CodexCo
     updatedAt: '2026-08-23T11:00:00.000Z',
     ...overrides,
   };
+}
+
+function persistedRemoteForFile(overrides: Partial<CodexControllerState> = {}): CodexControllerState {
+  const persisted = persistedRemote(overrides);
+  if (persisted.remote) {
+    const remote = persisted.remote as typeof persisted.remote & Record<string, unknown>;
+    delete remote.connectPath;
+    delete remote.execServerUrl;
+  }
+  return persisted;
 }
 
 function persistedLocal(overrides: Partial<CodexControllerState> = {}): CodexControllerState {
@@ -958,6 +984,107 @@ describe('CodexLiveController', () => {
     expect(store.value?.recoveredOutcome).toBeUndefined();
     expect(third.controller.takeRecoveredTurn()).toBeUndefined();
   });
+
+  it.each(['completed', 'failed', 'interrupted'] as const)(
+    'keeps a file-backed %s delivery fenced across restart, resume failure, close failure, and restart',
+    async (status) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `relay-controller-delivery-${status}-`));
+      const statePath = path.join(directory, 'state.json');
+      try {
+        const clientUserMessageId = `client-file-${status}`;
+        const store = fileStore(
+          statePath,
+          persistedRemoteForFile({
+            inFlightTurn: { clientUserMessageId, execution: 'remote' },
+          })
+        );
+        const outcome =
+          status === 'completed'
+            ? completedOutcome('turn-file-completed', 'file-backed answer', clientUserMessageId)
+            : { status, turnId: `turn-file-${status}` };
+        const reconciler = appServer({ turnOutcome: vi.fn(async () => outcome) });
+        const first = createController({ store, sessions: [reconciler] });
+
+        await expect(first.controller.initialize()).resolves.toMatchObject({
+          phase: 'local',
+          generation: 8,
+        });
+        await first.controller.close();
+
+        const durableAfterReconcile = new FileCodexControllerStateStore(statePath).read();
+        expect(durableAfterReconcile).toMatchObject({
+          phase: 'local',
+          generation: 8,
+          recoveredOutcome: {
+            generation: 8,
+            clientUserMessageId,
+            status,
+          },
+        });
+        expect(durableAfterReconcile?.pending).toBeUndefined();
+        expect(durableAfterReconcile?.remote).toBeUndefined();
+
+        const resumeFailure = appServer({
+          resumeThread: vi.fn(async () => Promise.reject(new Error('resume unavailable'))),
+        });
+        const second = createController({ store, sessions: [resumeFailure] });
+        await expect(second.controller.initialize()).rejects.toThrow('CODEX_THREAD_RESUME_FAILED_ON_RESTART');
+
+        const durableAfterResumeFailure = new FileCodexControllerStateStore(statePath).read();
+        expect(durableAfterResumeFailure).toMatchObject({
+          phase: 'recovery_failed',
+          generation: 8,
+          recoveredOutcome: { clientUserMessageId, status },
+        });
+
+        const closeError = new Error('close unavailable');
+        const closeFailure = appServer({ close: vi.fn(async () => Promise.reject(closeError)) });
+        const third = createController({ store, sessions: [closeFailure] });
+        await expect(third.controller.initialize()).resolves.toMatchObject({
+          phase: 'local',
+          generation: 8,
+        });
+
+        expect(() =>
+          third.controller.requestTeleport({ requestId: 'must-not-queue', expectedGeneration: 8 })
+        ).toThrow('awaiting durable output acknowledgment');
+        await expect(third.controller.runTurn('must not execute')).rejects.toThrow(
+          'awaiting durable output acknowledgment'
+        );
+        await expect(third.controller.rollback()).rejects.toThrow('awaiting durable output acknowledgment');
+        expect(closeFailure.runTurn).not.toHaveBeenCalled();
+        expect(closeFailure.addEnvironment).not.toHaveBeenCalled();
+        expect(store.value?.pending).toBeUndefined();
+        expect(store.value?.generation).toBe(8);
+
+        await expect(third.controller.close()).rejects.toBe(closeError);
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          phase: 'recovery_failed',
+          generation: 8,
+          recoveredOutcome: { clientUserMessageId, status },
+        });
+
+        const finalSession = appServer();
+        const fourth = createController({ store, sessions: [finalSession] });
+        await expect(fourth.controller.initialize()).resolves.toMatchObject({
+          phase: 'local',
+          generation: 8,
+        });
+        if (status === 'completed') {
+          expect(fourth.controller.takeRecoveredTurn()).toMatchObject({
+            turnId: 'turn-file-completed',
+          });
+        } else {
+          expect(fourth.controller.takeRecoveredTerminal()).toMatchObject({ status });
+        }
+        fourth.controller.acknowledgeRecoveredOutcome();
+        expect(new FileCodexControllerStateStore(statePath).read()?.recoveredOutcome).toBeUndefined();
+        await fourth.controller.close();
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('fails outcome-uncertain when an accepted remote turn cannot be found after fencing', async () => {
     const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('transport lost'))) });

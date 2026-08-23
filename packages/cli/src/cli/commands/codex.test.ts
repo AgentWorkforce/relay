@@ -2,9 +2,149 @@ import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CodexTurnRecordedError } from '../lib/codex-live-controller.js';
-import { registerCodexCommands, runManagedCodexTurn, surfaceRecoveredCodexTerminal } from './codex.js';
+import {
+  nodeCallbackWriter,
+  registerCodexCommands,
+  runManagedCodexTurn,
+  surfaceRecoveredCodexTerminal,
+} from './codex.js';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function reconciledResult() {
+  const turn = {
+    id: 'turn-reconciled',
+    status: 'completed',
+    itemsView: 'full',
+    items: [{ id: 'answer-1', type: 'agentMessage', text: 'the recovered answer' }],
+  };
+  return {
+    turnId: turn.id,
+    response: { turn },
+    completed: { method: 'turn/completed', params: { threadId: 'thread-1', turn } },
+    reconciled: true as const,
+  };
+}
+
+describe('nodeCallbackWriter', () => {
+  it('waits for the Node write callback even when write reports backpressure', async () => {
+    let callback!: (error?: Error | null) => void;
+    const stream = {
+      write: vi.fn((_message: string, done: (error?: Error | null) => void) => {
+        callback = done;
+        return false;
+      }),
+    };
+    const completed = vi.fn();
+    const pending = nodeCallbackWriter(stream)('durable output').then(completed);
+
+    await Promise.resolve();
+    expect(stream.write).toHaveBeenCalledWith('durable output', expect.any(Function));
+    expect(completed).not.toHaveBeenCalled();
+
+    callback();
+    await pending;
+    expect(completed).toHaveBeenCalledOnce();
+  });
+
+  it('rejects callback errors and synchronous stream throws', async () => {
+    const callbackError = new Error('callback failed');
+    const callbackStream = {
+      write: vi.fn((_message: string, done: (error?: Error | null) => void) => {
+        done(callbackError);
+        return true;
+      }),
+    };
+    await expect(nodeCallbackWriter(callbackStream)('output')).rejects.toBe(callbackError);
+
+    const thrown = new Error('write threw');
+    const throwingStream = {
+      write: vi.fn(() => {
+        throw thrown;
+      }),
+    };
+    await expect(nodeCallbackWriter(throwingStream as never)('output')).rejects.toBe(thrown);
+  });
+});
 
 describe('runManagedCodexTurn', () => {
+  it('keeps a completed recovery unacknowledged until the async output writer resolves', async () => {
+    const write = deferred<void>();
+    const controller = {
+      runTurn: vi.fn(async () => reconciledResult()),
+      acknowledgeRecoveredOutcome: vi.fn(),
+    };
+    const running = runManagedCodexTurn(controller as never, 'recover me', {
+      json: false,
+      writeError: vi.fn(async () => undefined),
+      writeOutput: vi.fn(() => write.promise),
+    });
+
+    await vi.waitFor(() => expect(controller.runTurn).toHaveBeenCalledOnce());
+    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+    write.resolve();
+    await running;
+    expect(controller.acknowledgeRecoveredOutcome).toHaveBeenCalledOnce();
+  });
+
+  it.each(['failed', 'interrupted'] as const)(
+    'keeps a %s recovery unacknowledged until the async error writer resolves',
+    async (status) => {
+      const write = deferred<void>();
+      const terminal = new CodexTurnRecordedError(status, `recorded ${status}`, true);
+      const controller = {
+        runTurn: vi.fn().mockRejectedValue(terminal),
+        acknowledgeRecoveredOutcome: vi.fn(),
+      };
+      const running = runManagedCodexTurn(controller as never, 'recover me', {
+        json: false,
+        writeError: vi.fn(() => write.promise),
+      });
+
+      await vi.waitFor(() => expect(controller.runTurn).toHaveBeenCalledOnce());
+      expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+      write.resolve();
+      await expect(running).rejects.toBe(terminal);
+      expect(controller.acknowledgeRecoveredOutcome).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each(['completed', 'failed', 'interrupted'] as const)(
+    'keeps a %s recovery durable when the Node write callback fails',
+    async (status) => {
+      const writeError = new Error(`write callback failed for ${status}`);
+      const writer = nodeCallbackWriter({
+        write: vi.fn((_message: string, done: (error?: Error | null) => void) => {
+          done(writeError);
+          return true;
+        }),
+      });
+      const terminal =
+        status === 'completed' ? undefined : new CodexTurnRecordedError(status, `recorded ${status}`, true);
+      const controller = {
+        runTurn: terminal ? vi.fn().mockRejectedValue(terminal) : vi.fn(async () => reconciledResult()),
+        acknowledgeRecoveredOutcome: vi.fn(),
+      };
+
+      await expect(
+        runManagedCodexTurn(controller as never, 'recover me', {
+          json: false,
+          writeError: writer,
+          writeOutput: writer,
+        })
+      ).rejects.toBe(writeError);
+      expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+    }
+  );
+
   it('renders an exact assistant answer recovered after completion-notification loss', async () => {
     const turn = {
       id: 'turn-reconciled',
@@ -103,28 +243,31 @@ describe('runManagedCodexTurn', () => {
     }
   );
 
-  it('does not acknowledge a live reconciled terminal when rendering fails', async () => {
-    const terminal = new CodexTurnRecordedError('failed', 'recorded failed', true);
-    const renderError = new Error('stderr unavailable');
-    const controller = {
-      runTurn: vi.fn().mockRejectedValue(terminal),
-      acknowledgeRecoveredOutcome: vi.fn(),
-    };
+  it.each(['failed', 'interrupted'] as const)(
+    'does not acknowledge a live reconciled %s terminal when rendering throws',
+    async (status) => {
+      const terminal = new CodexTurnRecordedError(status, `recorded ${status}`, true);
+      const renderError = new Error('stderr unavailable');
+      const controller = {
+        runTurn: vi.fn().mockRejectedValue(terminal),
+        acknowledgeRecoveredOutcome: vi.fn(),
+      };
 
-    await expect(
-      runManagedCodexTurn(controller as never, 'do not replay', {
-        json: false,
-        writeError: () => {
-          throw renderError;
-        },
-      })
-    ).rejects.toBe(renderError);
-    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
-  });
+      await expect(
+        runManagedCodexTurn(controller as never, 'do not replay', {
+          json: false,
+          writeError: () => {
+            throw renderError;
+          },
+        })
+      ).rejects.toBe(renderError);
+      expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+    }
+  );
 
   it.each(['failed', 'interrupted'] as const)(
     'surfaces a crash-reconciled %s turn nonzero before any new prompt runs',
-    (status) => {
+    async (status) => {
       const terminal = new CodexTurnRecordedError(status, `recorded ${status}`);
       const controller = {
         takeRecoveredTerminal: vi.fn().mockReturnValueOnce(terminal).mockReturnValue(undefined),
@@ -133,38 +276,41 @@ describe('runManagedCodexTurn', () => {
       };
       const writeError = vi.fn();
 
-      expect(() => surfaceRecoveredCodexTerminal(controller as never, { json: false, writeError })).toThrow(
-        terminal
-      );
+      await expect(
+        surfaceRecoveredCodexTerminal(controller as never, { json: false, writeError })
+      ).rejects.toBe(terminal);
 
       expect(writeError).toHaveBeenCalledWith(expect.stringContaining(`turn as ${status}`));
       expect(controller.acknowledgeRecoveredOutcome).toHaveBeenCalledOnce();
-      expect(() =>
+      await expect(
         surfaceRecoveredCodexTerminal(controller as never, { json: false, writeError })
-      ).not.toThrow();
+      ).resolves.toBeUndefined();
       expect(writeError).toHaveBeenCalledTimes(1);
       expect(controller.runTurn).not.toHaveBeenCalled();
     }
   );
 
-  it('does not acknowledge durable terminal evidence when rendering fails', () => {
-    const terminal = new CodexTurnRecordedError('failed', 'recorded failed');
-    const controller = {
-      takeRecoveredTerminal: vi.fn(() => terminal),
-      acknowledgeRecoveredOutcome: vi.fn(),
-    };
-    const renderError = new Error('stderr unavailable');
+  it.each(['failed', 'interrupted'] as const)(
+    'does not acknowledge durable %s terminal evidence when rendering throws',
+    async (status) => {
+      const terminal = new CodexTurnRecordedError(status, `recorded ${status}`);
+      const controller = {
+        takeRecoveredTerminal: vi.fn(() => terminal),
+        acknowledgeRecoveredOutcome: vi.fn(),
+      };
+      const renderError = new Error('stderr unavailable');
 
-    expect(() =>
-      surfaceRecoveredCodexTerminal(controller as never, {
-        json: false,
-        writeError: () => {
-          throw renderError;
-        },
-      })
-    ).toThrow(renderError);
-    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
-  });
+      await expect(
+        surfaceRecoveredCodexTerminal(controller as never, {
+          json: false,
+          writeError: () => {
+            throw renderError;
+          },
+        })
+      ).rejects.toBe(renderError);
+      expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+    }
+  );
 
   it('fails closed instead of continuing when fencing is unconfirmed', async () => {
     const controller = {

@@ -749,6 +749,12 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     if (input.status === 'active' && (!input.leaseExpiresAt || input.leaseExpiresAt !== input.expiresAt)) {
       throw new Error('Cloud live-teleport status returned inconsistent active lease metadata.');
     }
+    if (
+      (input.status === 'warming' || input.status === 'ready' || input.status === 'verifying') &&
+      input.leaseExpiresAt !== undefined
+    ) {
+      throw new Error('Cloud live-teleport status returned a lease before the environment became active.');
+    }
     const requiresEligibleRollout =
       input.status === 'warming' ||
       input.status === 'ready' ||

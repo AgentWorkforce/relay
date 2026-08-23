@@ -758,6 +758,75 @@ describe('CloudLiveTeleportClient', () => {
     });
   });
 
+  it.each(['warming', 'ready', 'verifying'] as const)(
+    'rejects leaseExpiresAt while Cloud is only %s',
+    async (status) => {
+      const expiresAt = '2026-08-23T12:30:00.000Z';
+      const client = new CloudLiveTeleportClient(
+        async () =>
+          Response.json({
+            sessionId: 'session-1',
+            generation: 2,
+            prewarmId: 'prewarm-2',
+            status,
+            expiresAt,
+            leaseExpiresAt: expiresAt,
+            rollout: cloudRollout,
+            ...(status === 'warming' || status === 'verifying' ? { retryAfterMs: 250 } : {}),
+          }),
+        'https://cloud.agentrelay.test'
+      );
+
+      await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+        'lease before the environment became active'
+      );
+    }
+  );
+
+  it('pins active, cleanup, and terminal lease metadata semantics', async () => {
+    const activeWithoutLease = new CloudLiveTeleportClient(async () => {
+      const { leaseExpiresAt: _leaseExpiresAt, ...response } = cloudActiveStatus();
+      return Response.json(response);
+    }, 'https://cloud.agentrelay.test');
+    await expect(activeWithoutLease.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+      'inconsistent active lease metadata'
+    );
+
+    const mismatchedActiveLease = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({
+          ...cloudActiveStatus(),
+          leaseExpiresAt: '2026-08-23T12:44:59.000Z',
+        }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(mismatchedActiveLease.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+      'inconsistent active lease metadata'
+    );
+
+    for (const status of ['failed', 'revoked', 'expired'] as const) {
+      const terminal = new CloudLiveTeleportClient(
+        async () =>
+          Response.json({
+            sessionId: 'session-1',
+            generation: 2,
+            prewarmId: 'prewarm-2',
+            status,
+            expiresAt: '2026-08-23T12:30:00.000Z',
+            // A terminal row may retain its historical active lease. It no
+            // longer grants execution and need not equal the terminal expiry.
+            leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+            rollout: cloudRollout,
+          }),
+        'https://cloud.agentrelay.test'
+      );
+      await expect(terminal.status({ sessionId: 'session-1', generation: 2 })).resolves.toMatchObject({
+        status,
+        leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+      });
+    }
+  });
+
   it('parses the exact active lease deadline and rejects non-canonical timestamps', async () => {
     const fetcher = vi
       .fn()

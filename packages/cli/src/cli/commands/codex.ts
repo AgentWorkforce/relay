@@ -39,6 +39,31 @@ type ControlRequest =
 
 type ControlResponse = { ok: true; status: PublicCodexControllerStatus } | { ok: false; error: string };
 
+export type CodexAsyncWriter = (message: string) => Promise<void>;
+
+type NodeCallbackWritable = {
+  write(message: string, callback: (error?: Error | null) => void): boolean;
+};
+
+/**
+ * Adapts Node's callback-based stream contract into a durable-output promise.
+ * A false return value is backpressure, not completion; only the callback ACKs
+ * the write. Callback errors and synchronous throws both reject the promise.
+ */
+export function nodeCallbackWriter(stream: NodeCallbackWritable): CodexAsyncWriter {
+  return (message) =>
+    new Promise<void>((resolve, reject) => {
+      try {
+        stream.write(message, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+}
+
 export interface CodexCommandDependencies {
   runManaged(options: { cwd: string; model?: string; prompt?: string; json?: boolean }): Promise<void>;
   checkpointAndSeal: CodexWorkspaceSealProvider;
@@ -77,8 +102,8 @@ export async function runManagedCodexTurn(
   text: string,
   options: {
     json: boolean;
-    writeError: (message: string) => void;
-    writeOutput?: (message: string) => void;
+    writeError: CodexAsyncWriter;
+    writeOutput?: CodexAsyncWriter;
   }
 ): Promise<void> {
   let result: CodexTurnResult;
@@ -87,11 +112,11 @@ export async function runManagedCodexTurn(
   } catch (error) {
     if (error instanceof CodexTurnRecordedError) {
       if (error.requiresRecoveryAcknowledgment) {
-        writeCodexRecordedTerminal(error, options);
+        await writeCodexRecordedTerminal(error, options);
         controller.acknowledgeRecoveredOutcome();
         throw error;
       }
-      surfaceCodexRecordedTerminal(error, options);
+      await surfaceCodexRecordedTerminal(error, options);
     }
     if (error instanceof CodexTurnOutcomeUncertainError) {
       throw new Error('Relay-managed Codex stopped because the last turn outcome is uncertain.', {
@@ -104,24 +129,24 @@ export async function runManagedCodexTurn(
     );
   }
   if (result.reconciled) {
-    writeReconciledTurn(result, options);
+    await writeReconciledTurn(result, options);
     controller.acknowledgeRecoveredOutcome();
   }
 }
 
-export function surfaceCodexRecordedTerminal(
+export async function surfaceCodexRecordedTerminal(
   error: CodexTurnRecordedError,
-  options: { json: boolean; writeError: (message: string) => void }
-): never {
-  writeCodexRecordedTerminal(error, options);
+  options: { json: boolean; writeError: CodexAsyncWriter }
+): Promise<never> {
+  await writeCodexRecordedTerminal(error, options);
   throw error;
 }
 
-function writeCodexRecordedTerminal(
+async function writeCodexRecordedTerminal(
   error: CodexTurnRecordedError,
-  options: { json: boolean; writeError: (message: string) => void }
-): void {
-  options.writeError(
+  options: { json: boolean; writeError: CodexAsyncWriter }
+): Promise<void> {
+  await options.writeError(
     options.json
       ? `${JSON.stringify({
           method: 'relay/codexTurnRecordedTerminal',
@@ -131,26 +156,26 @@ function writeCodexRecordedTerminal(
   );
 }
 
-export function surfaceRecoveredCodexTerminal(
+export async function surfaceRecoveredCodexTerminal(
   controller: Pick<CodexLiveController, 'takeRecoveredTerminal' | 'acknowledgeRecoveredOutcome'>,
-  options: { json: boolean; writeError: (message: string) => void }
-): void {
+  options: { json: boolean; writeError: CodexAsyncWriter }
+): Promise<void> {
   const terminal = controller.takeRecoveredTerminal();
   if (!terminal) return;
-  writeCodexRecordedTerminal(terminal, options);
+  await writeCodexRecordedTerminal(terminal, options);
   controller.acknowledgeRecoveredOutcome();
   throw terminal;
 }
 
-function writeReconciledTurn(
+async function writeReconciledTurn(
   result: CodexTurnResult,
-  options: { json: boolean; writeOutput?: (message: string) => void }
-): void {
+  options: { json: boolean; writeOutput?: CodexAsyncWriter }
+): Promise<void> {
   if (!options.writeOutput) {
     throw new Error('Reconciled Codex completion cannot be acknowledged without an output writer.');
   }
   if (options.json) {
-    options.writeOutput(`${JSON.stringify(result.completed)}\n`);
+    await options.writeOutput(`${JSON.stringify(result.completed)}\n`);
     return;
   }
   const params = result.completed.params;
@@ -177,7 +202,7 @@ function writeReconciledTurn(
   if (answers.length === 0) {
     throw new Error('Reconciled Codex completion did not contain an observable assistant answer.');
   }
-  options.writeOutput(`${answers.join('\n')}\n`);
+  await options.writeOutput(`${answers.join('\n')}\n`);
 }
 
 async function listen(server: net.Server, socketPath: string): Promise<void> {
@@ -302,6 +327,11 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
               StdioCodexAppServerSession.spawn({
                 cwd: workspaceRoot,
                 onNotification: (notification) => {
+                  // Live notifications are best-effort display hints, not the
+                  // durable delivery ACK. If a terminal notification is lost,
+                  // restart recovery writes the full answer at least once; it
+                  // may therefore duplicate a prefix already emitted here.
+                  // The underlying model turn is never submitted again.
                   if (options.json) process.stdout.write(`${JSON.stringify(notification)}\n`);
                   else {
                     const delta = agentMessageDelta(notification);
@@ -331,9 +361,9 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
         const server = createControlServer(controller);
         try {
           const status = await controller.initialize();
-          surfaceRecoveredCodexTerminal(controller, {
+          await surfaceRecoveredCodexTerminal(controller, {
             json: Boolean(options.json),
-            writeError: (message) => process.stderr.write(message),
+            writeError: nodeCallbackWriter(process.stderr),
           });
           await listen(server, paths.socketPath);
           process.stderr.write(
@@ -341,9 +371,9 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
           );
           const recoveredTurn = controller.takeRecoveredTurn();
           if (recoveredTurn) {
-            writeReconciledTurn(recoveredTurn, {
+            await writeReconciledTurn(recoveredTurn, {
               json: Boolean(options.json),
-              writeOutput: (message) => process.stdout.write(message),
+              writeOutput: nodeCallbackWriter(process.stdout),
             });
             controller.acknowledgeRecoveredOutcome();
           }
@@ -351,8 +381,8 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
           if (options.prompt) {
             await runManagedCodexTurn(controller, options.prompt, {
               json: Boolean(options.json),
-              writeError: (message) => process.stderr.write(message),
-              writeOutput: (message) => process.stdout.write(message),
+              writeError: nodeCallbackWriter(process.stderr),
+              writeOutput: nodeCallbackWriter(process.stdout),
             });
           }
           const input = readline.createInterface({
@@ -363,8 +393,8 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
             if (!line.trim()) continue;
             await runManagedCodexTurn(controller, line, {
               json: Boolean(options.json),
-              writeError: (message) => process.stderr.write(message),
-              writeOutput: (message) => process.stdout.write(message),
+              writeError: nodeCallbackWriter(process.stderr),
+              writeOutput: nodeCallbackWriter(process.stdout),
             });
             if (!options.json) process.stdout.write('\n');
           }

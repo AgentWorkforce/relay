@@ -75,7 +75,10 @@ export type CodexControllerState = {
     clientUserMessageId: string;
     execution: 'local' | 'remote';
   };
-  /** Durable, at-least-once recovery evidence retained until the CLI acknowledges rendering it. */
+  /**
+   * Durable, at-least-once output delivery retained until the CLI acknowledges
+   * that its asynchronous writer completed. Model execution is never replayed.
+   */
   recoveredOutcome?: CodexRecoveredOutcome;
   lastError?: string;
   updatedAt: string;
@@ -291,9 +294,9 @@ function invalidNestedState(state: Record<string, unknown>): boolean {
     (state.recoveredOutcome !== undefined && !recovered) ||
     (inFlight !== undefined && recovered !== undefined) ||
     (recovered !== undefined && !validRecoveredOutcome(state, recovered)) ||
+    (recovered !== undefined && state.phase !== 'local' && state.phase !== 'recovery_failed') ||
     (recovered !== undefined &&
-      (state.phase !== 'local' ||
-        pending !== undefined ||
+      (pending !== undefined ||
         source !== undefined ||
         restore !== undefined ||
         remote !== undefined ||
@@ -675,7 +678,13 @@ export class CodexLiveController {
     return publicStatus(this.requireState());
   }
 
-  /** Claims crash-reconciled completion evidence in memory without clearing its durable copy. */
+  /**
+   * Claims crash-reconciled completion evidence without clearing its durable
+   * copy. Rendering the full recovered answer is intentionally at-least-once:
+   * a process can have emitted notification deltas before it lost the terminal
+   * notification, so a recovered answer may duplicate an already-observed
+   * prefix. The model turn itself is not replayed.
+   */
   takeRecoveredTurn(): CodexTurnResult | undefined {
     const recovered = this.requireState().recoveredOutcome;
     if (!recovered || recovered.status !== 'completed' || this.recoveredEvidenceTaken) return undefined;
@@ -707,16 +716,17 @@ export class CodexLiveController {
     state.updatedAt = this.timestamp();
     try {
       this.persist();
-      this.recoveredEvidenceTaken = undefined;
-      if (durable.status === 'completed') this.schedulePrewarm();
     } catch (error) {
       state.recoveredOutcome = durable;
       throw error;
     }
+    this.recoveredEvidenceTaken = undefined;
+    if (state.phase === 'local') this.schedulePrewarm();
   }
 
   requestTeleport(request: CodexTeleportRequest): PublicCodexControllerStatus {
     const state = this.requireState();
+    this.assertNoUnacknowledgedOutcome('queue a teleport');
     if (request.expectedGeneration !== state.generation) {
       throw new Error(
         `Stale teleport generation ${request.expectedGeneration}; active generation is ${state.generation}.`
@@ -741,6 +751,7 @@ export class CodexLiveController {
 
   async runTurn(text: string): Promise<CodexTurnResult> {
     const state = this.requireState();
+    this.assertNoUnacknowledgedOutcome('start a turn');
     if (state.turnActive) throw new Error('A Codex turn is already active.');
     if (TURN_BLOCKED_PHASES.has(state.phase)) {
       throw new Error(`Cannot start a turn while the controller is ${state.phase}.`);
@@ -853,6 +864,7 @@ export class CodexLiveController {
 
   async rollback(): Promise<PublicCodexControllerStatus> {
     const state = this.requireState();
+    this.assertNoUnacknowledgedOutcome('roll back');
     if (state.turnActive) throw new Error('Rollback is only allowed at a Codex turn boundary.');
     await this.recoverLocal('rollback-revoke', 'Operator requested local rollback.');
     return this.status();
@@ -1434,6 +1446,14 @@ export class CodexLiveController {
 
   private cloudMayOwnResources(state = this.requireState()): boolean {
     return inferredCloudLifecycle(state as unknown as Record<string, unknown>) !== 'none';
+  }
+
+  private assertNoUnacknowledgedOutcome(operation: string): void {
+    if (this.requireState().recoveredOutcome) {
+      throw new Error(
+        `Cannot ${operation} while a recovered Codex turn is awaiting durable output acknowledgment.`
+      );
+    }
   }
 
   private markCloudFenced(): void {
