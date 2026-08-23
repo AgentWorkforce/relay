@@ -1087,19 +1087,37 @@ async fn admit_agent_registration(
             // agent-specific 404 (`agent_not_found`) is a real failure and is
             // deliberately excluded.
             let token_response = match token_response {
-                Ok(response) => response.token,
+                Ok(response) => {
+                    // Same reasoning as the takeover path in ws.rs: the audit id
+                    // ties this recovery to the engine's audit record, so a
+                    // crash reclaim is checkable rather than inferred.
+                    tracing::info!(
+                        agent = %existing.name,
+                        agent_id = %existing.id,
+                        audit_id = %response.audit_id,
+                        "recovered agent identity via the recover route"
+                    );
+                    response.token
+                }
                 Err(RelayError::Api {
                     status: 404,
                     ref code,
                     ..
-                }) if code != "agent_not_found" => relay
-                    .rotate_agent_token(&existing.name, workspace_key)
-                    .await
-                    .map_err(relay_error_to_anyhow)
-                    .context(
-                        "recover unavailable on this engine and the legacy rotate fallback failed",
-                    )?
-                    .token,
+                }) if code != "agent_not_found" => {
+                    tracing::warn!(
+                        agent = %existing.name,
+                        agent_id = %existing.id,
+                        "recover route absent on this engine; fell back to the legacy workspace-key rotate (unaudited)"
+                    );
+                    relay
+                        .rotate_agent_token(&existing.name, workspace_key)
+                        .await
+                        .map_err(relay_error_to_anyhow)
+                        .context(
+                            "recover unavailable on this engine and the legacy rotate fallback failed",
+                        )?
+                        .token
+                }
                 Err(error) => return Err(relay_error_to_anyhow(error)),
             };
             Ok((

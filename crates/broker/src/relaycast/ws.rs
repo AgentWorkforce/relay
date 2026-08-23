@@ -288,6 +288,10 @@ impl RelaycastHttpClient {
         // taking over again would invalidate it.
         if let Some(registration) = self.registration.as_ref().as_ref() {
             if let Some(cached) = registration.cached_agent_token(agent_name) {
+                tracing::debug!(
+                    agent = %agent_name,
+                    "another caller completed the takeover while we waited; reusing its token"
+                );
                 return Ok(cached);
             }
         }
@@ -330,7 +334,19 @@ impl RelaycastHttpClient {
             )
             .await
         {
-            Ok(response) => response,
+            Ok(response) => {
+                // The audit id is the whole point of logging here: it ties this
+                // reclaim to the engine's workspace-readable audit record, so
+                // "the name was taken over" is checkable after the fact rather
+                // than inferred from the absence of a 401.
+                tracing::info!(
+                    agent = %agent_name,
+                    agent_id = %existing_id,
+                    audit_id = %response.audit_id,
+                    "reclaimed agent name via takeover"
+                );
+                response
+            }
             // Engines before 8.2.0 have no `/takeover` route — the whole
             // identity-recovery surface arrived with it. Those engines still
             // allow the workspace key to rotate an agent's token, which is what
@@ -356,6 +372,14 @@ impl RelaycastHttpClient {
                             "takeover unavailable on this engine and the legacy rotate fallback failed: {error}"
                         ),
                     })?;
+                // No audit id exists on this path: the legacy rotate route
+                // predates the audit surface. Warn so an operator can tell a
+                // silently-unaudited reclaim from an audited one.
+                tracing::warn!(
+                    agent = %agent_name,
+                    agent_id = %existing_id,
+                    "takeover route absent on this engine; fell back to the legacy workspace-key rotate (unaudited)"
+                );
                 AgentIdentityRecoveryResponse {
                     agent_id: existing_id,
                     name: agent_name.to_string(),
@@ -1424,6 +1448,7 @@ mod tests {
     };
     use relaycast::AgentRegistrationError;
     use serde_json::json;
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
 
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
@@ -2313,6 +2338,118 @@ mod tests {
         register.assert_hits(1);
         lookup.assert_hits(1);
         takeover.assert_hits(1);
+    }
+
+    /// The takeover log line is the only operator-visible evidence that a
+    /// colliding name was *reclaimed* rather than freshly registered. Cloud
+    /// retains no per-agent broker logs, so without this an operator can only
+    /// infer the reclaim from the absence of a 401 — which is indistinguishable
+    /// from the name never having collided at all. Assert the audit id, the
+    /// handle onto the engine's own audit record, actually reaches the log.
+    #[tokio::test]
+    async fn takeover_logs_the_audit_id() {
+        #[derive(Clone)]
+        struct Capture(Arc<StdMutex<Vec<u8>>>);
+
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+            type Writer = Capture;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_worker-a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": { "agent_id": "a_worker-a", "name": "worker-a", "token": "at_live_taken", "audit_id": "aud_42" }
+            }));
+        });
+
+        let buffer = Arc::new(StdMutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(Capture(Arc::clone(&buffer)))
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .finish();
+
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let client = RelaycastHttpClient::new(
+                Some(server.base_url()),
+                "rk_live_test",
+                "broker",
+                "codex",
+            );
+            let token = client
+                .register_agent_token("worker-a", Some("codex"))
+                .await
+                .expect("takeover succeeds");
+            assert_eq!(token, "at_live_taken");
+        }
+
+        let logged = String::from_utf8(
+            buffer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
+        .expect("log output is utf-8");
+
+        assert!(
+            logged.contains("reclaimed agent name via takeover"),
+            "takeover must be logged, got: {logged}"
+        );
+        assert!(
+            logged.contains("aud_42"),
+            "the audit id must reach the log so the reclaim is checkable, got: {logged}"
+        );
+        assert!(
+            logged.contains("worker-a"),
+            "the agent name must reach the log, got: {logged}"
+        );
+        assert!(
+            !logged.contains("at_live_taken"),
+            "the token must never be logged, got: {logged}"
+        );
     }
 
     /// Must-not-fire: the existing `register_agent_token` API keeps its

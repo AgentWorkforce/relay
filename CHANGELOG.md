@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Agent-name reclaims are now logged. A takeover records the agent, its id and the engine's audit id at `info`; a crash recovery through the recover route does the same; and both log a `warn` when they fall back to the legacy workspace-key rotate on an engine older than 8.2.0, which produces no audit record. Previously a reclaim was only visible as the absence of a `401`, which is indistinguishable from the name never having collided. Tokens are never logged.
+
 ## [11.8.2] - 2026-08-22
 
 ### Fixed
