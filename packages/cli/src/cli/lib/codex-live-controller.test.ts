@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import type { LiveTeleportCloudClient, LiveTeleportLifecycleStatus } from '@agent-relay/cloud';
 
 import {
   CodexLiveController,
+  FileCodexControllerStateStore,
   type CodexControllerState,
   type CodexControllerStateStore,
   type CodexPersistedMountResumeProvider,
@@ -20,35 +24,39 @@ const source = {
 function sealHandle(overrides: Partial<CodexWorkspaceSealHandle> = {}): CodexWorkspaceSealHandle {
   return {
     source,
-    restore: { resumeId: 'resume-1', workspaceId: 'workspace-1', localRoot: '/repo' },
+    restore: {
+      lifecycleId: 'session-1:1:operation-1',
+      resumeId: 'resume-1',
+      workspaceId: 'workspace-1',
+      localRoot: '/repo',
+    },
     resumeLocal: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
     ...overrides,
   };
 }
-const convergence = {
-  verdict: 'converged' as const,
-  source: {
-    cursor: 'evt_10',
-    manifestSha256: 'a'.repeat(64),
-    files: 2,
-    bytes: 20,
-    conflictArtifacts: [],
-    conflictDigest: 'b'.repeat(64),
-    sealedAt: '2026-08-23T11:59:00.000Z',
+const verification = {
+  version: 1 as const,
+  kind: 'relayfile-destination-verification' as const,
+  verificationId: 'verify-1',
+  workspaceId: 'workspace-1',
+  localRoot: '/workspace',
+  remoteRoot: '/' as const,
+  sessionId: 'session-1',
+  generation: 1,
+  status: 'converged' as const,
+  observed: {
+    digest: `sha256:${'a'.repeat(64)}`,
+    workspaceRevision: 'rev_10',
+    eventCursor: 'evt_10',
   },
-  destination: {
-    cursor: 'evt_10',
-    manifestSha256: 'a'.repeat(64),
-    files: 2,
-    bytes: 20,
-    conflictArtifacts: [],
-    conflictDigest: 'b'.repeat(64),
+  health: {
     pendingWriteback: 0 as const,
-    hasPendingWriteback: false as const,
+    conflicts: 0 as const,
+    outboxPending: 0 as const,
     outboxNeedsAttention: false as const,
-    ephemeralPaths: [] as [],
   },
+  verifiedAt: '2026-08-23T11:59:00.000Z',
 };
 
 function deferred<T>() {
@@ -87,6 +95,7 @@ function appServer(overrides: Partial<CodexAppServerSession> = {}): CodexAppServ
     addEnvironment: vi.fn(async () => undefined),
     environmentStatus: vi.fn(async () => ({ status: 'ready' })),
     runTurn: vi.fn(async () => turnResult()),
+    turnOutcome: vi.fn(async () => ({ status: 'absent' as const })),
     close: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -106,7 +115,7 @@ function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCl
       generation: input.generation,
       status: 'ready' as const,
     })),
-    status: vi.fn(async (input) => lifecycle(input, 'ready')),
+    status: vi.fn(async (input) => lifecycle(input, 'active')),
     acquire: vi.fn(async (input) => ({
       sessionId: input.sessionId,
       generation: input.generation,
@@ -114,8 +123,9 @@ function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCl
       connectPath: `/api/v1/live-teleports/connect/${input.sessionId}/${input.generation}`,
       execServerUrl: `wss://cloud.agentrelay.test/api/v1/live-teleports/connect/${input.sessionId}/${input.generation}`,
       workspaceCwd: '/workspace',
-      expiresAt: '2026-08-23T13:00:00.000Z',
-      convergence,
+      connectExpiresAt: '2026-08-23T12:05:00.000Z',
+      leaseExpiresAt: '2026-08-23T13:00:00.000Z',
+      verification: { ...verification, generation: input.generation, sessionId: input.sessionId },
     })),
     revoke: vi.fn(async (input) => ({ ...lifecycle(input, 'revoked'), status: 'revoked' as const })),
     ...overrides,
@@ -142,8 +152,20 @@ function createController(
     if (!session) throw new Error('no app server');
     return session;
   });
-  const checkpointAndSeal = vi.fn(options.checkpointAndSeal ?? (async () => sealHandle()));
+  const checkpointAndSeal = vi.fn(
+    options.checkpointAndSeal ??
+      (async (input) =>
+        sealHandle({
+          restore: {
+            lifecycleId: input.lifecycleId,
+            resumeId: 'resume-1',
+            workspaceId: 'workspace-1',
+            localRoot: '/repo',
+          },
+        }))
+  );
   const resumePersistedLocalMount = vi.fn(options.resumePersistedLocalMount ?? (async () => undefined));
+  let operation = 0;
   const controller = new CodexLiveController(
     {
       workspaceRoot: '/repo',
@@ -163,6 +185,7 @@ function createController(
       sleep: async () => undefined,
       now: () => new Date('2026-08-23T12:00:00.000Z'),
       sessionId: () => 'session-1',
+      operationId: () => `operation-${++operation}`,
       pid: 123,
     }
   );
@@ -182,8 +205,13 @@ function persistedRemote(overrides: Partial<CodexControllerState> = {}): CodexCo
     sessionId: 'session-1',
     threadId: 'thread-1',
     workspaceRoot: '/repo',
-    source,
-    mountRestore: { resumeId: 'resume-7', workspaceId: 'workspace-1', localRoot: '/repo' },
+    source: { kind: source.kind },
+    mountRestore: {
+      lifecycleId: 'session-1:7:operation-7',
+      resumeId: 'resume-7',
+      workspaceId: 'workspace-1',
+      localRoot: '/repo',
+    },
     generation: 7,
     phase: 'remote',
     controllerPid: 99,
@@ -196,10 +224,28 @@ function persistedRemote(overrides: Partial<CodexControllerState> = {}): CodexCo
       connectPath: '/api/v1/live-teleports/connect/session-1/7',
       execServerUrl: 'wss://cloud.agentrelay.test/api/v1/live-teleports/connect/session-1/7',
       workspaceCwd: '/workspace',
-      expiresAt: '2026-08-23T13:00:00.000Z',
+      connectExpiresAt: '2026-08-23T12:05:00.000Z',
+      leaseExpiresAt: '2026-08-23T13:00:00.000Z',
       attached: true,
-      convergence,
+      verification: { ...verification, generation: 7 },
     },
+    updatedAt: '2026-08-23T11:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function persistedLocal(overrides: Partial<CodexControllerState> = {}): CodexControllerState {
+  return {
+    version: 1,
+    sessionId: 'session-1',
+    threadId: 'thread-1',
+    workspaceRoot: '/repo',
+    generation: 3,
+    phase: 'local',
+    cloudLifecycle: 'none',
+    controllerPid: 99,
+    socketPath: '/old.sock',
+    turnActive: false,
     updatedAt: '2026-08-23T11:00:00.000Z',
     ...overrides,
   };
@@ -234,6 +280,148 @@ describe('CodexLiveController', () => {
     );
   });
 
+  it('does not block local initialization on a stalled background prewarm', async () => {
+    const pendingPrewarm = deferred<{
+      prewarmId: string;
+      generation: number;
+      status: 'ready';
+    }>();
+    const cloudClient = cloud({ prewarm: vi.fn(() => pendingPrewarm.promise) });
+    const { controller } = createController({ cloud: cloudClient });
+
+    await expect(controller.initialize()).resolves.toMatchObject({ phase: 'local' });
+    pendingPrewarm.resolve({ prewarmId: 'prewarm-1', generation: 1, status: 'ready' });
+    await vi.waitFor(() => expect(controller.status().prewarmStatus).toBe('ready'));
+  });
+
+  it('retains durable Cloud ownership intent when a prewarm response is lost', async () => {
+    const cloudClient = cloud({
+      prewarm: vi.fn(async () => Promise.reject(new Error('response lost'))),
+    });
+    const { controller, store } = createController({ cloud: cloudClient });
+
+    await controller.initialize();
+    await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('failed'));
+
+    expect(store.value).toMatchObject({ cloudLifecycle: 'prewarm_requested' });
+  });
+
+  it('cleans up a failed no-row prewarm through Cloud idempotent terminal revoke', async () => {
+    const cloudClient = cloud({
+      prewarm: vi.fn(async () => Promise.reject(new Error('feature disabled'))),
+    });
+    const { controller, store } = createController({ cloud: cloudClient });
+    await controller.initialize();
+    await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('failed'));
+
+    await controller.close();
+
+    expect(cloudClient.revoke).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'session-1:1:revoke' })
+    );
+    expect(cloudClient.status).not.toHaveBeenCalled();
+    expect(store.value).toMatchObject({ cloudLifecycle: 'none' });
+  });
+
+  it('persists checkpoint lifecycle intent before Relayfile can stop the mount', async () => {
+    const checkpoint = deferred<CodexWorkspaceSealHandle>();
+    let lifecycleId = '';
+    const { controller, store } = createController({
+      checkpointAndSeal: async (input) => {
+        lifecycleId = input.lifecycleId;
+        return checkpoint.promise;
+      },
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    const running = controller.runTurn('boundary turn');
+    await vi.waitFor(() => expect(lifecycleId).not.toBe(''));
+    expect(store.value?.mountRestore).toEqual({ lifecycleId, localRoot: '/repo' });
+    expect(store.value?.source).toBeUndefined();
+    checkpoint.resolve(
+      sealHandle({
+        restore: {
+          lifecycleId,
+          resumeId: 'resume-1',
+          workspaceId: 'workspace-1',
+          localRoot: '/repo',
+        },
+      })
+    );
+    await running;
+  });
+
+  it('waits for aborted checkpoint cleanup to settle before starting local recovery', async () => {
+    const cleanup = deferred<CodexWorkspaceSealHandle>();
+    const aborted = deferred<void>();
+    const original = appServer();
+    const replacement = appServer();
+    const { controller } = createController({
+      sessions: [original, replacement],
+      lifecycleDeadlineMs: 5,
+      checkpointAndSeal: async (input) => {
+        input.signal?.addEventListener('abort', () => aborted.resolve(), { once: true });
+        return cleanup.promise;
+      },
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    const running = controller.runTurn('deadline');
+    await aborted.promise;
+    expect(original.close).not.toHaveBeenCalled();
+
+    cleanup.reject(Object.assign(new Error('checkpoint aborted and source ready'), { name: 'AbortError' }));
+    await expect(running).rejects.toThrow('Teleport failed before turn submission');
+    expect(original.close).toHaveBeenCalled();
+    expect(replacement.resumeThread).toHaveBeenCalled();
+  });
+
+  it('fences without inverse effects when checkpoint ignores abort and never settles', async () => {
+    const original = appServer();
+    const sealed = sealHandle();
+    const { controller } = createController({
+      sessions: [original],
+      lifecycleDeadlineMs: 5,
+      checkpointAndSeal: async () => new Promise<CodexWorkspaceSealHandle>(() => undefined),
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('unknown checkpoint')).rejects.toThrow('lifecycle outcome is unknown');
+
+    expect(original.close).not.toHaveBeenCalled();
+    expect(sealed.resumeLocal).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({
+      phase: 'fenced',
+      lastError: 'LIFECYCLE_EFFECT_OUTCOME_UNKNOWN',
+    });
+    await expect(controller.runTurn('must remain blocked')).rejects.toThrow('controller is fenced');
+  });
+
+  it('fences without resuming the source when Cloud acquire never settles', async () => {
+    const original = appServer();
+    const sealed = sealHandle();
+    const cloudClient = cloud({
+      acquire: vi.fn(async () => new Promise<never>(() => undefined)),
+    });
+    const { controller } = createController({
+      sessions: [original],
+      cloud: cloudClient,
+      lifecycleDeadlineMs: 5,
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('unknown acquire')).rejects.toThrow('lifecycle outcome is unknown');
+
+    expect(sealed.resumeLocal).not.toHaveBeenCalled();
+    expect(original.close).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'fenced' });
+  });
+
   it('rejects stale generations and applies a mid-turn teleport only at the next boundary', async () => {
     const firstTurn = deferred<CodexTurnResult>();
     const original = appServer({
@@ -261,11 +449,13 @@ describe('CodexLiveController', () => {
     expect(original.runTurn).toHaveBeenNthCalledWith(1, {
       threadId: 'thread-1',
       text: 'local turn',
+      clientUserMessageId: 'operation-1',
       execution: { kind: 'local', workspaceRoot: '/repo' },
     });
     expect(original.runTurn).toHaveBeenNthCalledWith(2, {
       threadId: 'thread-1',
       text: 'remote turn',
+      clientUserMessageId: 'operation-3',
       execution: {
         kind: 'remote',
         environment: { environmentId: 'environment-1', cwd: '/workspace' },
@@ -286,7 +476,7 @@ describe('CodexLiveController', () => {
   it('reports verifying—not remote—until the first Cloud turn completes', async () => {
     const firstRemoteTurn = deferred<CodexTurnResult>();
     const original = appServer({ runTurn: vi.fn(() => firstRemoteTurn.promise) });
-    const { controller } = createController({ sessions: [original] });
+    const { controller, store } = createController({ sessions: [original] });
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
@@ -303,18 +493,23 @@ describe('CodexLiveController', () => {
     expect(controller.status().remote).not.toHaveProperty('connectPath');
     expect(controller.status()).not.toHaveProperty('source');
     expect(controller.status()).not.toHaveProperty('mountRestore');
+    expect(store.value?.source).toEqual({ kind: 'relayfile-checkpoint-seal' });
+    expect(JSON.stringify(store.value)).not.toMatch(/opaque|ticket=|wss:\/\//);
 
     await controller.runTurn('subsequent remote turn');
     expect(original.runTurn).toHaveBeenNthCalledWith(2, {
       threadId: 'thread-1',
       text: 'subsequent remote turn',
+      clientUserMessageId: 'operation-3',
       execution: { kind: 'remote' },
     });
   });
 
-  it('confirms revoke, closes the old controller, and resumes the same thread after first-turn failure', async () => {
+  it('confirms revoke, reconciles a recorded failed turn, and resumes the same thread without replay', async () => {
     const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
-    const replacement = appServer();
+    const replacement = appServer({
+      turnOutcome: vi.fn(async () => ({ status: 'failed' as const, turnId: 'turn-remote-1' })),
+    });
     const cloudClient = cloud();
     const sealed = sealHandle();
     const { controller } = createController({
@@ -325,10 +520,10 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('do not replay me')).rejects.toThrow('resumed locally');
+    await expect(controller.runTurn('do not replay me')).rejects.toThrow('recorded terminal turn');
 
     expect(cloudClient.revoke).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: 'session-1:1:first-turn-failed-revoke' })
+      expect.objectContaining({ idempotencyKey: 'session-1:1:revoke' })
     );
     expect(original.close).toHaveBeenCalled();
     expect(sealed.resumeLocal).toHaveBeenCalled();
@@ -338,9 +533,64 @@ describe('CodexLiveController', () => {
     expect(controller.status()).toMatchObject({ generation: 2, phase: 'local', execution: 'local' });
   });
 
+  it('reconciles a completed remote turn after notification loss without replaying it', async () => {
+    const original = appServer({
+      runTurn: vi.fn(async () => Promise.reject(new Error('notification lost'))),
+    });
+    const replacement = appServer({
+      turnOutcome: vi.fn(async () => ({ status: 'completed' as const, turnId: 'turn-remote-1' })),
+    });
+    const { controller } = createController({ sessions: [original, replacement] });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('exactly once')).resolves.toMatchObject({
+      turnId: 'turn-remote-1',
+      response: { reconciled: true },
+    });
+    expect(replacement.runTurn).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+  });
+
+  it('fails outcome-uncertain when an accepted remote turn cannot be found after fencing', async () => {
+    const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('transport lost'))) });
+    const replacement = appServer({ turnOutcome: vi.fn(async () => ({ status: 'absent' as const })) });
+    const { controller } = createController({ sessions: [original, replacement] });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('ambiguous')).rejects.toThrow('outcome is uncertain');
+    expect(replacement.runTurn).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'outcome_uncertain', execution: 'fenced' });
+  });
+
+  it('recovers an expired later-turn lease before submitting the next prompt locally', async () => {
+    const original = appServer();
+    const replacement = appServer();
+    const cloudClient = cloud({ status: vi.fn(async (input) => lifecycle(input, 'expired')) });
+    const { controller } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+    await controller.runTurn('first remote');
+
+    await controller.runTurn('after lease expiry');
+
+    expect(replacement.runTurn).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      text: 'after lease expiry',
+      clientUserMessageId: 'operation-3',
+      execution: { kind: 'local', workspaceRoot: '/repo' },
+    });
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+  });
+
   it('fails fenced and never resumes locally when first-turn revoke is unconfirmed', async () => {
     const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
     const replacement = appServer();
+    const sealed = sealHandle();
     const cloudClient = cloud({
       revoke: vi.fn(async () => Promise.reject(new Error('revoke timeout'))),
       status: vi.fn(async (input) => lifecycle(input, 'ready')),
@@ -348,14 +598,16 @@ describe('CodexLiveController', () => {
     const { controller, createAppServer } = createController({
       sessions: [original, replacement],
       cloud: cloudClient,
+      checkpointAndSeal: async () => sealed,
     });
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('must not run locally')).rejects.toThrow('could not be confirmed');
+    await expect(controller.runTurn('must not run locally')).rejects.toThrow('CLOUD_FENCE_UNCONFIRMED');
 
     expect(original.close).toHaveBeenCalled();
     expect(createAppServer).toHaveBeenCalledTimes(1);
+    expect(sealed.resumeLocal).not.toHaveBeenCalled();
     expect(replacement.resumeThread).not.toHaveBeenCalled();
     expect(controller.status()).toMatchObject({ phase: 'fenced', execution: 'fenced' });
   });
@@ -376,7 +628,7 @@ describe('CodexLiveController', () => {
     expect(controller.status()).toMatchObject({ phase: 'local', workspaceSource: 'unavailable' });
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('local only')).rejects.toThrow('checkpoint-and-seal API unavailable');
+    await expect(controller.runTurn('local only')).rejects.toThrow('Teleport failed before turn submission');
 
     expect(cloudClient.acquire).not.toHaveBeenCalled();
     expect(cloudClient.revoke).toHaveBeenCalled();
@@ -385,7 +637,12 @@ describe('CodexLiveController', () => {
 
   it('does not persist a seal whose restore identity targets another local root', async () => {
     const sealed = sealHandle({
-      restore: { resumeId: 'resume-1', workspaceId: 'workspace-1', localRoot: '/other' },
+      restore: {
+        lifecycleId: 'session-1:1:operation-1',
+        resumeId: 'resume-1',
+        workspaceId: 'workspace-1',
+        localRoot: '/other',
+      },
     });
     const original = appServer();
     const replacement = appServer();
@@ -398,7 +655,9 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('must stay on this mount')).rejects.toThrow('invalid restore identity');
+    await expect(controller.runTurn('must stay on this mount')).rejects.toThrow(
+      'Teleport failed before turn submission'
+    );
 
     expect(cloudClient.acquire).not.toHaveBeenCalled();
     expect(sealed.resumeLocal).toHaveBeenCalled();
@@ -420,7 +679,9 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('local after abort')).rejects.toThrow('acquire failed');
+    await expect(controller.runTurn('local after abort')).rejects.toThrow(
+      'Teleport failed before turn submission'
+    );
 
     expect(sealed.resumeLocal).toHaveBeenCalled();
     expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
@@ -429,6 +690,7 @@ describe('CodexLiveController', () => {
     expect(replacement.runTurn).toHaveBeenCalledWith({
       threadId: 'thread-1',
       text: 'second input',
+      clientUserMessageId: 'operation-2',
       execution: { kind: 'local', workspaceRoot: '/repo' },
     });
   });
@@ -446,7 +708,9 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('must stay fenced')).rejects.toThrow('could not resume');
+    await expect(controller.runTurn('must stay fenced')).rejects.toThrow(
+      'RELAYFILE_RESUME_FAILED_AFTER_FENCE'
+    );
 
     expect(createAppServer).toHaveBeenCalledTimes(1);
     expect(replacement.resumeThread).not.toHaveBeenCalled();
@@ -505,7 +769,7 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('bounded')).rejects.toThrow('did not converge');
+    await expect(controller.runTurn('bounded')).rejects.toThrow('Teleport failed before turn submission');
 
     expect(cloudClient.acquire).not.toHaveBeenCalled();
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
@@ -531,8 +795,10 @@ describe('CodexLiveController', () => {
     const original = appServer();
     const replacement = appServer();
     const sealed = sealHandle();
+    const cloudClient = cloud();
     const { controller } = createController({
       sessions: [original, replacement],
+      cloud: cloudClient,
       checkpointAndSeal: async () => sealed,
     });
     await controller.initialize();
@@ -543,13 +809,92 @@ describe('CodexLiveController', () => {
 
     expect(original.close).toHaveBeenCalled();
     expect(sealed.resumeLocal).toHaveBeenCalled();
+    expect(vi.mocked(cloudClient.revoke).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(sealed.resumeLocal).mock.invocationCallOrder[0]!
+    );
     expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
     expect(status).toMatchObject({ phase: 'local', generation: 2, execution: 'local' });
   });
 
+  it('does not resume a consumed checkpoint while Cloud handback is cleanup_pending', async () => {
+    const handback = deferred<LiveTeleportLifecycleStatus>();
+    const original = appServer();
+    const replacement = appServer();
+    const sealed = sealHandle();
+    const cloudClient = cloud({
+      revoke: vi.fn(async (input) => lifecycle(input, 'cleanup_pending')),
+      status: vi.fn(() => handback.promise),
+    });
+    const { controller } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+    await controller.runTurn('remote');
+
+    const rollingBack = controller.rollback();
+    await vi.waitFor(() => expect(cloudClient.status).toHaveBeenCalled());
+    expect(sealed.resumeLocal).not.toHaveBeenCalled();
+
+    handback.resolve(lifecycle({ sessionId: 'session-1', generation: 1 }, 'revoked'));
+    await rollingBack;
+    expect(sealed.resumeLocal).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the source sealed when revoke ignores abort and never settles', async () => {
+    const original = appServer();
+    const replacement = appServer();
+    const sealed = sealHandle();
+    const cloudClient = cloud({ revoke: vi.fn(async () => new Promise<never>(() => undefined)) });
+    const { controller } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+      lifecycleDeadlineMs: 5,
+      checkpointAndSeal: async () => sealed,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+    await controller.runTurn('remote');
+
+    await expect(controller.rollback()).rejects.toThrow('CLOUD_FENCE_UNCONFIRMED');
+
+    expect(sealed.resumeLocal).not.toHaveBeenCalled();
+    expect(replacement.resumeThread).not.toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ phase: 'fenced' });
+  });
+
+  it('restarts a clean local session without trying to revoke or poll Cloud', async () => {
+    const store = memoryStore(persistedLocal());
+    const resumed = appServer();
+    const cloudClient = cloud();
+    const { controller } = createController({ store, sessions: [resumed], cloud: cloudClient });
+
+    await expect(controller.initialize()).resolves.toMatchObject({ phase: 'local', generation: 3 });
+
+    expect(cloudClient.revoke).not.toHaveBeenCalled();
+    expect(cloudClient.status).not.toHaveBeenCalled();
+    expect(resumed.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+  });
+
+  it('fences a persisted prewarm request whose response may have been lost', async () => {
+    const store = memoryStore(persistedLocal({ cloudLifecycle: 'prewarm_requested' }));
+    const resumed = appServer();
+    const cloudClient = cloud();
+    const { controller } = createController({ store, sessions: [resumed], cloud: cloudClient });
+
+    await expect(controller.initialize()).resolves.toMatchObject({ phase: 'local', generation: 4 });
+
+    expect(cloudClient.revoke).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'session-1', generation: 3, idempotencyKey: 'session-1:3:revoke' })
+    );
+    expect(resumed.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+  });
+
   it('persists fenced on restart and never constructs a local app-server after unconfirmed revoke', async () => {
     const persisted = persistedRemote();
-    persisted.remote!.expiresAt = '2026-08-23T11:00:00.000Z';
+    persisted.remote!.leaseExpiresAt = '2026-08-23T11:00:00.000Z';
     const store = memoryStore(persisted);
     const cloudClient = cloud({
       revoke: vi.fn(async () => Promise.reject(new Error('timeout'))),
@@ -557,7 +902,7 @@ describe('CodexLiveController', () => {
     });
     const { controller, createAppServer } = createController({ store, cloud: cloudClient });
 
-    await expect(controller.initialize()).rejects.toThrow('could not confirm Cloud fencing');
+    await expect(controller.initialize()).rejects.toThrow('CLOUD_FENCE_UNCONFIRMED_ON_RESTART');
 
     expect(createAppServer).not.toHaveBeenCalled();
     expect(store.value).toMatchObject({ phase: 'fenced', generation: 7 });
@@ -565,7 +910,7 @@ describe('CodexLiveController', () => {
 
   it('resumes locally only after Cloud authoritatively confirms the persisted lease expired', async () => {
     const expired = persistedRemote({
-      remote: { ...persistedRemote().remote!, expiresAt: '2026-08-23T11:59:59.000Z' },
+      remote: { ...persistedRemote().remote!, leaseExpiresAt: '2026-08-23T11:59:59.000Z' },
     });
     const store = memoryStore(expired);
     const resumed = appServer();
@@ -585,10 +930,31 @@ describe('CodexLiveController', () => {
     });
 
     expect(cloudClient.revoke).toHaveBeenCalled();
-    expect(resumePersistedLocalMount).toHaveBeenCalledWith(expect.objectContaining({ source }));
+    expect(resumePersistedLocalMount).toHaveBeenCalledWith(
+      expect.objectContaining({ source: { kind: 'relayfile-checkpoint-seal' } })
+    );
     expect(resumed.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
     expect(store.value?.source).toBeUndefined();
     expect(store.value?.mountRestore).toBeUndefined();
+  });
+
+  it('reconciles a persisted completed turn before reopening local execution after restart', async () => {
+    const store = memoryStore(
+      persistedRemote({
+        inFlightTurn: { clientUserMessageId: 'client-persisted-1', execution: 'remote' },
+      })
+    );
+    const resumed = appServer({
+      turnOutcome: vi.fn(async () => ({ status: 'completed' as const, turnId: 'turn-persisted-1' })),
+    });
+    const { controller } = createController({ store, sessions: [resumed] });
+
+    await expect(controller.initialize()).resolves.toMatchObject({ phase: 'local', generation: 8 });
+    expect(resumed.turnOutcome).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      clientUserMessageId: 'client-persisted-1',
+    });
+    expect(store.value?.inFlightTurn).toBeUndefined();
   });
 
   it('fails recovery if the same thread cannot be resumed after a confirmed fence', async () => {
@@ -596,7 +962,7 @@ describe('CodexLiveController', () => {
     const resumed = appServer({ resumeThread: vi.fn(async () => Promise.reject(new Error('gone'))) });
     const { controller } = createController({ store, sessions: [resumed] });
 
-    await expect(controller.initialize()).rejects.toThrow('Could not resume Codex thread thread-1');
+    await expect(controller.initialize()).rejects.toThrow('CODEX_THREAD_RESUME_FAILED_ON_RESTART');
 
     expect(store.value).toMatchObject({ phase: 'recovery_failed', generation: 7 });
   });
@@ -624,6 +990,52 @@ describe('CodexLiveController', () => {
     expect(controller.status()).toMatchObject({ phase: 'fenced', execution: 'fenced' });
   });
 
+  it('cancels and fences a racing prewarm without a late state mutation', async () => {
+    const prewarmStarted = deferred<void>();
+    const cloudClient = cloud({
+      prewarm: vi.fn(
+        (input) =>
+          new Promise((_, reject) => {
+            prewarmStarted.resolve();
+            input.signal?.addEventListener(
+              'abort',
+              () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+              { once: true }
+            );
+          })
+      ),
+    });
+    const { controller, store } = createController({ cloud: cloudClient });
+    await controller.initialize();
+    await prewarmStarted.promise;
+
+    await controller.close();
+    await Promise.resolve();
+
+    expect(cloudClient.revoke).toHaveBeenCalled();
+    expect(store.value).toMatchObject({ cloudLifecycle: 'none' });
+    expect(store.value?.prewarmStatus).toBeUndefined();
+  });
+
+  it('bounds shutdown when prewarm ignores abort, then fences the ambiguous request', async () => {
+    const original = appServer();
+    const cloudClient = cloud({
+      prewarm: vi.fn(async () => new Promise<never>(() => undefined)),
+    });
+    const { controller } = createController({
+      sessions: [original],
+      cloud: cloudClient,
+      lifecycleDeadlineMs: 5,
+    });
+    await controller.initialize();
+
+    await controller.close();
+
+    expect(cloudClient.revoke).toHaveBeenCalled();
+    expect(original.close).toHaveBeenCalled();
+    expect(controller.status()).toMatchObject({ cloudLifecycle: 'none' });
+  });
+
   it('resumes and verifies the sealed local mount on ordinary shutdown after remote execution', async () => {
     const sealed = sealHandle();
     const original = appServer();
@@ -641,5 +1053,46 @@ describe('CodexLiveController', () => {
     expect(sealed.resumeLocal).toHaveBeenCalled();
     expect(sealed.close).not.toHaveBeenCalled();
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2, execution: 'local' });
+  });
+});
+
+describe('FileCodexControllerStateStore', () => {
+  it.each([
+    ['foreign version', { ...persistedLocal(), version: 2 }],
+    ['negative generation', { ...persistedLocal(), generation: -1 }],
+    ['invalid pid', { ...persistedLocal(), controllerPid: 0 }],
+    ['malformed phase', { ...persistedLocal(), phase: 'teleported' }],
+    ['malformed pending', { ...persistedLocal(), pending: { requestId: '', expectedGeneration: 3 } }],
+    ['secret-bearing source', { ...persistedLocal(), source: { ...source } }],
+    [
+      'cross-root restore',
+      {
+        ...persistedLocal(),
+        mountRestore: { lifecycleId: 'lifecycle-3', resumeId: 'resume-3', localRoot: '/other' },
+      },
+    ],
+    ['partial remote', { ...persistedLocal(), remote: { sessionId: 'session-1', generation: 3 } }],
+    [
+      'cross-generation remote',
+      {
+        ...persistedRemote(),
+        remote: { ...persistedRemote().remote!, generation: 8 },
+      },
+    ],
+    [
+      'malformed in-flight turn',
+      { ...persistedLocal(), inFlightTurn: { clientUserMessageId: '', execution: 'remote' } },
+    ],
+  ])('rejects %s instead of adopting malformed controller state', (_name, value) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-state-'));
+    const file = path.join(directory, 'state.json');
+    try {
+      fs.writeFileSync(file, JSON.stringify(value));
+      expect(() => new FileCodexControllerStateStore(file).read()).toThrow(
+        'invalid or from an unsupported version'
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

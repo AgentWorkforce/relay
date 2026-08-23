@@ -9,7 +9,7 @@ import type {
   LiveTeleportWorkspaceSource,
 } from '@agent-relay/cloud';
 
-import type { CodexAppServerSession, CodexTurnResult } from './codex-app-server.js';
+import type { CodexAppServerSession, CodexTurnOutcome, CodexTurnResult } from './codex-app-server.js';
 
 export type CodexControllerPhase =
   | 'local'
@@ -18,8 +18,17 @@ export type CodexControllerPhase =
   | 'verifying'
   | 'remote'
   | 'rolling_back'
+  | 'outcome_uncertain'
   | 'fenced'
   | 'recovery_failed';
+
+export type CodexCloudLifecycleIntent =
+  | 'none'
+  | 'prewarm_requested'
+  | 'prewarmed'
+  | 'acquire_requested'
+  | 'acquired'
+  | 'cleanup_requested';
 
 export type CodexTeleportRequest = {
   requestId: string;
@@ -31,7 +40,7 @@ export type CodexControllerState = {
   sessionId: string;
   threadId: string;
   workspaceRoot: string;
-  source?: LiveTeleportWorkspaceSource;
+  source?: { kind: LiveTeleportWorkspaceSource['kind'] };
   mountRestore?: CodexMountRestoreIdentity;
   generation: number;
   phase: CodexControllerPhase;
@@ -42,9 +51,15 @@ export type CodexControllerState = {
   lastRequestId?: string;
   prewarmId?: string;
   prewarmStatus?: 'warming' | 'ready' | 'failed';
-  remote?: LiveTeleportEnvironment & {
+  /** Durable evidence that Cloud may own resources for this generation. */
+  cloudLifecycle?: CodexCloudLifecycleIntent;
+  remote?: Omit<LiveTeleportEnvironment, 'connectPath' | 'execServerUrl'> & {
     /** True only after the first remote turn/completed notification. */
     attached: boolean;
+  };
+  inFlightTurn?: {
+    clientUserMessageId: string;
+    execution: 'local' | 'remote';
   };
   lastError?: string;
   updatedAt: string;
@@ -53,7 +68,10 @@ export type CodexControllerState = {
 export type PublicCodexControllerStatus = Omit<CodexControllerState, 'source' | 'remote' | 'mountRestore'> & {
   execution: 'local' | 'verifying' | 'cloud' | 'fenced';
   controller: 'local';
-  remote?: Pick<LiveTeleportEnvironment, 'environmentId' | 'generation' | 'workspaceCwd' | 'expiresAt'> & {
+  remote?: Pick<
+    LiveTeleportEnvironment,
+    'environmentId' | 'generation' | 'workspaceCwd' | 'connectExpiresAt' | 'leaseExpiresAt'
+  > & {
     attached: true;
   };
   workspaceSource: LiveTeleportWorkspaceSource['kind'] | 'unavailable';
@@ -69,7 +87,7 @@ export class FileCodexControllerStateStore implements CodexControllerStateStore 
 
   read(): CodexControllerState | null {
     try {
-      return JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as CodexControllerState;
+      return validatePersistedState(JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as unknown);
     } catch (error) {
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
       throw error;
@@ -80,8 +98,32 @@ export class FileCodexControllerStateStore implements CodexControllerStateStore 
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
     const temporary = `${this.filePath}.tmp-${process.pid}-${randomUUID()}`;
     fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    const temporaryFd = fs.openSync(temporary, 'r');
+    try {
+      fs.fsyncSync(temporaryFd);
+    } finally {
+      fs.closeSync(temporaryFd);
+    }
     fs.renameSync(temporary, this.filePath);
     fs.chmodSync(this.filePath, 0o600);
+    try {
+      const directoryFd = fs.openSync(path.dirname(this.filePath), 'r');
+      try {
+        fs.fsyncSync(directoryFd);
+      } finally {
+        fs.closeSync(directoryFd);
+      }
+    } catch (error) {
+      if (
+        !(
+          error instanceof Error &&
+          'code' in error &&
+          ['EBADF', 'EISDIR', 'EINVAL', 'ENOTSUP', 'EPERM'].includes(String(error.code))
+        )
+      ) {
+        throw error;
+      }
+    }
   }
 }
 
@@ -90,6 +132,7 @@ export type CodexWorkspaceSealInput = {
   generation: number;
   threadId: string;
   workspaceRoot: string;
+  lifecycleId: string;
   signal?: AbortSignal;
 };
 
@@ -103,8 +146,9 @@ export type CodexWorkspaceSealHandle = {
 };
 
 export type CodexMountRestoreIdentity = {
-  resumeId: string;
-  workspaceId: string;
+  lifecycleId: string;
+  resumeId?: string;
+  workspaceId?: string;
   localRoot: string;
 };
 
@@ -117,7 +161,7 @@ export type CodexWorkspaceSealProvider = (
 
 export type CodexPersistedMountResumeProvider = (
   input: CodexWorkspaceSealInput & {
-    source: LiveTeleportWorkspaceSource;
+    source?: { kind: LiveTeleportWorkspaceSource['kind'] };
     restore: CodexMountRestoreIdentity;
   }
 ) => Promise<void>;
@@ -132,6 +176,7 @@ export type CodexLiveControllerDependencies = {
   sleep: (milliseconds: number) => Promise<void>;
   now: () => Date;
   sessionId: () => string;
+  operationId: () => string;
   pid: number;
 };
 
@@ -147,11 +192,165 @@ const DEFAULT_LIFECYCLE_DEADLINE_MS = 60_000;
 const DEFAULT_LIFECYCLE_POLL_INTERVAL_MS = 500;
 const TURN_BLOCKED_PHASES = new Set<CodexControllerPhase>([
   'recovery_failed',
+  'outcome_uncertain',
   'fenced',
   'rolling_back',
   'acquiring',
   'verifying',
 ]);
+const CONTROLLER_PHASES = new Set<CodexControllerPhase>([
+  'local',
+  'teleport_pending',
+  'acquiring',
+  'verifying',
+  'remote',
+  'rolling_back',
+  'outcome_uncertain',
+  'fenced',
+  'recovery_failed',
+]);
+const CLOUD_LIFECYCLE_INTENTS = new Set<CodexCloudLifecycleIntent>([
+  'none',
+  'prewarm_requested',
+  'prewarmed',
+  'acquire_requested',
+  'acquired',
+  'cleanup_requested',
+]);
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function validOptionalString(value: unknown): boolean {
+  return value === undefined || nonEmptyString(value);
+}
+
+function validTimestamp(value: unknown): value is string {
+  return nonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function invalidNestedState(state: Record<string, unknown>): boolean {
+  const pending = state.pending === undefined ? undefined : record(state.pending);
+  const source = state.source === undefined ? undefined : record(state.source);
+  const restore = state.mountRestore === undefined ? undefined : record(state.mountRestore);
+  const remote = state.remote === undefined ? undefined : record(state.remote);
+  const inFlight = state.inFlightTurn === undefined ? undefined : record(state.inFlightTurn);
+  const generation = Number(state.generation);
+  const workspaceRoot = String(state.workspaceRoot);
+  if (
+    (pending !== undefined &&
+      (!nonEmptyString(pending.requestId) || pending.expectedGeneration !== generation)) ||
+    (state.pending !== undefined && !pending) ||
+    (source !== undefined &&
+      (!hasOnlyKeys(source, ['kind']) || source.kind !== 'relayfile-checkpoint-seal')) ||
+    (state.source !== undefined && !source) ||
+    (restore !== undefined &&
+      (!nonEmptyString(restore.lifecycleId) ||
+        !validOptionalString(restore.resumeId) ||
+        !validOptionalString(restore.workspaceId) ||
+        !nonEmptyString(restore.localRoot) ||
+        !path.isAbsolute(restore.localRoot) ||
+        path.resolve(restore.localRoot) !== path.resolve(workspaceRoot))) ||
+    (state.mountRestore !== undefined && !restore) ||
+    (source !== undefined && !restore) ||
+    (inFlight !== undefined &&
+      (!nonEmptyString(inFlight.clientUserMessageId) ||
+        (inFlight.execution !== 'local' && inFlight.execution !== 'remote'))) ||
+    (state.inFlightTurn !== undefined && !inFlight) ||
+    !validOptionalString(state.prewarmId) ||
+    (state.prewarmStatus !== undefined &&
+      state.prewarmStatus !== 'warming' &&
+      state.prewarmStatus !== 'ready' &&
+      state.prewarmStatus !== 'failed')
+  ) {
+    return true;
+  }
+  if (!remote) return state.remote !== undefined || state.phase === 'remote' || state.phase === 'verifying';
+  const verification = record(remote.verification);
+  const observed = record(verification?.observed);
+  const health = record(verification?.health);
+  return (
+    'connectPath' in remote ||
+    'execServerUrl' in remote ||
+    remote.sessionId !== state.sessionId ||
+    remote.generation !== generation ||
+    !nonEmptyString(remote.environmentId) ||
+    !nonEmptyString(remote.workspaceCwd) ||
+    !validTimestamp(remote.connectExpiresAt) ||
+    !validTimestamp(remote.leaseExpiresAt) ||
+    typeof remote.attached !== 'boolean' ||
+    !verification ||
+    verification.version !== 1 ||
+    verification.kind !== 'relayfile-destination-verification' ||
+    verification.status !== 'converged' ||
+    verification.remoteRoot !== '/' ||
+    verification.sessionId !== state.sessionId ||
+    verification.generation !== generation ||
+    !nonEmptyString(verification.verificationId) ||
+    !nonEmptyString(verification.workspaceId) ||
+    !nonEmptyString(verification.localRoot) ||
+    !validTimestamp(verification.verifiedAt) ||
+    !observed ||
+    typeof observed.digest !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(observed.digest) ||
+    typeof observed.workspaceRevision !== 'string' ||
+    !/^(?:0|rev_[0-9]+)$/.test(observed.workspaceRevision) ||
+    typeof observed.eventCursor !== 'string' ||
+    !/^(?:0|evt_[0-9]+)$/.test(observed.eventCursor) ||
+    !health ||
+    health.pendingWriteback !== 0 ||
+    health.conflicts !== 0 ||
+    health.outboxPending !== 0 ||
+    health.outboxNeedsAttention !== false
+  );
+}
+
+function inferredCloudLifecycle(value: Record<string, unknown>): CodexCloudLifecycleIntent {
+  if (value.remote) return 'acquired';
+  if (value.phase === 'acquiring' || value.phase === 'verifying') return 'acquire_requested';
+  if (value.prewarmId || value.prewarmStatus === 'ready') return 'prewarmed';
+  if (CLOUD_LIFECYCLE_INTENTS.has(value.cloudLifecycle as CodexCloudLifecycleIntent)) {
+    return value.cloudLifecycle as CodexCloudLifecycleIntent;
+  }
+  return 'none';
+}
+
+function validatePersistedState(value: unknown): CodexControllerState {
+  const state = record(value);
+  if (
+    !state ||
+    state.version !== 1 ||
+    !nonEmptyString(state.sessionId) ||
+    !nonEmptyString(state.threadId) ||
+    !nonEmptyString(state.workspaceRoot) ||
+    !nonEmptyString(state.socketPath) ||
+    !Number.isSafeInteger(state.generation) ||
+    Number(state.generation) < 1 ||
+    !Number.isSafeInteger(state.controllerPid) ||
+    Number(state.controllerPid) < 1 ||
+    typeof state.turnActive !== 'boolean' ||
+    !CONTROLLER_PHASES.has(state.phase as CodexControllerPhase) ||
+    !nonEmptyString(state.updatedAt) ||
+    Number.isNaN(Date.parse(state.updatedAt)) ||
+    (state.cloudLifecycle !== undefined &&
+      !CLOUD_LIFECYCLE_INTENTS.has(state.cloudLifecycle as CodexCloudLifecycleIntent)) ||
+    invalidNestedState(state)
+  ) {
+    throw new Error('Persisted managed Codex controller state is invalid or from an unsupported version.');
+  }
+  return { ...(state as CodexControllerState), cloudLifecycle: inferredCloudLifecycle(state) };
+}
 
 export class CodexTurnRecoveredError extends Error {
   readonly recoveredLocally = true;
@@ -162,8 +361,35 @@ export class CodexTurnRecoveredError extends Error {
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+export class CodexTurnRecordedError extends Error {
+  readonly recordedTerminal = true;
+
+  constructor(
+    readonly status: 'failed' | 'interrupted',
+    message: string
+  ) {
+    super(message);
+    this.name = 'CodexTurnRecordedError';
+  }
+}
+
+export class CodexTurnOutcomeUncertainError extends Error {
+  readonly outcomeUncertain = true;
+
+  constructor(
+    message = 'Codex turn outcome is uncertain; execution is fenced pending reconciliation.',
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = 'CodexTurnOutcomeUncertainError';
+  }
+}
+
+class CodexLifecycleEffectUnsettledError extends Error {
+  constructor(operationName: string) {
+    super(`${operationName} did not settle after abort; lifecycle outcome is unknown.`);
+    this.name = 'CodexLifecycleEffectUnsettledError';
+  }
 }
 
 function isReadyStatus(value: unknown): boolean {
@@ -183,7 +409,11 @@ function publicStatus(state: CodexControllerState): PublicCodexControllerStatus 
       ? 'cloud'
       : state.phase === 'verifying'
         ? 'verifying'
-        : state.phase === 'fenced' || state.phase === 'recovery_failed'
+        : state.phase === 'fenced' ||
+            state.phase === 'recovery_failed' ||
+            state.phase === 'outcome_uncertain' ||
+            state.phase === 'acquiring' ||
+            state.phase === 'rolling_back'
           ? 'fenced'
           : 'local';
   return {
@@ -197,7 +427,8 @@ function publicStatus(state: CodexControllerState): PublicCodexControllerStatus 
             environmentId: remote.environmentId,
             generation: remote.generation,
             workspaceCwd: remote.workspaceCwd,
-            expiresAt: remote.expiresAt,
+            connectExpiresAt: remote.connectExpiresAt,
+            leaseExpiresAt: remote.leaseExpiresAt,
             attached: true,
           },
         }
@@ -214,6 +445,9 @@ export class CodexLiveController {
   private appServer: CodexAppServerSession | null = null;
   private state: CodexControllerState | null = null;
   private sealedWorkspace: CodexWorkspaceSealHandle | null = null;
+  private prewarmPromise: Promise<void> | null = null;
+  private prewarmAbort: AbortController | null = null;
+  private closing = false;
 
   constructor(
     private readonly options: CodexLiveControllerOptions,
@@ -230,33 +464,37 @@ export class CodexLiveController {
     }
 
     if (persisted) {
+      const mustFenceCloud = this.cloudMayOwnResources(persisted);
+      const mustRecoverMount = Boolean(persisted.source || persisted.mountRestore || persisted.remote);
       this.state = {
         ...persisted,
         controllerPid: this.deps.pid,
         socketPath: this.options.socketPath,
         workspaceRoot: this.options.workspaceRoot,
         turnActive: false,
-        phase: 'rolling_back',
+        phase: mustFenceCloud || mustRecoverMount ? 'rolling_back' : 'local',
         pending: undefined,
         lastError: undefined,
         updatedAt: this.timestamp(),
       };
       this.persist();
 
-      try {
-        await this.confirmFence('restart-revoke');
-      } catch (error) {
-        this.markFenced(`Controller restart could not confirm Cloud fencing: ${errorMessage(error)}`);
-        throw new Error(this.requireState().lastError, { cause: error });
+      if (mustFenceCloud) {
+        try {
+          await this.confirmFence('restart-revoke');
+        } catch (error) {
+          this.markFenced('CLOUD_FENCE_UNCONFIRMED_ON_RESTART');
+          throw new Error(this.requireState().lastError, { cause: error });
+        }
       }
 
-      try {
-        await this.resumeLocalMount();
-      } catch (error) {
-        this.markRecoveryFailed(
-          `Cloud was fenced but the persisted Relayfile mount could not resume: ${errorMessage(error)}`
-        );
-        throw new Error(this.requireState().lastError, { cause: error });
+      if (mustRecoverMount) {
+        try {
+          await this.resumeLocalMount();
+        } catch (error) {
+          this.markRecoveryFailed('RELAYFILE_RESUME_FAILED_ON_RESTART');
+          throw new Error(this.requireState().lastError, { cause: error });
+        }
       }
 
       const replacement = await this.createInitializedAppServer();
@@ -267,17 +505,32 @@ export class CodexLiveController {
           cwd: this.options.workspaceRoot,
         });
       } catch (error) {
-        this.markRecoveryFailed(
-          `Could not resume Codex thread ${persisted.threadId}: ${errorMessage(error)}`
-        );
+        this.markRecoveryFailed('CODEX_THREAD_RESUME_FAILED_ON_RESTART');
         await replacement.close().catch(() => undefined);
         this.appServer = null;
         throw new Error(this.requireState().lastError, { cause: error });
       }
 
+      if (this.requireState().inFlightTurn) {
+        const outcome = await this.reconcileInFlightTurn().catch((error) => {
+          this.markOutcomeUncertain('TURN_RECONCILIATION_UNAVAILABLE');
+          throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
+        });
+        if (outcome.status === 'absent' || outcome.status === 'inProgress') {
+          this.markOutcomeUncertain(`TURN_${outcome.status.toUpperCase()}`);
+          throw new CodexTurnOutcomeUncertainError();
+        }
+        this.clearInFlightTurn(
+          outcome.status === 'completed'
+            ? 'TURN_COMPLETED_DURING_RECOVERY'
+            : `TURN_${outcome.status.toUpperCase()}`
+        );
+      }
+
       const state = this.requireState();
-      state.generation = persisted.generation + 1;
+      state.generation = persisted.generation + (mustFenceCloud || mustRecoverMount ? 1 : 0);
       state.phase = 'local';
+      state.cloudLifecycle = 'none';
       state.remote = undefined;
       state.source = undefined;
       state.mountRestore = undefined;
@@ -301,12 +554,13 @@ export class CodexLiveController {
         controllerPid: this.deps.pid,
         socketPath: this.options.socketPath,
         turnActive: false,
+        cloudLifecycle: 'none',
         updatedAt: this.timestamp(),
       };
       this.persist();
     }
 
-    await this.startPrewarm();
+    this.schedulePrewarm();
     return this.status();
   }
 
@@ -353,7 +607,22 @@ export class CodexLiveController {
     this.persist();
     try {
       if (pendingAtBoundary) await this.applyPendingTeleport(pendingAtBoundary);
-      return await this.executeTurn(text);
+      if (this.requireState().phase === 'remote') await this.ensureRemoteActiveOrRecover();
+      const execution =
+        this.requireState().phase === 'remote' || this.requireState().phase === 'verifying'
+          ? 'remote'
+          : 'local';
+      state.inFlightTurn = {
+        clientUserMessageId: this.deps.operationId(),
+        execution,
+      };
+      state.updatedAt = this.timestamp();
+      this.persist();
+      const result = await this.executeTurn(text, state.inFlightTurn.clientUserMessageId);
+      state.inFlightTurn = undefined;
+      state.updatedAt = this.timestamp();
+      this.persist();
+      return result;
     } finally {
       state.turnActive = false;
       state.updatedAt = this.timestamp();
@@ -361,7 +630,7 @@ export class CodexLiveController {
     }
   }
 
-  private async executeTurn(text: string): Promise<CodexTurnResult> {
+  private async executeTurn(text: string, clientUserMessageId: string): Promise<CodexTurnResult> {
     const state = this.requireState();
     const phase = state.phase as CodexControllerPhase;
     const remote = phase === 'verifying' || phase === 'remote' ? state.remote : undefined;
@@ -369,6 +638,7 @@ export class CodexLiveController {
       const result = await this.requireAppServer().runTurn({
         threadId: state.threadId,
         text,
+        clientUserMessageId,
         execution: remote
           ? {
               kind: 'remote',
@@ -387,12 +657,31 @@ export class CodexLiveController {
       }
       return result;
     } catch (error) {
-      if (this.requireState().phase !== 'verifying') throw error;
-      await this.recoverLocal('first-turn-failed-revoke', `First Cloud turn failed: ${errorMessage(error)}`);
-      throw new CodexTurnRecoveredError(
-        `First Cloud turn failed; Cloud fencing was confirmed and thread ${state.threadId} resumed locally: ${errorMessage(error)}`,
-        { cause: error }
-      );
+      if (remote) {
+        const outcome = await this.recoverLocal('remote-turn-error-revoke', 'REMOTE_TURN_RECONCILED');
+        if (outcome?.status === 'completed') return this.resultFromOutcome(outcome);
+        if (outcome?.status === 'failed' || outcome?.status === 'interrupted') {
+          throw new CodexTurnRecordedError(
+            outcome.status,
+            `Cloud turn ended ${outcome.status}; the recorded terminal turn was not replayed.`
+          );
+        }
+        throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
+      }
+      let outcome: CodexTurnOutcome;
+      try {
+        outcome = await this.reconcileInFlightTurn();
+      } catch (reconcileError) {
+        this.markOutcomeUncertain('TURN_RECONCILIATION_UNAVAILABLE');
+        throw new CodexTurnOutcomeUncertainError(undefined, { cause: reconcileError });
+      }
+      if (outcome.status === 'completed') return this.resultFromOutcome(outcome);
+      if (outcome.status === 'failed' || outcome.status === 'interrupted') {
+        this.clearInFlightTurn(`TURN_${outcome.status.toUpperCase()}`);
+        throw new CodexTurnRecordedError(outcome.status, `Codex turn ended ${outcome.status}.`);
+      }
+      this.markOutcomeUncertain(`TURN_${outcome.status.toUpperCase()}`);
+      throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
     }
   }
 
@@ -405,37 +694,49 @@ export class CodexLiveController {
 
   async close(): Promise<void> {
     const state = this.state;
+    this.closing = true;
+    this.prewarmAbort?.abort();
+    await this.prewarmPromise?.catch(() => undefined);
     let fenceConfirmed = false;
-    if (state) {
+    if (state && this.cloudMayOwnResources(state)) {
       try {
         await this.confirmFence('shutdown-revoke');
         fenceConfirmed = true;
-      } catch (error) {
-        this.markFenced(`Cloud shutdown revoke was not confirmed: ${errorMessage(error)}`);
+      } catch {
+        this.markFenced('CLOUD_FENCE_UNCONFIRMED_ON_SHUTDOWN');
       }
     }
     try {
       await this.appServer?.close();
     } catch (error) {
-      if (state && fenceConfirmed) {
-        this.markRecoveryFailed(
-          `Cloud was fenced during shutdown but the Codex app-server did not exit: ${errorMessage(error)}`
-        );
+      if (state && (fenceConfirmed || !this.cloudMayOwnResources(state))) {
+        this.markRecoveryFailed('CONTROLLER_CLOSE_FAILED_ON_SHUTDOWN');
       }
       throw error;
     }
     this.appServer = null;
-    if (state && fenceConfirmed && (this.sealedWorkspace || state.source || state.mountRestore)) {
+    if (
+      state &&
+      (fenceConfirmed || !this.cloudMayOwnResources(state)) &&
+      (this.sealedWorkspace || state.source || state.mountRestore)
+    ) {
       try {
         await this.resumeLocalMount();
       } catch (error) {
-        this.markRecoveryFailed(
-          `Cloud was fenced during shutdown but the Relayfile mount did not resume: ${errorMessage(error)}`
-        );
+        this.markRecoveryFailed('RELAYFILE_RESUME_FAILED_ON_SHUTDOWN');
         throw new Error(state.lastError, { cause: error });
+      }
+      if (state.inFlightTurn) {
+        state.phase = 'outcome_uncertain';
+        state.remote = undefined;
+        state.lastError = 'TURN_RECONCILIATION_REQUIRED_ON_RESTART';
+        state.updatedAt = this.timestamp();
+        this.persist();
+        return;
       }
       state.generation += 1;
       state.phase = 'local';
+      state.cloudLifecycle = 'none';
       state.remote = undefined;
       state.source = undefined;
       state.mountRestore = undefined;
@@ -462,10 +763,15 @@ export class CodexLiveController {
       // Keep the poll mount alive while Cloud warms. Admission is already
       // stopped at this turn boundary, but the short-lived seal is minted only
       // when Cloud is ready to consume it.
+      await this.prewarmPromise;
       if (state.prewarmId && state.prewarmStatus !== 'ready') {
         await this.waitForCloudReady(state.prewarmId);
       }
 
+      const lifecycleId = `${state.sessionId}:${state.generation}:${this.deps.operationId()}`;
+      state.mountRestore = { lifecycleId, localRoot: state.workspaceRoot };
+      state.updatedAt = this.timestamp();
+      this.persist();
       const sealedWorkspace = await this.withAbortableLifecycleDeadline(
         (signal) =>
           this.deps.checkpointAndSeal({
@@ -473,6 +779,7 @@ export class CodexLiveController {
             generation: state.generation,
             threadId: state.threadId,
             workspaceRoot: state.workspaceRoot,
+            lifecycleId,
             signal,
           }),
         'Relayfile checkpoint-and-seal'
@@ -480,11 +787,14 @@ export class CodexLiveController {
       const source = sealedWorkspace.source;
       this.sealedWorkspace = sealedWorkspace;
       this.assertSeal(source, sealedWorkspace.restore);
-      state.source = source;
+      state.source = { kind: source.kind };
       state.mountRestore = sealedWorkspace.restore;
       state.updatedAt = this.timestamp();
       this.persist();
 
+      state.cloudLifecycle = 'acquire_requested';
+      state.updatedAt = this.timestamp();
+      this.persist();
       const environment = await this.withAbortableLifecycleDeadline(
         (signal) =>
           this.deps.cloud.acquire({
@@ -503,7 +813,13 @@ export class CodexLiveController {
         throw new Error('Cloud returned a stale or cross-session live-teleport generation.');
       }
 
-      state.remote = { ...environment, attached: false };
+      const {
+        connectPath: _connectPath,
+        execServerUrl: _execServerUrl,
+        ...persistedEnvironment
+      } = environment;
+      state.remote = { ...persistedEnvironment, attached: false };
+      state.cloudLifecycle = 'acquired';
       state.pending = undefined;
       state.phase = 'acquiring';
       state.updatedAt = this.timestamp();
@@ -521,18 +837,19 @@ export class CodexLiveController {
       state.updatedAt = this.timestamp();
       this.persist();
     } catch (error) {
-      await this.recoverLocal(
-        'failed-acquire-revoke',
-        `Teleport failed before the first Cloud turn completed: ${errorMessage(error)}`
-      );
+      if (error instanceof CodexLifecycleEffectUnsettledError) {
+        this.markFenced('LIFECYCLE_EFFECT_OUTCOME_UNKNOWN');
+        throw error;
+      }
+      await this.recoverLocal('failed-acquire-revoke', 'TELEPORT_ACQUIRE_FAILED_RECOVERED');
       throw new CodexTurnRecoveredError(
-        `Teleport failed; Cloud fencing was confirmed and execution resumed locally: ${errorMessage(error)}`,
+        'Teleport failed before turn submission; Cloud fencing and local recovery were confirmed.',
         { cause: error }
       );
     }
   }
 
-  private async recoverLocal(reason: string, context: string): Promise<void> {
+  private async recoverLocal(reason: string, context: string): Promise<CodexTurnOutcome | undefined> {
     const state = this.requireState();
     const old = this.requireAppServer();
     state.phase = 'rolling_back';
@@ -540,57 +857,69 @@ export class CodexLiveController {
     state.updatedAt = this.timestamp();
     this.persist();
 
-    try {
-      await this.confirmFence(reason);
-    } catch (error) {
-      this.markFenced(`${context} Cloud fencing could not be confirmed: ${errorMessage(error)}`);
-      await old.close().catch((closeError) => {
-        state.lastError = `${state.lastError} Old controller shutdown also failed: ${errorMessage(closeError)}`;
-        state.updatedAt = this.timestamp();
-        this.persist();
-      });
-      this.appServer = null;
-      throw new Error(state.lastError, { cause: error });
+    if (this.cloudMayOwnResources(state)) {
+      try {
+        await this.confirmFence(reason);
+      } catch (error) {
+        this.markFenced('CLOUD_FENCE_UNCONFIRMED');
+        await old.close().catch(() => {
+          state.lastError = 'CLOUD_FENCE_UNCONFIRMED_AND_CONTROLLER_CLOSE_FAILED';
+          state.updatedAt = this.timestamp();
+          this.persist();
+        });
+        this.appServer = null;
+        throw new Error(state.lastError, { cause: error });
+      }
     }
 
     try {
       await old.close();
     } catch (error) {
-      this.markRecoveryFailed(
-        `Cloud was fenced but the previous Codex app-server did not exit: ${errorMessage(error)}`
-      );
+      this.markRecoveryFailed('CONTROLLER_CLOSE_FAILED_AFTER_FENCE');
       throw new Error(state.lastError, { cause: error });
     }
     this.appServer = null;
     try {
       await this.resumeLocalMount();
     } catch (error) {
-      this.markRecoveryFailed(
-        `Cloud was fenced but the sealed Relayfile mount could not resume: ${errorMessage(error)}`
-      );
+      this.markRecoveryFailed('RELAYFILE_RESUME_FAILED_AFTER_FENCE');
       throw new Error(state.lastError, { cause: error });
     }
     let replacement: CodexAppServerSession;
     try {
       replacement = await this.createInitializedAppServer();
     } catch (error) {
-      this.markRecoveryFailed(
-        `Cloud was fenced and the mount resumed, but a local Codex app-server could not start: ${errorMessage(error)}`
-      );
+      this.markRecoveryFailed('LOCAL_APP_SERVER_START_FAILED_AFTER_FENCE');
       throw new Error(state.lastError, { cause: error });
     }
     this.appServer = replacement;
     try {
       await replacement.resumeThread({ threadId: state.threadId, cwd: state.workspaceRoot });
     } catch (error) {
-      this.markRecoveryFailed(`Could not resume Codex thread ${state.threadId}: ${errorMessage(error)}`);
+      this.markRecoveryFailed('CODEX_THREAD_RESUME_FAILED_AFTER_FENCE');
       await replacement.close().catch(() => undefined);
       this.appServer = null;
       throw new Error(state.lastError, { cause: error });
     }
 
+    let outcome: CodexTurnOutcome | undefined;
+    if (state.inFlightTurn) {
+      try {
+        outcome = await this.reconcileInFlightTurn();
+      } catch (error) {
+        this.markOutcomeUncertain('TURN_RECONCILIATION_UNAVAILABLE');
+        throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
+      }
+      if (outcome.status === 'absent' || outcome.status === 'inProgress') {
+        this.markOutcomeUncertain(`TURN_${outcome.status.toUpperCase()}`);
+        throw new CodexTurnOutcomeUncertainError();
+      }
+      state.inFlightTurn = undefined;
+    }
+
     state.generation += 1;
     state.phase = 'local';
+    state.cloudLifecycle = 'none';
     state.remote = undefined;
     state.source = undefined;
     state.mountRestore = undefined;
@@ -599,47 +928,56 @@ export class CodexLiveController {
     state.lastError = context;
     state.updatedAt = this.timestamp();
     this.persist();
-    await this.startPrewarm();
+    this.schedulePrewarm();
+    return outcome;
   }
 
-  private async confirmFence(reason: string): Promise<void> {
+  private async confirmFence(_reason: string): Promise<void> {
     const state = this.requireState();
-
-    try {
-      const revoked = await this.withAbortableLifecycleDeadline(
-        (signal) =>
-          this.deps.cloud.revoke({
+    state.cloudLifecycle = 'cleanup_requested';
+    state.updatedAt = this.timestamp();
+    this.persist();
+    await this.withAbortableLifecycleDeadline(async (signal) => {
+      let lastError: unknown;
+      try {
+        const revoked = await this.deps.cloud.revoke({
+          sessionId: state.sessionId,
+          generation: state.generation,
+          idempotencyKey: `${state.sessionId}:${state.generation}:revoke`,
+          signal,
+        });
+        this.assertLifecycleIdentity(revoked);
+        // The Cloud contract may publish revoked/expired only after the
+        // destination is stopped, flushed, and its consumer-bound Relayfile
+        // ownership has been handed back. cleanup_pending is not a fence and
+        // must never allow the source mount to resume.
+        if (revoked.status === 'revoked' || revoked.status === 'expired') {
+          this.markCloudFenced();
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      for (let attempt = 0; attempt < this.lifecycleAttempts(); attempt += 1) {
+        try {
+          const status = await this.deps.cloud.status({
             sessionId: state.sessionId,
             generation: state.generation,
-            idempotencyKey: `${state.sessionId}:${state.generation}:${reason}`,
             signal,
-          }),
-        'Cloud revoke confirmation'
-      );
-      this.assertLifecycleIdentity(revoked);
-      if (revoked.status === 'revoked' || revoked.status === 'expired') return;
-    } catch (revokeError) {
-      try {
-        const status = await this.withAbortableLifecycleDeadline(
-          (signal) =>
-            this.deps.cloud.status({
-              sessionId: state.sessionId,
-              generation: state.generation,
-              signal,
-            }),
-          'Cloud fence status confirmation'
-        );
-        this.assertLifecycleIdentity(status);
-        if (status.status === 'revoked' || status.status === 'expired') return;
-      } catch (statusError) {
-        throw new Error(
-          `revoke failed (${errorMessage(revokeError)}); status was unconfirmed (${errorMessage(statusError)})`,
-          { cause: statusError }
-        );
+          });
+          this.assertLifecycleIdentity(status);
+          if (status.status === 'revoked' || status.status === 'expired') {
+            this.markCloudFenced();
+            return;
+          }
+          lastError = new Error(`Cloud fence remains ${status.status}.`);
+        } catch (error) {
+          lastError = error;
+        }
+        await this.deps.sleep(this.lifecyclePollIntervalMs());
       }
-      throw revokeError;
-    }
-    throw new Error('Cloud revoke returned without a terminal fence state.');
+      throw new Error('Cloud fencing did not reach a terminal state.', { cause: lastError });
+    }, 'Cloud revoke confirmation');
   }
 
   private async waitForCloudReady(prewarmId: string): Promise<void> {
@@ -689,31 +1027,54 @@ export class CodexLiveController {
     );
   }
 
-  private async startPrewarm(): Promise<void> {
+  private schedulePrewarm(): void {
+    if (this.prewarmPromise || this.closing) return;
+    const state = this.requireState();
+    const generation = state.generation;
+    state.cloudLifecycle = 'prewarm_requested';
+    state.updatedAt = this.timestamp();
+    this.persist();
+    const abort = new AbortController();
+    this.prewarmAbort = abort;
+    const pending = this.startPrewarm(generation, abort.signal).finally(() => {
+      if (this.prewarmPromise === pending) this.prewarmPromise = null;
+      if (this.prewarmAbort === abort) this.prewarmAbort = null;
+    });
+    this.prewarmPromise = pending;
+  }
+
+  private async startPrewarm(generation: number, outerSignal: AbortSignal): Promise<void> {
     const state = this.requireState();
     try {
       const prewarm = await this.withAbortableLifecycleDeadline(
         (signal) =>
           this.deps.cloud.prewarm({
             sessionId: state.sessionId,
-            generation: state.generation,
+            generation,
             workspaceRoot: '/',
-            idempotencyKey: `${state.sessionId}:${state.generation}:prewarm`,
+            idempotencyKey: `${state.sessionId}:${generation}:prewarm`,
             signal,
           }),
-        'Cloud prewarm'
+        'Cloud prewarm',
+        outerSignal
       );
-      if (prewarm.generation !== state.generation) {
+      if (prewarm.generation !== generation) {
         throw new Error('Cloud returned a stale prewarm generation.');
       }
+      if (this.closing || this.requireState().generation !== generation) return;
       state.source = undefined;
       state.prewarmId = prewarm.prewarmId;
       state.prewarmStatus = prewarm.status;
-    } catch (error) {
+      state.cloudLifecycle = 'prewarmed';
+    } catch {
+      if (this.closing || this.requireState().generation !== generation) return;
       state.source = undefined;
       state.prewarmId = undefined;
       state.prewarmStatus = 'failed';
-      state.lastError = `Cloud prewarm unavailable; local Codex remains usable: ${errorMessage(error)}`;
+      // Response loss is ambiguous. Retain prewarm_requested so restart or
+      // shutdown fences any Cloud resource that may have been created.
+      state.cloudLifecycle = 'prewarm_requested';
+      state.lastError = 'CLOUD_PREWARM_UNAVAILABLE';
     }
     state.updatedAt = this.timestamp();
     this.persist();
@@ -733,10 +1094,64 @@ export class CodexLiveController {
       restore.resumeId.length === 0 ||
       typeof restore.workspaceId !== 'string' ||
       restore.workspaceId.length === 0 ||
+      typeof restore.lifecycleId !== 'string' ||
+      restore.lifecycleId.length === 0 ||
+      restore.lifecycleId !== this.requireState().mountRestore?.lifecycleId ||
       path.resolve(restore.localRoot) !== path.resolve(this.options.workspaceRoot)
     ) {
       throw new Error('Relayfile checkpoint-and-seal provider returned an invalid restore identity.');
     }
+  }
+
+  private async ensureRemoteActiveOrRecover(): Promise<void> {
+    const state = this.requireState();
+    let active: boolean;
+    try {
+      const status = await this.withAbortableLifecycleDeadline(
+        (signal) =>
+          this.deps.cloud.status({
+            sessionId: state.sessionId,
+            generation: state.generation,
+            signal,
+          }),
+        'Cloud active lease preflight'
+      );
+      this.assertLifecycleIdentity(status);
+      active = status.status === 'active';
+    } catch {
+      active = false;
+    }
+    if (!active) await this.recoverLocal('remote-preflight-revoke', 'REMOTE_LEASE_RECOVERED');
+  }
+
+  private reconcileInFlightTurn(): Promise<CodexTurnOutcome> {
+    const state = this.requireState();
+    const inFlight = state.inFlightTurn;
+    if (!inFlight) return Promise.resolve({ status: 'absent' });
+    return this.requireAppServer().turnOutcome({
+      threadId: state.threadId,
+      clientUserMessageId: inFlight.clientUserMessageId,
+    });
+  }
+
+  private resultFromOutcome(outcome: Extract<CodexTurnOutcome, { status: 'completed' }>): CodexTurnResult {
+    const state = this.requireState();
+    return {
+      turnId: outcome.turnId,
+      response: { reconciled: true },
+      completed: {
+        method: 'turn/completed',
+        params: { threadId: state.threadId, turn: { id: outcome.turnId, status: 'completed' } },
+      },
+    };
+  }
+
+  private clearInFlightTurn(code?: string): void {
+    const state = this.requireState();
+    state.inFlightTurn = undefined;
+    state.lastError = code;
+    state.updatedAt = this.timestamp();
+    this.persist();
   }
 
   private async resumeLocalMount(): Promise<void> {
@@ -749,13 +1164,12 @@ export class CodexLiveController {
       this.sealedWorkspace = null;
       return;
     }
-    if (!state.source || !state.mountRestore) {
+    if (!state.mountRestore) {
       if (state.remote) {
         throw new Error('Persisted remote execution has no Relayfile seal identity to restore.');
       }
       return;
     }
-    const source = state.source;
     const restore = state.mountRestore;
     await this.withAbortableLifecycleDeadline(
       (signal) =>
@@ -764,7 +1178,8 @@ export class CodexLiveController {
           generation: state.generation,
           threadId: state.threadId,
           workspaceRoot: state.workspaceRoot,
-          source,
+          lifecycleId: restore.lifecycleId,
+          ...(state.source ? { source: state.source } : {}),
           restore,
           signal,
         }),
@@ -777,6 +1192,19 @@ export class CodexLiveController {
     if (status.sessionId !== state.sessionId || status.generation !== state.generation) {
       throw new Error('Cloud returned a stale or cross-session lifecycle status.');
     }
+  }
+
+  private cloudMayOwnResources(state = this.requireState()): boolean {
+    return inferredCloudLifecycle(state as unknown as Record<string, unknown>) !== 'none';
+  }
+
+  private markCloudFenced(): void {
+    const state = this.requireState();
+    state.cloudLifecycle = 'none';
+    state.prewarmId = undefined;
+    state.prewarmStatus = undefined;
+    state.updatedAt = this.timestamp();
+    this.persist();
   }
 
   private async createInitializedAppServer(): Promise<CodexAppServerSession> {
@@ -803,33 +1231,69 @@ export class CodexLiveController {
     this.persist();
   }
 
+  private markOutcomeUncertain(code: string): void {
+    const state = this.requireState();
+    state.phase = 'outcome_uncertain';
+    state.lastError = code;
+    state.updatedAt = this.timestamp();
+    this.persist();
+  }
+
   private withAbortableLifecycleDeadline<T>(
     operation: (signal: AbortSignal) => Promise<T>,
-    operationName: string
+    operationName: string,
+    outerSignal?: AbortSignal
   ): Promise<T> {
     const controller = new AbortController();
+    const abortFromOuter = () => controller.abort();
+    outerSignal?.addEventListener('abort', abortFromOuter, { once: true });
+    if (outerSignal?.aborted) controller.abort();
     const timeoutMs = this.lifecycleDeadlineMs();
     return new Promise<T>((resolve, reject) => {
+      let timedOut = false;
+      let settled = false;
+      let settlementTimer: NodeJS.Timeout | undefined;
       const timer = setTimeout(() => {
+        timedOut = true;
         controller.abort();
-        reject(new Error(`${operationName} exceeded the ${timeoutMs}ms lifecycle deadline.`));
+        settlementTimer = setTimeout(
+          () => {
+            if (!settled) {
+              outerSignal?.removeEventListener('abort', abortFromOuter);
+              reject(new CodexLifecycleEffectUnsettledError(operationName));
+            }
+          },
+          Math.min(5_000, timeoutMs)
+        );
       }, timeoutMs);
       let promise: Promise<T>;
       try {
         promise = operation(controller.signal);
       } catch (error) {
         clearTimeout(timer);
+        outerSignal?.removeEventListener('abort', abortFromOuter);
         reject(error);
         return;
       }
       promise.then(
         (value) => {
+          settled = true;
           clearTimeout(timer);
-          resolve(value);
+          if (settlementTimer) clearTimeout(settlementTimer);
+          outerSignal?.removeEventListener('abort', abortFromOuter);
+          if (timedOut) reject(new Error(`${operationName} exceeded the ${timeoutMs}ms lifecycle deadline.`));
+          else resolve(value);
         },
         (error) => {
+          settled = true;
           clearTimeout(timer);
-          reject(error);
+          if (settlementTimer) clearTimeout(settlementTimer);
+          outerSignal?.removeEventListener('abort', abortFromOuter);
+          if (timedOut)
+            reject(
+              new Error(`${operationName} exceeded the ${timeoutMs}ms lifecycle deadline.`, { cause: error })
+            );
+          else reject(error);
         }
       );
     });

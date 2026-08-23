@@ -15,8 +15,8 @@ function receipt(overrides: Record<string, unknown> = {}) {
     sessionId: 'session-1',
     generation: 4,
     digest: `sha256:${'a'.repeat(64)}`,
-    workspaceRevision: 'rev-40',
-    eventCursor: 'evt-50',
+    workspaceRevision: 'rev_40',
+    eventCursor: 'evt_50',
     issuedAt: '2026-08-23T12:00:00.000Z',
     expiresAt: '2026-08-23T12:01:00.000Z',
     ...overrides,
@@ -27,12 +27,19 @@ function checkpointOutput(overrides: Record<string, unknown> = {}) {
   return {
     version: 1,
     kind: 'relayfile-checkpoint-seal',
+    status: 'sealed',
     workspaceId: 'ws_123',
     localRoot: '/repo',
     sessionId: 'session-1',
     generation: 4,
     receipt: receipt(),
-    resumeId: 'resume_opaque_123',
+    health: {
+      pendingWriteback: 0,
+      conflicts: 0,
+      outboxPending: 0,
+      outboxNeedsAttention: false,
+    },
+    resumeId: 'lifecycle-4',
     sealedAt: '2026-08-23T12:00:00.000Z',
     ...overrides,
   };
@@ -44,7 +51,7 @@ function resumeOutput(overrides: Record<string, unknown> = {}) {
     kind: 'relayfile-resume-seal',
     workspaceId: 'ws_123',
     localRoot: '/repo',
-    resumeId: 'resume_opaque_123',
+    resumeId: 'lifecycle-4',
     status: 'ready',
     resumedAt: '2026-08-23T12:00:10.000Z',
     ...overrides,
@@ -64,6 +71,7 @@ describe('createRelayfileSealLifecycle', () => {
       generation: 4,
       threadId: 'thread-1',
       workspaceRoot: '/repo',
+      lifecycleId: 'lifecycle-4',
     });
 
     expect(runner).toHaveBeenNthCalledWith(1, {
@@ -77,6 +85,8 @@ describe('createRelayfileSealLifecycle', () => {
         'session-1',
         '--generation',
         '4',
+        '--lifecycle-id',
+        'lifecycle-4',
         '--timeout',
         '30s',
         '--ttl',
@@ -87,7 +97,8 @@ describe('createRelayfileSealLifecycle', () => {
     });
     expect(handle.source).toEqual({ kind: 'relayfile-checkpoint-seal', receipt: receipt() });
     expect(handle.restore).toEqual({
-      resumeId: 'resume_opaque_123',
+      lifecycleId: 'lifecycle-4',
+      resumeId: 'lifecycle-4',
       workspaceId: 'ws_123',
       localRoot: '/repo',
     });
@@ -96,12 +107,14 @@ describe('createRelayfileSealLifecycle', () => {
 
     const resumeCall = runner.mock.calls[1]![0];
     expect(resumeCall.args).toEqual(['mount', 'resume-seal', '--root', '/repo', '--json']);
-    expect(resumeCall.args.join(' ')).not.toContain('resume_opaque_123');
-    expect(resumeCall.stdin).toBe(`${JSON.stringify({ resumeId: 'resume_opaque_123' })}\n`);
+    expect(resumeCall.args.join(' ')).not.toContain('lifecycle-4');
+    expect(resumeCall.stdin).toBe(`${JSON.stringify({ resumeId: 'lifecycle-4' })}\n`);
   });
 
   it('uses the same stdin-only resume contract after controller restart', async () => {
-    const runner = vi.fn<RelayfileLifecycleCommandRunner>(async () => resumeOutput());
+    const runner = vi.fn<RelayfileLifecycleCommandRunner>(async () =>
+      resumeOutput({ resumeId: 'resume_opaque_123' })
+    );
     const lifecycle = createRelayfileSealLifecycle({ runner });
 
     await lifecycle.resumePersistedLocalMount({
@@ -109,8 +122,14 @@ describe('createRelayfileSealLifecycle', () => {
       generation: 4,
       threadId: 'thread-1',
       workspaceRoot: '/repo',
-      source: { kind: 'relayfile-checkpoint-seal', receipt: receipt() },
-      restore: { resumeId: 'resume_opaque_123', workspaceId: 'ws_123', localRoot: '/repo' },
+      lifecycleId: 'lifecycle-4',
+      source: { kind: 'relayfile-checkpoint-seal' },
+      restore: {
+        lifecycleId: 'lifecycle-4',
+        resumeId: 'resume_opaque_123',
+        workspaceId: 'ws_123',
+        localRoot: '/repo',
+      },
     });
 
     expect(runner).toHaveBeenCalledWith(
@@ -121,12 +140,44 @@ describe('createRelayfileSealLifecycle', () => {
     );
   });
 
+  it('reconciles an in-flight checkpoint from persisted lifecycle intent alone', async () => {
+    const runner = vi.fn<RelayfileLifecycleCommandRunner>(async () => resumeOutput());
+    const lifecycle = createRelayfileSealLifecycle({ runner });
+
+    await lifecycle.resumePersistedLocalMount({
+      sessionId: 'session-1',
+      generation: 4,
+      threadId: 'thread-1',
+      workspaceRoot: '/repo',
+      lifecycleId: 'lifecycle-4',
+      restore: { lifecycleId: 'lifecycle-4', localRoot: '/repo' },
+    });
+
+    expect(runner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: ['mount', 'resume-seal', '--root', '/repo', '--json'],
+        stdin: `${JSON.stringify({ resumeId: 'lifecycle-4' })}\n`,
+      })
+    );
+  });
+
   it.each([
     ['wrong local root', checkpointOutput({ localRoot: '/other' })],
     ['wrong session', checkpointOutput({ sessionId: 'session-other' })],
     ['wrong generation', checkpointOutput({ generation: 5 })],
     ['non-logical receipt root', checkpointOutput({ receipt: receipt({ root: '/repo' }) })],
     ['caller-shaped digest', checkpointOutput({ receipt: receipt({ digest: 'caller-says-ok' }) })],
+    ['uppercase digest', checkpointOutput({ receipt: receipt({ digest: `sha256:${'A'.repeat(64)}` }) })],
+    ['bare revision', checkpointOutput({ receipt: receipt({ workspaceRevision: '40' }) })],
+    ['wrong revision namespace', checkpointOutput({ receipt: receipt({ workspaceRevision: 'evt_40' }) })],
+    ['bare cursor', checkpointOutput({ receipt: receipt({ eventCursor: '50' }) })],
+    ['wrong cursor namespace', checkpointOutput({ receipt: receipt({ eventCursor: 'rev_50' }) })],
+    [
+      'unsettled health',
+      checkpointOutput({
+        health: { pendingWriteback: 1, conflicts: 0, outboxPending: 0, outboxNeedsAttention: false },
+      }),
+    ],
     ['missing one-use token', checkpointOutput({ receipt: receipt({ sealToken: '' }) })],
   ])('fails closed on %s', async (_name, output) => {
     const lifecycle = createRelayfileSealLifecycle({ runner: async () => output });
@@ -136,6 +187,7 @@ describe('createRelayfileSealLifecycle', () => {
         generation: 4,
         threadId: 'thread-1',
         workspaceRoot: '/repo',
+        lifecycleId: 'lifecycle-4',
       })
     ).rejects.toThrow(/relayfile|checkpoint/);
   });
@@ -152,6 +204,7 @@ describe('createRelayfileSealLifecycle', () => {
       generation: 4,
       threadId: 'thread-1',
       workspaceRoot: '/repo',
+      lifecycleId: 'lifecycle-4',
     });
     await expect(handle.resumeLocal()).rejects.toThrow('did not confirm mount readiness');
   });

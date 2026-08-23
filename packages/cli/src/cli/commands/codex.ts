@@ -15,6 +15,8 @@ import {
 } from '../lib/codex-app-server.js';
 import {
   CodexLiveController,
+  CodexTurnOutcomeUncertainError,
+  CodexTurnRecordedError,
   CodexTurnRecoveredError,
   FileCodexControllerStateStore,
   type CodexControllerState,
@@ -90,9 +92,25 @@ export async function runManagedCodexTurn(
                 generation: status.generation,
               },
             })}\n`
-          : 'Cloud turn failed; Cloud was fenced and the same Codex thread recovered locally. Retry the turn.\n'
+          : 'Cloud execution was fenced and the same Codex thread recovered locally; no turn was replayed.\n'
       );
       return;
+    }
+    if (error instanceof CodexTurnRecordedError) {
+      options.writeError(
+        options.json
+          ? `${JSON.stringify({
+              method: 'relay/codexTurnRecordedTerminal',
+              params: { code: 'TURN_RECORDED_TERMINAL', status: error.status },
+            })}\n`
+          : `Codex recorded the turn as ${error.status}; it was not replayed.\n`
+      );
+      return;
+    }
+    if (error instanceof CodexTurnOutcomeUncertainError) {
+      throw new Error('Relay-managed Codex stopped because the last turn outcome is uncertain.', {
+        cause: error,
+      });
     }
     throw new Error(
       'Relay-managed Codex cannot continue because execution fencing or local recovery is unconfirmed.',
@@ -239,6 +257,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
             sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
             now: () => new Date(),
             sessionId: randomUUID,
+            operationId: randomUUID,
             pid: process.pid,
           }
         );

@@ -17,6 +17,11 @@ export type CodexTurnResult = {
   completed: CodexNotification;
 };
 
+export type CodexTurnOutcome =
+  | { status: 'completed'; turnId: string }
+  | { status: 'failed' | 'interrupted' | 'inProgress'; turnId: string }
+  | { status: 'absent' };
+
 export type CodexTurnExecution =
   | { kind: 'local'; workspaceRoot: string }
   | {
@@ -34,7 +39,13 @@ export interface CodexAppServerSession {
     connectTimeoutMs: number;
   }): Promise<void>;
   environmentStatus(environmentId: string): Promise<unknown>;
-  runTurn(input: { threadId: string; text: string; execution: CodexTurnExecution }): Promise<CodexTurnResult>;
+  runTurn(input: {
+    threadId: string;
+    text: string;
+    clientUserMessageId: string;
+    execution: CodexTurnExecution;
+  }): Promise<CodexTurnResult>;
+  turnOutcome(input: { threadId: string; clientUserMessageId: string }): Promise<CodexTurnOutcome>;
   close(): Promise<void>;
 }
 
@@ -85,31 +96,75 @@ function assertTurnPolicySchema(turnParams: string): void {
   if (
     !turnSchema.properties?.approvalPolicy ||
     !turnSchema.properties?.sandboxPolicy ||
-    !schemaContainsEnum(turnSchema, 'never') ||
-    !schemaContainsEnum(turnSchema, 'workspaceWrite') ||
-    !schemaContainsProperty(turnSchema, 'writableRoots') ||
-    !schemaContainsEnum(turnSchema, 'dangerFullAccess')
+    !turnSchema.properties?.clientUserMessageId ||
+    !schemaNodeContainsEnum(turnSchema, turnSchema.properties.approvalPolicy, 'never') ||
+    !schemaNodeContainsEnum(turnSchema, turnSchema.properties.sandboxPolicy, 'workspaceWrite') ||
+    !schemaNodeContainsProperty(turnSchema, turnSchema.properties.sandboxPolicy, 'writableRoots') ||
+    !schemaNodeContainsEnum(turnSchema, turnSchema.properties.sandboxPolicy, 'dangerFullAccess')
   ) {
     throw new Error("Codex TurnStartParams does not support Relay's explicit execution-policy contract.");
   }
 }
 
-function schemaContainsEnum(value: unknown, expected: string): boolean {
-  if (Array.isArray(value)) return value.some((entry) => schemaContainsEnum(entry, expected));
-  if (!value || typeof value !== 'object') return false;
-  const object = value as Record<string, unknown>;
-  if (Array.isArray(object.enum) && object.enum.includes(expected)) return true;
-  return Object.values(object).some((entry) => schemaContainsEnum(entry, expected));
+function assertTurnReconciliationSchema(requests: string, listParams: string, listResponse: string): void {
+  const params = JSON.parse(listParams) as { properties?: Record<string, unknown> };
+  const response = JSON.parse(listResponse) as { properties?: Record<string, unknown> };
+  if (
+    !requests.includes('"thread/turns/list"') ||
+    !params.properties?.itemsView ||
+    !params.properties?.sortDirection ||
+    !response.properties?.data ||
+    !schemaNodeContainsEnum(params, params.properties.itemsView, 'full') ||
+    !schemaNodeContainsEnum(params, params.properties.sortDirection, 'desc') ||
+    !schemaNodeContainsProperty(response, response.properties.data, 'clientId') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'userMessage') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'completed') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'interrupted') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'failed') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'inProgress')
+  ) {
+    throw new Error("Codex thread/turns/list does not support Relay's turn-reconciliation contract.");
+  }
 }
 
-function schemaContainsProperty(value: unknown, expected: string): boolean {
-  if (Array.isArray(value)) return value.some((entry) => schemaContainsProperty(entry, expected));
-  if (!value || typeof value !== 'object') return false;
-  const object = value as Record<string, unknown>;
+function resolveSchemaRef(root: unknown, value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const ref = (value as Record<string, unknown>).$ref;
+  if (typeof ref !== 'string' || !ref.startsWith('#/')) return value;
+  let cursor: unknown = root;
+  for (const segment of ref.slice(2).split('/')) {
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return value;
+    cursor = (cursor as Record<string, unknown>)[segment.replaceAll('~1', '/').replaceAll('~0', '~')];
+  }
+  return cursor;
+}
+
+function schemaNodeContainsEnum(root: unknown, value: unknown, expected: string): boolean {
+  const resolved = resolveSchemaRef(root, value);
+  if (Array.isArray(resolved)) {
+    return resolved.some((entry) => schemaNodeContainsEnum(root, entry, expected));
+  }
+  if (!resolved || typeof resolved !== 'object') return false;
+  const object = resolved as Record<string, unknown>;
+  if (Array.isArray(object.enum) && object.enum.includes(expected)) return true;
+  return Object.entries(object)
+    .filter(([key]) => key !== 'definitions')
+    .some(([, entry]) => schemaNodeContainsEnum(root, entry, expected));
+}
+
+function schemaNodeContainsProperty(root: unknown, value: unknown, expected: string): boolean {
+  const resolved = resolveSchemaRef(root, value);
+  if (Array.isArray(resolved)) {
+    return resolved.some((entry) => schemaNodeContainsProperty(root, entry, expected));
+  }
+  if (!resolved || typeof resolved !== 'object') return false;
+  const object = resolved as Record<string, unknown>;
   if (object.properties && typeof object.properties === 'object' && expected in object.properties) {
     return true;
   }
-  return Object.values(object).some((entry) => schemaContainsProperty(entry, expected));
+  return Object.entries(object)
+    .filter(([key]) => key !== 'definitions')
+    .some(([, entry]) => schemaNodeContainsProperty(root, entry, expected));
 }
 
 /**
@@ -132,10 +187,12 @@ export async function probeCodexEnvironmentCapability(
       '--out',
       directory,
     ]);
-    const [requests, addParams, turnParams] = await Promise.all([
+    const [requests, addParams, turnParams, turnsListParams, turnsListResponse] = await Promise.all([
       deps.readFile(path.join(directory, 'ClientRequest.json')),
       deps.readFile(path.join(directory, 'v2', 'EnvironmentAddParams.json')),
       deps.readFile(path.join(directory, 'v2', 'TurnStartParams.json')),
+      deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListParams.json')),
+      deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListResponse.json')),
     ]);
     if (!requests.includes('"environment/add"') || !requests.includes('"environment/status"')) {
       throw new Error(
@@ -145,6 +202,7 @@ export async function probeCodexEnvironmentCapability(
 
     assertEnvironmentAddSchema(addParams);
     assertTurnPolicySchema(turnParams);
+    assertTurnReconciliationSchema(requests, turnsListParams, turnsListResponse);
 
     return { environmentAdd: true, environmentStatus: true, explicitTurnPolicy: true };
   } finally {
@@ -301,6 +359,7 @@ export class StdioCodexAppServerSession implements CodexAppServerSession {
   async runTurn(input: {
     threadId: string;
     text: string;
+    clientUserMessageId: string;
     execution: CodexTurnExecution;
   }): Promise<CodexTurnResult> {
     let executionParams: Record<string, unknown>;
@@ -330,6 +389,7 @@ export class StdioCodexAppServerSession implements CodexAppServerSession {
       'turn/start',
       {
         threadId: input.threadId,
+        clientUserMessageId: input.clientUserMessageId,
         input: [{ type: 'text', text: input.text }],
         ...executionParams,
       },
@@ -345,6 +405,45 @@ export class StdioCodexAppServerSession implements CodexAppServerSession {
       this.turnTimeoutMs
     );
     return { turnId, response, completed };
+  }
+
+  async turnOutcome(input: { threadId: string; clientUserMessageId: string }): Promise<CodexTurnOutcome> {
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await this.request('thread/turns/list', {
+        threadId: input.threadId,
+        itemsView: 'full',
+        sortDirection: 'desc',
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!isObject(response) || !Array.isArray(response.data)) {
+        throw new Error('Codex thread/turns/list returned an invalid response.');
+      }
+      for (const candidate of response.data) {
+        if (!isObject(candidate) || typeof candidate.id !== 'string' || !Array.isArray(candidate.items)) {
+          continue;
+        }
+        const matches = candidate.items.some(
+          (item) =>
+            isObject(item) && item.type === 'userMessage' && item.clientId === input.clientUserMessageId
+        );
+        if (!matches) continue;
+        if (
+          candidate.status !== 'completed' &&
+          candidate.status !== 'failed' &&
+          candidate.status !== 'interrupted' &&
+          candidate.status !== 'inProgress'
+        ) {
+          throw new Error('Codex thread/turns/list returned an invalid turn status.');
+        }
+        return { status: candidate.status, turnId: candidate.id };
+      }
+      const nextCursor = typeof response.nextCursor === 'string' ? response.nextCursor : undefined;
+      if (!nextCursor) return { status: 'absent' };
+      cursor = nextCursor;
+    }
+    throw new Error('Codex thread/turns/list exceeded the reconciliation page bound.');
   }
 
   async close(): Promise<void> {

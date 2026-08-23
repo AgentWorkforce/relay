@@ -68,6 +68,26 @@ function requiredTimestamp(value: unknown, field: string): string {
   return timestamp;
 }
 
+function requiredRelayfilePosition(value: unknown, field: string, prefix: 'rev' | 'evt'): string {
+  const position = requiredString(value, field);
+  if (!new RegExp(`^(?:0|${prefix}_[0-9]+)$`).test(position)) {
+    throw new Error(`relayfile lifecycle response returned an invalid ${field}.`);
+  }
+  return position;
+}
+
+function requireConvergedHealth(value: unknown): void {
+  if (
+    !isObject(value) ||
+    value.pendingWriteback !== 0 ||
+    value.conflicts !== 0 ||
+    value.outboxPending !== 0 ||
+    value.outboxNeedsAttention !== false
+  ) {
+    throw new Error('relayfile checkpoint response did not report converged health.');
+  }
+}
+
 function validateReceipt(
   value: unknown,
   input: { sessionId: string; generation: number; workspaceId: string }
@@ -82,15 +102,15 @@ function validateReceipt(
   if (requiredString(value.root, 'receipt.root') !== '/') {
     throw new Error('relayfile checkpoint receipt root must be logical / for live teleport v1.');
   }
-  requiredString(value.workspaceRevision, 'receipt.workspaceRevision');
-  requiredString(value.eventCursor, 'receipt.eventCursor');
+  requiredRelayfilePosition(value.workspaceRevision, 'receipt.workspaceRevision', 'rev');
+  requiredRelayfilePosition(value.eventCursor, 'receipt.eventCursor', 'evt');
   requiredTimestamp(value.issuedAt, 'receipt.issuedAt');
   requiredTimestamp(value.expiresAt, 'receipt.expiresAt');
   if (
     workspaceId !== input.workspaceId ||
     sessionId !== input.sessionId ||
     generation !== input.generation ||
-    !/^sha256:[a-f0-9]{64}$/i.test(digest)
+    !/^sha256:[a-f0-9]{64}$/.test(digest)
   ) {
     throw new Error('relayfile checkpoint receipt is unbound or has an invalid digest.');
   }
@@ -99,9 +119,14 @@ function validateReceipt(
 
 function validateCheckpointOutput(
   value: unknown,
-  input: { workspaceRoot: string; sessionId: string; generation: number }
+  input: { workspaceRoot: string; sessionId: string; generation: number; lifecycleId: string }
 ): { source: LiveTeleportWorkspaceSource; restore: CodexMountRestoreIdentity } {
-  if (!isObject(value) || value.version !== 1 || value.kind !== 'relayfile-checkpoint-seal') {
+  if (
+    !isObject(value) ||
+    value.version !== 1 ||
+    value.kind !== 'relayfile-checkpoint-seal' ||
+    value.status !== 'sealed'
+  ) {
     throw new Error('relayfile checkpoint command returned an invalid response contract.');
   }
   const workspaceId = requiredString(value.workspaceId, 'workspaceId');
@@ -112,8 +137,12 @@ function validateCheckpointOutput(
   ) {
     throw new Error('relayfile checkpoint command returned a stale or cross-session response.');
   }
+  requireConvergedHealth(value.health);
   requiredTimestamp(value.sealedAt, 'sealedAt');
   const resumeId = requiredResumeId(value.resumeId);
+  if (resumeId !== input.lifecycleId) {
+    throw new Error('relayfile checkpoint command returned a mismatched lifecycle identity.');
+  }
   const receipt = validateReceipt(value.receipt, {
     sessionId: input.sessionId,
     generation: input.generation,
@@ -121,7 +150,7 @@ function validateCheckpointOutput(
   });
   return {
     source: { kind: 'relayfile-checkpoint-seal', receipt },
-    restore: { resumeId, workspaceId, localRoot },
+    restore: { lifecycleId: input.lifecycleId, resumeId, workspaceId, localRoot },
   };
 }
 
@@ -135,9 +164,10 @@ function validateResumeOutput(value: unknown, restore: CodexMountRestoreIdentity
     throw new Error('relayfile resume command did not confirm mount readiness.');
   }
   if (
-    requiredString(value.workspaceId, 'workspaceId') !== restore.workspaceId ||
-    requiredExactLocalRoot(value.localRoot, restore.localRoot) !== restore.localRoot ||
-    requiredResumeId(value.resumeId) !== restore.resumeId
+    requiredResumeId(value.resumeId) !== (restore.resumeId ?? restore.lifecycleId) ||
+    (restore.workspaceId !== undefined &&
+      requiredString(value.workspaceId, 'workspaceId') !== restore.workspaceId) ||
+    requiredExactLocalRoot(value.localRoot, restore.localRoot) !== restore.localRoot
   ) {
     throw new Error('relayfile resume command returned a mismatched restore identity.');
   }
@@ -243,7 +273,7 @@ export function createRelayfileSealLifecycle(
     const output = await runner({
       binary,
       args: ['mount', 'resume-seal', '--root', restore.localRoot, '--json'],
-      stdin: `${JSON.stringify({ resumeId: restore.resumeId })}\n`,
+      stdin: `${JSON.stringify({ resumeId: restore.resumeId ?? restore.lifecycleId })}\n`,
       signal,
     });
     validateResumeOutput(output, restore);
@@ -251,26 +281,36 @@ export function createRelayfileSealLifecycle(
 
   return {
     checkpointAndSeal: async (input): Promise<CodexWorkspaceSealHandle> => {
-      const output = await runner({
-        binary,
-        args: [
-          'mount',
-          'checkpoint-seal',
-          '--root',
-          input.workspaceRoot,
-          '--session',
-          input.sessionId,
-          '--generation',
-          String(input.generation),
-          '--timeout',
-          '30s',
-          '--ttl',
-          '60s',
-          '--json',
-        ],
-        signal: input.signal,
-      });
-      const sealed = validateCheckpointOutput(output, input);
+      let sealed: ReturnType<typeof validateCheckpointOutput>;
+      try {
+        const output = await runner({
+          binary,
+          args: [
+            'mount',
+            'checkpoint-seal',
+            '--root',
+            input.workspaceRoot,
+            '--session',
+            input.sessionId,
+            '--generation',
+            String(input.generation),
+            '--lifecycle-id',
+            input.lifecycleId,
+            '--timeout',
+            '30s',
+            '--ttl',
+            '60s',
+            '--json',
+          ],
+          signal: input.signal,
+        });
+        sealed = validateCheckpointOutput(output, input);
+      } catch (error) {
+        await resume({ lifecycleId: input.lifecycleId, localRoot: input.workspaceRoot }).catch(
+          () => undefined
+        );
+        throw error;
+      }
       return {
         ...sealed,
         resumeLocal: (signal) => resume(sealed.restore, signal),

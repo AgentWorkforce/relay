@@ -30,7 +30,13 @@ async function nextRequest(child: ChildProcessWithoutNullStreams): Promise<Recor
 
 function turnPolicySchema(): string {
   return JSON.stringify({
-    properties: { approvalPolicy: {}, sandboxPolicy: {} },
+    properties: {
+      approvalPolicy: { $ref: '#/definitions/approval' },
+      sandboxPolicy: {
+        oneOf: [{ $ref: '#/definitions/workspace' }, { $ref: '#/definitions/remote' }],
+      },
+      clientUserMessageId: {},
+    },
     definitions: {
       approval: { enum: ['never'] },
       workspace: {
@@ -41,17 +47,44 @@ function turnPolicySchema(): string {
   });
 }
 
+function turnsListParamsSchema(): string {
+  return JSON.stringify({
+    properties: {
+      itemsView: { $ref: '#/definitions/items' },
+      sortDirection: { $ref: '#/definitions/sort' },
+    },
+    definitions: { items: { enum: ['full'] }, sort: { enum: ['desc'] } },
+  });
+}
+
+function turnsListResponseSchema(): string {
+  return JSON.stringify({
+    properties: { data: { $ref: '#/definitions/data' } },
+    definitions: {
+      data: {
+        properties: {
+          clientId: {},
+          type: { enum: ['userMessage'] },
+          status: { enum: ['completed', 'interrupted', 'failed', 'inProgress'] },
+        },
+      },
+    },
+  });
+}
+
+function successfulProbeFile(file: string): string {
+  if (file.endsWith('ClientRequest.json')) {
+    return '{"methods":["environment/add","environment/status","thread/turns/list"]}';
+  }
+  if (file.endsWith('TurnStartParams.json')) return turnPolicySchema();
+  if (file.endsWith('ThreadTurnsListParams.json')) return turnsListParamsSchema();
+  if (file.endsWith('ThreadTurnsListResponse.json')) return turnsListResponseSchema();
+  return '{"required":["environmentId","execServerUrl"],"properties":{"environmentId":{},"execServerUrl":{}}}';
+}
+
 describe('probeCodexEnvironmentCapability', () => {
   it('requires add and status in the locally generated experimental schema', async () => {
-    const readFile = vi.fn(async (file: string) => {
-      if (file.endsWith('ClientRequest.json')) {
-        return '{"methods":["environment/add","environment/status"]}';
-      }
-      if (file.endsWith('TurnStartParams.json')) {
-        return turnPolicySchema();
-      }
-      return '{"required":["environmentId","execServerUrl"],"properties":{"environmentId":{},"execServerUrl":{}}}';
-    });
+    const readFile = vi.fn(async (file: string) => successfulProbeFile(file));
     await expect(
       probeCodexEnvironmentCapability('codex', {
         makeTempDir: async () => '/schema',
@@ -74,10 +107,7 @@ describe('probeCodexEnvironmentCapability', () => {
         execFile: async () => undefined,
         readFile: async (file) => {
           if (file.endsWith('ClientRequest.json')) return '{"methods":["environment/add"]}';
-          if (file.endsWith('TurnStartParams.json')) {
-            return turnPolicySchema();
-          }
-          return '{"required":["environmentId","execServerUrl"]}';
+          return successfulProbeFile(file);
         },
         remove,
       })
@@ -91,12 +121,7 @@ describe('probeCodexEnvironmentCapability', () => {
         makeTempDir: async () => '/schema',
         execFile: async () => undefined,
         readFile: async (file) => {
-          if (file.endsWith('ClientRequest.json')) {
-            return '{"methods":["environment/add","environment/status"]}';
-          }
-          if (file.endsWith('TurnStartParams.json')) {
-            return turnPolicySchema();
-          }
+          if (!file.endsWith('EnvironmentAddParams.json')) return successfulProbeFile(file);
           return '{"required":["environmentId","execServerUrl"],"properties":{"headers":{}}}';
         },
         remove: async () => undefined,
@@ -110,15 +135,27 @@ describe('probeCodexEnvironmentCapability', () => {
         makeTempDir: async () => '/schema',
         execFile: async () => undefined,
         readFile: async (file) => {
-          if (file.endsWith('ClientRequest.json')) {
-            return '{"methods":["environment/add","environment/status"]}';
-          }
+          if (file.endsWith('ClientRequest.json')) return successfulProbeFile(file);
           if (file.endsWith('TurnStartParams.json')) return '{"properties":{}}';
-          return '{"required":["environmentId","execServerUrl"]}';
+          return successfulProbeFile(file);
         },
         remove: async () => undefined,
       })
     ).rejects.toThrow('execution-policy contract');
+  });
+
+  it('fails closed when full turn-history reconciliation is unavailable', async () => {
+    await expect(
+      probeCodexEnvironmentCapability('codex', {
+        makeTempDir: async () => '/schema',
+        execFile: async () => undefined,
+        readFile: async (file) => {
+          if (file.endsWith('ThreadTurnsListResponse.json')) return '{"properties":{"data":{}}}';
+          return successfulProbeFile(file);
+        },
+        remove: async () => undefined,
+      })
+    ).rejects.toThrow('turn-reconciliation contract');
   });
 });
 
@@ -151,6 +188,7 @@ describe('StdioCodexAppServerSession', () => {
     const running = session.runTurn({
       threadId: 'thread-1',
       text: 'continue',
+      clientUserMessageId: 'client-turn-1',
       execution: {
         kind: 'remote',
         environment: { environmentId: 'environment-3', cwd: '/workspace' },
@@ -162,6 +200,7 @@ describe('StdioCodexAppServerSession', () => {
       method: 'turn/start',
       params: {
         threadId: 'thread-1',
+        clientUserMessageId: 'client-turn-1',
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'dangerFullAccess' },
         environments: [{ environmentId: 'environment-3', cwd: '/workspace' }],
@@ -175,6 +214,43 @@ describe('StdioCodexAppServerSession', () => {
     await session.close();
   });
 
+  it('reconciles a persisted client user message through full turn history', async () => {
+    const child = fakeChild();
+    const session = new StdioCodexAppServerSession(child);
+    const requestPromise = nextRequest(child);
+    const reconciling = session.turnOutcome({
+      threadId: 'thread-1',
+      clientUserMessageId: 'client-turn-1',
+    });
+    const request = await requestPromise;
+    expect(request).toMatchObject({
+      method: 'thread/turns/list',
+      params: {
+        threadId: 'thread-1',
+        itemsView: 'full',
+        sortDirection: 'desc',
+        limit: 100,
+      },
+    });
+    child.stdout.write(
+      `${JSON.stringify({
+        id: request.id,
+        result: {
+          data: [
+            {
+              id: 'turn-1',
+              status: 'completed',
+              items: [{ type: 'userMessage', clientId: 'client-turn-1' }],
+            },
+          ],
+          nextCursor: null,
+        },
+      })}\n`
+    );
+    await expect(reconciling).resolves.toEqual({ status: 'completed', turnId: 'turn-1' });
+    await session.close();
+  });
+
   it('pins local turns to a non-networked workspace sandbox and rejects an unexpected approval request', async () => {
     const child = fakeChild();
     const session = new StdioCodexAppServerSession(child);
@@ -182,6 +258,7 @@ describe('StdioCodexAppServerSession', () => {
     const running = session.runTurn({
       threadId: 'thread-1',
       text: 'edit the workspace',
+      clientUserMessageId: 'client-turn-local',
       execution: { kind: 'local', workspaceRoot: '/repo' },
     });
     const request = await requestPromise;
@@ -189,6 +266,7 @@ describe('StdioCodexAppServerSession', () => {
       method: 'turn/start',
       params: {
         approvalPolicy: 'never',
+        clientUserMessageId: 'client-turn-local',
         sandboxPolicy: {
           type: 'workspaceWrite',
           writableRoots: ['/repo'],
@@ -274,6 +352,7 @@ describe('StdioCodexAppServerSession', () => {
     const running = session.runTurn({
       threadId: 'thread-1',
       text: 'long turn',
+      clientUserMessageId: 'client-turn-long',
       execution: { kind: 'local', workspaceRoot: '/repo' },
     });
     const request = await requestPromise;

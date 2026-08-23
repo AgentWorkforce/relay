@@ -23,24 +23,28 @@ export type LiveTeleportAcquireInput = LiveTeleportPrewarmInput & {
   prewarmId?: string;
 };
 
-export type LiveTeleportConvergenceWatermark = {
-  cursor: string;
-  manifestSha256: string;
-  files: number;
-  bytes: number;
-  conflictArtifacts: string[];
-  conflictDigest: string;
-};
-
-export type LiveTeleportConvergenceProof = {
-  verdict: 'converged';
-  source: LiveTeleportConvergenceWatermark & { sealedAt: string };
-  destination: LiveTeleportConvergenceWatermark & {
-    pendingWriteback: 0;
-    hasPendingWriteback: false;
-    outboxNeedsAttention: false;
-    ephemeralPaths: [];
+export type LiveTeleportDestinationVerification = {
+  version: 1;
+  kind: 'relayfile-destination-verification';
+  verificationId: string;
+  workspaceId: string;
+  localRoot: string;
+  remoteRoot: '/';
+  sessionId: string;
+  generation: number;
+  status: 'converged';
+  observed: {
+    digest: string;
+    workspaceRevision: string;
+    eventCursor: string;
   };
+  health: {
+    pendingWriteback: 0;
+    conflicts: 0;
+    outboxPending: 0;
+    outboxNeedsAttention: false;
+  };
+  verifiedAt: string;
 };
 
 export type LiveTeleportEnvironment = {
@@ -52,8 +56,9 @@ export type LiveTeleportEnvironment = {
   /** Derived locally from the constructor-pinned Cloud gateway origin. */
   execServerUrl: string;
   workspaceCwd: string;
-  expiresAt: string;
-  convergence: LiveTeleportConvergenceProof;
+  connectExpiresAt: string;
+  leaseExpiresAt: string;
+  verification: LiveTeleportDestinationVerification;
 };
 
 export type LiveTeleportRevokeInput = {
@@ -73,7 +78,7 @@ export type LiveTeleportStatusInput = {
 export type LiveTeleportLifecycleStatus = {
   sessionId: string;
   generation: number;
-  status: 'warming' | 'ready' | 'failed' | 'revoked' | 'expired';
+  status: 'warming' | 'ready' | 'verifying' | 'active' | 'cleanup_pending' | 'failed' | 'revoked' | 'expired';
   prewarmId?: string;
   retryAfterMs?: number;
   expiresAt?: string;
@@ -87,13 +92,15 @@ export interface LiveTeleportCloudClient {
   prewarm(input: LiveTeleportPrewarmInput): Promise<LiveTeleportPrewarm>;
   status(input: LiveTeleportStatusInput): Promise<LiveTeleportLifecycleStatus>;
   acquire(input: LiveTeleportAcquireInput): Promise<LiveTeleportEnvironment>;
-  revoke(input: LiveTeleportRevokeInput): Promise<LiveTeleportRevocation>;
+  revoke(input: LiveTeleportRevokeInput): Promise<LiveTeleportLifecycleStatus>;
 }
 
 type Fetcher = (path: string, init?: RequestInit) => Promise<Response>;
 
 const FORBIDDEN_PROVIDER_FIELD =
-  /(?:provider.*(?:url|token|credential)|trafficAccessToken|signedPreviewUrl)/i;
+  /(?:provider.*(?:url|token|credential)|trafficAccessToken|signedPreviewUrl|sealToken|^ticket$)/i;
+const MAX_ACQUIRE_ATTEMPTS = 120;
+const MAX_ACQUIRE_RETRY_AFTER_MS = 1_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -155,91 +162,91 @@ function requiredNonNegativeInteger(value: unknown, field: string): number {
   return Number(value);
 }
 
-function requiredStringArray(value: unknown, field: string): string[] {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
-    throw new Error(`Cloud live-teleport convergence proof has an invalid ${field}.`);
-  }
-  return value as string[];
-}
-
 function requiredDigest(value: unknown, field: string): string {
   const digest = requiredString(value, field);
-  if (!/^[a-f0-9]{64}$/i.test(digest)) {
-    throw new Error(`Cloud live-teleport convergence proof has an invalid ${field}.`);
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(`Cloud live-teleport verification has an invalid ${field}.`);
   }
-  return digest.toLowerCase();
+  return digest;
 }
 
-function requiredWatermark(value: unknown, field: string): LiveTeleportConvergenceWatermark {
-  if (!isObject(value)) throw new Error(`Cloud live-teleport convergence proof is missing ${field}.`);
-  return {
-    cursor: requiredString(value.cursor, `${field}.cursor`),
-    manifestSha256: requiredDigest(value.manifestSha256, `${field}.manifestSha256`),
-    files: requiredNonNegativeInteger(value.files, `${field}.files`),
-    bytes: requiredNonNegativeInteger(value.bytes, `${field}.bytes`),
-    conflictArtifacts: requiredStringArray(value.conflictArtifacts, `${field}.conflictArtifacts`),
-    conflictDigest: requiredDigest(value.conflictDigest, `${field}.conflictDigest`),
-  };
-}
-
-function parseCounter(value: string): { prefix: string; ordinal: number } | null {
-  const match = /^([A-Za-z][A-Za-z0-9]*_)?(\d+)$/.exec(value);
-  if (!match) return null;
-  const ordinal = Number.parseInt(match[2]!, 10);
-  return Number.isSafeInteger(ordinal) ? { prefix: match[1] ?? '', ordinal } : null;
-}
-
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((entry, index) => entry === right[index]);
-}
-
-function requiredConvergenceProof(value: unknown): LiveTeleportConvergenceProof {
-  if (!isObject(value) || value.verdict !== 'converged') {
-    throw new Error('Cloud live-teleport acquire did not return a converged hash/cursor proof.');
+function requiredRelayfilePosition(value: unknown, field: string, prefix: 'rev' | 'evt'): string {
+  const position = requiredString(value, field);
+  if (!new RegExp(`^(?:0|${prefix}_[0-9]+)$`).test(position)) {
+    throw new Error(`Cloud live-teleport verification has an invalid ${field}.`);
   }
-  const source = requiredWatermark(value.source, 'source');
-  const destination = requiredWatermark(value.destination, 'destination');
-  const sourceObject = value.source as Record<string, unknown>;
-  const destinationObject = value.destination as Record<string, unknown>;
-  const sealedAt = requiredString(sourceObject.sealedAt, 'source.sealedAt');
-  if (Number.isNaN(Date.parse(sealedAt))) {
-    throw new Error('Cloud live-teleport convergence proof has an invalid source.sealedAt.');
+  return position;
+}
+
+function requiredVerification(
+  value: unknown,
+  identity: { sessionId: string; generation: number }
+): LiveTeleportDestinationVerification {
+  if (!isObject(value) || !isObject(value.observed) || !isObject(value.health)) {
+    throw new Error('Cloud live-teleport acquire did not return Relayfile destination verification.');
   }
-  const sourceCursor = parseCounter(source.cursor);
-  const destinationCursor = parseCounter(destination.cursor);
-  const sameCursorNamespace =
-    sourceCursor && destinationCursor && sourceCursor.prefix === destinationCursor.prefix;
-  const hashesMatch =
-    source.manifestSha256 === destination.manifestSha256 &&
-    source.files === destination.files &&
-    source.bytes === destination.bytes &&
-    sameStrings([...source.conflictArtifacts].sort(), [...destination.conflictArtifacts].sort()) &&
-    source.conflictDigest === destination.conflictDigest;
-  const outboxHealthy =
-    destinationObject.pendingWriteback === 0 &&
-    destinationObject.hasPendingWriteback === false &&
-    destinationObject.outboxNeedsAttention === false &&
-    Array.isArray(destinationObject.ephemeralPaths) &&
-    destinationObject.ephemeralPaths.length === 0;
+  const verifiedAt = requiredString(value.verifiedAt, 'verification.verifiedAt');
   if (
-    !sameCursorNamespace ||
-    destinationCursor.ordinal < sourceCursor.ordinal ||
-    !hashesMatch ||
-    !outboxHealthy
+    value.version !== 1 ||
+    value.kind !== 'relayfile-destination-verification' ||
+    value.status !== 'converged' ||
+    value.remoteRoot !== '/' ||
+    value.sessionId !== identity.sessionId ||
+    value.generation !== identity.generation ||
+    value.health.pendingWriteback !== 0 ||
+    value.health.conflicts !== 0 ||
+    value.health.outboxPending !== 0 ||
+    value.health.outboxNeedsAttention !== false ||
+    Number.isNaN(Date.parse(verifiedAt))
   ) {
-    throw new Error('Cloud live-teleport acquire returned a non-converged hash/cursor proof.');
+    throw new Error('Cloud live-teleport acquire returned a mismatched Relayfile verification.');
   }
   return {
-    verdict: 'converged',
-    source: { ...source, sealedAt },
-    destination: {
-      ...destination,
-      pendingWriteback: 0,
-      hasPendingWriteback: false,
-      outboxNeedsAttention: false,
-      ephemeralPaths: [],
+    version: 1,
+    kind: 'relayfile-destination-verification',
+    verificationId: requiredString(value.verificationId, 'verification.verificationId'),
+    workspaceId: requiredString(value.workspaceId, 'verification.workspaceId'),
+    localRoot: requiredString(value.localRoot, 'verification.localRoot'),
+    remoteRoot: '/',
+    sessionId: identity.sessionId,
+    generation: identity.generation,
+    status: 'converged',
+    observed: {
+      digest: requiredDigest(value.observed.digest, 'verification.observed.digest'),
+      workspaceRevision: requiredRelayfilePosition(
+        value.observed.workspaceRevision,
+        'verification.observed.workspaceRevision',
+        'rev'
+      ),
+      eventCursor: requiredRelayfilePosition(
+        value.observed.eventCursor,
+        'verification.observed.eventCursor',
+        'evt'
+      ),
     },
+    health: {
+      pendingWriteback: 0,
+      conflicts: 0,
+      outboxPending: 0,
+      outboxNeedsAttention: false,
+    },
+    verifiedAt,
   };
+}
+
+function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, milliseconds);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 /**
@@ -260,8 +267,10 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     } catch {
       throw new Error('Cloud live-teleport requires a valid pinned gateway origin.');
     }
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error('Cloud live-teleport gateway origin must use HTTP or HTTPS.');
+    const loopback =
+      parsed.hostname === '127.0.0.1' || parsed.hostname === '::1' || parsed.hostname === 'localhost';
+    if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+      throw new Error('Cloud live-teleport gateway origin must use HTTPS (HTTP is loopback-only).');
     }
     if (parsed.username || parsed.password) {
       throw new Error('Cloud live-teleport gateway origin must not contain credentials.');
@@ -306,13 +315,35 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
 
   async acquire(input: LiveTeleportAcquireInput): Promise<LiveTeleportEnvironment> {
     const { signal, ...request } = input;
-    const response = await this.fetcher('/api/v1/live-teleports/acquire', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-      signal,
-    });
-    const payload = await readPayload(response);
+    let payload: unknown;
+    let stillVerifying = false;
+    for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
+      const response = await this.fetcher('/api/v1/live-teleports/acquire', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        signal,
+      });
+      payload = await readPayload(response);
+      if (response.status !== 202) {
+        stillVerifying = false;
+        break;
+      }
+      stillVerifying = true;
+      if (!isObject(payload) || payload.status !== 'verifying') {
+        throw new Error('Cloud live-teleport acquire returned an invalid pending response.');
+      }
+      await wait(
+        Math.min(
+          optionalNonNegativeInteger(payload.retryAfterMs, 'retryAfterMs') ?? 500,
+          MAX_ACQUIRE_RETRY_AFTER_MS
+        ),
+        signal
+      );
+    }
+    if (stillVerifying) {
+      throw new Error('Cloud live-teleport acquire exceeded the bounded verification poll limit.');
+    }
     if (!isObject(payload)) throw new Error('Cloud live-teleport acquire returned an invalid response.');
 
     if ('execServerUrl' in payload) {
@@ -321,24 +352,37 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     const connectPath = this.requiredConnectPath(payload.connectPath);
     const execServerUrl = this.execServerUrl(connectPath);
 
-    const expiresAt = requiredString(payload.expiresAt, 'expiresAt');
-    if (Number.isNaN(Date.parse(expiresAt))) {
-      throw new Error('Cloud live-teleport acquire returned an invalid expiresAt.');
+    const sessionId = requiredString(payload.sessionId, 'sessionId');
+    const generation = requiredGeneration(payload.generation);
+    const threadId = requiredString(payload.threadId, 'threadId');
+    const connectExpiresAt = requiredString(payload.connectExpiresAt, 'connectExpiresAt');
+    const leaseExpiresAt = requiredString(payload.leaseExpiresAt, 'leaseExpiresAt');
+    if (
+      payload.status !== 'active' ||
+      sessionId !== input.sessionId ||
+      generation !== input.generation ||
+      threadId !== input.threadId ||
+      Number.isNaN(Date.parse(connectExpiresAt)) ||
+      Number.isNaN(Date.parse(leaseExpiresAt)) ||
+      Date.parse(leaseExpiresAt) <= Date.parse(connectExpiresAt)
+    ) {
+      throw new Error('Cloud live-teleport acquire returned invalid active lifecycle metadata.');
     }
 
     return {
-      sessionId: requiredString(payload.sessionId, 'sessionId'),
-      generation: requiredGeneration(payload.generation),
+      sessionId,
+      generation,
       environmentId: requiredString(payload.environmentId, 'environmentId'),
       connectPath,
       execServerUrl,
       workspaceCwd: requiredString(payload.workspaceCwd, 'workspaceCwd'),
-      expiresAt,
-      convergence: requiredConvergenceProof(payload.convergence),
+      connectExpiresAt,
+      leaseExpiresAt,
+      verification: requiredVerification(payload.verification, { sessionId, generation }),
     };
   }
 
-  async revoke(input: LiveTeleportRevokeInput): Promise<LiveTeleportRevocation> {
+  async revoke(input: LiveTeleportRevokeInput): Promise<LiveTeleportLifecycleStatus> {
     const { signal, ...request } = input;
     const response = await this.fetcher('/api/v1/live-teleports/revoke', {
       method: 'POST',
@@ -349,10 +393,10 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport revoke returned an invalid response.');
     const status = this.parseLifecycleStatus(payload);
-    if (status.status !== 'revoked' && status.status !== 'expired') {
+    if (status.status !== 'cleanup_pending' && status.status !== 'revoked' && status.status !== 'expired') {
       throw new Error('Cloud live-teleport revoke was not confirmed.');
     }
-    return { ...status, status: status.status };
+    return status;
   }
 
   private parseLifecycleStatus(payload: Record<string, unknown>): LiveTeleportLifecycleStatus {
@@ -360,6 +404,9 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     if (
       status !== 'warming' &&
       status !== 'ready' &&
+      status !== 'verifying' &&
+      status !== 'active' &&
+      status !== 'cleanup_pending' &&
       status !== 'failed' &&
       status !== 'revoked' &&
       status !== 'expired'
