@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `relay codex run` starts a Relay-managed local Codex app-server/thread, and `relay codex teleport` seals its active Relayfile poll mount at the next turn boundary, requires exact Relayfile destination verification before Cloud execution, reconciles lost turn responses by stable client message ID, and requires confirmed fencing plus ownership handback and mount readiness before local rollback.
+- `relay codex run` starts a Relay-managed local Codex app-server/thread, and `relay codex teleport` seals its active Relayfile poll mount at the next turn boundary, binds exact Relayfile destination verification to the source checkpoint, requires a 40-minute Cloud turn lease, preserves reconciled assistant answers, transparently runs the same prompt locally after a confirmed pre-submission cutover failure, and requires confirmed fencing plus ownership handback and mount readiness before local rollback.
 
 ## [Unreleased - Patch]
 

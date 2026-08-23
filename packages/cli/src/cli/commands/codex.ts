@@ -12,12 +12,12 @@ import {
   probeCodexEnvironmentCapability,
   StdioCodexAppServerSession,
   type CodexNotification,
+  type CodexTurnResult,
 } from '../lib/codex-app-server.js';
 import {
   CodexLiveController,
   CodexTurnOutcomeUncertainError,
   CodexTurnRecordedError,
-  CodexTurnRecoveredError,
   FileCodexControllerStateStore,
   type CodexControllerState,
   type CodexPersistedMountResumeProvider,
@@ -73,39 +73,20 @@ function agentMessageDelta(notification: CodexNotification): string | undefined 
 }
 
 export async function runManagedCodexTurn(
-  controller: Pick<CodexLiveController, 'runTurn' | 'status'>,
+  controller: Pick<CodexLiveController, 'runTurn'>,
   text: string,
-  options: { json: boolean; writeError: (message: string) => void }
+  options: {
+    json: boolean;
+    writeError: (message: string) => void;
+    writeOutput?: (message: string) => void;
+  }
 ): Promise<void> {
+  let result: CodexTurnResult;
   try {
-    await controller.runTurn(text);
+    result = await controller.runTurn(text);
   } catch (error) {
-    const status = controller.status();
-    if (error instanceof CodexTurnRecoveredError && status.phase === 'local') {
-      options.writeError(
-        options.json
-          ? `${JSON.stringify({
-              method: 'relay/codexTurnRecovered',
-              params: {
-                code: 'TURN_FAILED_RECOVERED_LOCALLY',
-                threadId: status.threadId,
-                generation: status.generation,
-              },
-            })}\n`
-          : 'Cloud execution was fenced and the same Codex thread recovered locally; no turn was replayed.\n'
-      );
-      return;
-    }
     if (error instanceof CodexTurnRecordedError) {
-      options.writeError(
-        options.json
-          ? `${JSON.stringify({
-              method: 'relay/codexTurnRecordedTerminal',
-              params: { code: 'TURN_RECORDED_TERMINAL', status: error.status },
-            })}\n`
-          : `Codex recorded the turn as ${error.status}; it was not replayed.\n`
-      );
-      return;
+      surfaceCodexRecordedTerminal(error, options);
     }
     if (error instanceof CodexTurnOutcomeUncertainError) {
       throw new Error('Relay-managed Codex stopped because the last turn outcome is uncertain.', {
@@ -117,6 +98,66 @@ export async function runManagedCodexTurn(
       { cause: error }
     );
   }
+  if (result.reconciled) writeReconciledTurn(result, options);
+}
+
+export function surfaceCodexRecordedTerminal(
+  error: CodexTurnRecordedError,
+  options: { json: boolean; writeError: (message: string) => void }
+): never {
+  options.writeError(
+    options.json
+      ? `${JSON.stringify({
+          method: 'relay/codexTurnRecordedTerminal',
+          params: { code: 'TURN_RECORDED_TERMINAL', status: error.status },
+        })}\n`
+      : `Codex recorded the turn as ${error.status}; it was not replayed.\n`
+  );
+  throw error;
+}
+
+export function surfaceRecoveredCodexTerminal(
+  controller: Pick<CodexLiveController, 'takeRecoveredTerminal'>,
+  options: { json: boolean; writeError: (message: string) => void }
+): void {
+  const terminal = controller.takeRecoveredTerminal();
+  if (terminal) surfaceCodexRecordedTerminal(terminal, options);
+}
+
+function writeReconciledTurn(
+  result: CodexTurnResult,
+  options: { json: boolean; writeOutput?: (message: string) => void }
+): void {
+  if (!options.writeOutput) return;
+  if (options.json) {
+    options.writeOutput(`${JSON.stringify(result.completed)}\n`);
+    return;
+  }
+  const params = result.completed.params;
+  const turn =
+    params && typeof params === 'object' && !Array.isArray(params)
+      ? (params as Record<string, unknown>).turn
+      : undefined;
+  const items =
+    turn && typeof turn === 'object' && !Array.isArray(turn)
+      ? (turn as Record<string, unknown>).items
+      : undefined;
+  if (!Array.isArray(items)) {
+    throw new Error('Reconciled Codex completion did not contain an observable assistant answer.');
+  }
+  const answers = items.flatMap((item) =>
+    item &&
+    typeof item === 'object' &&
+    !Array.isArray(item) &&
+    (item as Record<string, unknown>).type === 'agentMessage' &&
+    typeof (item as Record<string, unknown>).text === 'string'
+      ? [(item as Record<string, unknown>).text as string]
+      : []
+  );
+  if (answers.length === 0) {
+    throw new Error('Reconciled Codex completion did not contain an observable assistant answer.');
+  }
+  options.writeOutput(`${answers.join('\n')}\n`);
 }
 
 async function listen(server: net.Server, socketPath: string): Promise<void> {
@@ -270,15 +311,27 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
         const server = createControlServer(controller);
         try {
           const status = await controller.initialize();
+          surfaceRecoveredCodexTerminal(controller, {
+            json: Boolean(options.json),
+            writeError: (message) => process.stderr.write(message),
+          });
           await listen(server, paths.socketPath);
           process.stderr.write(
             `Relay-managed Codex ${status.threadId} is ready locally (generation ${status.generation}).\n`
           );
+          const recoveredTurn = controller.takeRecoveredTurn();
+          if (recoveredTurn) {
+            writeReconciledTurn(recoveredTurn, {
+              json: Boolean(options.json),
+              writeOutput: (message) => process.stdout.write(message),
+            });
+          }
 
           if (options.prompt) {
             await runManagedCodexTurn(controller, options.prompt, {
               json: Boolean(options.json),
               writeError: (message) => process.stderr.write(message),
+              writeOutput: (message) => process.stdout.write(message),
             });
           }
           const input = readline.createInterface({
@@ -290,6 +343,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
             await runManagedCodexTurn(controller, line, {
               json: Boolean(options.json),
               writeError: (message) => process.stderr.write(message),
+              writeOutput: (message) => process.stdout.write(message),
             });
             if (!options.json) process.stdout.write('\n');
           }
@@ -380,7 +434,7 @@ export function registerCodexCommands(
         })
       );
       deps.log(
-        `Codex execution teleport queued for generation ${status.generation}; the local controller remains authoritative.`
+        `Codex execution teleport queued for generation ${status.generation}; the next prompt runs in Cloud after cutover, or locally after confirmed pre-submission recovery.`
       );
     });
 

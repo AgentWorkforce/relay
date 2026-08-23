@@ -15,10 +15,21 @@ import {
   type CodexWorkspaceSealProvider,
 } from './codex-live-controller.js';
 import type { CodexAppServerSession, CodexTurnResult } from './codex-app-server.js';
+import { CodexAppServerTurnTerminalError } from './codex-app-server.js';
 
 const source = {
   kind: 'relayfile-checkpoint-seal' as const,
-  receipt: { sealId: 'seal-1', sealToken: 'opaque' },
+  receipt: {
+    sealId: 'seal-1',
+    sealToken: 'opaque',
+    workspaceId: 'workspace-1',
+    root: '/',
+    sessionId: 'session-1',
+    generation: 1,
+    digest: `sha256:${'a'.repeat(64)}`,
+    workspaceRevision: 'rev_10',
+    eventCursor: 'evt_10',
+  },
 };
 
 function sealHandle(overrides: Partial<CodexWorkspaceSealHandle> = {}): CodexWorkspaceSealHandle {
@@ -70,7 +81,36 @@ function deferred<T>() {
 }
 
 function turnResult(turnId = 'turn-1'): CodexTurnResult {
-  return { turnId, response: {}, completed: { method: 'turn/completed' } };
+  const turn = {
+    id: turnId,
+    status: 'completed',
+    itemsView: 'full',
+    items: [{ id: `answer-${turnId}`, type: 'agentMessage', text: `answer for ${turnId}` }],
+  };
+  return {
+    turnId,
+    response: { turn },
+    completed: { method: 'turn/completed', params: { threadId: 'thread-1', turn } },
+  };
+}
+
+function completedOutcome(turnId: string, answer = `answer for ${turnId}`) {
+  const turn = {
+    id: turnId,
+    status: 'completed',
+    itemsView: 'full',
+    items: [{ id: `answer-${turnId}`, type: 'agentMessage', text: answer }],
+  };
+  return {
+    status: 'completed' as const,
+    turnId,
+    result: {
+      turnId,
+      response: { turn },
+      completed: { method: 'turn/completed', params: { threadId: 'thread-1', turn } },
+      reconciled: true as const,
+    },
+  };
 }
 
 function memoryStore(initial: CodexControllerState | null = null): CodexControllerStateStore & {
@@ -115,7 +155,10 @@ function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCl
       generation: input.generation,
       status: 'ready' as const,
     })),
-    status: vi.fn(async (input) => lifecycle(input, 'active')),
+    status: vi.fn(async (input) => ({
+      ...lifecycle(input, 'active'),
+      leaseExpiresAt: '2026-08-23T13:00:00.000Z',
+    })),
     acquire: vi.fn(async (input) => ({
       sessionId: input.sessionId,
       generation: input.generation,
@@ -142,6 +185,7 @@ function createController(
     resumePersistedLocalMount?: CodexPersistedMountResumeProvider;
     lifecycleDeadlineMs?: number;
     lifecyclePollIntervalMs?: number;
+    now?: () => Date;
   } = {}
 ) {
   const store = options.store ?? memoryStore();
@@ -183,7 +227,7 @@ function createController(
       checkpointAndSeal,
       resumePersistedLocalMount,
       sleep: async () => undefined,
-      now: () => new Date('2026-08-23T12:00:00.000Z'),
+      now: options.now ?? (() => new Date('2026-08-23T12:00:00.000Z')),
       sessionId: () => 'session-1',
       operationId: () => `operation-${++operation}`,
       pid: 123,
@@ -320,7 +364,41 @@ describe('CodexLiveController', () => {
       expect.objectContaining({ idempotencyKey: 'session-1:1:revoke' })
     );
     expect(cloudClient.status).not.toHaveBeenCalled();
-    expect(store.value).toMatchObject({ cloudLifecycle: 'none' });
+    expect(store.value).toMatchObject({ cloudLifecycle: 'none', generation: 2 });
+  });
+
+  it('advances prewarm identity after graceful fence before close → initialize → teleport', async () => {
+    const store = memoryStore();
+    const cloudClient = cloud();
+    const first = createController({ store, cloud: cloudClient, sessions: [appServer()] });
+    await first.controller.initialize();
+    await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+
+    await first.controller.close();
+
+    expect(store.value).toMatchObject({ generation: 2, cloudLifecycle: 'none', phase: 'local' });
+    expect(cloudClient.revoke).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: 1, idempotencyKey: 'session-1:1:revoke' })
+    );
+
+    const resumed = appServer();
+    const second = createController({ store, cloud: cloudClient, sessions: [resumed] });
+    await second.controller.initialize();
+    second.controller.requestTeleport({ requestId: 'request-generation-2', expectedGeneration: 2 });
+    await second.controller.runTurn('fresh identity');
+
+    expect(cloudClient.prewarm).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:prewarm' })
+    );
+    expect(cloudClient.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:acquire' })
+    );
+    expect(resumed.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'fresh identity',
+        execution: expect.objectContaining({ kind: 'remote' }),
+      })
+    );
   });
 
   it('persists checkpoint lifecycle intent before Relayfile can stop the mount', async () => {
@@ -373,9 +451,12 @@ describe('CodexLiveController', () => {
     expect(original.close).not.toHaveBeenCalled();
 
     cleanup.reject(Object.assign(new Error('checkpoint aborted and source ready'), { name: 'AbortError' }));
-    await expect(running).rejects.toThrow('Teleport failed before turn submission');
+    await expect(running).resolves.toMatchObject({ turnId: 'turn-1' });
     expect(original.close).toHaveBeenCalled();
     expect(replacement.resumeThread).toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'deadline', execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
   });
 
   it('fences without inverse effects when checkpoint ignores abort and never settles', async () => {
@@ -505,6 +586,184 @@ describe('CodexLiveController', () => {
     });
   });
 
+  it.each(['failed', 'interrupted'] as const)(
+    'surfaces a normal turn/completed %s terminal and keeps it recorded',
+    async (terminalStatus) => {
+      const completed = {
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: { id: 'turn-terminal', status: terminalStatus, items: [] },
+        },
+      };
+      const original = appServer({
+        runTurn: vi.fn(async () => {
+          throw new CodexAppServerTurnTerminalError(terminalStatus, 'turn-terminal', completed);
+        }),
+      });
+      const { controller, store } = createController({ sessions: [original] });
+      await controller.initialize();
+
+      await expect(controller.runTurn('terminal prompt')).rejects.toMatchObject({
+        name: 'CodexTurnRecordedError',
+        status: terminalStatus,
+      });
+
+      expect(store.value?.inFlightTurn).toBeUndefined();
+      expect(controller.status()).toMatchObject({
+        phase: 'local',
+        lastError: `TURN_${terminalStatus.toUpperCase()}`,
+      });
+    }
+  );
+
+  it('admits an acquired lease at the exact 40-minute turn horizon', async () => {
+    const cloudClient = cloud({
+      acquire: vi.fn(async (input) => ({
+        sessionId: input.sessionId,
+        generation: input.generation,
+        environmentId: 'environment-boundary',
+        connectPath: '/api/v1/live-teleports/connect/boundary',
+        execServerUrl: 'wss://cloud.agentrelay.test/api/v1/live-teleports/connect/boundary',
+        workspaceCwd: '/workspace',
+        connectExpiresAt: '2026-08-23T12:05:00.000Z',
+        leaseExpiresAt: '2026-08-23T12:40:00.000Z',
+        verification: { ...verification, generation: input.generation },
+      })),
+    });
+    const original = appServer();
+    const { controller } = createController({ cloud: cloudClient, sessions: [original] });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-boundary', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('boundary lease')).resolves.toMatchObject({ turnId: 'turn-1' });
+    expect(original.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ execution: expect.objectContaining({ kind: 'remote' }) })
+    );
+  });
+
+  it('fences a short acquired lease and transparently submits the same prompt locally', async () => {
+    const original = appServer();
+    const replacement = appServer();
+    const cloudClient = cloud({
+      acquire: vi.fn(async (input) => ({
+        sessionId: input.sessionId,
+        generation: input.generation,
+        environmentId: 'environment-short',
+        connectPath: '/api/v1/live-teleports/connect/short',
+        execServerUrl: 'wss://cloud.agentrelay.test/api/v1/live-teleports/connect/short',
+        workspaceCwd: '/workspace',
+        connectExpiresAt: '2026-08-23T12:05:00.000Z',
+        leaseExpiresAt: '2026-08-23T12:39:59.999Z',
+        verification: { ...verification, generation: input.generation },
+      })),
+    });
+    const { controller } = createController({
+      cloud: cloudClient,
+      sessions: [original, replacement],
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-short', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('preserve this prompt')).resolves.toMatchObject({ turnId: 'turn-1' });
+    expect(cloudClient.revoke).toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      text: 'preserve this prompt',
+      clientUserMessageId: 'operation-2',
+      execution: { kind: 'local', workspaceRoot: '/repo' },
+    });
+  });
+
+  it('persists a newer active lease only after same-generation 40-minute preflight renewal', async () => {
+    let now = new Date('2026-08-23T12:00:00.000Z');
+    const original = appServer();
+    const cloudClient = cloud({
+      status: vi.fn(async (input) => ({
+        ...lifecycle(input, 'active'),
+        leaseExpiresAt: '2026-08-23T13:10:00.000Z',
+      })),
+    });
+    const { controller, store } = createController({
+      cloud: cloudClient,
+      sessions: [original],
+      now: () => now,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-renew', expectedGeneration: 1 });
+    await controller.runTurn('first remote');
+
+    now = new Date('2026-08-23T12:20:00.000Z');
+    await controller.runTurn('after renewal');
+
+    expect(store.value?.remote?.leaseExpiresAt).toBe('2026-08-23T13:10:00.000Z');
+    expect(original.runTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['short', '2026-08-23T12:59:59.999Z'],
+  ])('recovers locally when active status has a %s next-turn lease', async (_name, leaseExpiresAt) => {
+    let now = new Date('2026-08-23T12:00:00.000Z');
+    const original = appServer();
+    const replacement = appServer();
+    const cloudClient = cloud({
+      status: vi.fn(async (input) => ({
+        ...lifecycle(input, 'active'),
+        ...(leaseExpiresAt ? { leaseExpiresAt } : {}),
+      })),
+    });
+    const { controller } = createController({
+      cloud: cloudClient,
+      sessions: [original, replacement],
+      now: () => now,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: `request-${_name}`, expectedGeneration: 1 });
+    await controller.runTurn('first remote');
+
+    now = new Date('2026-08-23T12:20:00.000Z');
+    await controller.runTurn('must recover locally');
+
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'must recover locally',
+        execution: { kind: 'local', workspaceRoot: '/repo' },
+      })
+    );
+    expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+  });
+
+  it('never revives a locally expired lease from a later active status', async () => {
+    let now = new Date('2026-08-23T12:00:00.000Z');
+    const original = appServer();
+    const replacement = appServer();
+    const status = vi.fn(async (input) => ({
+      ...lifecycle(input, 'active'),
+      leaseExpiresAt: '2026-08-23T14:00:00.000Z',
+    }));
+    const cloudClient = cloud({ status });
+    const { controller } = createController({
+      cloud: cloudClient,
+      sessions: [original, replacement],
+      now: () => now,
+    });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-expired', expectedGeneration: 1 });
+    await controller.runTurn('first remote');
+
+    now = new Date('2026-08-23T13:00:00.001Z');
+    await controller.runTurn('expired locally');
+
+    expect(status).not.toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'expired locally',
+        execution: expect.objectContaining({ kind: 'local' }),
+      })
+    );
+  });
+
   it('confirms revoke, reconciles a recorded failed turn, and resumes the same thread without replay', async () => {
     const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
     const replacement = appServer({
@@ -538,7 +797,7 @@ describe('CodexLiveController', () => {
       runTurn: vi.fn(async () => Promise.reject(new Error('notification lost'))),
     });
     const replacement = appServer({
-      turnOutcome: vi.fn(async () => ({ status: 'completed' as const, turnId: 'turn-remote-1' })),
+      turnOutcome: vi.fn(async () => completedOutcome('turn-remote-1', 'recovered exact answer')),
     });
     const { controller } = createController({ sessions: [original, replacement] });
     await controller.initialize();
@@ -546,7 +805,16 @@ describe('CodexLiveController', () => {
 
     await expect(controller.runTurn('exactly once')).resolves.toMatchObject({
       turnId: 'turn-remote-1',
-      response: { reconciled: true },
+      response: {
+        turn: {
+          items: [expect.objectContaining({ type: 'agentMessage', text: 'recovered exact answer' })],
+        },
+      },
+      completed: {
+        params: {
+          turn: expect.objectContaining({ id: 'turn-remote-1', status: 'completed' }),
+        },
+      },
     });
     expect(replacement.runTurn).not.toHaveBeenCalled();
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
@@ -562,6 +830,26 @@ describe('CodexLiveController', () => {
     await expect(controller.runTurn('ambiguous')).rejects.toThrow('outcome is uncertain');
     expect(replacement.runTurn).not.toHaveBeenCalled();
     expect(controller.status()).toMatchObject({ phase: 'outcome_uncertain', execution: 'fenced' });
+  });
+
+  it('fails outcome-uncertain instead of claiming completion when history lost the exact answer', async () => {
+    const original = appServer({
+      runTurn: vi.fn(async () => Promise.reject(new Error('notification lost'))),
+    });
+    const replacement = appServer({
+      turnOutcome: vi.fn(async () => {
+        throw new Error('completed history omitted assistant answer');
+      }),
+    });
+    const { controller } = createController({ sessions: [original, replacement] });
+    await controller.initialize();
+    controller.requestTeleport({ requestId: 'request-missing-answer', expectedGeneration: 1 });
+
+    await expect(controller.runTurn('need exact answer')).rejects.toThrow('outcome is uncertain');
+    expect(controller.status()).toMatchObject({
+      phase: 'outcome_uncertain',
+      lastError: 'TURN_RECONCILIATION_UNAVAILABLE',
+    });
   });
 
   it('recovers an expired later-turn lease before submitting the next prompt locally', async () => {
@@ -628,10 +916,13 @@ describe('CodexLiveController', () => {
     expect(controller.status()).toMatchObject({ phase: 'local', workspaceSource: 'unavailable' });
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('local only')).rejects.toThrow('Teleport failed before turn submission');
+    await expect(controller.runTurn('local only')).resolves.toMatchObject({ turnId: 'turn-1' });
 
     expect(cloudClient.acquire).not.toHaveBeenCalled();
     expect(cloudClient.revoke).toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'local only', execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
   });
 
@@ -655,12 +946,16 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('must stay on this mount')).rejects.toThrow(
-      'Teleport failed before turn submission'
-    );
+    await expect(controller.runTurn('must stay on this mount')).resolves.toMatchObject({ turnId: 'turn-1' });
 
     expect(cloudClient.acquire).not.toHaveBeenCalled();
     expect(sealed.resumeLocal).toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'must stay on this mount',
+        execution: { kind: 'local', workspaceRoot: '/repo' },
+      })
+    );
     expect(store.value?.source).toBeUndefined();
     expect(store.value?.mountRestore).toBeUndefined();
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
@@ -679,17 +974,14 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('local after abort')).rejects.toThrow(
-      'Teleport failed before turn submission'
-    );
+    await expect(controller.runTurn('local after abort')).resolves.toMatchObject({ turnId: 'turn-1' });
 
     expect(sealed.resumeLocal).toHaveBeenCalled();
     expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
-    await controller.runTurn('second input');
     expect(replacement.runTurn).toHaveBeenCalledWith({
       threadId: 'thread-1',
-      text: 'second input',
+      text: 'local after abort',
       clientUserMessageId: 'operation-2',
       execution: { kind: 'local', workspaceRoot: '/repo' },
     });
@@ -769,9 +1061,12 @@ describe('CodexLiveController', () => {
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('bounded')).rejects.toThrow('Teleport failed before turn submission');
+    await expect(controller.runTurn('bounded')).resolves.toMatchObject({ turnId: 'turn-1' });
 
     expect(cloudClient.acquire).not.toHaveBeenCalled();
+    expect(replacement.runTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'bounded', execution: { kind: 'local', workspaceRoot: '/repo' } })
+    );
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
   });
 
@@ -945,7 +1240,7 @@ describe('CodexLiveController', () => {
       })
     );
     const resumed = appServer({
-      turnOutcome: vi.fn(async () => ({ status: 'completed' as const, turnId: 'turn-persisted-1' })),
+      turnOutcome: vi.fn(async () => completedOutcome('turn-persisted-1')),
     });
     const { controller } = createController({ store, sessions: [resumed] });
 
@@ -955,6 +1250,66 @@ describe('CodexLiveController', () => {
       clientUserMessageId: 'client-persisted-1',
     });
     expect(store.value?.inFlightTurn).toBeUndefined();
+    expect(controller.takeRecoveredTurn()).toMatchObject({
+      reconciled: true,
+      response: {
+        turn: {
+          items: [expect.objectContaining({ type: 'agentMessage', text: 'answer for turn-persisted-1' })],
+        },
+      },
+    });
+    expect(controller.takeRecoveredTurn()).toBeUndefined();
+  });
+
+  it.each(['failed', 'interrupted'] as const)(
+    'preserves a persisted crash-reconciled %s terminal for one-shot CLI failure',
+    async (status) => {
+      const store = memoryStore(
+        persistedRemote({
+          inFlightTurn: { clientUserMessageId: `client-persisted-${status}`, execution: 'remote' },
+        })
+      );
+      const resumed = appServer({
+        turnOutcome: vi.fn(async () => ({ status, turnId: `turn-persisted-${status}` })),
+      });
+      const cloudClient = cloud();
+      const { controller } = createController({ store, sessions: [resumed], cloud: cloudClient });
+
+      await expect(controller.initialize()).resolves.toMatchObject({ phase: 'local', generation: 8 });
+      expect(resumed.runTurn).not.toHaveBeenCalled();
+      expect(cloudClient.prewarm).not.toHaveBeenCalled();
+      expect(store.value?.inFlightTurn).toBeUndefined();
+      expect(controller.takeRecoveredTerminal()).toMatchObject({
+        name: 'CodexTurnRecordedError',
+        status,
+        recordedTerminal: true,
+      });
+      expect(controller.takeRecoveredTerminal()).toBeUndefined();
+      expect(controller.takeRecoveredTurn()).toBeUndefined();
+    }
+  );
+
+  it('keeps restart recovery outcome-uncertain when completed history cannot return the exact answer', async () => {
+    const store = memoryStore(
+      persistedRemote({
+        inFlightTurn: { clientUserMessageId: 'client-persisted-missing', execution: 'remote' },
+      })
+    );
+    const resumed = appServer({
+      turnOutcome: vi.fn(async () => {
+        throw new Error('completed history omitted assistant answer');
+      }),
+    });
+    const { controller } = createController({ store, sessions: [resumed] });
+
+    await expect(controller.initialize()).rejects.toThrow('outcome is uncertain');
+    expect(store.value).toMatchObject({
+      phase: 'outcome_uncertain',
+      generation: 7,
+      lastError: 'TURN_RECONCILIATION_UNAVAILABLE',
+      inFlightTurn: { clientUserMessageId: 'client-persisted-missing' },
+    });
+    expect(controller.takeRecoveredTurn()).toBeUndefined();
   });
 
   it('fails recovery if the same thread cannot be resumed after a confirmed fence', async () => {

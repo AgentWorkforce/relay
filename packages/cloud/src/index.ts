@@ -55,6 +55,7 @@ export {
 
 export {
   CloudLiveTeleportClient,
+  LIVE_TELEPORT_MIN_TURN_LEASE_MS,
   type LiveTeleportCloudClient,
   type LiveTeleportWorkspaceSource,
   type LiveTeleportPrewarmInput,

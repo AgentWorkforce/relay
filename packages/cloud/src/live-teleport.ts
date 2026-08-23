@@ -82,6 +82,8 @@ export type LiveTeleportLifecycleStatus = {
   prewarmId?: string;
   retryAfterMs?: number;
   expiresAt?: string;
+  /** Exact Cloud-authoritative lease deadline, present for active status. */
+  leaseExpiresAt?: string;
 };
 
 export type LiveTeleportRevocation = LiveTeleportLifecycleStatus & {
@@ -101,6 +103,8 @@ const FORBIDDEN_PROVIDER_FIELD =
   /(?:provider.*(?:url|token|credential)|trafficAccessToken|signedPreviewUrl|sealToken|^ticket$)/i;
 const MAX_ACQUIRE_ATTEMPTS = 120;
 const MAX_ACQUIRE_RETRY_AFTER_MS = 1_000;
+/** Remote turns can wait up to 30m for completion; Cloud reserves another 10m for fencing. */
+export const LIVE_TELEPORT_MIN_TURN_LEASE_MS = 40 * 60_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -134,6 +138,18 @@ async function readPayload(response: Response): Promise<unknown> {
     throw new Error(`Cloud live-teleport request failed (${response.status}): ${detail || 'unknown error'}`);
   }
   return payload;
+}
+
+async function fetchAcquireSafely(fetcher: Fetcher, path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetcher(path, init);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    // A transport adapter can include the serialized request body in its
+    // diagnostic. Acquire carries the one-use seal token, so never relay that
+    // arbitrary prose to callers.
+    throw new Error('Cloud live-teleport acquire transport failed.');
+  }
 }
 
 function requiredString(value: unknown, field: string): string {
@@ -178,21 +194,82 @@ function requiredRelayfilePosition(value: unknown, field: string, prefix: 'rev' 
   return position;
 }
 
+function requiredExactTimestamp(value: unknown, field: string): string {
+  const timestamp = requiredString(value, field);
+  const milliseconds = Date.parse(timestamp);
+  if (Number.isNaN(milliseconds) || new Date(milliseconds).toISOString() !== timestamp) {
+    throw new Error(`Cloud live-teleport response has an invalid ${field}.`);
+  }
+  return timestamp;
+}
+
+type LiveTeleportReceiptBinding = {
+  workspaceId: string;
+  remoteRoot: '/';
+  sessionId: string;
+  generation: number;
+  digest: string;
+  workspaceRevision: string;
+  eventCursor: string;
+};
+
+function requiredReceiptBinding(source: LiveTeleportWorkspaceSource): LiveTeleportReceiptBinding {
+  if (source.kind !== 'relayfile-checkpoint-seal' || !isObject(source.receipt)) {
+    throw new Error('Cloud live-teleport acquire requires a Relayfile checkpoint receipt.');
+  }
+  const receipt = source.receipt;
+  // Validate the capability without ever retaining it in verification output or
+  // interpolating it into an error.
+  requiredString(receipt.sealToken, 'source.receipt.sealToken');
+  if (requiredString(receipt.root, 'source.receipt.root') !== '/') {
+    throw new Error('Cloud live-teleport acquire requires logical Relayfile root /.');
+  }
+  return {
+    workspaceId: requiredString(receipt.workspaceId, 'source.receipt.workspaceId'),
+    remoteRoot: '/',
+    sessionId: requiredString(receipt.sessionId, 'source.receipt.sessionId'),
+    generation: requiredGeneration(receipt.generation),
+    digest: requiredDigest(receipt.digest, 'source.receipt.digest'),
+    workspaceRevision: requiredRelayfilePosition(
+      receipt.workspaceRevision,
+      'source.receipt.workspaceRevision',
+      'rev'
+    ),
+    eventCursor: requiredRelayfilePosition(receipt.eventCursor, 'source.receipt.eventCursor', 'evt'),
+  };
+}
+
 function requiredVerification(
   value: unknown,
-  identity: { sessionId: string; generation: number }
+  expected: LiveTeleportReceiptBinding
 ): LiveTeleportDestinationVerification {
   if (!isObject(value) || !isObject(value.observed) || !isObject(value.health)) {
     throw new Error('Cloud live-teleport acquire did not return Relayfile destination verification.');
   }
   const verifiedAt = requiredString(value.verifiedAt, 'verification.verifiedAt');
+  const workspaceId = requiredString(value.workspaceId, 'verification.workspaceId');
+  const digest = requiredDigest(value.observed.digest, 'verification.observed.digest');
+  const workspaceRevision = requiredRelayfilePosition(
+    value.observed.workspaceRevision,
+    'verification.observed.workspaceRevision',
+    'rev'
+  );
+  const eventCursor = requiredRelayfilePosition(
+    value.observed.eventCursor,
+    'verification.observed.eventCursor',
+    'evt'
+  );
   if (
     value.version !== 1 ||
     value.kind !== 'relayfile-destination-verification' ||
     value.status !== 'converged' ||
-    value.remoteRoot !== '/' ||
-    value.sessionId !== identity.sessionId ||
-    value.generation !== identity.generation ||
+    workspaceId !== expected.workspaceId ||
+    value.remoteRoot !== expected.remoteRoot ||
+    value.sessionId !== expected.sessionId ||
+    value.generation !== expected.generation ||
+    digest !== expected.digest ||
+    workspaceRevision !== expected.workspaceRevision ||
+    eventCursor !== expected.eventCursor ||
     value.health.pendingWriteback !== 0 ||
     value.health.conflicts !== 0 ||
     value.health.outboxPending !== 0 ||
@@ -205,24 +282,16 @@ function requiredVerification(
     version: 1,
     kind: 'relayfile-destination-verification',
     verificationId: requiredString(value.verificationId, 'verification.verificationId'),
-    workspaceId: requiredString(value.workspaceId, 'verification.workspaceId'),
+    workspaceId,
     localRoot: requiredString(value.localRoot, 'verification.localRoot'),
     remoteRoot: '/',
-    sessionId: identity.sessionId,
-    generation: identity.generation,
+    sessionId: expected.sessionId,
+    generation: expected.generation,
     status: 'converged',
     observed: {
-      digest: requiredDigest(value.observed.digest, 'verification.observed.digest'),
-      workspaceRevision: requiredRelayfilePosition(
-        value.observed.workspaceRevision,
-        'verification.observed.workspaceRevision',
-        'rev'
-      ),
-      eventCursor: requiredRelayfilePosition(
-        value.observed.eventCursor,
-        'verification.observed.eventCursor',
-        'evt'
-      ),
+      digest,
+      workspaceRevision,
+      eventCursor,
     },
     health: {
       pendingWriteback: 0,
@@ -315,10 +384,14 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
 
   async acquire(input: LiveTeleportAcquireInput): Promise<LiveTeleportEnvironment> {
     const { signal, ...request } = input;
+    const receiptBinding = requiredReceiptBinding(input.source);
+    if (receiptBinding.sessionId !== input.sessionId || receiptBinding.generation !== input.generation) {
+      throw new Error('Cloud live-teleport acquire received a stale or cross-session checkpoint receipt.');
+    }
     let payload: unknown;
     let stillVerifying = false;
     for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
-      const response = await this.fetcher('/api/v1/live-teleports/acquire', {
+      const response = await fetchAcquireSafely(this.fetcher, '/api/v1/live-teleports/acquire', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
@@ -378,7 +451,7 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       workspaceCwd: requiredString(payload.workspaceCwd, 'workspaceCwd'),
       connectExpiresAt,
       leaseExpiresAt,
-      verification: requiredVerification(payload.verification, { sessionId, generation }),
+      verification: requiredVerification(payload.verification, receiptBinding),
     };
   }
 
@@ -393,6 +466,9 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport revoke returned an invalid response.');
     const status = this.parseLifecycleStatus(payload);
+    if (status.sessionId !== input.sessionId || status.generation !== input.generation) {
+      throw new Error('Cloud live-teleport revoke returned a stale or cross-session lifecycle identity.');
+    }
     if (status.status !== 'cleanup_pending' && status.status !== 'revoked' && status.status !== 'expired') {
       throw new Error('Cloud live-teleport revoke was not confirmed.');
     }
@@ -418,6 +494,10 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     if (expiresAt && Number.isNaN(Date.parse(expiresAt))) {
       throw new Error('Cloud live-teleport status returned an invalid expiresAt.');
     }
+    const leaseExpiresAt =
+      payload.leaseExpiresAt === undefined
+        ? undefined
+        : requiredExactTimestamp(payload.leaseExpiresAt, 'leaseExpiresAt');
     return {
       sessionId: requiredString(payload.sessionId, 'sessionId'),
       generation: requiredGeneration(payload.generation),
@@ -429,6 +509,7 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
         ? {}
         : { retryAfterMs: optionalNonNegativeInteger(payload.retryAfterMs, 'retryAfterMs')! }),
       ...(expiresAt ? { expiresAt } : {}),
+      ...(leaseExpiresAt ? { leaseExpiresAt } : {}),
     };
   }
 

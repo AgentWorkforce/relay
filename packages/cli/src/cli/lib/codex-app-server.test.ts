@@ -64,12 +64,46 @@ function turnsListResponseSchema(): string {
       data: {
         properties: {
           clientId: {},
-          type: { enum: ['userMessage'] },
+          text: {},
+          type: { enum: ['userMessage', 'agentMessage'] },
           status: { enum: ['completed', 'interrupted', 'failed', 'inProgress'] },
         },
       },
     },
   });
+}
+
+function turnCompletedSchema(): string {
+  return JSON.stringify({
+    required: ['threadId', 'turn'],
+    properties: { threadId: { type: 'string' }, turn: { $ref: '#/definitions/turn' } },
+    definitions: {
+      turn: {
+        required: ['id', 'items', 'status'],
+        properties: {
+          id: { type: 'string' },
+          items: { type: 'array' },
+          status: { enum: ['completed', 'failed', 'interrupted', 'inProgress'] },
+        },
+      },
+    },
+  });
+}
+
+function turnPayload(
+  status: 'completed' | 'failed' | 'interrupted' | 'inProgress' = 'completed',
+  id = 'turn-1',
+  clientId = 'client-turn-1'
+) {
+  return {
+    id,
+    status,
+    itemsView: 'full',
+    items: [
+      { id: `user-${id}`, type: 'userMessage', clientId, content: [] },
+      { id: `agent-${id}`, type: 'agentMessage', text: 'observable assistant answer' },
+    ],
+  };
 }
 
 function successfulProbeFile(file: string): string {
@@ -79,6 +113,7 @@ function successfulProbeFile(file: string): string {
   if (file.endsWith('TurnStartParams.json')) return turnPolicySchema();
   if (file.endsWith('ThreadTurnsListParams.json')) return turnsListParamsSchema();
   if (file.endsWith('ThreadTurnsListResponse.json')) return turnsListResponseSchema();
+  if (file.endsWith('TurnCompletedNotification.json')) return turnCompletedSchema();
   return '{"required":["environmentId","execServerUrl"],"properties":{"environmentId":{},"execServerUrl":{}}}';
 }
 
@@ -157,6 +192,33 @@ describe('probeCodexEnvironmentCapability', () => {
       })
     ).rejects.toThrow('turn-reconciliation contract');
   });
+
+  it('fails closed if turn/completed does not carry generated terminal status and items', async () => {
+    await expect(
+      probeCodexEnvironmentCapability('codex', {
+        makeTempDir: async () => '/schema',
+        execFile: async () => undefined,
+        readFile: async (file) => {
+          if (file.endsWith('TurnCompletedNotification.json')) {
+            return JSON.stringify({
+              properties: { turn: { $ref: '#/definitions/turn' } },
+              definitions: {
+                turn: {
+                  required: ['id', 'status'],
+                  properties: {
+                    id: {},
+                    status: { enum: ['completed', 'failed', 'interrupted', 'inProgress'] },
+                  },
+                },
+              },
+            });
+          }
+          return successfulProbeFile(file);
+        },
+        remove: async () => undefined,
+      })
+    ).rejects.toThrow('terminal-turn contract');
+  });
 });
 
 describe('StdioCodexAppServerSession', () => {
@@ -208,7 +270,7 @@ describe('StdioCodexAppServerSession', () => {
     });
     child.stdout.write(`${JSON.stringify({ id: 1, result: { turn: { id: 'turn-1' } } })}\n`);
     child.stdout.write(
-      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1' } } })}\n`
+      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turn: turnPayload() } })}\n`
     );
     await expect(running).resolves.toMatchObject({ turnId: 'turn-1' });
     await session.close();
@@ -238,18 +300,99 @@ describe('StdioCodexAppServerSession', () => {
         result: {
           data: [
             {
-              id: 'turn-1',
-              status: 'completed',
-              items: [{ type: 'userMessage', clientId: 'client-turn-1' }],
+              ...turnPayload(),
             },
           ],
           nextCursor: null,
         },
       })}\n`
     );
-    await expect(reconciling).resolves.toEqual({ status: 'completed', turnId: 'turn-1' });
+    await expect(reconciling).resolves.toMatchObject({
+      status: 'completed',
+      turnId: 'turn-1',
+      result: {
+        response: {
+          turn: {
+            items: [
+              expect.objectContaining({ type: 'userMessage' }),
+              expect.objectContaining({ type: 'agentMessage', text: 'observable assistant answer' }),
+            ],
+          },
+        },
+        completed: {
+          method: 'turn/completed',
+          params: {
+            turn: expect.objectContaining({ status: 'completed' }),
+          },
+        },
+      },
+    });
     await session.close();
   });
+
+  it('fails completed reconciliation when full history has no recoverable assistant answer', async () => {
+    const child = fakeChild();
+    const session = new StdioCodexAppServerSession(child);
+    const requestPromise = nextRequest(child);
+    const reconciling = session.turnOutcome({
+      threadId: 'thread-1',
+      clientUserMessageId: 'client-turn-1',
+    });
+    const request = await requestPromise;
+    child.stdout.write(
+      `${JSON.stringify({
+        id: request.id,
+        result: {
+          data: [
+            {
+              ...turnPayload(),
+              items: [{ id: 'user-1', type: 'userMessage', clientId: 'client-turn-1', content: [] }],
+            },
+          ],
+          nextCursor: null,
+        },
+      })}\n`
+    );
+
+    await expect(reconciling).rejects.toThrow('could not recover the completed assistant answer exactly');
+    await session.close();
+  });
+
+  it.each(['completed', 'failed', 'interrupted', 'inProgress'] as const)(
+    'interprets generated turn/completed status %s without collapsing it to success',
+    async (status) => {
+      const child = fakeChild();
+      const session = new StdioCodexAppServerSession(child);
+      const requestPromise = nextRequest(child);
+      const running = session.runTurn({
+        threadId: 'thread-1',
+        text: 'status test',
+        clientUserMessageId: 'client-turn-1',
+        execution: { kind: 'local', workspaceRoot: '/repo' },
+      });
+      const request = await requestPromise;
+      child.stdout.write(`${JSON.stringify({ id: request.id, result: { turn: { id: 'turn-1' } } })}\n`);
+      child.stdout.write(
+        `${JSON.stringify({
+          method: 'turn/completed',
+          params: { threadId: 'thread-1', turn: turnPayload(status) },
+        })}\n`
+      );
+
+      if (status === 'completed') {
+        await expect(running).resolves.toMatchObject({ turnId: 'turn-1' });
+      } else if (status === 'failed' || status === 'interrupted') {
+        await expect(running).rejects.toMatchObject({
+          name: 'CodexAppServerTurnTerminalError',
+          status,
+          turnId: 'turn-1',
+        });
+      } else {
+        await expect(running).rejects.toThrow('non-terminal status inProgress');
+      }
+      await session.close();
+    }
+  );
 
   it('pins local turns to a non-networked workspace sandbox and rejects an unexpected approval request', async () => {
     const child = fakeChild();
@@ -287,7 +430,13 @@ describe('StdioCodexAppServerSession', () => {
 
     child.stdout.write(`${JSON.stringify({ id: request.id, result: { turnId: 'turn-local' } })}\n`);
     child.stdout.write(
-      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-local' } })}\n`
+      `${JSON.stringify({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: turnPayload('completed', 'turn-local', 'client-turn-local'),
+        },
+      })}\n`
     );
     await expect(running).resolves.toMatchObject({ turnId: 'turn-local' });
     await session.close();
@@ -333,8 +482,12 @@ describe('StdioCodexAppServerSession', () => {
       forceKillTimeoutMs: 10,
     });
 
-    child.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { turnId: 'one' } })}\n`);
-    child.stdout.write(`${JSON.stringify({ method: 'turn/completed', params: { turnId: 'two' } })}\n`);
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/completed', params: { turn: turnPayload('completed', 'one') } })}\n`
+    );
+    child.stdout.write(
+      `${JSON.stringify({ method: 'turn/completed', params: { turn: turnPayload('completed', 'two') } })}\n`
+    );
 
     await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGTERM'));
     await session.close();
@@ -364,7 +517,13 @@ describe('StdioCodexAppServerSession', () => {
     }
     child.stdout.write(`${JSON.stringify({ id: request.id, result: { turnId: 'turn-long' } })}\n`);
     child.stdout.write(
-      `${JSON.stringify({ method: 'turn/completed', params: { threadId: 'thread-1', turnId: 'turn-long' } })}\n`
+      `${JSON.stringify({
+        method: 'turn/completed',
+        params: {
+          threadId: 'thread-1',
+          turn: turnPayload('completed', 'turn-long', 'client-turn-long'),
+        },
+      })}\n`
     );
 
     await expect(running).resolves.toMatchObject({ turnId: 'turn-long' });

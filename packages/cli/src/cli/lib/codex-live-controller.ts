@@ -8,8 +8,14 @@ import type {
   LiveTeleportLifecycleStatus,
   LiveTeleportWorkspaceSource,
 } from '@agent-relay/cloud';
+import { LIVE_TELEPORT_MIN_TURN_LEASE_MS } from '@agent-relay/cloud';
 
-import type { CodexAppServerSession, CodexTurnOutcome, CodexTurnResult } from './codex-app-server.js';
+import {
+  CodexAppServerTurnTerminalError,
+  type CodexAppServerSession,
+  type CodexTurnOutcome,
+  type CodexTurnResult,
+} from './codex-app-server.js';
 
 export type CodexControllerPhase =
   | 'local'
@@ -352,15 +358,6 @@ function validatePersistedState(value: unknown): CodexControllerState {
   return { ...(state as CodexControllerState), cloudLifecycle: inferredCloudLifecycle(state) };
 }
 
-export class CodexTurnRecoveredError extends Error {
-  readonly recoveredLocally = true;
-
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = 'CodexTurnRecoveredError';
-  }
-}
-
 export class CodexTurnRecordedError extends Error {
   readonly recordedTerminal = true;
 
@@ -447,6 +444,8 @@ export class CodexLiveController {
   private sealedWorkspace: CodexWorkspaceSealHandle | null = null;
   private prewarmPromise: Promise<void> | null = null;
   private prewarmAbort: AbortController | null = null;
+  private recoveredTurn: CodexTurnResult | undefined;
+  private recoveredTerminal: CodexTurnRecordedError | undefined;
   private closing = false;
 
   constructor(
@@ -520,6 +519,14 @@ export class CodexLiveController {
           this.markOutcomeUncertain(`TURN_${outcome.status.toUpperCase()}`);
           throw new CodexTurnOutcomeUncertainError();
         }
+        if (outcome.status === 'completed') {
+          this.recoveredTurn = outcome.result;
+        } else if (outcome.status === 'failed' || outcome.status === 'interrupted') {
+          this.recoveredTerminal = new CodexTurnRecordedError(
+            outcome.status,
+            `Codex recorded the crash-reconciled turn as ${outcome.status}; it was not replayed.`
+          );
+        }
         this.clearInFlightTurn(
           outcome.status === 'completed'
             ? 'TURN_COMPLETED_DURING_RECOVERY'
@@ -560,12 +567,26 @@ export class CodexLiveController {
       this.persist();
     }
 
-    this.schedulePrewarm();
+    if (!this.recoveredTerminal) this.schedulePrewarm();
     return this.status();
   }
 
   status(): PublicCodexControllerStatus {
     return publicStatus(this.requireState());
+  }
+
+  /** Returns a crash-reconciled completion once so the command can render it. */
+  takeRecoveredTurn(): CodexTurnResult | undefined {
+    const recovered = this.recoveredTurn;
+    this.recoveredTurn = undefined;
+    return recovered;
+  }
+
+  /** Returns a crash-reconciled failed/interrupted terminal once for CLI failure surfacing. */
+  takeRecoveredTerminal(): CodexTurnRecordedError | undefined {
+    const terminal = this.recoveredTerminal;
+    this.recoveredTerminal = undefined;
+    return terminal;
   }
 
   requestTeleport(request: CodexTeleportRequest): PublicCodexControllerStatus {
@@ -657,6 +678,14 @@ export class CodexLiveController {
       }
       return result;
     } catch (error) {
+      if (error instanceof CodexAppServerTurnTerminalError) {
+        if (remote && this.requireState().phase === 'verifying' && !remote.attached) {
+          remote.attached = true;
+          state.phase = 'remote';
+        }
+        this.clearInFlightTurn(`TURN_${error.status.toUpperCase()}`);
+        throw new CodexTurnRecordedError(error.status, `Codex turn ended ${error.status}.`);
+      }
       if (remote) {
         const outcome = await this.recoverLocal('remote-turn-error-revoke', 'REMOTE_TURN_RECONCILED');
         if (outcome?.status === 'completed') return this.resultFromOutcome(outcome);
@@ -694,6 +723,10 @@ export class CodexLiveController {
 
   async close(): Promise<void> {
     const state = this.state;
+    const lifecycleIdentityConsumed = Boolean(
+      state &&
+      (this.cloudMayOwnResources(state) || this.sealedWorkspace || state.source || state.mountRestore)
+    );
     this.closing = true;
     this.prewarmAbort?.abort();
     await this.prewarmPromise?.catch(() => undefined);
@@ -715,16 +748,14 @@ export class CodexLiveController {
       throw error;
     }
     this.appServer = null;
-    if (
-      state &&
-      (fenceConfirmed || !this.cloudMayOwnResources(state)) &&
-      (this.sealedWorkspace || state.source || state.mountRestore)
-    ) {
-      try {
-        await this.resumeLocalMount();
-      } catch (error) {
-        this.markRecoveryFailed('RELAYFILE_RESUME_FAILED_ON_SHUTDOWN');
-        throw new Error(state.lastError, { cause: error });
+    if (state && (fenceConfirmed || !this.cloudMayOwnResources(state))) {
+      if (this.sealedWorkspace || state.source || state.mountRestore) {
+        try {
+          await this.resumeLocalMount();
+        } catch (error) {
+          this.markRecoveryFailed('RELAYFILE_RESUME_FAILED_ON_SHUTDOWN');
+          throw new Error(state.lastError, { cause: error });
+        }
       }
       if (state.inFlightTurn) {
         state.phase = 'outcome_uncertain';
@@ -734,6 +765,10 @@ export class CodexLiveController {
         this.persist();
         return;
       }
+      if (!lifecycleIdentityConsumed) return;
+      // A confirmed prewarm-only fence consumes this generation's idempotency
+      // identity just as surely as acquire/revoke. Never reinitialize and
+      // replay a revoked resource under the same generation.
       state.generation += 1;
       state.phase = 'local';
       state.cloudLifecycle = 'none';
@@ -812,6 +847,7 @@ export class CodexLiveController {
       if (environment.sessionId !== state.sessionId || environment.generation !== state.generation) {
         throw new Error('Cloud returned a stale or cross-session live-teleport generation.');
       }
+      this.requireTurnLeaseHorizon(environment.leaseExpiresAt);
 
       const {
         connectPath: _connectPath,
@@ -842,10 +878,10 @@ export class CodexLiveController {
         throw error;
       }
       await this.recoverLocal('failed-acquire-revoke', 'TELEPORT_ACQUIRE_FAILED_RECOVERED');
-      throw new CodexTurnRecoveredError(
-        'Teleport failed before turn submission; Cloud fencing and local recovery were confirmed.',
-        { cause: error }
-      );
+      // No clientUserMessageId exists until applyPendingTeleport returns, so a
+      // settled failure here is proven pre-submission. Continue this same
+      // prompt locally on the recovered app-server with a fresh message id.
+      return;
     }
   }
 
@@ -1105,7 +1141,12 @@ export class CodexLiveController {
 
   private async ensureRemoteActiveOrRecover(): Promise<void> {
     const state = this.requireState();
+    const remote = state.remote;
     let active: boolean;
+    if (!remote || Date.parse(remote.leaseExpiresAt) <= this.deps.now().getTime()) {
+      await this.recoverLocal('remote-preflight-revoke', 'REMOTE_LEASE_RECOVERED');
+      return;
+    }
     try {
       const status = await this.withAbortableLifecycleDeadline(
         (signal) =>
@@ -1117,7 +1158,15 @@ export class CodexLiveController {
         'Cloud active lease preflight'
       );
       this.assertLifecycleIdentity(status);
-      active = status.status === 'active';
+      active = status.status === 'active' && status.leaseExpiresAt !== undefined;
+      if (active) {
+        this.requireTurnLeaseHorizon(status.leaseExpiresAt!);
+        if (Date.parse(status.leaseExpiresAt!) > Date.parse(remote.leaseExpiresAt)) {
+          remote.leaseExpiresAt = status.leaseExpiresAt!;
+          state.updatedAt = this.timestamp();
+          this.persist();
+        }
+      }
     } catch {
       active = false;
     }
@@ -1135,15 +1184,17 @@ export class CodexLiveController {
   }
 
   private resultFromOutcome(outcome: Extract<CodexTurnOutcome, { status: 'completed' }>): CodexTurnResult {
-    const state = this.requireState();
-    return {
-      turnId: outcome.turnId,
-      response: { reconciled: true },
-      completed: {
-        method: 'turn/completed',
-        params: { threadId: state.threadId, turn: { id: outcome.turnId, status: 'completed' } },
-      },
-    };
+    return outcome.result;
+  }
+
+  private requireTurnLeaseHorizon(leaseExpiresAt: string): void {
+    const leaseDeadline = Date.parse(leaseExpiresAt);
+    const minimumDeadline = this.deps.now().getTime() + LIVE_TELEPORT_MIN_TURN_LEASE_MS;
+    if (Number.isNaN(leaseDeadline) || leaseDeadline < minimumDeadline) {
+      throw new Error(
+        `Cloud active lease does not cover the ${LIVE_TELEPORT_MIN_TURN_LEASE_MS / 60_000}-minute turn horizon.`
+      );
+    }
   }
 
   private clearInFlightTurn(code?: string): void {

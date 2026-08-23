@@ -2,6 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CloudLiveTeleportClient } from './live-teleport.js';
 
+const receipt = {
+  sealId: 'seal-1',
+  sealToken: 'opaque-seal-token',
+  workspaceId: 'workspace-1',
+  root: '/',
+  sessionId: 'session-1',
+  generation: 2,
+  digest: `sha256:${'a'.repeat(64)}`,
+  workspaceRevision: 'rev_12',
+  eventCursor: 'evt_19313',
+};
+
 const input = {
   sessionId: 'session-1',
   threadId: 'thread-1',
@@ -9,7 +21,7 @@ const input = {
   workspaceRoot: '/workspace',
   source: {
     kind: 'relayfile-checkpoint-seal' as const,
-    receipt: { sealId: 'seal-1', sealToken: 'opaque' },
+    receipt,
   },
   idempotencyKey: 'session-1:2:acquire',
 };
@@ -19,6 +31,10 @@ function verification(
     digest?: string;
     workspaceRevision?: string;
     eventCursor?: string;
+    workspaceId?: string;
+    remoteRoot?: string;
+    sessionId?: string;
+    generation?: number;
     pendingWriteback?: number;
   } = {}
 ) {
@@ -26,11 +42,11 @@ function verification(
     version: 1,
     kind: 'relayfile-destination-verification',
     verificationId: 'verify-2',
-    workspaceId: 'workspace-1',
+    workspaceId: overrides.workspaceId ?? 'workspace-1',
     localRoot: '/workspace',
-    remoteRoot: '/',
-    sessionId: 'session-1',
-    generation: 2,
+    remoteRoot: overrides.remoteRoot ?? '/',
+    sessionId: overrides.sessionId ?? 'session-1',
+    generation: overrides.generation ?? 2,
     status: 'converged',
     observed: {
       digest: overrides.digest ?? `sha256:${'a'.repeat(64)}`,
@@ -220,6 +236,60 @@ describe('CloudLiveTeleportClient', () => {
     await expect(client.acquire(input)).rejects.toThrow(/verification\.observed/);
   });
 
+  it.each([
+    ['workspace', verification({ workspaceId: 'workspace-other' })],
+    ['remote root', verification({ remoteRoot: '/other' })],
+    ['session', verification({ sessionId: 'session-other' })],
+    ['generation', verification({ generation: 3 })],
+    ['digest', verification({ digest: `sha256:${'b'.repeat(64)}` })],
+    ['workspace revision', verification({ workspaceRevision: 'rev_13' })],
+    ['event cursor', verification({ eventCursor: 'evt_19314' })],
+  ])('rejects destination verification that does not bind the receipt %s', async (_name, proof) => {
+    const client = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          threadId: 'thread-1',
+          status: 'active',
+          environmentId: 'env-2',
+          connectPath: '/api/v1/live-teleports/connect/ticket',
+          workspaceCwd: '/workspace',
+          connectExpiresAt: '2026-08-23T12:00:00.000Z',
+          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+          verification: proof,
+        }),
+      'https://cloud.agentrelay.test'
+    );
+
+    const error = await client.acquire(input).catch((caught: unknown) => caught);
+    expect(String(error)).toContain('mismatched Relayfile verification');
+    expect(String(error)).not.toContain(receipt.sealToken);
+  });
+
+  it('rejects any response that echoes the one-use checkpoint capability', async () => {
+    const client = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          threadId: 'thread-1',
+          status: 'active',
+          environmentId: 'env-2',
+          connectPath: '/api/v1/live-teleports/connect/ticket',
+          workspaceCwd: '/workspace',
+          connectExpiresAt: '2026-08-23T12:00:00.000Z',
+          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+          verification: { ...verification(), sealToken: receipt.sealToken },
+        }),
+      'https://cloud.agentrelay.test'
+    );
+
+    const error = await client.acquire(input).catch((caught: unknown) => caught);
+    expect(String(error)).toContain('forbidden provider field');
+    expect(String(error)).not.toContain(receipt.sealToken);
+  });
+
   it('bounds a permanently verifying acquire while replaying the same request', async () => {
     const fetcher = vi.fn(async () =>
       Response.json({ status: 'verifying', retryAfterMs: 0 }, { status: 202 })
@@ -268,6 +338,16 @@ describe('CloudLiveTeleportClient', () => {
     expect(String(error)).not.toContain('provider.invalid');
   });
 
+  it('does not leak the seal token through an acquire transport diagnostic', async () => {
+    const client = new CloudLiveTeleportClient(async (_path, init) => {
+      throw new Error(`transport rejected ${String(init?.body)}`);
+    }, 'https://cloud.agentrelay.test');
+
+    const error = await client.acquire(input).catch((caught: unknown) => caught);
+    expect(String(error)).toContain('acquire transport failed');
+    expect(String(error)).not.toContain(receipt.sealToken);
+  });
+
   it('parses bounded lifecycle polling and requires explicit revoke confirmation', async () => {
     const fetcher = vi
       .fn()
@@ -297,6 +377,36 @@ describe('CloudLiveTeleportClient', () => {
     ).resolves.toMatchObject({ status: 'revoked' });
   });
 
+  it('parses the exact active lease deadline and rejects non-canonical timestamps', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          status: 'active',
+          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+        })
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          status: 'active',
+          leaseExpiresAt: '2026-08-23T14:45:00+02:00',
+        })
+      );
+    const client = new CloudLiveTeleportClient(fetcher, 'https://cloud.agentrelay.test');
+
+    await expect(client.status({ sessionId: 'session-1', generation: 2 })).resolves.toMatchObject({
+      status: 'active',
+      leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+    });
+    await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+      'invalid leaseExpiresAt'
+    );
+  });
+
   it('accepts cleanup_pending as a non-terminal revoke acknowledgement', async () => {
     const client = new CloudLiveTeleportClient(
       async () =>
@@ -309,6 +419,35 @@ describe('CloudLiveTeleportClient', () => {
     await expect(
       client.revoke({ sessionId: 'session-1', generation: 2, idempotencyKey: 'revoke-2' })
     ).resolves.toMatchObject({ status: 'cleanup_pending' });
+  });
+
+  it('accepts only the exact identity-matching HTTP 200 terminal no-row revoke response', async () => {
+    const exact = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({ sessionId: 'session-1', generation: 2, status: 'revoked' }, { status: 200 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(
+      exact.revoke({ sessionId: 'session-1', generation: 2, idempotencyKey: 'revoke-no-row-2' })
+    ).resolves.toEqual({ sessionId: 'session-1', generation: 2, status: 'revoked' });
+
+    const mismatched = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({ sessionId: 'other-session', generation: 2, status: 'revoked' }, { status: 200 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(
+      mismatched.revoke({ sessionId: 'session-1', generation: 2, idempotencyKey: 'revoke-no-row-2' })
+    ).rejects.toThrow('stale or cross-session');
+
+    const notFound = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({ sessionId: 'session-1', generation: 2, status: 'revoked' }, { status: 404 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(
+      notFound.revoke({ sessionId: 'session-1', generation: 2, idempotencyKey: 'revoke-no-row-2' })
+    ).rejects.toThrow('request failed (404)');
   });
 
   it('requires encrypted transport except for explicit loopback development', () => {

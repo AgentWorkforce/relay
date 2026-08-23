@@ -15,12 +15,25 @@ export type CodexTurnResult = {
   turnId?: string;
   response: unknown;
   completed: CodexNotification;
+  /** Relay reconstructed this exact completion from full persisted turn history. */
+  reconciled?: true;
 };
 
 export type CodexTurnOutcome =
-  | { status: 'completed'; turnId: string }
+  | { status: 'completed'; turnId: string; result: CodexTurnResult }
   | { status: 'failed' | 'interrupted' | 'inProgress'; turnId: string }
   | { status: 'absent' };
+
+export class CodexAppServerTurnTerminalError extends Error {
+  constructor(
+    readonly status: 'failed' | 'interrupted',
+    readonly turnId: string,
+    readonly completed: CodexNotification
+  ) {
+    super(`Codex turn ended ${status}.`);
+    this.name = 'CodexAppServerTurnTerminalError';
+  }
+}
 
 export type CodexTurnExecution =
   | { kind: 'local'; workspaceRoot: string }
@@ -118,12 +131,37 @@ function assertTurnReconciliationSchema(requests: string, listParams: string, li
     !schemaNodeContainsEnum(params, params.properties.sortDirection, 'desc') ||
     !schemaNodeContainsProperty(response, response.properties.data, 'clientId') ||
     !schemaNodeContainsEnum(response, response.properties.data, 'userMessage') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'agentMessage') ||
+    !schemaNodeContainsProperty(response, response.properties.data, 'text') ||
     !schemaNodeContainsEnum(response, response.properties.data, 'completed') ||
     !schemaNodeContainsEnum(response, response.properties.data, 'interrupted') ||
     !schemaNodeContainsEnum(response, response.properties.data, 'failed') ||
     !schemaNodeContainsEnum(response, response.properties.data, 'inProgress')
   ) {
     throw new Error("Codex thread/turns/list does not support Relay's turn-reconciliation contract.");
+  }
+}
+
+function assertTurnCompletedSchema(completedNotification: string): void {
+  const notification = JSON.parse(completedNotification) as {
+    required?: unknown;
+    properties?: Record<string, unknown>;
+  };
+  const required = Array.isArray(notification.required) ? notification.required : [];
+  const turn = notification.properties?.turn;
+  if (
+    !required.includes('threadId') ||
+    !required.includes('turn') ||
+    !turn ||
+    !schemaNodeRequiresProperty(notification, turn, 'id') ||
+    !schemaNodeRequiresProperty(notification, turn, 'items') ||
+    !schemaNodeRequiresProperty(notification, turn, 'status') ||
+    !schemaNodeContainsEnum(notification, turn, 'completed') ||
+    !schemaNodeContainsEnum(notification, turn, 'failed') ||
+    !schemaNodeContainsEnum(notification, turn, 'interrupted') ||
+    !schemaNodeContainsEnum(notification, turn, 'inProgress')
+  ) {
+    throw new Error("Codex turn/completed does not match Relay's terminal-turn contract.");
   }
 }
 
@@ -167,6 +205,19 @@ function schemaNodeContainsProperty(root: unknown, value: unknown, expected: str
     .some(([, entry]) => schemaNodeContainsProperty(root, entry, expected));
 }
 
+function schemaNodeRequiresProperty(root: unknown, value: unknown, expected: string): boolean {
+  const resolved = resolveSchemaRef(root, value);
+  if (Array.isArray(resolved)) {
+    return resolved.some((entry) => schemaNodeRequiresProperty(root, entry, expected));
+  }
+  if (!resolved || typeof resolved !== 'object') return false;
+  const object = resolved as Record<string, unknown>;
+  if (Array.isArray(object.required) && object.required.includes(expected)) return true;
+  return Object.entries(object)
+    .filter(([key]) => key !== 'definitions')
+    .some(([, entry]) => schemaNodeRequiresProperty(root, entry, expected));
+}
+
 /**
  * Probe the locally installed binary rather than assuming an experimental
  * protocol from Relay's build-time Codex version. Both methods and the exact
@@ -187,13 +238,15 @@ export async function probeCodexEnvironmentCapability(
       '--out',
       directory,
     ]);
-    const [requests, addParams, turnParams, turnsListParams, turnsListResponse] = await Promise.all([
-      deps.readFile(path.join(directory, 'ClientRequest.json')),
-      deps.readFile(path.join(directory, 'v2', 'EnvironmentAddParams.json')),
-      deps.readFile(path.join(directory, 'v2', 'TurnStartParams.json')),
-      deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListParams.json')),
-      deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListResponse.json')),
-    ]);
+    const [requests, addParams, turnParams, turnsListParams, turnsListResponse, turnCompletedNotification] =
+      await Promise.all([
+        deps.readFile(path.join(directory, 'ClientRequest.json')),
+        deps.readFile(path.join(directory, 'v2', 'EnvironmentAddParams.json')),
+        deps.readFile(path.join(directory, 'v2', 'TurnStartParams.json')),
+        deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListParams.json')),
+        deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListResponse.json')),
+        deps.readFile(path.join(directory, 'v2', 'TurnCompletedNotification.json')),
+      ]);
     if (!requests.includes('"environment/add"') || !requests.includes('"environment/status"')) {
       throw new Error(
         'This Codex app-server does not expose both experimental environment/add and environment/status.'
@@ -203,6 +256,7 @@ export async function probeCodexEnvironmentCapability(
     assertEnvironmentAddSchema(addParams);
     assertTurnPolicySchema(turnParams);
     assertTurnReconciliationSchema(requests, turnsListParams, turnsListResponse);
+    assertTurnCompletedSchema(turnCompletedNotification);
 
     return { environmentAdd: true, environmentStatus: true, explicitTurnPolicy: true };
   } finally {
@@ -255,6 +309,34 @@ function notificationThreadId(notification: CodexNotification): string | undefin
 
 function notificationTurnId(notification: CodexNotification): string | undefined {
   return stringAt(notification.params, 'turnId') ?? stringAt(notification.params, 'turn', 'id');
+}
+
+type CodexTurnPayload = Record<string, unknown> & {
+  id: string;
+  items: unknown[];
+  status: 'completed' | 'failed' | 'interrupted' | 'inProgress';
+};
+
+function requiredTurnPayload(value: unknown, context: string): CodexTurnPayload {
+  if (!isObject(value) || typeof value.id !== 'string' || !value.id.trim() || !Array.isArray(value.items)) {
+    throw new Error(`Codex ${context} returned an invalid turn payload.`);
+  }
+  if (
+    value.status !== 'completed' &&
+    value.status !== 'failed' &&
+    value.status !== 'interrupted' &&
+    value.status !== 'inProgress'
+  ) {
+    throw new Error(`Codex ${context} returned an invalid turn status.`);
+  }
+  return value as CodexTurnPayload;
+}
+
+function hasExactAssistantAnswer(turn: CodexTurnPayload): boolean {
+  if (turn.itemsView !== undefined && turn.itemsView !== 'full') return false;
+  return turn.items.some(
+    (item) => isObject(item) && item.type === 'agentMessage' && typeof item.text === 'string'
+  );
 }
 
 /** Newline-delimited Codex app-server transport. Codex omits the jsonrpc field. */
@@ -404,6 +486,19 @@ export class StdioCodexAppServerSession implements CodexAppServerSession {
         (!turnId || !notificationTurnId(notification) || notificationTurnId(notification) === turnId),
       this.turnTimeoutMs
     );
+    const completedTurn = requiredTurnPayload(
+      isObject(completed.params) ? completed.params.turn : undefined,
+      'turn/completed'
+    );
+    if (turnId && completedTurn.id !== turnId) {
+      throw new Error('Codex turn/completed returned a mismatched turn id.');
+    }
+    if (completedTurn.status === 'failed' || completedTurn.status === 'interrupted') {
+      throw new CodexAppServerTurnTerminalError(completedTurn.status, completedTurn.id, completed);
+    }
+    if (completedTurn.status !== 'completed') {
+      throw new Error(`Codex turn/completed returned non-terminal status ${completedTurn.status}.`);
+    }
     return { turnId, response, completed };
   }
 
@@ -429,15 +524,28 @@ export class StdioCodexAppServerSession implements CodexAppServerSession {
             isObject(item) && item.type === 'userMessage' && item.clientId === input.clientUserMessageId
         );
         if (!matches) continue;
-        if (
-          candidate.status !== 'completed' &&
-          candidate.status !== 'failed' &&
-          candidate.status !== 'interrupted' &&
-          candidate.status !== 'inProgress'
-        ) {
-          throw new Error('Codex thread/turns/list returned an invalid turn status.');
+        const turn = requiredTurnPayload(candidate, 'thread/turns/list');
+        if (turn.status === 'completed') {
+          if (!hasExactAssistantAnswer(turn)) {
+            throw new Error(
+              'Codex thread/turns/list could not recover the completed assistant answer exactly.'
+            );
+          }
+          return {
+            status: 'completed',
+            turnId: turn.id,
+            result: {
+              turnId: turn.id,
+              response: { turn },
+              completed: {
+                method: 'turn/completed',
+                params: { threadId: input.threadId, turn },
+              },
+              reconciled: true,
+            },
+          };
         }
-        return { status: candidate.status, turnId: candidate.id };
+        return { status: turn.status, turnId: turn.id };
       }
       const nextCursor = typeof response.nextCursor === 'string' ? response.nextCursor : undefined;
       if (!nextCursor) return { status: 'absent' };

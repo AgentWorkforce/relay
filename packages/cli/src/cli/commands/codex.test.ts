@@ -1,32 +1,78 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import { CodexTurnRecoveredError } from '../lib/codex-live-controller.js';
-import { registerCodexCommands, runManagedCodexTurn } from './codex.js';
+import { CodexTurnRecordedError } from '../lib/codex-live-controller.js';
+import { registerCodexCommands, runManagedCodexTurn, surfaceRecoveredCodexTerminal } from './codex.js';
 
 describe('runManagedCodexTurn', () => {
-  it('reports a recovered acquire failure and accepts the next input on the same controller', async () => {
-    const runTurn = vi
-      .fn()
-      .mockRejectedValueOnce(new CodexTurnRecoveredError('acquire failed but recovered'))
-      .mockResolvedValueOnce({});
+  it('renders an exact assistant answer recovered after completion-notification loss', async () => {
+    const turn = {
+      id: 'turn-reconciled',
+      status: 'completed',
+      itemsView: 'full',
+      items: [{ id: 'answer-1', type: 'agentMessage', text: 'the recovered answer' }],
+    };
+    const controller = {
+      runTurn: vi.fn(async () => ({
+        turnId: turn.id,
+        response: { turn },
+        completed: { method: 'turn/completed', params: { threadId: 'thread-1', turn } },
+        reconciled: true as const,
+      })),
+      status: vi.fn(),
+    };
+    const writeOutput = vi.fn();
+
+    await runManagedCodexTurn(controller as never, 'recover me', {
+      json: false,
+      writeError: vi.fn(),
+      writeOutput,
+    });
+
+    expect(writeOutput).toHaveBeenCalledWith('the recovered answer\n');
+  });
+
+  it('does not report a successful command for a recorded failed turn', async () => {
+    const terminal = new CodexTurnRecordedError('failed', 'Codex turn ended failed.');
+    const runTurn = vi.fn().mockRejectedValue(terminal);
     const controller = {
       runTurn,
       status: vi.fn(() => ({
         phase: 'local' as const,
         threadId: 'thread-1',
-        generation: 2,
+        generation: 1,
       })),
     };
     const writeError = vi.fn();
 
-    await runManagedCodexTurn(controller as never, 'first input', { json: false, writeError });
-    await runManagedCodexTurn(controller as never, 'second input', { json: false, writeError });
-
-    expect(runTurn).toHaveBeenNthCalledWith(1, 'first input');
-    expect(runTurn).toHaveBeenNthCalledWith(2, 'second input');
-    expect(writeError).toHaveBeenCalledWith(expect.stringContaining('recovered locally'));
+    await expect(
+      runManagedCodexTurn(controller as never, 'failed input', { json: false, writeError })
+    ).rejects.toBe(terminal);
+    expect(writeError).toHaveBeenCalledWith(expect.stringContaining('recorded the turn as failed'));
   });
+
+  it.each(['failed', 'interrupted'] as const)(
+    'surfaces a crash-reconciled %s turn nonzero before any new prompt runs',
+    (status) => {
+      const terminal = new CodexTurnRecordedError(status, `recorded ${status}`);
+      const controller = {
+        takeRecoveredTerminal: vi.fn().mockReturnValueOnce(terminal).mockReturnValue(undefined),
+        runTurn: vi.fn(),
+      };
+      const writeError = vi.fn();
+
+      expect(() => surfaceRecoveredCodexTerminal(controller as never, { json: false, writeError })).toThrow(
+        terminal
+      );
+
+      expect(writeError).toHaveBeenCalledWith(expect.stringContaining(`turn as ${status}`));
+      expect(() =>
+        surfaceRecoveredCodexTerminal(controller as never, { json: false, writeError })
+      ).not.toThrow();
+      expect(writeError).toHaveBeenCalledTimes(1);
+      expect(controller.runTurn).not.toHaveBeenCalled();
+    }
+  );
 
   it('fails closed instead of continuing when fencing is unconfirmed', async () => {
     const controller = {
@@ -81,7 +127,7 @@ describe('registerCodexCommands', () => {
       requestId: 'request-1',
       expectedGeneration: 4,
     });
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('local controller remains authoritative'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('confirmed pre-submission recovery'));
   });
 
   it('refuses teleport when the session was not started under Relay control', async () => {
