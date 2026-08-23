@@ -64,11 +64,67 @@ function verification(
   };
 }
 
+// Frozen constructor parity fixtures derived from Cloud e3f9e5ddc:
+// prewarm/route.ts, acquire/route.ts, status/route.ts, and feature-flag.ts.
+const cloudRollout = {
+  masterEnabled: true,
+  eligible: true,
+  reason: 'workspace-allowlist' as const,
+  percentage: 25,
+};
+
+function cloudPrewarmWarming() {
+  return {
+    sessionId: 'session-1',
+    generation: 2,
+    prewarmId: 'prewarm-2',
+    status: 'warming',
+    expiresAt: '2026-08-23T12:30:00.000Z',
+    retryAfterMs: 1_000,
+  };
+}
+
+function cloudAcquireVerifying() {
+  return {
+    sessionId: 'session-1',
+    generation: 2,
+    status: 'verifying',
+    retryAfterMs: 1_000,
+  };
+}
+
+function cloudAcquireActive() {
+  return {
+    sessionId: 'session-1',
+    generation: 2,
+    threadId: 'thread-1',
+    status: 'active',
+    environmentId: 'env-2',
+    connectPath: '/api/v1/live-teleports/connect/ticket',
+    workspaceCwd: '/workspace',
+    connectExpiresAt: '2026-08-23T12:05:00.000Z',
+    leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+    verification: verification(),
+  };
+}
+
+function cloudActiveStatus(leaseExpiresAt = '2026-08-23T12:45:00.000Z') {
+  return {
+    sessionId: 'session-1',
+    generation: 2,
+    status: 'active',
+    prewarmId: 'prewarm-2',
+    expiresAt: leaseExpiresAt,
+    leaseExpiresAt,
+    rollout: cloudRollout,
+  };
+}
+
 describe('CloudLiveTeleportClient', () => {
   it('polls an exact 202 acquire with the same idempotency body until active', async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(Response.json({ status: 'verifying', retryAfterMs: 0 }, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(cloudAcquireVerifying(), { status: 202 }))
       .mockResolvedValueOnce(
         Response.json({
           sessionId: 'session-1',
@@ -88,6 +144,133 @@ describe('CloudLiveTeleportClient', () => {
     await expect(client.acquire(input)).resolves.toMatchObject({ environmentId: 'env-2' });
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(vi.mocked(fetcher).mock.calls[0]?.[1]?.body).toBe(vi.mocked(fetcher).mock.calls[1]?.[1]?.body);
+  });
+
+  it('composes the frozen Cloud e3f9e5ddc warming → verifying → active and renewal constructors', async () => {
+    const renewedLease = '2026-08-23T13:15:00.000Z';
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(cloudPrewarmWarming(), { status: 202 }))
+      .mockResolvedValueOnce(Response.json(cloudAcquireVerifying(), { status: 202 }))
+      .mockResolvedValueOnce(Response.json(cloudAcquireActive()))
+      .mockResolvedValueOnce(Response.json(cloudActiveStatus(renewedLease)));
+    const client = new CloudLiveTeleportClient(fetcher, 'https://cloud.agentrelay.test');
+
+    await expect(
+      client.prewarm({
+        sessionId: 'session-1',
+        generation: 2,
+        workspaceRoot: '/',
+        idempotencyKey: 'session-1:2:prewarm',
+      })
+    ).resolves.toEqual(cloudPrewarmWarming());
+    await expect(client.acquire(input)).resolves.toMatchObject({
+      sessionId: 'session-1',
+      generation: 2,
+      environmentId: 'env-2',
+      leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+    });
+    await expect(client.status({ sessionId: 'session-1', generation: 2 })).resolves.toEqual(
+      cloudActiveStatus(renewedLease)
+    );
+
+    expect(Object.keys(cloudPrewarmWarming()).sort()).toEqual(
+      ['expiresAt', 'generation', 'prewarmId', 'retryAfterMs', 'sessionId', 'status'].sort()
+    );
+    expect(Object.keys(cloudAcquireVerifying()).sort()).toEqual(
+      ['generation', 'retryAfterMs', 'sessionId', 'status'].sort()
+    );
+    expect(Object.keys(cloudActiveStatus()).sort()).toEqual(
+      ['expiresAt', 'generation', 'leaseExpiresAt', 'prewarmId', 'rollout', 'sessionId', 'status'].sort()
+    );
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/live-teleports/prewarm',
+      '/api/v1/live-teleports/acquire',
+      '/api/v1/live-teleports/acquire',
+      '/api/v1/live-teleports/status',
+    ]);
+  });
+
+  it('rejects identity or required-field drift in frozen Cloud prewarm and pending acquire shapes', async () => {
+    const stalePrewarm = new CloudLiveTeleportClient(
+      async () => Response.json({ ...cloudPrewarmWarming(), sessionId: 'other-session' }, { status: 202 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(
+      stalePrewarm.prewarm({
+        sessionId: 'session-1',
+        generation: 2,
+        workspaceRoot: '/',
+        idempotencyKey: 'session-1:2:prewarm',
+      })
+    ).rejects.toThrow('mismatched lifecycle metadata');
+
+    const missingExpiry = new CloudLiveTeleportClient(async () => {
+      const { expiresAt: _expiresAt, ...response } = cloudPrewarmWarming();
+      return Response.json(response, { status: 202 });
+    }, 'https://cloud.agentrelay.test');
+    await expect(
+      missingExpiry.prewarm({
+        sessionId: 'session-1',
+        generation: 2,
+        workspaceRoot: '/',
+        idempotencyKey: 'session-1:2:prewarm',
+      })
+    ).rejects.toThrow('expiresAt');
+
+    const stalePending = new CloudLiveTeleportClient(
+      async () => Response.json({ ...cloudAcquireVerifying(), generation: 3 }, { status: 202 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(stalePending.acquire(input)).rejects.toThrow('stale lifecycle identity');
+  });
+
+  it('enforces Cloud prewarm HTTP, expiry, and retry semantics', async () => {
+    const readyResponse = {
+      ...cloudPrewarmWarming(),
+      status: 'ready',
+    };
+    const { retryAfterMs: _retryAfterMs, ...ready } = readyResponse;
+    const readyClient = new CloudLiveTeleportClient(
+      async () => Response.json(ready),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(
+      readyClient.prewarm({
+        sessionId: 'session-1',
+        generation: 2,
+        workspaceRoot: '/',
+        idempotencyKey: 'session-1:2:prewarm',
+      })
+    ).resolves.toEqual(ready);
+
+    for (const response of [
+      { body: cloudPrewarmWarming(), status: 200 },
+      {
+        body: { ...cloudPrewarmWarming(), status: 'ready' },
+        status: 200,
+      },
+      {
+        body: (() => {
+          const { retryAfterMs: _retry, ...withoutRetry } = cloudPrewarmWarming();
+          return withoutRetry;
+        })(),
+        status: 202,
+      },
+    ]) {
+      const client = new CloudLiveTeleportClient(
+        async () => Response.json(response.body, { status: response.status }),
+        'https://cloud.agentrelay.test'
+      );
+      await expect(
+        client.prewarm({
+          sessionId: 'session-1',
+          generation: 2,
+          workspaceRoot: '/',
+          idempotencyKey: 'session-1:2:prewarm',
+        })
+      ).rejects.toThrow('mismatched lifecycle metadata');
+    }
   });
 
   it('accepts only the provider-neutral Cloud WSS bridge contract', async () => {
@@ -400,7 +583,7 @@ describe('CloudLiveTeleportClient', () => {
 
   it('bounds a permanently verifying acquire while replaying the same request', async () => {
     const fetcher = vi.fn(async () =>
-      Response.json({ status: 'verifying', retryAfterMs: 0 }, { status: 202 })
+      Response.json({ ...cloudAcquireVerifying(), retryAfterMs: 1 }, { status: 202 })
     );
     const client = new CloudLiveTeleportClient(fetcher, 'https://cloud.agentrelay.test');
 
@@ -466,6 +649,8 @@ describe('CloudLiveTeleportClient', () => {
           prewarmId: 'prewarm-2',
           status: 'warming',
           retryAfterMs: 250,
+          expiresAt: '2026-08-23T12:30:00.000Z',
+          rollout: cloudRollout,
         })
       )
       .mockResolvedValueOnce(Response.json({ sessionId: 'session-1', generation: 2, status: 'revoked' }));
@@ -488,19 +673,10 @@ describe('CloudLiveTeleportClient', () => {
   it('parses the exact active lease deadline and rejects non-canonical timestamps', async () => {
     const fetcher = vi
       .fn()
+      .mockResolvedValueOnce(Response.json(cloudActiveStatus()))
       .mockResolvedValueOnce(
         Response.json({
-          sessionId: 'session-1',
-          generation: 2,
-          status: 'active',
-          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
-        })
-      )
-      .mockResolvedValueOnce(
-        Response.json({
-          sessionId: 'session-1',
-          generation: 2,
-          status: 'active',
+          ...cloudActiveStatus(),
           leaseExpiresAt: '2026-08-23T14:45:00+02:00',
         })
       );
@@ -512,6 +688,31 @@ describe('CloudLiveTeleportClient', () => {
     });
     await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
       'invalid leaseExpiresAt'
+    );
+  });
+
+  it.each([
+    ['unknown reason', { ...cloudRollout, reason: 'manual-override' }],
+    ['out-of-range percentage', { ...cloudRollout, percentage: 101 }],
+    ['inconsistent eligibility', { ...cloudRollout, reason: 'not-targeted', eligible: true }],
+    ['unexpected rollout field', { ...cloudRollout, cohort: 'canary' }],
+  ])('rejects %s in Cloud status rollout metadata', async (_name, rollout) => {
+    const client = new CloudLiveTeleportClient(
+      async () => Response.json({ ...cloudActiveStatus(), rollout }),
+      'https://cloud.agentrelay.test'
+    );
+
+    await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(/rollout/);
+  });
+
+  it('rejects a cross-session status response even when its rollout and lease are valid', async () => {
+    const client = new CloudLiveTeleportClient(
+      async () => Response.json({ ...cloudActiveStatus(), sessionId: 'other-session' }),
+      'https://cloud.agentrelay.test'
+    );
+
+    await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+      'stale or cross-session'
     );
   });
 

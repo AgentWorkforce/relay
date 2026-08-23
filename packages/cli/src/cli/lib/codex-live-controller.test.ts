@@ -154,9 +154,11 @@ function lifecycle(
 function cloud(overrides: Partial<LiveTeleportCloudClient> = {}): LiveTeleportCloudClient {
   return {
     prewarm: vi.fn(async (input) => ({
+      sessionId: input.sessionId,
       prewarmId: `prewarm-${input.generation}`,
       generation: input.generation,
       status: 'ready' as const,
+      expiresAt: '2026-08-23T12:30:00.000Z',
     })),
     status: vi.fn(async (input) => ({
       ...lifecycle(input, 'active'),
@@ -329,15 +331,23 @@ describe('CodexLiveController', () => {
 
   it('does not block local initialization on a stalled background prewarm', async () => {
     const pendingPrewarm = deferred<{
+      sessionId: string;
       prewarmId: string;
       generation: number;
       status: 'ready';
+      expiresAt: string;
     }>();
     const cloudClient = cloud({ prewarm: vi.fn(() => pendingPrewarm.promise) });
     const { controller } = createController({ cloud: cloudClient });
 
     await expect(controller.initialize()).resolves.toMatchObject({ phase: 'local' });
-    pendingPrewarm.resolve({ prewarmId: 'prewarm-1', generation: 1, status: 'ready' });
+    pendingPrewarm.resolve({
+      sessionId: 'session-1',
+      prewarmId: 'prewarm-1',
+      generation: 1,
+      status: 'ready',
+      expiresAt: '2026-08-23T12:30:00.000Z',
+    });
     await vi.waitFor(() => expect(controller.status().prewarmStatus).toBe('ready'));
   });
 
@@ -1060,9 +1070,12 @@ describe('CodexLiveController', () => {
   it('polls warming lifecycle status to ready before acquisition', async () => {
     const cloudClient = cloud({
       prewarm: vi.fn(async (input) => ({
+        sessionId: input.sessionId,
         prewarmId: `prewarm-${input.generation}`,
         generation: input.generation,
         status: 'warming' as const,
+        expiresAt: '2026-08-23T12:30:00.000Z',
+        retryAfterMs: 1,
       })),
       status: vi
         .fn()
@@ -1092,9 +1105,12 @@ describe('CodexLiveController', () => {
   it('bounds non-convergence and recovers locally instead of blocking forever', async () => {
     const cloudClient = cloud({
       prewarm: vi.fn(async (input) => ({
+        sessionId: input.sessionId,
         prewarmId: `prewarm-${input.generation}`,
         generation: input.generation,
         status: 'warming' as const,
+        expiresAt: '2026-08-23T12:30:00.000Z',
+        retryAfterMs: 1,
       })),
       status: vi.fn(async (input) => ({ ...lifecycle(input, 'warming'), retryAfterMs: 1 })),
     });
@@ -1534,6 +1550,19 @@ describe('FileCodexControllerStateStore', () => {
       {
         ...persistedRemote(),
         remote: { ...persistedRemote().remote!, generation: 8 },
+      },
+    ],
+    [
+      'cross-root destination verification',
+      {
+        ...persistedRemote(),
+        remote: {
+          ...persistedRemote().remote!,
+          verification: {
+            ...persistedRemote().remote!.verification,
+            localRoot: '/different-workspace',
+          },
+        },
       },
     ],
     [

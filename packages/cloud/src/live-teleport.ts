@@ -12,9 +12,19 @@ export type LiveTeleportPrewarmInput = {
 };
 
 export type LiveTeleportPrewarm = {
+  sessionId: string;
   prewarmId: string;
   generation: number;
   status: 'warming' | 'ready';
+  expiresAt: string;
+  retryAfterMs?: number;
+};
+
+export type LiveTeleportRollout = {
+  masterEnabled: boolean;
+  eligible: boolean;
+  reason: 'disabled' | 'workspace-allowlist' | 'user-allowlist' | 'percentage' | 'not-targeted';
+  percentage: number;
 };
 
 export type LiveTeleportAcquireInput = LiveTeleportPrewarmInput & {
@@ -84,6 +94,8 @@ export type LiveTeleportLifecycleStatus = {
   expiresAt?: string;
   /** Exact Cloud-authoritative lease deadline, present for active status. */
   leaseExpiresAt?: string;
+  /** Present on authoritative status responses; omitted by cleanup-pending recovery responses. */
+  rollout?: LiveTeleportRollout;
 };
 
 export type LiveTeleportRevocation = LiveTeleportLifecycleStatus & {
@@ -177,14 +189,9 @@ function requiredGeneration(value: unknown): number {
   return Number(value);
 }
 
-function optionalNonNegativeInteger(value: unknown, field: string): number | undefined {
-  if (value === undefined) return undefined;
-  return requiredNonNegativeInteger(value, field);
-}
-
-function requiredNonNegativeInteger(value: unknown, field: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0) {
-    throw new Error(`Cloud live-teleport convergence proof has an invalid ${field}.`);
+function requiredPositiveInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 1) {
+    throw new Error(`Cloud live-teleport response has an invalid ${field}.`);
   }
   return Number(value);
 }
@@ -212,6 +219,46 @@ function requiredExactTimestamp(value: unknown, field: string): string {
     throw new Error(`Cloud live-teleport response has an invalid ${field}.`);
   }
   return timestamp;
+}
+
+function requiredRollout(value: unknown): LiveTeleportRollout {
+  if (!isObject(value)) {
+    throw new Error('Cloud live-teleport status is missing rollout metadata.');
+  }
+  assertAllowedResponseKeys(value, ['masterEnabled', 'eligible', 'reason', 'percentage'], 'status rollout');
+  const reason = value.reason;
+  const validReason =
+    reason === 'disabled' ||
+    reason === 'workspace-allowlist' ||
+    reason === 'user-allowlist' ||
+    reason === 'percentage' ||
+    reason === 'not-targeted';
+  const percentage = value.percentage;
+  if (
+    typeof value.masterEnabled !== 'boolean' ||
+    typeof value.eligible !== 'boolean' ||
+    !validReason ||
+    !Number.isSafeInteger(percentage) ||
+    Number(percentage) < 0 ||
+    Number(percentage) > 100
+  ) {
+    throw new Error('Cloud live-teleport status returned invalid rollout metadata.');
+  }
+  const expected =
+    reason === 'disabled'
+      ? { masterEnabled: false, eligible: false }
+      : reason === 'not-targeted'
+        ? { masterEnabled: true, eligible: false }
+        : { masterEnabled: true, eligible: true };
+  if (value.masterEnabled !== expected.masterEnabled || value.eligible !== expected.eligible) {
+    throw new Error('Cloud live-teleport status returned inconsistent rollout metadata.');
+  }
+  return {
+    masterEnabled: value.masterEnabled,
+    eligible: value.eligible,
+    reason,
+    percentage: Number(percentage),
+  };
 }
 
 type LiveTeleportReceiptBinding = {
@@ -398,16 +445,38 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     });
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport prewarm returned an invalid response.');
-    assertAllowedResponseKeys(payload, ['prewarmId', 'generation', 'status'], 'prewarm');
+    assertAllowedResponseKeys(
+      payload,
+      ['sessionId', 'generation', 'prewarmId', 'status', 'expiresAt', 'retryAfterMs'],
+      'prewarm'
+    );
 
     const status = payload.status;
     if (status !== 'warming' && status !== 'ready') {
       throw new Error('Cloud live-teleport prewarm returned an invalid status.');
     }
+    const sessionId = requiredString(payload.sessionId, 'sessionId');
+    const generation = requiredGeneration(payload.generation);
+    const expiresAt = requiredExactTimestamp(payload.expiresAt, 'expiresAt');
+    const retryAfterMs =
+      payload.retryAfterMs === undefined
+        ? undefined
+        : requiredPositiveInteger(payload.retryAfterMs, 'retryAfterMs');
+    if (
+      sessionId !== input.sessionId ||
+      generation !== input.generation ||
+      (status === 'warming' && (response.status !== 202 || retryAfterMs === undefined)) ||
+      (status === 'ready' && (response.status !== 200 || retryAfterMs !== undefined))
+    ) {
+      throw new Error('Cloud live-teleport prewarm returned mismatched lifecycle metadata.');
+    }
     return {
+      sessionId,
       prewarmId: requiredString(payload.prewarmId, 'prewarmId'),
-      generation: requiredGeneration(payload.generation),
+      generation,
       status,
+      expiresAt,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     };
   }
 
@@ -421,7 +490,11 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     });
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport status returned an invalid response.');
-    return this.parseLifecycleStatus(payload);
+    const status = this.parseLifecycleStatus(payload, 'status');
+    if (status.sessionId !== input.sessionId || status.generation !== input.generation) {
+      throw new Error('Cloud live-teleport status returned a stale or cross-session lifecycle identity.');
+    }
+    return status;
   }
 
   async acquire(input: LiveTeleportAcquireInput): Promise<LiveTeleportEnvironment> {
@@ -448,12 +521,18 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       if (!isObject(payload) || payload.status !== 'verifying') {
         throw new Error('Cloud live-teleport acquire returned an invalid pending response.');
       }
-      assertAllowedResponseKeys(payload, ['status', 'retryAfterMs'], 'pending acquire');
+      assertAllowedResponseKeys(
+        payload,
+        ['sessionId', 'generation', 'status', 'retryAfterMs'],
+        'pending acquire'
+      );
+      const pendingSessionId = requiredString(payload.sessionId, 'sessionId');
+      const pendingGeneration = requiredGeneration(payload.generation);
+      if (pendingSessionId !== input.sessionId || pendingGeneration !== input.generation) {
+        throw new Error('Cloud live-teleport pending acquire returned a stale lifecycle identity.');
+      }
       await wait(
-        Math.min(
-          optionalNonNegativeInteger(payload.retryAfterMs, 'retryAfterMs') ?? 500,
-          MAX_ACQUIRE_RETRY_AFTER_MS
-        ),
+        Math.min(requiredPositiveInteger(payload.retryAfterMs, 'retryAfterMs'), MAX_ACQUIRE_RETRY_AFTER_MS),
         signal
       );
     }
@@ -488,15 +567,13 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     const generation = requiredGeneration(payload.generation);
     const threadId = requiredString(payload.threadId, 'threadId');
     const workspaceCwd = requiredString(payload.workspaceCwd, 'workspaceCwd');
-    const connectExpiresAt = requiredString(payload.connectExpiresAt, 'connectExpiresAt');
-    const leaseExpiresAt = requiredString(payload.leaseExpiresAt, 'leaseExpiresAt');
+    const connectExpiresAt = requiredExactTimestamp(payload.connectExpiresAt, 'connectExpiresAt');
+    const leaseExpiresAt = requiredExactTimestamp(payload.leaseExpiresAt, 'leaseExpiresAt');
     if (
       payload.status !== 'active' ||
       sessionId !== input.sessionId ||
       generation !== input.generation ||
       threadId !== input.threadId ||
-      Number.isNaN(Date.parse(connectExpiresAt)) ||
-      Number.isNaN(Date.parse(leaseExpiresAt)) ||
       Date.parse(leaseExpiresAt) <= Date.parse(connectExpiresAt)
     ) {
       throw new Error('Cloud live-teleport acquire returned invalid active lifecycle metadata.');
@@ -528,20 +605,34 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
     });
     const payload = await readPayload(response);
     if (!isObject(payload)) throw new Error('Cloud live-teleport revoke returned an invalid response.');
-    const status = this.parseLifecycleStatus(payload);
+    const status = this.parseLifecycleStatus(payload, 'revoke');
     if (status.sessionId !== input.sessionId || status.generation !== input.generation) {
       throw new Error('Cloud live-teleport revoke returned a stale or cross-session lifecycle identity.');
     }
-    if (status.status !== 'cleanup_pending' && status.status !== 'revoked' && status.status !== 'expired') {
+    if (status.status !== 'cleanup_pending' && status.status !== 'revoked') {
       throw new Error('Cloud live-teleport revoke was not confirmed.');
     }
     return status;
   }
 
-  private parseLifecycleStatus(payload: Record<string, unknown>): LiveTeleportLifecycleStatus {
+  private parseLifecycleStatus(
+    payload: Record<string, unknown>,
+    boundary: 'status' | 'revoke'
+  ): LiveTeleportLifecycleStatus {
     assertAllowedResponseKeys(
       payload,
-      ['sessionId', 'generation', 'status', 'prewarmId', 'retryAfterMs', 'expiresAt', 'leaseExpiresAt'],
+      boundary === 'status'
+        ? [
+            'sessionId',
+            'generation',
+            'status',
+            'prewarmId',
+            'retryAfterMs',
+            'expiresAt',
+            'leaseExpiresAt',
+            'rollout',
+          ]
+        : ['sessionId', 'generation', 'status', 'retryAfterMs'],
       'lifecycle status'
     );
     const status = payload.status;
@@ -558,14 +649,25 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       throw new Error('Cloud live-teleport status returned an invalid lifecycle state.');
     }
     const expiresAt =
-      payload.expiresAt === undefined ? undefined : requiredString(payload.expiresAt, 'expiresAt');
-    if (expiresAt && Number.isNaN(Date.parse(expiresAt))) {
-      throw new Error('Cloud live-teleport status returned an invalid expiresAt.');
-    }
+      payload.expiresAt === undefined ? undefined : requiredExactTimestamp(payload.expiresAt, 'expiresAt');
     const leaseExpiresAt =
       payload.leaseExpiresAt === undefined
         ? undefined
         : requiredExactTimestamp(payload.leaseExpiresAt, 'leaseExpiresAt');
+    const retryAfterMs =
+      payload.retryAfterMs === undefined
+        ? undefined
+        : requiredPositiveInteger(payload.retryAfterMs, 'retryAfterMs');
+    const rollout = payload.rollout === undefined ? undefined : requiredRollout(payload.rollout);
+    this.assertLifecycleResponseSemantics({
+      boundary,
+      status,
+      prewarmId: payload.prewarmId,
+      retryAfterMs,
+      expiresAt,
+      leaseExpiresAt,
+      rollout,
+    });
     return {
       sessionId: requiredString(payload.sessionId, 'sessionId'),
       generation: requiredGeneration(payload.generation),
@@ -573,12 +675,60 @@ export class CloudLiveTeleportClient implements LiveTeleportCloudClient {
       ...(payload.prewarmId === undefined
         ? {}
         : { prewarmId: requiredString(payload.prewarmId, 'prewarmId') }),
-      ...(payload.retryAfterMs === undefined
-        ? {}
-        : { retryAfterMs: optionalNonNegativeInteger(payload.retryAfterMs, 'retryAfterMs')! }),
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       ...(expiresAt ? { expiresAt } : {}),
       ...(leaseExpiresAt ? { leaseExpiresAt } : {}),
+      ...(rollout ? { rollout } : {}),
     };
+  }
+
+  private assertLifecycleResponseSemantics(input: {
+    boundary: 'status' | 'revoke';
+    status: LiveTeleportLifecycleStatus['status'];
+    prewarmId: unknown;
+    retryAfterMs?: number;
+    expiresAt?: string;
+    leaseExpiresAt?: string;
+    rollout?: LiveTeleportRollout;
+  }): void {
+    if (input.boundary === 'revoke') {
+      const valid =
+        (input.status === 'cleanup_pending' && input.retryAfterMs !== undefined) ||
+        (input.status !== 'cleanup_pending' && input.retryAfterMs === undefined);
+      if (!valid) throw new Error('Cloud live-teleport revoke returned invalid lifecycle semantics.');
+      return;
+    }
+
+    if (input.prewarmId === undefined) {
+      throw new Error('Cloud live-teleport status is missing prewarmId.');
+    }
+    if (input.status === 'cleanup_pending') {
+      const compactCleanup =
+        input.retryAfterMs !== undefined &&
+        input.expiresAt === undefined &&
+        input.leaseExpiresAt === undefined &&
+        input.rollout === undefined;
+      const fullCleanup =
+        input.retryAfterMs !== undefined &&
+        input.expiresAt !== undefined &&
+        input.rollout !== undefined &&
+        (input.leaseExpiresAt === undefined || input.leaseExpiresAt === input.expiresAt);
+      if (!compactCleanup && !fullCleanup) {
+        throw new Error('Cloud live-teleport status returned invalid cleanup lifecycle semantics.');
+      }
+      return;
+    }
+
+    if (!input.expiresAt || !input.rollout) {
+      throw new Error('Cloud live-teleport status is missing authoritative lifecycle metadata.');
+    }
+    const polling = input.status === 'warming' || input.status === 'verifying';
+    if (polling !== (input.retryAfterMs !== undefined)) {
+      throw new Error('Cloud live-teleport status returned invalid retryAfterMs semantics.');
+    }
+    if (input.status === 'active' && (!input.leaseExpiresAt || input.leaseExpiresAt !== input.expiresAt)) {
+      throw new Error('Cloud live-teleport status returned inconsistent active lease metadata.');
+    }
   }
 
   private requiredConnectPath(value: unknown): string {

@@ -66,6 +66,7 @@ export {
   type LiveTeleportRevokeInput,
   type LiveTeleportStatusInput,
   type LiveTeleportLifecycleStatus,
+  type LiveTeleportRollout,
   type LiveTeleportRevocation,
 } from './live-teleport.js';
 

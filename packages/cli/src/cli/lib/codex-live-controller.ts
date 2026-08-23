@@ -332,6 +332,7 @@ function invalidNestedState(state: Record<string, unknown>): boolean {
     !nonEmptyString(verification.verificationId) ||
     !nonEmptyString(verification.workspaceId) ||
     !nonEmptyString(verification.localRoot) ||
+    verification.localRoot !== remote.workspaceCwd ||
     !validTimestamp(verification.verifiedAt) ||
     !observed ||
     typeof observed.digest !== 'string' ||
