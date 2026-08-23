@@ -64,6 +64,30 @@ export function nodeCallbackWriter(stream: NodeCallbackWritable): CodexAsyncWrit
     });
 }
 
+/**
+ * Gives controller shutdown the same semantic outcome as the command body.
+ * A rejected command is an error unwind, never implicit cancellation of a
+ * teleport that the controller already accepted durably.
+ */
+export async function withCodexControllerShutdown<T>(
+  controller: Pick<CodexLiveController, 'close'>,
+  run: () => Promise<T>,
+  beforeClose: () => Promise<void> = async () => undefined
+): Promise<T> {
+  let completedNormally = false;
+  try {
+    const result = await run();
+    completedNormally = true;
+    return result;
+  } finally {
+    try {
+      await beforeClose();
+    } finally {
+      await controller.close({ cancelPendingTeleport: completedNormally });
+    }
+  }
+}
+
 export interface CodexCommandDependencies {
   runManaged(options: { cwd: string; model?: string; prompt?: string; json?: boolean }): Promise<void>;
   checkpointAndSeal: CodexWorkspaceSealProvider;
@@ -360,47 +384,51 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
         }
         const server = createControlServer(controller);
         try {
-          const status = await controller.initialize();
-          await surfaceRecoveredCodexTerminal(controller, {
-            json: Boolean(options.json),
-            writeError: nodeCallbackWriter(process.stderr),
-          });
-          await listen(server, paths.socketPath);
-          process.stderr.write(
-            `Relay-managed Codex ${status.threadId} is ready locally (generation ${status.generation}).\n`
-          );
-          const recoveredTurn = controller.takeRecoveredTurn();
-          if (recoveredTurn) {
-            await writeReconciledTurn(recoveredTurn, {
-              json: Boolean(options.json),
-              writeOutput: nodeCallbackWriter(process.stdout),
-            });
-            controller.acknowledgeRecoveredOutcome();
-          }
+          await withCodexControllerShutdown(
+            controller,
+            async () => {
+              const status = await controller.initialize();
+              await surfaceRecoveredCodexTerminal(controller, {
+                json: Boolean(options.json),
+                writeError: nodeCallbackWriter(process.stderr),
+              });
+              await listen(server, paths.socketPath);
+              process.stderr.write(
+                `Relay-managed Codex ${status.threadId} is ready locally (generation ${status.generation}).\n`
+              );
+              const recoveredTurn = controller.takeRecoveredTurn();
+              if (recoveredTurn) {
+                await writeReconciledTurn(recoveredTurn, {
+                  json: Boolean(options.json),
+                  writeOutput: nodeCallbackWriter(process.stdout),
+                });
+                controller.acknowledgeRecoveredOutcome();
+              }
 
-          if (options.prompt) {
-            await runManagedCodexTurn(controller, options.prompt, {
-              json: Boolean(options.json),
-              writeError: nodeCallbackWriter(process.stderr),
-              writeOutput: nodeCallbackWriter(process.stdout),
-            });
-          }
-          const input = readline.createInterface({
-            input: process.stdin,
-            terminal: Boolean(process.stdin.isTTY),
-          });
-          for await (const line of input) {
-            if (!line.trim()) continue;
-            await runManagedCodexTurn(controller, line, {
-              json: Boolean(options.json),
-              writeError: nodeCallbackWriter(process.stderr),
-              writeOutput: nodeCallbackWriter(process.stdout),
-            });
-            if (!options.json) process.stdout.write('\n');
-          }
+              if (options.prompt) {
+                await runManagedCodexTurn(controller, options.prompt, {
+                  json: Boolean(options.json),
+                  writeError: nodeCallbackWriter(process.stderr),
+                  writeOutput: nodeCallbackWriter(process.stdout),
+                });
+              }
+              const input = readline.createInterface({
+                input: process.stdin,
+                terminal: Boolean(process.stdin.isTTY),
+              });
+              for await (const line of input) {
+                if (!line.trim()) continue;
+                await runManagedCodexTurn(controller, line, {
+                  json: Boolean(options.json),
+                  writeError: nodeCallbackWriter(process.stderr),
+                  writeOutput: nodeCallbackWriter(process.stdout),
+                });
+                if (!options.json) process.stdout.write('\n');
+              }
+            },
+            () => closeServer(server)
+          );
         } finally {
-          await closeServer(server);
-          await controller.close();
           try {
             fs.unlinkSync(paths.socketPath);
           } catch {

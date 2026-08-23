@@ -167,6 +167,14 @@ export type CodexWorkspaceSealHandle = {
   close(): Promise<void>;
 };
 
+export type CodexControllerCloseOptions = {
+  /**
+   * Explicit operator/session completion is the only boundary allowed to
+   * cancel an accepted, not-yet-consumed teleport. Error unwinds retain it.
+   */
+  cancelPendingTeleport?: boolean;
+};
+
 export type CodexMountRestoreIdentity = {
   lifecycleId: string;
   resumeId?: string;
@@ -877,8 +885,9 @@ export class CodexLiveController {
     return this.status();
   }
 
-  async close(): Promise<void> {
+  async close(options: CodexControllerCloseOptions = {}): Promise<void> {
     const state = this.state;
+    const cancelPendingTeleport = options.cancelPendingTeleport ?? true;
     const lifecycleIdentityConsumed = Boolean(
       state &&
       (this.cloudMayOwnResources(state) || this.sealedWorkspace || state.source || state.mountRestore)
@@ -922,12 +931,12 @@ export class CodexLiveController {
         return;
       }
       if (!lifecycleIdentityConsumed) {
-        // A clean operator shutdown is the explicit cancellation boundary for
-        // an otherwise durable queued request. Crash/recovery failures never
-        // pass through this successful close path and therefore retain it.
+        // Only explicit session completion is a cancellation boundary. A
+        // terminal/error unwind can successfully close the app-server too,
+        // but must leave an already accepted request durable for restart.
         if (state.pending) {
-          state.pending = undefined;
-          state.phase = 'local';
+          if (cancelPendingTeleport) state.pending = undefined;
+          state.phase = cancelPendingTeleport ? 'local' : 'teleport_pending';
           state.updatedAt = this.timestamp();
           this.persist();
         }
@@ -936,11 +945,14 @@ export class CodexLiveController {
       // A confirmed prewarm-only fence consumes this generation's idempotency
       // identity just as surely as acquire/revoke. Never reinitialize and
       // replay a revoked resource under the same generation.
-      // Finalize any queued request in the same durable write so it cannot
-      // retain an expectedGeneration from the consumed identity.
-      state.pending = undefined;
       state.generation += 1;
-      state.phase = 'local';
+      // Finalize or atomically rebase a queued request in the same durable
+      // write as the consumed identity. Error unwind is not cancellation.
+      if (state.pending) {
+        if (cancelPendingTeleport) state.pending = undefined;
+        else state.pending.expectedGeneration = state.generation;
+      }
+      state.phase = state.pending ? 'teleport_pending' : 'local';
       state.cloudLifecycle = 'none';
       state.remote = undefined;
       state.source = undefined;

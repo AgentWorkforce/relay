@@ -16,6 +16,7 @@ import {
 } from './codex-live-controller.js';
 import type { CodexAppServerSession, CodexTurnResult } from './codex-app-server.js';
 import { CodexAppServerTurnTerminalError } from './codex-app-server.js';
+import { surfaceRecoveredCodexTerminal, withCodexControllerShutdown } from '../commands/codex.js';
 
 const source = {
   kind: 'relayfile-checkpoint-seal' as const,
@@ -1461,24 +1462,58 @@ describe('CodexLiveController', () => {
 
         if (outcomeStatus === 'completed') {
           expect(fourth.controller.takeRecoveredTurn()).toMatchObject({ turnId: 'turn-before-crash' });
+          fourth.controller.acknowledgeRecoveredOutcome();
+          await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+          await fourth.controller.close({ cancelPendingTeleport: false });
         } else {
-          expect(fourth.controller.takeRecoveredTerminal()).toMatchObject({ status: outcomeStatus });
+          const writeError = vi.fn(async () => undefined);
+          await expect(
+            withCodexControllerShutdown(fourth.controller, () =>
+              surfaceRecoveredCodexTerminal(fourth.controller, { json: false, writeError })
+            )
+          ).rejects.toMatchObject({ status: outcomeStatus });
+          expect(writeError).toHaveBeenCalledWith(
+            `Codex recorded the turn as ${outcomeStatus}; it was not replayed.\n`
+          );
         }
-        fourth.controller.acknowledgeRecoveredOutcome();
-        await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
         expect(prewarm).toHaveBeenCalledTimes(2);
         expect(prewarm).toHaveBeenLastCalledWith(
           expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:prewarm' })
         );
 
-        await expect(fourth.controller.runTurn('first acknowledged Cloud turn')).resolves.toMatchObject({
+        // This is the production terminal/error-unwind seam: stderr delivery
+        // was acknowledged, but throwing the recorded terminal must not turn
+        // a successful controller close into user cancellation. Because the
+        // generation-2 prewarm exists, close fences it and atomically rebases
+        // the accepted request onto generation 3.
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          generation: 3,
+          phase: 'teleport_pending',
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 3 },
+          cloudLifecycle: 'none',
+        });
+        expect(cloudClient.acquire).not.toHaveBeenCalled();
+
+        const fifthSession = appServer();
+        const fifth = createController({ store, cloud: cloudClient, sessions: [fifthSession] });
+        await expect(fifth.controller.initialize()).resolves.toMatchObject({
+          generation: 3,
+          phase: 'teleport_pending',
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 3 },
+        });
+        await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+        expect(prewarm).toHaveBeenCalledTimes(3);
+        expect(prewarm).toHaveBeenLastCalledWith(
+          expect.objectContaining({ generation: 3, idempotencyKey: 'session-1:3:prewarm' })
+        );
+        await expect(fifth.controller.runTurn('first acknowledged Cloud turn')).resolves.toMatchObject({
           turnId: 'turn-1',
         });
         expect(cloudClient.acquire).toHaveBeenCalledTimes(1);
         expect(cloudClient.acquire).toHaveBeenCalledWith(
-          expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:acquire' })
+          expect.objectContaining({ generation: 3, idempotencyKey: 'session-1:3:acquire' })
         );
-        await fourth.controller.close();
+        await fifth.controller.close();
       } finally {
         fs.rmSync(directory, { recursive: true, force: true });
       }

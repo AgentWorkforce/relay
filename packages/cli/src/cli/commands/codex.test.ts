@@ -7,6 +7,7 @@ import {
   registerCodexCommands,
   runManagedCodexTurn,
   surfaceRecoveredCodexTerminal,
+  withCodexControllerShutdown,
 } from './codex.js';
 
 function deferred<T>() {
@@ -72,6 +73,35 @@ describe('nodeCallbackWriter', () => {
       }),
     };
     await expect(nodeCallbackWriter(throwingStream as never)('output')).rejects.toBe(thrown);
+  });
+});
+
+describe('withCodexControllerShutdown', () => {
+  it('marks only a normally completed command as an explicit pending-teleport cancellation', async () => {
+    const close = vi.fn(async () => undefined);
+    await expect(withCodexControllerShutdown({ close } as never, async () => 'complete')).resolves.toBe(
+      'complete'
+    );
+    expect(close).toHaveBeenLastCalledWith({ cancelPendingTeleport: true });
+
+    const terminal = new Error('recorded terminal');
+    await expect(
+      withCodexControllerShutdown({ close } as never, async () => Promise.reject(terminal))
+    ).rejects.toBe(terminal);
+    expect(close).toHaveBeenLastCalledWith({ cancelPendingTeleport: false });
+  });
+
+  it('still closes the controller when control-server cleanup fails', async () => {
+    const close = vi.fn(async () => undefined);
+    const cleanupError = new Error('control server close failed');
+    await expect(
+      withCodexControllerShutdown(
+        { close } as never,
+        async () => undefined,
+        async () => Promise.reject(cleanupError)
+      )
+    ).rejects.toBe(cleanupError);
+    expect(close).toHaveBeenCalledWith({ cancelPendingTeleport: true });
   });
 });
 
