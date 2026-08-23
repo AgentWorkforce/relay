@@ -1086,6 +1086,323 @@ describe('CodexLiveController', () => {
     }
   );
 
+  it.each(
+    (['ready', 'failed', 'in-flight'] as const).flatMap((prewarmState) =>
+      (['completed', 'failed', 'interrupted'] as const).map(
+        (outcomeStatus) => [prewarmState, outcomeStatus] as const
+      )
+    )
+  )(
+    'keeps a file-backed local %s prewarm independent from an unacknowledged %s outcome',
+    async (prewarmState, outcomeStatus) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), `relay-controller-local-${prewarmState}-${outcomeStatus}-`)
+      );
+      const statePath = path.join(directory, 'state.json');
+      const pendingPrewarm = deferred<{
+        sessionId: string;
+        prewarmId: string;
+        generation: number;
+        status: 'ready';
+        expiresAt: string;
+      }>();
+      let prewarmCalls = 0;
+      const prewarm = vi.fn(async (input: Parameters<LiveTeleportCloudClient['prewarm']>[0]) => {
+        prewarmCalls += 1;
+        if (prewarmCalls === 1) {
+          if (prewarmState === 'failed') throw new Error('first prewarm failed ambiguously');
+          if (prewarmState === 'in-flight') return pendingPrewarm.promise;
+        }
+        return {
+          sessionId: input.sessionId,
+          prewarmId: `prewarm-${input.generation}`,
+          generation: input.generation,
+          status: 'ready' as const,
+          expiresAt: '2026-08-23T12:30:00.000Z',
+        };
+      });
+      const cloudClient = cloud({ prewarm });
+      const store = fileStore(statePath, persistedLocal({ generation: 1 }));
+      const outcome =
+        outcomeStatus === 'completed'
+          ? completedOutcome('turn-local-recovered', 'file-backed local answer', 'operation-1')
+          : { status: outcomeStatus, turnId: `turn-local-${outcomeStatus}` };
+      const local = appServer({
+        runTurn: vi.fn(async () => Promise.reject(new Error('terminal notification lost'))),
+        turnOutcome: vi.fn(async () => outcome),
+      });
+
+      try {
+        const first = createController({ store, cloud: cloudClient, sessions: [local] });
+        await first.controller.initialize();
+        if (prewarmState === 'ready') {
+          await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+        } else if (prewarmState === 'failed') {
+          await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('failed'));
+        }
+
+        if (outcomeStatus === 'completed') {
+          await expect(first.controller.runTurn('do not replay local')).resolves.toMatchObject({
+            turnId: 'turn-local-recovered',
+          });
+        } else {
+          await expect(first.controller.runTurn('do not replay local')).rejects.toMatchObject({
+            status: outcomeStatus,
+            requiresRecoveryAcknowledgment: true,
+          });
+        }
+        expect(local.runTurn).toHaveBeenCalledTimes(1);
+        expect(local.turnOutcome).toHaveBeenCalledTimes(1);
+
+        const durableBeforeRestart = new FileCodexControllerStateStore(statePath).read();
+        expect(durableBeforeRestart).toMatchObject({
+          generation: 1,
+          phase: 'local',
+          cloudLifecycle: prewarmState === 'ready' ? 'prewarmed' : 'prewarm_requested',
+          recoveredOutcome: {
+            generation: 1,
+            clientUserMessageId: 'operation-1',
+            status: outcomeStatus,
+          },
+        });
+        if (prewarmState === 'in-flight') {
+          expect(durableBeforeRestart?.prewarmStatus).toBeUndefined();
+        }
+
+        const closeError = new Error('close unavailable after durable recovery');
+        const afterCrash = appServer({ close: vi.fn(async () => Promise.reject(closeError)) });
+        const second = createController({ store, cloud: cloudClient, sessions: [afterCrash] });
+        await expect(second.controller.initialize()).resolves.toMatchObject({
+          generation: 2,
+          phase: 'local',
+        });
+        expect(cloudClient.revoke).toHaveBeenCalledWith(
+          expect.objectContaining({ generation: 1, idempotencyKey: 'session-1:1:revoke' })
+        );
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          generation: 2,
+          cloudLifecycle: 'none',
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+        expect(new FileCodexControllerStateStore(statePath).read()?.prewarmId).toBeUndefined();
+        expect(new FileCodexControllerStateStore(statePath).read()?.prewarmStatus).toBeUndefined();
+
+        await expect(second.controller.close()).rejects.toBe(closeError);
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          phase: 'recovery_failed',
+          generation: 2,
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+
+        const resumeFailure = appServer({
+          resumeThread: vi.fn(async () => Promise.reject(new Error('resume unavailable'))),
+        });
+        const third = createController({ store, cloud: cloudClient, sessions: [resumeFailure] });
+        await expect(third.controller.initialize()).rejects.toThrow('CODEX_THREAD_RESUME_FAILED_ON_RESTART');
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          phase: 'recovery_failed',
+          generation: 2,
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+
+        const finalSession = appServer();
+        const fourth = createController({ store, cloud: cloudClient, sessions: [finalSession] });
+        await fourth.controller.initialize();
+        expect(finalSession.runTurn).not.toHaveBeenCalled();
+        if (outcomeStatus === 'completed') {
+          expect(fourth.controller.takeRecoveredTurn()).toMatchObject({
+            turnId: 'turn-local-recovered',
+          });
+        } else {
+          expect(fourth.controller.takeRecoveredTerminal()).toMatchObject({ status: outcomeStatus });
+        }
+        fourth.controller.acknowledgeRecoveredOutcome();
+        await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+        expect(prewarm).toHaveBeenLastCalledWith(
+          expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:prewarm' })
+        );
+        await fourth.controller.close();
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('keeps late background prewarm completion from invalidating or erasing recovered output', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-late-prewarm-'));
+    const statePath = path.join(directory, 'state.json');
+    const pendingPrewarm = deferred<{
+      sessionId: string;
+      prewarmId: string;
+      generation: number;
+      status: 'ready';
+      expiresAt: string;
+    }>();
+    const prewarm = vi.fn(() => pendingPrewarm.promise);
+    const cloudClient = cloud({ prewarm });
+    const store = fileStore(statePath, persistedLocal({ generation: 1 }));
+    const local = appServer({
+      runTurn: vi.fn(async () => Promise.reject(new Error('terminal notification lost'))),
+      turnOutcome: vi.fn(async () =>
+        completedOutcome('turn-local-late-prewarm', 'exact recovered answer', 'operation-1')
+      ),
+    });
+
+    try {
+      const { controller } = createController({ store, cloud: cloudClient, sessions: [local] });
+      await controller.initialize();
+      await controller.runTurn('do not replay local');
+      expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+        cloudLifecycle: 'prewarm_requested',
+        recoveredOutcome: { turnId: 'turn-local-late-prewarm', status: 'completed' },
+      });
+
+      pendingPrewarm.resolve({
+        sessionId: 'session-1',
+        prewarmId: 'prewarm-1',
+        generation: 1,
+        status: 'ready',
+        expiresAt: '2026-08-23T12:30:00.000Z',
+      });
+      await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+      expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+        cloudLifecycle: 'prewarmed',
+        prewarmId: 'prewarm-1',
+        recoveredOutcome: { turnId: 'turn-local-late-prewarm', status: 'completed' },
+      });
+
+      controller.acknowledgeRecoveredOutcome();
+      expect(prewarm).toHaveBeenCalledTimes(1);
+      expect(new FileCodexControllerStateStore(statePath).read()?.recoveredOutcome).toBeUndefined();
+      await controller.close();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a turn-boundary teleport queued while recovered local output awaits acknowledgment', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-recovered-pending-'));
+    const statePath = path.join(directory, 'state.json');
+    const lostTerminal = deferred<CodexTurnResult>();
+    const local = appServer({
+      runTurn: vi
+        .fn()
+        .mockImplementationOnce(() => lostTerminal.promise)
+        .mockResolvedValue(turnResult()),
+      turnOutcome: vi.fn(async () =>
+        completedOutcome('turn-before-queued-teleport', 'durable exact answer', 'operation-1')
+      ),
+    });
+    const store = fileStore(statePath, persistedLocal({ generation: 1 }));
+    const cloudClient = cloud();
+
+    try {
+      const { controller } = createController({ store, cloud: cloudClient, sessions: [local] });
+      await controller.initialize();
+      await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+
+      const running = controller.runTurn('turn before queued teleport');
+      await vi.waitFor(() => expect(local.runTurn).toHaveBeenCalledTimes(1));
+      controller.requestTeleport({ requestId: 'queued-during-turn', expectedGeneration: 1 });
+      lostTerminal.reject(new Error('terminal notification lost'));
+      await expect(running).resolves.toMatchObject({ turnId: 'turn-before-queued-teleport' });
+
+      expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+        phase: 'teleport_pending',
+        pending: { requestId: 'queued-during-turn', expectedGeneration: 1 },
+        recoveredOutcome: { turnId: 'turn-before-queued-teleport', status: 'completed' },
+      });
+      await expect(controller.runTurn('must wait for durable output')).rejects.toThrow(
+        'awaiting durable output acknowledgment'
+      );
+
+      controller.acknowledgeRecoveredOutcome();
+      await expect(controller.runTurn('first turn after acknowledgment')).resolves.toMatchObject({
+        turnId: 'turn-1',
+      });
+      expect(cloudClient.acquire).toHaveBeenCalledTimes(1);
+      expect(cloudClient.acquire).toHaveBeenCalledWith(
+        expect.objectContaining({ generation: 1, idempotencyKey: 'session-1:1:acquire' })
+      );
+      expect(local.runTurn).toHaveBeenCalledTimes(2);
+      await controller.close();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('retains the consumed generation fence if restart crashes after terminal revoke', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-terminal-fence-'));
+    const statePath = path.join(directory, 'state.json');
+    const recovered = completedOutcome(
+      'turn-before-terminal-fence',
+      'durable answer before terminal fence',
+      'client-before-terminal-fence'
+    );
+    const store = fileStore(
+      statePath,
+      persistedLocal({
+        generation: 3,
+        cloudLifecycle: 'prewarmed',
+        prewarmId: 'prewarm-3',
+        prewarmStatus: 'ready',
+        recoveredOutcome: {
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          generation: 3,
+          clientUserMessageId: 'client-before-terminal-fence',
+          turnId: recovered.turnId,
+          status: 'completed',
+          result: recovered.result,
+        },
+      })
+    );
+    const cloudClient = cloud();
+    const startFailure = appServer({
+      initialize: vi.fn(async () => Promise.reject(new Error('process crashed after revoke'))),
+    });
+
+    try {
+      const first = createController({ store, cloud: cloudClient, sessions: [startFailure] });
+      await expect(first.controller.initialize()).rejects.toThrow('process crashed after revoke');
+      expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+        generation: 3,
+        phase: 'rolling_back',
+        cloudLifecycle: 'cleanup_requested',
+        recoveredOutcome: { generation: 3, turnId: recovered.turnId },
+      });
+
+      const resumed = appServer();
+      const second = createController({ store, cloud: cloudClient, sessions: [resumed] });
+      await expect(second.controller.initialize()).resolves.toMatchObject({
+        generation: 4,
+        phase: 'local',
+        cloudLifecycle: 'none',
+      });
+      expect(cloudClient.revoke).toHaveBeenCalledTimes(2);
+      expect(cloudClient.revoke).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ generation: 3, idempotencyKey: 'session-1:3:revoke' })
+      );
+      expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+        generation: 4,
+        recoveredOutcome: { generation: 3, turnId: recovered.turnId },
+      });
+      expect(new FileCodexControllerStateStore(statePath).read()?.prewarmId).toBeUndefined();
+      expect(new FileCodexControllerStateStore(statePath).read()?.prewarmStatus).toBeUndefined();
+
+      expect(second.controller.takeRecoveredTurn()).toMatchObject({ turnId: recovered.turnId });
+      second.controller.acknowledgeRecoveredOutcome();
+      await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+      expect(cloudClient.prewarm).toHaveBeenCalledWith(
+        expect.objectContaining({ generation: 4, idempotencyKey: 'session-1:4:prewarm' })
+      );
+      await second.controller.close();
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('fails outcome-uncertain when an accepted remote turn cannot be found after fencing', async () => {
     const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('transport lost'))) });
     const replacement = appServer({ turnOutcome: vi.fn(async () => ({ status: 'absent' as const })) });
@@ -1789,6 +2106,34 @@ describe('FileCodexControllerStateStore', () => {
           turnId: 'turn-recovered',
           status: 'completed',
           result: completedOutcome('turn-recovered').result,
+        },
+      },
+    ],
+    [
+      'future-generation recovered outcome',
+      {
+        ...persistedLocal(),
+        recoveredOutcome: {
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          generation: 4,
+          clientUserMessageId: 'client-future',
+          turnId: 'turn-future',
+          status: 'failed',
+        },
+      },
+    ],
+    [
+      'two-generations-stale recovered outcome',
+      {
+        ...persistedLocal(),
+        recoveredOutcome: {
+          sessionId: 'session-1',
+          threadId: 'thread-1',
+          generation: 1,
+          clientUserMessageId: 'client-stale',
+          turnId: 'turn-stale',
+          status: 'interrupted',
         },
       },
     ],

@@ -294,15 +294,13 @@ function invalidNestedState(state: Record<string, unknown>): boolean {
     (state.recoveredOutcome !== undefined && !recovered) ||
     (inFlight !== undefined && recovered !== undefined) ||
     (recovered !== undefined && !validRecoveredOutcome(state, recovered)) ||
-    (recovered !== undefined && state.phase !== 'local' && state.phase !== 'recovery_failed') ||
     (recovered !== undefined &&
-      (pending !== undefined ||
-        source !== undefined ||
-        restore !== undefined ||
-        remote !== undefined ||
-        state.cloudLifecycle !== 'none' ||
-        state.prewarmId !== undefined ||
-        state.prewarmStatus !== undefined)) ||
+      state.phase !== 'local' &&
+      state.phase !== 'teleport_pending' &&
+      state.phase !== 'rolling_back' &&
+      state.phase !== 'fenced' &&
+      state.phase !== 'recovery_failed') ||
+    (recovered !== undefined && (source !== undefined || restore !== undefined || remote !== undefined)) ||
     !validOptionalString(state.prewarmId) ||
     (state.prewarmStatus !== undefined &&
       state.prewarmStatus !== 'warming' &&
@@ -364,7 +362,8 @@ function validRecoveredOutcome(state: Record<string, unknown>, recovered: Record
   const bindingMatches = [
     recovered.sessionId === state.sessionId,
     recovered.threadId === state.threadId,
-    recovered.generation === state.generation,
+    Number.isSafeInteger(recovered.generation) &&
+      (recovered.generation === state.generation || recovered.generation === Number(state.generation) - 1),
     nonEmptyString(recovered.clientUserMessageId),
     nonEmptyString(recovered.turnId),
   ].every(Boolean);
@@ -643,6 +642,8 @@ export class CodexLiveController {
       state.remote = undefined;
       state.source = undefined;
       state.mountRestore = undefined;
+      state.prewarmId = undefined;
+      state.prewarmStatus = undefined;
       if (recovered) this.stageRecoveredOutcome(recovered);
       state.lastError = undefined;
       state.updatedAt = this.timestamp();
@@ -1131,6 +1132,10 @@ export class CodexLiveController {
   private async confirmFence(_reason: string): Promise<void> {
     const state = this.requireState();
     state.cloudLifecycle = 'cleanup_requested';
+    // Once cleanup owns the generation, stale warm metadata must not cause
+    // legacy-state inference to downgrade the durable cleanup intent.
+    state.prewarmId = undefined;
+    state.prewarmStatus = undefined;
     state.updatedAt = this.timestamp();
     this.persist();
     await this.withAbortableLifecycleDeadline(async (signal) => {
@@ -1148,7 +1153,6 @@ export class CodexLiveController {
         // ownership has been handed back. cleanup_pending is not a fence and
         // must never allow the source mount to resume.
         if (revoked.status === 'revoked' || revoked.status === 'expired') {
-          this.markCloudFenced();
           return;
         }
       } catch (error) {
@@ -1163,7 +1167,6 @@ export class CodexLiveController {
           });
           this.assertLifecycleIdentity(status);
           if (status.status === 'revoked' || status.status === 'expired') {
-            this.markCloudFenced();
             return;
           }
           lastError = new Error(`Cloud fence remains ${status.status}.`);
@@ -1226,6 +1229,10 @@ export class CodexLiveController {
   private schedulePrewarm(): void {
     if (this.prewarmPromise || this.closing) return;
     const state = this.requireState();
+    // Recovered output is an independent durable delivery queue. Do not start
+    // another lifecycle while it is unacknowledged, and do not duplicate an
+    // already-started lifecycle after its background promise has settled.
+    if (state.recoveredOutcome || this.cloudMayOwnResources(state)) return;
     const generation = state.generation;
     state.cloudLifecycle = 'prewarm_requested';
     state.updatedAt = this.timestamp();
@@ -1454,15 +1461,6 @@ export class CodexLiveController {
         `Cannot ${operation} while a recovered Codex turn is awaiting durable output acknowledgment.`
       );
     }
-  }
-
-  private markCloudFenced(): void {
-    const state = this.requireState();
-    state.cloudLifecycle = 'none';
-    state.prewarmId = undefined;
-    state.prewarmStatus = undefined;
-    state.updatedAt = this.timestamp();
-    this.persist();
   }
 
   private async createInitializedAppServer(): Promise<CodexAppServerSession> {
