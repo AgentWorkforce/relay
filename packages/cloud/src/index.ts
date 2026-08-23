@@ -54,6 +54,19 @@ export {
 } from './api-client.js';
 
 export {
+  CloudLiveTeleportClient,
+  type LiveTeleportCloudClient,
+  type LiveTeleportWorkspaceSource,
+  type LiveTeleportPrewarmInput,
+  type LiveTeleportPrewarm,
+  type LiveTeleportAcquireInput,
+  type LiveTeleportEnvironment,
+  type LiveTeleportConvergenceWatermark,
+  type LiveTeleportConvergenceProof,
+  type LiveTeleportRevokeInput,
+} from './live-teleport.js';
+
+export {
   runWorkflow,
   scheduleWorkflow,
   listWorkflowSchedules,

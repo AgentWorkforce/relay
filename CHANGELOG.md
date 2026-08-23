@@ -5,6 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased - Minor]
+
+### Added
+
+- `relay codex run` starts a Relay-managed local Codex app-server/thread, and `relay codex teleport` queues Cloud execution for its next turn boundary with persisted generations and local-resume rollback.
+
 ## [Unreleased - Patch]
 
 ### Fixed

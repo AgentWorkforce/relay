@@ -40,6 +40,11 @@ const expectedLeafCommands = [
   'reflex off',
   'reflex status',
   'session replay',
+  // Relay-managed Codex execution teleport
+  'codex run',
+  'codex teleport',
+  'codex rollback',
+  'codex status',
   // fleet (serve is a hidden error stub, filtered out below)
   'fleet agent list',
   'fleet config',
@@ -221,6 +226,7 @@ describe('bootstrap CLI', () => {
         'fleet',
         'reflex',
         'session',
+        'codex',
         'status',
         'observer',
         'version',
