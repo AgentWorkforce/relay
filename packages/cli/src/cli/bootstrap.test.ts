@@ -5,7 +5,8 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createProgram, propagateTelemetryContextToChildren } from './bootstrap.js';
+import { createProgram, loadCliEnvironment, propagateTelemetryContextToChildren } from './bootstrap.js';
+import { RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV } from './lib/codex-live-controller.js';
 
 const expectedLeafCommands = [
   // node broker + agent group (local is a hidden alias, filtered out below)
@@ -203,6 +204,27 @@ describe('createProgram output redaction', () => {
 });
 
 describe('bootstrap CLI', () => {
+  it('does not let a cwd .env enable live teleport after the trusted startup capture', () => {
+    const originalCwd = process.cwd();
+    const originalValue = process.env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV];
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-codex-dotenv-'));
+    fs.writeFileSync(path.join(cwd, '.env'), `${RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV}=true\n`);
+    delete process.env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV];
+    process.chdir(cwd);
+
+    try {
+      const startupSwitch = loadCliEnvironment();
+
+      expect(startupSwitch).toEqual({ enabled: false, reason: 'ambient-unset' });
+      expect(process.env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV]).toBe('true');
+    } finally {
+      process.chdir(originalCwd);
+      if (originalValue === undefined) delete process.env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV];
+      else process.env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV] = originalValue;
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('uses the expected program name', () => {
     const program = createProgram();
     expect(program.name()).toBe('agent-relay');

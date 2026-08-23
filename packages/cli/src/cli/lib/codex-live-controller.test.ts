@@ -8,9 +8,10 @@ import type { LiveTeleportCloudClient, LiveTeleportLifecycleStatus } from '@agen
 import {
   CodexLiveController,
   FileCodexControllerStateStore,
-  isCodexLiveTeleportEnabled,
+  resolveCodexLiveTeleportStartupSwitch,
   type CodexControllerState,
   type CodexControllerStateStore,
+  type CodexLiveTeleportStartupSwitch,
   type CodexPersistedMountResumeProvider,
   type CodexWorkspaceSealHandle,
   type CodexWorkspaceSealProvider,
@@ -213,6 +214,7 @@ function createController(
     lifecycleDeadlineMs?: number;
     lifecyclePollIntervalMs?: number;
     liveTeleportEnabled?: boolean;
+    liveTeleportStartupSwitch?: CodexLiveTeleportStartupSwitch;
     now?: () => Date;
   } = {}
 ) {
@@ -242,7 +244,11 @@ function createController(
     {
       workspaceRoot: '/repo',
       socketPath: '/state/controller.sock',
-      liveTeleportEnabled: options.liveTeleportEnabled ?? true,
+      liveTeleportStartupSwitch:
+        options.liveTeleportStartupSwitch ??
+        (options.liveTeleportEnabled === false
+          ? { enabled: false, reason: 'ambient-unset' }
+          : { enabled: true, reason: 'ambient-exact-true' }),
       ...(options.lifecycleDeadlineMs ? { lifecycleDeadlineMs: options.lifecycleDeadlineMs } : {}),
       ...(options.lifecyclePollIntervalMs
         ? { lifecyclePollIntervalMs: options.lifecyclePollIntervalMs }
@@ -336,13 +342,16 @@ function persistedLocal(overrides: Partial<CodexControllerState> = {}): CodexCon
 
 describe('CodexLiveController', () => {
   it.each([
-    ['unset', {}, false],
-    ['false', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: 'false' }, false],
-    ['true', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: 'true' }, true],
-    ['trimmed uppercase true', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: ' TRUE ' }, true],
-    ['noncanonical truthy value', { RELAY_LIVE_SESSION_TELEPORT_ENABLED: '1' }, false],
-  ] as const)('treats the local teleport flag as %s', (_name, env, enabled) => {
-    expect(isCodexLiveTeleportEnabled(env)).toBe(enabled);
+    ['unset', undefined, false, 'ambient-unset'],
+    ['false', 'false', false, 'ambient-value-not-exact-true'],
+    ['exact true', 'true', true, 'ambient-exact-true'],
+    ['uppercase true', 'TRUE', false, 'ambient-value-not-exact-true'],
+    ['leading whitespace', ' true', false, 'ambient-value-not-exact-true'],
+    ['trailing whitespace', 'true ', false, 'ambient-value-not-exact-true'],
+    ['noncanonical truthy value', '1', false, 'ambient-value-not-exact-true'],
+    ['empty', '', false, 'ambient-value-not-exact-true'],
+  ] as const)('treats the ambient teleport flag as %s', (_name, raw, enabled, reason) => {
+    expect(resolveCodexLiveTeleportStartupSwitch(raw)).toEqual({ enabled, reason });
   });
 
   it('keeps a fresh managed Codex session entirely local when teleport is disabled', async () => {
@@ -362,6 +371,7 @@ describe('CodexLiveController', () => {
       phase: 'local',
       execution: 'local',
       cloudLifecycle: 'none',
+      liveTeleport: { enabled: false, reason: 'ambient-unset' },
     });
     await expect(controller.runTurn('local only')).resolves.toMatchObject({ turnId: 'turn-1' });
 
@@ -413,6 +423,7 @@ describe('CodexLiveController', () => {
       phase: 'local',
       execution: 'local',
       cloudLifecycle: 'none',
+      liveTeleport: { enabled: false, reason: 'ambient-unset' },
     });
     await controller.runTurn('recovered local turn');
 
@@ -2111,12 +2122,23 @@ describe('CodexLiveController', () => {
       revoke: vi.fn(async () => Promise.reject(new Error('timeout'))),
       status: vi.fn(async (input) => lifecycle(input, 'ready')),
     });
-    const { controller, createAppServer } = createController({ store, cloud: cloudClient });
+    const { controller, createAppServer, resumePersistedLocalMount } = createController({
+      store,
+      cloud: cloudClient,
+      liveTeleportEnabled: false,
+    });
 
     await expect(controller.initialize()).rejects.toThrow('CLOUD_FENCE_UNCONFIRMED_ON_RESTART');
 
     expect(createAppServer).not.toHaveBeenCalled();
+    expect(resumePersistedLocalMount).not.toHaveBeenCalled();
+    expect(cloudClient.prewarm).not.toHaveBeenCalled();
+    expect(cloudClient.acquire).not.toHaveBeenCalled();
     expect(store.value).toMatchObject({ phase: 'fenced', generation: 7 });
+    expect(controller.status()).toMatchObject({
+      execution: 'fenced',
+      liveTeleport: { enabled: false, reason: 'ambient-unset' },
+    });
   });
 
   it('resumes locally only after Cloud authoritatively confirms the persisted lease expired', async () => {

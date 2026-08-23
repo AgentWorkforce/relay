@@ -31,10 +31,13 @@ RELAY_LIVE_SESSION_TELEPORT_ENABLED=true relay codex run
 relay codex teleport
 ```
 
-Unset, `false`, `1`, and all other values keep new execution local: a fresh or
-already-local controller does not authenticate to Cloud, prewarm, acquire, or
-route a turn remotely. The `teleport`, `rollback`, and `status` commands remain
-discoverable, but a disabled controller rejects teleport requests.
+Unset, `false`, `TRUE`, whitespace-padded values, `1`, and all other values keep
+new execution local: a fresh or already-local controller does not authenticate
+to Cloud, prewarm, acquire, or route a turn remotely. The opt-in must come from
+the ambient process environment; a cwd `.env` file cannot enable it. The
+`teleport`, `rollback`, and `status` commands remain discoverable, but a disabled
+controller rejects teleport requests. `relay codex status` reports the effective
+startup switch and why it is enabled or disabled.
 
 The flag is read when `relay codex run` starts. To roll back the capability,
 stop the controller and restart it with the variable unset or set to `false`.

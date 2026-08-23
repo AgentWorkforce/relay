@@ -376,6 +376,7 @@ describe('registerCodexCommands', () => {
         updatedAt: '2026-08-23T12:00:00.000Z',
         controller: 'local' as const,
         execution: 'local' as const,
+        liveTeleport: { enabled: true, reason: 'ambient-exact-true' as const },
         workspaceSource: 'relayfile-checkpoint-seal' as const,
       },
     }));
@@ -407,5 +408,51 @@ describe('registerCodexCommands', () => {
       'No active Relay-managed Codex session'
     );
     expect(sendControl).not.toHaveBeenCalled();
+  });
+
+  it('prints the immutable startup switch and reason in human and JSON status', async () => {
+    const status = {
+      version: 1 as const,
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      workspaceRoot: '/repo',
+      generation: 4,
+      phase: 'local' as const,
+      controllerPid: 10,
+      socketPath: '/state/controller.sock',
+      turnActive: false,
+      cloudLifecycle: 'none' as const,
+      updatedAt: '2026-08-23T12:00:00.000Z',
+      controller: 'local' as const,
+      execution: 'local' as const,
+      liveTeleport: { enabled: false, reason: 'ambient-value-not-exact-true' as const },
+      workspaceSource: 'unavailable' as const,
+    };
+    const sendControl = vi.fn(async () => ({ ok: true as const, status }));
+    const humanLog = vi.fn();
+    const humanProgram = new Command().exitOverride();
+    registerCodexCommands(humanProgram, {
+      readState: () => ({ generation: 4 }) as never,
+      sendControl,
+      log: humanLog,
+    });
+
+    await humanProgram.parseAsync(['node', 'relay', 'codex', 'status']);
+
+    expect(humanLog).toHaveBeenCalledWith('Live teleport: disabled (ambient-value-not-exact-true)');
+
+    const jsonLog = vi.fn();
+    const jsonProgram = new Command().exitOverride();
+    registerCodexCommands(jsonProgram, {
+      readState: () => ({ generation: 4 }) as never,
+      sendControl,
+      log: jsonLog,
+    });
+
+    await jsonProgram.parseAsync(['node', 'relay', 'codex', 'status', '--json']);
+
+    expect(JSON.parse(String(jsonLog.mock.calls[0]?.[0]))).toMatchObject({
+      liveTeleport: { enabled: false, reason: 'ambient-value-not-exact-true' },
+    });
   });
 });

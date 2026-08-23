@@ -43,13 +43,35 @@ export type CodexTeleportRequest = {
 
 export const RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV = 'RELAY_LIVE_SESSION_TELEPORT_ENABLED';
 
+export type CodexLiveTeleportStartupReason =
+  | 'ambient-exact-true'
+  | 'ambient-unset'
+  | 'ambient-value-not-exact-true';
+
+export type CodexLiveTeleportStartupSwitch = Readonly<{
+  enabled: boolean;
+  reason: CodexLiveTeleportStartupReason;
+}>;
+
+export const DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH: CodexLiveTeleportStartupSwitch = Object.freeze({
+  enabled: false,
+  reason: 'ambient-unset',
+});
+
 /**
  * Live execution teleport is a dark-launched, local-only capability. Only the
- * explicit string `true` enables it; unset, false, and every unknown value
- * fail closed so merging support code cannot activate remote execution.
+ * exact, unmodified string `true` enables it. The caller must pass the value
+ * captured from the ambient process environment before dotenv is loaded;
+ * unset, whitespace/case variants, and every unknown value fail closed.
  */
-export function isCodexLiveTeleportEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV]?.trim().toLowerCase() === 'true';
+export function resolveCodexLiveTeleportStartupSwitch(
+  ambientRawValue: string | undefined
+): CodexLiveTeleportStartupSwitch {
+  if (ambientRawValue === 'true') {
+    return Object.freeze({ enabled: true, reason: 'ambient-exact-true' });
+  }
+  if (ambientRawValue === undefined) return DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH;
+  return Object.freeze({ enabled: false, reason: 'ambient-value-not-exact-true' });
 }
 
 type CodexRecoveredOutcome = {
@@ -101,6 +123,8 @@ export type PublicCodexControllerStatus = Omit<
 > & {
   execution: 'local' | 'verifying' | 'cloud' | 'fenced';
   controller: 'local';
+  /** Immutable process-start gate; never inferred from dotenv-mutated state. */
+  liveTeleport: CodexLiveTeleportStartupSwitch;
   remote?: Pick<
     LiveTeleportEnvironment,
     'environmentId' | 'generation' | 'workspaceCwd' | 'connectExpiresAt' | 'leaseExpiresAt'
@@ -225,8 +249,8 @@ export type CodexLiveControllerOptions = {
   workspaceRoot: string;
   socketPath: string;
   model?: string;
-  /** Defaults off. Enabling must always be an explicit local operator action. */
-  liveTeleportEnabled?: boolean;
+  /** Defaults off. Production passes the immutable pre-dotenv startup gate. */
+  liveTeleportStartupSwitch?: CodexLiveTeleportStartupSwitch;
   lifecycleDeadlineMs?: number;
   lifecyclePollIntervalMs?: number;
 };
@@ -529,7 +553,10 @@ function sameRecoveredIdentity(left: CodexRecoveredOutcome, right: CodexRecovere
   );
 }
 
-function publicStatus(state: CodexControllerState): PublicCodexControllerStatus {
+function publicStatus(
+  state: CodexControllerState,
+  liveTeleport: CodexLiveTeleportStartupSwitch
+): PublicCodexControllerStatus {
   const { source, remote, mountRestore: _mountRestore, recoveredOutcome: _recoveredOutcome, ...rest } = state;
   const execution =
     state.phase === 'remote'
@@ -547,6 +574,7 @@ function publicStatus(state: CodexControllerState): PublicCodexControllerStatus 
     ...rest,
     controller: 'local',
     execution,
+    liveTeleport,
     workspaceSource: source?.kind ?? 'unavailable',
     ...(remote && state.phase === 'remote' && remote.attached
       ? {
@@ -576,11 +604,15 @@ export class CodexLiveController {
   private prewarmAbort: AbortController | null = null;
   private recoveredEvidenceTaken: CodexRecoveredOutcome | undefined;
   private closing = false;
+  private readonly liveTeleportStartupSwitch: CodexLiveTeleportStartupSwitch;
 
   constructor(
     private readonly options: CodexLiveControllerOptions,
     private readonly deps: CodexLiveControllerDependencies
-  ) {}
+  ) {
+    const startupSwitch = options.liveTeleportStartupSwitch ?? DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH;
+    this.liveTeleportStartupSwitch = Object.freeze({ ...startupSwitch });
+  }
 
   async initialize(): Promise<PublicCodexControllerStatus> {
     this.recoveredEvidenceTaken = undefined;
@@ -715,7 +747,7 @@ export class CodexLiveController {
   }
 
   status(): PublicCodexControllerStatus {
-    return publicStatus(this.requireState());
+    return publicStatus(this.requireState(), this.liveTeleportStartupSwitch);
   }
 
   /**
@@ -1526,7 +1558,7 @@ export class CodexLiveController {
   }
 
   private liveTeleportEnabled(): boolean {
-    return this.options.liveTeleportEnabled === true;
+    return this.liveTeleportStartupSwitch.enabled;
   }
 
   private requireCloud(): LiveTeleportCloudClient {

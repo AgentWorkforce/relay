@@ -20,8 +20,9 @@ import {
   CodexTurnRecordedError,
   FileCodexControllerStateStore,
   codexControllerStateMayOwnCloudResources,
-  isCodexLiveTeleportEnabled,
+  DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH,
   type CodexControllerState,
+  type CodexLiveTeleportStartupSwitch,
   type CodexPersistedMountResumeProvider,
   type CodexWorkspaceSealProvider,
   type PublicCodexControllerStatus,
@@ -42,6 +43,7 @@ type ControlRequest =
 type ControlResponse = { ok: true; status: PublicCodexControllerStatus } | { ok: false; error: string };
 
 export type CodexAsyncWriter = (message: string) => Promise<void>;
+type CodexCommandInput = NodeJS.ReadableStream & { isTTY?: boolean };
 
 type NodeCallbackWritable = {
   write(message: string, callback: (error?: Error | null) => void): boolean;
@@ -92,12 +94,15 @@ export async function withCodexControllerShutdown<T>(
 
 export interface CodexCommandDependencies {
   runManaged(options: { cwd: string; model?: string; prompt?: string; json?: boolean }): Promise<void>;
+  /** Immutable value captured before bootstrap loads dotenv. */
+  liveTeleportStartupSwitch: CodexLiveTeleportStartupSwitch;
   checkpointAndSeal: CodexWorkspaceSealProvider;
   resumePersistedLocalMount: CodexPersistedMountResumeProvider;
   readState(): CodexControllerState | null;
   sendControl(request: ControlRequest): Promise<ControlResponse>;
   requestId(): string;
   cwd(): string;
+  input: CodexCommandInput;
   log(message: string): void;
 }
 
@@ -317,6 +322,10 @@ async function sendSocketControl(socketPath: string, request: ControlRequest): P
 function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexCommandDependencies {
   const paths = codexControllerPaths();
   const relayfileLifecycle = createRelayfileSealLifecycle();
+  const liveTeleportStartupSwitch = Object.freeze({
+    ...(overrides.liveTeleportStartupSwitch ?? DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH),
+  });
+  const inputStream = overrides.input ?? process.stdin;
   const checkpointAndSeal = overrides.checkpointAndSeal ?? relayfileLifecycle.checkpointAndSeal;
   const resumePersistedLocalMount =
     overrides.resumePersistedLocalMount ?? relayfileLifecycle.resumePersistedLocalMount;
@@ -325,7 +334,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
       overrides.runManaged ??
       (async (options) => {
         const workspaceRoot = fs.realpathSync(path.resolve(options.cwd));
-        const liveTeleportEnabled = isCodexLiveTeleportEnabled();
+        const liveTeleportEnabled = liveTeleportStartupSwitch.enabled;
         if (liveTeleportEnabled) await probeCodexEnvironmentCapability('codex');
         fs.mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
         const store = new FileCodexControllerStateStore(paths.statePath);
@@ -351,7 +360,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
           {
             workspaceRoot,
             socketPath: paths.socketPath,
-            liveTeleportEnabled,
+            liveTeleportStartupSwitch,
             ...(options.model ? { model: options.model } : {}),
           },
           {
@@ -424,8 +433,8 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
                 });
               }
               const input = readline.createInterface({
-                input: process.stdin,
-                terminal: Boolean(process.stdin.isTTY),
+                input: inputStream,
+                terminal: Boolean(inputStream.isTTY),
               });
               for await (const line of input) {
                 if (!line.trim()) continue;
@@ -447,6 +456,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
           }
         }
       }),
+    liveTeleportStartupSwitch,
     checkpointAndSeal,
     resumePersistedLocalMount,
     readState:
@@ -461,6 +471,7 @@ function withDefaults(overrides: Partial<CodexCommandDependencies> = {}): CodexC
     sendControl: overrides.sendControl ?? ((request) => sendSocketControl(paths.socketPath, request)),
     requestId: overrides.requestId ?? randomUUID,
     cwd: overrides.cwd ?? (() => process.cwd()),
+    input: inputStream,
     log: overrides.log ?? ((message) => console.log(message)),
   };
 }
@@ -548,6 +559,9 @@ export function registerCodexCommands(
       else {
         deps.log(`Execution: ${status.execution}`);
         deps.log('Controller: local (keep this process and laptop running)');
+        deps.log(
+          `Live teleport: ${status.liveTeleport.enabled ? 'enabled' : 'disabled'} (${status.liveTeleport.reason})`
+        );
         deps.log(`Thread: ${status.threadId}`);
         deps.log(`Generation: ${status.generation}`);
       }
