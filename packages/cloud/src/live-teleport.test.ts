@@ -146,6 +146,36 @@ describe('CloudLiveTeleportClient', () => {
     expect(vi.mocked(fetcher).mock.calls[0]?.[1]?.body).toBe(vi.mocked(fetcher).mock.calls[1]?.[1]?.body);
   });
 
+  it('accepts active acquire only with HTTP 200 and rejects other successful codes', async () => {
+    const exact = new CloudLiveTeleportClient(
+      async () => Response.json(cloudAcquireActive(), { status: 200 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(exact.acquire(input)).resolves.toMatchObject({ environmentId: 'env-2' });
+
+    for (const status of [201, 206]) {
+      const client = new CloudLiveTeleportClient(
+        async () => Response.json(cloudAcquireActive(), { status }),
+        'https://cloud.agentrelay.test'
+      );
+      await expect(client.acquire(input)).rejects.toThrow('invalid active lifecycle metadata');
+    }
+  });
+
+  it('rejects acquire HTTP/body state mismatches', async () => {
+    const activePending = new CloudLiveTeleportClient(
+      async () => Response.json(cloudAcquireActive(), { status: 202 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(activePending.acquire(input)).rejects.toThrow('invalid pending response');
+
+    const verifyingSuccess = new CloudLiveTeleportClient(
+      async () => Response.json(cloudAcquireVerifying(), { status: 200 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(verifyingSuccess.acquire(input)).rejects.toThrow('invalid active lifecycle metadata');
+  });
+
   it('composes the frozen Cloud e3f9e5ddc warming → verifying → active and renewal constructors', async () => {
     const renewedLease = '2026-08-23T13:15:00.000Z';
     const fetcher = vi
@@ -670,6 +700,64 @@ describe('CloudLiveTeleportClient', () => {
     ).resolves.toMatchObject({ status: 'revoked' });
   });
 
+  it('requires exact status HTTP codes while accepting the compact 202 cleanup contract', async () => {
+    const activeWith202 = new CloudLiveTeleportClient(
+      async () => Response.json(cloudActiveStatus(), { status: 202 }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(activeWith202.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+      'invalid HTTP success code'
+    );
+
+    for (const status of [201, 206]) {
+      const client = new CloudLiveTeleportClient(
+        async () => Response.json(cloudActiveStatus(), { status }),
+        'https://cloud.agentrelay.test'
+      );
+      await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+        'invalid HTTP success code'
+      );
+    }
+
+    const cleanup = new CloudLiveTeleportClient(
+      async () =>
+        Response.json(
+          {
+            sessionId: 'session-1',
+            generation: 2,
+            prewarmId: 'prewarm-2',
+            status: 'cleanup_pending',
+            retryAfterMs: 250,
+          },
+          { status: 202 }
+        ),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(cleanup.status({ sessionId: 'session-1', generation: 2 })).resolves.toMatchObject({
+      status: 'cleanup_pending',
+      retryAfterMs: 250,
+    });
+
+    const fullCleanup = new CloudLiveTeleportClient(
+      async () =>
+        Response.json({
+          sessionId: 'session-1',
+          generation: 2,
+          prewarmId: 'prewarm-2',
+          status: 'cleanup_pending',
+          retryAfterMs: 250,
+          expiresAt: '2026-08-23T12:45:00.000Z',
+          leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+          rollout: cloudRollout,
+        }),
+      'https://cloud.agentrelay.test'
+    );
+    await expect(fullCleanup.status({ sessionId: 'session-1', generation: 2 })).resolves.toMatchObject({
+      status: 'cleanup_pending',
+      leaseExpiresAt: '2026-08-23T12:45:00.000Z',
+    });
+  });
+
   it('parses the exact active lease deadline and rejects non-canonical timestamps', async () => {
     const fetcher = vi
       .fn()
@@ -695,6 +783,8 @@ describe('CloudLiveTeleportClient', () => {
     ['unknown reason', { ...cloudRollout, reason: 'manual-override' }],
     ['out-of-range percentage', { ...cloudRollout, percentage: 101 }],
     ['inconsistent eligibility', { ...cloudRollout, reason: 'not-targeted', eligible: true }],
+    ['zero-percent admission', { ...cloudRollout, reason: 'percentage', percentage: 0 }],
+    ['100-percent exclusion', { ...cloudRollout, reason: 'not-targeted', percentage: 100, eligible: false }],
     ['unexpected rollout field', { ...cloudRollout, cohort: 'canary' }],
   ])('rejects %s in Cloud status rollout metadata', async (_name, rollout) => {
     const client = new CloudLiveTeleportClient(
@@ -704,6 +794,36 @@ describe('CloudLiveTeleportClient', () => {
 
     await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(/rollout/);
   });
+
+  it.each(['warming', 'ready', 'verifying', 'active'] as const)(
+    'rejects Cloud %s while the rollout is disabled',
+    async (status) => {
+      const expiresAt = '2026-08-23T12:45:00.000Z';
+      const response = {
+        sessionId: 'session-1',
+        generation: 2,
+        prewarmId: 'prewarm-2',
+        status,
+        expiresAt,
+        rollout: {
+          masterEnabled: false,
+          eligible: false,
+          reason: 'disabled',
+          percentage: 25,
+        },
+        ...(status === 'warming' || status === 'verifying' ? { retryAfterMs: 250 } : {}),
+        ...(status === 'active' ? { leaseExpiresAt: expiresAt } : {}),
+      };
+      const client = new CloudLiveTeleportClient(
+        async () => Response.json(response),
+        'https://cloud.agentrelay.test'
+      );
+
+      await expect(client.status({ sessionId: 'session-1', generation: 2 })).rejects.toThrow(
+        'nonterminal state for an ineligible rollout'
+      );
+    }
+  );
 
   it('rejects a cross-session status response even when its rollout and lease are valid', async () => {
     const client = new CloudLiveTeleportClient(

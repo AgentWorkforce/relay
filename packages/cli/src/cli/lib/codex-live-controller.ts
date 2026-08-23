@@ -453,7 +453,8 @@ export class CodexTurnRecordedError extends Error {
 
   constructor(
     readonly status: 'failed' | 'interrupted',
-    message: string
+    message: string,
+    readonly requiresRecoveryAcknowledgment = false
   ) {
     super(message);
     this.name = 'CodexTurnRecordedError';
@@ -612,12 +613,8 @@ export class CodexLiveController {
       }
 
       let recovered:
-        | {
-            clientUserMessageId: string;
-            outcome:
-              | Extract<CodexTurnOutcome, { status: 'completed' }>
-              | { status: 'failed' | 'interrupted'; turnId: string };
-          }
+        | Extract<CodexTurnOutcome, { status: 'completed' }>
+        | { status: 'failed' | 'interrupted'; turnId: string }
         | undefined;
       const inFlight = this.requireState().inFlightTurn;
       if (inFlight) {
@@ -630,12 +627,9 @@ export class CodexLiveController {
           throw new CodexTurnOutcomeUncertainError();
         }
         if (outcome.status === 'completed') {
-          recovered = { clientUserMessageId: inFlight.clientUserMessageId, outcome };
+          recovered = outcome;
         } else if (outcome.status === 'failed' || outcome.status === 'interrupted') {
-          recovered = {
-            clientUserMessageId: inFlight.clientUserMessageId,
-            outcome: { status: outcome.status, turnId: outcome.turnId },
-          };
+          recovered = { status: outcome.status, turnId: outcome.turnId };
         }
       }
 
@@ -646,20 +640,7 @@ export class CodexLiveController {
       state.remote = undefined;
       state.source = undefined;
       state.mountRestore = undefined;
-      if (recovered) {
-        const common = {
-          sessionId: state.sessionId,
-          threadId: state.threadId,
-          generation: state.generation,
-          clientUserMessageId: recovered.clientUserMessageId,
-          turnId: recovered.outcome.turnId,
-        };
-        state.recoveredOutcome =
-          recovered.outcome.status === 'completed'
-            ? { ...common, status: 'completed', result: recovered.outcome.result }
-            : { ...common, status: recovered.outcome.status };
-        state.inFlightTurn = undefined;
-      }
+      if (recovered) this.stageRecoveredOutcome(recovered);
       state.lastError = undefined;
       state.updatedAt = this.timestamp();
       this.persist();
@@ -709,7 +690,8 @@ export class CodexLiveController {
     this.recoveredEvidenceTaken = recovered;
     return new CodexTurnRecordedError(
       recovered.status,
-      `Codex recorded the crash-reconciled turn as ${recovered.status}; it was not replayed.`
+      `Codex recorded the crash-reconciled turn as ${recovered.status}; it was not replayed.`,
+      true
     );
   }
 
@@ -836,7 +818,8 @@ export class CodexLiveController {
         if (outcome?.status === 'failed' || outcome?.status === 'interrupted') {
           throw new CodexTurnRecordedError(
             outcome.status,
-            `Cloud turn ended ${outcome.status}; the recorded terminal turn was not replayed.`
+            `Cloud turn ended ${outcome.status}; the recorded terminal turn was not replayed.`,
+            true
           );
         }
         throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
@@ -848,10 +831,20 @@ export class CodexLiveController {
         this.markOutcomeUncertain('TURN_RECONCILIATION_UNAVAILABLE');
         throw new CodexTurnOutcomeUncertainError(undefined, { cause: reconcileError });
       }
-      if (outcome.status === 'completed') return this.resultFromOutcome(outcome);
+      if (outcome.status === 'completed') {
+        this.persistRecoveredOutcome(outcome, 'LOCAL_TURN_RECONCILED');
+        return this.resultFromOutcome(outcome);
+      }
       if (outcome.status === 'failed' || outcome.status === 'interrupted') {
-        this.clearInFlightTurn(`TURN_${outcome.status.toUpperCase()}`);
-        throw new CodexTurnRecordedError(outcome.status, `Codex turn ended ${outcome.status}.`);
+        this.persistRecoveredOutcome(
+          { status: outcome.status, turnId: outcome.turnId },
+          'LOCAL_TURN_RECONCILED'
+        );
+        throw new CodexTurnRecordedError(
+          outcome.status,
+          `Codex turn ended ${outcome.status}; the recorded terminal turn was not replayed.`,
+          true
+        );
       }
       this.markOutcomeUncertain(`TURN_${outcome.status.toUpperCase()}`);
       throw new CodexTurnOutcomeUncertainError(undefined, { cause: error });
@@ -1097,7 +1090,6 @@ export class CodexLiveController {
         this.markOutcomeUncertain(`TURN_${outcome.status.toUpperCase()}`);
         throw new CodexTurnOutcomeUncertainError();
       }
-      state.inFlightTurn = undefined;
     }
 
     state.generation += 1;
@@ -1108,10 +1100,19 @@ export class CodexLiveController {
     state.mountRestore = undefined;
     state.prewarmId = undefined;
     state.prewarmStatus = undefined;
+    if (outcome?.status === 'completed') {
+      this.stageRecoveredOutcome(outcome);
+    } else if (outcome?.status === 'failed' || outcome?.status === 'interrupted') {
+      this.stageRecoveredOutcome({ status: outcome.status, turnId: outcome.turnId });
+    }
     state.lastError = context;
     state.updatedAt = this.timestamp();
     this.persist();
-    this.schedulePrewarm();
+    if (outcome) {
+      this.recoveredEvidenceTaken = state.recoveredOutcome;
+    } else {
+      this.schedulePrewarm();
+    }
     return outcome;
   }
 
@@ -1332,6 +1333,45 @@ export class CodexLiveController {
 
   private resultFromOutcome(outcome: Extract<CodexTurnOutcome, { status: 'completed' }>): CodexTurnResult {
     return outcome.result;
+  }
+
+  private persistRecoveredOutcome(
+    outcome:
+      | Extract<CodexTurnOutcome, { status: 'completed' }>
+      | { status: 'failed' | 'interrupted'; turnId: string },
+    context: string
+  ): void {
+    const state = this.requireState();
+    this.stageRecoveredOutcome(outcome);
+    state.lastError = context;
+    state.updatedAt = this.timestamp();
+    this.persist();
+    this.recoveredEvidenceTaken = state.recoveredOutcome;
+  }
+
+  /** Move one reconciled in-flight turn into durable evidence in the caller's atomic state write. */
+  private stageRecoveredOutcome(
+    outcome:
+      | Extract<CodexTurnOutcome, { status: 'completed' }>
+      | { status: 'failed' | 'interrupted'; turnId: string }
+  ): void {
+    const state = this.requireState();
+    const inFlight = state.inFlightTurn;
+    if (!inFlight || state.recoveredOutcome) {
+      throw new Error('Codex reconciliation evidence does not match one unique in-flight turn.');
+    }
+    const common = {
+      sessionId: state.sessionId,
+      threadId: state.threadId,
+      generation: state.generation,
+      clientUserMessageId: inFlight.clientUserMessageId,
+      turnId: outcome.turnId,
+    };
+    state.recoveredOutcome =
+      outcome.status === 'completed'
+        ? { ...common, status: 'completed', result: outcome.result }
+        : { ...common, status: outcome.status };
+    state.inFlightTurn = undefined;
   }
 
   private requireTurnLeaseHorizon(leaseExpiresAt: string): void {

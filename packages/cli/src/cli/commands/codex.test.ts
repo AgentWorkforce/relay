@@ -19,6 +19,7 @@ describe('runManagedCodexTurn', () => {
         completed: { method: 'turn/completed', params: { threadId: 'thread-1', turn } },
         reconciled: true as const,
       })),
+      acknowledgeRecoveredOutcome: vi.fn(),
       status: vi.fn(),
     };
     const writeOutput = vi.fn();
@@ -30,6 +31,37 @@ describe('runManagedCodexTurn', () => {
     });
 
     expect(writeOutput).toHaveBeenCalledWith('the recovered answer\n');
+    expect(controller.acknowledgeRecoveredOutcome).toHaveBeenCalledOnce();
+  });
+
+  it('does not acknowledge a live recovered completion until its exact answer is rendered', async () => {
+    const turn = {
+      id: 'turn-reconciled',
+      status: 'completed',
+      itemsView: 'full',
+      items: [{ id: 'answer-1', type: 'agentMessage', text: 'the recovered answer' }],
+    };
+    const renderError = new Error('stdout unavailable');
+    const controller = {
+      runTurn: vi.fn(async () => ({
+        turnId: turn.id,
+        response: { turn },
+        completed: { method: 'turn/completed', params: { threadId: 'thread-1', turn } },
+        reconciled: true as const,
+      })),
+      acknowledgeRecoveredOutcome: vi.fn(),
+    };
+
+    await expect(
+      runManagedCodexTurn(controller as never, 'recover me', {
+        json: false,
+        writeError: vi.fn(),
+        writeOutput: () => {
+          throw renderError;
+        },
+      })
+    ).rejects.toBe(renderError);
+    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
   });
 
   it('does not report a successful command for a recorded failed turn', async () => {
@@ -37,6 +69,7 @@ describe('runManagedCodexTurn', () => {
     const runTurn = vi.fn().mockRejectedValue(terminal);
     const controller = {
       runTurn,
+      acknowledgeRecoveredOutcome: vi.fn(),
       status: vi.fn(() => ({
         phase: 'local' as const,
         threadId: 'thread-1',
@@ -49,6 +82,44 @@ describe('runManagedCodexTurn', () => {
       runManagedCodexTurn(controller as never, 'failed input', { json: false, writeError })
     ).rejects.toBe(terminal);
     expect(writeError).toHaveBeenCalledWith(expect.stringContaining('recorded the turn as failed'));
+    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
+  });
+
+  it.each(['failed', 'interrupted'] as const)(
+    'acknowledges a live reconciled %s terminal only after rendering it',
+    async (status) => {
+      const terminal = new CodexTurnRecordedError(status, `recorded ${status}`, true);
+      const controller = {
+        runTurn: vi.fn().mockRejectedValue(terminal),
+        acknowledgeRecoveredOutcome: vi.fn(),
+      };
+      const writeError = vi.fn();
+
+      await expect(
+        runManagedCodexTurn(controller as never, 'do not replay', { json: false, writeError })
+      ).rejects.toBe(terminal);
+      expect(writeError).toHaveBeenCalledWith(expect.stringContaining(`turn as ${status}`));
+      expect(controller.acknowledgeRecoveredOutcome).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('does not acknowledge a live reconciled terminal when rendering fails', async () => {
+    const terminal = new CodexTurnRecordedError('failed', 'recorded failed', true);
+    const renderError = new Error('stderr unavailable');
+    const controller = {
+      runTurn: vi.fn().mockRejectedValue(terminal),
+      acknowledgeRecoveredOutcome: vi.fn(),
+    };
+
+    await expect(
+      runManagedCodexTurn(controller as never, 'do not replay', {
+        json: false,
+        writeError: () => {
+          throw renderError;
+        },
+      })
+    ).rejects.toBe(renderError);
+    expect(controller.acknowledgeRecoveredOutcome).not.toHaveBeenCalled();
   });
 
   it.each(['failed', 'interrupted'] as const)(

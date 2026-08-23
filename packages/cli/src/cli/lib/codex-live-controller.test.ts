@@ -94,13 +94,17 @@ function turnResult(turnId = 'turn-1'): CodexTurnResult {
   };
 }
 
-function completedOutcome(turnId: string, answer = `answer for ${turnId}`) {
+function completedOutcome(
+  turnId: string,
+  answer = `answer for ${turnId}`,
+  clientUserMessageId = 'client-persisted-1'
+) {
   const turn = {
     id: turnId,
     status: 'completed',
     itemsView: 'full',
     items: [
-      { id: `user-${turnId}`, type: 'userMessage', clientId: 'client-persisted-1', text: 'prompt' },
+      { id: `user-${turnId}`, type: 'userMessage', clientId: clientUserMessageId, text: 'prompt' },
       { id: `answer-${turnId}`, type: 'agentMessage', text: answer },
     ],
   };
@@ -820,42 +824,82 @@ describe('CodexLiveController', () => {
     );
   });
 
-  it('confirms revoke, reconciles a recorded failed turn, and resumes the same thread without replay', async () => {
-    const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
-    const replacement = appServer({
-      turnOutcome: vi.fn(async () => ({ status: 'failed' as const, turnId: 'turn-remote-1' })),
-    });
-    const cloudClient = cloud();
-    const sealed = sealHandle();
-    const { controller } = createController({
-      sessions: [original, replacement],
-      cloud: cloudClient,
-      checkpointAndSeal: async () => sealed,
-    });
-    await controller.initialize();
-    controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
+  it.each(['failed', 'interrupted'] as const)(
+    'durably preserves a live remote %s reconciliation across two crashes without replay',
+    async (status) => {
+      const original = appServer({ runTurn: vi.fn(async () => Promise.reject(new Error('remote died'))) });
+      const replacement = appServer({
+        turnOutcome: vi.fn(async () => ({ status, turnId: `turn-remote-${status}` })),
+      });
+      const cloudClient = cloud();
+      const sealed = sealHandle();
+      const { controller, store } = createController({
+        sessions: [original, replacement],
+        cloud: cloudClient,
+        checkpointAndSeal: async () => sealed,
+      });
+      await controller.initialize();
+      controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
-    await expect(controller.runTurn('do not replay me')).rejects.toThrow('recorded terminal turn');
+      await expect(controller.runTurn('do not replay me')).rejects.toMatchObject({
+        status,
+        requiresRecoveryAcknowledgment: true,
+      });
 
-    expect(cloudClient.revoke).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: 'session-1:1:revoke' })
-    );
-    expect(original.close).toHaveBeenCalled();
-    expect(sealed.resumeLocal).toHaveBeenCalled();
-    expect(replacement.initialize).toHaveBeenCalled();
-    expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
-    expect(replacement.runTurn).not.toHaveBeenCalled();
-    expect(controller.status()).toMatchObject({ generation: 2, phase: 'local', execution: 'local' });
-  });
+      expect(cloudClient.revoke).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotencyKey: 'session-1:1:revoke' })
+      );
+      expect(original.close).toHaveBeenCalled();
+      expect(sealed.resumeLocal).toHaveBeenCalled();
+      expect(replacement.initialize).toHaveBeenCalled();
+      expect(replacement.resumeThread).toHaveBeenCalledWith({ threadId: 'thread-1', cwd: '/repo' });
+      expect(replacement.runTurn).not.toHaveBeenCalled();
+      expect(store.value?.inFlightTurn).toBeUndefined();
+      expect(store.value?.recoveredOutcome).toMatchObject({
+        sessionId: 'session-1',
+        threadId: 'thread-1',
+        generation: 2,
+        clientUserMessageId: 'operation-2',
+        turnId: `turn-remote-${status}`,
+        status,
+      });
+      expect(controller.status()).toMatchObject({ generation: 2, phase: 'local', execution: 'local' });
+
+      const prewarmCallsAfterRecovery = vi.mocked(cloudClient.prewarm).mock.calls.length;
+      const restartedOnce = appServer();
+      const second = createController({ store, cloud: cloudClient, sessions: [restartedOnce] });
+      await second.controller.initialize();
+      expect(restartedOnce.turnOutcome).not.toHaveBeenCalled();
+      expect(restartedOnce.runTurn).not.toHaveBeenCalled();
+      expect(second.controller.takeRecoveredTerminal()).toMatchObject({ status });
+      expect(vi.mocked(cloudClient.prewarm)).toHaveBeenCalledTimes(prewarmCallsAfterRecovery);
+
+      const restartedTwice = appServer();
+      const third = createController({ store, cloud: cloudClient, sessions: [restartedTwice] });
+      await third.controller.initialize();
+      expect(restartedTwice.turnOutcome).not.toHaveBeenCalled();
+      expect(restartedTwice.runTurn).not.toHaveBeenCalled();
+      expect(third.controller.takeRecoveredTerminal()).toMatchObject({ status });
+      third.controller.acknowledgeRecoveredOutcome();
+      expect(store.value?.recoveredOutcome).toBeUndefined();
+      expect(third.controller.takeRecoveredTerminal()).toBeUndefined();
+    }
+  );
 
   it('reconciles a completed remote turn after notification loss without replaying it', async () => {
     const original = appServer({
       runTurn: vi.fn(async () => Promise.reject(new Error('notification lost'))),
     });
     const replacement = appServer({
-      turnOutcome: vi.fn(async () => completedOutcome('turn-remote-1', 'recovered exact answer')),
+      turnOutcome: vi.fn(async () =>
+        completedOutcome('turn-remote-1', 'recovered exact answer', 'operation-2')
+      ),
     });
-    const { controller } = createController({ sessions: [original, replacement] });
+    const cloudClient = cloud();
+    const { controller, store } = createController({
+      sessions: [original, replacement],
+      cloud: cloudClient,
+    });
     await controller.initialize();
     controller.requestTeleport({ requestId: 'request-1', expectedGeneration: 1 });
 
@@ -875,7 +919,44 @@ describe('CodexLiveController', () => {
       },
     });
     expect(replacement.runTurn).not.toHaveBeenCalled();
+    expect(store.value?.inFlightTurn).toBeUndefined();
+    expect(store.value?.recoveredOutcome).toMatchObject({
+      sessionId: 'session-1',
+      threadId: 'thread-1',
+      generation: 2,
+      clientUserMessageId: 'operation-2',
+      turnId: 'turn-remote-1',
+      status: 'completed',
+    });
     expect(controller.status()).toMatchObject({ phase: 'local', generation: 2 });
+
+    const prewarmCallsAfterRecovery = vi.mocked(cloudClient.prewarm).mock.calls.length;
+    const restartedOnce = appServer();
+    const second = createController({ store, cloud: cloudClient, sessions: [restartedOnce] });
+    await second.controller.initialize();
+    expect(restartedOnce.turnOutcome).not.toHaveBeenCalled();
+    expect(restartedOnce.runTurn).not.toHaveBeenCalled();
+    expect(second.controller.takeRecoveredTurn()).toMatchObject({
+      turnId: 'turn-remote-1',
+      response: {
+        turn: {
+          items: expect.arrayContaining([
+            expect.objectContaining({ type: 'agentMessage', text: 'recovered exact answer' }),
+          ]),
+        },
+      },
+    });
+    expect(vi.mocked(cloudClient.prewarm)).toHaveBeenCalledTimes(prewarmCallsAfterRecovery);
+
+    const restartedTwice = appServer();
+    const third = createController({ store, cloud: cloudClient, sessions: [restartedTwice] });
+    await third.controller.initialize();
+    expect(restartedTwice.turnOutcome).not.toHaveBeenCalled();
+    expect(restartedTwice.runTurn).not.toHaveBeenCalled();
+    expect(third.controller.takeRecoveredTurn()).toMatchObject({ turnId: 'turn-remote-1' });
+    third.controller.acknowledgeRecoveredOutcome();
+    expect(store.value?.recoveredOutcome).toBeUndefined();
+    expect(third.controller.takeRecoveredTurn()).toBeUndefined();
   });
 
   it('fails outcome-uncertain when an accepted remote turn cannot be found after fencing', async () => {

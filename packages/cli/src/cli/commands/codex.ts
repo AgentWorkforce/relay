@@ -73,7 +73,7 @@ function agentMessageDelta(notification: CodexNotification): string | undefined 
 }
 
 export async function runManagedCodexTurn(
-  controller: Pick<CodexLiveController, 'runTurn'>,
+  controller: Pick<CodexLiveController, 'runTurn' | 'acknowledgeRecoveredOutcome'>,
   text: string,
   options: {
     json: boolean;
@@ -86,6 +86,11 @@ export async function runManagedCodexTurn(
     result = await controller.runTurn(text);
   } catch (error) {
     if (error instanceof CodexTurnRecordedError) {
+      if (error.requiresRecoveryAcknowledgment) {
+        writeCodexRecordedTerminal(error, options);
+        controller.acknowledgeRecoveredOutcome();
+        throw error;
+      }
       surfaceCodexRecordedTerminal(error, options);
     }
     if (error instanceof CodexTurnOutcomeUncertainError) {
@@ -98,7 +103,10 @@ export async function runManagedCodexTurn(
       { cause: error }
     );
   }
-  if (result.reconciled) writeReconciledTurn(result, options);
+  if (result.reconciled) {
+    writeReconciledTurn(result, options);
+    controller.acknowledgeRecoveredOutcome();
+  }
 }
 
 export function surfaceCodexRecordedTerminal(
@@ -138,7 +146,9 @@ function writeReconciledTurn(
   result: CodexTurnResult,
   options: { json: boolean; writeOutput?: (message: string) => void }
 ): void {
-  if (!options.writeOutput) return;
+  if (!options.writeOutput) {
+    throw new Error('Reconciled Codex completion cannot be acknowledged without an output writer.');
+  }
   if (options.json) {
     options.writeOutput(`${JSON.stringify(result.completed)}\n`);
     return;
