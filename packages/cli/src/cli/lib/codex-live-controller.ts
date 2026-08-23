@@ -576,7 +576,6 @@ export class CodexLiveController {
         workspaceRoot: this.options.workspaceRoot,
         turnActive: false,
         phase: mustFenceCloud || mustRecoverMount ? 'rolling_back' : 'local',
-        pending: undefined,
         lastError: undefined,
         updatedAt: this.timestamp(),
       };
@@ -637,7 +636,14 @@ export class CodexLiveController {
 
       const state = this.requireState();
       state.generation = persisted.generation + (mustFenceCloud || mustRecoverMount ? 1 : 0);
-      state.phase = 'local';
+      if (state.pending) {
+        // A queued teleport is an accepted durable intent, independent from
+        // recovered output delivery. Fencing consumes the old Cloud identity,
+        // so rebind the request in the same write that publishes the new
+        // generation; never silently discard it across a process restart.
+        state.pending = { ...state.pending, expectedGeneration: state.generation };
+      }
+      state.phase = state.pending ? 'teleport_pending' : 'local';
       state.cloudLifecycle = 'none';
       state.remote = undefined;
       state.source = undefined;
@@ -722,7 +728,7 @@ export class CodexLiveController {
       throw error;
     }
     this.recoveredEvidenceTaken = undefined;
-    if (state.phase === 'local') this.schedulePrewarm();
+    if (state.phase === 'local' || state.phase === 'teleport_pending') this.schedulePrewarm();
   }
 
   requestTeleport(request: CodexTeleportRequest): PublicCodexControllerStatus {
@@ -915,7 +921,18 @@ export class CodexLiveController {
         this.persist();
         return;
       }
-      if (!lifecycleIdentityConsumed) return;
+      if (!lifecycleIdentityConsumed) {
+        // A clean operator shutdown is the explicit cancellation boundary for
+        // an otherwise durable queued request. Crash/recovery failures never
+        // pass through this successful close path and therefore retain it.
+        if (state.pending) {
+          state.pending = undefined;
+          state.phase = 'local';
+          state.updatedAt = this.timestamp();
+          this.persist();
+        }
+        return;
+      }
       // A confirmed prewarm-only fence consumes this generation's idempotency
       // identity just as surely as acquire/revoke. Never reinitialize and
       // replay a revoked resource under the same generation.
@@ -1472,7 +1489,6 @@ export class CodexLiveController {
   private markFenced(message: string): void {
     const state = this.requireState();
     state.phase = 'fenced';
-    state.pending = undefined;
     state.lastError = message;
     state.updatedAt = this.timestamp();
     this.persist();

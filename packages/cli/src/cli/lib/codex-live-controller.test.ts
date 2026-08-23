@@ -1331,6 +1331,160 @@ describe('CodexLiveController', () => {
     }
   });
 
+  it.each(
+    (['ready', 'failed', 'in-flight'] as const).flatMap((prewarmState) =>
+      (['completed', 'failed', 'interrupted'] as const).map(
+        (outcomeStatus) => [prewarmState, outcomeStatus] as const
+      )
+    )
+  )(
+    'rebases a queued teleport after a crash with %s prewarm and %s recovery evidence',
+    async (prewarmState, outcomeStatus) => {
+      const directory = fs.mkdtempSync(
+        path.join(os.tmpdir(), `relay-controller-pending-restart-${prewarmState}-${outcomeStatus}-`)
+      );
+      const statePath = path.join(directory, 'state.json');
+      const neverSettledPrewarm = deferred<{
+        sessionId: string;
+        prewarmId: string;
+        generation: number;
+        status: 'ready';
+        expiresAt: string;
+      }>();
+      let prewarmCalls = 0;
+      const prewarm = vi.fn(async (input: Parameters<LiveTeleportCloudClient['prewarm']>[0]) => {
+        prewarmCalls += 1;
+        if (prewarmCalls === 1) {
+          if (prewarmState === 'failed') throw new Error('first prewarm failed ambiguously');
+          if (prewarmState === 'in-flight') return neverSettledPrewarm.promise;
+        }
+        return {
+          sessionId: input.sessionId,
+          prewarmId: `prewarm-${input.generation}`,
+          generation: input.generation,
+          status: 'ready' as const,
+          expiresAt: '2026-08-23T12:30:00.000Z',
+        };
+      });
+      const cloudClient = cloud({ prewarm });
+      const store = fileStore(statePath, persistedLocal({ generation: 1 }));
+      const lostTerminal = deferred<CodexTurnResult>();
+      const outcome =
+        outcomeStatus === 'completed'
+          ? completedOutcome('turn-before-crash', 'durable answer before crash', 'operation-1')
+          : { status: outcomeStatus, turnId: `turn-before-crash-${outcomeStatus}` };
+      const firstSession = appServer({
+        runTurn: vi.fn(() => lostTerminal.promise),
+        turnOutcome: vi.fn(async () => outcome),
+      });
+
+      try {
+        const first = createController({ store, cloud: cloudClient, sessions: [firstSession] });
+        await first.controller.initialize();
+        if (prewarmState === 'ready') {
+          await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+        } else if (prewarmState === 'failed') {
+          await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('failed'));
+        } else {
+          expect(store.value).toMatchObject({ cloudLifecycle: 'prewarm_requested' });
+          expect(store.value?.prewarmStatus).toBeUndefined();
+        }
+
+        const running = first.controller.runTurn('turn before process crash');
+        await vi.waitFor(() => expect(firstSession.runTurn).toHaveBeenCalledTimes(1));
+        first.controller.requestTeleport({ requestId: 'queued-before-crash', expectedGeneration: 1 });
+        lostTerminal.reject(new Error('terminal notification lost before process crash'));
+        if (outcomeStatus === 'completed') {
+          await expect(running).resolves.toMatchObject({ turnId: 'turn-before-crash' });
+        } else {
+          await expect(running).rejects.toMatchObject({
+            status: outcomeStatus,
+            requiresRecoveryAcknowledgment: true,
+          });
+        }
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          generation: 1,
+          phase: 'teleport_pending',
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 1 },
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+
+        // Simulate a new process whose first restart cannot resume the Codex
+        // thread after the old Cloud identity has been fenced.
+        const resumeFailure = appServer({
+          resumeThread: vi.fn(async () => Promise.reject(new Error('resume unavailable'))),
+        });
+        const second = createController({ store, cloud: cloudClient, sessions: [resumeFailure] });
+        await expect(second.controller.initialize()).rejects.toThrow('CODEX_THREAD_RESUME_FAILED_ON_RESTART');
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          generation: 1,
+          phase: 'recovery_failed',
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 1 },
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+        expect(prewarm).toHaveBeenCalledTimes(1);
+        expect(cloudClient.acquire).not.toHaveBeenCalled();
+
+        // A later restart succeeds and atomically moves both the controller and
+        // accepted request onto generation 2. A close failure must not erase it.
+        const closeError = new Error('close unavailable after restart');
+        const closeFailure = appServer({ close: vi.fn(async () => Promise.reject(closeError)) });
+        const third = createController({ store, cloud: cloudClient, sessions: [closeFailure] });
+        await expect(third.controller.initialize()).resolves.toMatchObject({
+          generation: 2,
+          phase: 'teleport_pending',
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 2 },
+        });
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          generation: 2,
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 2 },
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+        expect(prewarm).toHaveBeenCalledTimes(1);
+        expect(cloudClient.acquire).not.toHaveBeenCalled();
+        await expect(third.controller.close()).rejects.toBe(closeError);
+        expect(new FileCodexControllerStateStore(statePath).read()).toMatchObject({
+          phase: 'recovery_failed',
+          generation: 2,
+          pending: { requestId: 'queued-before-crash', expectedGeneration: 2 },
+          recoveredOutcome: { generation: 1, status: outcomeStatus },
+        });
+
+        const finalSession = appServer();
+        const fourth = createController({ store, cloud: cloudClient, sessions: [finalSession] });
+        await expect(fourth.controller.initialize()).resolves.toMatchObject({
+          generation: 2,
+          phase: 'teleport_pending',
+        });
+        expect(prewarm).toHaveBeenCalledTimes(1);
+        expect(cloudClient.acquire).not.toHaveBeenCalled();
+
+        if (outcomeStatus === 'completed') {
+          expect(fourth.controller.takeRecoveredTurn()).toMatchObject({ turnId: 'turn-before-crash' });
+        } else {
+          expect(fourth.controller.takeRecoveredTerminal()).toMatchObject({ status: outcomeStatus });
+        }
+        fourth.controller.acknowledgeRecoveredOutcome();
+        await vi.waitFor(() => expect(store.value?.prewarmStatus).toBe('ready'));
+        expect(prewarm).toHaveBeenCalledTimes(2);
+        expect(prewarm).toHaveBeenLastCalledWith(
+          expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:prewarm' })
+        );
+
+        await expect(fourth.controller.runTurn('first acknowledged Cloud turn')).resolves.toMatchObject({
+          turnId: 'turn-1',
+        });
+        expect(cloudClient.acquire).toHaveBeenCalledTimes(1);
+        expect(cloudClient.acquire).toHaveBeenCalledWith(
+          expect.objectContaining({ generation: 2, idempotencyKey: 'session-1:2:acquire' })
+        );
+        await fourth.controller.close();
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('retains the consumed generation fence if restart crashes after terminal revoke', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-controller-terminal-fence-'));
     const statePath = path.join(directory, 'state.json');
