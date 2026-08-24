@@ -1054,9 +1054,9 @@ async fn admit_agent_registration(
                 }));
             }
 
-            let identity_hash = identity_key
-                .map(hash_identity_key)
-                .context("matching identity reclaim did not retain its work-unit proof")?;
+            let identity_hash = hash_identity_key(
+                identity_key.expect("matching identity proof was established above"),
+            );
 
             // Reclaiming a crashed work unit's identity. We have proved the
             // work-unit key locally against the protected verifier on the
@@ -1112,6 +1112,12 @@ async fn admit_agent_registration(
                     .token,
                 Err(error) => return Err(relay_error_to_anyhow(error)),
             };
+            if token_response.trim().is_empty() {
+                anyhow::bail!(
+                    "audited takeover returned a blank token for agent '{}'",
+                    existing.name
+                );
+            }
             Ok((
                 existing.id,
                 existing.name,
@@ -1790,6 +1796,68 @@ mod tests {
         assert_eq!(session.token, "at_live_legacy_reclaim");
         takeover.assert_hits(1);
         legacy_rotate.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn identity_reclaim_rejects_blank_takeover_tokens() {
+        let _env_guard = clear_relay_env();
+        let identity = "work-unit-42";
+        let identity_hash = hash_identity_key(identity);
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", identity);
+        }
+
+        for token in ["", "   ", "\t\r\n"] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/agents");
+                then.status(409)
+                    .header("content-type", "application/json")
+                    .body(
+                        r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#,
+                    );
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/v1/agents/lead");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .body(format!(
+                        r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                    ));
+            });
+            let takeover = server.mock(|when, then| {
+                when.method(POST).path("/v1/agents/lead/takeover");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .json_body(json!({
+                        "ok": true,
+                        "data": {
+                            "agent_id": "a_existing",
+                            "name": "lead",
+                            "token": token,
+                            "audit_id": "aud_blank"
+                        }
+                    }));
+            });
+
+            let client = AuthClient::new(Some(server.base_url()));
+            let error = client
+                .startup_session_with_options(Some("lead"), true, None)
+                .await
+                .expect_err("blank takeover tokens must fail closed");
+
+            assert!(
+                format!("{error:#}").contains("audited takeover returned a blank token"),
+                "unexpected error for token {token:?}: {error:#}"
+            );
+            takeover.assert_hits(1);
+        }
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+            std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
+        }
     }
 
     #[tokio::test]
