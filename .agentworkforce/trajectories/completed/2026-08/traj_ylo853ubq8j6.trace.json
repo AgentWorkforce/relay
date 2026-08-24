@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "id": "7e19f806-85fe-4d30-8cb4-cf48ab750824",
+  "timestamp": "2026-08-24T15:38:33Z",
+  "trajectory": "traj_ylo853ubq8j6",
+  "files": [
+    {
+      "path": "crates/broker/src/relaycast/auth.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1054,
+              "end_line": 1125,
+              "revision": "7df320c43206d7314dcf8d898d6e87d8f1883a90"
+            },
+            {
+              "start_line": 1798,
+              "end_line": 1865,
+              "revision": "7df320c43206d7314dcf8d898d6e87d8f1883a90"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

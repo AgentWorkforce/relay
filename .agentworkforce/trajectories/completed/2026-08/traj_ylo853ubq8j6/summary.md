@@ -36,5 +36,5 @@ Completed the audited fleet-broker identity reclaim with fail-closed takeover-to
 
 ## Artifacts
 
-**Commits:** 4afdffdb94
-**Files changed:** 5
+**Commits:** 4afdffdb94, 7df320c43
+**Files changed:** 6
