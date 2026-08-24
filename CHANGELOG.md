@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A broker takeover that answers with a blank or whitespace-only agent token now fails closed with a missing-token error instead of caching an unusable credential and reporting a misleading `401 Agent token required` on every later call.
+- Broker startup identity reclaim and agent takeover now fail closed when the engine returns a blank or whitespace-only agent token, instead of caching an unusable credential and reporting a misleading `401 Agent token required` on every later call.
 
 ## [11.8.2] - 2026-08-22
 

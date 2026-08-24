@@ -1102,6 +1102,18 @@ async fn admit_agent_registration(
                     .token,
                 Err(error) => return Err(relay_error_to_anyhow(error)),
             };
+            // Fail closed on a blank credential. A 200 carrying an empty or
+            // whitespace-only token is worse than an error: it is cached as the
+            // session credential, so every later call authenticates as
+            // `Bearer ` and the engine's `401 Agent token required` points at
+            // auth rather than at the reclaim that produced it. Guarding here
+            // rather than at the call covers the rotate fallback too.
+            if token_response.trim().is_empty() {
+                anyhow::bail!(
+                    "identity reclaim for '{}' returned a blank agent token; refusing to cache an unusable credential",
+                    existing.name
+                );
+            }
             Ok((
                 existing.id,
                 existing.name,
@@ -1847,6 +1859,118 @@ mod tests {
             std::env::remove_var("RELAY_API_KEY");
             std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
         }
+    }
+
+    /// Drive the strict-conflict crash-recovery reclaim against an engine
+    /// whose recovery route answers 200 with `token`. Callers hold the env
+    /// guard, since this sets the workspace key and identity proof.
+    async fn identity_reclaim_returning_token(
+        token: serde_json::Value,
+    ) -> anyhow::Result<super::AuthSession> {
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_AGENT_IDENTITY_KEY", "work-unit-42");
+        }
+        let identity_hash = hash_identity_key("work-unit-42");
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"name_taken"}}"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/lead")
+                .header("authorization", "Bearer rk_live_shared");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(format!(
+                    r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
+                ));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/lead/recover");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "agent_id": "a_existing",
+                        "name": "lead",
+                        "token": token,
+                        "audit_id": "aud_blank"
+                    }
+                }));
+        });
+
+        let client = AuthClient::new(Some(server.base_url()));
+        let outcome = client
+            .startup_session_with_options(Some("lead"), true, None)
+            .await;
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+            std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
+        }
+        outcome
+    }
+
+    /// **Must-fire**: without the blank guard the reclaim returns `""` as the
+    /// session credential, and every later call authenticates as `Bearer `
+    /// while the engine's 401 misdirects to auth.
+    #[tokio::test]
+    async fn identity_reclaim_rejects_an_empty_token() {
+        let _env_guard = clear_relay_env();
+        let error = identity_reclaim_returning_token(json!(""))
+            .await
+            .expect_err("an empty reclaim token must not yield a session");
+        assert!(
+            format!("{error:#}").contains("blank agent token"),
+            "expected a blank-token refusal, got: {error:#}"
+        );
+    }
+
+    /// Spaces are the case a bare `is_empty()` check would wave through.
+    #[tokio::test]
+    async fn identity_reclaim_rejects_a_whitespace_only_token() {
+        let _env_guard = clear_relay_env();
+        let error = identity_reclaim_returning_token(json!("   "))
+            .await
+            .expect_err("a whitespace-only reclaim token must not yield a session");
+        assert!(
+            format!("{error:#}").contains("blank agent token"),
+            "expected a blank-token refusal, got: {error:#}"
+        );
+    }
+
+    /// Tabs and newlines survive JSON round trips that collapse spaces, so
+    /// they get their own pin rather than riding on the spaces case.
+    #[tokio::test]
+    async fn identity_reclaim_rejects_a_tab_and_newline_only_token() {
+        let _env_guard = clear_relay_env();
+        let error = identity_reclaim_returning_token(json!("\t\r\n  \n"))
+            .await
+            .expect_err("a tab/newline-only reclaim token must not yield a session");
+        assert!(
+            format!("{error:#}").contains("blank agent token"),
+            "expected a blank-token refusal, got: {error:#}"
+        );
+    }
+
+    /// A `null` token cannot deserialize into the recovery response's
+    /// non-optional `token`, so it fails one layer before the blank guard.
+    /// Pin that it still fails closed rather than degrading to an empty
+    /// credential.
+    #[tokio::test]
+    async fn identity_reclaim_rejects_a_null_token() {
+        let _env_guard = clear_relay_env();
+        assert!(
+            identity_reclaim_returning_token(json!(null)).await.is_err(),
+            "a null reclaim token must not yield a session"
+        );
     }
 
     #[test]
