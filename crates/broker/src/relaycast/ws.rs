@@ -2003,6 +2003,135 @@ mod tests {
         rotate.assert_hits(1);
     }
 
+    /// Drive the create-only 409 -> audited takeover path against an engine
+    /// whose takeover answers 200 with `token`, then register again. Returns
+    /// the first outcome and the number of takeover round trips: a second trip
+    /// proves the unusable token was never seeded into the credential cache.
+    async fn takeover_returning_token(
+        token: serde_json::Value,
+    ) -> (std::result::Result<String, AgentRegistrationError>, usize) {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_already_exists", "message": "exists" }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "offline",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2026-08-16T20:00:00.000Z"
+                }
+            }));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-a/takeover");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "agent_id": "agent_worker_a",
+                    "name": "worker-a",
+                    "token": token,
+                    "audit_id": "aud_blank"
+                }
+            }));
+        });
+
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let outcome = client.register_agent_token("worker-a", Some("codex")).await;
+        let _ = client.register_agent_token("worker-a", Some("codex")).await;
+        (outcome, takeover.hits())
+    }
+
+    /// **Must-fire**: without the `trim().is_empty()` guard the broker seeds
+    /// `response.token` verbatim, so an empty token is worse than an error —
+    /// every later call authenticates as `Bearer ` and the engine's 401 points
+    /// at auth rather than at the takeover that produced it.
+    #[tokio::test]
+    async fn takeover_rejects_an_empty_token() {
+        let (outcome, takeover_hits) = takeover_returning_token(json!("")).await;
+        assert!(
+            matches!(
+                outcome,
+                Err(AgentRegistrationError::MissingToken { ref agent_name })
+                if agent_name == "worker-a"
+            ),
+            "expected MissingToken for an empty takeover token, got {:?}",
+            outcome,
+        );
+        assert_eq!(
+            takeover_hits, 2,
+            "an empty token must not be seeded into the credential cache"
+        );
+    }
+
+    /// Spaces are the case a bare `is_empty()` check would wave through.
+    #[tokio::test]
+    async fn takeover_rejects_a_whitespace_only_token() {
+        let (outcome, takeover_hits) = takeover_returning_token(json!("   ")).await;
+        assert!(
+            matches!(
+                outcome,
+                Err(AgentRegistrationError::MissingToken { ref agent_name })
+                if agent_name == "worker-a"
+            ),
+            "expected MissingToken for a whitespace-only takeover token, got {:?}",
+            outcome,
+        );
+        assert_eq!(
+            takeover_hits, 2,
+            "a whitespace-only token must not be seeded into the credential cache"
+        );
+    }
+
+    /// Tabs and newlines survive JSON round trips that collapse spaces, so
+    /// they get their own pin rather than riding on the spaces case.
+    #[tokio::test]
+    async fn takeover_rejects_a_tab_and_newline_only_token() {
+        let (outcome, takeover_hits) = takeover_returning_token(json!("\t\r\n  \n")).await;
+        assert!(
+            matches!(
+                outcome,
+                Err(AgentRegistrationError::MissingToken { ref agent_name })
+                if agent_name == "worker-a"
+            ),
+            "expected MissingToken for a tab/newline-only takeover token, got {:?}",
+            outcome,
+        );
+        assert_eq!(
+            takeover_hits, 2,
+            "a tab/newline-only token must not be seeded into the credential cache"
+        );
+    }
+
+    /// A `null` token cannot deserialize into the recovery response's
+    /// non-optional `token`, so it fails one layer before the blank guard.
+    /// Pin that it still fails closed instead of degrading into an empty
+    /// credential, and that nothing is cached either.
+    #[tokio::test]
+    async fn takeover_rejects_a_null_token() {
+        let (outcome, takeover_hits) = takeover_returning_token(json!(null)).await;
+        assert!(
+            outcome.is_err(),
+            "a null takeover token must not yield a credential, got {:?}",
+            outcome,
+        );
+        assert_eq!(
+            takeover_hits, 2,
+            "a null token must not be seeded into the credential cache"
+        );
+    }
+
     /// End-to-end must-fire on the actual impersonation entry point: an
     /// impersonating call (e.g. `mark_read_as_agent`) with an empty cache
     /// against a live worker MUST return an error rather than rotate. The

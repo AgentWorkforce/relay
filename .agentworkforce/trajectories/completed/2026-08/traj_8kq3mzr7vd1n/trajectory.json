@@ -1,0 +1,53 @@
+{
+  "id": "traj_8kq3mzr7vd1n",
+  "version": 1,
+  "task": {
+    "title": "Pin blank takeover-token rejection with must-fire regression coverage"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-24T15:16:00.000Z",
+  "completedAt": "2026-08-24T15:54:00.000Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-24T15:16:00.000Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4vd7pmz1qk83",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-24T15:16:00.000Z",
+      "endedAt": "2026-08-24T15:54:00.000Z",
+      "events": [
+        {
+          "ts": 1787584920000,
+          "type": "decision",
+          "content": "Add must-fire coverage for the existing blank-token guard rather than rewrite it: Add must-fire coverage for the existing blank-token guard rather than rewrite it",
+          "raw": {
+            "question": "Add must-fire coverage for the existing blank-token guard rather than rewrite it",
+            "chosen": "Add must-fire coverage for the existing blank-token guard rather than rewrite it",
+            "alternatives": [],
+            "reasoning": "The `response.token.trim().is_empty()` guard in `take_over_agent_identity` already shipped in 11.8.2 via #1596, but `MissingToken` had exactly one reference in the tree — the raise site — so nothing pinned it. Rewriting a correct guard would churn a released path; the real gap was coverage. Each test asserts the takeover mock is hit twice, because the damage a blank token does is not the return value but `seed_agent_token` poisoning the SDK credential cache, after which every later call authenticates as `Bearer ` and the engine's 401 misdirects to auth. Verified must-fire by neutralising the guard: the empty, whitespace and tab/newline cases returned Ok(\"\"), Ok(\"   \") and Ok(\"\\t\\r\\n  \\n\"). The null case is documented as failing one layer earlier, at deserialisation into the non-optional `token` field, so it holds with or without the guard."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Pinned the broker's blank/whitespace takeover-token rejection with four must-fire regression tests covering empty, spaces, tab/newline and null, each asserting the unusable token is never seeded into the credential cache.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38",
+    "endRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38"
+  }
+}
