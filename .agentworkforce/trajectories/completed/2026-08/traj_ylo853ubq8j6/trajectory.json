@@ -1,0 +1,87 @@
+{
+  "id": "traj_ylo853ubq8j6",
+  "version": 1,
+  "task": {
+    "title": "Fix fleet broker restart identity reclaim"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-24T13:52:09.241Z",
+  "completedAt": "2026-08-24T15:38:33Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-24T13:54:02.320Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_sctweucbw15w",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-24T13:54:02.320Z",
+      "endedAt": "2026-08-24T15:38:33Z",
+      "events": [
+        {
+          "ts": 1787579642321,
+          "type": "decision",
+          "content": "Use audited takeover only after the stable work-unit identity hash matches: Use audited takeover only after the stable work-unit identity hash matches",
+          "raw": {
+            "question": "Use audited takeover only after the stable work-unit identity hash matches",
+            "chosen": "Use audited takeover only after the stable work-unit identity hash matches",
+            "alternatives": [],
+            "reasoning": "The recovery endpoint cannot authorize a workspace key; takeover is the explicit audited workspace-admin operation, while the broker keeps its local identity verifier as a fail-closed gate and never transmits the raw proof."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787585913000,
+          "type": "reflection",
+          "content": "The audited takeover response must fail closed when its token is empty or whitespace-only; regression coverage now exercises both shapes, while the existing stable-identity match continues to gate the broker's takeover attempt.",
+          "raw": {
+            "focalPoints": [
+              "blank takeover tokens",
+              "stable identity proof",
+              "restart reclaim",
+              "review closure"
+            ],
+            "adjustments": "Validated the takeover credential before constructing a session, added empty and whitespace-only regression cases, retained the repository's Unreleased - Patch heading, and completed the review trajectory.",
+            "confidence": 0.94
+          },
+          "significance": "high",
+          "tags": [
+            "focal:blank takeover tokens",
+            "focal:stable identity proof",
+            "focal:restart reclaim",
+            "focal:review closure",
+            "confidence:0.94"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Completed the audited fleet-broker identity reclaim with fail-closed takeover-token validation and regression coverage for empty and whitespace-only credentials.",
+    "approach": "Kept the stable work-unit identity comparison as the broker admission gate, used Relaycast's audited workspace-admin takeover for the lost-token restart case, rejected blank returned credentials before session construction, and verified the focused broker tests and repository gates.",
+    "confidence": 0.94
+  },
+  "commits": [
+    "4afdffdb94",
+    "7df320c43"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-08/traj_ylo853ubq8j6.trace.json",
+    ".agentworkforce/trajectories/completed/2026-08/traj_ylo853ubq8j6/summary.md",
+    ".agentworkforce/trajectories/completed/2026-08/traj_ylo853ubq8j6/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/relaycast/auth.rs",
+    "crates/broker/src/terminal_control.rs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38",
+    "endRef": "7df320c43206d7314dcf8d898d6e87d8f1883a90",
+    "traceId": "7e19f806-85fe-4d30-8cb4-cf48ab750824"
+  }
+}
