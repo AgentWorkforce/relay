@@ -2,14 +2,19 @@
   "id": "traj_8kq3mzr7vd1n",
   "version": 1,
   "task": {
-    "title": "Pin blank takeover-token rejection with must-fire regression coverage"
+    "title": "Reject blank takeover and identity-reclaim agent tokens",
+    "source": {
+      "system": "github",
+      "id": "1608",
+      "url": "https://github.com/AgentWorkforce/relay/pull/1608"
+    }
   },
   "status": "completed",
   "startedAt": "2026-08-24T15:16:00.000Z",
-  "completedAt": "2026-08-24T15:54:00.000Z",
+  "completedAt": "2026-08-24T16:04:00.000Z",
   "agents": [
     {
-      "name": "default",
+      "name": "relay-takeover-token",
       "role": "lead",
       "joinedAt": "2026-08-24T15:16:00.000Z"
     }
@@ -17,37 +22,77 @@
   "chapters": [
     {
       "id": "chap_4vd7pmz1qk83",
-      "title": "Work",
-      "agentName": "default",
+      "title": "Initial work",
+      "agentName": "relay-takeover-token",
       "startedAt": "2026-08-24T15:16:00.000Z",
-      "endedAt": "2026-08-24T15:54:00.000Z",
+      "endedAt": "2026-08-24T16:04:00.000Z",
       "events": [
         {
           "ts": 1787584920000,
           "type": "decision",
-          "content": "Add must-fire coverage for the existing blank-token guard rather than rewrite it: Add must-fire coverage for the existing blank-token guard rather than rewrite it",
+          "content": "Pin the shipped relaycast takeover guard with must-fire coverage rather than rewriting it",
           "raw": {
-            "question": "Add must-fire coverage for the existing blank-token guard rather than rewrite it",
-            "chosen": "Add must-fire coverage for the existing blank-token guard rather than rewrite it",
-            "alternatives": [],
-            "reasoning": "The `response.token.trim().is_empty()` guard in `take_over_agent_identity` already shipped in 11.8.2 via #1596, but `MissingToken` had exactly one reference in the tree — the raise site — so nothing pinned it. Rewriting a correct guard would churn a released path; the real gap was coverage. Each test asserts the takeover mock is hit twice, because the damage a blank token does is not the return value but `seed_agent_token` poisoning the SDK credential cache, after which every later call authenticates as `Bearer ` and the engine's 401 misdirects to auth. Verified must-fire by neutralising the guard: the empty, whitespace and tab/newline cases returned Ok(\"\"), Ok(\"   \") and Ok(\"\\t\\r\\n  \\n\"). The null case is documented as failing one layer earlier, at deserialisation into the non-optional `token` field, so it holds with or without the guard."
+            "question": "Rewrite or pin the existing blank-token guard in the relaycast takeover path?",
+            "chosen": "Pin the shipped relaycast takeover guard with must-fire coverage rather than rewriting it",
+            "alternatives": ["Rewrite the guard in take_over_agent_identity"],
+            "reasoning": "The `response.token.trim().is_empty()` guard in `take_over_agent_identity` already shipped in 11.8.2 via #1596, but `MissingToken` had exactly one reference in the tree — the raise site — so nothing pinned it. Rewriting a correct guard would churn a released path; the real gap was coverage. Each test asserts the takeover mock is hit twice, because the damage a blank token does is not the return value but `seed_agent_token` poisoning the SDK credential cache, after which every later call authenticates as `Bearer ` and the engine's 401 misdirects to auth."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1787587200000,
+          "type": "decision",
+          "content": "Guard the resolved token in admit_agent_registration instead of at the recovery call site",
+          "raw": {
+            "question": "Where does the startup identity-reclaim path need the blank-token guard?",
+            "chosen": "Guard the resolved token in admit_agent_registration instead of at the recovery call site",
+            "alternatives": [
+              "Guard only the recover/takeover response",
+              "Guard inside each call site separately"
+            ],
+            "reasoning": "The broker's startup reclaim in `auth.rs` had no blank-token check at all: a 200 from the recovery route was destructured straight into the session credential. The pre-8.2.0 rotate fallback returns a token from a different route into the same binding, so guarding the resolved `token_response` covers both arms with one check, while guarding at the recovery call would leave the fallback open. This is the path PR #1608 converts from `recover` to audited `takeover`, so the guard holds under either engine contract."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787587500000,
+          "type": "reflection",
+          "content": "Verified must-fire by neutralising the guard: the empty, whitespace and tab/newline cases fail without it, while the null case fails one layer earlier at deserialisation and so holds either way. Full broker lib suite is green apart from five pre-existing spawner git-hook failures that reproduce unchanged on the base commit.",
+          "raw": {
+            "focalPoints": [
+              "fail-closed-credentials",
+              "must-fire-coverage",
+              "fallback-parity"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fail-closed-credentials",
+            "focal:must-fire-coverage",
+            "focal:fallback-parity",
+            "confidence:0.9"
+          ]
         }
       ]
     }
   ],
   "retrospective": {
-    "summary": "Pinned the broker's blank/whitespace takeover-token rejection with four must-fire regression tests covering empty, spaces, tab/newline and null, each asserting the unusable token is never seeded into the credential cache.",
-    "approach": "Standard approach",
+    "summary": "Made blank and whitespace-only agent tokens fail closed on both broker credential-reclaim paths: added the missing guard to the startup identity reclaim in `auth.rs` (covering the pre-8.2.0 rotate fallback in the same check) and pinned the already-shipped relaycast takeover guard in `ws.rs`, with must-fire regression tests for the empty, whitespace, tab/newline and null cases on each.",
+    "approach": "Read the shipped guard before changing it, pinned it with coverage verified to fail when the guard is neutralised, then closed the genuinely unguarded startup path at the point where both the recovery response and the legacy rotate fallback converge.",
     "confidence": 0.9
   },
-  "commits": [],
-  "filesChanged": [],
+  "commits": ["b3f354a23", "f362c8900"],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "crates/broker/src/relaycast/auth.rs",
+    "crates/broker/src/relaycast/ws.rs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38",
-    "endRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38"
+    "endRef": "f362c890093689d8e139904962727c7fe1a0060d",
+    "traceId": "b7f1c3e2-5a48-4d9e-9c31-6ea20f8d4b17"
   }
 }

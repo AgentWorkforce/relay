@@ -1,0 +1,64 @@
+{
+  "version": "1.0.0",
+  "id": "b7f1c3e2-5a48-4d9e-9c31-6ea20f8d4b17",
+  "timestamp": "2026-08-24T16:04:00.000Z",
+  "trajectory": "traj_8kq3mzr7vd1n",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 8,
+              "end_line": 12,
+              "revision": "f362c890093689d8e139904962727c7fe1a0060d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/relaycast/auth.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1105,
+              "end_line": 1116,
+              "revision": "f362c890093689d8e139904962727c7fe1a0060d"
+            },
+            {
+              "start_line": 1864,
+              "end_line": 1975,
+              "revision": "f362c890093689d8e139904962727c7fe1a0060d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/relaycast/ws.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 2006,
+              "end_line": 2134,
+              "revision": "b3f354a23"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
