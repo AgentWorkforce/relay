@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet brokers now reclaim their stable agent identity through audited takeover after a restart, preventing nodes from remaining offline when their previous agent token is unavailable.
+- Fleet brokers now reclaim their stable agent identity after a restart instead of remaining offline when their previous agent token is unavailable.
 
 ## [11.8.2] - 2026-08-22
 
