@@ -1221,12 +1221,7 @@ mod tests {
             let _ = ws.send(Message::Text(frame)).await;
             // With the writer aborted the connection tears down; without it the
             // writer keeps the write half alive and this never resolves.
-            loop {
-                match ws.next().await {
-                    Some(Ok(_)) => continue,
-                    Some(Err(_)) | None => break,
-                }
-            }
+            while let Some(Ok(_)) = ws.next().await {}
         });
 
         tokio::time::timeout(Duration::from_secs(10), server)

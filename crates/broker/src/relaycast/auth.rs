@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use relaycast::{
-    CreateAgentRequest, RecoverAgentRequest, RelayCast, RelayCastOptions, RelayError,
+    CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, TakeOverAgentRequest,
     WorkspaceProvenance,
 };
 use reqwest::StatusCode;
@@ -1054,32 +1054,42 @@ async fn admit_agent_registration(
                 }));
             }
 
-            // Reclaiming a crashed work unit's identity. We have just proven
-            // ownership via the work-unit identity key but do not hold the
-            // agent's token — which is precisely the case `recover` exists for
-            // (relaycast 7.0.0). Rotation is self-rollover only and cannot serve
-            // this path: attempting it with the workspace key is what produced
-            // an opaque `401 Agent token required` here.
+            let identity_hash = identity_key
+                .map(hash_identity_key)
+                .context("matching identity reclaim did not retain its work-unit proof")?;
+
+            // Reclaiming a crashed work unit's identity. We have proved the
+            // work-unit key locally against the protected verifier on the
+            // incumbent record, but Relaycast's `/recover` route cannot accept
+            // that proof: it authorizes only a current agent token, the origin
+            // node token, or a server-issued recovery credential. Sending the
+            // workspace key there is rejected with
+            // `agent_recovery_not_authorized` even when the verifier matches.
+            //
+            // A workspace owner replacing an identity whose current token was
+            // lost uses `/takeover`, the explicit audited escape hatch added
+            // alongside create-only registration. The local identity check
+            // above remains the broker's fail-closed admission gate; takeover
+            // is reached only after that proof matches.
             let token_response = relay
-                .recover_agent(
+                .take_over_agent(
                     &existing.name,
-                    RecoverAgentRequest {
+                    TakeOverAgentRequest {
                         expected_agent_id: existing.id.clone(),
-                        recovery_proof: None,
-                        reason: Some(
-                            "work-unit identity key proved ownership after a crash".to_string(),
-                        ),
-                        // Hashed, never raw: the identity key is a replayable
-                        // credential and the surrounding code hashes it before
-                        // anything workspace-readable. An audit record is
-                        // workspace-readable, so it gets the same treatment —
-                        // still correlatable, not replayable.
-                        session_ref: identity_key.map(hash_identity_key),
-                        node_id: None,
+                        actor: format!("broker:{}", existing.name),
+                        reason: "work-unit identity key proved ownership after a crash".to_string(),
+                        // Hashed, never raw: the identity key is replayable and
+                        // the audit record is workspace-readable.
+                        session_ref: identity_hash,
+                        node_id: std::env::var("RELAY_NODE_ID")
+                            .ok()
+                            .map(|value| value.trim().to_string())
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or_else(|| existing.name.clone()),
                     },
                 )
                 .await;
-            // Engines before 8.2.0 have no `/recover` route — the identity
+            // Engines before 8.2.0 have no `/takeover` route — the identity
             // recovery surface arrived with it — and answer "Route not found".
             // Those engines still let the workspace key rotate an agent's
             // token, which is what this path did before, so fall back rather
@@ -1097,7 +1107,7 @@ async fn admit_agent_registration(
                     .await
                     .map_err(relay_error_to_anyhow)
                     .context(
-                        "recover unavailable on this engine and the legacy rotate fallback failed",
+                        "takeover unavailable on this engine and the legacy rotate fallback failed",
                     )?
                     .token,
                 Err(error) => return Err(relay_error_to_anyhow(error)),
@@ -1441,6 +1451,7 @@ mod tests {
             std::env::remove_var("RELAY_WORKSPACES_JSON");
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
             std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
+            std::env::remove_var("RELAY_NODE_ID");
         }
         guard
     }
@@ -1687,10 +1698,11 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(r#"{"ok":true,"data":{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}"#);
         });
-        // Identity reclaim uses `recover`, not rotation (relaycast 7.0.0).
-        let rotate = server.mock(|when, then| {
+        // Identity reclaim would use audited takeover, not rotation. With no
+        // matching proof it must never reach that escape hatch.
+        let takeover = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/lead/recover")
+                .path("/v1/agents/lead/takeover")
                 .header("authorization", "Bearer rk_live_shared");
             then.status(200)
                 .header("content-type", "application/json")
@@ -1715,14 +1727,14 @@ mod tests {
         );
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
-        rotate.assert_hits(0);
+        takeover.assert_hits(0);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
         }
     }
 
-    /// Engines before 8.2.0 have no `/recover`. A node restarting against one
+    /// Engines before 8.2.0 have no `/takeover`. A node restarting against one
     /// must still reclaim its identity via the legacy workspace-key rotate —
     /// this is the exact path the two-node fleet e2e drives, against a pinned
     /// v7.0.0 engine.
@@ -1750,9 +1762,9 @@ mod tests {
                     r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
-        // Older engine: the recovery surface simply is not mounted.
-        let recover = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/lead/recover");
+        // Older engine: the takeover surface simply is not mounted.
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/lead/takeover");
             then.status(404)
                 .header("content-type", "application/json")
                 .body(r#"{"ok":false,"error":{"code":"not_found","message":"Route not found"}}"#);
@@ -1776,7 +1788,7 @@ mod tests {
             .expect("a session was registered");
 
         assert_eq!(session.token, "at_live_legacy_reclaim");
-        recover.assert_hits(1);
+        takeover.assert_hits(1);
         legacy_rotate.assert_hits(1);
     }
 
@@ -1819,11 +1831,18 @@ mod tests {
                     r#"{{"ok":true,"data":{{"id":"a_existing","name":"lead","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
-        // Identity reclaim uses `recover`, not rotation (relaycast 7.0.0).
-        let rotate = server.mock(|when, then| {
+        // Identity reclaim uses audited takeover, not self-rollover.
+        let takeover = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/lead/recover")
-                .header("authorization", "Bearer rk_live_shared");
+                .path("/v1/agents/lead/takeover")
+                .header("authorization", "Bearer rk_live_shared")
+                .json_body(json!({
+                    "expected_agent_id": "a_existing",
+                    "actor": "broker:lead",
+                    "reason": "work-unit identity key proved ownership after a crash",
+                    "session_ref": identity_hash,
+                    "node_id": "lead"
+                }));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(
@@ -1841,7 +1860,7 @@ mod tests {
         assert_eq!(session.credentials.agent_id, "a_existing");
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
-        rotate.assert_hits(1);
+        takeover.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
@@ -1883,6 +1902,7 @@ mod tests {
         let server = MockServer::start();
         unsafe {
             std::env::set_var("RELAY_API_KEY", "rk_live_shared");
+            std::env::set_var("RELAY_NODE_ID", "node_fleet_123");
         }
         let stable_identity = stable_node_identity_key(std::path::Path::new(
             "/tmp/node-a/.agentworkforce/relay/state.json",
@@ -1911,13 +1931,20 @@ mod tests {
                     r#"{{"ok":true,"data":{{"id":"a_existing","name":"node-a","type":"agent","status":"offline","persona":null,"metadata":{{"identity_key":"{identity_hash}"}},"last_seen":"2025-01-01T00:00:00Z","channels":[]}}}}"#
                 ));
         });
-        // Reclaiming a crashed identity goes through `recover`, not rotation:
-        // rotation is self-rollover only and this path holds the work-unit
-        // identity proof rather than the agent's token (relaycast 7.0.0).
-        let rotate = server.mock(|when, then| {
+        // Reclaiming a crashed identity goes through audited takeover, not
+        // self-rollover: this path has the workspace authority plus a locally
+        // verified work-unit proof, but not the agent's current token.
+        let takeover = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/node-a/recover")
-                .header("authorization", "Bearer rk_live_shared");
+                .path("/v1/agents/node-a/takeover")
+                .header("authorization", "Bearer rk_live_shared")
+                .json_body(json!({
+                    "expected_agent_id": "a_existing",
+                    "actor": "broker:node-a",
+                    "reason": "work-unit identity key proved ownership after a crash",
+                    "session_ref": identity_hash,
+                    "node_id": "node_fleet_123"
+                }));
             then.status(200)
                 .header("content-type", "application/json")
                 .body(
@@ -1938,10 +1965,11 @@ mod tests {
         assert_eq!(session.credentials.agent_id, "a_existing");
         conflict.assert_hits(1);
         get_existing.assert_hits(1);
-        rotate.assert_hits(1);
+        takeover.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
+            std::env::remove_var("RELAY_NODE_ID");
         }
     }
 

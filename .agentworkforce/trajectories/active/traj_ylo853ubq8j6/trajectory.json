@@ -1,0 +1,46 @@
+{
+  "id": "traj_ylo853ubq8j6",
+  "version": 1,
+  "task": {
+    "title": "Fix fleet broker restart identity reclaim"
+  },
+  "status": "active",
+  "startedAt": "2026-08-24T13:52:09.241Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-24T13:54:02.320Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_sctweucbw15w",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-24T13:54:02.320Z",
+      "events": [
+        {
+          "ts": 1787579642321,
+          "type": "decision",
+          "content": "Use audited takeover only after the stable work-unit identity hash matches: Use audited takeover only after the stable work-unit identity hash matches",
+          "raw": {
+            "question": "Use audited takeover only after the stable work-unit identity hash matches",
+            "chosen": "Use audited takeover only after the stable work-unit identity hash matches",
+            "alternatives": [],
+            "reasoning": "The recovery endpoint cannot authorize a workspace key; takeover is the explicit audited workspace-admin operation, while the broker keeps its local identity verifier as a fail-closed gate and never transmits the raw proof."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38",
+    "endRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38"
+  }
+}
