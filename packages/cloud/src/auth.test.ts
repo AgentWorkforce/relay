@@ -30,6 +30,7 @@ import {
   clearStoredAuth,
   ensureAuthenticated,
   ensureCloudSession,
+  ensureWorkflowAuthenticated,
   readStoredAuth,
   refreshStoredAuth,
   refreshStoredCloudIdentity,
@@ -230,7 +231,7 @@ describe('ensureAuthenticated', () => {
     vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
     fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
 
-    await expect(ensureAuthenticated('https://explicit.example/cloud')).resolves.toEqual({
+    await expect(ensureWorkflowAuthenticated('https://explicit.example/cloud')).resolves.toEqual({
       authMode: 'api-key',
       apiUrl: 'https://explicit.example/cloud',
       accessToken: 'ci-api-key',
@@ -242,10 +243,29 @@ describe('ensureAuthenticated', () => {
     vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
     fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
 
-    await expect(ensureAuthenticated('not-a-url')).rejects.toMatchObject({
+    await expect(ensureWorkflowAuthenticated('not-a-url')).rejects.toMatchObject({
       code: 'AUTH_ENV_REPROVISION_REQUIRED',
     });
     expect(fsMocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('does not use workflow API-key auth for general Cloud authentication', async () => {
+    vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        ...FILE_AUTH,
+        accessTokenExpiresAt: farFutureIso(),
+      })
+    );
+
+    const result = await ensureAuthenticated('https://default.example/cloud');
+
+    expect(result).toMatchObject({
+      apiUrl: FILE_AUTH.apiUrl,
+      accessToken: FILE_AUTH.accessToken,
+      refreshToken: FILE_AUTH.refreshToken,
+    });
+    expect(result).not.toHaveProperty('authMode');
   });
 
   it('returns stored file auth even when apiUrl differs from defaultApiUrl', async () => {

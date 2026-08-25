@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import type { RunWorkflowResponse } from './types.js';
 
 const s3SendMock = vi.hoisted(() => vi.fn());
-const ensureAuthenticatedMock = vi.hoisted(() => vi.fn());
+const ensureWorkflowAuthenticatedMock = vi.hoisted(() => vi.fn());
 const authorizedApiFetchMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@aws-sdk/client-s3', () => {
@@ -25,7 +25,7 @@ vi.mock('@aws-sdk/client-s3', () => {
 });
 
 vi.mock('./auth.js', () => ({
-  ensureAuthenticated: (...args: unknown[]) => ensureAuthenticatedMock(...args),
+  ensureWorkflowAuthenticated: (...args: unknown[]) => ensureWorkflowAuthenticatedMock(...args),
   authorizedApiFetch: (...args: unknown[]) => authorizedApiFetchMock(...args),
 }));
 
@@ -353,7 +353,7 @@ describe('runWorkflow code sync', () => {
     originalCwd = process.cwd();
     tmpRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cloud-run-workflow-')));
     process.chdir(tmpRoot);
-    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+    ensureWorkflowAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
     s3SendMock.mockResolvedValue({});
   });
 
@@ -620,7 +620,7 @@ describe('workflow schedules', () => {
     originalCwd = process.cwd();
     tmpRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cloud-schedule-workflow-')));
     process.chdir(tmpRoot);
-    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+    ensureWorkflowAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
   });
 
   afterEach(async () => {

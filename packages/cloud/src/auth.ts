@@ -714,12 +714,7 @@ export async function ensureAuthenticated(
     device?: boolean;
     refreshTimeoutMs?: number;
   }
-): Promise<CloudRequestAuth> {
-  if (options?.force !== true) {
-    const apiKeyAuth = readApiKeyAuth(apiUrl);
-    if (apiKeyAuth) return apiKeyAuth;
-  }
-
+): Promise<StoredAuth> {
   const session = await ensureCloudSession({
     apiUrl,
     force: options?.force,
@@ -728,6 +723,17 @@ export async function ensureAuthenticated(
     refreshTimeoutMs: options?.refreshTimeoutMs,
   });
   return session.auth;
+}
+
+/**
+ * Resolve authentication for the workflow control plane only. The API-key
+ * path is intentionally absent from general Cloud login, fleet, workspace,
+ * and integration commands even though Cloud also enforces its narrow scopes.
+ */
+export async function ensureWorkflowAuthenticated(apiUrl: string): Promise<CloudRequestAuth> {
+  const apiKeyAuth = readApiKeyAuth(apiUrl);
+  if (apiKeyAuth) return apiKeyAuth;
+  return ensureAuthenticated(apiUrl);
 }
 
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {

@@ -6,7 +6,7 @@ import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import ignore from 'ignore';
 import * as tar from 'tar';
 
-import { ensureAuthenticated, authorizedApiFetch } from './auth.js';
+import { ensureWorkflowAuthenticated, authorizedApiFetch } from './auth.js';
 import {
   defaultApiUrl,
   type WorkflowFileType,
@@ -240,7 +240,7 @@ export async function runWorkflow(
   options: RunWorkflowOptions = {}
 ): Promise<RunWorkflowResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  let auth = await ensureAuthenticated(apiUrl);
+  let auth = await ensureWorkflowAuthenticated(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
 
   if (input.fileType === 'ts') {
@@ -459,7 +459,7 @@ export async function scheduleWorkflow(
   }
 
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const auth = await ensureWorkflowAuthenticated(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
 
   if (input.fileType === 'ts') {
@@ -518,7 +518,7 @@ export async function scheduleWorkflow(
 
 export async function listWorkflowSchedules(options: { apiUrl?: string } = {}): Promise<WorkflowSchedule[]> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const auth = await ensureWorkflowAuthenticated(apiUrl);
   const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
     headers: { Accept: 'application/json' },
   });
@@ -544,7 +544,7 @@ export async function getRunStatus(
   options: { apiUrl?: string } = {}
 ): Promise<Record<string, unknown>> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const auth = await ensureWorkflowAuthenticated(apiUrl);
   const { response } = await authorizedApiFetch(auth, `/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
     headers: { Accept: 'application/json' },
   });
@@ -566,7 +566,7 @@ export async function cancelWorkflow(
   options: { apiUrl?: string } = {}
 ): Promise<{ runId: string; status: string }> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const auth = await ensureWorkflowAuthenticated(apiUrl);
   const { response } = await authorizedApiFetch(
     auth,
     `/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`,
@@ -597,7 +597,7 @@ export async function getRunLogs(
   } = {}
 ): Promise<WorkflowLogsResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const auth = await ensureWorkflowAuthenticated(apiUrl);
   const searchParams = new URLSearchParams();
   if (typeof options.offset === 'number') {
     searchParams.set('offset', String(options.offset));
@@ -636,7 +636,7 @@ export async function syncWorkflowPatch(
   options: { apiUrl?: string } = {}
 ): Promise<SyncPatchResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  let auth = await ensureAuthenticated(apiUrl);
+  let auth = await ensureWorkflowAuthenticated(apiUrl);
 
   // Verify the run is completed
   const { response: statusResponse, auth: a1 } = await authorizedApiFetch(
