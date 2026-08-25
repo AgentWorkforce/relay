@@ -1,0 +1,53 @@
+{
+  "id": "traj_tj6v5g9rfbce",
+  "version": 1,
+  "task": {
+    "title": "Fix npm publish readiness race for SDK and root package"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-25T18:55:26.569Z",
+  "completedAt": "2026-08-25T19:05:31.356Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-25T19:04:08.269Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_qqcfvjn8u7tc",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-25T19:04:08.269Z",
+      "endedAt": "2026-08-25T19:05:31.356Z",
+      "events": [
+        {
+          "ts": 1787684648270,
+          "type": "decision",
+          "content": "Gate each npm publish job on exact-version metadata and tarball readiness: Gate each npm publish job on exact-version metadata and tarball readiness",
+          "raw": {
+            "question": "Gate each npm publish job on exact-version metadata and tarball readiness",
+            "chosen": "Gate each npm publish job on exact-version metadata and tarball readiness",
+            "alternatives": [],
+            "reasoning": "npm accepted @agent-relay/sdk@11.8.4 at 18:45:52 but did not expose it until 19:01:05; waiting at the producer preserves dependency ordering for every downstream job and a 30-minute bound covers the observed 15-minute processing delay."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Confirmed npm's asynchronous SDK processing exposed a publish-readiness race, gated each npm package job on exact-version metadata and tarball availability with a 30-minute bound, added unit coverage and a Cloud red/green RelayFlow case, and recovered the partial 11.8.4 release by rerunning failed jobs.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "639158c8cb2fd63d5719d3bf21e2dc4cad19f382",
+    "endRef": "639158c8cb2fd63d5719d3bf21e2dc4cad19f382"
+  }
+}
