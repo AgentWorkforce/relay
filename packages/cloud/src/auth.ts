@@ -23,6 +23,8 @@ import {
   REFRESH_WINDOW_MS,
   CloudAuthError,
   defaultApiUrl,
+  type CloudApiKeyAuth,
+  type CloudRequestAuth,
   type CloudSession,
   type CloudSessionOptions,
   type StoredAuth,
@@ -36,13 +38,12 @@ const AUTH_LOCK_STALE_MS = 30_000;
 const AUTH_LOCK_TIMEOUT_MS = 30_000;
 
 const envBackedAuth = new WeakSet<StoredAuth>();
-const API_KEY_NON_REFRESHING_EXPIRY = '9999-12-31T23:59:59.999Z';
 
-function isApiKeyAuth(auth: StoredAuth): boolean {
-  return auth.authMode === 'api-key';
+function isApiKeyAuth(auth: CloudRequestAuth): auth is CloudApiKeyAuth {
+  return 'authMode' in auth && auth.authMode === 'api-key';
 }
 
-function readApiKeyAuth(apiUrl: string, env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
+function readApiKeyAuth(apiUrl: string, env: NodeJS.ProcessEnv = process.env): CloudApiKeyAuth | null {
   const apiKey = env.CLOUD_API_KEY?.trim();
   if (!apiKey) return null;
 
@@ -59,11 +60,6 @@ function readApiKeyAuth(apiUrl: string, env: NodeJS.ProcessEnv = process.env): S
     authMode: 'api-key',
     apiUrl: configuredApiUrl,
     accessToken: apiKey,
-    // StoredAuth predates service credentials and models a refreshable login.
-    // These placeholders keep that internal shape stable; authMode guarantees
-    // neither value is consulted or sent over the network.
-    refreshToken: '',
-    accessTokenExpiresAt: API_KEY_NON_REFRESHING_EXPIRY,
   };
 }
 
@@ -129,7 +125,6 @@ function isValidStoredAuth(value: unknown): value is StoredAuth {
 
   const auth = value as Partial<StoredAuth>;
   return (
-    auth.authMode === undefined &&
     typeof auth.accessToken === 'string' &&
     typeof auth.refreshToken === 'string' &&
     typeof auth.accessTokenExpiresAt === 'string' &&
@@ -719,7 +714,7 @@ export async function ensureAuthenticated(
     device?: boolean;
     refreshTimeoutMs?: number;
   }
-): Promise<StoredAuth> {
+): Promise<CloudRequestAuth> {
   if (options?.force !== true) {
     const apiKeyAuth = readApiKeyAuth(apiUrl);
     if (apiKeyAuth) return apiKeyAuth;
@@ -838,8 +833,8 @@ function apiFetch(
   });
 }
 
-export async function authorizedApiFetch(
-  auth: StoredAuth,
+export async function authorizedApiFetch<T extends CloudRequestAuth>(
+  auth: T,
   requestPath: string,
   init: RequestInit,
   options: {
@@ -853,29 +848,31 @@ export async function authorizedApiFetch(
     device?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {}
-): Promise<{ response: Response; auth: StoredAuth }> {
-  let activeAuth = auth;
+): Promise<{ response: Response; auth: T }> {
+  let activeAuth: CloudRequestAuth = auth;
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
 
   if (response.status !== 401) {
-    return { response, auth: activeAuth };
+    return { response, auth: activeAuth as T };
   }
 
   // API keys are deliberately non-refreshing. Return the Cloud 401 to the
   // caller so unattended automation fails closed instead of attempting token
   // rotation or opening an interactive login flow.
   if (isApiKeyAuth(activeAuth)) {
-    return { response, auth: activeAuth };
+    return { response, auth: activeAuth as T };
   }
 
+  let refreshableAuth: StoredAuth = activeAuth;
   try {
-    activeAuth = await refreshStoredAuth(activeAuth, {
+    refreshableAuth = await refreshStoredAuth(refreshableAuth, {
       force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
     });
+    activeAuth = refreshableAuth;
   } catch (error) {
-    if (isEnvBackedAuth(activeAuth)) {
+    if (isEnvBackedAuth(refreshableAuth)) {
       throw toEnvAuthRefreshError(error);
     }
 
@@ -902,5 +899,5 @@ export async function authorizedApiFetch(
   }
 
   response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
-  return { response, auth: activeAuth };
+  return { response, auth: activeAuth as T };
 }

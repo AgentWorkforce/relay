@@ -2,13 +2,20 @@ import os from 'node:os';
 import path from 'node:path';
 
 export type StoredAuth = {
-  authMode?: 'api-key';
   accessToken: string;
   refreshToken: string;
   accessTokenExpiresAt: string;
   refreshTokenExpiresAt?: string;
   apiUrl: string;
 };
+
+export type CloudApiKeyAuth = {
+  authMode: 'api-key';
+  accessToken: string;
+  apiUrl: string;
+};
+
+export type CloudRequestAuth = StoredAuth | CloudApiKeyAuth;
 
 export type CloudAuthErrorCode =
   | 'AUTH_REFRESH_TIMEOUT'

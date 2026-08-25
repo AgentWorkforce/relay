@@ -36,7 +36,13 @@ import {
   toCloudIdentity,
   writeStoredAuth,
 } from './auth.js';
-import { AUTH_FILE_PATH, CloudAuthError, type StoredAuth, type WhoAmIResponse } from './types.js';
+import {
+  AUTH_FILE_PATH,
+  CloudAuthError,
+  type CloudApiKeyAuth,
+  type StoredAuth,
+  type WhoAmIResponse,
+} from './types.js';
 
 const AUTH_LOCK_PATH = `${AUTH_FILE_PATH}.lock`;
 
@@ -228,8 +234,6 @@ describe('ensureAuthenticated', () => {
       authMode: 'api-key',
       apiUrl: 'https://ci.example/cloud',
       accessToken: 'ci-api-key',
-      refreshToken: '',
-      accessTokenExpiresAt: '9999-12-31T23:59:59.999Z',
     });
     expect(fsMocks.readFile).not.toHaveBeenCalled();
   });
@@ -866,12 +870,10 @@ describe('authorizedApiFetch re-login', () => {
     const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
     vi.stubGlobal('fetch', fetchSpy);
 
-    const auth: StoredAuth = {
+    const auth: CloudApiKeyAuth = {
       authMode: 'api-key',
       apiUrl: 'https://api.example.test',
       accessToken: 'ci-api-key',
-      refreshToken: '',
-      accessTokenExpiresAt: '9999-12-31T23:59:59.999Z',
     };
     const result = await authorizedApiFetch(auth, '/api/v1/workflows/run', { method: 'POST' });
 
