@@ -109,9 +109,10 @@ jobs:
           if-no-files-found: warn
 
       - name: Finish required status on PR head
-        # A replacement run has already published pending on this same status
-        # context. A cancelled predecessor must not overwrite that newer state.
-        if: always() && !cancelled() && steps.status.outputs.head_sha != ''
+        # report-status verifies that this run still owns the latest pending
+        # context before publishing. That makes cancellation terminal without
+        # allowing a cancelled predecessor to overwrite a replacement run.
+        if: always() && steps.status.outputs.head_sha != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-

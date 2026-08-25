@@ -43,7 +43,7 @@ function validateRepository(value) {
   return value;
 }
 
-async function resolvePullRequest({ payload, repository, apiUrl, token, fetchImpl }) {
+export async function resolvePullRequest({ payload, repository, apiUrl, token, fetchImpl }) {
   let pullRequest = payload.pull_request ?? null;
   const manualNumber = Number(payload.inputs?.pr_number);
   if (!pullRequest && Number.isInteger(manualNumber) && manualNumber > 0) {
@@ -56,14 +56,8 @@ async function resolvePullRequest({ payload, repository, apiUrl, token, fetchImp
   }
   const number = Number(pullRequest?.number);
   const headSha = pullRequest?.head?.sha;
-  const headRepository = pullRequest?.head?.repo?.full_name;
   if (!Number.isInteger(number) || number < 1 || !SHA_RE.test(headSha ?? '')) {
     throw new Error('The event does not identify a pull request with an exact head SHA');
-  }
-  if (headRepository !== repository) {
-    throw new Error(
-      `Fork pull request ${headRepository ?? 'unknown'} cannot receive the credential-bearing proof status`
-    );
   }
   return { number, headSha };
 }
@@ -100,6 +94,39 @@ export async function publishCommitStatus({ sha, state, description, env = proce
   );
 }
 
+export async function publishOwnedCommitStatus({
+  sha,
+  state,
+  description,
+  env = process.env,
+  fetchImpl = fetch,
+}) {
+  const repository = validateRepository(env.GITHUB_REPOSITORY?.trim());
+  const token = env.GITHUB_TOKEN?.trim();
+  const apiUrl = (env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '');
+  const ownerTargetUrl = targetUrl(env);
+  if (!token || !ownerTargetUrl) {
+    throw new Error('GITHUB_TOKEN, GITHUB_SERVER_URL, and GITHUB_RUN_ID are required to finish status');
+  }
+  if (!SHA_RE.test(sha ?? '')) throw new Error('PR proof status SHA must be a full lowercase SHA');
+
+  const combined = await githubJson(
+    `${apiUrl}/repos/${repository}/commits/${sha}/status`,
+    token,
+    {},
+    fetchImpl
+  );
+  const latest = Array.isArray(combined?.statuses)
+    ? combined.statuses.find((status) => status?.context === CONTEXT)
+    : null;
+  if (latest?.state !== 'pending' || latest?.target_url !== ownerTargetUrl) {
+    return { published: false, ownerTargetUrl, latest };
+  }
+
+  await publishCommitStatus({ sha, state, description, env, fetchImpl });
+  return { published: true, ownerTargetUrl, latest };
+}
+
 function conclusionState(jobStatus) {
   if (jobStatus === 'success') return 'success';
   if (jobStatus === 'failure') return 'failure';
@@ -134,7 +161,7 @@ export async function main() {
     const sha = option('--sha');
     const jobStatus = option('--job-status');
     const state = conclusionState(jobStatus);
-    await publishCommitStatus({
+    const result = await publishOwnedCommitStatus({
       sha,
       state,
       description:
@@ -144,7 +171,11 @@ export async function main() {
             ? 'Declared Cloud red/green proof failed'
             : `Cloud red/green proof ended with ${jobStatus ?? 'unknown'} status`,
     });
-    console.log(`PR_PROOF_STATUS_FINAL head=${sha} state=${state}`);
+    console.log(
+      result.published
+        ? `PR_PROOF_STATUS_FINAL head=${sha} state=${state}`
+        : `PR_PROOF_STATUS_FINAL_SKIPPED head=${sha} reason=status-owned-by-newer-run`
+    );
     return;
   }
 

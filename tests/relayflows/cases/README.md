@@ -106,7 +106,9 @@ the runner's git index because Cloud code sync uploads git-known paths. It does
 not commit or push the generated file.
 
 Fork PRs do not receive Cloud credentials. A maintainer must reproduce the
-change and its case on a same-repository branch before merge.
+change and its case on a same-repository branch before merge. Non-functional
+fork PRs can still complete the stable status without entering a
+credential-bearing step.
 
 ## Enabling the required check
 
@@ -132,6 +134,14 @@ the exact PR head SHA. Require that context—not the dispatcher job name—on
 `main` branch protection.
 
 GitHub loads `pull_request_target` workflow code from the default branch. Merge
-this infrastructure PR before running the live canary on a subsequent feature
-or bug-fix PR. Require the status context only after that canary proves the
-credential, Cloud handoff, and red/green case end to end.
+this infrastructure PR and publish the resulting Agent Relay package before
+running the live canary on a subsequent feature or bug-fix PR. The published
+CLI emits an opt-in prepared-run marker so the dispatcher can cancel remote
+work even if submission is interrupted before its final JSON response. Require
+the status context only after that canary proves the credential, Cloud handoff,
+submission cancellation, and red/green case end to end.
+
+The final status step also runs during cancellation. Before it publishes a
+terminal state, it verifies that its own Actions run still owns the latest
+pending `RelayFlow PR proof` context; a cancelled predecessor cannot overwrite
+a replacement run.

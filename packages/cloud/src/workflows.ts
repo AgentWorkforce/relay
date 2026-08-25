@@ -58,6 +58,8 @@ type RunWorkflowOptions = {
   previousRunId?: string;
 };
 
+const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
+
 const CODE_SYNC_EXCLUDES = [
   '.git',
   'node_modules',
@@ -289,6 +291,13 @@ export async function runWorkflow(
     }
 
     const prepared = prepPayload;
+    // Trusted automation can opt into this machine-readable progress record
+    // before code upload and final submission. It lets a supervising process
+    // cancel the prepared run if the CLI is interrupted after the launch POST
+    // has completed but before the final JSON response is observed.
+    if (process.env.AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID === '1') {
+      console.error(`${PREPARED_RUN_ID_MARKER}${prepared.runId}`);
+    }
     console.error(`  Prepared in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
     let s3Client: S3Client | null = null;

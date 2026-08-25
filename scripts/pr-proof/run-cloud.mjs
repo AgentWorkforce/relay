@@ -19,14 +19,21 @@ const CLOUD_AUTH_KEYS = [
 ];
 const CREDENTIAL_WINDOW_BUFFER_MS = 15 * 60_000;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
+const MAX_LIVE_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
+const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
+const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 function run(command, args, options = {}) {
   return runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
     maxCaptureBytes: MAX_CAPTURE_BYTES,
+    maxLiveOutputBytes: MAX_LIVE_OUTPUT_BYTES,
     timeoutMs: options.timeoutMs,
+    signal: options.signal,
+    onStdout: options.onStdout,
+    onStderr: options.onStderr,
   });
 }
 
@@ -61,6 +68,18 @@ function requiredCredential(env, name) {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+export function preparedRunIdFromOutput(output) {
+  for (const line of output.split(/\r?\n/)) {
+    if (!line.startsWith(PREPARED_RUN_ID_MARKER)) continue;
+    const candidate = line.slice(PREPARED_RUN_ID_MARKER.length).trim();
+    if (!RUN_ID_RE.test(candidate)) {
+      throw new Error('Cloud prepare progress contained an invalid run ID');
+    }
+    return candidate;
+  }
+  return null;
 }
 
 export function validateCredentialWindow(env, timeoutMs, now = Date.now()) {
@@ -147,6 +166,33 @@ export async function main() {
   let terminal = false;
   let cancelPromise = null;
   let shuttingDown = false;
+  let activeCommandController = null;
+  let launchProgress = '';
+  let launchProgressError = null;
+
+  const noteLaunchProgress = (text) => {
+    launchProgress = `${launchProgress}${text}`.slice(-8_192);
+    try {
+      const preparedRunId = preparedRunIdFromOutput(launchProgress);
+      if (!preparedRunId) return;
+      if (runId && runId !== preparedRunId) {
+        throw new Error(`Cloud prepare/run ID mismatch: ${runId} != ${preparedRunId}`);
+      }
+      runId = preparedRunId;
+    } catch (error) {
+      launchProgressError ??= error;
+    }
+  };
+
+  const runTracked = async (command, args, options = {}) => {
+    const controller = new AbortController();
+    activeCommandController = controller;
+    try {
+      return await run(command, args, { ...options, signal: controller.signal });
+    } finally {
+      if (activeCommandController === controller) activeCommandController = null;
+    }
+  };
 
   const cancelRemote = async (reason) => {
     if (!runId || terminal) return;
@@ -167,6 +213,7 @@ export async function main() {
   const signalHandler = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    activeCommandController?.abort();
     void (async () => {
       await cancelRemote(signal).catch((error) => console.warn(error.message));
       await rm(auth.temporaryHome, { recursive: true, force: true });
@@ -177,14 +224,21 @@ export async function main() {
   process.once('SIGTERM', signalHandler);
 
   try {
-    const launch = await run(cli, ['cloud', 'run', workflowPath, '--sync-code', '--json'], {
-      env: auth.cliEnv,
+    const launch = await runTracked(cli, ['cloud', 'run', workflowPath, '--sync-code', '--json'], {
+      env: {
+        ...auth.cliEnv,
+        AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID: '1',
+      },
       quiet: true,
       timeoutMs: commandTimeoutMs,
+      onStderr: noteLaunchProgress,
     });
+    if (launchProgressError) throw launchProgressError;
+    if (launch.aborted) throw new Error('Cloud workflow submission was interrupted');
     if (launch.timedOut) {
+      await cancelRemote('submission command timed out');
       throw new Error(
-        'Cloud workflow submission command timed out; it is not retried because submission may have completed'
+        'Cloud workflow submission command timed out and its prepared run was cancelled; it is not retried'
       );
     }
     if (launch.exitCode !== 0) {
@@ -192,8 +246,14 @@ export async function main() {
       throw new Error(`Cloud workflow submission failed with exit ${launch.exitCode}`);
     }
     const launchPayload = parseJsonOutput(launch.stdout, 'Cloud run');
-    runId = launchPayload.runId;
-    if (typeof runId !== 'string' || !runId) throw new Error('Cloud run response did not contain runId');
+    const launchedRunId = launchPayload.runId;
+    if (typeof launchedRunId !== 'string' || !RUN_ID_RE.test(launchedRunId)) {
+      throw new Error('Cloud run response did not contain a valid runId');
+    }
+    if (runId && runId !== launchedRunId) {
+      throw new Error(`Cloud prepare/run ID mismatch: ${runId} != ${launchedRunId}`);
+    }
+    runId = launchedRunId;
     console.log(`Cloud RelayFlow run: ${runId}`);
     if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `run_id=${runId}\n`);
 
@@ -201,7 +261,7 @@ export async function main() {
     let terminalStatus = null;
     while (Date.now() < deadline) {
       await delay(pollMs);
-      const statusResult = await run(cli, ['cloud', 'status', runId, '--json'], {
+      const statusResult = await runTracked(cli, ['cloud', 'status', runId, '--json'], {
         env: auth.cliEnv,
         quiet: true,
         timeoutMs: commandTimeoutMs,
@@ -228,7 +288,7 @@ export async function main() {
     }
 
     await mkdir(path.dirname(logsPath), { recursive: true });
-    const logs = await run(cli, ['cloud', 'logs', runId], {
+    const logs = await runTracked(cli, ['cloud', 'logs', runId], {
       env: auth.cliEnv,
       quiet: true,
       timeoutMs: commandTimeoutMs,
@@ -250,6 +310,7 @@ export async function main() {
       );
     }
   } finally {
+    activeCommandController?.abort();
     process.removeListener('SIGINT', signalHandler);
     process.removeListener('SIGTERM', signalHandler);
     if (runId && !terminal)

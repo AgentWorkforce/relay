@@ -25,7 +25,11 @@ import {
   validateCloudEvidenceEnvironment,
 } from '../../scripts/pr-proof/cloud-storage.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { publishCommitStatus } from '../../scripts/pr-proof/report-status.mjs';
+import {
+  publishCommitStatus,
+  publishOwnedCommitStatus,
+  resolvePullRequest,
+} from '../../scripts/pr-proof/report-status.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -33,6 +37,7 @@ import {
   assertCredentialDidNotRotate,
   boundedDuration,
   createCliAuthEnvironment,
+  preparedRunIdFromOutput,
   validateCredentialWindow,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -305,6 +310,47 @@ describe('Cloud evidence handoff', () => {
     await expect(downloadCloudEvidence(input(), 'head', { env, fetchImpl })).resolves.toEqual(record);
   });
 
+  it('accepts the Cloud worker run-id alias and rejects conflicting runtime provenance', async () => {
+    let requestUrl = '';
+    const fetchImpl = async (url: string | URL | Request) => {
+      requestUrl = String(url);
+      return Response.json({ ok: true });
+    };
+    const workerEnv = {
+      CLOUD_API_URL: env.CLOUD_API_URL,
+      CLOUD_API_ACCESS_TOKEN: env.CLOUD_API_ACCESS_TOKEN,
+      AGENT_RELAY_CLOUD_WORKER_RUN_ID: env.RUN_ID,
+    };
+    await uploadCloudEvidence(input(), 'base', evidence('base', 'sandbox-base'), {
+      env: workerEnv,
+      fetchImpl,
+    });
+    expect(requestUrl).toContain('/workflows/runs/run-123/storage/');
+    expect(() =>
+      validateCloudEvidenceEnvironment(input(), 'base', {
+        ...workerEnv,
+        RUN_ID: 'different-run',
+      })
+    ).toThrow(/conflicting workflow run IDs/);
+  });
+
+  it('rejects malformed request deadlines instead of disabling or collapsing the timeout', async () => {
+    await expect(
+      downloadCloudEvidence(input(), 'base', {
+        env,
+        requestTimeoutMs: Number.NaN,
+        fetchImpl: async () => Response.json({}),
+      })
+    ).rejects.toThrow(/positive finite/);
+    await expect(
+      downloadCloudEvidence(input(), 'base', {
+        env,
+        requestTimeoutMs: 0.5,
+        fetchImpl: async () => Response.json({}),
+      })
+    ).rejects.toThrow(/at least one millisecond/);
+  });
+
   it('rejects incomplete Cloud evidence configuration before proof execution', () => {
     expect(() =>
       validateCloudEvidenceEnvironment(input(), 'base', {
@@ -340,6 +386,17 @@ describe('Cloud dispatcher credential lifecycle', () => {
     expect(boundedDuration(undefined, options)).toBe(15_000);
     expect(() => boundedDuration('not-a-number', options)).toThrow(/between 100 and 60000/);
     expect(() => boundedDuration('60001', options)).toThrow(/between 100 and 60000/);
+  });
+
+  it('captures the prepared run before the final Cloud submission response', () => {
+    expect(
+      preparedRunIdFromOutput(
+        `Preparing run...\nAGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-prepared-123\nUploading...\n`
+      )
+    ).toBe('run-prepared-123');
+    expect(() => preparedRunIdFromOutput('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=invalid run\n')).toThrow(
+      /invalid run ID/
+    );
   });
 
   it('shares an owner-only temporary auth file across CLI subprocesses and detects rotation', async () => {
@@ -393,6 +450,34 @@ describe('process timeout contract', () => {
     expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
+  it('force-kills same-group descendants even when they do not inherit output pipes', async () => {
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' });",
+      "process.stdout.write(String(child.pid) + '\\n');",
+      "process.on('SIGTERM', () => process.exit(0));",
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const result = await runProcess(process.execPath, ['-e', script], {
+      echo: false,
+      timeoutMs: 100,
+      terminationGraceMs: 100,
+    });
+    const descendantPid = Number(result.stdout.trim());
+    expect(result.timedOut).toBe(true);
+    expect(descendantPid).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    let alive = true;
+    try {
+      process.kill(descendantPid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') alive = false;
+      else throw error;
+    }
+    if (alive) process.kill(descendantPid, 'SIGKILL');
+    expect(alive).toBe(false);
+  });
+
   it('preserves UTF-8 characters split across output chunks', async () => {
     const script = [
       'process.stdout.write(Buffer.from([0xe2]));',
@@ -401,9 +486,52 @@ describe('process timeout contract', () => {
     const result = await runProcess(process.execPath, ['-e', script], { echo: false });
     expect(result.stdout).toBe('€');
   });
+
+  it('caps captured and live output by UTF-8 bytes', async () => {
+    const captured = await runProcess(process.execPath, ['-e', "process.stdout.write('€'.repeat(10))"], {
+      echo: false,
+      maxCaptureBytes: 5,
+    });
+    expect(Buffer.byteLength(captured.stdout, 'utf8')).toBeLessThanOrEqual(5);
+    expect(captured.stdout).not.toContain('�');
+
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await runProcess(process.execPath, ['-e', "process.stdout.write('abcdef')"], {
+        maxLiveOutputBytes: 4,
+      });
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(writes.join('')).toContain('abcd');
+    expect(writes.join('')).not.toContain('abcdef');
+    expect(writes.join('')).toContain('live output truncated');
+  });
+
+  it('rejects malformed process bounds before spawning', async () => {
+    await expect(
+      runProcess(process.execPath, ['-e', 'process.exit(0)'], { timeoutMs: Number.NaN })
+    ).rejects.toThrow(/timeoutMs must be an integer/);
+    await expect(
+      runProcess(process.execPath, ['-e', 'process.exit(0)'], { terminationGraceMs: -1 })
+    ).rejects.toThrow(/terminationGraceMs must be an integer/);
+  });
 });
 
 describe('required head status', () => {
+  const statusEnv = {
+    GITHUB_REPOSITORY: 'AgentWorkforce/relay',
+    GITHUB_TOKEN: 'github-token',
+    GITHUB_API_URL: 'https://api.github.test',
+    GITHUB_SERVER_URL: 'https://github.test',
+    GITHUB_RUN_ID: '12345',
+  };
+
   it('publishes the stable proof context on the exact head SHA', async () => {
     let requestUrl = '';
     let requestBody: Record<string, string> = {};
@@ -416,15 +544,83 @@ describe('required head status', () => {
       sha: HEAD_SHA,
       state: 'success',
       description: 'proof passed',
-      env: {
-        GITHUB_REPOSITORY: 'AgentWorkforce/relay',
-        GITHUB_TOKEN: 'github-token',
-        GITHUB_API_URL: 'https://api.github.test',
-      },
+      env: statusEnv,
       fetchImpl,
     });
     expect(requestUrl).toBe(`https://api.github.test/repos/AgentWorkforce/relay/statuses/${HEAD_SHA}`);
     expect(requestBody).toMatchObject({ context: 'RelayFlow PR proof', state: 'success' });
+  });
+
+  it('publishes status for a fork head while leaving credential rejection to preparation', async () => {
+    await expect(
+      resolvePullRequest({
+        payload: {
+          pull_request: {
+            number: 1612,
+            head: { sha: HEAD_SHA, repo: { full_name: 'outside/fork' } },
+          },
+        },
+        repository: 'AgentWorkforce/relay',
+        apiUrl: 'https://api.github.test',
+        token: 'github-token',
+        fetchImpl: async () => Response.json({}),
+      })
+    ).resolves.toEqual({ number: 1612, headSha: HEAD_SHA });
+  });
+
+  it('finalizes only the pending status owned by the current workflow run', async () => {
+    const requests: Array<{ url: string; method: string; body?: Record<string, string> }> = [];
+    const ownerTargetUrl = 'https://github.test/AgentWorkforce/relay/actions/runs/12345';
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({
+        url: String(url),
+        method: init?.method ?? 'GET',
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (!init?.method) {
+        return Response.json({
+          statuses: [{ context: 'RelayFlow PR proof', state: 'pending', target_url: ownerTargetUrl }],
+        });
+      }
+      return Response.json({ id: 2 });
+    };
+    await expect(
+      publishOwnedCommitStatus({
+        sha: HEAD_SHA,
+        state: 'error',
+        description: 'cancelled',
+        env: statusEnv,
+        fetchImpl,
+      })
+    ).resolves.toMatchObject({ published: true });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.body).toMatchObject({ state: 'error' });
+  });
+
+  it('does not let a cancelled predecessor overwrite a newer run', async () => {
+    let requests = 0;
+    const fetchImpl = async () => {
+      requests += 1;
+      return Response.json({
+        statuses: [
+          {
+            context: 'RelayFlow PR proof',
+            state: 'pending',
+            target_url: 'https://github.test/AgentWorkforce/relay/actions/runs/newer',
+          },
+        ],
+      });
+    };
+    await expect(
+      publishOwnedCommitStatus({
+        sha: HEAD_SHA,
+        state: 'error',
+        description: 'cancelled',
+        env: statusEnv,
+        fetchImpl,
+      })
+    ).resolves.toMatchObject({ published: false });
+    expect(requests).toBe(1);
   });
 });
 
@@ -467,7 +663,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('statuses: write');
     expect(source).toContain('report-status.mjs start');
     expect(source).toContain('report-status.mjs finish');
-    expect(source).toContain('always() && !cancelled()');
+    expect(source).toContain("if: always() && steps.status.outputs.head_sha != ''");
+    expect(source).not.toContain('always() && !cancelled()');
     expect(source).toContain('--expected-head-sha "${{ steps.status.outputs.head_sha }}"');
     expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
     expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
@@ -496,8 +693,20 @@ describe('trusted dispatcher source contract', () => {
   it('shares refreshes only inside the job and cancels remote work on termination', async () => {
     const source = await readFile('scripts/pr-proof/run-cloud.mjs', 'utf8');
     expect(source).toContain("process.once('SIGTERM', signalHandler)");
+    expect(source).toContain('activeCommandController?.abort()');
+    expect(source).toContain('AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID');
     expect(source).toContain("['cloud', 'cancel', runId, '--json']");
     expect(source).toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).toContain('assertCredentialDidNotRotate');
+  });
+
+  it('emits the prepared Cloud run id before upload and final submission', async () => {
+    const source = await readFile('packages/cloud/src/workflows.ts', 'utf8');
+    const marker = source.indexOf("if (process.env.AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID === '1')");
+    const upload = source.indexOf('Creating tarball...');
+    const launch = source.indexOf('Launching workflow...');
+    expect(marker).toBeGreaterThan(0);
+    expect(marker).toBeLessThan(upload);
+    expect(marker).toBeLessThan(launch);
   });
 });
