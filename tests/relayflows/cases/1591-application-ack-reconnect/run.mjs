@@ -1,13 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  appendFileSync,
-  cpSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -40,7 +32,8 @@ const checkout = join(scratch, 'target');
 try {
   cpSync(targetDir, checkout, {
     recursive: true,
-    filter: (source) => !source.includes(`${join(targetDir, '.git')}`) && !source.includes(`${join(targetDir, 'target')}`),
+    filter: (source) =>
+      !source.includes(`${join(targetDir, '.git')}`) && !source.includes(`${join(targetDir, 'target')}`),
   });
 
   const sourcePath = join(checkout, 'crates/broker/src/node_control.rs');
@@ -49,10 +42,7 @@ try {
   if (!source.includes(cadence)) fail('base/head-common inventory refresh constant was not found');
   writeFileSync(
     sourcePath,
-    source.replace(
-      cadence,
-      'const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_millis(100);',
-    ),
+    source.replace(cadence, 'const INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_millis(100);')
   );
   appendFileSync(
     sourcePath,
@@ -123,7 +113,7 @@ pub async fn relayflow_application_ack_reconnect_probe() -> bool {
             .unwrap();
         reconnected
 }
-`,
+`
   );
 
   const libPath = join(checkout, 'crates/broker/src/lib.rs');
@@ -133,24 +123,18 @@ pub async fn relayflow_application_ack_reconnect_probe() -> bool {
   writeFileSync(libPath, libSource.replace(privateModule, 'pub mod node_control;'));
   appendFileSync(
     join(checkout, 'crates/broker/Cargo.toml'),
-    '\n[[bin]]\nname = "relayflow-application-ack-reconnect"\npath = "src/bin/relayflow_application_ack_reconnect.rs"\n',
+    '\n[[bin]]\nname = "relayflow-application-ack-reconnect"\npath = "src/bin/relayflow_application_ack_reconnect.rs"\n'
   );
   const binDir = join(checkout, 'crates/broker/src/bin');
   mkdirSync(binDir, { recursive: true });
   writeFileSync(
     join(binDir, 'relayflow_application_ack_reconnect.rs'),
-    `#[tokio::main]\nasync fn main() {\n    let reconnected = relay_broker::node_control::relayflow_application_ack_reconnect_probe().await;\n    println!("${MARKER}{}", if reconnected { "true" } else { "false" });\n}\n`,
+    `#[tokio::main]\nasync fn main() {\n    let reconnected = relay_broker::node_control::relayflow_application_ack_reconnect_probe().await;\n    println!("${MARKER}{}", if reconnected { "true" } else { "false" });\n}\n`
   );
 
   const run = spawnSync(
     'cargo',
-    [
-      'run',
-      '-p',
-      'agent-relay-broker',
-      '--bin',
-      'relayflow-application-ack-reconnect',
-    ],
+    ['run', '-p', 'agent-relay-broker', '--bin', 'relayflow-application-ack-reconnect'],
     {
       cwd: checkout,
       encoding: 'utf8',
@@ -163,7 +147,7 @@ pub async fn relayflow_application_ack_reconnect_probe() -> bool {
         CARGO_PROFILE_DEV_DEBUG: process.env.CARGO_PROFILE_DEV_DEBUG ?? '0',
         RUSTFLAGS: process.env.RUSTFLAGS ?? '-C debuginfo=0 -C codegen-units=256',
       },
-    },
+    }
   );
   process.stdout.write(run.stdout ?? '');
   process.stderr.write(run.stderr ?? '');
