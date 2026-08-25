@@ -219,6 +219,32 @@ describe('ensureAuthenticated', () => {
     return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   }
 
+  it('uses one non-refreshing Cloud API key without reading stored login state', async () => {
+    vi.stubEnv('CLOUD_API_URL', 'https://ci.example/cloud');
+    vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
+    fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
+
+    await expect(ensureAuthenticated('https://default.example/cloud')).resolves.toEqual({
+      authMode: 'api-key',
+      apiUrl: 'https://ci.example/cloud',
+      accessToken: 'ci-api-key',
+      refreshToken: '',
+      accessTokenExpiresAt: '9999-12-31T23:59:59.999Z',
+    });
+    expect(fsMocks.readFile).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when API-key auth has a malformed Cloud URL', async () => {
+    vi.stubEnv('CLOUD_API_URL', 'not-a-url');
+    vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
+    fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
+
+    await expect(ensureAuthenticated('https://default.example/cloud')).rejects.toMatchObject({
+      code: 'AUTH_ENV_REPROVISION_REQUIRED',
+    });
+    expect(fsMocks.readFile).not.toHaveBeenCalled();
+  });
+
   it('returns stored file auth even when apiUrl differs from defaultApiUrl', async () => {
     // Regression: previously, any host mismatch between the CLI's default
     // apiUrl and the stored apiUrl forced a browser login on every cloud
@@ -836,6 +862,25 @@ describe('authorizedApiFetch telemetry headers', () => {
 });
 
 describe('authorizedApiFetch re-login', () => {
+  it('returns a Cloud 401 for API-key auth without refresh or interactive login', async () => {
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const auth: StoredAuth = {
+      authMode: 'api-key',
+      apiUrl: 'https://api.example.test',
+      accessToken: 'ci-api-key',
+      refreshToken: '',
+      accessTokenExpiresAt: '9999-12-31T23:59:59.999Z',
+    };
+    const result = await authorizedApiFetch(auth, '/api/v1/workflows/run', { method: 'POST' });
+
+    expect(result.response.status).toBe(401);
+    expect(result.auth).toBe(auth);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
+
   it('re-authenticates a headless host through the device flow, not the browser', async () => {
     // The steady state this feature exists for: barry logged in once over ssh
     // with `--device`, and now a request 401s with a refresh token the server

@@ -1,4 +1,4 @@
-import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -36,12 +36,10 @@ import {
 import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
-  assertCredentialDidNotRotate,
   boundedDuration,
   createPreparedRunProgressParser,
-  createCliAuthEnvironment,
+  createCliApiKeyEnvironment,
   preparedRunIdFromOutput,
-  validateCredentialWindow,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { runProcess } from '../../scripts/pr-proof/run-arm.mjs';
@@ -365,24 +363,19 @@ describe('Cloud evidence handoff', () => {
   });
 });
 
-describe('Cloud dispatcher credential lifecycle', () => {
-  const now = Date.parse('2026-08-25T10:00:00.000Z');
+describe('Cloud dispatcher API key lifecycle', () => {
   const credentialEnv = {
     CLOUD_API_URL: 'https://cloud.test/cloud',
-    CLOUD_API_ACCESS_TOKEN: 'ci-access-token',
-    CLOUD_API_REFRESH_TOKEN: 'ci-refresh-token',
-    CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: '2026-08-25T13:00:00.000Z',
-    CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: '2026-08-26T10:00:00.000Z',
+    CLOUD_API_KEY: 'ci-api-key',
   };
 
-  it('fails before dispatch when the static access token cannot cover the proof window', () => {
-    expect(() =>
-      validateCredentialWindow(
-        { ...credentialEnv, CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: '2026-08-25T10:30:00.000Z' },
-        60 * 60_000,
-        now
-      )
-    ).toThrow(/expires before the proof deadline/);
+  it('requires exactly the Cloud URL and API key before dispatch', () => {
+    expect(() => createCliApiKeyEnvironment({ CLOUD_API_URL: credentialEnv.CLOUD_API_URL })).toThrow(
+      /CLOUD_API_KEY is required/
+    );
+    expect(() => createCliApiKeyEnvironment({ CLOUD_API_KEY: credentialEnv.CLOUD_API_KEY })).toThrow(
+      /CLOUD_API_URL is required/
+    );
   });
 
   it('rejects unbounded or malformed dispatcher durations', () => {
@@ -413,31 +406,21 @@ describe('Cloud dispatcher credential lifecycle', () => {
     expect(runIds).toEqual(['run-prepared-123']);
   });
 
-  it('shares an owner-only temporary auth file across CLI subprocesses and detects rotation', async () => {
-    validateCredentialWindow(credentialEnv, 60 * 60_000, now);
-    const auth = await createCliAuthEnvironment({ ...process.env, ...credentialEnv });
-    try {
-      expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
-      expect(auth.cliEnv.HOME).toBe(auth.temporaryHome);
-      const authFile = await open(auth.authPath, 'r+');
-      try {
-        expect((await authFile.stat()).mode & 0o777).toBe(0o600);
-        await expect(
-          assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
-        ).resolves.toBeUndefined();
-        const stored = JSON.parse(await authFile.readFile('utf8'));
-        stored.accessToken = 'rotated-token';
-        await authFile.truncate(0);
-        await authFile.write(JSON.stringify(stored), 0, 'utf8');
-      } finally {
-        await authFile.close();
-      }
-      await expect(
-        assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
-      ).rejects.toThrow(/cannot be persisted/);
-    } finally {
-      await rm(auth.temporaryHome, { recursive: true, force: true });
-    }
+  it('passes one API key to every CLI subprocess and removes legacy refresh credentials', () => {
+    const auth = createCliApiKeyEnvironment({
+      ...credentialEnv,
+      CLOUD_API_ACCESS_TOKEN: 'legacy-access',
+      CLOUD_API_REFRESH_TOKEN: 'legacy-refresh',
+      CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: '2027-08-25T00:00:00.000Z',
+      CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: '2027-08-25T00:00:00.000Z',
+    });
+
+    expect(auth.cliEnv.CLOUD_API_URL).toBe(credentialEnv.CLOUD_API_URL);
+    expect(auth.cliEnv.CLOUD_API_KEY).toBe(credentialEnv.CLOUD_API_KEY);
+    expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
+    expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN).toBeUndefined();
+    expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT).toBeUndefined();
+    expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT).toBeUndefined();
   });
 });
 
@@ -743,15 +726,16 @@ describe('trusted dispatcher source contract', () => {
     expect(source).not.toContain('process.env.DAYTONA_SANDBOX_ID');
   });
 
-  it('shares refreshes only inside the job and cancels remote work on termination', async () => {
+  it('uses one non-refreshing API key and cancels remote work on termination', async () => {
     const source = await readFile('scripts/pr-proof/run-cloud.mjs', 'utf8');
     expect(source).toContain("process.once('SIGTERM', signalHandler)");
     expect(source).toContain('activeCommandController?.abort()');
     expect(source).toContain('AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID');
     expect(source).toContain('captureLaunchProgressError(() => launchProgress.write(text))');
     expect(source).toContain("['cloud', 'cancel', runId, '--json']");
-    expect(source).toContain("path.join(authDir, 'cloud-auth.json')");
-    expect(source).toContain('assertCredentialDidNotRotate');
+    expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
+    expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
+    expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {

@@ -36,6 +36,36 @@ const AUTH_LOCK_STALE_MS = 30_000;
 const AUTH_LOCK_TIMEOUT_MS = 30_000;
 
 const envBackedAuth = new WeakSet<StoredAuth>();
+const API_KEY_NON_REFRESHING_EXPIRY = '9999-12-31T23:59:59.999Z';
+
+function isApiKeyAuth(auth: StoredAuth): boolean {
+  return auth.authMode === 'api-key';
+}
+
+function readApiKeyAuth(apiUrl: string, env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
+  const apiKey = env.CLOUD_API_KEY?.trim();
+  if (!apiKey) return null;
+
+  const configuredApiUrl = env.CLOUD_API_URL?.trim() || apiUrl;
+  try {
+    new URL(configuredApiUrl);
+  } catch (error) {
+    throw new CloudAuthError('AUTH_ENV_REPROVISION_REQUIRED', 'CLOUD_API_URL is invalid for CLOUD_API_KEY', {
+      cause: error,
+    });
+  }
+
+  return {
+    authMode: 'api-key',
+    apiUrl: configuredApiUrl,
+    accessToken: apiKey,
+    // StoredAuth predates service credentials and models a refreshable login.
+    // These placeholders keep that internal shape stable; authMode guarantees
+    // neither value is consulted or sent over the network.
+    refreshToken: '',
+    accessTokenExpiresAt: API_KEY_NON_REFRESHING_EXPIRY,
+  };
+}
 
 function markEnvBackedAuth(auth: StoredAuth): StoredAuth {
   envBackedAuth.add(auth);
@@ -99,6 +129,7 @@ function isValidStoredAuth(value: unknown): value is StoredAuth {
 
   const auth = value as Partial<StoredAuth>;
   return (
+    auth.authMode === undefined &&
     typeof auth.accessToken === 'string' &&
     typeof auth.refreshToken === 'string' &&
     typeof auth.accessTokenExpiresAt === 'string' &&
@@ -689,6 +720,11 @@ export async function ensureAuthenticated(
     refreshTimeoutMs?: number;
   }
 ): Promise<StoredAuth> {
+  if (options?.force !== true) {
+    const apiKeyAuth = readApiKeyAuth(apiUrl);
+    if (apiKeyAuth) return apiKeyAuth;
+  }
+
   const session = await ensureCloudSession({
     apiUrl,
     force: options?.force,
@@ -822,6 +858,13 @@ export async function authorizedApiFetch(
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
 
   if (response.status !== 401) {
+    return { response, auth: activeAuth };
+  }
+
+  // API keys are deliberately non-refreshing. Return the Cloud 401 to the
+  // caller so unattended automation fails closed instead of attempting token
+  // rotation or opening an interactive login flow.
+  if (isApiKeyAuth(activeAuth)) {
     return { response, auth: activeAuth };
   }
 

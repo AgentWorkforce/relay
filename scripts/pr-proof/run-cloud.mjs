@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
@@ -10,14 +9,12 @@ import { runBoundedProcess } from './process-runner.mjs';
 
 const TERMINAL_SUCCESS = new Set(['completed', 'succeeded', 'success']);
 const TERMINAL_FAILURE = new Set(['failed', 'cancelled', 'canceled', 'timed_out', 'error']);
-const CLOUD_AUTH_KEYS = [
-  'CLOUD_API_URL',
+const LEGACY_REFRESHABLE_AUTH_KEYS = [
   'CLOUD_API_ACCESS_TOKEN',
   'CLOUD_API_REFRESH_TOKEN',
   'CLOUD_API_ACCESS_TOKEN_EXPIRES_AT',
   'CLOUD_API_REFRESH_TOKEN_EXPIRES_AT',
 ];
-const CREDENTIAL_WINDOW_BUFFER_MS = 15 * 60_000;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_LIVE_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
@@ -113,60 +110,14 @@ export function createPreparedRunProgressParser(onRunId) {
   };
 }
 
-export function validateCredentialWindow(env, timeoutMs, now = Date.now()) {
-  const accessExpiry = Date.parse(requiredCredential(env, 'CLOUD_API_ACCESS_TOKEN_EXPIRES_AT'));
-  if (!Number.isFinite(accessExpiry)) throw new Error('CLOUD_API_ACCESS_TOKEN_EXPIRES_AT is invalid');
-  const requiredUntil = now + timeoutMs + CREDENTIAL_WINDOW_BUFFER_MS;
-  if (accessExpiry <= requiredUntil) {
-    throw new Error(
-      `Cloud CI access token expires before the proof deadline; reprovision the Relay secrets before ${new Date(requiredUntil).toISOString()}`
-    );
-  }
-  const refreshExpirySource = env.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT?.trim();
-  if (refreshExpirySource) {
-    const refreshExpiry = Date.parse(refreshExpirySource);
-    if (!Number.isFinite(refreshExpiry) || refreshExpiry <= requiredUntil) {
-      throw new Error('Cloud CI refresh token expires before the proof deadline; reprovision Relay secrets');
-    }
-  }
-}
-
-export async function createCliAuthEnvironment(env = process.env) {
+export function createCliApiKeyEnvironment(env = process.env) {
   const apiUrl = requiredCredential(env, 'CLOUD_API_URL');
-  const accessToken = requiredCredential(env, 'CLOUD_API_ACCESS_TOKEN');
-  const refreshToken = requiredCredential(env, 'CLOUD_API_REFRESH_TOKEN');
-  const accessTokenExpiresAt = requiredCredential(env, 'CLOUD_API_ACCESS_TOKEN_EXPIRES_AT');
-  const refreshTokenExpiresAt = env.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT?.trim();
+  const apiKey = requiredCredential(env, 'CLOUD_API_KEY');
   new URL(apiUrl);
 
-  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-auth-'));
-  const authDir = path.join(temporaryHome, '.agentworkforce', 'relay');
-  const authPath = path.join(authDir, 'cloud-auth.json');
-  await mkdir(authDir, { recursive: true, mode: 0o700 });
-  await writeFile(
-    authPath,
-    `${JSON.stringify({
-      apiUrl,
-      accessToken,
-      refreshToken,
-      accessTokenExpiresAt,
-      ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
-    })}\n`,
-    { mode: 0o600 }
-  );
-
-  const cliEnv = { ...env, HOME: temporaryHome };
-  for (const key of CLOUD_AUTH_KEYS) delete cliEnv[key];
-  return { cliEnv, temporaryHome, authPath, originalAccessToken: accessToken };
-}
-
-export async function assertCredentialDidNotRotate(authPath, originalAccessToken) {
-  const stored = JSON.parse(await readFile(authPath, 'utf8'));
-  if (stored.accessToken !== originalAccessToken) {
-    throw new Error(
-      'Cloud CI credential refreshed during the job; the rotated tuple cannot be persisted to GitHub secrets. Reprovision the Relay secrets before rerunning.'
-    );
-  }
+  const cliEnv = { ...env, CLOUD_API_URL: apiUrl, CLOUD_API_KEY: apiKey };
+  for (const key of LEGACY_REFRESHABLE_AUTH_KEYS) delete cliEnv[key];
+  return { cliEnv };
 }
 
 export async function main() {
@@ -191,8 +142,7 @@ export async function main() {
     maximum: 5 * 60_000,
     label: 'PR_PROOF_CLOUD_COMMAND_TIMEOUT_MS',
   });
-  validateCredentialWindow(process.env, timeoutMs);
-  const auth = await createCliAuthEnvironment(process.env);
+  const auth = createCliApiKeyEnvironment(process.env);
   let runId = null;
   let terminal = false;
   let cancelPromise = null;
@@ -251,7 +201,6 @@ export async function main() {
     activeCommandController?.abort();
     void (async () => {
       await cancelRemote(signal).catch((error) => console.warn(error.message));
-      await rm(auth.temporaryHome, { recursive: true, force: true });
       process.exit(signal === 'SIGINT' ? 130 : 143);
     })();
   };
@@ -338,7 +287,6 @@ export async function main() {
     if (!TERMINAL_SUCCESS.has(terminalStatus)) {
       throw new Error(`Cloud RelayFlow finished with status ${terminalStatus}`);
     }
-    await assertCredentialDidNotRotate(auth.authPath, auth.originalAccessToken);
     if (process.env.GITHUB_STEP_SUMMARY) {
       await appendFile(
         process.env.GITHUB_STEP_SUMMARY,
@@ -351,7 +299,6 @@ export async function main() {
     process.removeListener('SIGTERM', signalHandler);
     if (runId && !terminal)
       await cancelRemote('dispatcher exiting').catch((error) => console.warn(error.message));
-    await rm(auth.temporaryHome, { recursive: true, force: true });
   }
 }
 

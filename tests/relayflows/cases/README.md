@@ -112,21 +112,19 @@ credential-bearing step.
 
 ## Enabling the required check
 
-The repository needs a dedicated Cloud CLI session in these GitHub secrets:
+The repository needs a dedicated non-refreshing Cloud API key in these GitHub
+secrets:
 
 - `CLOUD_API_URL`
-- `RELAYFLOW_PR_PROOF_CLOUD_ACCESS_TOKEN`
-- `RELAYFLOW_PR_PROOF_CLOUD_REFRESH_TOKEN`
-- `RELAYFLOW_PR_PROOF_CLOUD_ACCESS_TOKEN_EXPIRES_AT`
-- `RELAYFLOW_PR_PROOF_CLOUD_REFRESH_TOKEN_EXPIRES_AT` (optional until refresh)
+- `RELAYFLOW_PR_PROOF_CLOUD_API_KEY`
 
 Use a workspace-scoped, least-privilege credential that can prepare, invoke,
 read, and cancel workflow runs. Do not copy a human laptop session into CI.
-The dispatcher stores the tuple in an owner-only temporary auth file so a
-refresh is visible to every CLI subprocess in the same job. It refuses tokens
-that expire inside the proof window and fails if a refresh rotates the tuple,
-because Actions cannot write rotated values back to repository secrets. Rotate
-the dedicated credential before that window.
+The dispatcher passes one API key to every CLI subprocess and removes any
+legacy refreshable-auth environment variables. API-key auth never refreshes or
+opens an interactive login; Cloud enforces its workspace binding, scopes,
+expiry, and revocation server-side. A `401` fails the proof and requires an
+operator to rotate the dedicated key.
 
 `pull_request_target` itself is attached to the base SHA, so the dispatcher
 publishes a separate stable commit-status context named `RelayFlow PR proof` on

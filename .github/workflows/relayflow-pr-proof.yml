@@ -67,15 +67,10 @@ jobs:
         if: steps.prepare.outputs.required == 'true'
         env:
           CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
-          CLOUD_API_ACCESS_TOKEN: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_ACCESS_TOKEN }}
-          CLOUD_API_REFRESH_TOKEN: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_REFRESH_TOKEN }}
-          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_ACCESS_TOKEN_EXPIRES_AT }}
-          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_REFRESH_TOKEN_EXPIRES_AT }}
+          CLOUD_API_KEY: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_API_KEY }}
         run: |
           test -n "$CLOUD_API_URL"
-          test -n "$CLOUD_API_ACCESS_TOKEN"
-          test -n "$CLOUD_API_REFRESH_TOKEN"
-          test -n "$CLOUD_API_ACCESS_TOKEN_EXPIRES_AT"
+          test -n "$CLOUD_API_KEY"
 
       # Cloud code sync intentionally uploads only paths known to git. Add the
       # generated, validated input to this disposable runner's index so it is
@@ -93,10 +88,7 @@ jobs:
         id: cloud
         env:
           CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
-          CLOUD_API_ACCESS_TOKEN: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_ACCESS_TOKEN }}
-          CLOUD_API_REFRESH_TOKEN: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_REFRESH_TOKEN }}
-          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_ACCESS_TOKEN_EXPIRES_AT }}
-          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_REFRESH_TOKEN_EXPIRES_AT }}
+          CLOUD_API_KEY: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_API_KEY }}
           PR_PROOF_CLOUD_TIMEOUT_MS: '3600000'
         run: node scripts/pr-proof/run-cloud.mjs workflows/pr-proof.ts
 

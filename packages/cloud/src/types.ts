@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export type StoredAuth = {
+  authMode?: 'api-key';
   accessToken: string;
   refreshToken: string;
   accessTokenExpiresAt: string;
