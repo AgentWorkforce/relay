@@ -3460,17 +3460,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconciliation_restores_a_live_worker_missing_from_inventory_without_reregistering() {
+    async fn reconciliation_adds_an_adopted_live_worker_without_reregistering() {
         let server = MockServer::start();
         let lookup = server.mock(|when, then| {
             when.method(GET)
-                .path("/v1/agents/live-worker")
+                .path("/v1/agents/adopted-worker")
                 .header("authorization", "Bearer rk_live_test");
             then.status(200).json_body(serde_json::json!({
                 "ok": true,
                 "data": {
-                    "id": "agent-live-id",
-                    "name": "live-worker",
+                    "id": "agent-adopted-id",
+                    "name": "adopted-worker",
                     "type": "agent",
                     "status": "offline",
                     "persona": null,
@@ -3490,7 +3490,15 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, mut rx) = mpsc::channel(2);
-        let mut inventory = HashMap::new();
+        let mut inventory = HashMap::from([(
+            WorkerName::from("inventory-worker"),
+            InventoryAgent {
+                agent_id: "agent-inventory-id".to_string(),
+                name: "inventory-worker".to_string(),
+                invocation_id: Some("inv-inventory".to_string()),
+                session_ref: Some("session-inventory".to_string()),
+            },
+        )]);
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
 
@@ -3500,30 +3508,37 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![live_fleet_worker("live-worker", Some("session-live"), 101)],
+            vec![
+                live_fleet_worker("inventory-worker", Some("session-inventory"), 100),
+                live_fleet_worker("adopted-worker", Some("session-adopted"), 101),
+            ],
             Instant::now(),
         )
         .await;
 
         assert_eq!(repaired, 1, "the live orphan must be restored");
         assert_eq!(
-            inventory.get(&WorkerName::from("live-worker")),
+            inventory.get(&WorkerName::from("adopted-worker")),
             Some(&InventoryAgent {
-                agent_id: "agent-live-id".to_string(),
-                name: "live-worker".to_string(),
+                agent_id: "agent-adopted-id".to_string(),
+                name: "adopted-worker".to_string(),
                 invocation_id: None,
-                session_ref: Some("session-live".to_string()),
+                session_ref: Some("session-adopted".to_string()),
             })
         );
         assert_eq!(
-            delivery_book.active_agent_id("live-worker"),
-            Some("agent-live-id")
+            delivery_book.active_agent_id("adopted-worker"),
+            Some("agent-adopted-id")
         );
         match rx.recv().await {
             Some(FleetControlCommand::UpdateInventory(agents)) => {
-                assert_eq!(agents.len(), 1);
-                assert_eq!(agents[0].name, "live-worker");
-                assert_eq!(agents[0].agent_id, "agent-live-id");
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().any(|agent| {
+                    agent.name == "inventory-worker" && agent.agent_id == "agent-inventory-id"
+                }));
+                assert!(agents.iter().any(|agent| {
+                    agent.name == "adopted-worker" && agent.agent_id == "agent-adopted-id"
+                }));
             }
             other => panic!("expected repaired inventory snapshot, got {other:?}"),
         }

@@ -176,8 +176,8 @@ pub struct NodeHeartbeat {
     pub name: String,
     pub node_id: String,
     // The broker appends reserved live-agent capabilities on every heartbeat;
-    // their names come directly from its worker registry, independently of
-    // provider registration and inventory.sync.
+    // their names come from the retained, identity-bearing inventory also sent
+    // by inventory.sync after live-worker reconciliation repairs adopted PTYs.
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub version: String,

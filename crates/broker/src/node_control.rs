@@ -502,12 +502,12 @@ impl FleetLoadSnapshot {
             .filter(|capability| capability.name != LIVE_AGENT_CAPABILITY_NAME)
             .cloned()
             .collect();
-        // `inventory.sync` is the authoritative broker-owned live-worker set:
-        // it carries the immutable agent ids used to reclaim a roster binding,
-        // survives node-control reconnects, and is repaired from live adopted
-        // PTYs without registering or rotating their identities. Deriving this
-        // capability from the same slice makes it impossible for heartbeat
-        // authorization names and roster reconciliation to drift apart.
+        // The retained inventory is the broker's identity-bearing projection of
+        // its live fleet workers: runtime reconciliation repairs adopted PTYs
+        // into it without registration or token rotation, and node control keeps
+        // it across reconnects. Deriving this capability from the same slice
+        // makes heartbeat authorization and inventory.sync converge on the
+        // repaired worker set instead of maintaining independent projections.
         let mut active_agent_names: Vec<_> =
             inventory.iter().map(|agent| agent.name.clone()).collect();
         active_agent_names.sort();
@@ -4059,7 +4059,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_control_reconnect_sends_inventory_sync() {
+    async fn repaired_inventory_drives_heartbeat_and_survives_reconnect() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
         let (command_tx, command_rx) = mpsc::channel(32);
@@ -4097,10 +4097,34 @@ mod tests {
             ));
             match next_non_heartbeat_node_to_server(&mut ws).await {
                 BrokerToRelaycast::InventorySync(sync) => {
-                    assert_eq!(sync.agents.len(), 1);
-                    assert_eq!(sync.agents[0].name, "agent-a");
+                    let mut names: Vec<_> = sync
+                        .agents
+                        .iter()
+                        .map(|agent| agent.name.as_str())
+                        .collect();
+                    names.sort_unstable();
+                    assert_eq!(names, ["adopted-worker", "inventory-worker"]);
                 }
-                other => panic!("expected inventory update before reconnect, got {other:?}"),
+                other => panic!("expected repaired inventory update, got {other:?}"),
+            }
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::NodeHeartbeat(heartbeat) => {
+                    let names = heartbeat
+                        .capabilities
+                        .iter()
+                        .find(|capability| capability.name == LIVE_AGENT_CAPABILITY_NAME)
+                        .and_then(|capability| capability.metadata.as_ref())
+                        .and_then(|metadata| metadata.get("names"));
+                    assert_eq!(
+                        names,
+                        Some(&serde_json::json!([
+                            "adopted-worker",
+                            "inventory-worker"
+                        ])),
+                        "the adopted live worker must enter heartbeat authorization after inventory repair"
+                    );
+                }
+                other => panic!("expected heartbeat after repaired inventory, got {other:?}"),
             }
             ws.close(None).await.unwrap();
 
@@ -4112,8 +4136,16 @@ mod tests {
             ));
             match next_non_heartbeat_node_to_server(&mut ws).await {
                 BrokerToRelaycast::InventorySync(sync) => {
-                    assert_eq!(sync.agents.len(), 1);
-                    assert_eq!(sync.agents[0].name, "agent-a");
+                    let mut names: Vec<_> = sync
+                        .agents
+                        .iter()
+                        .map(|agent| agent.name.as_str())
+                        .collect();
+                    names.sort_unstable();
+                    assert_eq!(names, ["adopted-worker", "inventory-worker"]);
+                    assert!(sync.agents.iter().any(|agent| {
+                        agent.name == "adopted-worker" && agent.agent_id == "agent-adopted-id"
+                    }));
                 }
                 other => panic!("expected inventory.sync, got {other:?}"),
             }
@@ -4127,8 +4159,8 @@ mod tests {
                         .and_then(|metadata| metadata.get("names"));
                     assert_eq!(
                         names,
-                        Some(&serde_json::json!(["agent-a"])),
-                        "a reconnect heartbeat must advertise the retained inventory"
+                        Some(&serde_json::json!(["adopted-worker", "inventory-worker"])),
+                        "a reconnect heartbeat must retain the repaired live-worker inventory"
                     );
                 }
                 other => panic!("expected reconnect heartbeat, got {other:?}"),
@@ -4142,13 +4174,36 @@ mod tests {
             })
             .await
             .unwrap();
+        // This command is the output of runtime live-worker reconciliation: the
+        // already-retained worker and a live adopted PTY now both have their
+        // immutable Relaycast identities in the authoritative inventory.
         command_tx
-            .send(FleetControlCommand::UpdateInventory(vec![InventoryAgent {
-                agent_id: "agt-1".to_string(),
-                name: "agent-a".to_string(),
-                invocation_id: Some("inv-1".to_string()),
-                session_ref: Some("session-1".to_string()),
-            }]))
+            .send(FleetControlCommand::UpdateInventory(vec![
+                InventoryAgent {
+                    agent_id: "agent-inventory-id".to_string(),
+                    name: "inventory-worker".to_string(),
+                    invocation_id: Some("inv-1".to_string()),
+                    session_ref: Some("session-1".to_string()),
+                },
+                InventoryAgent {
+                    agent_id: "agent-adopted-id".to_string(),
+                    name: "adopted-worker".to_string(),
+                    invocation_id: None,
+                    session_ref: Some("session-adopted".to_string()),
+                },
+            ]))
+            .await
+            .unwrap();
+        command_tx
+            .send(FleetControlCommand::UpdateLoad(FleetLoadSnapshot {
+                active_agents: 2,
+                max_agents: 4,
+                handlers_live: true,
+            }))
+            .await
+            .unwrap();
+        command_tx
+            .send(FleetControlCommand::HeartbeatNow)
             .await
             .unwrap();
 
@@ -4260,46 +4315,6 @@ mod tests {
         let value = serde_json::to_value(BrokerToRelaycast::NodeHeartbeat(unbounded)).unwrap();
         assert_eq!(value["load"], 0.0);
         assert_eq!(value["active_agents"], 25);
-    }
-
-    #[test]
-    fn heartbeat_live_names_match_reconnect_inventory() {
-        let register = build_node_register(
-            &test_manifest(),
-            "node-default",
-            "host-default",
-            "broker/test",
-            None,
-        );
-        let inventory = vec![InventoryAgent {
-            agent_id: "agent-inventory-id".to_string(),
-            name: "inventory-worker".to_string(),
-            invocation_id: None,
-            session_ref: Some("session-inventory".to_string()),
-        }];
-        let heartbeat = FleetLoadSnapshot {
-            active_agents: 2,
-            max_agents: 4,
-            handlers_live: true,
-        }
-        .heartbeat(&register, &inventory);
-        let heartbeat_names = heartbeat
-            .capabilities
-            .iter()
-            .find(|capability| capability.name == LIVE_AGENT_CAPABILITY_NAME)
-            .and_then(|capability| capability.metadata.as_ref())
-            .and_then(|metadata| metadata.get("names"))
-            .cloned()
-            .expect("heartbeat must publish live worker names");
-        let mut inventory_names: Vec<_> =
-            inventory.iter().map(|agent| agent.name.as_str()).collect();
-        inventory_names.sort_unstable();
-
-        assert_eq!(
-            heartbeat_names,
-            serde_json::json!(inventory_names),
-            "heartbeat authorization names and inventory.sync must derive from one live-worker set"
-        );
     }
 
     #[test]
