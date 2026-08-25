@@ -1,5 +1,6 @@
 import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -49,6 +50,7 @@ const BASE_SHA = '1'.repeat(40);
 const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
+const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -462,40 +464,43 @@ describe('process timeout contract', () => {
     expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
-  it('force-kills same-group descendants even when they do not inherit output pipes', async () => {
-    const script = [
-      "const { spawn } = require('node:child_process');",
-      "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' });",
-      "process.stdout.write(String(child.pid) + '\\n');",
-      "process.on('SIGTERM', () => process.exit(0));",
-      'setInterval(() => {}, 1000);',
-    ].join('');
-    const result = await runProcess(process.execPath, ['-e', script], {
-      echo: false,
-      timeoutMs: 100,
-      terminationGraceMs: 100,
-    });
-    const descendantPid = Number(result.stdout.trim());
-    expect(result.timedOut).toBe(true);
-    expect(descendantPid).toBeGreaterThan(0);
-    const deadline = Date.now() + 2_000;
-    let running = true;
-    while (running && Date.now() < deadline) {
-      let processState = '';
-      try {
-        processState = execFileSync('ps', ['-o', 'stat=', '-p', String(descendantPid)], {
-          encoding: 'utf8',
-        }).trim();
-      } catch (error) {
-        const status = (error as { status?: number }).status;
-        if (status !== 1) throw error;
+  it.skipIf(process.platform === 'win32' || !PS_PATH)(
+    'force-kills same-group descendants even when they do not inherit output pipes',
+    async () => {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' });",
+        "process.stdout.write(String(child.pid) + '\\n');",
+        "process.on('SIGTERM', () => process.exit(0));",
+        'setInterval(() => {}, 1000);',
+      ].join('');
+      const result = await runProcess(process.execPath, ['-e', script], {
+        echo: false,
+        timeoutMs: 100,
+        terminationGraceMs: 100,
+      });
+      const descendantPid = Number(result.stdout.trim());
+      expect(result.timedOut).toBe(true);
+      expect(descendantPid).toBeGreaterThan(0);
+      const deadline = Date.now() + 2_000;
+      let running = true;
+      while (running && Date.now() < deadline) {
+        let processState = '';
+        try {
+          processState = execFileSync(PS_PATH, ['-o', 'stat=', '-p', String(descendantPid)], {
+            encoding: 'utf8',
+          }).trim();
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if (status !== 1) throw error;
+        }
+        running = processState.length > 0 && !processState.startsWith('Z');
+        if (running) await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      running = processState.length > 0 && !processState.startsWith('Z');
-      if (running) await new Promise((resolve) => setTimeout(resolve, 20));
+      if (running) process.kill(descendantPid, 'SIGKILL');
+      expect(running).toBe(false);
     }
-    if (running) process.kill(descendantPid, 'SIGKILL');
-    expect(running).toBe(false);
-  });
+  );
 
   it('preserves UTF-8 characters split across output chunks', async () => {
     const script = [
