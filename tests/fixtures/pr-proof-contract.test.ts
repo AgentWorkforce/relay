@@ -1,4 +1,5 @@
 import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -467,15 +468,18 @@ describe('process timeout contract', () => {
     expect(result.timedOut).toBe(true);
     expect(descendantPid).toBeGreaterThan(0);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    let alive = true;
+    let processState = '';
     try {
-      process.kill(descendantPid, 0);
+      processState = execFileSync('ps', ['-o', 'stat=', '-p', String(descendantPid)], {
+        encoding: 'utf8',
+      }).trim();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') alive = false;
-      else throw error;
+      const status = (error as { status?: number }).status;
+      if (status !== 1) throw error;
     }
-    if (alive) process.kill(descendantPid, 'SIGKILL');
-    expect(alive).toBe(false);
+    const running = processState.length > 0 && !processState.startsWith('Z');
+    if (running) process.kill(descendantPid, 'SIGKILL');
+    expect(running).toBe(false);
   });
 
   it('preserves UTF-8 characters split across output chunks', async () => {
