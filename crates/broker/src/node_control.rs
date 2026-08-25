@@ -466,7 +466,6 @@ pub(crate) struct FleetLoadSnapshot {
     pub(crate) active_agents: u32,
     pub(crate) max_agents: u32,
     pub(crate) handlers_live: bool,
-    pub(crate) active_agent_names: Vec<String>,
 }
 
 impl FleetLoadSnapshot {
@@ -487,7 +486,7 @@ impl FleetLoadSnapshot {
     ///
     /// `last_heartbeat_at` is intentionally NOT set — the engine stamps receipt
     /// time server-side as the single source of truth for liveness.
-    fn heartbeat(&self, node: &NodeRegister) -> NodeHeartbeat {
+    fn heartbeat(&self, node: &NodeRegister, inventory: &[InventoryAgent]) -> NodeHeartbeat {
         let load = if self.max_agents == 0 {
             // Relaycast releases before relaycast#307 require a numeric load.
             // Keep emitting the legacy value until the engine accepts an
@@ -503,7 +502,14 @@ impl FleetLoadSnapshot {
             .filter(|capability| capability.name != LIVE_AGENT_CAPABILITY_NAME)
             .cloned()
             .collect();
-        let mut active_agent_names = self.active_agent_names.clone();
+        // `inventory.sync` is the authoritative broker-owned live-worker set:
+        // it carries the immutable agent ids used to reclaim a roster binding,
+        // survives node-control reconnects, and is repaired from live adopted
+        // PTYs without registering or rotating their identities. Deriving this
+        // capability from the same slice makes it impossible for heartbeat
+        // authorization names and roster reconciliation to drift apart.
+        let mut active_agent_names: Vec<_> =
+            inventory.iter().map(|agent| agent.name.clone()).collect();
         active_agent_names.sort();
         active_agent_names.dedup();
         capabilities.push(FleetCapability {
@@ -1775,7 +1781,7 @@ async fn run_connected_once(
     }
     if send_wire(
         &mut sink,
-        &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register)),
+        &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register, inventory)),
     )
     .await
     .is_err()
@@ -1828,7 +1834,7 @@ async fn run_connected_once(
                         *load = next;
                     }
                     Some(FleetControlCommand::HeartbeatNow) => {
-                        if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
+                        if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register, inventory))).await.is_err() {
                             return ControlRunResult::Disconnected;
                         }
                     }
@@ -1882,7 +1888,7 @@ async fn run_connected_once(
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
                 }
-                if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
+                if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register, inventory))).await.is_err() {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
                 }
@@ -3744,7 +3750,6 @@ mod tests {
             active_agents: 1,
             max_agents: 4,
             handlers_live: true,
-            active_agent_names: vec!["agent-a".to_string()],
         };
 
         let server = tokio::spawn(async move {
@@ -3825,7 +3830,6 @@ mod tests {
             active_agents: 0,
             max_agents: 4,
             handlers_live: true,
-            active_agent_names: Vec::new(),
         };
 
         let server = tokio::spawn(async move {
@@ -4113,6 +4117,22 @@ mod tests {
                 }
                 other => panic!("expected inventory.sync, got {other:?}"),
             }
+            match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::NodeHeartbeat(heartbeat) => {
+                    let names = heartbeat
+                        .capabilities
+                        .iter()
+                        .find(|capability| capability.name == LIVE_AGENT_CAPABILITY_NAME)
+                        .and_then(|capability| capability.metadata.as_ref())
+                        .and_then(|metadata| metadata.get("names"));
+                    assert_eq!(
+                        names,
+                        Some(&serde_json::json!(["agent-a"])),
+                        "a reconnect heartbeat must advertise the retained inventory"
+                    );
+                }
+                other => panic!("expected reconnect heartbeat, got {other:?}"),
+            }
         });
 
         command_tx
@@ -4197,9 +4217,24 @@ mod tests {
             active_agents: 3,
             max_agents: 4,
             handlers_live: true,
-            active_agent_names: vec!["worker-b".to_string(), "worker-a".to_string()],
         }
-        .heartbeat(&register);
+        .heartbeat(
+            &register,
+            &[
+                InventoryAgent {
+                    agent_id: "agent-b".to_string(),
+                    name: "worker-b".to_string(),
+                    invocation_id: None,
+                    session_ref: None,
+                },
+                InventoryAgent {
+                    agent_id: "agent-a".to_string(),
+                    name: "worker-a".to_string(),
+                    invocation_id: None,
+                    session_ref: None,
+                },
+            ],
+        );
         assert_eq!(measured.load, Some(0.75));
         let live_agent_capability = measured
             .capabilities
@@ -4218,14 +4253,53 @@ mod tests {
             active_agents: 25,
             max_agents: 0,
             handlers_live: true,
-            active_agent_names: Vec::new(),
         }
-        .heartbeat(&register);
+        .heartbeat(&register, &[]);
         assert_eq!(unbounded.load, Some(0.0));
 
         let value = serde_json::to_value(BrokerToRelaycast::NodeHeartbeat(unbounded)).unwrap();
         assert_eq!(value["load"], 0.0);
         assert_eq!(value["active_agents"], 25);
+    }
+
+    #[test]
+    fn heartbeat_live_names_match_reconnect_inventory() {
+        let register = build_node_register(
+            &test_manifest(),
+            "node-default",
+            "host-default",
+            "broker/test",
+            None,
+        );
+        let inventory = vec![InventoryAgent {
+            agent_id: "agent-inventory-id".to_string(),
+            name: "inventory-worker".to_string(),
+            invocation_id: None,
+            session_ref: Some("session-inventory".to_string()),
+        }];
+        let heartbeat = FleetLoadSnapshot {
+            active_agents: 2,
+            max_agents: 4,
+            handlers_live: true,
+        }
+        .heartbeat(&register, &inventory);
+        let heartbeat_names = heartbeat
+            .capabilities
+            .iter()
+            .find(|capability| capability.name == LIVE_AGENT_CAPABILITY_NAME)
+            .and_then(|capability| capability.metadata.as_ref())
+            .and_then(|metadata| metadata.get("names"))
+            .cloned()
+            .expect("heartbeat must publish live worker names");
+        let mut inventory_names: Vec<_> =
+            inventory.iter().map(|agent| agent.name.as_str()).collect();
+        inventory_names.sort_unstable();
+
+        assert_eq!(
+            heartbeat_names,
+            serde_json::json!(inventory_names),
+            "heartbeat authorization names and inventory.sync must derive from one live-worker set"
+        );
     }
 
     #[test]
