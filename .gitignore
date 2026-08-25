@@ -81,6 +81,7 @@ __pycache__/
 .agentworkforce/relay/
 .relay/
 .agent-relay/
+.relayflow/pr-proof-input.json
 
 .msd/
 /workflows/*
@@ -91,6 +92,7 @@ __pycache__/
 !/workflows/cloud-connect/
 !/workflows/verify-features.ts
 !/workflows/audit-feature-manifest.ts
+!/workflows/pr-proof.ts
 
 # Eval harness JSON reports (generated per run)
 tests/integration/broker/evals-reports/

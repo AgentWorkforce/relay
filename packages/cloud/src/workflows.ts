@@ -7,6 +7,7 @@ import ignore from 'ignore';
 import * as tar from 'tar';
 
 import { ensureAuthenticated, authorizedApiFetch } from './auth.js';
+import { WorkflowApiKeyClient } from './api-client.js';
 import {
   defaultApiUrl,
   type WorkflowFileType,
@@ -57,6 +58,8 @@ type RunWorkflowOptions = {
   startFrom?: string;
   previousRunId?: string;
 };
+
+const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 
 const CODE_SYNC_EXCLUDES = [
   '.git',
@@ -238,7 +241,7 @@ export async function runWorkflow(
   options: RunWorkflowOptions = {}
 ): Promise<RunWorkflowResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  let auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
 
   if (input.fileType === 'ts') {
@@ -269,15 +272,10 @@ export async function runWorkflow(
   if (syncCode) {
     const t0 = Date.now();
     console.error('Preparing run...');
-    const { response: prepResponse, auth: prepAuth } = await authorizedApiFetch(
-      auth,
-      '/api/v1/workflows/prepare',
-      {
-        method: 'POST',
-        headers: { Accept: 'application/json' },
-      }
-    );
-    auth = prepAuth;
+    const prepResponse = await api.fetch('/api/v1/workflows/prepare', {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+    });
 
     const prepPayload = await readJsonResponse(prepResponse);
     if (!prepResponse.ok) {
@@ -289,24 +287,26 @@ export async function runWorkflow(
     }
 
     const prepared = prepPayload;
+    // Trusted automation can opt into this machine-readable progress record
+    // before code upload and final submission. It lets a supervising process
+    // cancel the prepared run if the CLI is interrupted after the launch POST
+    // has completed but before the final JSON response is observed.
+    if (process.env.AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID === '1') {
+      console.error(`${PREPARED_RUN_ID_MARKER}${prepared.runId}`);
+    }
     console.error(`  Prepared in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
     let s3Client: S3Client | null = null;
     const uploadCodeObject = async (objectKey: string, tarball: Buffer) => {
       if (isCloudApiWorkflowStorage(prepared)) {
-        const { response, auth: uploadAuth } = await authorizedApiFetch(
-          auth,
-          workflowStorageObjectPath(prepared.runId, objectKey),
-          {
-            method: 'PUT',
-            headers: {
-              'content-type': 'application/gzip',
-              accept: 'application/json',
-            },
-            body: tarball as unknown as BodyInit,
-          }
-        );
-        auth = uploadAuth;
+        const response = await api.fetch(workflowStorageObjectPath(prepared.runId, objectKey), {
+          method: 'PUT',
+          headers: {
+            'content-type': 'application/gzip',
+            accept: 'application/json',
+          },
+          body: tarball as unknown as BodyInit,
+        });
         const payload = await readJsonResponse(response);
         if (!response.ok) {
           throw new Error(`Workflow storage upload failed: ${describeResponseError(response, payload)}`);
@@ -410,7 +410,7 @@ export async function runWorkflow(
 
   const t3 = Date.now();
   console.error('Launching workflow...');
-  const { response, auth: updatedAuth } = await authorizedApiFetch(auth, '/api/v1/workflows/run', {
+  const response = await api.fetch('/api/v1/workflows/run', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -418,7 +418,6 @@ export async function runWorkflow(
     },
     body: JSON.stringify(requestBody),
   });
-  auth = updatedAuth;
 
   console.error(`  Launched in ${((Date.now() - t3) / 1000).toFixed(1)}s`);
 
@@ -450,7 +449,7 @@ export async function scheduleWorkflow(
   }
 
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
 
   if (input.fileType === 'ts') {
@@ -486,7 +485,7 @@ export async function scheduleWorkflow(
     requestBody.scheduled_at = scheduledAt.toISOString();
   }
 
-  const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
+  const response = await api.fetch('/api/v1/workflows/schedules', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -509,8 +508,8 @@ export async function scheduleWorkflow(
 
 export async function listWorkflowSchedules(options: { apiUrl?: string } = {}): Promise<WorkflowSchedule[]> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
+  const api = await workflowApiClient(apiUrl);
+  const response = await api.fetch('/api/v1/workflows/schedules', {
     headers: { Accept: 'application/json' },
   });
 
@@ -535,8 +534,8 @@ export async function getRunStatus(
   options: { apiUrl?: string } = {}
 ): Promise<Record<string, unknown>> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(auth, `/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
+  const api = await workflowApiClient(apiUrl);
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
     headers: { Accept: 'application/json' },
   });
 
@@ -557,15 +556,11 @@ export async function cancelWorkflow(
   options: { apiUrl?: string } = {}
 ): Promise<{ runId: string; status: string }> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(
-    auth,
-    `/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`,
-    {
-      method: 'POST',
-      headers: { Accept: 'application/json' },
-    }
-  );
+  const api = await workflowApiClient(apiUrl);
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+  });
 
   const payload = await readJsonResponse(response);
   if (!response.ok) {
@@ -588,7 +583,7 @@ export async function getRunLogs(
   } = {}
 ): Promise<WorkflowLogsResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
   const searchParams = new URLSearchParams();
   if (typeof options.offset === 'number') {
     searchParams.set('offset', String(options.offset));
@@ -599,7 +594,7 @@ export async function getRunLogs(
 
   const requestPath = `/api/v1/workflows/runs/${encodeURIComponent(runId)}/logs${searchParams.size ? `?${searchParams.toString()}` : ''}`;
 
-  const { response } = await authorizedApiFetch(auth, requestPath, {
+  const response = await api.fetch(requestPath, {
     headers: { Accept: 'application/json' },
   });
 
@@ -627,15 +622,12 @@ export async function syncWorkflowPatch(
   options: { apiUrl?: string } = {}
 ): Promise<SyncPatchResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  let auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
 
   // Verify the run is completed
-  const { response: statusResponse, auth: a1 } = await authorizedApiFetch(
-    auth,
-    `/api/v1/workflows/runs/${encodeURIComponent(runId)}`,
-    { headers: { Accept: 'application/json' } }
-  );
-  auth = a1;
+  const statusResponse = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
+    headers: { Accept: 'application/json' },
+  });
 
   if (!statusResponse.ok) {
     const payload = await readJsonResponse(statusResponse);
@@ -648,11 +640,9 @@ export async function syncWorkflowPatch(
   }
 
   // Download the patch
-  const { response } = await authorizedApiFetch(
-    auth,
-    `/api/v1/workflows/runs/${encodeURIComponent(runId)}/patch`,
-    { headers: { Accept: 'application/json' } }
-  );
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}/patch`, {
+    headers: { Accept: 'application/json' },
+  });
 
   const payload = await readJsonResponse(response);
   if (!response.ok) {
@@ -675,6 +665,25 @@ export async function syncWorkflowPatch(
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+type WorkflowHttpClient = {
+  fetch(requestPath: string, init?: RequestInit): Promise<Response>;
+};
+
+async function storedWorkflowClient(apiUrl: string): Promise<WorkflowHttpClient> {
+  let auth = await ensureAuthenticated(apiUrl);
+  return {
+    async fetch(requestPath, init = {}) {
+      const result = await authorizedApiFetch(auth, requestPath, init);
+      auth = result.auth;
+      return result.response;
+    },
+  };
+}
+
+async function workflowApiClient(apiUrl: string): Promise<WorkflowHttpClient> {
+  return WorkflowApiKeyClient.fromEnv(apiUrl) ?? storedWorkflowClient(apiUrl);
+}
 
 async function readJsonResponse(response: Response): Promise<unknown> {
   const rawBody = await response.text();

@@ -42,6 +42,52 @@ export function buildApiUrl(apiUrl: string, p: string): URL {
   return new URL(trimLeadingSlash(p), withTrailingSlash(apiUrl));
 }
 
+function bearerHeaders(headers: HeaderInput | undefined, accessToken: string, defaultJson: boolean): Headers {
+  const merged = new Headers(headers);
+  if (defaultJson && !merged.has('content-type')) {
+    merged.set('content-type', 'application/json');
+  }
+  merged.set('Authorization', `Bearer ${accessToken}`);
+  return appendAgentRelayTelemetryHeaders(merged);
+}
+
+/**
+ * A deliberately small, non-refreshing client for workflow automation. It has
+ * no path to stored sessions, token rotation, browser login, or device login.
+ */
+export class WorkflowApiKeyClient {
+  private constructor(
+    private readonly apiUrl: string,
+    private readonly apiKey: string
+  ) {}
+
+  static fromEnv(apiUrl: string, env: NodeJS.ProcessEnv = process.env): WorkflowApiKeyClient | null {
+    const apiKey = env.CLOUD_API_KEY?.trim();
+    if (!apiKey) return null;
+
+    try {
+      new URL(apiUrl);
+    } catch (error) {
+      throw new CloudAuthError(
+        'AUTH_ENV_REPROVISION_REQUIRED',
+        'CLOUD_API_URL is invalid for CLOUD_API_KEY',
+        {
+          cause: error,
+        }
+      );
+    }
+
+    return new WorkflowApiKeyClient(apiUrl, apiKey);
+  }
+
+  fetch(p: string, init: RequestInit = {}): Promise<Response> {
+    return fetch(buildApiUrl(this.apiUrl, p), {
+      ...init,
+      headers: bearerHeaders(init.headers, this.apiKey, true),
+    });
+  }
+}
+
 export class CloudApiClient {
   private apiUrl: string;
   private accessToken: string;
@@ -242,9 +288,7 @@ export class CloudApiClient {
   }
 
   private buildHeaders(headers: HeaderInput | undefined): Headers {
-    const merged = new Headers(headers);
-    merged.set('Authorization', `Bearer ${this.accessToken}`);
-    return appendAgentRelayTelemetryHeaders(merged);
+    return bearerHeaders(headers, this.accessToken, false);
   }
 
   private shouldRefresh(): boolean {
