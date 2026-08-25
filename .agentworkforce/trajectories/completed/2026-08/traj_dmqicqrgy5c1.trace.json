@@ -1,0 +1,516 @@
+{
+  "version": "1.0.0",
+  "id": "5e19ca7a-8ee1-4fbd-84cc-170bf89080a2",
+  "timestamp": "2026-08-25T19:56:08.566Z",
+  "trajectory": "traj_dmqicqrgy5c1",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_yr3f5u3r6zdz/summary.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 54,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_yr3f5u3r6zdz/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 128,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/pull_request_template.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 21,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/relayflow-pr-proof.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 113,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".gitignore",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 81,
+              "end_line": 87,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 92,
+              "end_line": 98,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/api-client.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 41,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/api-client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 42,
+              "end_line": 93,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 288,
+              "end_line": 294,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/auth.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 219,
+              "end_line": 243,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/auth.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 825,
+              "end_line": 840,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflows.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 19,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 517,
+              "end_line": 553,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 797,
+              "end_line": 822,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflows.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 13,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 59,
+              "end_line": 66,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 241,
+              "end_line": 247,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 272,
+              "end_line": 281,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 287,
+              "end_line": 312,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 410,
+              "end_line": 416,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 418,
+              "end_line": 423,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 449,
+              "end_line": 455,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 485,
+              "end_line": 491,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 508,
+              "end_line": 515,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 534,
+              "end_line": 541,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 556,
+              "end_line": 566,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 583,
+              "end_line": 589,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 594,
+              "end_line": 600,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 622,
+              "end_line": 633,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 640,
+              "end_line": 648,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            },
+            {
+              "start_line": 666,
+              "end_line": 690,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/cloud-storage.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 101,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/contract.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 326,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/prepare.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 253,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/process-runner.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 198,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/report-status.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 199,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/run-arm.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 210,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/run-cloud.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 310,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/verify-evidence.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 104,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/pr-proof-contract.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 753,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1602-parentless-worker-inventory/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 20,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1602-parentless-worker-inventory/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 485,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 147,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/pr-proof.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 88,
+              "revision": "d0b5207386a9eb4068befdc3d7bb3bd98da9694d"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
