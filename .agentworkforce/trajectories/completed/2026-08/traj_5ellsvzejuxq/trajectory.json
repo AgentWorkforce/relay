@@ -46,12 +46,19 @@
     "approach": "Standard approach",
     "confidence": 0.97
   },
-  "commits": [],
-  "filesChanged": [],
+  "commits": [
+    "75f92f4474dc621a7b8e461e121c24605c40bccc"
+  ],
+  "filesChanged": [
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/worker.rs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "4a695b26e9022756f1729be31b929fa61535b0a4",
-    "endRef": "4a695b26e9022756f1729be31b929fa61535b0a4"
+    "endRef": "75f92f4474dc621a7b8e461e121c24605c40bccc",
+    "traceId": "60d228aa-be88-43f6-b386-88de5bd5d1ef"
   }
 }
