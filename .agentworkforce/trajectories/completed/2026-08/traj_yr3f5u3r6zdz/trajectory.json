@@ -1,0 +1,128 @@
+{
+  "id": "traj_yr3f5u3r6zdz",
+  "version": 1,
+  "task": {
+    "title": "Add PR-specific Cloud RelayFlow red-green proof infrastructure"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-25T08:45:32.835Z",
+  "completedAt": "2026-08-25T09:14:31.949Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-25T08:50:30.315Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cco5mxx3i8f5",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-25T08:50:30.315Z",
+      "endedAt": "2026-08-25T09:14:31.949Z",
+      "events": [
+        {
+          "ts": 1787647830316,
+          "type": "decision",
+          "content": "Require exactly one PR proof case and a structured observation result: Require exactly one PR proof case and a structured observation result",
+          "raw": {
+            "question": "Require exactly one PR proof case and a structured observation result",
+            "chosen": "Require exactly one PR proof case and a structured observation result",
+            "alternatives": [],
+            "reasoning": "One feature or fix should trigger only its own case. The case runner must exit successfully after observing behavior and write bug/absent/fixed plus an exact signature; test crashes, missing tests, skips, and build failures remain infrastructure failures and cannot count as expected red."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787647830374,
+          "type": "decision",
+          "content": "Use pull_request_target only as a trusted dispatcher; execute PR case code only inside Cloud sandboxes: Use pull_request_target only as a trusted dispatcher; execute PR case code only inside Cloud sandboxes",
+          "raw": {
+            "question": "Use pull_request_target only as a trusted dispatcher; execute PR case code only inside Cloud sandboxes",
+            "chosen": "Use pull_request_target only as a trusted dispatcher; execute PR case code only inside Cloud sandboxes",
+            "alternatives": [],
+            "reasoning": "The GitHub runner must never checkout or execute untrusted head code while holding Cloud credentials. It will fetch and validate one declarative case manifest, stage exact base/head SHAs, and submit the trusted base-branch RelayFlow."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787649023999,
+          "type": "decision",
+          "content": "Disable automatic repair and retries for PR proof workflows: Disable automatic repair and retries for PR proof workflows",
+          "raw": {
+            "question": "Disable automatic repair and retries for PR proof workflows",
+            "chosen": "Disable automatic repair and retries for PR proof workflows",
+            "alternatives": [
+              {
+                "option": "Default retry policy",
+                "reason": ""
+              },
+              {
+                "option": "Continue on failure",
+                "reason": ""
+              }
+            ],
+            "reasoning": "A red/green gate must preserve the first observation and fail closed. RelayFlow defaults to agent-assisted repair retries when agents exist, so the proof workflow explicitly uses fail-fast with zero step retries."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787649024705,
+          "type": "decision",
+          "content": "Stage the validated generated input in the disposable CI git index: Stage the validated generated input in the disposable CI git index",
+          "raw": {
+            "question": "Stage the validated generated input in the disposable CI git index",
+            "chosen": "Stage the validated generated input in the disposable CI git index",
+            "alternatives": [
+              {
+                "option": "Change global code-sync semantics",
+                "reason": ""
+              },
+              {
+                "option": "Commit a placeholder input file",
+                "reason": ""
+              }
+            ],
+            "reasoning": "Cloud code sync uploads git-known files. The per-PR input is generated after checkout, so the action must git-add it without committing or pushing or the Cloud workflow cannot see the exact case and SHAs."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787649025196,
+          "type": "decision",
+          "content": "Require explicit proof classification on every PR: Require explicit proof classification on every PR",
+          "raw": {
+            "question": "Require explicit proof classification on every PR",
+            "chosen": "Require explicit proof classification on every PR",
+            "alternatives": [
+              {
+                "option": "Infer only from conventional titles",
+                "reason": ""
+              },
+              {
+                "option": "Run Cloud for every PR",
+                "reason": ""
+              }
+            ],
+            "reasoning": "Silently treating missing metadata as non-functional would let non-conventional feature and fix titles bypass the gate. Every PR must declare feature, bugfix, or non-functional; only the first two launch Cloud."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented trusted PR classification and single-case dispatch, a fail-closed Cloud RelayFlow that proves base then head in distinct per-step sandboxes, provenance/evidence validation, GitHub Action wiring, tests, template guidance, and credential rollout documentation.",
+    "approach": "Kept pull_request_target as a data-only trusted dispatcher, ran PR code only in Cloud, represented expected-red as a structured successful observation, disabled repair retries, validated exact base/head SHAs and sandbox IDs, and tested both the contracts and the complete repository.",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "191e5f14a343431ec42282c1103c9f014854ac0b",
+    "endRef": "191e5f14a343431ec42282c1103c9f014854ac0b"
+  }
+}
