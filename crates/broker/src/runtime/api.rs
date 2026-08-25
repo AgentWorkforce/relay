@@ -965,11 +965,6 @@ impl BrokerRuntime {
                         super::fleet::publish_fleet_load_snapshot(
                             fleet_control_tx,
                             u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
-                            workers
-                                .workers
-                                .keys()
-                                .map(|name| name.as_str().to_string())
-                                .collect(),
                             fleet_max_agents,
                             fleet_handlers_live,
                             true,
@@ -1072,11 +1067,6 @@ impl BrokerRuntime {
                             super::fleet::publish_fleet_load_snapshot(
                                 fleet_control_tx,
                                 u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
-                                workers
-                                    .workers
-                                    .keys()
-                                    .map(|name| name.as_str().to_string())
-                                    .collect(),
                                 fleet_max_agents,
                                 fleet_handlers_live,
                                 true,

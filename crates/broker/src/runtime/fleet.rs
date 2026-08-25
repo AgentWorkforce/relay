@@ -1489,19 +1489,12 @@ impl BrokerRuntime {
 
     async fn publish_fleet_load(&self, heartbeat_now: bool) {
         let active_agents = u32::try_from(self.workers.workers.len()).unwrap_or(u32::MAX);
-        let active_agent_names = self
-            .workers
-            .workers
-            .keys()
-            .map(|name| name.as_str().to_string())
-            .collect();
         // The broker provider's capacity handlers (spawn/release) are live for as
         // long as its connection is up, so `handlers_live` is unconditionally true
         // here — a connected broker can always place work.
         publish_fleet_load_snapshot(
             &self.fleet_control_tx,
             active_agents,
-            active_agent_names,
             self.fleet_max_agents,
             true,
             heartbeat_now,
@@ -1830,7 +1823,6 @@ pub(super) async fn register_node_agent_token(
 pub(super) async fn publish_fleet_load_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     active_agents: u32,
-    active_agent_names: Vec<String>,
     max_agents: u32,
     handlers_live: bool,
     heartbeat_now: bool,
@@ -1840,7 +1832,6 @@ pub(super) async fn publish_fleet_load_snapshot(
             active_agents,
             max_agents,
             handlers_live,
-            active_agent_names,
         }))
     {
         tracing::warn!(error = %error, "fleet load update queue is unavailable; periodic heartbeat will retry");
@@ -3280,7 +3271,7 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_millis(50),
-            publish_fleet_load_snapshot(&tx, 1, vec!["worker-a".to_string()], 4, true, true),
+            publish_fleet_load_snapshot(&tx, 1, 4, true, true),
         )
         .await
         .expect("load publication must not stall the runtime API actor");
@@ -4021,12 +4012,11 @@ mod tests {
     async fn publish_fleet_load_snapshot_emits_immediate_heartbeat_after_release() {
         let (tx, mut rx) = mpsc::channel(4);
 
-        publish_fleet_load_snapshot(&tx, 1, vec!["worker-a".to_string()], 4, true, true).await;
+        publish_fleet_load_snapshot(&tx, 1, 4, true, true).await;
 
         match rx.recv().await {
             Some(FleetControlCommand::UpdateLoad(load)) => {
                 assert_eq!(load.active_agents, 1);
-                assert_eq!(load.active_agent_names, vec!["worker-a"]);
                 assert_eq!(load.max_agents, 4);
                 assert!(load.handlers_live);
             }
