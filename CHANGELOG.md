@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.8.4] - 2026-08-25
+
+### Changed
+
+- Gate feature and fix PRs with isolated red-green proofs
+
 ## [11.8.3] - 2026-08-24
 
 ### Fixed
