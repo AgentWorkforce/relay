@@ -3461,6 +3461,54 @@ mod tests {
 
     #[tokio::test]
     async fn reconciliation_adds_an_adopted_live_worker_without_reregistering() {
+        let temp = tempfile::tempdir().expect("worker registry tempdir");
+        let (event_tx, _event_rx) = mpsc::channel::<WorkerEvent>(4);
+        let mut workers = WorkerRegistry::new(
+            event_tx,
+            Vec::new(),
+            temp.path().join("worker-logs"),
+            Instant::now(),
+        );
+        let mut child_command = tokio::process::Command::new("sh");
+        child_command
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let child = child_command.spawn().expect("live adopted PTY fixture");
+        let adopted_name = WorkerName::from("adopted-worker");
+        let mut adopted_spec = test_agent_spec(Some("session-adopted"), None);
+        adopted_spec.name = adopted_name.clone();
+        let (worker_command_tx, _worker_command_rx) = mpsc::channel(4);
+        workers.workers.insert(
+            adopted_name.clone(),
+            WorkerHandle {
+                generation: Uuid::from_u128(101),
+                spec: adopted_spec,
+                // Reproduce the incident seam: an adopted/migrated live PTY no
+                // longer has the original fleet spawn parent marker.
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx: worker_command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: crate::worker::AgentWorkState::Idle,
+                exit_reason: None,
+            },
+        );
+        let live_workers = workers.live_fleet_inventory_candidates();
+        assert_eq!(live_workers.len(), 1);
+        assert_eq!(live_workers[0].name, adopted_name);
+        assert_eq!(
+            live_workers[0].session_ref.as_deref(),
+            Some("session-adopted")
+        );
+
         let server = MockServer::start();
         let lookup = server.mock(|when, then| {
             when.method(GET)
@@ -3508,10 +3556,7 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![
-                live_fleet_worker("inventory-worker", Some("session-inventory"), 100),
-                live_fleet_worker("adopted-worker", Some("session-adopted"), 101),
-            ],
+            live_workers,
             Instant::now(),
         )
         .await;
@@ -3539,6 +3584,7 @@ mod tests {
                 assert!(agents.iter().any(|agent| {
                     agent.name == "adopted-worker" && agent.agent_id == "agent-adopted-id"
                 }));
+                crate::node_control::tests::assert_repaired_inventory_drives_heartbeat_and_survives_reconnect(agents).await;
             }
             other => panic!("expected repaired inventory snapshot, got {other:?}"),
         }
