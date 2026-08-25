@@ -47,7 +47,7 @@ function readApiKeyAuth(apiUrl: string, env: NodeJS.ProcessEnv = process.env): C
   const apiKey = env.CLOUD_API_KEY?.trim();
   if (!apiKey) return null;
 
-  const configuredApiUrl = env.CLOUD_API_URL?.trim() || apiUrl;
+  const configuredApiUrl = apiUrl;
   try {
     new URL(configuredApiUrl);
   } catch (error) {

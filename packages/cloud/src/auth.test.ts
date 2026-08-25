@@ -225,25 +225,24 @@ describe('ensureAuthenticated', () => {
     return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   }
 
-  it('uses one non-refreshing Cloud API key without reading stored login state', async () => {
+  it('uses one non-refreshing Cloud API key and preserves explicit URL precedence', async () => {
     vi.stubEnv('CLOUD_API_URL', 'https://ci.example/cloud');
     vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
     fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
 
-    await expect(ensureAuthenticated('https://default.example/cloud')).resolves.toEqual({
+    await expect(ensureAuthenticated('https://explicit.example/cloud')).resolves.toEqual({
       authMode: 'api-key',
-      apiUrl: 'https://ci.example/cloud',
+      apiUrl: 'https://explicit.example/cloud',
       accessToken: 'ci-api-key',
     });
     expect(fsMocks.readFile).not.toHaveBeenCalled();
   });
 
   it('fails closed when API-key auth has a malformed Cloud URL', async () => {
-    vi.stubEnv('CLOUD_API_URL', 'not-a-url');
     vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
     fsMocks.readFile.mockResolvedValue(JSON.stringify(FILE_AUTH));
 
-    await expect(ensureAuthenticated('https://default.example/cloud')).rejects.toMatchObject({
+    await expect(ensureAuthenticated('not-a-url')).rejects.toMatchObject({
       code: 'AUTH_ENV_REPROVISION_REQUIRED',
     });
     expect(fsMocks.readFile).not.toHaveBeenCalled();
