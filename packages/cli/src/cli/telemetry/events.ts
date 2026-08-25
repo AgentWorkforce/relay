@@ -361,8 +361,11 @@ export interface CloudAuthEvent {
   duration_ms: number;
   /** Provider id for `connect` flows (e.g., 'anthropic', 'openai') */
   provider?: string;
-  /** Which login style ran; only present for `login` */
-  method?: 'browser' | 'device';
+  /**
+   * Which style of flow ran: `browser`/`device` for `login`, `setup_token` for
+   * a non-interactive `connect --setup-token`. Absent when the default flow ran.
+   */
+  method?: 'browser' | 'device' | 'setup_token';
   /** Error constructor name on failure */
   error_class?: string;
 }

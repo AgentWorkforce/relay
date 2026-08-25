@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay cloud connect anthropic --setup-token` stores a locally generated `claude setup-token` against the active workspace instead of running the interactive SSH flow, so Cloud sandboxes get `CLAUDE_CODE_OAUTH_TOKEN` without a TTY-bound login. Pass the token inline or let the command prompt for it without echo; `--workspace` overrides the active workspace.
 - `relay session replay <id>` and `@agent-relay/session`'s `SessionClient.replaySession()` now include the cross-node Relaycast conversation for the session, report the effective retention boundary, and flag incomplete coverage.
 - Relay channel, thread, direct, and group messages now carry their originating session so they can be recovered in later session replays.
 

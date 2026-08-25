@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
 import { create as createTar } from 'tar';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const cloudMocks = vi.hoisted(() => ({
   runWorkflow: vi.fn(),
@@ -19,6 +19,7 @@ const cloudMocks = vi.hoisted(() => ({
   enrollFleetNode: vi.fn(),
   upsertFleetNodeEnrollment: vi.fn(),
   isHeadlessEnvironment: vi.fn(() => false),
+  resolveActiveWorkspaceKey: vi.fn(() => undefined as string | undefined),
 }));
 
 vi.mock('@agent-relay/cloud', async (importOriginal) => ({
@@ -46,6 +47,10 @@ vi.mock('@agent-relay/cloud', async (importOriginal) => ({
   // prefix set, so a copy here would let production drift past these tests.
   redactCredentialValues: (await importOriginal<typeof import('@agent-relay/cloud')>())
     .redactCredentialValues,
+  // Likewise real: `--setup-token` gates on the normalized provider, so a copy
+  // of the alias table here would let production drift past these tests.
+  normalizeProvider: (await importOriginal<typeof import('@agent-relay/cloud')>()).normalizeProvider,
+  resolveActiveWorkspaceKey: (...args: unknown[]) => cloudMocks.resolveActiveWorkspaceKey(...args),
   registerCloudWorker: (...args: unknown[]) => cloudMocks.registerCloudWorker(...args),
   resolveCloudWorkerRecord: (...args: unknown[]) => cloudMocks.resolveCloudWorkerRecord(...args),
   runWorkflow: (...args: unknown[]) => cloudMocks.runWorkflow(...args),
@@ -66,6 +71,7 @@ vi.mock('../telemetry/index.js', () => ({
 
 import {
   authorizedApiFetch,
+  connectProvider,
   ensureAuthenticated,
   ensureCloudSession,
   readStoredAuth,
@@ -99,6 +105,10 @@ function createHarness(overrides?: Partial<CloudDependencies>) {
     linkEnrolledNodeToProjectPin: vi.fn(() => ({
       status: 'no-pin',
     })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'],
+    resolveActiveWorkspaceKey:
+      cloudMocks.resolveActiveWorkspaceKey as unknown as CloudDependencies['resolveActiveWorkspaceKey'],
+    // Stubbed by default so no test can block on the real terminal.
+    promptSecret: vi.fn(async () => ''),
     ...overrides,
   };
 
@@ -615,6 +625,357 @@ describe('registerCloudCommands', () => {
     expect(connect?.registeredArguments[0]?.description).toContain('anthropic (alias: claude)');
     expect(connect?.registeredArguments[0]?.description).toContain('openai (alias: codex)');
     expect(connect?.registeredArguments[0]?.description).toContain('google (alias: gemini)');
+  });
+
+  describe('cloud connect --setup-token', () => {
+    // A Claude setup-token is a live Anthropic OAuth access token. Every test
+    // below asserts it never reaches a URL, the logs, or an error message.
+    const SETUP_TOKEN = 'sk-ant-oat-01-not-a-real-token';
+    const WORKSPACE_KEY = 'br_live_activekey';
+    const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
+    const SETUP_TOKEN_PATH = `/api/v1/workspaces/${CLOUD_WORKSPACE_ID}/provider-credentials/setup-token`;
+
+    const auth = {
+      apiUrl: 'https://cloud.test',
+      accessToken: 'access-secret',
+      refreshToken: 'refresh-secret',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    const resolvedAuth = { ...auth, accessToken: 'refreshed-secret' };
+
+    function mockWorkspaceResolve() {
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: jsonResponse({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: resolvedAuth,
+      });
+    }
+
+    function mockSetupTokenResponse(body: unknown, init: ResponseInit = {}) {
+      vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+        response: jsonResponse(body, init),
+        auth: resolvedAuth,
+      });
+    }
+
+    function allOutput(deps: CloudDependencies): string {
+      return [
+        ...vi.mocked(deps.log).mock.calls.flat(),
+        ...vi.mocked(deps.warn).mock.calls.flat(),
+        ...vi.mocked(deps.error).mock.calls.flat(),
+      ].join('\n');
+    }
+
+    beforeEach(() => {
+      vi.mocked(ensureCloudSession).mockResolvedValue({ auth, client: {} as never });
+      cloudMocks.resolveActiveWorkspaceKey.mockReturnValue(WORKSPACE_KEY);
+    });
+
+    // `vi.clearAllMocks` drops recorded calls but keeps implementations, so
+    // these stubs have to be torn down or they leak into every later test.
+    afterEach(() => {
+      vi.mocked(ensureCloudSession).mockReset();
+      vi.mocked(authorizedApiFetch).mockReset();
+      vi.mocked(connectProvider).mockReset();
+      cloudMocks.resolveActiveWorkspaceKey.mockReset();
+    });
+
+    it('exposes --setup-token and --workspace on the connect command', () => {
+      const { program } = createHarness();
+      const connect = program.commands
+        .find((command) => command.name() === 'cloud')
+        ?.commands.find((command) => command.name() === 'connect');
+
+      const optionNames = connect?.options.map((option) => option.long);
+      expect(optionNames).toContain('--setup-token');
+      expect(optionNames).toContain('--workspace');
+      // The interactive flow's own options stay untouched.
+      expect(optionNames).toContain('--language');
+      expect(optionNames).toContain('--timeout');
+    });
+
+    it('stores a pasted token against the active workspace without touching the SSH flow', async () => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse({ providerCredentialId: 'cred_1', id: 'cred_1' }, { status: 201 });
+      const { program, deps } = createHarness();
+
+      await program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'connect',
+        'anthropic',
+        '--setup-token',
+        SETUP_TOKEN,
+      ]);
+
+      expect(ensureCloudSession).toHaveBeenCalledWith({
+        apiUrl: 'https://cloud.test',
+        interactive: false,
+      });
+      expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+        1,
+        auth,
+        `/api/v1/workspaces/${WORKSPACE_KEY}/resolve`,
+        { method: 'GET' },
+        { interactive: false }
+      );
+      expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+        2,
+        resolvedAuth,
+        SETUP_TOKEN_PATH,
+        {
+          method: 'POST',
+          body: JSON.stringify({ token: SETUP_TOKEN, label: 'agent-relay CLI setup token' }),
+        },
+        { interactive: false }
+      );
+      expect(connectProvider).not.toHaveBeenCalled();
+      expect(deps.log).toHaveBeenCalledWith(
+        `Claude setup token stored for Cloud workspace ${CLOUD_WORKSPACE_ID}.`
+      );
+      expect(allOutput(deps)).not.toContain(SETUP_TOKEN);
+    });
+
+    it('never puts the token in a request path or query string', async () => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse({ id: 'cred_1' });
+      const { program } = createHarness();
+
+      await program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'connect',
+        'claude',
+        '--setup-token',
+        SETUP_TOKEN,
+      ]);
+
+      for (const call of vi.mocked(authorizedApiFetch).mock.calls) {
+        expect(String(call[1])).not.toContain(SETUP_TOKEN);
+      }
+    });
+
+    it('prompts for the token when --setup-token is passed without a value', async () => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse({ id: 'cred_1' });
+      const promptSecret = vi.fn(async () => `  ${SETUP_TOKEN}  `);
+      const { program } = createHarness({ promptSecret });
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'anthropic', '--setup-token']);
+
+      expect(promptSecret).toHaveBeenCalledWith(expect.stringContaining('claude setup-token'));
+      expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+        2,
+        resolvedAuth,
+        SETUP_TOKEN_PATH,
+        // Trimmed, so a trailing newline from the paste never reaches Cloud.
+        expect.objectContaining({
+          body: JSON.stringify({ token: SETUP_TOKEN, label: 'agent-relay CLI setup token' }),
+        }),
+        { interactive: false }
+      );
+    });
+
+    it('rejects an empty prompted token before any request', async () => {
+      const promptSecret = vi.fn(async () => '   ');
+      const { program } = createHarness({ promptSecret });
+
+      await expect(
+        program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'anthropic', '--setup-token'])
+      ).rejects.toThrow('A setup token is required');
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects a token that carries whitespace without echoing it', async () => {
+      const { program } = createHarness();
+
+      const error = await program
+        .parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'connect',
+          'anthropic',
+          '--setup-token',
+          `${SETUP_TOKEN} extra`,
+        ])
+        .then(
+          () => null,
+          (err: unknown) => err as Error
+        );
+
+      expect(error?.message).toContain('contains whitespace');
+      expect(error?.message).not.toContain(SETUP_TOKEN);
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses --setup-token for providers the endpoint does not accept', async () => {
+      const { program } = createHarness();
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'connect',
+          'openai',
+          '--setup-token',
+          SETUP_TOKEN,
+        ])
+      ).rejects.toThrow('--setup-token is only supported for anthropic');
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+      expect(connectProvider).not.toHaveBeenCalled();
+    });
+
+    it('stores against --workspace instead of the active workspace when given', async () => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse({ id: 'cred_1' });
+      const { program } = createHarness();
+
+      await program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'connect',
+        'anthropic',
+        '--setup-token',
+        SETUP_TOKEN,
+        '--workspace',
+        'rw_7ccfea89',
+      ]);
+
+      expect(cloudMocks.resolveActiveWorkspaceKey).not.toHaveBeenCalled();
+      expect(authorizedApiFetch).toHaveBeenNthCalledWith(
+        1,
+        auth,
+        '/api/v1/workspaces/rw_7ccfea89/resolve',
+        { method: 'GET' },
+        { interactive: false }
+      );
+    });
+
+    it('points at workspace setup when nothing is active and no --workspace is passed', async () => {
+      cloudMocks.resolveActiveWorkspaceKey.mockReturnValue(undefined);
+      const { program } = createHarness();
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'connect',
+          'anthropic',
+          '--setup-token',
+          SETUP_TOKEN,
+        ])
+      ).rejects.toThrow('No active Agent Relay workspace found');
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+    });
+
+    it('rejects --workspace on the interactive flow rather than silently ignoring it', async () => {
+      const { program } = createHarness();
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'connect',
+          'anthropic',
+          '--workspace',
+          'rw_7ccfea89',
+        ])
+      ).rejects.toThrow('--workspace only applies to');
+      expect(connectProvider).not.toHaveBeenCalled();
+    });
+
+    it('drops a rejection detail that echoes the token back', async () => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse(
+        { error: `Anthropic rejected ${SETUP_TOKEN}`, code: 'setup_token_invalid' },
+        { status: 400 }
+      );
+      const { program } = createHarness();
+
+      const error = await program
+        .parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'anthropic', '--setup-token', SETUP_TOKEN])
+        .then(
+          () => null,
+          (err: unknown) => err as Error
+        );
+
+      expect(error?.message).toContain('Agent Relay Cloud rejected the setup token');
+      expect(error?.message).toContain('claude setup-token');
+      expect(error?.message).not.toContain(SETUP_TOKEN);
+    });
+
+    it.each([
+      { status: 401, message: 'Cloud login required' },
+      { status: 403, message: 'You do not have permission to store provider credentials' },
+      { status: 404, message: 'That workspace was not found by Agent Relay Cloud' },
+      { status: 429, message: 'Cloud provider-credential rate limit exceeded' },
+      { status: 502, message: 'Failed to store the Claude setup token' },
+    ])('maps a $status response to an actionable error', async ({ status, message }) => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse({ error: 'nope' }, { status });
+      const { program } = createHarness();
+
+      await expect(
+        program.parseAsync([
+          'node',
+          'agent-relay',
+          'cloud',
+          'connect',
+          'anthropic',
+          '--setup-token',
+          SETUP_TOKEN,
+        ])
+      ).rejects.toThrow(message);
+    });
+
+    it('records the setup-token flow separately from the interactive one', async () => {
+      mockWorkspaceResolve();
+      mockSetupTokenResponse({ id: 'cred_1' });
+      const { program } = createHarness();
+
+      await program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'connect',
+        'claude',
+        '--setup-token',
+        SETUP_TOKEN,
+      ]);
+
+      expect(vi.mocked(track)).toHaveBeenCalledWith(
+        'cloud_auth',
+        expect.objectContaining({
+          action: 'connect',
+          provider: 'anthropic',
+          method: 'setup_token',
+          success: true,
+        })
+      );
+      expect(JSON.stringify(vi.mocked(track).mock.calls)).not.toContain(SETUP_TOKEN);
+    });
+
+    it('leaves the interactive SSH flow untouched when --setup-token is absent', async () => {
+      vi.mocked(connectProvider).mockResolvedValueOnce({ provider: 'anthropic', success: true });
+      const { program } = createHarness();
+
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'connect', 'claude']);
+
+      expect(connectProvider).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'claude', language: 'typescript', timeoutMs: 300_000 })
+      );
+      expect(authorizedApiFetch).not.toHaveBeenCalled();
+      expect(vi.mocked(track)).toHaveBeenCalledWith(
+        'cloud_auth',
+        expect.not.objectContaining({ method: 'setup_token' })
+      );
+    });
   });
 
   it('run requires a workflow argument', () => {

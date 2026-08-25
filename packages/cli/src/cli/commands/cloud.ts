@@ -26,6 +26,7 @@ import {
   enrollFleetNode,
   upsertFleetNodeEnrollment,
   redactCredentialValues,
+  resolveActiveWorkspaceKey,
   toCloudIdentity,
   writeStoredIdentity,
   IDENTITY_FILE_PATH,
@@ -78,6 +79,10 @@ export interface CloudDependencies {
   writeEnrollmentRecoveryFile: (record: unknown) => string;
   /** Reconcile a freshly enrolled node against this project's workspace pin. */
   linkEnrolledNodeToProjectPin: typeof linkEnrolledNodeToProjectPin;
+  /** Machine-global active workspace key, used when no `--workspace` is passed. */
+  resolveActiveWorkspaceKey: typeof resolveActiveWorkspaceKey;
+  /** Read a secret from the terminal without echoing it. Injectable for tests. */
+  promptSecret: (prompt: string) => Promise<string>;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,8 +109,49 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
       return file;
     },
     linkEnrolledNodeToProjectPin,
+    resolveActiveWorkspaceKey,
+    promptSecret: promptForSecret,
     ...overrides,
   };
+}
+
+/**
+ * Read a secret from the TTY without echoing it.
+ *
+ * A bare `--setup-token` gives Commander `true`, so the value has to come from
+ * the terminal — and a pasted credential must never land in the scrollback,
+ * where it outlives the command in the user's terminal buffer.
+ */
+async function promptForSecret(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      'Reading a setup token requires an interactive terminal. Pass `--setup-token <token>` instead.'
+    );
+  }
+
+  const readline = await import('node:readline');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true,
+  });
+  // `rl.question` writes the prompt synchronously, so muting straight after the
+  // call suppresses the keystroke echo without swallowing the prompt itself.
+  let muted = false;
+  (rl as unknown as { _writeToOutput: (chunk: string) => void })._writeToOutput = (chunk: string) => {
+    if (!muted) process.stdout.write(chunk);
+  };
+
+  try {
+    return await new Promise<string>((resolve) => {
+      rl.question(prompt, resolve);
+      muted = true;
+    });
+  } finally {
+    rl.close();
+    // The muted terminal never echoed the Enter that ended the line.
+    process.stdout.write('\n');
+  }
 }
 
 function parsePositiveInteger(value: string): number {
@@ -393,6 +439,133 @@ async function resolveWorkspaceSelector(
       ? `That value looks like a credential, not a workspace. Pass a workspace name, Cloud workspace UUID, or unified rw_ workspace ID. ${WORKSPACE_SELECTOR_HELP}`
       : `No Cloud workspace matched that name. ${WORKSPACE_SELECTOR_HELP}`
   );
+}
+
+/**
+ * Provider whose credential the setup-token endpoint accepts. Claude
+ * setup-tokens are long-lived Anthropic OAuth access tokens; every other
+ * provider keeps using the interactive connect flow or BYOK.
+ */
+const SETUP_TOKEN_PROVIDER = 'anthropic';
+
+const SETUP_TOKEN_PROMPT = 'Paste the token from `claude setup-token`: ';
+
+/**
+ * The workspace the setup token is stored against: `--workspace` when given,
+ * otherwise this machine's active workspace. Both go through the same resolver
+ * so the endpoint only ever sees a canonical Cloud workspace UUID.
+ */
+async function resolveSetupTokenWorkspace(
+  selector: string | undefined,
+  auth: CloudAuth,
+  deps: Pick<CloudDependencies, 'authorizedApiFetch' | 'resolveActiveWorkspaceKey'>
+): Promise<ResolvedCloudWorkspace> {
+  if (selector) {
+    const selected = await resolveWorkspaceSelector(selector, auth, deps);
+    return resolveCloudWorkspace(selected.workspaceId, selected.auth, deps);
+  }
+
+  const activeKey = deps.resolveActiveWorkspaceKey();
+  if (!activeKey) {
+    throw new Error(
+      'No active Agent Relay workspace found. Run `agent-relay workspace set_key <name> <key>` ' +
+        'or pass --workspace.'
+    );
+  }
+  return resolveCloudWorkspace(activeKey, auth, deps);
+}
+
+/**
+ * Validate a pasted setup token locally. Neither branch echoes the value: a
+ * mistyped paste is still a live credential.
+ */
+function normalizeSetupToken(value: string): string {
+  const token = value.trim();
+  if (!token) {
+    throw new Error('A setup token is required. Generate one by running `claude setup-token`.');
+  }
+  if (/\s/.test(token)) {
+    throw new Error(
+      'That setup token contains whitespace. Paste only the token `claude setup-token` printed.'
+    );
+  }
+  return token;
+}
+
+function setupTokenError(response: Response, payload: unknown, token: string): Error {
+  if (response.status === 400) {
+    const raw =
+      isObject(payload) && typeof payload.error === 'string' && payload.error.trim()
+        ? payload.error.trim()
+        : '';
+    // The server echoes the upstream probe message. Drop it entirely if it
+    // carries the token back rather than trusting a redactor that does not
+    // know the `sk-ant-oat-` shape.
+    const detail = raw && !raw.includes(token) ? redactCredentialValues(raw) : '';
+    return new Error(
+      `Agent Relay Cloud rejected the setup token${detail ? `: ${detail}` : '.'} ` +
+        'Generate a fresh one with `claude setup-token` and retry.'
+    );
+  }
+  if (response.status === 401) {
+    return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+  }
+  if (response.status === 403) {
+    return new Error('You do not have permission to store provider credentials in that workspace.');
+  }
+  if (response.status === 404) {
+    return new Error('That workspace was not found by Agent Relay Cloud. Check --workspace and retry.');
+  }
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('retry-after')?.trim();
+    return new Error(
+      `Cloud provider-credential rate limit exceeded.${
+        retryAfter ? ` Retry-After: ${retryAfter} seconds.` : ' Wait and retry.'
+      }`
+    );
+  }
+
+  const detail = `${response.status} ${response.statusText}`.trim();
+  return new Error(`Failed to store the Claude setup token: ${detail}`);
+}
+
+/**
+ * Non-interactive counterpart to {@link connectProvider} for Anthropic: store a
+ * locally generated `claude setup-token` against the workspace so Cloud
+ * sandboxes launch Claude with `CLAUDE_CODE_OAUTH_TOKEN` set.
+ */
+async function connectAnthropicSetupToken(
+  options: { token: string; apiUrl?: string; workspace?: string },
+  deps: Pick<
+    CloudDependencies,
+    'log' | 'ensureCloudSession' | 'authorizedApiFetch' | 'resolveActiveWorkspaceKey'
+  >
+): Promise<void> {
+  const session = await deps.ensureCloudSession({
+    apiUrl: options.apiUrl || defaultApiUrl(),
+    interactive: false,
+  });
+  const resolved = await resolveSetupTokenWorkspace(options.workspace, session.auth, deps);
+
+  const { response } = await deps.authorizedApiFetch(
+    resolved.auth,
+    `/api/v1/workspaces/${encodeURIComponent(resolved.cloudWorkspaceId)}/provider-credentials/setup-token`,
+    {
+      method: 'POST',
+      // The token travels in the body only — never a path segment or query
+      // string, where it would land in server and proxy access logs.
+      body: JSON.stringify({ token: options.token, label: 'agent-relay CLI setup token' }),
+    },
+    { interactive: false }
+  );
+  const payload = (await response.json().catch(() => null)) as unknown;
+
+  if (!response.ok) {
+    throw setupTokenError(response, payload, options.token);
+  }
+
+  deps.log(`Claude setup token stored for Cloud workspace ${resolved.cloudWorkspaceId}.`);
+  deps.log('Cloud sandboxes in this workspace now launch Claude with CLAUDE_CODE_OAUTH_TOKEN set.');
 }
 
 async function mintFleetNodeEnrollment(
@@ -894,38 +1067,87 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('connect')
-    .description('Connect a provider via interactive SSH session')
+    .description('Connect a provider via interactive SSH session, or store a Claude setup token')
     .argument('<provider>', `Provider to connect (${getProviderHelpText()})`)
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--language <language>', 'Sandbox language/image', 'typescript')
     .option('--timeout <seconds>', 'Connection timeout in seconds', parsePositiveInteger, 300)
-    .action(async (providerArg: string, options: { apiUrl?: string; language: string; timeout: number }) => {
-      const started = Date.now();
-      let success = false;
-      let errorClass: string | undefined;
-      const trackedProvider = normalizeProvider(providerArg);
-      try {
-        const result = await connectProvider({
-          provider: providerArg,
-          apiUrl: options.apiUrl,
-          language: options.language,
-          timeoutMs: options.timeout * 1000,
-          io: { log: deps.log, error: deps.error },
-        });
-        success = result.success;
-      } catch (err) {
-        errorClass = errorClassName(err);
-        throw err;
-      } finally {
-        track('cloud_auth', {
-          action: 'connect',
-          success,
-          duration_ms: Date.now() - started,
-          provider: trackedProvider,
-          ...(errorClass ? { error_class: errorClass } : {}),
-        });
+    .option(
+      '--setup-token [token]',
+      'Store a locally generated `claude setup-token` instead of running the SSH flow ' +
+        '(anthropic only); prompts without echo when no value is given'
+    )
+    .option(
+      '--workspace <workspace>',
+      'Workspace to store the setup token in (defaults to the active workspace)'
+    )
+    .action(
+      async (
+        providerArg: string,
+        options: {
+          apiUrl?: string;
+          language: string;
+          timeout: number;
+          setupToken?: string | boolean;
+          workspace?: string;
+        }
+      ) => {
+        const started = Date.now();
+        let success = false;
+        let errorClass: string | undefined;
+        const trackedProvider = normalizeProvider(providerArg);
+        const usingSetupToken = options.setupToken !== undefined;
+        try {
+          if (!usingSetupToken && options.workspace) {
+            throw new Error('--workspace only applies to `cloud connect <provider> --setup-token`.');
+          }
+
+          if (usingSetupToken) {
+            if (trackedProvider !== SETUP_TOKEN_PROVIDER) {
+              throw new Error(
+                `--setup-token is only supported for ${SETUP_TOKEN_PROVIDER} (alias: claude). ` +
+                  `Run \`agent-relay cloud connect ${providerArg}\` for the interactive flow.`
+              );
+            }
+            const token = normalizeSetupToken(
+              typeof options.setupToken === 'string'
+                ? options.setupToken
+                : await deps.promptSecret(SETUP_TOKEN_PROMPT)
+            );
+            await connectAnthropicSetupToken(
+              {
+                token,
+                ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
+                ...(options.workspace ? { workspace: options.workspace } : {}),
+              },
+              deps
+            );
+            success = true;
+          } else {
+            const result = await connectProvider({
+              provider: providerArg,
+              apiUrl: options.apiUrl,
+              language: options.language,
+              timeoutMs: options.timeout * 1000,
+              io: { log: deps.log, error: deps.error },
+            });
+            success = result.success;
+          }
+        } catch (err) {
+          errorClass = errorClassName(err);
+          throw err;
+        } finally {
+          track('cloud_auth', {
+            action: 'connect',
+            success,
+            duration_ms: Date.now() - started,
+            provider: trackedProvider,
+            ...(usingSetupToken ? { method: 'setup_token' as const } : {}),
+            ...(errorClass ? { error_class: errorClass } : {}),
+          });
+        }
       }
-    });
+    );
 
   // ── enroll ─────────────────────────────────────────────────────────────────
 
