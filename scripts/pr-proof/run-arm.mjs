@@ -15,7 +15,7 @@ import {
   validateObservation,
   validateProofInput,
 } from './contract.mjs';
-import { uploadCloudEvidence } from './cloud-storage.mjs';
+import { uploadCloudEvidence, validateCloudEvidenceEnvironment } from './cloud-storage.mjs';
 import { runBoundedProcess } from './process-runner.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
@@ -109,6 +109,9 @@ export async function main() {
   const input = validateProofInput(JSON.parse(await readFile(inputPath, 'utf8')));
   const sandboxId = process.env.SANDBOX_ID?.trim();
   if (!sandboxId) throw new Error('SANDBOX_ID is required; this proof arm must run as a Cloud step');
+  // Validate the Cloud evidence handoff before checking out or executing any
+  // PR-authored code, so a misconfigured proof cannot do work it cannot attest.
+  validateCloudEvidenceEnvironment(input, arm);
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), `relay-pr-proof-${arm}-`));
   const harnessDir = path.join(temporaryRoot, 'harness');

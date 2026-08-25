@@ -19,7 +19,11 @@ import {
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { verifyEvidenceFiles } from '../../scripts/pr-proof/verify-evidence.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { downloadCloudEvidence, uploadCloudEvidence } from '../../scripts/pr-proof/cloud-storage.mjs';
+import {
+  downloadCloudEvidence,
+  uploadCloudEvidence,
+  validateCloudEvidenceEnvironment,
+} from '../../scripts/pr-proof/cloud-storage.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { publishCommitStatus } from '../../scripts/pr-proof/report-status.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -291,6 +295,7 @@ describe('Cloud evidence handoff', () => {
     );
     expect(requestUrl).not.toContain('sandbox-access-token');
     expect(requestInit?.method).toBe('PUT');
+    expect(requestInit?.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.parse(String(requestInit?.body))).toMatchObject(record);
   });
 
@@ -298,6 +303,15 @@ describe('Cloud evidence handoff', () => {
     const record = evidence('head', 'sandbox-head');
     const fetchImpl = async () => new Response(JSON.stringify(record), { status: 200 });
     await expect(downloadCloudEvidence(input(), 'head', { env, fetchImpl })).resolves.toEqual(record);
+  });
+
+  it('rejects incomplete Cloud evidence configuration before proof execution', () => {
+    expect(() =>
+      validateCloudEvidenceEnvironment(input(), 'base', {
+        CLOUD_API_URL: env.CLOUD_API_URL,
+        RUN_ID: env.RUN_ID,
+      })
+    ).toThrow(/CLOUD_API_ACCESS_TOKEN/);
   });
 });
 
@@ -377,6 +391,15 @@ describe('process timeout contract', () => {
     const result = await runProcess(process.execPath, ['-e', script], { timeoutMs: 100 });
     expect(result.timedOut).toBe(true);
     expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it('preserves UTF-8 characters split across output chunks', async () => {
+    const script = [
+      'process.stdout.write(Buffer.from([0xe2]));',
+      'setTimeout(() => process.stdout.write(Buffer.from([0x82, 0xac])), 25);',
+    ].join('');
+    const result = await runProcess(process.execPath, ['-e', script], { echo: false });
+    expect(result.stdout).toBe('€');
   });
 });
 

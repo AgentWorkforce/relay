@@ -2,6 +2,7 @@
 
 const ARM_RE = /^(base|head)$/;
 const NONCE_RE = /^[0-9a-f]{32}$/;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 function requiredEnvironment(env, name) {
   const value = env[name]?.trim();
@@ -24,6 +25,15 @@ function authorization(env) {
   return `Bearer ${requiredEnvironment(env, 'CLOUD_API_ACCESS_TOKEN')}`;
 }
 
+export function validateCloudEvidenceEnvironment(input, arm, env = process.env) {
+  storageUrl(env, input, arm);
+  authorization(env);
+}
+
+function requestSignal(options) {
+  return options.signal ?? AbortSignal.timeout(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+}
+
 export async function uploadCloudEvidence(input, arm, evidence, options = {}) {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -32,6 +42,7 @@ export async function uploadCloudEvidence(input, arm, evidence, options = {}) {
   // codeql[js/file-access-to-http]
   const response = await fetchImpl(storageUrl(env, input, arm), {
     method: 'PUT',
+    signal: requestSignal(options),
     headers: {
       accept: 'application/json',
       authorization: authorization(env),
@@ -55,6 +66,7 @@ export async function downloadCloudEvidence(input, arm, options = {}) {
   // prevent file-derived data from selecting an arbitrary destination.
   // codeql[js/file-access-to-http]
   const response = await fetchImpl(storageUrl(env, input, arm), {
+    signal: requestSignal(options),
     headers: {
       accept: 'application/json',
       authorization: authorization(env),

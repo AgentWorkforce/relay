@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 const DEFAULT_CAPTURE_BYTES = 128 * 1024;
 const DEFAULT_TERMINATION_GRACE_MS = 5_000;
@@ -44,6 +45,8 @@ export function runBoundedProcess(command, args, options = {}) {
     let timedOut = false;
     let settled = false;
     let hardKill = null;
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
 
     const timeout = options.timeoutMs
       ? setTimeout(() => {
@@ -64,12 +67,14 @@ export function runBoundedProcess(command, args, options = {}) {
     };
 
     child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
+      const text = stdoutDecoder.write(chunk);
+      if (!text) return;
       stdout = appendBounded(stdout, text, maximum);
       if (options.echo !== false) process.stdout.write(text);
     });
     child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
+      const text = stderrDecoder.write(chunk);
+      if (!text) return;
       stderr = appendBounded(stderr, text, maximum);
       if (options.echo !== false) process.stderr.write(text);
     });
@@ -83,6 +88,12 @@ export function runBoundedProcess(command, args, options = {}) {
       if (settled) return;
       settled = true;
       cleanup();
+      const stdoutTail = stdoutDecoder.end();
+      const stderrTail = stderrDecoder.end();
+      stdout = appendBounded(stdout, stdoutTail, maximum);
+      stderr = appendBounded(stderr, stderrTail, maximum);
+      if (options.echo !== false && stdoutTail) process.stdout.write(stdoutTail);
+      if (options.echo !== false && stderrTail) process.stderr.write(stderrTail);
       resolve({ exitCode: code ?? 1, signal, stdout, stderr, timedOut });
     });
   });
