@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "id": "c8b672d1-2524-4908-9b2d-04666fc8da44",
+  "timestamp": "2026-08-25T20:50:56.814Z",
+  "trajectory": "traj_bd1m78v7jn8i",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_dmqicqrgy5c1/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 64,
+              "end_line": 71,
+              "revision": "6a8cb6c9a7ff5966ccc7a1b8a3452f62eb6c7a0e"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
