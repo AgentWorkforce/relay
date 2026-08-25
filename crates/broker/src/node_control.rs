@@ -4323,16 +4323,18 @@ mod tests {
 
         let started = Instant::now();
         let mut accepted_at = Vec::new();
+        let mut shutdown_ws = None;
         for attempt in 0..3 {
             let (stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
                 .await
                 .expect("client did not make the next reconnect attempt")
                 .unwrap();
-            let mut ws = accept_async(stream).await.unwrap();
+            let ws = accept_async(stream).await.unwrap();
             accepted_at.push(started.elapsed());
             if attempt < 2 {
-                ws.close(None).await.unwrap();
+                drop(ws);
             } else {
+                shutdown_ws = Some(ws);
                 command_tx
                     .send(FleetControlCommand::Shutdown)
                     .await
@@ -4341,6 +4343,7 @@ mod tests {
         }
 
         client.await.unwrap();
+        drop(shutdown_ws);
         assert!(
             accepted_at[1].saturating_sub(accepted_at[0]) >= Duration::from_millis(900),
             "first pre-ready failure must retain the one-second backoff: {accepted_at:?}"
