@@ -17,6 +17,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 concurrency:
   group: relayflow-pr-proof-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -24,20 +25,31 @@ concurrency:
 
 jobs:
   proof:
-    name: RelayFlow PR proof
+    name: RelayFlow PR proof dispatcher
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:
       - name: Checkout trusted base
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.14.0
+
+      # pull_request_target runs are attached to the base SHA. Publish the
+      # stable required context explicitly on the exact validated PR head.
+      - name: Start required status on PR head
+        id: status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/pr-proof/report-status.mjs start
+          --event "$GITHUB_EVENT_PATH"
+          --github-output "$GITHUB_OUTPUT"
 
       - name: Classify PR and validate declared case
         id: prepare
@@ -47,6 +59,7 @@ jobs:
           node scripts/pr-proof/prepare.mjs
           --event "$GITHUB_EVENT_PATH"
           --output .relayflow/pr-proof-input.json
+          --expected-head-sha "${{ steps.status.outputs.head_sha }}"
           --github-output "$GITHUB_OUTPUT"
           --summary "$GITHUB_STEP_SUMMARY"
 
@@ -89,8 +102,19 @@ jobs:
 
       - name: Upload Cloud proof logs
         if: always() && steps.prepare.outputs.required == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: relayflow-pr-proof-${{ github.event.pull_request.number || inputs.pr_number }}
           path: .workflow-artifacts/pr-proof/cloud.log
           if-no-files-found: warn
+
+      - name: Finish required status on PR head
+        # A replacement run has already published pending on this same status
+        # context. A cancelled predecessor must not overwrite that newer state.
+        if: always() && !cancelled() && steps.status.outputs.head_sha != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/pr-proof/report-status.mjs finish
+          --sha "${{ steps.status.outputs.head_sha }}"
+          --job-status "${{ job.status }}"

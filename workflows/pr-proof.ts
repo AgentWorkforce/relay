@@ -8,8 +8,8 @@
  *
  * Order is deliberate:
  *   1. base-prover observes the exact bug/capability absence on the base SHA;
- *   2. a deterministic gate rejects crashes, skips, missing tests, and the
- *      wrong failure signature;
+ *   2. run-scoped Cloud storage hands nonce-bound evidence to a deterministic
+ *      gate, which rejects crashes, skips, and wrong signatures;
  *   3. head-verifier observes the declared fixed behavior on the head SHA;
  *   4. a deterministic gate verifies exact SHAs and distinct sandbox IDs.
  */
@@ -32,14 +32,14 @@ const result = await workflow('relay-pr-proof')
     cli: 'codex',
     preset: 'worker',
     role: 'Run the trusted PR proof base-arm command exactly once without editing repository files.',
-    interactive: true,
+    interactive: false,
     retries: 0,
   })
   .agent('head-verifier', {
     cli: 'codex',
     preset: 'worker',
     role: 'Run the trusted PR proof head-arm command exactly once without editing repository files.',
-    interactive: true,
+    interactive: false,
     retries: 0,
   })
   .step('prove-base', {
@@ -56,7 +56,8 @@ const result = await workflow('relay-pr-proof')
   .step('gate-base', {
     type: 'deterministic',
     dependsOn: ['prove-base'],
-    command: 'node scripts/pr-proof/verify-evidence.mjs --arm base --input .relayflow/pr-proof-input.json',
+    command:
+      'node scripts/pr-proof/verify-evidence.mjs --source cloud --arm base --input .relayflow/pr-proof-input.json',
     captureOutput: true,
     failOnError: true,
   })
@@ -75,12 +76,13 @@ const result = await workflow('relay-pr-proof')
   .step('gate-red-green', {
     type: 'deterministic',
     dependsOn: ['verify-head'],
-    command: 'node scripts/pr-proof/verify-evidence.mjs --arm both --input .relayflow/pr-proof-input.json',
+    command:
+      'node scripts/pr-proof/verify-evidence.mjs --source cloud --arm both --input .relayflow/pr-proof-input.json',
     captureOutput: true,
     failOnError: true,
   })
   .run({ cwd: process.cwd() });
 
-if ('status' in result && result.status === 'failed') {
+if ('status' in result && result.status !== 'completed') {
   process.exitCode = 1;
 }

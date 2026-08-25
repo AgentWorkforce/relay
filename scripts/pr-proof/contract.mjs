@@ -9,6 +9,8 @@ const CASE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SIGNATURE_RE = /^[a-z0-9](?:[a-z0-9._:-]{0,127})$/;
+const HANDOFF_NONCE_RE = /^[0-9a-f]{32}$/;
+const MAX_OBSERVATION_DETAILS_LENGTH = 4_000;
 const REQUIRED_TITLE_RE = /^(feat|fix)(?:\([^)]*\))?!?:/i;
 const TYPE_MARKER_RE = /^\s*-\s*Change type:\s*`([^`]+)`\s*<!--\s*relay-pr-proof:type\s*-->\s*$/im;
 const CASE_MARKER_RE = /^\s*-\s*RelayFlow case:\s*`([^`]+)`\s*<!--\s*relay-pr-proof:case\s*-->\s*$/im;
@@ -47,7 +49,10 @@ export function changedRelayFlowCaseIds(files = []) {
       files
         .filter((file) => typeof file === 'string' && file.startsWith(prefix))
         .map((file) => file.slice(prefix.length).split('/'))
-        .filter((parts) => parts.length > 1 && CASE_ID_RE.test(parts[0]))
+        // Keep malformed directory names in the result. The caller compares
+        // this set with the one declared valid case, so dropping an invalid
+        // sibling here would turn an ambiguous PR into a false single-case.
+        .filter((parts) => parts.length > 1 && parts[0])
         .map((parts) => parts[0])
     ),
   ].sort();
@@ -225,10 +230,11 @@ export function validateProofInput(value) {
   const headSha = nonEmptyString(input.headSha);
   const caseId = nonEmptyString(input.caseId);
   const kind = nonEmptyString(input.kind);
-  const pullRequest = Number(input.pullRequest);
+  const handoffNonce = nonEmptyString(input.handoffNonce);
+  const pullRequest = input.pullRequest;
   if (input.version !== PR_PROOF_VERSION) errors.push(`proof input version must be ${PR_PROOF_VERSION}`);
   if (!repository || !REPOSITORY_RE.test(repository)) errors.push('proof input repository is invalid');
-  if (!Number.isInteger(pullRequest) || pullRequest < 1) {
+  if (typeof pullRequest !== 'number' || !Number.isInteger(pullRequest) || pullRequest < 1) {
     errors.push('proof input pullRequest must be a positive integer');
   }
   if (!baseSha || !SHA_RE.test(baseSha)) errors.push('proof input baseSha must be a full lowercase SHA');
@@ -236,6 +242,9 @@ export function validateProofInput(value) {
   if (baseSha && headSha && baseSha === headSha) errors.push('proof input baseSha and headSha must differ');
   if (!caseId || !CASE_ID_RE.test(caseId)) errors.push('proof input caseId is invalid');
   if (!['feature', 'bugfix'].includes(kind)) errors.push('proof input kind must be feature or bugfix');
+  if (!handoffNonce || !HANDOFF_NONCE_RE.test(handoffNonce)) {
+    errors.push('proof input handoffNonce must be 32 lowercase hexadecimal characters');
+  }
 
   let manifest = null;
   try {
@@ -254,6 +263,7 @@ export function validateProofInput(value) {
     headSha,
     caseId,
     kind,
+    handoffNonce,
     manifest,
   };
 }
@@ -274,6 +284,10 @@ export function validateObservation(value, { caseId, arm, expected }) {
       `observation signature ${observation.signature} does not match expected ${expected.signature}`
     );
   }
+  const details = nonEmptyString(observation.details) ?? '';
+  if (details.length > MAX_OBSERVATION_DETAILS_LENGTH) {
+    errors.push(`observation details must not exceed ${MAX_OBSERVATION_DETAILS_LENGTH} characters`);
+  }
   if (errors.length > 0) throw new PrProofContractError('Invalid case observation', errors);
   return {
     version: PR_PROOF_VERSION,
@@ -281,7 +295,7 @@ export function validateObservation(value, { caseId, arm, expected }) {
     arm,
     outcome: observation.outcome,
     signature: observation.signature,
-    details: nonEmptyString(observation.details) ?? '',
+    details,
   };
 }
 
@@ -300,6 +314,9 @@ export function validateEvidence(value, input, arm) {
   }
   if (evidence.targetSha !== expectedSha) errors.push(`${arm} evidence target SHA is invalid`);
   if (evidence.harnessSha !== input.headSha) errors.push(`${arm} evidence harness SHA is invalid`);
+  if (evidence.handoffNonce !== input.handoffNonce) {
+    errors.push(`${arm} evidence handoff nonce is invalid`);
+  }
   if (!nonEmptyString(evidence.sandboxId)) errors.push(`${arm} evidence sandboxId is missing`);
   if (evidence.runnerExitCode !== 0) errors.push(`${arm} evidence runner exit code is not zero`);
   if (evidence.outcome !== expected.outcome) errors.push(`${arm} evidence outcome is invalid`);

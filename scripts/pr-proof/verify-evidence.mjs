@@ -12,6 +12,7 @@ import {
   validateEvidence,
   validateProofInput,
 } from './contract.mjs';
+import { downloadCloudEvidence } from './cloud-storage.mjs';
 
 function option(name, fallback = null) {
   const index = process.argv.indexOf(name);
@@ -24,10 +25,16 @@ async function readJson(filePath) {
 
 export async function verifyEvidenceFiles({ inputPath, arm, artifactRoot = ARTIFACT_ROOT }) {
   const input = validateProofInput(await readJson(inputPath));
-  const base = validateEvidence(await readJson(path.join(artifactRoot, 'base.json')), input, 'base');
+  const base = await readJson(path.join(artifactRoot, 'base.json'));
+  const head = arm === 'base' ? null : await readJson(path.join(artifactRoot, 'head.json'));
+  return verifyEvidenceRecords({ input, arm, base, head });
+}
+
+export function verifyEvidenceRecords({ input, arm, base: baseRecord, head: headRecord }) {
+  const base = validateEvidence(baseRecord, input, 'base');
   if (arm === 'base') return { input, base, head: null };
 
-  const head = validateEvidence(await readJson(path.join(artifactRoot, 'head.json')), input, 'head');
+  const head = validateEvidence(headRecord, input, 'head');
   if (base.sandboxId === head.sandboxId) {
     throw new PrProofContractError('Base and head proofs did not run in distinct sandboxes', [
       `both evidence files report sandbox ${base.sandboxId}`,
@@ -36,12 +43,24 @@ export async function verifyEvidenceFiles({ inputPath, arm, artifactRoot = ARTIF
   return { input, base, head };
 }
 
+export async function verifyCloudEvidence({ inputPath, arm, env = process.env, fetchImpl = fetch }) {
+  const input = validateProofInput(await readJson(inputPath));
+  const base = await downloadCloudEvidence(input, 'base', { env, fetchImpl });
+  const head = arm === 'base' ? null : await downloadCloudEvidence(input, 'head', { env, fetchImpl });
+  return verifyEvidenceRecords({ input, arm, base, head });
+}
+
 async function main() {
   const arm = option('--arm', 'both');
   if (arm !== 'base' && arm !== 'both') throw new Error('--arm must be base or both');
   const inputPath = option('--input', process.env.RELAY_PR_PROOF_INPUT ?? INPUT_PATH);
   const artifactRoot = option('--artifacts', ARTIFACT_ROOT);
-  const { input, base, head } = await verifyEvidenceFiles({ inputPath, arm, artifactRoot });
+  const source = option('--source', 'files');
+  if (source !== 'files' && source !== 'cloud') throw new Error('--source must be files or cloud');
+  const { input, base, head } =
+    source === 'cloud'
+      ? await verifyCloudEvidence({ inputPath, arm })
+      : await verifyEvidenceFiles({ inputPath, arm, artifactRoot });
   console.log(`PR_PROOF_BASE_VALID case=${input.caseId} outcome=${base.outcome} sandbox=${base.sandboxId}`);
   if (!head) return;
 

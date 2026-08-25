@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,14 +13,31 @@ import {
   classifyPullRequest,
   validateCaseManifest,
   validateEvidence,
+  validateObservation,
   validateProofInput,
 } from '../../scripts/pr-proof/contract.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { verifyEvidenceFiles } from '../../scripts/pr-proof/verify-evidence.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { downloadCloudEvidence, uploadCloudEvidence } from '../../scripts/pr-proof/cloud-storage.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { publishCommitStatus } from '../../scripts/pr-proof/report-status.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../scripts/pr-proof/prepare.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  assertCredentialDidNotRotate,
+  boundedDuration,
+  createCliAuthEnvironment,
+  validateCredentialWindow,
+} from '../../scripts/pr-proof/run-cloud.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { runProcess } from '../../scripts/pr-proof/run-arm.mjs';
 
 const BASE_SHA = '1'.repeat(40);
 const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
+const HANDOFF_NONCE = 'a'.repeat(32);
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -63,6 +80,7 @@ function input() {
     headSha: HEAD_SHA,
     caseId: CASE_ID,
     kind: 'bugfix',
+    handoffNonce: HANDOFF_NONCE,
     manifest: manifest(),
   });
 }
@@ -78,6 +96,7 @@ function evidence(arm: 'base' | 'head', sandboxId: string) {
     pullRequest: 1610,
     targetSha: arm === 'base' ? BASE_SHA : HEAD_SHA,
     harnessSha: HEAD_SHA,
+    handoffNonce: HANDOFF_NONCE,
     sandboxId,
     runnerExitCode: 0,
     outcome: expected.outcome,
@@ -148,6 +167,15 @@ describe('RelayFlow case manifest', () => {
     ).toEqual([CASE_ID]);
   });
 
+  it('keeps malformed sibling case directories visible so selection fails closed', () => {
+    expect(
+      changedRelayFlowCaseIds([
+        `tests/relayflows/cases/${CASE_ID}/case.json`,
+        'tests/relayflows/cases/INVALID CASE/run.mjs',
+      ])
+    ).toEqual([CASE_ID, 'INVALID CASE']);
+  });
+
   it('accepts a structured external case runner', () => {
     expect(validateCaseManifest(manifest(), { caseId: CASE_ID, kind: 'bugfix' })).toEqual(manifest());
   });
@@ -170,6 +198,22 @@ describe('RelayFlow case manifest', () => {
 });
 
 describe('RelayFlow evidence gates', () => {
+  it('rejects coercible non-numeric pull request provenance', () => {
+    const invalid = {
+      ...input(),
+      pullRequest: true,
+    };
+    try {
+      validateProofInput(invalid);
+      throw new Error('expected invalid proof input to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PrProofContractError);
+      expect((error as { details: string[] }).details).toContain(
+        'proof input pullRequest must be a positive integer'
+      );
+    }
+  });
+
   it('accepts exact SHA, outcome, and signature provenance', () => {
     const proofInput = input();
     expect(validateEvidence(evidence('base', 'sandbox-base'), proofInput, 'base')).toMatchObject({
@@ -191,6 +235,27 @@ describe('RelayFlow evidence gates', () => {
     }
   });
 
+  it('rejects evidence from a stale or different handoff', () => {
+    const invalid = { ...evidence('base', 'sandbox-base'), handoffNonce: 'b'.repeat(32) };
+    expect(() => validateEvidence(invalid, input(), 'base')).toThrow(/Invalid base evidence/);
+  });
+
+  it('bounds PR-authored observation details before evidence upload', () => {
+    expect(() =>
+      validateObservation(
+        {
+          version: 1,
+          caseId: CASE_ID,
+          arm: 'base',
+          outcome: 'bug',
+          signature: manifest().expected.base.signature,
+          details: 'x'.repeat(4_001),
+        },
+        { caseId: CASE_ID, arm: 'base', expected: manifest().expected.base }
+      )
+    ).toThrow(/Invalid case observation/);
+  });
+
   it('rejects base and head evidence from the same sandbox', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-test-'));
     const inputPath = path.join(root, 'input.json');
@@ -204,6 +269,165 @@ describe('RelayFlow evidence gates', () => {
   });
 });
 
+describe('Cloud evidence handoff', () => {
+  const env = {
+    CLOUD_API_URL: 'https://cloud.test/cloud',
+    CLOUD_API_ACCESS_TOKEN: 'sandbox-access-token',
+    RUN_ID: 'run-123',
+  };
+
+  it('uploads evidence to nonce-bound run storage without exposing credentials in the URL', async () => {
+    let requestUrl = '';
+    let requestInit: RequestInit | undefined;
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(url);
+      requestInit = init;
+      return Response.json({ ok: true });
+    };
+    const record = evidence('base', 'sandbox-base');
+    await uploadCloudEvidence(input(), 'base', record, { env, fetchImpl });
+    expect(requestUrl).toBe(
+      `https://cloud.test/cloud/api/v1/workflows/runs/run-123/storage/pr-proof/${HANDOFF_NONCE}/base.json`
+    );
+    expect(requestUrl).not.toContain('sandbox-access-token');
+    expect(requestInit?.method).toBe('PUT');
+    expect(JSON.parse(String(requestInit?.body))).toMatchObject(record);
+  });
+
+  it('downloads structured evidence from the same nonce-bound object', async () => {
+    const record = evidence('head', 'sandbox-head');
+    const fetchImpl = async () => new Response(JSON.stringify(record), { status: 200 });
+    await expect(downloadCloudEvidence(input(), 'head', { env, fetchImpl })).resolves.toEqual(record);
+  });
+});
+
+describe('Cloud dispatcher credential lifecycle', () => {
+  const now = Date.parse('2026-08-25T10:00:00.000Z');
+  const credentialEnv = {
+    CLOUD_API_URL: 'https://cloud.test/cloud',
+    CLOUD_API_ACCESS_TOKEN: 'ci-access-token',
+    CLOUD_API_REFRESH_TOKEN: 'ci-refresh-token',
+    CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: '2026-08-25T13:00:00.000Z',
+    CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: '2026-08-26T10:00:00.000Z',
+  };
+
+  it('fails before dispatch when the static access token cannot cover the proof window', () => {
+    expect(() =>
+      validateCredentialWindow(
+        { ...credentialEnv, CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: '2026-08-25T10:30:00.000Z' },
+        60 * 60_000,
+        now
+      )
+    ).toThrow(/expires before the proof deadline/);
+  });
+
+  it('rejects unbounded or malformed dispatcher durations', () => {
+    const options = { fallback: 15_000, minimum: 100, maximum: 60_000, label: 'poll' };
+    expect(boundedDuration(undefined, options)).toBe(15_000);
+    expect(() => boundedDuration('not-a-number', options)).toThrow(/between 100 and 60000/);
+    expect(() => boundedDuration('60001', options)).toThrow(/between 100 and 60000/);
+  });
+
+  it('shares an owner-only temporary auth file across CLI subprocesses and detects rotation', async () => {
+    validateCredentialWindow(credentialEnv, 60 * 60_000, now);
+    const auth = await createCliAuthEnvironment({ ...process.env, ...credentialEnv });
+    try {
+      expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
+      expect(auth.cliEnv.HOME).toBe(auth.temporaryHome);
+      expect((await stat(auth.authPath)).mode & 0o777).toBe(0o600);
+      await expect(
+        assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
+      ).resolves.toBeUndefined();
+      const stored = JSON.parse(await readFile(auth.authPath, 'utf8'));
+      stored.accessToken = 'rotated-token';
+      await writeFile(auth.authPath, JSON.stringify(stored), { mode: 0o600 });
+      await expect(
+        assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
+      ).rejects.toThrow(/cannot be persisted/);
+    } finally {
+      await rm(auth.temporaryHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('process timeout contract', () => {
+  it('marks a process timed out even when it exits zero after SIGTERM', async () => {
+    const result = await runProcess(
+      process.execPath,
+      ['-e', "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)"],
+      { timeoutMs: 100 }
+    );
+    expect(result.timedOut).toBe(true);
+  });
+
+  it('terminates descendants that inherit output pipes instead of hanging after the parent exits', async () => {
+    const startedAt = Date.now();
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });",
+      "process.on('SIGTERM', () => process.exit(0));",
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const result = await runProcess(process.execPath, ['-e', script], { timeoutMs: 100 });
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+});
+
+describe('required head status', () => {
+  it('publishes the stable proof context on the exact head SHA', async () => {
+    let requestUrl = '';
+    let requestBody: Record<string, string> = {};
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      requestUrl = String(url);
+      requestBody = JSON.parse(String(init?.body));
+      return Response.json({ id: 1 });
+    };
+    await publishCommitStatus({
+      sha: HEAD_SHA,
+      state: 'success',
+      description: 'proof passed',
+      env: {
+        GITHUB_REPOSITORY: 'AgentWorkforce/relay',
+        GITHUB_TOKEN: 'github-token',
+        GITHUB_API_URL: 'https://api.github.test',
+      },
+      fetchImpl,
+    });
+    expect(requestUrl).toBe(`https://api.github.test/repos/AgentWorkforce/relay/statuses/${HEAD_SHA}`);
+    expect(requestBody).toMatchObject({ context: 'RelayFlow PR proof', state: 'success' });
+  });
+});
+
+describe('pull request snapshot consistency', () => {
+  const pullRequest = {
+    number: 1612,
+    title: 'feat(ci): prove one case',
+    body: proofBody('feature'),
+    head: { sha: HEAD_SHA, repo: { full_name: 'AgentWorkforce/relay' } },
+    base: { sha: BASE_SHA },
+  };
+
+  it('accepts the same live metadata and exact base/head pair', () => {
+    expect(() =>
+      assertSamePullRequestSnapshot(pullRequestSnapshot(pullRequest), structuredClone(pullRequest))
+    ).not.toThrow();
+  });
+
+  it('rejects a head or proof-metadata edit during file enumeration', () => {
+    const snapshot = pullRequestSnapshot(pullRequest);
+    expect(() =>
+      assertSamePullRequestSnapshot(snapshot, {
+        ...pullRequest,
+        head: { ...pullRequest.head, sha: '3'.repeat(40) },
+      })
+    ).toThrow(/headSha/);
+    expect(() =>
+      assertSamePullRequestSnapshot(snapshot, { ...pullRequest, body: proofBody('non-functional', 'n/a') })
+    ).toThrow(/body/);
+  });
+});
+
 describe('trusted dispatcher source contract', () => {
   it('never checks out PR head code on the credential-bearing GitHub runner', async () => {
     const source = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
@@ -211,6 +435,14 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('ref: ${{ github.event.pull_request.base.sha || github.sha }}');
     expect(source).toContain('persist-credentials: false');
     expect(source).toContain('git add -f -- .relayflow/pr-proof-input.json');
+    expect(source).toContain('statuses: write');
+    expect(source).toContain('report-status.mjs start');
+    expect(source).toContain('report-status.mjs finish');
+    expect(source).toContain('always() && !cancelled()');
+    expect(source).toContain('--expected-head-sha "${{ steps.status.outputs.head_sha }}"');
+    expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
+    expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
+    expect(source).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
     expect(source).not.toContain('github.event.pull_request.head.sha }}');
   });
 
@@ -222,11 +454,21 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain(".step('gate-red-green'");
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=base');
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
+    expect(source).toContain('--source cloud');
+    expect(source).toContain("result.status !== 'completed'");
   });
 
   it('records the per-step Cloud sandbox id instead of the orchestrator id', async () => {
     const source = await readFile('scripts/pr-proof/run-arm.mjs', 'utf8');
     expect(source).toContain('process.env.SANDBOX_ID');
     expect(source).not.toContain('process.env.DAYTONA_SANDBOX_ID');
+  });
+
+  it('shares refreshes only inside the job and cancels remote work on termination', async () => {
+    const source = await readFile('scripts/pr-proof/run-cloud.mjs', 'utf8');
+    expect(source).toContain("process.once('SIGTERM', signalHandler)");
+    expect(source).toContain("['cloud', 'cancel', runId, '--json']");
+    expect(source).toContain("path.join(authDir, 'cloud-auth.json')");
+    expect(source).toContain('assertCredentialDidNotRotate');
   });
 });

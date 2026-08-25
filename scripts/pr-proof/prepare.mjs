@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   INPUT_PATH,
@@ -49,6 +51,28 @@ async function pullRequestFiles(apiUrl, repository, number, token) {
   throw new Error('PR changes more than 3,000 files; RelayFlow proof dispatch refuses ambiguous scope');
 }
 
+export function pullRequestSnapshot(pullRequest) {
+  return {
+    number: pullRequest?.number,
+    headSha: pullRequest?.head?.sha,
+    baseSha: pullRequest?.base?.sha,
+    headRepository: pullRequest?.head?.repo?.full_name,
+    title: pullRequest?.title,
+    body: pullRequest?.body ?? '',
+  };
+}
+
+export function assertSamePullRequestSnapshot(expected, actual) {
+  const next = pullRequestSnapshot(actual);
+  for (const key of Object.keys(expected)) {
+    if (next[key] !== expected[key]) {
+      throw new Error(
+        `Pull request changed during proof preparation (${key}: ${JSON.stringify(expected[key])} -> ${JSON.stringify(next[key])}); dispatch the latest event instead`
+      );
+    }
+  }
+}
+
 async function readHeadFile(apiUrl, repository, filePath, headSha, token) {
   const payload = await githubJson(
     `${apiUrl}/repos/${repository}/contents/${filePath}?ref=${encodeURIComponent(headSha)}`,
@@ -80,11 +104,12 @@ async function writeSummary(lines, summaryPath) {
   await appendFile(summaryPath, `${lines.join('\n')}\n`);
 }
 
-async function main() {
+export async function main() {
   const eventPath = option('--event', process.env.GITHUB_EVENT_PATH);
   const outputPath = option('--output', INPUT_PATH);
   const githubOutput = option('--github-output', process.env.GITHUB_OUTPUT);
   const summaryPath = option('--summary', process.env.GITHUB_STEP_SUMMARY);
+  const expectedHeadSha = option('--expected-head-sha');
   const token = process.env.GITHUB_TOKEN?.trim();
   const repository = process.env.GITHUB_REPOSITORY?.trim();
   const apiUrl = (process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '');
@@ -93,20 +118,36 @@ async function main() {
   }
 
   const payload = JSON.parse(await readFile(eventPath, 'utf8'));
-  let pullRequest = pullRequestFromPayload(payload);
+  const eventPullRequest = pullRequestFromPayload(payload);
+  let pullRequest = eventPullRequest;
   const manualNumber = Number(payload.inputs?.pr_number);
   if (!pullRequest && Number.isInteger(manualNumber) && manualNumber > 0) {
     pullRequest = await githubJson(`${apiUrl}/repos/${repository}/pulls/${manualNumber}`, token);
   }
   if (!pullRequest) throw new Error('The event does not identify a pull request');
 
-  const number = Number(pullRequest.number);
+  const eventNumber = Number(pullRequest.number);
+  if (!Number.isInteger(eventNumber) || eventNumber < 1) {
+    throw new Error('Pull request payload is missing a valid number');
+  }
+  // The event can be stale after a synchronize/edited cancellation. Resolve a
+  // live snapshot before reading the live files endpoint, then compare the
+  // same fields again after all file and manifest reads.
+  pullRequest = await githubJson(`${apiUrl}/repos/${repository}/pulls/${eventNumber}`, token);
+
+  const number = pullRequest.number;
   const headSha = pullRequest.head?.sha;
   const baseSha = pullRequest.base?.sha;
   const headRepository = pullRequest.head?.repo?.full_name;
   if (!Number.isInteger(number) || !headSha || !baseSha || !headRepository) {
     throw new Error('Pull request payload is missing number, repository, or exact SHAs');
   }
+  if (expectedHeadSha && headSha !== expectedHeadSha) {
+    throw new Error(
+      `Pull request head changed during dispatch: status targets ${expectedHeadSha}, preparation resolved ${headSha}`
+    );
+  }
+  const snapshot = pullRequestSnapshot(pullRequest);
 
   const classification = classifyPullRequest({ title: pullRequest.title, body: pullRequest.body ?? '' });
   if (classification.errors.length > 0) {
@@ -116,6 +157,8 @@ async function main() {
     );
   }
   if (!classification.required) {
+    const finalPullRequest = await githubJson(`${apiUrl}/repos/${repository}/pulls/${number}`, token);
+    assertSamePullRequestSnapshot(snapshot, finalPullRequest);
     await writeGithubOutput({ required: false, case_id: 'n/a' }, githubOutput);
     await writeSummary(
       ['## RelayFlow PR proof', '', 'Cloud proof is not required for this non-functional change.'],
@@ -160,6 +203,9 @@ async function main() {
     kind: classification.kind,
   });
 
+  const finalPullRequest = await githubJson(`${apiUrl}/repos/${repository}/pulls/${number}`, token);
+  assertSamePullRequestSnapshot(snapshot, finalPullRequest);
+
   const proofInput = {
     version: PR_PROOF_VERSION,
     repository,
@@ -168,6 +214,7 @@ async function main() {
     headSha,
     caseId,
     kind: classification.kind,
+    handoffNonce: randomBytes(16).toString('hex'),
     manifestPath,
     manifest,
   };
@@ -187,12 +234,14 @@ async function main() {
   );
 }
 
-main().catch(async (error) => {
-  const details = error instanceof PrProofContractError ? error.details : [];
-  const lines = ['## RelayFlow PR proof', '', `**Contract failure:** ${error.message}`];
-  if (details.length > 0) lines.push('', ...details.map((detail) => `- ${detail}`));
-  await writeSummary(lines, option('--summary', process.env.GITHUB_STEP_SUMMARY)).catch(() => {});
-  console.error(error.message);
-  for (const detail of details) console.error(`- ${detail}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(async (error) => {
+    const details = error instanceof PrProofContractError ? error.details : [];
+    const lines = ['## RelayFlow PR proof', '', `**Contract failure:** ${error.message}`];
+    if (details.length > 0) lines.push('', ...details.map((detail) => `- ${detail}`));
+    await writeSummary(lines, option('--summary', process.env.GITHUB_STEP_SUMMARY)).catch(() => {});
+    console.error(error.message);
+    for (const detail of details) console.error(`- ${detail}`);
+    process.exitCode = 1;
+  });
+}

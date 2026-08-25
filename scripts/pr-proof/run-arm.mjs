@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   ARTIFACT_ROOT,
@@ -14,52 +14,20 @@ import {
   validateObservation,
   validateProofInput,
 } from './contract.mjs';
+import { uploadCloudEvidence } from './cloud-storage.mjs';
+import { runBoundedProcess } from './process-runner.mjs';
 
-const MAX_CAPTURE_BYTES = 128 * 1024;
+const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
 
-function appendBounded(current, chunk) {
-  const next = current + chunk;
-  return next.length <= MAX_CAPTURE_BYTES ? next : next.slice(next.length - MAX_CAPTURE_BYTES);
-}
-
-async function run(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      const text = chunk.toString();
-      stdout = appendBounded(stdout, text);
-      process.stdout.write(text);
-    });
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      stderr = appendBounded(stderr, text);
-      process.stderr.write(text);
-    });
-    const timeout = options.timeoutMs
-      ? setTimeout(() => {
-          child.kill('SIGTERM');
-          setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
-        }, options.timeoutMs)
-      : null;
-    child.on('error', reject);
-    child.on('close', (code, signal) => {
-      if (timeout) clearTimeout(timeout);
-      resolve({ exitCode: code ?? 1, signal, stdout, stderr });
-    });
-  });
+export async function runProcess(command, args, options = {}) {
+  return runBoundedProcess(command, args, options);
 }
 
 async function runChecked(command, args, options = {}) {
-  const result = await run(command, args, options);
-  if (result.exitCode !== 0) {
+  const result = await runProcess(command, args, options);
+  if (result.exitCode !== 0 || result.timedOut) {
     throw new Error(
-      `${command} ${args.join(' ')} failed with exit ${result.exitCode}${result.signal ? ` (${result.signal})` : ''}`
+      `${command} ${args.join(' ')} ${result.timedOut ? 'timed out' : `failed with exit ${result.exitCode}`}${result.signal ? ` (${result.signal})` : ''}`
     );
   }
   return result;
@@ -107,7 +75,7 @@ function armFromArg() {
   return arm;
 }
 
-async function main() {
+export async function main() {
   const arm = armFromArg();
   const inputPath = process.argv[3] ?? process.env.RELAY_PR_PROOF_INPUT ?? INPUT_PATH;
   const input = validateProofInput(JSON.parse(await readFile(inputPath, 'utf8')));
@@ -137,7 +105,7 @@ async function main() {
     }
 
     const [command, ...args] = input.manifest.runner.command;
-    const result = await run(command, args, {
+    const result = await runProcess(command, args, {
       cwd: harnessDir,
       env: sanitizedCaseEnvironment({
         temporaryHome,
@@ -149,6 +117,11 @@ async function main() {
       }),
       timeoutMs: input.manifest.timeoutSeconds * 1000,
     });
+    if (result.timedOut) {
+      throw new Error(
+        `Case runner exceeded ${input.manifest.timeoutSeconds}s; a timeout cannot count as expected-red evidence`
+      );
+    }
     if (result.exitCode !== 0) {
       throw new Error(
         `Case runner failed with exit ${result.exitCode}; expected-red behavior must be reported as a successful structured observation`
@@ -157,6 +130,12 @@ async function main() {
 
     let observationJson;
     try {
+      const resultStat = await stat(resultPath);
+      if (!resultStat.isFile() || resultStat.size > MAX_OBSERVATION_FILE_BYTES) {
+        throw new Error(
+          `observation must be a regular file no larger than ${MAX_OBSERVATION_FILE_BYTES} bytes`
+        );
+      }
       observationJson = JSON.parse(await readFile(resultPath, 'utf8'));
     } catch (error) {
       throw new PrProofContractError('Case runner did not write a valid observation JSON file', [
@@ -176,6 +155,7 @@ async function main() {
       pullRequest: input.pullRequest,
       targetSha: actualTargetSha,
       harnessSha,
+      handoffNonce: input.handoffNonce,
       sandboxId,
       runnerExitCode: result.exitCode,
       outcome: observation.outcome,
@@ -187,16 +167,19 @@ async function main() {
     };
     await mkdir(path.dirname(evidencePath), { recursive: true });
     await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    await uploadCloudEvidence(input, arm, evidence);
     console.log(`PR_PROOF_ARM_COMPLETE arm=${arm} case=${input.caseId} sandbox=${sandboxId}`);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  if (error instanceof PrProofContractError) {
-    for (const detail of error.details) console.error(`- ${detail}`);
-  }
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    if (error instanceof PrProofContractError) {
+      for (const detail of error.details) console.error(`- ${detail}`);
+    }
+    process.exitCode = 1;
+  });
+}
