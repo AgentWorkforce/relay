@@ -13,6 +13,11 @@ on:
         description: Pull request number to prove
         required: true
         type: number
+      validate_credential_only:
+        description: Validate the production proof credential without launching a RelayFlow
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -24,7 +29,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  credential-identity:
+    name: Validate production Cloud proof credential
+    if: github.event_name == 'workflow_dispatch' && inputs.validate_credential_only == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assert production workspace binding and least privilege
+        env:
+          CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
+          CLOUD_API_KEY: ${{ secrets.RELAYFLOW_PR_PROOF_CLOUD_API_KEY }}
+          EXPECTED_CLOUD_API_URL: https://agentrelay.com/cloud
+          EXPECTED_WORKSPACE_ID: 50587328-441d-4acb-b8f3-dbe1b3c5de99
+        run: |
+          node --input-type=module - <<'NODE'
+          const apiUrl = process.env.CLOUD_API_URL?.trim().replace(/\/$/, '');
+          const apiKey = process.env.CLOUD_API_KEY?.trim();
+          const expectedApiUrl = process.env.EXPECTED_CLOUD_API_URL;
+          const expectedWorkspaceId = process.env.EXPECTED_WORKSPACE_ID;
+          if (!apiUrl || !apiKey) throw new Error('Cloud proof credential secrets are missing');
+          if (apiUrl !== expectedApiUrl) {
+            throw new Error(`Cloud proof URL is not production: ${apiUrl}`);
+          }
+          const response = await fetch(`${apiUrl}/api/v1/auth/whoami`, {
+            headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
+            signal: AbortSignal.timeout(30_000),
+          });
+          const payload = await response.json().catch(() => null);
+          if (!response.ok) throw new Error(`Cloud credential identity check failed with HTTP ${response.status}`);
+          const scopes = Array.isArray(payload?.scopes) ? [...payload.scopes].sort() : [];
+          const expectedScopes = ['workflow:invoke:read', 'workflow:invoke:write'];
+          const actualWorkspaceId = payload?.currentWorkspace?.id;
+          if (payload?.authenticated !== true) throw new Error('Cloud credential is not authenticated');
+          if (payload?.subjectType !== 'ci') throw new Error(`Unexpected subjectType: ${payload?.subjectType ?? 'missing'}`);
+          if (actualWorkspaceId !== expectedWorkspaceId) {
+            throw new Error(`Credential is bound to unexpected workspace: ${actualWorkspaceId ?? 'missing'}`);
+          }
+          if (JSON.stringify(scopes) !== JSON.stringify(expectedScopes)) {
+            throw new Error(`Credential scopes differ from the proof profile: ${scopes.join(',') || 'missing'}`);
+          }
+          console.log(`CLOUD_PROOF_CREDENTIAL_VALID subjectType=ci workspace=${actualWorkspaceId} scopes=${scopes.join(',')}`);
+          NODE
+
   proof:
+    if: github.event_name != 'workflow_dispatch' || inputs.validate_credential_only != true
     name: RelayFlow PR proof dispatcher
     runs-on: ubuntu-latest
     timeout-minutes: 70
