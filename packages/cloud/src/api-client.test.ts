@@ -1,7 +1,40 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CloudApiClient } from './api-client.js';
+import { CloudApiClient, WorkflowApiKeyClient } from './api-client.js';
 import { CloudAuthError } from './types.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('WorkflowApiKeyClient', () => {
+  it('uses one API key at the explicit URL and returns a 401 without retrying', async () => {
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const client = WorkflowApiKeyClient.fromEnv('https://explicit.example/cloud', {
+      CLOUD_API_URL: 'https://ignored.example/cloud',
+      CLOUD_API_KEY: 'ci-api-key',
+    });
+    expect(client).not.toBeNull();
+
+    const response = await client!.fetch('/api/v1/workflows/run', { method: 'POST' });
+
+    expect(response.status).toBe(401);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(String(fetchSpy.mock.calls[0][0])).toBe('https://explicit.example/cloud/api/v1/workflows/run');
+    const headers = new Headers(fetchSpy.mock.calls[0][1]?.headers);
+    expect(headers.get('authorization')).toBe('Bearer ci-api-key');
+  });
+
+  it('fails closed when the API key has a malformed Cloud URL', () => {
+    expect(() =>
+      WorkflowApiKeyClient.fromEnv('not-a-url', {
+        CLOUD_API_KEY: 'ci-api-key',
+      })
+    ).toThrowError(expect.objectContaining({ code: 'AUTH_ENV_REPROVISION_REQUIRED' }));
+  });
+});
 
 describe('CloudApiClient', () => {
   it('refreshes before an otherwise-valid session reaches refresh-token expiry', async () => {

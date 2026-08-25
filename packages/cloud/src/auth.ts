@@ -23,8 +23,6 @@ import {
   REFRESH_WINDOW_MS,
   CloudAuthError,
   defaultApiUrl,
-  type CloudApiKeyAuth,
-  type CloudRequestAuth,
   type CloudSession,
   type CloudSessionOptions,
   type StoredAuth,
@@ -38,30 +36,6 @@ const AUTH_LOCK_STALE_MS = 30_000;
 const AUTH_LOCK_TIMEOUT_MS = 30_000;
 
 const envBackedAuth = new WeakSet<StoredAuth>();
-
-function isApiKeyAuth(auth: CloudRequestAuth): auth is CloudApiKeyAuth {
-  return 'authMode' in auth && auth.authMode === 'api-key';
-}
-
-function readApiKeyAuth(apiUrl: string, env: NodeJS.ProcessEnv = process.env): CloudApiKeyAuth | null {
-  const apiKey = env.CLOUD_API_KEY?.trim();
-  if (!apiKey) return null;
-
-  const configuredApiUrl = apiUrl;
-  try {
-    new URL(configuredApiUrl);
-  } catch (error) {
-    throw new CloudAuthError('AUTH_ENV_REPROVISION_REQUIRED', 'CLOUD_API_URL is invalid for CLOUD_API_KEY', {
-      cause: error,
-    });
-  }
-
-  return {
-    authMode: 'api-key',
-    apiUrl: configuredApiUrl,
-    accessToken: apiKey,
-  };
-}
 
 function markEnvBackedAuth(auth: StoredAuth): StoredAuth {
   envBackedAuth.add(auth);
@@ -725,17 +699,6 @@ export async function ensureAuthenticated(
   return session.auth;
 }
 
-/**
- * Resolve authentication for the workflow control plane only. The API-key
- * path is intentionally absent from general Cloud login, fleet, workspace,
- * and integration commands even though Cloud also enforces its narrow scopes.
- */
-export async function ensureWorkflowAuthenticated(apiUrl: string): Promise<CloudRequestAuth> {
-  const apiKeyAuth = readApiKeyAuth(apiUrl);
-  if (apiKeyAuth) return apiKeyAuth;
-  return ensureAuthenticated(apiUrl);
-}
-
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
   const env = options.env ?? process.env;
   const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
@@ -839,8 +802,8 @@ function apiFetch(
   });
 }
 
-export async function authorizedApiFetch<T extends CloudRequestAuth>(
-  auth: T,
+export async function authorizedApiFetch(
+  auth: StoredAuth,
   requestPath: string,
   init: RequestInit,
   options: {
@@ -854,19 +817,12 @@ export async function authorizedApiFetch<T extends CloudRequestAuth>(
     device?: boolean;
     env?: NodeJS.ProcessEnv;
   } = {}
-): Promise<{ response: Response; auth: T }> {
-  let activeAuth: CloudRequestAuth = auth;
+): Promise<{ response: Response; auth: StoredAuth }> {
+  let activeAuth = auth;
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
 
   if (response.status !== 401) {
-    return { response, auth: activeAuth as T };
-  }
-
-  // API keys are deliberately non-refreshing. Return the Cloud 401 to the
-  // caller so unattended automation fails closed instead of attempting token
-  // rotation or opening an interactive login flow.
-  if (isApiKeyAuth(activeAuth)) {
-    return { response, auth: activeAuth as T };
+    return { response, auth: activeAuth };
   }
 
   let refreshableAuth: StoredAuth = activeAuth;
@@ -905,5 +861,5 @@ export async function authorizedApiFetch<T extends CloudRequestAuth>(
   }
 
   response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
-  return { response, auth: activeAuth as T };
+  return { response, auth: activeAuth };
 }

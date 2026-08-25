@@ -9,14 +9,6 @@ export type StoredAuth = {
   apiUrl: string;
 };
 
-export type CloudApiKeyAuth = {
-  authMode: 'api-key';
-  accessToken: string;
-  apiUrl: string;
-};
-
-export type CloudRequestAuth = StoredAuth | CloudApiKeyAuth;
-
 export type CloudAuthErrorCode =
   | 'AUTH_REFRESH_TIMEOUT'
   | 'AUTH_REFRESH_EXPIRED'

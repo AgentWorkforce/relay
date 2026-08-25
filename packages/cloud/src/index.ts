@@ -225,8 +225,6 @@ export { PermissionAuditLog, getDefaultPermissionAuditPath } from './audit.js';
 
 export {
   type StoredAuth,
-  type CloudApiKeyAuth,
-  type CloudRequestAuth,
   CloudAuthError,
   type CloudAuthErrorCode,
   type CloudSession,

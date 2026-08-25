@@ -6,8 +6,13 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import type { RunWorkflowResponse } from './types.js';
 
 const s3SendMock = vi.hoisted(() => vi.fn());
-const ensureWorkflowAuthenticatedMock = vi.hoisted(() => vi.fn());
+const ensureAuthenticatedMock = vi.hoisted(() => vi.fn());
 const authorizedApiFetchMock = vi.hoisted(() => vi.fn());
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 vi.mock('@aws-sdk/client-s3', () => {
   class PutObjectCommand {
@@ -25,7 +30,7 @@ vi.mock('@aws-sdk/client-s3', () => {
 });
 
 vi.mock('./auth.js', () => ({
-  ensureWorkflowAuthenticated: (...args: unknown[]) => ensureWorkflowAuthenticatedMock(...args),
+  ensureAuthenticated: (...args: unknown[]) => ensureAuthenticatedMock(...args),
   authorizedApiFetch: (...args: unknown[]) => authorizedApiFetchMock(...args),
 }));
 
@@ -353,7 +358,7 @@ describe('runWorkflow code sync', () => {
     originalCwd = process.cwd();
     tmpRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cloud-run-workflow-')));
     process.chdir(tmpRoot);
-    ensureWorkflowAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
     s3SendMock.mockResolvedValue({});
   });
 
@@ -620,7 +625,7 @@ describe('workflow schedules', () => {
     originalCwd = process.cwd();
     tmpRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'cloud-schedule-workflow-')));
     process.chdir(tmpRoot);
-    ensureWorkflowAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
   });
 
   afterEach(async () => {
@@ -791,5 +796,27 @@ describe('workflow schedules', () => {
     );
     expect(schedules).toHaveLength(1);
     expect(schedules[0].id).toBe('sched-1');
+  });
+
+  it('uses the non-refreshing workflow API-key client without stored authentication', async () => {
+    vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ schedules: [scheduleRecord()] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const schedules = await listWorkflowSchedules({ apiUrl: 'https://ci.example/cloud' });
+
+    expect(schedules).toHaveLength(1);
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toBe('https://ci.example/cloud/api/v1/workflows/schedules');
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ci-api-key');
   });
 });
