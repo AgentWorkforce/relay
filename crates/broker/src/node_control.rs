@@ -2161,7 +2161,7 @@ pub(crate) fn delivery_ack(agent: impl Into<String>, up_to_seq: u64) -> BrokerTo
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -4060,6 +4060,26 @@ mod tests {
 
     #[tokio::test]
     async fn repaired_inventory_drives_heartbeat_and_survives_reconnect() {
+        assert_repaired_inventory_drives_heartbeat_and_survives_reconnect(vec![
+            InventoryAgent {
+                agent_id: "agent-inventory-id".to_string(),
+                name: "inventory-worker".to_string(),
+                invocation_id: Some("inv-1".to_string()),
+                session_ref: Some("session-1".to_string()),
+            },
+            InventoryAgent {
+                agent_id: "agent-adopted-id".to_string(),
+                name: "adopted-worker".to_string(),
+                invocation_id: None,
+                session_ref: Some("session-adopted".to_string()),
+            },
+        ])
+        .await;
+    }
+
+    pub(crate) async fn assert_repaired_inventory_drives_heartbeat_and_survives_reconnect(
+        repaired_inventory: Vec<InventoryAgent>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
         let (command_tx, command_rx) = mpsc::channel(32);
@@ -4174,24 +4194,8 @@ mod tests {
             })
             .await
             .unwrap();
-        // This command is the output of runtime live-worker reconciliation: the
-        // already-retained worker and a live adopted PTY now both have their
-        // immutable Relaycast identities in the authoritative inventory.
         command_tx
-            .send(FleetControlCommand::UpdateInventory(vec![
-                InventoryAgent {
-                    agent_id: "agent-inventory-id".to_string(),
-                    name: "inventory-worker".to_string(),
-                    invocation_id: Some("inv-1".to_string()),
-                    session_ref: Some("session-1".to_string()),
-                },
-                InventoryAgent {
-                    agent_id: "agent-adopted-id".to_string(),
-                    name: "adopted-worker".to_string(),
-                    invocation_id: None,
-                    session_ref: Some("session-adopted".to_string()),
-                },
-            ]))
+            .send(FleetControlCommand::UpdateInventory(repaired_inventory))
             .await
             .unwrap();
         command_tx
