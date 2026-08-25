@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,6 +19,33 @@ import { uploadCloudEvidence } from './cloud-storage.mjs';
 import { runBoundedProcess } from './process-runner.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
+
+async function readObservationFile(filePath) {
+  const resultFile = await open(
+    filePath,
+    fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW
+  );
+  try {
+    const resultStat = await resultFile.stat();
+    if (!resultStat.isFile()) throw new Error('observation must be a regular, non-symlink file');
+
+    const chunks = [];
+    let totalBytes = 0;
+    while (totalBytes <= MAX_OBSERVATION_FILE_BYTES) {
+      const chunk = Buffer.alloc(Math.min(16 * 1024, MAX_OBSERVATION_FILE_BYTES + 1 - totalBytes));
+      const { bytesRead } = await resultFile.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      totalBytes += bytesRead;
+    }
+    if (totalBytes > MAX_OBSERVATION_FILE_BYTES) {
+      throw new Error(`observation must be no larger than ${MAX_OBSERVATION_FILE_BYTES} bytes`);
+    }
+    return Buffer.concat(chunks, totalBytes).toString('utf8');
+  } finally {
+    await resultFile.close();
+  }
+}
 
 export async function runProcess(command, args, options = {}) {
   return runBoundedProcess(command, args, options);
@@ -130,18 +158,7 @@ export async function main() {
 
     let observationJson;
     try {
-      const resultFile = await open(resultPath, 'r');
-      try {
-        const resultStat = await resultFile.stat();
-        if (!resultStat.isFile() || resultStat.size > MAX_OBSERVATION_FILE_BYTES) {
-          throw new Error(
-            `observation must be a regular file no larger than ${MAX_OBSERVATION_FILE_BYTES} bytes`
-          );
-        }
-        observationJson = JSON.parse(await resultFile.readFile('utf8'));
-      } finally {
-        await resultFile.close();
-      }
+      observationJson = JSON.parse(await readObservationFile(resultPath));
     } catch (error) {
       throw new PrProofContractError('Case runner did not write a valid observation JSON file', [
         error instanceof Error ? error.message : String(error),
