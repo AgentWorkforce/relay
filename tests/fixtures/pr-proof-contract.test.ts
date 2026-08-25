@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -334,13 +334,19 @@ describe('Cloud dispatcher credential lifecycle', () => {
     try {
       expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
       expect(auth.cliEnv.HOME).toBe(auth.temporaryHome);
-      expect((await stat(auth.authPath)).mode & 0o777).toBe(0o600);
-      await expect(
-        assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
-      ).resolves.toBeUndefined();
-      const stored = JSON.parse(await readFile(auth.authPath, 'utf8'));
-      stored.accessToken = 'rotated-token';
-      await writeFile(auth.authPath, JSON.stringify(stored), { mode: 0o600 });
+      const authFile = await open(auth.authPath, 'r+');
+      try {
+        expect((await authFile.stat()).mode & 0o777).toBe(0o600);
+        await expect(
+          assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
+        ).resolves.toBeUndefined();
+        const stored = JSON.parse(await authFile.readFile('utf8'));
+        stored.accessToken = 'rotated-token';
+        await authFile.truncate(0);
+        await authFile.write(JSON.stringify(stored), 0, 'utf8');
+      } finally {
+        await authFile.close();
+      }
       await expect(
         assertCredentialDidNotRotate(auth.authPath, credentialEnv.CLOUD_API_ACCESS_TOKEN)
       ).rejects.toThrow(/cannot be persisted/);

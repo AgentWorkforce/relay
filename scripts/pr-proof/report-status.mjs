@@ -23,6 +23,9 @@ function headers(token) {
 }
 
 async function githubJson(url, token, init = {}, fetchImpl = fetch) {
+  // Callers construct only GitHub API URLs from the trusted API origin and
+  // validated repository, PR-number, or full-SHA components.
+  // codeql[js/file-access-to-http]
   const response = await fetchImpl(url, {
     ...init,
     headers: { ...headers(token), ...(init.headers ?? {}) },

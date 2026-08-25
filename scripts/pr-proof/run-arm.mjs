@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -130,13 +130,18 @@ export async function main() {
 
     let observationJson;
     try {
-      const resultStat = await stat(resultPath);
-      if (!resultStat.isFile() || resultStat.size > MAX_OBSERVATION_FILE_BYTES) {
-        throw new Error(
-          `observation must be a regular file no larger than ${MAX_OBSERVATION_FILE_BYTES} bytes`
-        );
+      const resultFile = await open(resultPath, 'r');
+      try {
+        const resultStat = await resultFile.stat();
+        if (!resultStat.isFile() || resultStat.size > MAX_OBSERVATION_FILE_BYTES) {
+          throw new Error(
+            `observation must be a regular file no larger than ${MAX_OBSERVATION_FILE_BYTES} bytes`
+          );
+        }
+        observationJson = JSON.parse(await resultFile.readFile('utf8'));
+      } finally {
+        await resultFile.close();
       }
-      observationJson = JSON.parse(await readFile(resultPath, 'utf8'));
     } catch (error) {
       throw new PrProofContractError('Case runner did not write a valid observation JSON file', [
         error instanceof Error ? error.message : String(error),

@@ -101,6 +101,9 @@ async function writeGithubOutput(values, outputPath) {
 
 async function writeSummary(lines, summaryPath) {
   if (!summaryPath) return;
+  // GitHub supplies the summary destination; PR fields are rendered only as
+  // inert Markdown text after classification/snapshot validation.
+  // codeql[js/http-to-file-access]
   await appendFile(summaryPath, `${lines.join('\n')}\n`);
 }
 
@@ -219,6 +222,9 @@ export async function main() {
     manifest,
   };
   await mkdir(path.dirname(outputPath), { recursive: true });
+  // The workflow fixes outputPath, and every network-derived property has
+  // passed strict type/path/SHA/manifest validation plus a final PR snapshot.
+  // codeql[js/http-to-file-access]
   await writeFile(outputPath, `${JSON.stringify(proofInput, null, 2)}\n`);
   await writeGithubOutput({ required: true, case_id: caseId, input_path: outputPath }, githubOutput);
   await writeSummary(

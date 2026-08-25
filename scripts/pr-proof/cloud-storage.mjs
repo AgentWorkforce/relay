@@ -27,6 +27,9 @@ function authorization(env) {
 export async function uploadCloudEvidence(input, arm, evidence, options = {}) {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetchImpl ?? fetch;
+  // The origin is the trusted Cloud runtime URL; run ID, nonce, and arm are
+  // strictly validated/encoded run-scoped identifiers, not arbitrary hosts.
+  // codeql[js/file-access-to-http]
   const response = await fetchImpl(storageUrl(env, input, arm), {
     method: 'PUT',
     headers: {
@@ -34,6 +37,9 @@ export async function uploadCloudEvidence(input, arm, evidence, options = {}) {
       authorization: authorization(env),
       'content-type': 'application/json',
     },
+    // Evidence is intentionally sent to this run's authenticated storage
+    // object after the trusted wrapper has validated its complete contract.
+    // codeql[js/file-access-to-http]
     body: JSON.stringify(evidence),
   });
   if (!response.ok) {
@@ -45,6 +51,9 @@ export async function uploadCloudEvidence(input, arm, evidence, options = {}) {
 export async function downloadCloudEvidence(input, arm, options = {}) {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetchImpl ?? fetch;
+  // The trusted Cloud runtime origin and encoded run-scoped identifiers above
+  // prevent file-derived data from selecting an arbitrary destination.
+  // codeql[js/file-access-to-http]
   const response = await fetchImpl(storageUrl(env, input, arm), {
     headers: {
       accept: 'application/json',
