@@ -748,6 +748,7 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain("process.once('SIGTERM', signalHandler)");
     expect(source).toContain('activeCommandController?.abort()');
     expect(source).toContain('AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID');
+    expect(source).toContain('captureLaunchProgressError(() => launchProgress.write(text))');
     expect(source).toContain("['cloud', 'cancel', runId, '--json']");
     expect(source).toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).toContain('assertCredentialDidNotRotate');

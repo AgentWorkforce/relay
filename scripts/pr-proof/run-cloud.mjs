@@ -211,6 +211,13 @@ export async function main() {
     }
   };
   const launchProgress = createPreparedRunProgressParser(notePreparedRunId);
+  const captureLaunchProgressError = (action) => {
+    try {
+      action();
+    } catch (error) {
+      launchProgressError ??= error;
+    }
+  };
 
   const runTracked = async (command, args, options = {}) => {
     const controller = new AbortController();
@@ -259,9 +266,9 @@ export async function main() {
       },
       quiet: true,
       timeoutMs: commandTimeoutMs,
-      onStderr: (text) => launchProgress.write(text),
+      onStderr: (text) => captureLaunchProgressError(() => launchProgress.write(text)),
     });
-    launchProgress.end();
+    captureLaunchProgressError(() => launchProgress.end());
     if (launchProgressError) throw launchProgressError;
     if (launch.aborted) throw new Error('Cloud workflow submission was interrupted');
     if (launch.timedOut) {
