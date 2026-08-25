@@ -1,0 +1,118 @@
+{
+  "id": "traj_lg1p32dy7d6e",
+  "version": 1,
+  "task": {
+    "title": "Fix PR 1610 reconnect backoff and add RelayFlow proof",
+    "source": {
+      "system": "plain",
+      "id": "PR-1610"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-25T21:57:29.360Z",
+  "completedAt": "2026-08-25T22:23:32.094Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-25T22:23:18.074Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_hte7kuu3p2rl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-25T22:23:18.074Z",
+      "endedAt": "2026-08-25T22:23:32.094Z",
+      "events": [
+        {
+          "ts": 1787696598075,
+          "type": "decision",
+          "content": "Reset reconnect backoff only after a successful correlated inventory.sync reply: Reset reconnect backoff only after a successful correlated inventory.sync reply",
+          "raw": {
+            "question": "Reset reconnect backoff only after a successful correlated inventory.sync reply",
+            "chosen": "Reset reconnect backoff only after a successful correlated inventory.sync reply",
+            "alternatives": [],
+            "reasoning": "A WebSocket handshake or correlated error proves transport/application reachability but does not establish a healthy ready control session; pre-ready failures must retain exponential outage backoff."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787696599112,
+          "type": "reflection",
+          "content": "Implementation and single RelayFlow case are complete; Rust library cargo check and formatting pass. Full lib-test and discriminating runner execution are locally resource-blocked because rustc is SIGKILLed during code generation in the 5 GiB filesystem environment.",
+          "raw": {
+            "confidence": 0.78
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.78"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Rebased PR 1610 onto main, preserved exponential backoff until successful correlated inventory acknowledgement, added readiness/error regressions, and added the single 1591 application-ack reconnect RelayFlow case with a head-authored loopback production-client runner.",
+    "approach": "Standard approach",
+    "confidence": 0.78
+  },
+  "commits": [
+    "054a3284b",
+    "10fc5ce1c",
+    "639158c8c"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-08/traj_yr3f5u3r6zdz/summary.md",
+    ".agentworkforce/trajectories/completed/2026-08/traj_yr3f5u3r6zdz/trajectory.json",
+    ".github/pull_request_template.md",
+    ".github/workflows/relayflow-pr-proof.yml",
+    ".gitignore",
+    "CHANGELOG.md",
+    "package.json",
+    "packages/brand/package.json",
+    "packages/broker-darwin-arm64/package.json",
+    "packages/broker-darwin-x64/package.json",
+    "packages/broker-linux-arm64/package.json",
+    "packages/broker-linux-x64/package.json",
+    "packages/broker-win32-x64/package.json",
+    "packages/cli/package.json",
+    "packages/cloud/package.json",
+    "packages/cloud/src/api-client.test.ts",
+    "packages/cloud/src/api-client.ts",
+    "packages/cloud/src/auth.test.ts",
+    "packages/cloud/src/auth.ts",
+    "packages/cloud/src/workflows.test.ts",
+    "packages/cloud/src/workflows.ts",
+    "packages/config/package.json",
+    "packages/evals/package.json",
+    "packages/fleet/package.json",
+    "packages/harness-driver/package.json",
+    "packages/harnesses/package.json",
+    "packages/integration-prompts/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/session/package.json",
+    "packages/utils/package.json",
+    "scripts/pr-proof/cloud-storage.mjs",
+    "scripts/pr-proof/contract.mjs",
+    "scripts/pr-proof/prepare.mjs",
+    "scripts/pr-proof/process-runner.mjs",
+    "scripts/pr-proof/report-status.mjs",
+    "scripts/pr-proof/run-arm.mjs",
+    "scripts/pr-proof/run-cloud.mjs",
+    "scripts/pr-proof/verify-evidence.mjs",
+    "tests/fixtures/pr-proof-contract.test.ts",
+    "tests/relayflows/cases/README.md",
+    "workflows/pr-proof.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "44ddb17dcafcdefa347cb31bb132a3dc4e9aa846",
+    "endRef": "054a3284b78d379f62feb03899cdf238aa539a54",
+    "traceId": "5fec40ab-a5ed-4f06-9183-e23ff31366a9"
+  }
+}

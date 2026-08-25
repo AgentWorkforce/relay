@@ -1616,15 +1616,18 @@ pub(crate) async fn run_node_control_client(
         if matches!(result, ControlRunResult::Shutdown) {
             return;
         }
-        if matches!(result, ControlRunResult::Disconnected) {
-            // A real connection was established and then dropped, so the current
-            // token authenticated successfully. Reset the 401 counter only here —
-            // NOT after a successful re-mint — so a tight loop where each mint
-            // succeeds but the engine keeps 401-ing `/v1/node/ws` still
-            // accumulates toward the cap instead of resetting on every iteration.
+        let application_ready = matches!(
+            result,
+            ControlRunResult::Disconnected {
+                application_ready: true
+            }
+        );
+        if application_ready {
+            // A correlated inventory.sync acknowledgement proves the engine's
+            // application processed this session. Reset outage state only after
+            // that proof — a transport handshake followed by a pre-ready drop
+            // must preserve both the 401 history and exponential backoff.
             consecutive_unauthorized = 0;
-            // A real session was established before it became unhealthy. Do not
-            // carry an old outage's 30-second backoff into this recovery.
             reconnect_delay = INITIAL_RECONNECT_DELAY;
         }
         if matches!(result, ControlRunResult::Unauthorized) {
@@ -1672,7 +1675,7 @@ pub(crate) async fn run_node_control_client(
         }
         let transition = match result {
             ControlRunResult::ConnectFailed => "connect_failed",
-            ControlRunResult::Disconnected => "disconnected",
+            ControlRunResult::Disconnected { .. } => "disconnected",
             ControlRunResult::Unauthorized => "unauthorized",
             ControlRunResult::Shutdown => unreachable!("shutdown returned above"),
         };
@@ -1685,7 +1688,7 @@ pub(crate) async fn run_node_control_client(
         );
         let _ = event_tx.send(FleetControlEvent::Disconnected).await;
         tokio::time::sleep(reconnect_delay).await;
-        if !matches!(result, ControlRunResult::Disconnected) {
+        if !application_ready {
             reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
         }
     }
@@ -1695,7 +1698,11 @@ pub(crate) async fn run_node_control_client(
 enum ControlRunResult {
     /// The WebSocket session never completed its transport handshake.
     ConnectFailed,
-    Disconnected,
+    Disconnected {
+        /// True only after a correlated inventory.sync acknowledgement proved
+        /// that the engine application processed this connection.
+        application_ready: bool,
+    },
     /// The `/v1/node/ws` handshake was rejected with HTTP 401/Unauthorized,
     /// i.e. the current node token is stale or scoped to a different
     /// workspace/engine and must be re-minted before retrying.
@@ -1753,6 +1760,10 @@ impl ApplicationLiveness {
         // queued control work; keep the set bounded during a healthy session.
         self.pending_inventory_syncs.clear();
         Some(became_ready)
+    }
+
+    fn reject(&mut self, id: &str) -> bool {
+        self.pending_inventory_syncs.remove(id)
     }
 
     fn idle(&self) -> Duration {
@@ -1869,7 +1880,9 @@ async fn run_connected_once(
     .await
     .is_err()
     {
-        return ControlRunResult::Disconnected;
+        return ControlRunResult::Disconnected {
+            application_ready: false,
+        };
     }
     if !send_inventory_sync(
         &mut sink,
@@ -1879,7 +1892,9 @@ async fn run_connected_once(
     )
     .await
     {
-        return ControlRunResult::Disconnected;
+        return ControlRunResult::Disconnected {
+            application_ready: false,
+        };
     }
     if send_wire(
         &mut sink,
@@ -1888,7 +1903,9 @@ async fn run_connected_once(
     .await
     .is_err()
     {
-        return ControlRunResult::Disconnected;
+        return ControlRunResult::Disconnected {
+            application_ready: false,
+        };
     }
 
     // The idle check runs on the heartbeat tick, so the tick must be shorter
@@ -1915,7 +1932,7 @@ async fn run_connected_once(
                         node_register = next.clone();
                         *registration = Some(next.clone());
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
-                            return ControlRunResult::Disconnected;
+                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                         }
                     }
                     Some(FleetControlCommand::UpdateInventory(next)) => {
@@ -1928,7 +1945,7 @@ async fn run_connected_once(
                         )
                         .await
                         {
-                            return ControlRunResult::Disconnected;
+                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                         }
                     }
                     Some(FleetControlCommand::UpdateLoad(next)) => {
@@ -1936,12 +1953,12 @@ async fn run_connected_once(
                     }
                     Some(FleetControlCommand::HeartbeatNow) => {
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
-                            return ControlRunResult::Disconnected;
+                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                         }
                     }
                     Some(FleetControlCommand::Send(message)) => {
                         if send_wire(&mut sink, &message).await.is_err() {
-                            return ControlRunResult::Disconnected;
+                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                         }
                     }
                     Some(FleetControlCommand::RegisterAgent { mut request, reply }) => {
@@ -1959,7 +1976,7 @@ async fn run_connected_once(
                         );
                         if send_wire(&mut sink, &BrokerToRelaycast::AgentRegister(request)).await.is_err() {
                             drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                            return ControlRunResult::Disconnected;
+                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                         }
                     }
                     Some(FleetControlCommand::Shutdown) | None => {
@@ -1987,7 +2004,7 @@ async fn run_connected_once(
                         "no inbound node-control frame within the read-idle window; reconnecting"
                     );
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
                 let application_idle = application_liveness.idle();
                 if application_idle >= application_liveness.deadline {
@@ -2001,17 +2018,17 @@ async fn run_connected_once(
                         "node-control application acknowledgement deadline exceeded while transport remained active; reconnecting"
                     );
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
                 if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
                 // Guarantees the peer owes us a frame every interval, so an idle
                 // engine is distinguishable from a dead connection.
                 if send_ws_frame(&mut sink, Message::Ping(Vec::new())).await.is_err() {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
             _ = inventory_refresh.tick() => {
@@ -2023,20 +2040,20 @@ async fn run_connected_once(
                 )
                 .await
                 {
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
             message = stream.next() => {
                 let Some(message) = message else {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 };
                 let message = match message {
                     Ok(message) => message,
                     Err(error) => {
                         tracing::warn!(target = "relay_broker::fleet", error = %error, "fleet node ws read failed");
                         drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                        return ControlRunResult::Disconnected;
+                        return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                     }
                 };
                 // Any frame proves the peer is still there — including the pong
@@ -2054,7 +2071,7 @@ async fn run_connected_once(
                 .await
                 {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                    return ControlRunResult::Disconnected;
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
         }
@@ -2134,7 +2151,7 @@ where
                     id = %error.id,
                     "engine rejected a node control frame"
                 );
-                let rejected_liveness_probe = application_liveness.acknowledge(&error.id).is_some();
+                let rejected_liveness_probe = application_liveness.reject(&error.id);
                 fail_agent_registration(
                     &error.id,
                     format!("{}: {}", error.code, error.message),
@@ -3245,6 +3262,22 @@ mod tests {
     }
 
     #[test]
+    fn application_readiness_requires_successful_correlated_inventory_reply() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        liveness.track_inventory_sync("inventory-rejected".to_string());
+        assert!(liveness.reject("inventory-rejected"));
+        assert!(
+            !liveness.ready,
+            "an error reply must not make the link ready"
+        );
+
+        liveness.track_inventory_sync("inventory-acknowledged".to_string());
+        assert_eq!(liveness.acknowledge("unrelated"), None);
+        assert_eq!(liveness.acknowledge("inventory-acknowledged"), Some(true));
+        assert!(liveness.ready);
+    }
+
+    #[test]
     fn expire_agent_registrations_bounds_pending_map() {
         let created_at = Instant::now();
         let (reply_tx, mut reply_rx) = oneshot::channel();
@@ -3976,7 +4009,12 @@ mod tests {
         .await
         .expect("mock node-control session should finish");
 
-        assert_eq!(result, ControlRunResult::Disconnected);
+        assert_eq!(
+            result,
+            ControlRunResult::Disconnected {
+                application_ready: false
+            }
+        );
         server.await.unwrap();
     }
 
@@ -4054,7 +4092,12 @@ mod tests {
         .await
         .expect("mock node-control session should finish");
 
-        assert_eq!(result, ControlRunResult::Disconnected);
+        assert_eq!(
+            result,
+            ControlRunResult::Disconnected {
+                application_ready: false
+            }
+        );
         server.await.unwrap();
     }
 
@@ -4140,7 +4183,12 @@ mod tests {
         .await
         .expect("application-level liveness deadline did not fire");
 
-        assert_eq!(result, ControlRunResult::Disconnected);
+        assert_eq!(
+            result,
+            ControlRunResult::Disconnected {
+                application_ready: false
+            }
+        );
         server.await.unwrap();
     }
 
@@ -4239,6 +4287,68 @@ mod tests {
         assert_eq!(result, ControlRunResult::Shutdown);
         shutdown.await.unwrap();
         server.await.unwrap();
+    }
+
+    /// Transport handshakes do not make a control session healthy. If the peer
+    /// repeatedly drops each socket before acknowledging inventory.sync, the
+    /// reconnect delay must continue growing instead of resetting to one second.
+    #[tokio::test]
+    async fn pre_ready_disconnects_preserve_exponential_reconnect_backoff() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+
+        let client = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_test".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: None,
+                session_token: None,
+                read_idle_timeout: Some(Duration::from_millis(400)),
+            },
+            command_rx,
+            event_tx,
+        ));
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        let started = Instant::now();
+        let mut accepted_at = Vec::new();
+        for attempt in 0..3 {
+            let (stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("client did not make the next reconnect attempt")
+                .unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            accepted_at.push(started.elapsed());
+            if attempt < 2 {
+                ws.close(None).await.unwrap();
+            } else {
+                command_tx
+                    .send(FleetControlCommand::Shutdown)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        client.await.unwrap();
+        assert!(
+            accepted_at[1].saturating_sub(accepted_at[0]) >= Duration::from_millis(900),
+            "first pre-ready failure must retain the one-second backoff: {accepted_at:?}"
+        );
+        assert!(
+            accepted_at[2].saturating_sub(accepted_at[1]) >= Duration::from_millis(1800),
+            "second pre-ready failure must grow to the two-second backoff: {accepted_at:?}"
+        );
     }
 
     /// A blackholed `/v1/node/ws` — the socket still accepts writes, but the
