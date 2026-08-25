@@ -1,0 +1,57 @@
+{
+  "id": "traj_dqaehk33bc2z",
+  "version": 1,
+  "task": {
+    "title": "Require complete verified-spawn success contract",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1603"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-23T23:44:36.484Z",
+  "completedAt": "2026-08-23T23:45:40.996Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-23T23:45:39.240Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ffgmv8akchv9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-23T23:45:39.240Z",
+      "endedAt": "2026-08-23T23:45:40.996Z",
+      "events": [
+        {
+          "ts": 1787528739240,
+          "type": "decision",
+          "content": "Require both spawned and ready on terminal success: Require both spawned and ready on terminal success",
+          "raw": {
+            "question": "Require both spawned and ready on terminal success",
+            "chosen": "Require both spawned and ready on terminal success",
+            "alternatives": [],
+            "reasoning": "The broker success contract is conjunctive; either flag alone can be malformed or legacy output and must not be reported as a verified spawn."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened verified raw spawn completion to require spawned=true and ready=true, with regressions for missing and false spawn confirmation; focused tests and typecheck pass.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "464816f48c2986a55db1097cb9f581966234360e",
+    "endRef": "464816f48c2986a55db1097cb9f581966234360e"
+  }
+}

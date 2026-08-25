@@ -1,0 +1,57 @@
+{
+  "id": "traj_eav8p9bmksk3",
+  "version": 1,
+  "task": {
+    "title": "Make raw MCP fleet spawns wait for broker readiness",
+    "source": {
+      "system": "plain",
+      "id": "relay#1603"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-23T17:44:18.116Z",
+  "completedAt": "2026-08-23T17:54:24.232Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-23T17:53:20.788Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_742ti6u2e5na",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-23T17:53:20.788Z",
+      "endedAt": "2026-08-23T17:54:24.232Z",
+      "events": [
+        {
+          "ts": 1787507600788,
+          "type": "decision",
+          "content": "Use an explicit top-level verify_ready action flag instead of synthesizing a harness config: Use an explicit top-level verify_ready action flag instead of synthesizing a harness config",
+          "raw": {
+            "question": "Use an explicit top-level verify_ready action flag instead of synthesizing a harness config",
+            "chosen": "Use an explicit top-level verify_ready action flag instead of synthesizing a harness config",
+            "alternatives": [],
+            "reasoning": "Readiness is an invocation contract, and injecting a PTY harness config could change CLI command/session semantics; the broker already has the readiness state machine and now accepts the flag alongside existing harness metadata."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made raw MCP fleet spawns request broker verification, wait for terminal readiness, reject missing ready proof, and surface early exits; added CLI and broker regressions plus changelog.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38",
+    "endRef": "2f24c6af2d1f017425db7ae54433dfedcac59b38"
+  }
+}
