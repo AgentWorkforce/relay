@@ -459,7 +459,10 @@ describe('process timeout contract', () => {
       ].join('');
       const result = await runProcess(process.execPath, ['-e', script], {
         echo: false,
-        timeoutMs: 100,
+        // This timeout measures when cleanup begins, not child startup. Leave
+        // enough room for a contended runner to spawn and report the descendant
+        // PID so the assertions exercise process-group termination itself.
+        timeoutMs: 500,
         terminationGraceMs: 100,
       });
       const descendantPid = Number(result.stdout.trim());
