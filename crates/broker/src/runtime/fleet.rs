@@ -3459,6 +3459,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn reconciliation_adds_an_adopted_live_worker_without_reregistering() {
         let temp = tempfile::tempdir().expect("worker registry tempdir");

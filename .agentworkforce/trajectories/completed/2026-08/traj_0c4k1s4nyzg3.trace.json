@@ -1,0 +1,32 @@
+{
+  "version": "1.0.0",
+  "id": "99d12cd8-b320-49c4-8ea6-25391f5313eb",
+  "timestamp": "2026-08-25T07:27:52.373Z",
+  "trajectory": "traj_0c4k1s4nyzg3",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/fleet_wire.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/node_control.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/runtime/api.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/runtime/maintenance.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    }
+  ]
+}
