@@ -219,6 +219,25 @@ describe('ensureAuthenticated', () => {
     return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   }
 
+  it('does not use workflow API-key auth for general Cloud authentication', async () => {
+    vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        ...FILE_AUTH,
+        accessTokenExpiresAt: farFutureIso(),
+      })
+    );
+
+    const result = await ensureAuthenticated('https://default.example/cloud');
+
+    expect(result).toMatchObject({
+      apiUrl: FILE_AUTH.apiUrl,
+      accessToken: FILE_AUTH.accessToken,
+      refreshToken: FILE_AUTH.refreshToken,
+    });
+    expect(result).not.toHaveProperty('authMode');
+  });
+
   it('returns stored file auth even when apiUrl differs from defaultApiUrl', async () => {
     // Regression: previously, any host mismatch between the CLI's default
     // apiUrl and the stored apiUrl forced a browser login on every cloud

@@ -9,6 +9,11 @@ const s3SendMock = vi.hoisted(() => vi.fn());
 const ensureAuthenticatedMock = vi.hoisted(() => vi.fn());
 const authorizedApiFetchMock = vi.hoisted(() => vi.fn());
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
 vi.mock('@aws-sdk/client-s3', () => {
   class PutObjectCommand {
     input: unknown;
@@ -512,6 +517,37 @@ describe('runWorkflow code sync', () => {
     expect((runBodies[0] as { paths?: unknown }).paths).toBeUndefined();
   });
 
+  it('reports the prepared run id before upload when supervising automation opts in', async () => {
+    await writeFile('README.md', 'supervised\n');
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(
+      workflowPath,
+      ['version: "1.0"', 'name: supervised', 'swarm:', '  pattern: dag', 'agents: []', 'workflows: []'].join(
+        '\n'
+      )
+    );
+    const runBodies: unknown[] = [];
+    mockPrepareAndRun(runBodies);
+    const errors: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((value) => {
+      errors.push(String(value));
+    });
+    process.env.AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID = '1';
+    try {
+      await runWorkflow(workflowPath);
+    } finally {
+      delete process.env.AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID;
+      errorSpy.mockRestore();
+    }
+
+    const preparedIndex = errors.indexOf('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-1');
+    const uploadIndex = errors.indexOf('Uploading to workflow storage...');
+    const launchIndex = errors.indexOf('Launching workflow...');
+    expect(preparedIndex).toBeGreaterThanOrEqual(0);
+    expect(preparedIndex).toBeLessThan(uploadIndex);
+    expect(preparedIndex).toBeLessThan(launchIndex);
+  });
+
   it('uploads code through the cloud API when prepare returns cloud-api storage', async () => {
     await writeFile('README.md', 'cloud-api\n');
     const workflowPath = path.join(tmpRoot, 'workflow.yaml');
@@ -760,5 +796,27 @@ describe('workflow schedules', () => {
     );
     expect(schedules).toHaveLength(1);
     expect(schedules[0].id).toBe('sched-1');
+  });
+
+  it('uses the non-refreshing workflow API-key client without stored authentication', async () => {
+    vi.stubEnv('CLOUD_API_KEY', 'ci-api-key');
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ schedules: [scheduleRecord()] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const schedules = await listWorkflowSchedules({ apiUrl: 'https://ci.example/cloud' });
+
+    expect(schedules).toHaveLength(1);
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toBe('https://ci.example/cloud/api/v1/workflows/schedules');
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ci-api-key');
   });
 });

@@ -825,14 +825,16 @@ export async function authorizedApiFetch(
     return { response, auth: activeAuth };
   }
 
+  let refreshableAuth: StoredAuth = activeAuth;
   try {
-    activeAuth = await refreshStoredAuth(activeAuth, {
+    refreshableAuth = await refreshStoredAuth(refreshableAuth, {
       force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
     });
+    activeAuth = refreshableAuth;
   } catch (error) {
-    if (isEnvBackedAuth(activeAuth)) {
+    if (isEnvBackedAuth(refreshableAuth)) {
       throw toEnvAuthRefreshError(error);
     }
 
