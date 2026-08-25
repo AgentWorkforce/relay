@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RUN_ATTEMPT_RE = /^[1-9][0-9]*$/;
 const CONTEXT = 'RelayFlow PR proof';
 
 function option(name, fallback = null) {
@@ -66,7 +67,11 @@ function targetUrl(env) {
   const server = env.GITHUB_SERVER_URL?.replace(/\/$/, '');
   const repository = env.GITHUB_REPOSITORY;
   const runId = env.GITHUB_RUN_ID;
-  return server && repository && runId ? `${server}/${repository}/actions/runs/${runId}` : undefined;
+  const runAttempt = env.GITHUB_RUN_ATTEMPT?.trim() || '1';
+  if (!RUN_ATTEMPT_RE.test(runAttempt)) throw new Error('GITHUB_RUN_ATTEMPT is invalid');
+  return server && repository && runId
+    ? `${server}/${repository}/actions/runs/${runId}/attempts/${runAttempt}`
+    : undefined;
 }
 
 export async function publishCommitStatus({ sha, state, description, env = process.env, fetchImpl = fetch }) {
@@ -123,6 +128,10 @@ export async function publishOwnedCommitStatus({
     return { published: false, ownerTargetUrl, latest };
   }
 
+  // The workflow-level concurrency group is the serialization lock for this
+  // compare-and-write. GitHub permits only one running workflow in the PR's
+  // group, so a replacement cannot publish its pending status until this
+  // cancelled predecessor has finished this step and released the group.
   await publishCommitStatus({ sha, state, description, env, fetchImpl });
   return { published: true, ownerTargetUrl, latest };
 }

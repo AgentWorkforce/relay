@@ -82,6 +82,37 @@ export function preparedRunIdFromOutput(output) {
   return null;
 }
 
+export function createPreparedRunProgressParser(onRunId) {
+  let pending = '';
+
+  const inspect = (output) => {
+    for (const line of output.split(/\r?\n/)) {
+      const runId = preparedRunIdFromOutput(line);
+      if (runId) onRunId(runId);
+    }
+  };
+
+  return {
+    write(text) {
+      pending += text;
+      const lastNewline = pending.lastIndexOf('\n');
+      if (lastNewline < 0) {
+        // The marker is a short, newline-terminated trusted CLI progress line.
+        // Bound unrelated unterminated stderr without parsing partial markers.
+        pending = pending.slice(-8_192);
+        return;
+      }
+      const complete = pending.slice(0, lastNewline + 1);
+      pending = pending.slice(lastNewline + 1);
+      inspect(complete);
+    },
+    end() {
+      if (pending) inspect(pending);
+      pending = '';
+    },
+  };
+}
+
 export function validateCredentialWindow(env, timeoutMs, now = Date.now()) {
   const accessExpiry = Date.parse(requiredCredential(env, 'CLOUD_API_ACCESS_TOKEN_EXPIRES_AT'));
   if (!Number.isFinite(accessExpiry)) throw new Error('CLOUD_API_ACCESS_TOKEN_EXPIRES_AT is invalid');
@@ -167,14 +198,10 @@ export async function main() {
   let cancelPromise = null;
   let shuttingDown = false;
   let activeCommandController = null;
-  let launchProgress = '';
   let launchProgressError = null;
 
-  const noteLaunchProgress = (text) => {
-    launchProgress = `${launchProgress}${text}`.slice(-8_192);
+  const notePreparedRunId = (preparedRunId) => {
     try {
-      const preparedRunId = preparedRunIdFromOutput(launchProgress);
-      if (!preparedRunId) return;
       if (runId && runId !== preparedRunId) {
         throw new Error(`Cloud prepare/run ID mismatch: ${runId} != ${preparedRunId}`);
       }
@@ -183,6 +210,7 @@ export async function main() {
       launchProgressError ??= error;
     }
   };
+  const launchProgress = createPreparedRunProgressParser(notePreparedRunId);
 
   const runTracked = async (command, args, options = {}) => {
     const controller = new AbortController();
@@ -231,8 +259,9 @@ export async function main() {
       },
       quiet: true,
       timeoutMs: commandTimeoutMs,
-      onStderr: noteLaunchProgress,
+      onStderr: (text) => launchProgress.write(text),
     });
+    launchProgress.end();
     if (launchProgressError) throw launchProgressError;
     if (launch.aborted) throw new Error('Cloud workflow submission was interrupted');
     if (launch.timedOut) {

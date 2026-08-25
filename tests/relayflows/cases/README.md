@@ -141,7 +141,9 @@ work even if submission is interrupted before its final JSON response. Require
 the status context only after that canary proves the credential, Cloud handoff,
 submission cancellation, and red/green case end to end.
 
-The final status step also runs during cancellation. Before it publishes a
-terminal state, it verifies that its own Actions run still owns the latest
-pending `RelayFlow PR proof` context; a cancelled predecessor cannot overwrite
-a replacement run.
+The final status step also runs during cancellation. Each run attempt gets a
+distinct owner URL. Before publishing a terminal state, it verifies that the
+current attempt still owns the latest pending `RelayFlow PR proof` context.
+The workflow-level PR concurrency group serializes that compare-and-write with
+the replacement's start step, so a cancelled predecessor cannot overwrite a
+replacement run.

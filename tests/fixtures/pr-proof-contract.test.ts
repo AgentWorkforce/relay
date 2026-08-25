@@ -37,6 +37,7 @@ import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../script
 import {
   assertCredentialDidNotRotate,
   boundedDuration,
+  createPreparedRunProgressParser,
   createCliAuthEnvironment,
   preparedRunIdFromOutput,
   validateCredentialWindow,
@@ -400,6 +401,16 @@ describe('Cloud dispatcher credential lifecycle', () => {
     );
   });
 
+  it('waits for a complete prepared-run progress line split across stderr chunks', () => {
+    const runIds: string[] = [];
+    const parser = createPreparedRunProgressParser((runId: string) => runIds.push(runId));
+    parser.write('Preparing run...\nAGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-pre');
+    expect(runIds).toEqual([]);
+    parser.write('pared-123\nUploading...\n');
+    parser.end();
+    expect(runIds).toEqual(['run-prepared-123']);
+  });
+
   it('shares an owner-only temporary auth file across CLI subprocesses and detects rotation', async () => {
     validateCredentialWindow(credentialEnv, 60 * 60_000, now);
     const auth = await createCliAuthEnvironment({ ...process.env, ...credentialEnv });
@@ -467,17 +478,21 @@ describe('process timeout contract', () => {
     const descendantPid = Number(result.stdout.trim());
     expect(result.timedOut).toBe(true);
     expect(descendantPid).toBeGreaterThan(0);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    let processState = '';
-    try {
-      processState = execFileSync('ps', ['-o', 'stat=', '-p', String(descendantPid)], {
-        encoding: 'utf8',
-      }).trim();
-    } catch (error) {
-      const status = (error as { status?: number }).status;
-      if (status !== 1) throw error;
+    const deadline = Date.now() + 2_000;
+    let running = true;
+    while (running && Date.now() < deadline) {
+      let processState = '';
+      try {
+        processState = execFileSync('ps', ['-o', 'stat=', '-p', String(descendantPid)], {
+          encoding: 'utf8',
+        }).trim();
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status !== 1) throw error;
+      }
+      running = processState.length > 0 && !processState.startsWith('Z');
+      if (running) await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    const running = processState.length > 0 && !processState.startsWith('Z');
     if (running) process.kill(descendantPid, 'SIGKILL');
     expect(running).toBe(false);
   });
@@ -534,6 +549,7 @@ describe('required head status', () => {
     GITHUB_API_URL: 'https://api.github.test',
     GITHUB_SERVER_URL: 'https://github.test',
     GITHUB_RUN_ID: '12345',
+    GITHUB_RUN_ATTEMPT: '2',
   };
 
   it('publishes the stable proof context on the exact head SHA', async () => {
@@ -574,7 +590,7 @@ describe('required head status', () => {
 
   it('finalizes only the pending status owned by the current workflow run', async () => {
     const requests: Array<{ url: string; method: string; body?: Record<string, string> }> = [];
-    const ownerTargetUrl = 'https://github.test/AgentWorkforce/relay/actions/runs/12345';
+    const ownerTargetUrl = 'https://github.test/AgentWorkforce/relay/actions/runs/12345/attempts/2';
     const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
       requests.push({
         url: String(url),
@@ -626,6 +642,32 @@ describe('required head status', () => {
     ).resolves.toMatchObject({ published: false });
     expect(requests).toBe(1);
   });
+
+  it('gives each rerun attempt a distinct status owner marker', async () => {
+    const targetUrls: string[] = [];
+    const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+      targetUrls.push(JSON.parse(String(init?.body)).target_url);
+      return Response.json({ id: targetUrls.length });
+    };
+    await publishCommitStatus({
+      sha: HEAD_SHA,
+      state: 'pending',
+      description: 'attempt 1',
+      env: { ...statusEnv, GITHUB_RUN_ATTEMPT: '1' },
+      fetchImpl,
+    });
+    await publishCommitStatus({
+      sha: HEAD_SHA,
+      state: 'pending',
+      description: 'attempt 2',
+      env: statusEnv,
+      fetchImpl,
+    });
+    expect(targetUrls).toEqual([
+      'https://github.test/AgentWorkforce/relay/actions/runs/12345/attempts/1',
+      'https://github.test/AgentWorkforce/relay/actions/runs/12345/attempts/2',
+    ]);
+  });
 });
 
 describe('pull request snapshot consistency', () => {
@@ -667,6 +709,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('statuses: write');
     expect(source).toContain('report-status.mjs start');
     expect(source).toContain('report-status.mjs finish');
+    expect(source).toContain('concurrency:');
+    expect(source).toContain('cancel-in-progress: true');
     expect(source).toContain("if: always() && steps.status.outputs.head_sha != ''");
     expect(source).not.toContain('always() && !cancelled()');
     expect(source).toContain('--expected-head-sha "${{ steps.status.outputs.head_sha }}"');
