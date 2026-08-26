@@ -265,7 +265,10 @@ describe('RelaycastMessagingClient placement', () => {
   it('leaves unconstrained automatic placement atomic in the engine', async () => {
     const { client, invoke } = createClient([LIVE_NODE_A]);
 
-    const ack = await client.placement.spawn({ capability: 'spawn:claude' });
+    const ack = await client.placement.spawn({
+      capability: 'spawn:claude',
+      input: { node: 'caller-target', target_node: 'caller-target' },
+    });
 
     expect(ack.placement.node).toBe('node-a');
     expect(invoke).toHaveBeenCalledWith('spawn', {

@@ -1071,10 +1071,12 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     return node.capabilities.some((item) => item.name === capability);
   }
 
+  /** Return true only when the fresh roster reports a usable action handler. */
   private nodeIsPlacementReady(node: RelayNode): boolean {
     return node.status === 'online' && node.live === true && node.handlersLive === true;
   }
 
+  /** Match the stable Cloud JIT provenance tag without relying on disposable node names. */
   private nodeIsCloudSandbox(node: RelayNode): boolean {
     return Boolean(
       node.tags?.some((tag) => /^cloud:node-type:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-jit$/.test(tag))

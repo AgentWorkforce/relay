@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- Placement queueing is no longer implicit. A request without an eligible live node rejects with `no_eligible_node`, `node_unavailable`, or `sandbox_policy_mismatch` instead of waiting for the placement TTL.
+- Placement queueing is no longer implicit. A request without an eligible live node rejects with `no_eligible_node`, `node_unavailable`, `sandbox_policy_mismatch`, or `unmapped_repo` instead of waiting for the placement TTL.
 
 ### Migration Guidance
 

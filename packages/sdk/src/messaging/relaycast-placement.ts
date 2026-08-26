@@ -89,6 +89,11 @@ export function placementActionInput(
   if (placement.node) {
     payload.node = placement.node;
     payload.target_node = placement.node;
+  } else {
+    // Automatic placement belongs to the engine. Do not let untrusted action
+    // input silently convert it back into a targeted request.
+    delete payload.node;
+    delete payload.target_node;
   }
   if (placement.repo) payload.repo = placement.repo;
   if (placement.ttlMs > 0) {

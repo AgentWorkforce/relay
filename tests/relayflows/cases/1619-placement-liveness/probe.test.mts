@@ -104,7 +104,10 @@ describe('placement liveness and policy proof', () => {
     );
 
     const automatic = createClient([READY_NODE]);
-    await automatic.client.placement.spawn({ capability: 'spawn:claude' });
+    await automatic.client.placement.spawn({
+      capability: 'spawn:claude',
+      input: { node: 'caller-target', target_node: 'caller-target' },
+    });
     const automaticInput = automatic.invoke.mock.calls[0]?.[1] as Record<string, unknown>;
 
     if (ARM === 'base') {
