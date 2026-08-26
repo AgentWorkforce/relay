@@ -1095,9 +1095,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         const nodes = await this.nodes.list({ capability });
         return nodes.find((candidate) => candidate.id === nodeId || candidate.nodeId === nodeId);
       } catch (error) {
-        this.placementLog?.(
-          `[placement] dispatch ${ack.invocationId ?? 'unknown'} accepted by ${nodeId}, but roster metadata could not be refreshed: ${error instanceof Error ? error.message : String(error)}`
-        );
+        try {
+          this.placementLog?.(
+            `[placement] dispatch ${ack.invocationId ?? 'unknown'} accepted by ${nodeId}, but roster metadata could not be refreshed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        } catch {
+          // Observability must not change the outcome of an accepted placement.
+        }
       }
     }
     // The action has already been accepted at this point. Missing or lagging

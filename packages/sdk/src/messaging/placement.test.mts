@@ -24,6 +24,7 @@ function createClient(
     maxQueuedPlacements?: number;
     placementSandboxOnly?: boolean;
     getInvocation?: (name: string, invocationId: string) => Promise<unknown>;
+    listNodes?: (query?: { capability?: string; name?: string }) => Promise<RawNode[]>;
   } = {}
 ) {
   const invoke = vi.fn(async (name: string, input?: Record<string, unknown>) => ({
@@ -46,16 +47,17 @@ function createClient(
     channels: { list: vi.fn(async () => []), get: vi.fn() },
     messages: { list: vi.fn(async () => []), get: vi.fn(), thread: vi.fn(), reactions: vi.fn() },
     nodes: {
-      list: vi.fn(async (query?: { capability?: string; name?: string }) =>
-        nodes
+      list: vi.fn(async (query?: { capability?: string; name?: string }) => {
+        if (options.listNodes) return options.listNodes(query);
+        return nodes
           .filter(
             (node) =>
               (!query?.name || node.name === query.name) &&
               (!query?.capability ||
                 node.capabilities.some((capability) => capability.name === query.capability))
           )
-          .map((node) => ({ handlers_live: true, ...node }))
-      ),
+          .map((node) => ({ handlers_live: true, ...node }));
+      }),
       get: vi.fn(async (name: string) => {
         const node = nodes.find((candidate) => candidate.name === name);
         return node ? { handlers_live: true, ...node } : null;
@@ -292,6 +294,28 @@ describe('RelaycastMessagingClient placement', () => {
     expect(ack.invocationId).toBe('inv-without-node');
     expect(ack.node).toBeUndefined();
     expect(ack.placement.node).toBeUndefined();
+  });
+
+  it('preserves an accepted automatic dispatch when roster refresh and placement logging fail', async () => {
+    const placementLog = vi.fn(() => {
+      throw new Error('observability sink down');
+    });
+    let rosterReads = 0;
+    const { client, invoke } = createClient([LIVE_NODE_A], {
+      placementLog,
+      listNodes: async () => {
+        rosterReads += 1;
+        if (rosterReads > 1) throw new Error('roster refresh down');
+        return [{ handlers_live: true, ...LIVE_NODE_A }];
+      },
+    });
+
+    await expect(client.placement.spawn({ capability: 'spawn:claude' })).resolves.toMatchObject({
+      invocationId: 'inv-1',
+      placement: { queued: false, attempts: 1 },
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(placementLog).toHaveBeenCalledWith(expect.stringContaining('roster refresh down'));
   });
 
   it('never selects a roster-offline node even when its live bit is stale', async () => {
