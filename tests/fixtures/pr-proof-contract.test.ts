@@ -718,6 +718,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
     expect(source).toContain('--source cloud');
     expect(source).toContain("result.status !== 'completed'");
+    expect(source).toContain('.timeout(2_700_000)');
+    expect(source).not.toContain('.timeout(3_600_000)');
   });
 
   it('records the per-step Cloud sandbox id instead of the orchestrator id', async () => {
