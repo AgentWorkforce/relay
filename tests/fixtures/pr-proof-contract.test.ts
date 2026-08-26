@@ -715,12 +715,17 @@ describe('trusted dispatcher source contract', () => {
     expect(dispatcher).toContain("inputs.proof_target == 'dev-canary'");
     expect(dispatcher).toContain("github.event_name == 'workflow_dispatch'");
     expect(dispatcher).toContain('relayflow-pr-proof-dev-canary-{0}');
-    expect(dispatcher).toContain('uses: ./.github/workflows/_relayflow-pr-proof-dev.yml');
+    expect(dispatcher).toContain(
+      'uses: AgentWorkforce/relay/.github/workflows/_relayflow-pr-proof-dev.yml@main'
+    );
+    expect(dispatcher).not.toContain('uses: ./.github/workflows/_relayflow-pr-proof-dev.yml');
     expect(devCanary).toContain('workflow_call:');
     expect(devCanary).not.toContain('workflow_dispatch:');
     expect(devCanary).not.toContain('pull_request_target:');
     expect(devCanary).toContain('environment: relayflow-dev-proof');
     expect(devCanary).toContain('name: RelayFlow dev canary dispatcher');
+    expect(devCanary).toContain('ref: main');
+    expect(devCanary).not.toContain('ref: ${{ github.sha }}');
     expect(devCanary).toContain('vars.RELAYFLOW_DEV_PROOF_CLOUD_API_URL');
     expect(devCanary).toContain('secrets.RELAYFLOW_DEV_PROOF_CLOUD_API_KEY');
     expect(devCanary).toContain("u.origin !== 'https://dev.agentrelay.com'");

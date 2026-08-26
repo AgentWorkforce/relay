@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "repository": "AgentWorkforce/relay",
+  "pullRequest": 1611,
+  "baseSha": "639158c8cb2fd63d5719d3bf21e2dc4cad19f382",
+  "headSha": "ec2f167105c0d957f3a1ac7638b8946b9c5f7e1e",
+  "caseId": "1602-parentless-worker-inventory",
+  "kind": "bugfix",
+  "handoffNonce": "71c8c44faf8b2328e7513f1e5db0b552",
+  "manifestPath": "tests/relayflows/cases/1602-parentless-worker-inventory/case.json",
+  "manifest": {
+    "version": 1,
+    "id": "1602-parentless-worker-inventory",
+    "kind": "bugfix",
+    "title": "Parentless adopted workers remain in reconnect inventory",
+    "runner": {
+      "command": [
+        "node",
+        "tests/relayflows/cases/1602-parentless-worker-inventory/run.mjs"
+      ]
+    },
+    "timeoutSeconds": 1800,
+    "expected": {
+      "base": {
+        "outcome": "bug",
+        "signature": "parentless_worker_excluded_from_reconnect_inventory"
+      },
+      "head": {
+        "outcome": "fixed",
+        "signature": "parentless_worker_in_sync_and_heartbeat_after_reconnect"
+      }
+    }
+  }
+}

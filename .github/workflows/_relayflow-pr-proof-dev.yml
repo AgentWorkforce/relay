@@ -1,8 +1,8 @@
 name: RelayFlow PR Proof (Dev Canary)
 
-# Called only by the manual dev-canary route in relayflow-pr-proof.yml. Keeping
-# workflow_dispatch on the existing default-branch workflow makes this lane
-# runnable from a feature-branch ref without exposing it to PR events.
+# Called only by the manual dev-canary route in relayflow-pr-proof.yml. The
+# caller references this file at @main so a selected workflow_dispatch branch
+# cannot redefine any step that receives the dev environment secret.
 on:
   workflow_call:
     inputs:
@@ -24,13 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:
-      # A workflow_dispatch can select this feature branch. That is intentional
-      # so maintainers can validate dispatcher changes before merge; environment
-      # protection limits the dev credential to approved manual runs.
-      - name: Checkout selected trusted dispatcher ref
+      # Keep runner code aligned with the protected reusable workflow source.
+      # Target PR head code is cloned only inside isolated Cloud sandboxes.
+      - name: Checkout protected dispatcher
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.sha }}
+          ref: main
           persist-credentials: false
 
       - name: Set up Node.js

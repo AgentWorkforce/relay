@@ -126,6 +126,10 @@ jobs:
   dev-canary:
     if: github.event_name == 'workflow_dispatch' && inputs.proof_target == 'dev-canary'
     name: RelayFlow dev canary
-    uses: ./.github/workflows/_relayflow-pr-proof-dev.yml
+    # This credential-bearing workflow must come from the protected default
+    # branch. A workflow_dispatch ref can name any branch, so a local reusable
+    # workflow would let that branch redefine the steps receiving the dev
+    # environment secret.
+    uses: AgentWorkforce/relay/.github/workflows/_relayflow-pr-proof-dev.yml@main
     with:
       pr_number: ${{ inputs.pr_number }}
