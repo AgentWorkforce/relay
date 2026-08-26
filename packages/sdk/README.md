@@ -133,6 +133,18 @@ relay.addListener(relay.action('github.open_pr').completed(), (event) => {
 handle.unregister();
 ```
 
+## Placement
+
+`placement.spawn` requires a live, online node with live action handlers and
+fails fast by default. Queueing is explicit: pass `failFast: false` together
+with a bounded `ttlMs` when waiting for a node to join is intentional.
+
+Set `placementSandboxOnly: true` on `RelaycastMessagingClient` to make Cloud
+JIT sandbox provenance a client-wide eligibility requirement, or pass
+`sandboxOnly: true` on one placement request. Both sandbox-policy switches
+default to `false`, so existing local and durable fleet nodes remain eligible
+unless the caller opts in.
+
 ## Events
 
 `relay.addListener(selector, handler)` accepts a dotted event name, a `*`/prefix wildcard, or a fluent predicate, and always hands the handler one discriminated event object. It returns an unsubscribe function.

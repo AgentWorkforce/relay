@@ -220,6 +220,11 @@ export interface RelaycastMessagingOptions extends RelaycastTelemetryOptions {
   selfNodeName?: string;
   /** Default bounded placement queue TTL. RFC placeholder default is one hour. */
   placementTtlMs?: number;
+  /**
+   * Restrict automatic and targeted placement to Cloud-provisioned sandbox
+   * nodes. Defaults to `false`; sandboxed workloads must opt in explicitly.
+   */
+  placementSandboxOnly?: boolean;
   /** Max in-process placement requests allowed to wait for an eligible node. */
   maxQueuedPlacements?: number;
   /** Receives placement queue/reject/fail log lines. */

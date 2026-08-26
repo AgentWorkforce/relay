@@ -188,6 +188,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   private readonly agentClient?: RelaycastAgentLike;
   private readonly selfNodeName?: string;
   private readonly placementTtlMs: number;
+  private readonly placementSandboxOnly: boolean;
   private readonly maxQueuedPlacements: number;
   private readonly placementLog?: (message: string) => void;
   private readonly sessionRef?: string;
@@ -205,6 +206,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
     this.selfNodeName = options.selfNodeName;
     this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
+    this.placementSandboxOnly = options.placementSandboxOnly ?? false;
     this.maxQueuedPlacements = options.maxQueuedPlacements ?? 100;
     this.placementLog = options.placementLog;
     this.sessionRef =
@@ -702,6 +704,8 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       const capability = nonEmptyPlacement(input.capability, 'placement capability');
       const repo = input.repo?.trim() || undefined;
       const targetNode = this.resolvePlacementNode(input.node, input.selfNodeName);
+      const sandboxOnly = input.sandboxOnly ?? this.placementSandboxOnly;
+      const failFast = input.failFast ?? true;
       const ttlMs = Math.max(0, input.ttlMs ?? input.ttlOverrideMs ?? this.placementTtlMs);
       const pollIntervalMs = Math.max(25, input.pollIntervalMs ?? 1_000);
       const startedAt = Date.now();
@@ -711,16 +715,25 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       try {
         while (true) {
           attempts += 1;
-          const decision = await this.selectPlacementNode({ capability, repo, targetNode });
+          const decision = await this.selectPlacementNode({ capability, repo, targetNode, sandboxOnly });
           if (decision.node) {
             const actionName = input.actionName ?? placementActionName(capability);
+            // Preserve the engine's atomic, least-loaded placement when there
+            // are no client-side repo or sandbox constraints. Retargeting every
+            // automatic request to the SDK's roster snapshot creates a TOCTOU:
+            // a node can die between this read and action invocation, after
+            // which the engine treats it as a targeted queued placement.
+            const clientMustTarget = Boolean(targetNode || repo || sandboxOnly);
             const actionInput = placementActionInput(input.input, {
               capability,
-              node: decision.node.name,
+              ...(clientMustTarget ? { node: decision.node.name } : {}),
               repo,
               ttlMs,
             });
             const ack = await this.commands.invoke(actionName, actionInput);
+            const placedNode = clientMustTarget
+              ? decision.node
+              : await this.resolvePlacementAckNode(ack, capability, attempts);
             // The ack proves only that the engine accepted the dispatch. Unless
             // the caller asks for confirmation, a node that accepted the
             // invocation and launched nothing resolves identically to a real
@@ -728,7 +741,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             const confirmation = input.confirm
               ? await this.confirmPlacementInvocation(actionName, ack, {
                   capability,
-                  node: decision.node.name,
+                  node: placedNode.name,
                   repo,
                   attempts,
                   // Defaults and validation live in confirmPlacementInvocation
@@ -739,10 +752,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               : undefined;
             return {
               ...ack,
-              node: decision.node,
+              node: placedNode,
               placement: {
                 capability,
-                node: decision.node.name,
+                node: placedNode.name,
                 ...(repo ? { repo } : {}),
                 attempts,
                 queued,
@@ -762,15 +775,26 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             });
           }
 
-          if (input.failFast || Date.now() - startedAt >= ttlMs) {
+          if (failFast || Date.now() - startedAt >= ttlMs) {
             // A repo that no live, capable node maps will never drain by waiting,
             // so report it as `unmapped_repo` rather than a generic TTL expiry.
-            const code: RelayPlacementError['code'] =
-              decision.reconcileReason === 'unmapped_repo' ? 'unmapped_repo' : 'placement_ttl_expired';
+            const code: RelayPlacementError['code'] = failFast
+              ? decision.reconcileReason === 'unmapped_repo'
+                ? 'unmapped_repo'
+                : decision.reconcileReason === 'target_offline'
+                  ? 'node_unavailable'
+                  : decision.reconcileReason === 'sandbox_policy_mismatch'
+                    ? 'sandbox_policy_mismatch'
+                    : 'no_eligible_node'
+              : decision.reconcileReason === 'unmapped_repo'
+                ? 'unmapped_repo'
+                : 'placement_ttl_expired';
             const message =
               code === 'unmapped_repo'
                 ? `${decision.message}; no node maps the requested repo`
-                : `${decision.message}; placement TTL expired`;
+                : failFast
+                  ? `${decision.message}; placement failed fast`
+                  : `${decision.message}; placement TTL expired`;
             await this.reconcilePlacement(input, {
               action: 'failed',
               reason: decision.reconcileReason,
@@ -974,6 +998,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     capability: string;
     repo?: string;
     targetNode?: string;
+    sandboxOnly: boolean;
   }): Promise<PlacementSelection> {
     if (input.targetNode) {
       const node = await this.nodes.get(input.targetNode);
@@ -991,9 +1016,17 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           reconcileReason: 'no_eligible_node',
         };
       }
-      if (!node.live) {
+      if (input.sandboxOnly && !this.nodeIsCloudSandbox(node)) {
         return {
-          message: `Placement queued: target node "${node.name}" is offline`,
+          message: `Placement rejected: node "${node.name}" is not a Cloud sandbox`,
+          hardFail: true,
+          reason: 'sandbox_policy_mismatch',
+          reconcileReason: 'sandbox_policy_mismatch',
+        };
+      }
+      if (!this.nodeIsPlacementReady(node)) {
+        return {
+          message: `Placement queued: target node "${node.name}" is not placement-ready`,
           reconcileReason: 'target_offline',
         };
       }
@@ -1008,9 +1041,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
     const nodes = await this.nodes.list({ capability: input.capability });
     const capable = nodes.filter((node) => this.nodeHasCapability(node, input.capability));
-    const live = capable.filter((node) => node.live);
+    const policyEligible = input.sandboxOnly
+      ? capable.filter((node) => this.nodeIsCloudSandbox(node))
+      : capable;
+    const live = policyEligible.filter((node) => this.nodeIsPlacementReady(node));
     const eligible = live.filter((node) => this.nodeMapsRepo(node, input.repo));
     if (eligible[0]) return { node: eligible[0] };
+
+    if (input.sandboxOnly) {
+      return {
+        message: `Placement queued: no placement-ready Cloud sandbox advertises capability "${input.capability}"`,
+        reconcileReason: 'sandbox_policy_mismatch',
+      };
+    }
 
     if (input.repo && live.length > 0) {
       return {
@@ -1026,6 +1069,34 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private nodeHasCapability(node: RelayNode, capability: string): boolean {
     return node.capabilities.some((item) => item.name === capability);
+  }
+
+  private nodeIsPlacementReady(node: RelayNode): boolean {
+    return node.status === 'online' && node.live === true && node.handlersLive === true;
+  }
+
+  private nodeIsCloudSandbox(node: RelayNode): boolean {
+    return Boolean(
+      node.tags?.some((tag) => /^cloud:node-type:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-jit$/.test(tag))
+    );
+  }
+
+  private async resolvePlacementAckNode(
+    ack: RelayActionInvocationAck,
+    capability: string,
+    attempts: number
+  ): Promise<RelayNode> {
+    const nodeId = ack.dispatchedNodeId ?? ack.handlerNodeId;
+    if (nodeId) {
+      const nodes = await this.nodes.list({ capability });
+      const node = nodes.find((candidate) => candidate.id === nodeId || candidate.nodeId === nodeId);
+      if (node) return node;
+    }
+    throw new RelayPlacementError(
+      'node_unavailable',
+      'Placement failed: the engine did not acknowledge a named dispatch node',
+      { capability, attempts }
+    );
   }
 
   private nodeMapsRepo(node: RelayNode, repo: string | undefined): boolean {

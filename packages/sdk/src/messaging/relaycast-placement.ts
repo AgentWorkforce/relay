@@ -7,7 +7,11 @@
  */
 import type { RelayNode } from './types.js';
 
-export type PlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
+export type PlacementReconcileReason =
+  | 'no_eligible_node'
+  | 'target_offline'
+  | 'unmapped_repo'
+  | 'sandbox_policy_mismatch';
 
 export type PlacementSelection =
   | { node: RelayNode; message?: never; hardFail?: never; reason?: never; reconcileReason?: never }
@@ -16,7 +20,7 @@ export type PlacementSelection =
       node?: never;
       message: string;
       hardFail: true;
-      reason: 'capability_mismatch';
+      reason: 'capability_mismatch' | 'sandbox_policy_mismatch';
       reconcileReason: PlacementReconcileReason;
     }
   | {
@@ -33,6 +37,9 @@ export class RelayPlacementError extends Error {
     | 'capability_mismatch'
     | 'placement_queue_full'
     | 'placement_ttl_expired'
+    | 'no_eligible_node'
+    | 'node_unavailable'
+    | 'sandbox_policy_mismatch'
     | 'unmapped_repo'
     /** The node ran the action and reported a failure. */
     | 'spawn_failed'
@@ -75,12 +82,14 @@ export function placementActionName(capability: string): string {
 
 export function placementActionInput(
   input: Record<string, unknown> | undefined,
-  placement: { capability: string; node: string; repo?: string; ttlMs: number }
+  placement: { capability: string; node?: string; repo?: string; ttlMs: number }
 ): Record<string, unknown> {
   const payload = { ...(input ?? {}) };
   payload.capability = placement.capability;
-  payload.node = placement.node;
-  payload.target_node = placement.node;
+  if (placement.node) {
+    payload.node = placement.node;
+    payload.target_node = placement.node;
+  }
   if (placement.repo) payload.repo = placement.repo;
   if (placement.ttlMs > 0) {
     payload.ttl_override_ms = placement.ttlMs;

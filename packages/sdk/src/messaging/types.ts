@@ -585,9 +585,16 @@ export type RelayPlacementRejectReason =
   | 'capability_mismatch'
   | 'placement_queue_full'
   | 'placement_ttl_expired'
+  | 'no_eligible_node'
+  | 'node_unavailable'
+  | 'sandbox_policy_mismatch'
   | 'unmapped_repo';
 
-export type RelayPlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
+export type RelayPlacementReconcileReason =
+  | 'no_eligible_node'
+  | 'target_offline'
+  | 'unmapped_repo'
+  | 'sandbox_policy_mismatch';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
@@ -621,8 +628,16 @@ export interface RelaySpawnPlacementInput {
   ttlOverrideMs?: number;
   /** Poll cadence while a placement is queued. */
   pollIntervalMs?: number;
-  /** Fail immediately instead of queueing when no currently eligible node exists. */
+  /**
+   * Fail immediately instead of queueing when no currently eligible node exists.
+   * Defaults to `true`; pass `false` to opt into bounded queue/reconcile behavior.
+   */
   failFast?: boolean;
+  /**
+   * Restrict eligibility to Cloud-provisioned sandbox nodes. Overrides the
+   * client default; the client default is `false`.
+   */
+  sandboxOnly?: boolean;
   /**
    * Wait for the target node's terminal action result before resolving.
    *
