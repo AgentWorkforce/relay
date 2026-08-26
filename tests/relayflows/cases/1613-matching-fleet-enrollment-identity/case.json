@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1613-matching-fleet-enrollment-identity",
+  "kind": "bugfix",
+  "title": "Preserve matching Fleet enrollment identity",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1613-matching-fleet-enrollment-identity/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "matching_workspace_enrollment_identity_dropped"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "matching_workspace_enrollment_identity_preserved"
+    }
+  }
+}

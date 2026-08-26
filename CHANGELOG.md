@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay node up` retains a stored Cloud fleet-node identity when the repository pin and enrollment name the same Relay workspace, including with a matching explicit workspace flag or environment key. A genuinely different explicit key still wins with a warning, and enrollment-time pin linking now preserves and checks the recorded workspace ID.
 
 ## [11.8.4] - 2026-08-25
 
