@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1619-placement-liveness",
+  "kind": "bugfix",
+  "title": "Fail closed when placement nodes are unavailable or policy-ineligible",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1619-placement-liveness/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "placement_accepts_unready_or_policy_ineligible_nodes"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "placement_fails_closed_and_preserves_atomic_selection"
+    }
+  }
+}
