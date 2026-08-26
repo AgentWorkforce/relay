@@ -1,0 +1,51 @@
+{
+  "id": "traj_zq10vbcnjpil",
+  "version": 1,
+  "task": {
+    "title": "Harden PR 1606 exact RelayFlow proof runner",
+    "source": {
+      "system": "github",
+      "id": "PR-1606",
+      "url": "https://github.com/AgentWorkforce/relay/pull/1606"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-08-26T00:28:25.971Z",
+  "agents": [
+    {
+      "name": "relay-bug-pr-proof-coordinator-0825",
+      "role": "lead",
+      "joinedAt": "2026-08-26T00:28:26.100Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_p8tazr8pd1c2",
+      "title": "Initial work",
+      "agentName": "relay-bug-pr-proof-coordinator-0825",
+      "startedAt": "2026-08-26T00:28:26.100Z",
+      "events": [
+        {
+          "ts": 1787704108480,
+          "type": "decision",
+          "content": "Install optional platform packages and assert the checked-out target SHA: Install optional platform packages and assert the checked-out target SHA",
+          "raw": {
+            "question": "Install optional platform packages and assert the checked-out target SHA",
+            "chosen": "Install optional platform packages and assert the checked-out target SHA",
+            "alternatives": [],
+            "reasoning": "The external proof runner must build the exact base or head checkout reliably; omitting optional packages removed esbuild's platform binary, and the SHA assertion prevents accidentally proving a stale tree."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "231a4fb2841194548f5209a895a53c93943ef1f4",
+    "endRef": "231a4fb2841194548f5209a895a53c93943ef1f4"
+  }
+}

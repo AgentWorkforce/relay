@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -15,6 +15,14 @@ delete childEnv.CODEX_MANAGED_BY_NPM;
 assert.ok(arm === 'base' || arm === 'head', 'RELAY_PR_PROOF_ARM must be base or head');
 assert.ok(targetDir, 'RELAY_PR_PROOF_TARGET_DIR is required');
 assert.ok(resultPath, 'RELAY_PR_PROOF_RESULT_PATH is required');
+
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+assert.ok(expectedSha, `missing expected ${arm} SHA`);
+const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
+  encoding: 'utf8',
+}).trim();
+assert.equal(targetSha, expectedSha, `target checkout does not match exact ${arm} SHA`);
 
 async function run(command, args, env = childEnv) {
   await new Promise((resolve, reject) => {
@@ -37,7 +45,7 @@ async function run(command, args, env = childEnv) {
   });
 }
 
-await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=optional'], {
+await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--include=optional'], {
   ...childEnv,
   NODE_OPTIONS: '--max-old-space-size=256',
 });
