@@ -708,6 +708,28 @@ describe('trusted dispatcher source contract', () => {
     expect(source).not.toContain('github.event.pull_request.head.sha }}');
   });
 
+  it('isolates the manual dev canary from the production required status and credential', async () => {
+    const dispatcher = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
+    const devCanary = await readFile('.github/workflows/_relayflow-pr-proof-dev.yml', 'utf8');
+
+    expect(dispatcher).toContain("inputs.proof_target == 'dev-canary'");
+    expect(dispatcher).toContain("github.event_name == 'workflow_dispatch'");
+    expect(dispatcher).toContain('relayflow-pr-proof-dev-canary-{0}');
+    expect(dispatcher).toContain('uses: ./.github/workflows/_relayflow-pr-proof-dev.yml');
+    expect(devCanary).toContain('workflow_call:');
+    expect(devCanary).not.toContain('workflow_dispatch:');
+    expect(devCanary).not.toContain('pull_request_target:');
+    expect(devCanary).toContain('environment: relayflow-dev-proof');
+    expect(devCanary).toContain('name: RelayFlow dev canary dispatcher');
+    expect(devCanary).toContain('vars.RELAYFLOW_DEV_PROOF_CLOUD_API_URL');
+    expect(devCanary).toContain('secrets.RELAYFLOW_DEV_PROOF_CLOUD_API_KEY');
+    expect(devCanary).toContain("u.origin !== 'https://dev.agentrelay.com'");
+    expect(devCanary).not.toContain('statuses: write');
+    expect(devCanary).not.toContain('report-status.mjs');
+    expect(devCanary).not.toContain('secrets.RELAYFLOW_PR_PROOF_CLOUD_API_KEY');
+    expect(devCanary).not.toContain('secrets.CLOUD_API_URL');
+  });
+
   it('gates head execution on deterministic base evidence', async () => {
     const source = await readFile('workflows/pr-proof.ts', 'utf8');
     expect(source).toContain(".onError('fail-fast')");

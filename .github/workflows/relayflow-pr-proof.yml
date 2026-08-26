@@ -13,6 +13,14 @@ on:
         description: Pull request number to prove
         required: true
         type: number
+      proof_target:
+        description: Cloud environment to use for this manual proof
+        required: true
+        type: choice
+        default: production
+        options:
+          - production
+          - dev-canary
 
 permissions:
   contents: read
@@ -20,11 +28,14 @@ permissions:
   statuses: write
 
 concurrency:
-  group: relayflow-pr-proof-${{ github.event.pull_request.number || inputs.pr_number }}
+  # Keep dev canaries independent from the production required-check lock.
+  # The production expression preserves the historical concurrency key.
+  group: ${{ inputs.proof_target == 'dev-canary' && format('relayflow-pr-proof-dev-canary-{0}', inputs.pr_number) || format('relayflow-pr-proof-{0}', github.event.pull_request.number || inputs.pr_number) }}
   cancel-in-progress: true
 
 jobs:
   proof:
+    if: github.event_name == 'pull_request_target' || inputs.proof_target != 'dev-canary'
     name: RelayFlow PR proof dispatcher
     runs-on: ubuntu-latest
     timeout-minutes: 70
@@ -111,3 +122,10 @@ jobs:
           node scripts/pr-proof/report-status.mjs finish
           --sha "${{ steps.status.outputs.head_sha }}"
           --job-status "${{ job.status }}"
+
+  dev-canary:
+    if: github.event_name == 'workflow_dispatch' && inputs.proof_target == 'dev-canary'
+    name: RelayFlow dev canary
+    uses: ./.github/workflows/_relayflow-pr-proof-dev.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}

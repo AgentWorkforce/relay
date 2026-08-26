@@ -1,0 +1,87 @@
+name: RelayFlow PR Proof (Dev Canary)
+
+# Called only by the manual dev-canary route in relayflow-pr-proof.yml. Keeping
+# workflow_dispatch on the existing default-branch workflow makes this lane
+# runnable from a feature-branch ref without exposing it to PR events.
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Pull request number to prove
+        required: true
+        type: number
+
+# This lane deliberately cannot publish the production "RelayFlow PR proof"
+# commit status. Its job/check name is also distinct from the required check.
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  proof:
+    name: RelayFlow dev canary dispatcher
+    environment: relayflow-dev-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      # A workflow_dispatch can select this feature branch. That is intentional
+      # so maintainers can validate dispatcher changes before merge; environment
+      # protection limits the dev credential to approved manual runs.
+      - name: Checkout selected trusted dispatcher ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.14.0
+
+      - name: Classify PR and validate declared case
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/pr-proof/prepare.mjs
+          --event "$GITHUB_EVENT_PATH"
+          --output .relayflow/pr-proof-input.json
+          --github-output "$GITHUB_OUTPUT"
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Confirm dedicated dev Cloud configuration
+        if: steps.prepare.outputs.required == 'true'
+        env:
+          CLOUD_API_URL: ${{ vars.RELAYFLOW_DEV_PROOF_CLOUD_API_URL }}
+          CLOUD_API_KEY: ${{ secrets.RELAYFLOW_DEV_PROOF_CLOUD_API_KEY }}
+        run: |
+          test -n "$CLOUD_API_URL"
+          test -n "$CLOUD_API_KEY"
+          node -e "const u = new URL(process.env.CLOUD_API_URL); if (u.origin !== 'https://dev.agentrelay.com') throw new Error('Dev proof URL must use https://dev.agentrelay.com')"
+
+      # Cloud code sync uploads only git-known paths. Add the generated,
+      # validated input to this disposable runner's index without committing.
+      - name: Include proof input in Cloud code sync
+        if: steps.prepare.outputs.required == 'true'
+        run: git add -f -- .relayflow/pr-proof-input.json
+
+      - name: Install the released Agent Relay CLI
+        if: steps.prepare.outputs.required == 'true'
+        run: npm install --global "agent-relay@$(node -p "require('./package.json').version")"
+
+      - name: Run isolated dev Cloud red-green proof
+        if: steps.prepare.outputs.required == 'true'
+        id: cloud
+        env:
+          CLOUD_API_URL: ${{ vars.RELAYFLOW_DEV_PROOF_CLOUD_API_URL }}
+          CLOUD_API_KEY: ${{ secrets.RELAYFLOW_DEV_PROOF_CLOUD_API_KEY }}
+          PR_PROOF_CLOUD_TIMEOUT_MS: '3600000'
+        run: node scripts/pr-proof/run-cloud.mjs workflows/pr-proof.ts
+
+      - name: Upload dev Cloud proof logs
+        if: always() && steps.prepare.outputs.required == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relayflow-dev-proof-${{ inputs.pr_number }}
+          path: .workflow-artifacts/pr-proof/cloud.log
+          if-no-files-found: warn
