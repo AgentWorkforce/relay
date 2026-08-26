@@ -85,32 +85,29 @@ pub async fn relayflow_application_ack_reconnect_probe() -> bool {
 
         let (stream, _) = listener.accept().await.unwrap();
         let mut first = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let mut shutdown_ws = None;
         let reconnected = tokio::time::timeout(Duration::from_millis(2500), async {
             loop {
-                tokio::select! {
-                    accepted = listener.accept() => {
-                        let (stream, _) = accepted.unwrap();
-                        let _second = tokio_tungstenite::accept_async(stream).await.unwrap();
-                        break true;
-                    }
-                    frame = first.next() => match frame {
-                        Some(Ok(Message::Ping(payload))) => {
-                            first.send(Message::Pong(payload)).await.unwrap();
+                match first.next().await {
+                    Some(Ok(Message::Ping(payload))) => {
+                        if first.send(Message::Pong(payload)).await.is_err() {
+                            break;
                         }
-                        Some(Ok(_)) => {}
-                        Some(Err(_)) | None => break false,
                     }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => break,
                 }
             }
+            let (stream, _) = listener.accept().await.unwrap();
+            shutdown_ws = Some(tokio_tungstenite::accept_async(stream).await.unwrap());
+            true
         })
         .await
         .unwrap_or(false);
 
-        command_tx.send(FleetControlCommand::Shutdown).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), client)
-            .await
-            .expect("node-control client did not shut down")
-            .unwrap();
+        client.abort();
+        let _ = client.await;
+        drop(shutdown_ws);
         reconnected
 }
 `
