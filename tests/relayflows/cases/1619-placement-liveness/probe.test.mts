@@ -129,6 +129,8 @@ describe('placement liveness and policy proof', () => {
     expect(absentError).toMatchObject({ code: 'no_eligible_node', attempts: 1 });
     expect(sandboxError).toMatchObject({ code: 'sandbox_policy_mismatch', attempts: 1 });
     expect(sandboxed.invoke).not.toHaveBeenCalled();
+    expect(automatic.invoke).toHaveBeenCalledTimes(1);
+    expect(automaticInput).toBeDefined();
     expect(automaticInput).not.toHaveProperty('node');
     expect(automaticInput).not.toHaveProperty('target_node');
   });

@@ -145,6 +145,11 @@ JIT sandbox provenance a client-wide eligibility requirement, or pass
 default to `false`, so existing local and durable fleet nodes remain eligible
 unless the caller opts in.
 
+For unconstrained automatic placement, resolved `node` metadata is present on
+the result when the engine acknowledgment can be matched to the current
+roster. A successful dispatch remains successful if that optional metadata is
+missing or the roster read lags; the raw acknowledgment IDs remain available.
+
 ## Events
 
 `relay.addListener(selector, handler)` accepts a dotted event name, a `*`/prefix wildcard, or a fluent predicate, and always hands the handler one discriminated event object. It returns an unsubscribe function.

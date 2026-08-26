@@ -733,7 +733,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             const ack = await this.commands.invoke(actionName, actionInput);
             const placedNode = clientMustTarget
               ? decision.node
-              : await this.resolvePlacementAckNode(ack, capability, attempts);
+              : await this.resolvePlacementAckNode(ack, capability);
+            const placedNodeLabel =
+              placedNode?.name ?? ack.dispatchedNodeId ?? ack.handlerNodeId ?? 'engine-selected node';
             // The ack proves only that the engine accepted the dispatch. Unless
             // the caller asks for confirmation, a node that accepted the
             // invocation and launched nothing resolves identically to a real
@@ -741,7 +743,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             const confirmation = input.confirm
               ? await this.confirmPlacementInvocation(actionName, ack, {
                   capability,
-                  node: placedNode.name,
+                  node: placedNodeLabel,
                   repo,
                   attempts,
                   // Defaults and validation live in confirmPlacementInvocation
@@ -752,10 +754,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               : undefined;
             return {
               ...ack,
-              node: placedNode,
+              ...(placedNode ? { node: placedNode } : {}),
               placement: {
                 capability,
-                node: placedNode.name,
+                ...(placedNode ? { node: placedNode.name } : {}),
                 ...(repo ? { repo } : {}),
                 attempts,
                 queued,
@@ -1085,20 +1087,23 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private async resolvePlacementAckNode(
     ack: RelayActionInvocationAck,
-    capability: string,
-    attempts: number
-  ): Promise<RelayNode> {
+    capability: string
+  ): Promise<RelayNode | undefined> {
     const nodeId = ack.dispatchedNodeId ?? ack.handlerNodeId;
     if (nodeId) {
-      const nodes = await this.nodes.list({ capability });
-      const node = nodes.find((candidate) => candidate.id === nodeId || candidate.nodeId === nodeId);
-      if (node) return node;
+      try {
+        const nodes = await this.nodes.list({ capability });
+        return nodes.find((candidate) => candidate.id === nodeId || candidate.nodeId === nodeId);
+      } catch (error) {
+        this.placementLog?.(
+          `[placement] dispatch ${ack.invocationId ?? 'unknown'} accepted by ${nodeId}, but roster metadata could not be refreshed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
-    throw new RelayPlacementError(
-      'node_unavailable',
-      'Placement failed: the engine did not acknowledge a named dispatch node',
-      { capability, attempts }
-    );
+    // The action has already been accepted at this point. Missing or lagging
+    // roster metadata must not turn that success into a retryable error that
+    // could duplicate the placement.
+    return undefined;
   }
 
   private nodeMapsRepo(node: RelayNode, repo: string | undefined): boolean {

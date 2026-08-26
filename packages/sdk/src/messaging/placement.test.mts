@@ -278,6 +278,22 @@ describe('RelaycastMessagingClient placement', () => {
     });
   });
 
+  it('preserves a successful automatic dispatch when ack node metadata is unavailable', async () => {
+    const { client, invoke } = createClient([LIVE_NODE_A]);
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'inv-without-node',
+      action_name: 'spawn',
+      status: 'invoked',
+    });
+
+    const ack = await client.placement.spawn({ capability: 'spawn:claude' });
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(ack.invocationId).toBe('inv-without-node');
+    expect(ack.node).toBeUndefined();
+    expect(ack.placement.node).toBeUndefined();
+  });
+
   it('never selects a roster-offline node even when its live bit is stale', async () => {
     const { client, invoke } = createClient([
       {

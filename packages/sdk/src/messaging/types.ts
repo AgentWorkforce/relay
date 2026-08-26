@@ -663,10 +663,12 @@ export interface RelaySpawnPlacementInput {
 }
 
 export interface RelaySpawnPlacementAck extends RelayActionInvocationAck {
-  node: RelayNode;
+  /** Resolved roster node when the dispatch acknowledgment identifies one. */
+  node?: RelayNode;
   placement: {
     capability: string;
-    node: string;
+    /** Resolved roster node name; absent when acknowledgment metadata is missing or not yet visible. */
+    node?: string;
     repo?: string;
     attempts: number;
     queued: boolean;

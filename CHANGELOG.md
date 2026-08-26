@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - Placement queueing is no longer implicit. A request without an eligible live node rejects with `no_eligible_node`, `node_unavailable`, `sandbox_policy_mismatch`, or `unmapped_repo` instead of waiting for the placement TTL.
+- `RelaySpawnPlacementAck.node` and `placement.node` are now optional for engine-selected dispatches whose successful acknowledgment cannot yet be matched to roster metadata; use `dispatchedNodeId` or `handlerNodeId` when an identifier is required.
 
 ### Migration Guidance
 
