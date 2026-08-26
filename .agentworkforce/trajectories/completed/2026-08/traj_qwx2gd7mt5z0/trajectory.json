@@ -1,0 +1,62 @@
+{
+  "id": "traj_qwx2gd7mt5z0",
+  "version": 1,
+  "task": {
+    "title": "Require exact target revisions in PR 1609 proof",
+    "source": {
+      "system": "plain",
+      "id": "PR-1609"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-26T00:33:25.042Z",
+  "completedAt": "2026-08-26T00:34:00.451Z",
+  "agents": [
+    {
+      "name": "relay-pr1609-trail-repair",
+      "role": "lead",
+      "joinedAt": "2026-08-26T00:33:25.157Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fixllmz1g3zi",
+      "title": "Initial work",
+      "agentName": "relay-pr1609-trail-repair",
+      "startedAt": "2026-08-26T00:33:25.157Z",
+      "endedAt": "2026-08-26T00:34:00.451Z",
+      "events": [
+        {
+          "ts": 1787704427666,
+          "type": "decision",
+          "content": "Bind each RelayFlow arm to the workflow-declared target revision: Bind each RelayFlow arm to the workflow-declared target revision",
+          "raw": {
+            "question": "Bind each RelayFlow arm to the workflow-declared target revision",
+            "chosen": "Bind each RelayFlow arm to the workflow-declared target revision",
+            "alternatives": [],
+            "reasoning": "A deterministic red-green result must reject a stale or mutated target checkout before observing production behavior."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added an exact target revision guard to the mounted-sandbox timeout proof runner.",
+    "approach": "Started the trajectory at the original PR head, committed the runner guard separately, and finalized the record from the resulting Git range.",
+    "confidence": 0.95
+  },
+  "commits": [
+    "7d14b0373"
+  ],
+  "filesChanged": [
+    "tests/relayflows/cases/1609-mounted-sandbox-provisioning-timeout/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "af713436226ccbe4c692ec5f86f5cd4f89b285e3",
+    "endRef": "7d14b0373f2c700fe4691ab837253cac725fba33",
+    "traceId": "5d1aaa71-b008-4847-a695-f3cfd9996895"
+  }
+}
