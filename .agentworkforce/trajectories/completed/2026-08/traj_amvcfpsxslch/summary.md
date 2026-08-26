@@ -10,7 +10,7 @@
 
 ## Summary
 
-Isolated placementLog failures after an accepted automatic dispatch and added a regression proving roster-refresh plus logger failures cannot reject committed work. Source-revert ablation failed 1/28 for the expected observability exception; restored source passed 28/28 and SDK typecheck.
+Isolated placementLog failures after an accepted automatic dispatch and added a regression proving roster-refresh plus logger failures cannot reject committed work. Source-revert ablation failed 1/28 for the expected observability exception; restored source passed 28/28. The SDK-only CI command `npm run -w @agent-relay/sdk check` (`tsc -p tsconfig.json --noEmit`) passed; this does not claim the broader root typecheck, SDK build, or `test:types` scopes.
 
 **Approach:** Standard approach
 
