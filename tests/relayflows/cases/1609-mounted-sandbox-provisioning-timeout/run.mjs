@@ -1,5 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,16 @@ const arm = requiredValue('RELAY_PR_PROOF_ARM');
 
 if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
+}
+
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
+const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
+  encoding: 'utf8',
+}).trim();
+if (targetSha !== expectedSha) {
+  throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
 
 const runnerPath = fileURLToPath(import.meta.url);
