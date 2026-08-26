@@ -1729,7 +1729,7 @@ fn connect_error_is_unauthorized(error: &tokio_tungstenite::tungstenite::Error) 
 struct ApplicationLiveness {
     deadline: Duration,
     last_acknowledged: Instant,
-    pending_inventory_syncs: HashSet<String>,
+    pending_inventory_syncs: VecDeque<String>,
     ready: bool,
 }
 
@@ -1738,32 +1738,42 @@ impl ApplicationLiveness {
         Self {
             deadline,
             last_acknowledged: Instant::now(),
-            pending_inventory_syncs: HashSet::new(),
+            pending_inventory_syncs: VecDeque::new(),
             ready: false,
         }
     }
 
     fn track_inventory_sync(&mut self, id: String) {
-        self.pending_inventory_syncs.insert(id);
+        self.pending_inventory_syncs.push_back(id);
     }
 
     /// Returns `Some(true)` for the first successful application acknowledgement,
     /// `Some(false)` for later ones, and `None` for unrelated replies.
     fn acknowledge(&mut self, id: &str) -> Option<bool> {
-        if !self.pending_inventory_syncs.remove(id) {
-            return None;
-        }
+        let acknowledged_index = self
+            .pending_inventory_syncs
+            .iter()
+            .position(|pending_id| pending_id == id)?;
+        self.pending_inventory_syncs.drain(..=acknowledged_index);
         let became_ready = !self.ready;
         self.ready = true;
         self.last_acknowledged = Instant::now();
-        // Any newer reply proves the application has advanced through all older
-        // queued control work; keep the set bounded during a healthy session.
-        self.pending_inventory_syncs.clear();
+        // Relaycast serializes control work for a node, so this reply proves all
+        // older probes were processed. Preserve newer probes: their later error
+        // replies must still replace an unhealthy control session.
         Some(became_ready)
     }
 
     fn reject(&mut self, id: &str) -> bool {
-        self.pending_inventory_syncs.remove(id)
+        let Some(index) = self
+            .pending_inventory_syncs
+            .iter()
+            .position(|pending_id| pending_id == id)
+        else {
+            return false;
+        };
+        self.pending_inventory_syncs.remove(index);
+        true
     }
 
     fn idle(&self) -> Duration {
@@ -3275,6 +3285,20 @@ mod tests {
         assert_eq!(liveness.acknowledge("unrelated"), None);
         assert_eq!(liveness.acknowledge("inventory-acknowledged"), Some(true));
         assert!(liveness.ready);
+    }
+
+    #[test]
+    fn acknowledged_probe_preserves_newer_probe_for_rejection() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        liveness.track_inventory_sync("inventory-a".to_string());
+        liveness.track_inventory_sync("inventory-b".to_string());
+
+        assert_eq!(liveness.acknowledge("inventory-a"), Some(true));
+        assert_eq!(
+            liveness.pending_inventory_syncs,
+            VecDeque::from(["inventory-b".to_string()])
+        );
+        assert!(liveness.reject("inventory-b"));
     }
 
     #[test]
