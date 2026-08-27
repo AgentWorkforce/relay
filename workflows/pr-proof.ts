@@ -27,7 +27,10 @@ const result = await workflow('relay-pr-proof')
   // of RelayFlow's default repair-agent retries so no agent can edit the
   // harness or artifacts after a gate rejects them.
   .onError('fail-fast')
-  .timeout(3_600_000)
+  // Finish inside the dispatcher's 60-minute polling deadline so Cloud can
+  // persist terminal step state and retain its sandbox for diagnostics before
+  // the GitHub runner issues an external cancellation.
+  .timeout(2_700_000)
   .agent('base-prover', {
     cli: 'codex',
     preset: 'worker',
