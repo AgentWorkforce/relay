@@ -22,6 +22,7 @@ const LIVE_NODE = {
   name: 'node-a',
   status: 'online',
   live: true,
+  handlers_live: true,
   capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
   repo_keys: ['relay'],
 };

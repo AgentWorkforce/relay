@@ -5,7 +5,28 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Added
+
+- `@agent-relay/sdk` placement accepts `placementSandboxOnly` as a client default and `sandboxOnly` per request to restrict eligible nodes to Cloud-provisioned JIT sandboxes; both default to `false`.
+
+### Changed
+
+- `placement.spawn` now fails fast by default when no placement-ready node exists; callers must pass `failFast: false` to opt into bounded queueing.
+
+### Fixed
+
+- `placement.spawn` excludes offline nodes and nodes without live handlers, preserves Relaycast's atomic automatic selection when no client-only constraints apply, and returns named failures without invoking or persisting a hostless placement.
+
+### Breaking Changes
+
+- Placement queueing is no longer implicit. A request without an eligible live node rejects with `no_eligible_node`, `node_unavailable`, `sandbox_policy_mismatch`, or `unmapped_repo` instead of waiting for the placement TTL.
+- `RelaySpawnPlacementAck.node` and `placement.node` are now optional for engine-selected dispatches whose successful acknowledgment cannot yet be matched to roster metadata; use `dispatchedNodeId` or `handlerNodeId` when an identifier is required.
+
+### Migration Guidance
+
+- Pass `failFast: false` on placement requests that intentionally wait for nodes to join, and set a bounded `ttlMs`; set `placementSandboxOnly: true` for clients whose workloads must never run on brokers or developer machines.
 
 ## [11.8.4] - 2026-08-25
 
