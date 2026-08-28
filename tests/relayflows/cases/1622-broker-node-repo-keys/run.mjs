@@ -46,6 +46,10 @@ const REGISTER_TIMEOUT_MS = 120_000;
 // budget so a stall surfaces as a catchable error naming the step that hung.
 const RUSTUP_TIMEOUT_MS = 300_000;
 const BUILD_TIMEOUT_MS = 1_200_000;
+// `cargo --version` looks instant but is not guaranteed to be: a rustup shim
+// can fetch a toolchain over the network on first use, so an unbounded probe is
+// the same unabortable hazard as an unbounded install.
+const PROBE_TIMEOUT_MS = 60_000;
 
 const arm = process.env.RELAY_PR_PROOF_ARM;
 const targetDir = process.env.RELAY_PR_PROOF_TARGET_DIR;
@@ -112,7 +116,7 @@ function rustupInstallScript() {
  */
 function resolveCargo() {
   for (const candidate of ['cargo', path.join(CARGO_HOME_BIN, 'cargo')]) {
-    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
+    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
     if (!probe.error && probe.status === 0) {
       console.log(`[${CASE_ID}] cargo already present: ${probe.stdout.trim()}`);
       return candidate;
@@ -141,7 +145,7 @@ function resolveCargo() {
   }
 
   const cargo = path.join(CARGO_HOME_BIN, 'cargo');
-  const probe = spawnSync(cargo, ['--version'], { encoding: 'utf8' });
+  const probe = spawnSync(cargo, ['--version'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
   if (probe.error || probe.status !== 0) {
     throw new Error('rustup reported success but cargo is still not runnable');
   }
