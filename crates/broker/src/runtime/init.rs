@@ -919,7 +919,15 @@ fn node_capacity_harnesses() -> Vec<String> {
 }
 
 /// The repository keys this node advertises, from `AGENT_RELAY_NODE_REPOS`
-/// (comma-separated `owner/name`, order-preserving, de-duplicated).
+/// (comma-separated `owner/name`, de-duplicated, sorted).
+///
+/// Sorted rather than order-preserving, which is where this deliberately parts
+/// company with `node_capacity_harnesses()`. Repo keys are a set, not a
+/// preference order, and the other producer of this same wire field —
+/// `nodeRepoKeys` in `packages/fleet` — returns `Object.keys(...).sort()`. Two
+/// producers emitting different arrays for the same set of repositories, purely
+/// because an operator listed them in a different order, would make the
+/// advertisement non-canonical for anything downstream that compares it.
 ///
 /// Absent yields `None`: the node advertises no repository at all, which is the
 /// behaviour every broker-served node had before this existed and keeps such a
@@ -936,13 +944,14 @@ fn node_capacity_harnesses() -> Vec<String> {
 fn node_capacity_repos() -> Option<Vec<String>> {
     let raw = std::env::var("AGENT_RELAY_NODE_REPOS").ok()?;
     let mut seen = std::collections::HashSet::new();
-    Some(
-        raw.split(',')
-            .map(|entry| entry.trim().to_string())
-            .filter(|entry| !entry.is_empty())
-            .filter(|entry| seen.insert(entry.clone()))
-            .collect(),
-    )
+    let mut repos: Vec<String> = raw
+        .split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| seen.insert(entry.clone()))
+        .collect();
+    repos.sort();
+    Some(repos)
 }
 
 /// Provider-level agent capacity, from `AGENT_RELAY_NODE_MAX_AGENTS`. Absent
@@ -1082,6 +1091,11 @@ mod tests {
         // all `kind: "capacity"`. It must never advertise a bare `"spawn"`, which
         // the engine would materialize as a generic action pinned to this node,
         // hijacking capability-based spawn placement for the whole workspace.
+        //
+        // The guard is required even though this test asserts nothing about
+        // repositories: `bootstrap_node_manifest` reads AGENT_RELAY_NODE_REPOS,
+        // so without the lock this test races the repo tests' `set_var`.
+        let _env = set_node_repos_env(None);
         let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
         assert!(
             !manifest.capabilities.is_empty(),
@@ -1131,10 +1145,13 @@ mod tests {
 
     #[test]
     fn bootstrap_node_manifest_advertises_configured_repo_keys() {
-        // Trimmed, order-preserving, de-duplicated — the same contract
-        // AGENT_RELAY_NODE_HARNESSES already has.
+        // Trimmed, de-duplicated, and SORTED. The input is deliberately not in
+        // sorted order: `nodeRepoKeys` in packages/fleet emits
+        // `Object.keys(...).sort()`, so a config-order array here would make the
+        // same set of repositories advertise differently depending on which
+        // producer registered the node.
         let _env = set_node_repos_env(Some(
-            " AgentWorkforce/factory ,AgentWorkforce/relay,,AgentWorkforce/factory ",
+            " AgentWorkforce/relay ,AgentWorkforce/factory,,AgentWorkforce/relay ",
         ));
         let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
         assert_eq!(
