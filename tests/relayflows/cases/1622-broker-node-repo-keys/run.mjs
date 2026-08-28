@@ -76,7 +76,17 @@ async function captureRegisterFrame(brokerBin) {
 
   const child = spawn(
     brokerBin,
-    ['init', '--instance-name', NODE_NAME, '--channels', 'general', '--api-port', '0', '--state-dir', stateDir],
+    [
+      'init',
+      '--instance-name',
+      NODE_NAME,
+      '--channels',
+      'general',
+      '--api-port',
+      '0',
+      '--state-dir',
+      stateDir,
+    ],
     {
       cwd: stateDir,
       env: {
@@ -114,7 +124,10 @@ async function captureRegisterFrame(brokerBin) {
 
   const timeout = new Promise((_, reject) =>
     setTimeout(
-      () => reject(new Error(`no node.register within ${REGISTER_TIMEOUT_MS}ms; broker exit=${JSON.stringify(exited)}`)),
+      () =>
+        reject(
+          new Error(`no node.register within ${REGISTER_TIMEOUT_MS}ms; broker exit=${JSON.stringify(exited)}`)
+        ),
       REGISTER_TIMEOUT_MS
     ).unref?.()
   );
