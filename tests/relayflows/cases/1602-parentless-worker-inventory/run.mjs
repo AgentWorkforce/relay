@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const CASE_ID = '1602-parentless-worker-inventory';
 const MARKER = 'RELAY_PR_PROOF_OBSERVATION=';
@@ -46,39 +47,158 @@ async function isExecutable(filePath) {
   }
 }
 
-async function resolveCargo() {
-  const pathEntries = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+// A shim is a version-manager stub that dispatches to a real toolchain based
+// on the current directory / env. Even when it happens to work end-to-end,
+// invoking the toolchain directly is more predictable in a sandbox that has
+// nothing but a bare PATH, and avoids surprises like "cargo not found in
+// toolchain X" or shim env-loading failures.
+export function isShimPath(candidate) {
+  const normalized = candidate.replaceAll('\\', '/');
+  // Any `.../shims/<name>` path is a version-manager shim (rustup, mise, asdf).
+  if (/\/shims\/[^/]+$/.test(normalized)) return true;
+  // Volta wraps invocations through the binaries it installs in .volta/bin.
+  if (/\/\.volta\/bin\/[^/]+$/.test(normalized)) return true;
+  return false;
+}
+
+async function defaultRunOnce(command, args) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', () => resolve({ code: 1, signal: null, stdout, stderr }));
+    child.on('close', (code, signal) => resolve({ code: code ?? 1, signal, stdout, stderr }));
+  });
+}
+
+export async function resolveCargo(options = {}) {
+  const {
+    env = process.env,
+    pathEntries = (env.PATH ?? '').split(path.delimiter).filter(Boolean),
+    isExecutable: isExec = isExecutable,
+    realpath: realpathFn = (p) => realpath(p).catch(() => p),
+    readdir: readdirFn = (p) => readdir(p).catch(() => []),
+    runOnce = defaultRunOnce,
+    extraSystemPaths = [
+      '/usr/local/cargo/bin/cargo',
+      '/opt/rust/bin/cargo',
+      '/root/.cargo/bin/cargo',
+      '/home/daytona/.cargo/bin/cargo',
+    ],
+  } = options;
+
+  const attempts = [];
+
+  // 1) A direct non-shim cargo on PATH. Rustup's symlink proxy is rejected by
+  //    the basename check (realpath's basename is "rustup"); hard-linked or
+  //    scripted shims (mise/asdf/volta/rustup) are rejected by isShimPath.
   for (const entry of pathEntries) {
     const candidate = path.join(entry, 'cargo');
-    if (!(await isExecutable(candidate))) continue;
-    const resolved = await realpath(candidate).catch(() => candidate);
-    if (path.basename(resolved) === 'cargo') return resolved;
+    if (!(await isExec(candidate))) continue;
+    const resolved = await realpathFn(candidate);
+    if (path.basename(resolved) !== 'cargo') {
+      attempts.push(`${candidate} -> ${resolved} (rejected: proxy, not named cargo)`);
+      continue;
+    }
+    if (isShimPath(candidate) || isShimPath(resolved)) {
+      attempts.push(`${resolved} (rejected: shim path)`);
+      continue;
+    }
+    return resolved;
   }
 
+  // 2) Ask an installed version manager for the toolchain-selected cargo.
+  //    `rustup which cargo` (and mise/asdf equivalents) prints the resolved
+  //    real binary. This is the reliable path in Cloud sandboxes where only
+  //    shims sit on PATH.
+  for (const [tool, args] of [
+    ['rustup', ['which', 'cargo']],
+    ['mise', ['which', 'cargo']],
+    ['asdf', ['which', 'cargo']],
+  ]) {
+    let binary = null;
+    for (const entry of pathEntries) {
+      const candidate = path.join(entry, tool);
+      if (await isExec(candidate)) {
+        binary = candidate;
+        break;
+      }
+    }
+    if (!binary) {
+      attempts.push(`${tool}: not found on PATH`);
+      continue;
+    }
+    let result;
+    try {
+      result = await runOnce(binary, args);
+    } catch (error) {
+      attempts.push(`${tool} ${args.join(' ')}: threw ${error?.message ?? error}`);
+      continue;
+    }
+    if (!result || result.code !== 0) {
+      attempts.push(`${tool} ${args.join(' ')}: exit ${result?.code ?? 'unknown'}`);
+      continue;
+    }
+    const printed = (result.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    if (!printed) {
+      attempts.push(`${tool} ${args.join(' ')}: no output`);
+      continue;
+    }
+    if (!(await isExec(printed))) {
+      attempts.push(`${tool} ${args.join(' ')} -> ${printed} (not executable)`);
+      continue;
+    }
+    if (path.basename(printed) !== 'cargo' || isShimPath(printed)) {
+      attempts.push(`${tool} ${args.join(' ')} -> ${printed} (rejected: still a shim)`);
+      continue;
+    }
+    return printed;
+  }
+
+  // 3) Enumerate rustup toolchains under any home we can plausibly infer.
   const homes = new Set();
   for (const entry of pathEntries) {
     const normalized = entry.replaceAll('\\', '/');
-    for (const suffix of ['/.local/share/mise/shims', '/.cargo/bin']) {
+    for (const suffix of ['/.local/share/mise/shims', '/.cargo/bin', '/.asdf/shims']) {
       if (normalized.endsWith(suffix)) homes.add(normalized.slice(0, -suffix.length));
     }
   }
-  if (process.env.RUSTUP_HOME) {
-    homes.add(path.dirname(path.resolve(process.env.RUSTUP_HOME)));
-  }
+  if (env.HOME) homes.add(env.HOME);
+  if (env.CARGO_HOME) homes.add(path.dirname(path.resolve(env.CARGO_HOME)));
+  if (env.RUSTUP_HOME) homes.add(path.dirname(path.resolve(env.RUSTUP_HOME)));
 
   for (const home of homes) {
     const toolchains = path.join(home, '.rustup', 'toolchains');
-    const entries = await readdir(toolchains).catch(() => []);
-    for (const entry of entries.sort().reverse()) {
+    const entries = await readdirFn(toolchains);
+    for (const entry of entries.slice().sort().reverse()) {
       const candidate = path.join(toolchains, entry, 'bin', 'cargo');
-      if (await isExecutable(candidate)) return candidate;
+      if (await isExec(candidate)) return candidate;
+      attempts.push(`${candidate} (missing/not executable)`);
     }
   }
 
-  for (const candidate of ['/usr/local/cargo/bin/cargo', '/opt/rust/bin/cargo']) {
-    if (await isExecutable(candidate)) return candidate;
+  // 4) System installs.
+  for (const candidate of extraSystemPaths) {
+    if (!(await isExec(candidate))) continue;
+    const resolved = await realpathFn(candidate);
+    if (path.basename(resolved) === 'cargo' && !isShimPath(resolved)) return resolved;
+    attempts.push(`${candidate} -> ${resolved} (rejected)`);
   }
-  throw new Error('could not resolve a real Cargo executable outside a version-manager shim');
+
+  const detail = attempts.length ? `; attempts: ${attempts.join('; ')}` : '';
+  throw new Error(`could not resolve a real Cargo executable outside a version-manager shim${detail}`);
 }
 
 function run(command, args, options = {}) {
@@ -479,7 +599,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
