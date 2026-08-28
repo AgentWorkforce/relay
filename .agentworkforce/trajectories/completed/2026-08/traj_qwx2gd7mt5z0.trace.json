@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "id": "5d1aaa71-b008-4847-a695-f3cfd9996895",
+  "timestamp": "2026-08-26T00:34:00.889Z",
+  "trajectory": "traj_qwx2gd7mt5z0",
+  "files": [
+    {
+      "path": "tests/relayflows/cases/1609-mounted-sandbox-provisioning-timeout/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 5,
+              "revision": "7d14b0373f2c700fe4691ab837253cac725fba33"
+            },
+            {
+              "start_line": 14,
+              "end_line": 29,
+              "revision": "7d14b0373f2c700fe4691ab837253cac725fba33"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

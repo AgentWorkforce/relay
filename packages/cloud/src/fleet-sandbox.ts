@@ -5,7 +5,13 @@ import { defaultApiUrl } from './types.js';
 type JsonRecord = Record<string, unknown>;
 
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DEFAULT_ENSURE_TIMEOUT_MS = 120_000;
+const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
+// Mounted provisioning can spend up to 240s completing the initial Relayfile
+// sync, then up to 90s waiting for the enrolled node to report ready. Leave a
+// bounded margin for Daytona creation and credential setup so the client does
+// not abandon a successful server-side request without receiving its sandbox
+// identity (which prevents the CLI from cleaning it up safely).
+const DEFAULT_ENSURE_TIMEOUT_MS = 480_000;
 const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
 
 export type CloudFleetSandboxRequestOptions = {
@@ -250,7 +256,7 @@ export async function ensureCloudFleetSandbox(
     apiUrl: options.apiUrl || defaultApiUrl(),
     interactive: false,
   });
-  const resolutionSignal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const resolutionSignal = boundedSignal(options, DEFAULT_RESOLUTION_TIMEOUT_MS);
   const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
   const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
   let response: Response;

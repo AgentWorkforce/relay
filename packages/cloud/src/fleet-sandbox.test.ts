@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   ensureCloudSession: vi.fn(),
@@ -29,6 +29,10 @@ describe('Cloud fleet sandbox client', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocks.ensureCloudSession.mockResolvedValue({ auth, client: {} });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
@@ -170,6 +174,37 @@ describe('Cloud fleet sandbox client', () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]).not.toBe(signals[1]);
     expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it('keeps the default provisioning budget beyond the mounted server deadline', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'daytona-codex',
+            sandboxId: 'sandbox-1',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+    });
+
+    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 120_000);
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 480_000);
   });
 
   it('turns Cloud authorization failures into actionable errors', async () => {

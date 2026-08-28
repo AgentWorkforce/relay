@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1609-mounted-sandbox-provisioning-timeout",
+  "kind": "bugfix",
+  "title": "Keep mounted sandbox provisioning within the client request budget",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1609-mounted-sandbox-provisioning-timeout/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "resolution_120000_provisioning_120000"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "resolution_120000_provisioning_480000"
+    }
+  }
+}

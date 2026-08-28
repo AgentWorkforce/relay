@@ -1,0 +1,53 @@
+{
+  "id": "traj_cz0lg3y3z061",
+  "version": 1,
+  "task": {
+    "title": "Extend Cloud fleet sandbox client budget beyond mounted provisioning deadline"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-24T20:42:59.722Z",
+  "completedAt": "2026-08-24T20:53:21.574Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-24T20:52:36.864Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_1hqibl3qswbn",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-24T20:52:36.864Z",
+      "endedAt": "2026-08-24T20:53:21.574Z",
+      "events": [
+        {
+          "ts": 1787604756866,
+          "type": "decision",
+          "content": "Keep workspace resolution at 120 seconds and extend only mounted provisioning to 480 seconds: Keep workspace resolution at 120 seconds and extend only mounted provisioning to 480 seconds",
+          "raw": {
+            "question": "Keep workspace resolution at 120 seconds and extend only mounted provisioning to 480 seconds",
+            "chosen": "Keep workspace resolution at 120 seconds and extend only mounted provisioning to 480 seconds",
+            "alternatives": [],
+            "reasoning": "Production provisioning can legitimately spend 240 seconds on initial Relayfile sync plus 90 seconds on roster readiness; a bounded 480-second request budget preserves sandbox identity for cleanup without weakening the cheaper resolution bound."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Extended only the Cloud fleet sandbox provisioning request to a bounded 480-second budget, retained 120-second workspace resolution, added a regression with mutation proof, updated the patch changelog, and passed package, CLI, build, format, and diff gates.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "191e5f14a343431ec42282c1103c9f014854ac0b",
+    "endRef": "191e5f14a343431ec42282c1103c9f014854ac0b"
+  }
+}
