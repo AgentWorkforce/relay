@@ -48,12 +48,65 @@ if ((arm !== 'base' && arm !== 'head') || !targetDir || !resultPath) {
   throw new Error('RelayFlow proof environment is incomplete');
 }
 
-function build() {
+const CARGO_HOME_BIN = path.join(os.homedir(), '.cargo', 'bin');
+
+/**
+ * Locate a usable cargo, installing a minimal toolchain when the host has none.
+ *
+ * The Cloud proof sandbox ships no Rust toolchain — the first run of this case
+ * died on `spawnSync cargo ENOENT` — and the `dtolnay/rust-toolchain` action the
+ * repository's own workflows use is a GitHub Action, so it cannot help inside
+ * the sandbox. There is no pinned `rust-toolchain.toml`, so stable is the same
+ * toolchain CI builds with.
+ */
+function resolveCargo() {
+  for (const candidate of ['cargo', path.join(CARGO_HOME_BIN, 'cargo')]) {
+    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
+    if (!probe.error && probe.status === 0) {
+      console.log(`[${CASE_ID}] cargo already present: ${probe.stdout.trim()}`);
+      return candidate;
+    }
+  }
+
+  console.log(`[${CASE_ID}] no cargo on this host; installing a minimal rustup toolchain`);
+  const started = Date.now();
+  const install = spawnSync(
+    'bash',
+    [
+      '-c',
+      "set -euo pipefail; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs " +
+        '| sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path',
+    ],
+    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  process.stdout.write(install.stdout ?? '');
+  process.stderr.write(install.stderr ?? '');
+  if (install.error) throw install.error;
+  if (install.status !== 0) {
+    throw new Error(`rustup install failed with exit ${install.status}`);
+  }
+
+  const cargo = path.join(CARGO_HOME_BIN, 'cargo');
+  const probe = spawnSync(cargo, ['--version'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    throw new Error('rustup reported success but cargo is still not runnable');
+  }
+  console.log(
+    `[${CASE_ID}] rustup installed in ${Math.round((Date.now() - started) / 1000)}s: ${probe.stdout.trim()}`
+  );
+  return cargo;
+}
+
+function build(cargoBin) {
   console.log(`[${CASE_ID}] building agent-relay-broker from ${targetDir}`);
   const started = Date.now();
-  const result = spawnSync('cargo', ['build', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'], {
+  const result = spawnSync(cargoBin, ['build', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'], {
     cwd: targetDir,
-    env: { ...process.env, CARGO_TERM_COLOR: 'never' },
+    env: {
+      ...process.env,
+      CARGO_TERM_COLOR: 'never',
+      PATH: `${CARGO_HOME_BIN}${path.delimiter}${process.env.PATH ?? ''}`,
+    },
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -180,7 +233,7 @@ function classify(register) {
   };
 }
 
-const brokerBin = build();
+const brokerBin = build(resolveCargo());
 const register = await captureRegisterFrame(brokerBin);
 console.log(`[${CASE_ID}] node.register: ${JSON.stringify(register)}`);
 const classified = classify(register);
