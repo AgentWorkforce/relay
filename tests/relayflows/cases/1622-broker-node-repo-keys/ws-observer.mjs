@@ -54,9 +54,10 @@ function decodeFrame(buffer) {
 /**
  * Listen on an ephemeral port and resolve the first `node.register` payload.
  *
- * Plain HTTP requests get a permissive `{}` so an unrelated startup call cannot
- * abort the broker before it reaches the node-control socket. Nothing here
- * inspects or asserts; the caller owns the semantics.
+ * Every plain HTTP request is answered with the same Relaycast agent envelope
+ * (`{ok, data}` carrying a fixed id, workspace, and token) so an unrelated
+ * startup call cannot abort the broker before it reaches the node-control
+ * socket. Nothing here inspects or asserts; the caller owns the semantics.
  */
 export function startNodeControlObserver() {
   let resolveRegister;

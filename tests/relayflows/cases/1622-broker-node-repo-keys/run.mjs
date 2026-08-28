@@ -39,6 +39,14 @@ const EXPECTED_SORTED = ['AgentWorkforce/factory', 'AgentWorkforce/relay'];
 
 const REGISTER_TIMEOUT_MS = 120_000;
 
+// `spawnSync` blocks the event loop, so an unbounded child would make the case
+// unabortable from inside: no promise, timer, or `Promise.race` can fire while
+// it runs, leaving only the 1800s case budget to kill it and reporting a stall
+// as an undiagnosable infrastructure failure. Both bounds sit well inside that
+// budget so a stall surfaces as a catchable error naming the step that hung.
+const RUSTUP_TIMEOUT_MS = 300_000;
+const BUILD_TIMEOUT_MS = 1_200_000;
+
 const arm = process.env.RELAY_PR_PROOF_ARM;
 const targetDir = process.env.RELAY_PR_PROOF_TARGET_DIR;
 const resultPath = process.env.RELAY_PR_PROOF_RESULT_PATH;
@@ -49,6 +57,49 @@ if ((arm !== 'base' && arm !== 'head') || !targetDir || !resultPath) {
 }
 
 const CARGO_HOME_BIN = path.join(os.homedir(), '.cargo', 'bin');
+
+// Pinned so the installer this gate executes is immutable. `sh.rustup.rs` serves
+// whatever script is current, which is both a supply-chain exposure and a
+// reproducibility one; the `archive/<version>` path never changes under us.
+const RUSTUP_INIT_VERSION = '1.28.2';
+const RUSTUP_INIT_TARGETS = {
+  'linux:x64': 'x86_64-unknown-linux-gnu',
+  'linux:arm64': 'aarch64-unknown-linux-gnu',
+  'darwin:x64': 'x86_64-apple-darwin',
+  'darwin:arm64': 'aarch64-apple-darwin',
+};
+
+/**
+ * The shell that installs rustup, preferring a pinned immutable installer.
+ *
+ * The toolchain itself stays `stable` on purpose: every Rust workflow in this
+ * repository uses `dtolnay/rust-toolchain@stable`, so pinning a different rustc
+ * here would prove the change against a compiler CI never uses.
+ *
+ * An unrecognised platform falls back to `sh.rustup.rs` rather than failing the
+ * gate outright, and says so in the log, because an unprovable case is a worse
+ * outcome than a mutable installer on a platform this table does not yet cover.
+ */
+function rustupInstallScript() {
+  const target = RUSTUP_INIT_TARGETS[`${process.platform}:${process.arch}`];
+  const args = '-y --profile minimal --default-toolchain stable --no-modify-path';
+  if (!target) {
+    console.log(
+      `[${CASE_ID}] no pinned rustup-init for ${process.platform}/${process.arch}; falling back to sh.rustup.rs`
+    );
+    return `set -euo pipefail; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- ${args}`;
+  }
+  const url = `https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/${target}/rustup-init`;
+  console.log(`[${CASE_ID}] installing pinned rustup-init ${RUSTUP_INIT_VERSION} for ${target}`);
+  return [
+    'set -euo pipefail',
+    'tmp="$(mktemp -d)"',
+    `curl --proto '=https' --tlsv1.2 -sSfL '${url}' -o "$tmp/rustup-init"`,
+    'chmod +x "$tmp/rustup-init"',
+    `"$tmp/rustup-init" ${args}`,
+    'rm -rf "$tmp"',
+  ].join('; ');
+}
 
 /**
  * Locate a usable cargo, installing a minimal toolchain when the host has none.
@@ -70,20 +121,23 @@ function resolveCargo() {
 
   console.log(`[${CASE_ID}] no cargo on this host; installing a minimal rustup toolchain`);
   const started = Date.now();
-  const install = spawnSync(
-    'bash',
-    [
-      '-c',
-      "set -euo pipefail; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs " +
-        '| sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path',
-    ],
-    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }
-  );
+  const install = spawnSync('bash', ['-c', rustupInstallScript()], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: RUSTUP_TIMEOUT_MS,
+  });
   process.stdout.write(install.stdout ?? '');
   process.stderr.write(install.stderr ?? '');
-  if (install.error) throw install.error;
+  if (install.error) {
+    throw new Error(
+      `rustup install did not complete within ${RUSTUP_TIMEOUT_MS}ms or could not start: ${install.error.message}`
+    );
+  }
   if (install.status !== 0) {
-    throw new Error(`rustup install failed with exit ${install.status}`);
+    throw new Error(
+      `rustup install failed with exit ${install.status}${install.signal ? ` (signal ${install.signal})` : ''}`
+    );
   }
 
   const cargo = path.join(CARGO_HOME_BIN, 'cargo');
@@ -102,20 +156,34 @@ function build(cargoBin) {
   const started = Date.now();
   const result = spawnSync(cargoBin, ['build', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'], {
     cwd: targetDir,
+    // Put the SELECTED cargo's own directory first, and only when it was
+    // resolved by path. Prepending ~/.cargo/bin unconditionally would let a
+    // rustup toolchain shadow a system cargo that `resolveCargo` had already
+    // chosen, so the build could run a different rustc than the cargo invoked
+    // here (coderabbitai, #1623 review).
     env: {
       ...process.env,
       CARGO_TERM_COLOR: 'never',
-      PATH: `${CARGO_HOME_BIN}${path.delimiter}${process.env.PATH ?? ''}`,
+      ...(path.isAbsolute(cargoBin)
+        ? { PATH: `${path.dirname(cargoBin)}${path.delimiter}${process.env.PATH ?? ''}` }
+        : {}),
     },
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: BUILD_TIMEOUT_MS,
   });
   process.stdout.write(result.stdout ?? '');
   process.stderr.write(result.stderr ?? '');
-  if (result.error) throw result.error;
+  if (result.error) {
+    throw new Error(
+      `cargo build did not complete within ${BUILD_TIMEOUT_MS}ms or could not start: ${result.error.message}`
+    );
+  }
   if (result.status !== 0) {
-    throw new Error(`cargo build failed with exit ${result.status}`);
+    throw new Error(
+      `cargo build failed with exit ${result.status}${result.signal ? ` (signal ${result.signal})` : ''}`
+    );
   }
   console.log(`[${CASE_ID}] build finished in ${Math.round((Date.now() - started) / 1000)}s`);
   return path.join(targetDir, 'target', 'debug', 'agent-relay-broker');
@@ -218,9 +286,20 @@ function classify(register) {
     advertised.every((value, index) => value === EXPECTED_SORTED[index]);
 
   if (!matches) {
-    throw new Error(
-      `node.register carried unexpected repo_keys ${JSON.stringify(advertised)}; expected ${JSON.stringify(EXPECTED_SORTED)}`
-    );
+    // A regression is data, not a crash. Throwing here would exit non-zero and
+    // the gate would record an undiagnosable infrastructure failure — the same
+    // reason the `absent` branch above is reported rather than thrown. Emitting
+    // a distinct signature makes the gate reject this on a signature mismatch
+    // and names what was actually advertised.
+    return {
+      outcome: 'fixed',
+      signature: 'broker_node_register_advertises_unexpected_repo_keys',
+      details:
+        `The broker registered node "${register.name}" advertising repo_keys ` +
+        `${JSON.stringify(advertised)}, but AGENT_RELAY_NODE_REPOS="${CONFIGURED_REPOS}" should have produced ` +
+        `${JSON.stringify(EXPECTED_SORTED)}. The field is present, so the feature exists, but its content is ` +
+        'wrong — a partial, unsorted, or mis-parsed advertisement.',
+    };
   }
 
   return {
