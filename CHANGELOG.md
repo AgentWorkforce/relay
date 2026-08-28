@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- Broker-served fleet nodes advertise repository keys from `AGENT_RELAY_NODE_REPOS`, so they can be selected for repo-qualified placement instead of being permanently ineligible for it.
 
 ### Fixed
 
