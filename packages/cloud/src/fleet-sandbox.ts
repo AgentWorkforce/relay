@@ -63,12 +63,7 @@ export type EnsureCloudFleetSandboxInput = {
 };
 
 export type CloudFleetSandboxWorkloadProfile = 'standard' | 'long-running-agent';
-export type CloudFleetSandboxProviderId =
-  | 'daytona'
-  | 'e2b'
-  | 'vercel'
-  | 'freestyle'
-  | 'agent37';
+export type CloudFleetSandboxProviderId = 'daytona' | 'e2b' | 'vercel' | 'freestyle' | 'agent37';
 
 export type CloudFleetSandboxReady = {
   outcome: 'provisioned';
@@ -296,9 +291,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
-          ...(input.workloadProfile !== undefined
-            ? { workloadProfile: input.workloadProfile }
-            : {}),
+          ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
         }),
       },
