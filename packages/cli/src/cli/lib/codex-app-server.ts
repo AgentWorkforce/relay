@@ -1,0 +1,776 @@
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
+
+export type CodexNotification = {
+  method: string;
+  params?: unknown;
+};
+
+export type CodexTurnResult = {
+  turnId?: string;
+  response: unknown;
+  completed: CodexNotification;
+  /** Relay reconstructed this exact completion from full persisted turn history. */
+  reconciled?: true;
+};
+
+export type CodexTurnOutcome =
+  | { status: 'completed'; turnId: string; result: CodexTurnResult }
+  | { status: 'failed' | 'interrupted' | 'inProgress'; turnId: string }
+  | { status: 'absent' };
+
+export class CodexAppServerTurnTerminalError extends Error {
+  constructor(
+    readonly status: 'failed' | 'interrupted',
+    readonly turnId: string,
+    readonly completed: CodexNotification
+  ) {
+    super(`Codex turn ended ${status}.`);
+    this.name = 'CodexAppServerTurnTerminalError';
+  }
+}
+
+export type CodexTurnExecution =
+  | { kind: 'local'; workspaceRoot: string }
+  | {
+      kind: 'remote';
+      environment?: { environmentId: string; cwd: string };
+    };
+
+export interface CodexAppServerSession {
+  initialize(): Promise<void>;
+  startThread(input: { cwd: string; model?: string }): Promise<string>;
+  resumeThread(input: { threadId: string; cwd: string }): Promise<void>;
+  addEnvironment(input: {
+    environmentId: string;
+    execServerUrl: string;
+    connectTimeoutMs: number;
+  }): Promise<void>;
+  environmentStatus(environmentId: string): Promise<unknown>;
+  runTurn(input: {
+    threadId: string;
+    text: string;
+    clientUserMessageId: string;
+    execution: CodexTurnExecution;
+  }): Promise<CodexTurnResult>;
+  turnOutcome(input: { threadId: string; clientUserMessageId: string }): Promise<CodexTurnOutcome>;
+  close(): Promise<void>;
+}
+
+export type CodexEnvironmentCapability = {
+  environmentAdd: true;
+  environmentStatus: true;
+  explicitTurnPolicy: true;
+};
+
+export type CodexCapabilityProbeDependencies = {
+  makeTempDir: () => Promise<string>;
+  execFile: (file: string, args: string[]) => Promise<void>;
+  readFile: (file: string) => Promise<string>;
+  remove: (directory: string) => Promise<void>;
+};
+
+function defaultCapabilityProbeDependencies(): CodexCapabilityProbeDependencies {
+  return {
+    makeTempDir: () => fsp.mkdtemp(path.join(os.tmpdir(), 'relay-codex-schema-')),
+    execFile: async (file, args) => {
+      await execFileAsync(file, args, { maxBuffer: 4 * 1024 * 1024 });
+    },
+    readFile: (file) => fsp.readFile(file, 'utf8'),
+    remove: (directory) => fsp.rm(directory, { recursive: true, force: true }),
+  };
+}
+
+function assertEnvironmentAddSchema(addParams: string): void {
+  const schema = JSON.parse(addParams) as {
+    required?: unknown;
+    properties?: Record<string, unknown>;
+  };
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  if (!required.includes('environmentId') || !required.includes('execServerUrl')) {
+    throw new Error('Codex EnvironmentAddParams does not match the required execution-teleport schema.');
+  }
+  if (schema.properties && ('headers' in schema.properties || 'token' in schema.properties)) {
+    throw new Error(
+      'Codex EnvironmentAddParams unexpectedly contains a credential field; upgrade Relay first.'
+    );
+  }
+}
+
+function assertTurnPolicySchema(turnParams: string): void {
+  const turnSchema = JSON.parse(turnParams) as {
+    properties?: Record<string, unknown>;
+  };
+  if (
+    !turnSchema.properties?.approvalPolicy ||
+    !turnSchema.properties?.sandboxPolicy ||
+    !turnSchema.properties?.clientUserMessageId ||
+    !schemaNodeContainsEnum(turnSchema, turnSchema.properties.approvalPolicy, 'never') ||
+    !schemaNodeContainsEnum(turnSchema, turnSchema.properties.sandboxPolicy, 'workspaceWrite') ||
+    !schemaNodeContainsProperty(turnSchema, turnSchema.properties.sandboxPolicy, 'writableRoots') ||
+    !schemaNodeContainsEnum(turnSchema, turnSchema.properties.sandboxPolicy, 'dangerFullAccess')
+  ) {
+    throw new Error("Codex TurnStartParams does not support Relay's explicit execution-policy contract.");
+  }
+}
+
+function assertTurnReconciliationSchema(requests: string, listParams: string, listResponse: string): void {
+  const params = JSON.parse(listParams) as { properties?: Record<string, unknown> };
+  const response = JSON.parse(listResponse) as { properties?: Record<string, unknown> };
+  if (
+    !requests.includes('"thread/turns/list"') ||
+    !params.properties?.itemsView ||
+    !params.properties?.sortDirection ||
+    !response.properties?.data ||
+    !schemaNodeContainsEnum(params, params.properties.itemsView, 'full') ||
+    !schemaNodeContainsEnum(params, params.properties.sortDirection, 'desc') ||
+    !schemaNodeContainsProperty(response, response.properties.data, 'clientId') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'userMessage') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'agentMessage') ||
+    !schemaNodeContainsProperty(response, response.properties.data, 'text') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'completed') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'interrupted') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'failed') ||
+    !schemaNodeContainsEnum(response, response.properties.data, 'inProgress')
+  ) {
+    throw new Error("Codex thread/turns/list does not support Relay's turn-reconciliation contract.");
+  }
+}
+
+function assertTurnCompletedSchema(completedNotification: string): void {
+  const notification = JSON.parse(completedNotification) as {
+    required?: unknown;
+    properties?: Record<string, unknown>;
+  };
+  const required = Array.isArray(notification.required) ? notification.required : [];
+  const turn = notification.properties?.turn;
+  if (
+    !required.includes('threadId') ||
+    !required.includes('turn') ||
+    !turn ||
+    !schemaNodeRequiresProperty(notification, turn, 'id') ||
+    !schemaNodeRequiresProperty(notification, turn, 'items') ||
+    !schemaNodeRequiresProperty(notification, turn, 'status') ||
+    !schemaNodeContainsEnum(notification, turn, 'completed') ||
+    !schemaNodeContainsEnum(notification, turn, 'failed') ||
+    !schemaNodeContainsEnum(notification, turn, 'interrupted') ||
+    !schemaNodeContainsEnum(notification, turn, 'inProgress')
+  ) {
+    throw new Error("Codex turn/completed does not match Relay's terminal-turn contract.");
+  }
+}
+
+function resolveSchemaRef(root: unknown, value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const ref = (value as Record<string, unknown>).$ref;
+  if (typeof ref !== 'string' || !ref.startsWith('#/')) return value;
+  let cursor: unknown = root;
+  for (const segment of ref.slice(2).split('/')) {
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return value;
+    cursor = (cursor as Record<string, unknown>)[segment.replaceAll('~1', '/').replaceAll('~0', '~')];
+  }
+  return cursor;
+}
+
+function schemaNodeContainsEnum(root: unknown, value: unknown, expected: string): boolean {
+  const resolved = resolveSchemaRef(root, value);
+  if (Array.isArray(resolved)) {
+    return resolved.some((entry) => schemaNodeContainsEnum(root, entry, expected));
+  }
+  if (!resolved || typeof resolved !== 'object') return false;
+  const object = resolved as Record<string, unknown>;
+  if (Array.isArray(object.enum) && object.enum.includes(expected)) return true;
+  return Object.entries(object)
+    .filter(([key]) => key !== 'definitions')
+    .some(([, entry]) => schemaNodeContainsEnum(root, entry, expected));
+}
+
+function schemaNodeContainsProperty(root: unknown, value: unknown, expected: string): boolean {
+  const resolved = resolveSchemaRef(root, value);
+  if (Array.isArray(resolved)) {
+    return resolved.some((entry) => schemaNodeContainsProperty(root, entry, expected));
+  }
+  if (!resolved || typeof resolved !== 'object') return false;
+  const object = resolved as Record<string, unknown>;
+  if (object.properties && typeof object.properties === 'object' && expected in object.properties) {
+    return true;
+  }
+  return Object.entries(object)
+    .filter(([key]) => key !== 'definitions')
+    .some(([, entry]) => schemaNodeContainsProperty(root, entry, expected));
+}
+
+function schemaNodeRequiresProperty(root: unknown, value: unknown, expected: string): boolean {
+  const resolved = resolveSchemaRef(root, value);
+  if (Array.isArray(resolved)) {
+    return resolved.some((entry) => schemaNodeRequiresProperty(root, entry, expected));
+  }
+  if (!resolved || typeof resolved !== 'object') return false;
+  const object = resolved as Record<string, unknown>;
+  if (Array.isArray(object.required) && object.required.includes(expected)) return true;
+  return Object.entries(object)
+    .filter(([key]) => key !== 'definitions')
+    .some(([, entry]) => schemaNodeRequiresProperty(root, entry, expected));
+}
+
+/**
+ * Probe the locally installed binary rather than assuming an experimental
+ * protocol from Relay's build-time Codex version. Both methods and the exact
+ * no-header EnvironmentAddParams seam are required before a managed session
+ * can become teleport-capable.
+ */
+export async function probeCodexEnvironmentCapability(
+  codexBinary = 'codex',
+  overrides: Partial<CodexCapabilityProbeDependencies> = {}
+): Promise<CodexEnvironmentCapability> {
+  const deps = { ...defaultCapabilityProbeDependencies(), ...overrides };
+  const directory = await deps.makeTempDir();
+  try {
+    await deps.execFile(codexBinary, [
+      'app-server',
+      'generate-json-schema',
+      '--experimental',
+      '--out',
+      directory,
+    ]);
+    const [requests, addParams, turnParams, turnsListParams, turnsListResponse, turnCompletedNotification] =
+      await Promise.all([
+        deps.readFile(path.join(directory, 'ClientRequest.json')),
+        deps.readFile(path.join(directory, 'v2', 'EnvironmentAddParams.json')),
+        deps.readFile(path.join(directory, 'v2', 'TurnStartParams.json')),
+        deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListParams.json')),
+        deps.readFile(path.join(directory, 'v2', 'ThreadTurnsListResponse.json')),
+        deps.readFile(path.join(directory, 'v2', 'TurnCompletedNotification.json')),
+      ]);
+    if (!requests.includes('"environment/add"') || !requests.includes('"environment/status"')) {
+      throw new Error(
+        'This Codex app-server does not expose both experimental environment/add and environment/status.'
+      );
+    }
+
+    assertEnvironmentAddSchema(addParams);
+    assertTurnPolicySchema(turnParams);
+    assertTurnReconciliationSchema(requests, turnsListParams, turnsListResponse);
+    assertTurnCompletedSchema(turnCompletedNotification);
+
+    return { environmentAdd: true, environmentStatus: true, explicitTurnPolicy: true };
+  } finally {
+    await deps.remove(directory);
+  }
+}
+
+type PendingRequest = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+};
+
+export type CodexAppServerTransportLimits = {
+  maxFrameBytes?: number;
+  maxBufferedNotifications?: number;
+  closeTimeoutMs?: number;
+  forceKillTimeoutMs?: number;
+};
+
+const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
+const DEFAULT_MAX_BUFFERED_NOTIFICATIONS = 1024;
+const DEFAULT_CLOSE_TIMEOUT_MS = 5_000;
+const DEFAULT_FORCE_KILL_TIMEOUT_MS = 1_000;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function stringAt(value: unknown, ...keys: string[]): string | undefined {
+  let cursor: unknown = value;
+  for (const key of keys) {
+    if (!isObject(cursor)) return undefined;
+    cursor = cursor[key];
+  }
+  return typeof cursor === 'string' && cursor.trim() ? cursor.trim() : undefined;
+}
+
+function notificationThreadId(notification: CodexNotification): string | undefined {
+  return (
+    stringAt(notification.params, 'threadId') ??
+    stringAt(notification.params, 'thread', 'id') ??
+    stringAt(notification.params, 'turn', 'threadId')
+  );
+}
+
+function notificationTurnId(notification: CodexNotification): string | undefined {
+  return stringAt(notification.params, 'turnId') ?? stringAt(notification.params, 'turn', 'id');
+}
+
+type CodexTurnPayload = Record<string, unknown> & {
+  id: string;
+  items: unknown[];
+  status: 'completed' | 'failed' | 'interrupted' | 'inProgress';
+};
+
+function requiredTurnPayload(value: unknown, context: string): CodexTurnPayload {
+  if (!isObject(value) || typeof value.id !== 'string' || !value.id.trim() || !Array.isArray(value.items)) {
+    throw new Error(`Codex ${context} returned an invalid turn payload.`);
+  }
+  if (
+    value.status !== 'completed' &&
+    value.status !== 'failed' &&
+    value.status !== 'interrupted' &&
+    value.status !== 'inProgress'
+  ) {
+    throw new Error(`Codex ${context} returned an invalid turn status.`);
+  }
+  return value as CodexTurnPayload;
+}
+
+function hasExactAssistantAnswer(turn: CodexTurnPayload): boolean {
+  if (turn.itemsView !== undefined && turn.itemsView !== 'full') return false;
+  return turn.items.some(
+    (item) => isObject(item) && item.type === 'agentMessage' && typeof item.text === 'string'
+  );
+}
+
+/** Newline-delimited Codex app-server transport. Codex omits the jsonrpc field. */
+export class StdioCodexAppServerSession implements CodexAppServerSession {
+  private readonly pending = new Map<number, PendingRequest>();
+  private readonly notifications: CodexNotification[] = [];
+  private readonly notificationWaiters = new Set<{
+    predicate: (notification: CodexNotification) => boolean;
+    resolve: (notification: CodexNotification) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+  private nextId = 1;
+  private buffer = '';
+  private closed = false;
+  private exited = false;
+  private shutdownStarted = false;
+  private writeChain = Promise.resolve();
+  private readonly exitPromise: Promise<void>;
+  private readonly maxFrameBytes: number;
+  private readonly maxBufferedNotifications: number;
+  private readonly closeTimeoutMs: number;
+  private readonly forceKillTimeoutMs: number;
+
+  constructor(
+    private readonly child: ChildProcessWithoutNullStreams,
+    private readonly requestTimeoutMs = 30_000,
+    private readonly turnTimeoutMs = 30 * 60_000,
+    private readonly onNotification?: (notification: CodexNotification) => void,
+    limits: CodexAppServerTransportLimits = {}
+  ) {
+    this.maxFrameBytes = limits.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+    this.maxBufferedNotifications = limits.maxBufferedNotifications ?? DEFAULT_MAX_BUFFERED_NOTIFICATIONS;
+    this.closeTimeoutMs = limits.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS;
+    this.forceKillTimeoutMs = limits.forceKillTimeoutMs ?? DEFAULT_FORCE_KILL_TIMEOUT_MS;
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => this.onData(chunk));
+    child.stderr.setEncoding('utf8');
+    // Drain stderr so the child cannot block, but never reflect provider or
+    // model diagnostics into persisted/public controller errors.
+    child.stderr.on('data', () => undefined);
+    this.exitPromise = new Promise((resolve) => {
+      child.once('exit', (code, signal) => {
+        this.exited = true;
+        this.closed = true;
+        this.rejectAll(
+          new Error(`Codex app-server exited before completing the request (${code ?? signal ?? 'unknown'}).`)
+        );
+        resolve();
+      });
+    });
+    child.stdin.once('error', (error) => this.failProtocol(`stdin write failed: ${error.message}`));
+  }
+
+  static spawn(options: {
+    codexBinary?: string;
+    cwd: string;
+    onNotification?: (notification: CodexNotification) => void;
+  }): StdioCodexAppServerSession {
+    const child = spawn(options.codexBinary ?? 'codex', ['app-server', '--stdio'], {
+      cwd: options.cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env,
+    });
+    return new StdioCodexAppServerSession(child, 30_000, 30 * 60_000, options.onNotification);
+  }
+
+  async initialize(): Promise<void> {
+    await this.request('initialize', {
+      clientInfo: { name: 'agent-relay', title: 'Agent Relay managed Codex', version: '1' },
+      capabilities: { experimentalApi: true },
+    });
+  }
+
+  async startThread(input: { cwd: string; model?: string }): Promise<string> {
+    const result = await this.request('thread/start', {
+      cwd: input.cwd,
+      ...(input.model ? { model: input.model } : {}),
+    });
+    const threadId =
+      stringAt(result, 'threadId') ?? stringAt(result, 'thread', 'id') ?? stringAt(result, 'id');
+    if (!threadId) throw new Error('Codex thread/start returned no thread id.');
+    return threadId;
+  }
+
+  async resumeThread(input: { threadId: string; cwd: string }): Promise<void> {
+    await this.request('thread/resume', { threadId: input.threadId, cwd: input.cwd });
+  }
+
+  async addEnvironment(input: {
+    environmentId: string;
+    execServerUrl: string;
+    connectTimeoutMs: number;
+  }): Promise<void> {
+    await this.request('environment/add', input);
+  }
+
+  environmentStatus(environmentId: string): Promise<unknown> {
+    return this.request('environment/status', { environmentId });
+  }
+
+  async runTurn(input: {
+    threadId: string;
+    text: string;
+    clientUserMessageId: string;
+    execution: CodexTurnExecution;
+  }): Promise<CodexTurnResult> {
+    let executionParams: Record<string, unknown>;
+    if (input.execution.kind === 'remote') {
+      executionParams = {
+        approvalPolicy: 'never',
+        sandboxPolicy: { type: 'dangerFullAccess' },
+        ...(input.execution.environment ? { environments: [input.execution.environment] } : {}),
+      };
+    } else {
+      const workspaceRoot = input.execution.workspaceRoot;
+      if (!path.isAbsolute(workspaceRoot) || path.normalize(workspaceRoot) !== workspaceRoot) {
+        throw new Error('Local Codex execution requires an absolute normalized workspace root.');
+      }
+      executionParams = {
+        approvalPolicy: 'never',
+        sandboxPolicy: {
+          type: 'workspaceWrite',
+          writableRoots: [workspaceRoot],
+          networkAccess: false,
+        },
+        // Clear any sticky remote environment before a recovered local turn.
+        environments: [],
+      };
+    }
+    const response = await this.request(
+      'turn/start',
+      {
+        threadId: input.threadId,
+        clientUserMessageId: input.clientUserMessageId,
+        input: [{ type: 'text', text: input.text }],
+        ...executionParams,
+      },
+      this.turnTimeoutMs
+    );
+    const turnId =
+      stringAt(response, 'turnId') ?? stringAt(response, 'turn', 'id') ?? stringAt(response, 'id');
+    const completed = await this.waitForNotification(
+      (notification) =>
+        notification.method === 'turn/completed' &&
+        (!notificationThreadId(notification) || notificationThreadId(notification) === input.threadId) &&
+        (!turnId || !notificationTurnId(notification) || notificationTurnId(notification) === turnId),
+      this.turnTimeoutMs
+    );
+    const completedTurn = requiredTurnPayload(
+      isObject(completed.params) ? completed.params.turn : undefined,
+      'turn/completed'
+    );
+    if (turnId && completedTurn.id !== turnId) {
+      throw new Error('Codex turn/completed returned a mismatched turn id.');
+    }
+    if (completedTurn.status === 'failed' || completedTurn.status === 'interrupted') {
+      throw new CodexAppServerTurnTerminalError(completedTurn.status, completedTurn.id, completed);
+    }
+    if (completedTurn.status !== 'completed') {
+      throw new Error(`Codex turn/completed returned non-terminal status ${completedTurn.status}.`);
+    }
+    return { turnId, response, completed };
+  }
+
+  async turnOutcome(input: { threadId: string; clientUserMessageId: string }): Promise<CodexTurnOutcome> {
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const response = await this.request('thread/turns/list', {
+        threadId: input.threadId,
+        itemsView: 'full',
+        sortDirection: 'desc',
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (!isObject(response) || !Array.isArray(response.data)) {
+        throw new Error('Codex thread/turns/list returned an invalid response.');
+      }
+      for (const candidate of response.data) {
+        if (!isObject(candidate) || typeof candidate.id !== 'string' || !Array.isArray(candidate.items)) {
+          continue;
+        }
+        const matches = candidate.items.some(
+          (item) =>
+            isObject(item) && item.type === 'userMessage' && item.clientId === input.clientUserMessageId
+        );
+        if (!matches) continue;
+        const turn = requiredTurnPayload(candidate, 'thread/turns/list');
+        if (turn.status === 'completed') {
+          if (!hasExactAssistantAnswer(turn)) {
+            throw new Error(
+              'Codex thread/turns/list could not recover the completed assistant answer exactly.'
+            );
+          }
+          return {
+            status: 'completed',
+            turnId: turn.id,
+            result: {
+              turnId: turn.id,
+              response: { turn },
+              completed: {
+                method: 'turn/completed',
+                params: { threadId: input.threadId, turn },
+              },
+              reconciled: true,
+            },
+          };
+        }
+        return { status: turn.status, turnId: turn.id };
+      }
+      const nextCursor = typeof response.nextCursor === 'string' ? response.nextCursor : undefined;
+      if (!nextCursor) return { status: 'absent' };
+      cursor = nextCursor;
+    }
+    throw new Error('Codex thread/turns/list exceeded the reconciliation page bound.');
+  }
+
+  async close(): Promise<void> {
+    this.beginShutdown(new Error('Codex app-server closed.'));
+    if (this.exited || this.child.exitCode !== null) return;
+    if (await this.waitForExit(this.closeTimeoutMs)) return;
+    this.child.kill('SIGKILL');
+    if (!(await this.waitForExit(this.forceKillTimeoutMs))) {
+      throw new Error('Codex app-server did not exit after SIGKILL.');
+    }
+  }
+
+  private request(method: string, params?: unknown, timeoutMs = this.requestTimeoutMs): Promise<unknown> {
+    if (this.closed) return Promise.reject(new Error('Codex app-server is not running.'));
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Timed out waiting for Codex ${method}.`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      void this.writeMessage({ id, method, ...(params === undefined ? {} : { params }) }).catch(
+        (error: unknown) => {
+          const pending = this.pending.get(id);
+          if (!pending) return;
+          this.pending.delete(id);
+          clearTimeout(pending.timer);
+          pending.reject(new Error(`Could not write Codex ${method}: ${errorMessage(error)}`));
+          this.failProtocol(`failed to serialize a client request: ${errorMessage(error)}`);
+        }
+      );
+    });
+  }
+
+  private waitForNotification(
+    predicate: (notification: CodexNotification) => boolean,
+    timeoutMs: number
+  ): Promise<CodexNotification> {
+    const queuedIndex = this.notifications.findIndex(predicate);
+    if (queuedIndex >= 0) return Promise.resolve(this.notifications.splice(queuedIndex, 1)[0]!);
+
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        predicate,
+        resolve: (notification: CodexNotification) => {
+          clearTimeout(waiter.timer);
+          this.notificationWaiters.delete(waiter);
+          resolve(notification);
+        },
+        reject: (error: Error) => {
+          clearTimeout(waiter.timer);
+          this.notificationWaiters.delete(waiter);
+          reject(error);
+        },
+        timer: setTimeout(() => {
+          this.notificationWaiters.delete(waiter);
+          reject(new Error('Timed out waiting for Codex turn/completed.'));
+        }, timeoutMs),
+      };
+      this.notificationWaiters.add(waiter);
+    });
+  }
+
+  private onData(chunk: string): void {
+    if (this.closed) return;
+    this.buffer += chunk;
+    let newline: number;
+    while ((newline = this.buffer.indexOf('\n')) >= 0) {
+      const frame = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (Buffer.byteLength(frame, 'utf8') > this.maxFrameBytes) {
+        this.failProtocol('received an oversized frame');
+        return;
+      }
+      const line = frame.trim();
+      if (!line) continue;
+      let message: unknown;
+      try {
+        message = JSON.parse(line) as unknown;
+      } catch {
+        this.failProtocol('received malformed JSON');
+        return;
+      }
+      if (!isObject(message)) {
+        this.failProtocol('received a non-object frame');
+        return;
+      }
+      this.handleMessage(message);
+      if (this.closed) return;
+    }
+    if (Buffer.byteLength(this.buffer, 'utf8') > this.maxFrameBytes) {
+      this.failProtocol('received an oversized unterminated frame');
+    }
+  }
+
+  private handleMessage(message: Record<string, unknown>): void {
+    if (typeof message.id === 'number' && ('result' in message || 'error' in message)) {
+      this.handleResponse(message.id, message);
+      return;
+    }
+    if (
+      (typeof message.id === 'number' || typeof message.id === 'string') &&
+      typeof message.method === 'string'
+    ) {
+      void this.writeMessage({
+        id: message.id,
+        error: { code: -32601, message: 'Client request not supported' },
+      }).catch((error: unknown) => {
+        this.failProtocol(`could not reject an app-server request: ${errorMessage(error)}`);
+      });
+      return;
+    }
+    if (typeof message.method !== 'string') {
+      this.failProtocol('received a frame without a response or method');
+      return;
+    }
+    const notification = {
+      method: message.method,
+      ...('params' in message ? { params: message.params } : {}),
+    };
+    try {
+      this.onNotification?.(notification);
+    } catch (error) {
+      this.failProtocol(`notification handler failed: ${errorMessage(error)}`);
+      return;
+    }
+    const waiter = [...this.notificationWaiters].find((candidate) => candidate.predicate(notification));
+    if (waiter) waiter.resolve(notification);
+    else if (notification.method === 'turn/completed') {
+      if (this.notifications.length >= this.maxBufferedNotifications) {
+        this.failProtocol('notification queue exceeded its bound');
+        return;
+      }
+      this.notifications.push(notification);
+    }
+  }
+
+  private handleResponse(id: number, message: Record<string, unknown>): void {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if ('error' in message) {
+      if (!isObject(message.error)) {
+        pending.reject(new Error('Codex app-server returned a malformed error response.'));
+        this.failProtocol('received a malformed error response');
+        return;
+      }
+      pending.reject(
+        new Error(
+          `${typeof message.error.code === 'number' ? `${message.error.code}: ` : ''}${
+            typeof message.error.message === 'string' ? message.error.message : 'Codex request failed'
+          }`
+        )
+      );
+      return;
+    }
+    pending.resolve(message.result);
+  }
+
+  private rejectAll(error: Error): void {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+    for (const waiter of this.notificationWaiters) waiter.reject(error);
+    this.notificationWaiters.clear();
+  }
+
+  private writeMessage(message: Record<string, unknown>): Promise<void> {
+    const frame = `${JSON.stringify(message)}\n`;
+    if (Buffer.byteLength(frame, 'utf8') > this.maxFrameBytes) {
+      return Promise.reject(new Error('outbound Codex frame exceeds the transport bound'));
+    }
+    const write = this.writeChain.then(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          if (this.closed || this.child.stdin.destroyed) {
+            reject(new Error('Codex app-server is not writable.'));
+            return;
+          }
+          this.child.stdin.write(frame, (error?: Error | null) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        })
+    );
+    this.writeChain = write.catch(() => undefined);
+    return write;
+  }
+
+  private failProtocol(detail: string): void {
+    this.beginShutdown(new Error(`Codex app-server protocol violation: ${detail}.`));
+  }
+
+  private beginShutdown(error: Error): void {
+    if (!this.closed) {
+      this.closed = true;
+      this.rejectAll(error);
+    }
+    if (this.shutdownStarted || this.exited || this.child.exitCode !== null) return;
+    this.shutdownStarted = true;
+    this.child.stdin.end();
+    this.child.kill('SIGTERM');
+  }
+
+  private async waitForExit(timeoutMs: number): Promise<boolean> {
+    if (this.exited || this.child.exitCode !== null) return true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        this.exitPromise.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}

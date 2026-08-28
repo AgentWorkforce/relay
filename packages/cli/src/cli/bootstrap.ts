@@ -50,8 +50,25 @@ import { registerCapabilitiesCommands } from './commands/capabilities.js';
 import { registerFleetCommands } from './commands/fleet.js';
 import { registerSkillsCommands } from './commands/skills.js';
 import { registerSessionCommands } from './commands/session.js';
+import { registerCodexCommands } from './commands/codex.js';
+import {
+  DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH,
+  RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV,
+  resolveCodexLiveTeleportStartupSwitch,
+  type CodexLiveTeleportStartupSwitch,
+} from './lib/codex-live-controller.js';
 
-dotenvConfig({ quiet: true });
+/**
+ * Capture the trusted local teleport switch before cwd dotenv loading can
+ * mutate process.env. Production calls this once, at the start of runCli.
+ */
+export function loadCliEnvironment(): CodexLiveTeleportStartupSwitch {
+  const liveTeleportStartupSwitch = resolveCodexLiveTeleportStartupSwitch(
+    process.env[RELAY_LIVE_SESSION_TELEPORT_ENABLED_ENV]
+  );
+  dotenvConfig({ quiet: true });
+  return liveTeleportStartupSwitch;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -373,7 +390,9 @@ function installExitHooks(): void {
   });
 }
 
-export function createProgram(options: { name?: string } = {}): Command {
+export function createProgram(
+  options: { name?: string; liveTeleportStartupSwitch?: CodexLiveTeleportStartupSwitch } = {}
+): Command {
   const program = new Command();
 
   // Commander echoes offending tokens verbatim (`error: unknown option
@@ -423,6 +442,10 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
   registerSessionCommands(program);
+  registerCodexCommands(program, {
+    liveTeleportStartupSwitch:
+      options.liveTeleportStartupSwitch ?? DEFAULT_CODEX_LIVE_TELEPORT_STARTUP_SWITCH,
+  });
 
   program
     .command('mcp')
@@ -471,6 +494,7 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 }
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
+  const liveTeleportStartupSwitch = loadCliEnvironment();
   assertSupportedNodeVersion();
   ensureWebSocketGlobal();
   maybeRunUpdateCheck(VERSION, argv);
@@ -487,7 +511,7 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     });
   }
 
-  const program = createProgram({ name: resolveProgramName(argv) });
+  const program = createProgram({ name: resolveProgramName(argv), liveTeleportStartupSwitch });
   installTelemetryHooks(program);
   installExitHooks();
 

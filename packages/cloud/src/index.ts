@@ -54,6 +54,23 @@ export {
 } from './api-client.js';
 
 export {
+  CloudLiveTeleportClient,
+  LIVE_TELEPORT_MIN_TURN_LEASE_MS,
+  type LiveTeleportCloudClient,
+  type LiveTeleportWorkspaceSource,
+  type LiveTeleportPrewarmInput,
+  type LiveTeleportPrewarm,
+  type LiveTeleportAcquireInput,
+  type LiveTeleportEnvironment,
+  type LiveTeleportDestinationVerification,
+  type LiveTeleportRevokeInput,
+  type LiveTeleportStatusInput,
+  type LiveTeleportLifecycleStatus,
+  type LiveTeleportRollout,
+  type LiveTeleportRevocation,
+} from './live-teleport.js';
+
+export {
   runWorkflow,
   scheduleWorkflow,
   listWorkflowSchedules,
@@ -86,6 +103,8 @@ export {
   type CloudFleetSandboxReady,
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,
+  type CloudFleetSandboxProviderId,
+  type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
 } from './fleet-sandbox.js';

@@ -5,6 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased - Minor]
+
+### Added
+
+- `relay codex run` starts a Relay-managed local Codex app-server/thread. Live session teleport is dark-launched behind the default-off local `RELAY_LIVE_SESSION_TELEPORT_ENABLED=true` switch, captured strictly from the ambient process environment before dotenv loading and reported by `relay codex status`; when enabled, `relay codex teleport` seals its active Relayfile poll mount at the next turn boundary, binds exact Relayfile destination verification to the source checkpoint, requires a 40-minute Cloud turn lease, and requires confirmed fencing plus ownership handback and mount readiness before local rollback. After notification loss, Relay never replays model execution: it durably redelivers reconciled output at least once, so an already-rendered live prefix can repeat, and it transparently runs the same prompt locally only after a confirmed pre-submission cutover failure.
+
 ## [Unreleased - Patch]
 
 ### Fixed

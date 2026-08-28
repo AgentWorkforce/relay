@@ -670,6 +670,7 @@ describe('fleet command support', () => {
       relayWorkspaceId: 'rw_abc',
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
+      providerId: 'agent37' as const,
     }));
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const logs: string[] = [];
@@ -715,6 +716,7 @@ describe('fleet command support', () => {
       maxAgents: 1,
       mountRelayfile: true,
       forceProvision: true,
+      workloadProfile: 'long-running-agent',
       waitTimeoutMs: 90_000,
       name: 'daytona-codex',
     });
@@ -749,7 +751,11 @@ describe('fleet command support', () => {
     );
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
     expect(JSON.parse(logs[0]!)).toMatchObject({
-      sandbox: { nodeName: 'daytona-codex', relayfileMountPath: '/workspace' },
+      sandbox: {
+        nodeName: 'daytona-codex',
+        relayfileMountPath: '/workspace',
+        providerId: 'agent37',
+      },
       invocation: { invocationId: 'inv_sandbox' },
       attachCommand: "agent-relay node agent attach 'sandbox-worker' --node 'daytona-codex' --mode drive",
     });
@@ -783,6 +789,7 @@ describe('fleet command support', () => {
         relayWorkspaceId: 'rw_abc',
         relayfileMounted: true,
         relayfileMountPath: '/workspace',
+        providerId: 'agent37' as const,
       })),
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
@@ -962,6 +969,7 @@ describe('fleet command support', () => {
         sandboxId: 'sandbox-1',
         relayWorkspaceId: 'rw_abc',
         relayfileMounted: false,
+        providerId: 'agent37' as const,
       })),
       deleteCloudFleetSandbox: vi.fn(async () => Promise.reject(new Error('delete failed'))),
       createFleetWorkspaceClient: vi.fn() as never,

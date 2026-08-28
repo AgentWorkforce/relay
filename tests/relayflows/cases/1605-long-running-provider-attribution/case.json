@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1605-long-running-provider-attribution",
+  "kind": "feature",
+  "title": "Send semantic long-running workload intent and preserve Cloud provider attribution",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1605-long-running-provider-attribution/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "semantic_profile_and_attribution_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "long_running_profile_with_agent37_attribution"
+    }
+  }
+}

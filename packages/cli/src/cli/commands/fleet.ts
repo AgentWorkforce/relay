@@ -236,6 +236,7 @@ export function registerFleetCommands(
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
             forceProvision: true,
+            workloadProfile: 'long-running-agent',
             waitTimeoutMs: 90_000,
             name: requestedSandboxName,
           });
@@ -248,7 +249,7 @@ export function registerFleetCommands(
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Daytona created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
                     cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
                   }`
                 );
@@ -257,7 +258,7 @@ export function registerFleetCommands(
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
                 error.nodeName ?? requestedSandboxName
-              }' before retrying so a Daytona sandbox is not left running.`
+              }' before retrying so a Cloud sandbox is not left running.`
             );
           }
           throw error;
@@ -276,7 +277,7 @@ export function registerFleetCommands(
               );
             });
           throw new Error(
-            `Daytona node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
+            `${sandbox.providerId} node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
           );
         }
         if (
@@ -297,7 +298,7 @@ export function registerFleetCommands(
                 );
               });
           }
-          throw new Error('Cloud returned a Daytona node without the required Relayfile mount.');
+          throw new Error('Cloud returned a sandbox node without the required Relayfile mount.');
         }
         targetNode = sandbox.nodeName;
         if (!workerCwd && sandbox.outcome === 'provisioned' && sandbox.relayfileMounted) {

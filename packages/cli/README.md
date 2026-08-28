@@ -20,6 +20,31 @@ agent-relay message post --channel general --text "hello"
 agent-relay workspace list
 ```
 
+## Relay-managed Codex teleport
+
+`relay codex run` always supports a local managed Codex app-server session. Live
+session teleport is dark-launched and remains disabled unless the controller
+process starts with the exact local opt-in below:
+
+```bash
+RELAY_LIVE_SESSION_TELEPORT_ENABLED=true relay codex run
+relay codex teleport
+```
+
+Unset, `false`, `TRUE`, whitespace-padded values, `1`, and all other values keep
+new execution local: a fresh or already-local controller does not authenticate
+to Cloud, prewarm, acquire, or route a turn remotely. The opt-in must come from
+the ambient process environment; a cwd `.env` file cannot enable it. The
+`teleport`, `rollback`, and `status` commands remain discoverable, but a disabled
+controller rejects teleport requests. `relay codex status` reports the effective
+startup switch and why it is enabled or disabled.
+
+The flag is read when `relay codex run` starts. To roll back the capability,
+stop the controller and restart it with the variable unset or set to `false`.
+If the prior process left a prewarm or remote environment behind, startup first
+revokes that Cloud generation and restores the same thread and Relayfile mount
+locally; it does not prewarm again while disabled.
+
 ## This machine's node
 
 The `node` command group manages the broker on your machine and the agents it runs:
