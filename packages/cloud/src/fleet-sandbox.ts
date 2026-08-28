@@ -69,6 +69,8 @@ export type EnsureCloudFleetSandboxInput = {
   forceProvision?: boolean;
   /** Constrain provisioning to a provider that Cloud has enabled for routing. */
   providerId?: CloudFleetSandboxProviderId;
+  /** Provider-neutral semantics; Cloud owns the provider decision. */
+  workloadProfile?: CloudFleetSandboxWorkloadProfile;
   waitTimeoutMs?: number;
   /**
    * Repositories to clone into `/srv/agent-workforce/<name>` inside the
@@ -81,6 +83,27 @@ export type EnsureCloudFleetSandboxInput = {
    */
   repos?: readonly string[];
 };
+
+export type CloudFleetSandboxWorkloadProfile =
+  | 'standard'
+  | 'long-running-agent'
+  | 'standard-long-running-agent';
+export type CloudFleetSandboxProviderId =
+  | 'daytona'
+  | 'e2b'
+  | 'vercel'
+  | 'freestyle'
+  | 'agent37'
+  | 'microsandbox';
+
+const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] = [
+  'daytona',
+  'e2b',
+  'vercel',
+  'freestyle',
+  'agent37',
+  'microsandbox',
+];
 
 export type CloudFleetSandboxReady = {
   outcome: 'provisioned';
@@ -225,7 +248,9 @@ function readProviderId(
 ): CloudFleetSandboxProviderId | undefined {
   const value = readString(payload, 'providerId');
   if (value === undefined) return undefined;
-  if (value === 'daytona' || value === 'e2b') return value;
+  if (CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(value as CloudFleetSandboxProviderId)) {
+    return value as CloudFleetSandboxProviderId;
+  }
   if (exactProviderRequested) {
     throw new Error('Cloud fleet sandbox response has an unknown providerId.');
   }
@@ -237,8 +262,10 @@ function cleanupProviderId(
   requestedProviderId?: CloudFleetSandboxProviderId
 ): CloudFleetSandboxProviderId | undefined {
   const payloadProviderId = readString(payload, 'providerId');
-  return payloadProviderId === 'daytona' || payloadProviderId === 'e2b'
-    ? payloadProviderId
+  return payloadProviderId && CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(
+    payloadProviderId as CloudFleetSandboxProviderId
+  )
+    ? payloadProviderId as CloudFleetSandboxProviderId
     : requestedProviderId;
 }
 
@@ -343,6 +370,9 @@ export async function ensureCloudFleetSandbox(
           ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
+          ...(input.workloadProfile !== undefined
+            ? { workloadProfile: input.workloadProfile }
+            : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),

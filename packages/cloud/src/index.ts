@@ -86,6 +86,8 @@ export {
   type CloudFleetSandboxReady,
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,
+  type CloudFleetSandboxProviderId,
+  type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
   type CloudFleetSandboxProviderId,
