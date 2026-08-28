@@ -860,6 +860,12 @@ const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode
 /// placement for the whole workspace. The harness set comes from the
 /// `AGENT_RELAY_NODE_HARNESSES` CSV (the CLI sets it from the project's
 /// teams.json / node definition), falling back to a built-in default.
+///
+/// The repository keys come from `AGENT_RELAY_NODE_REPOS` on the same footing.
+/// Until it existed this was hardcoded `None`, so a broker-served node could
+/// never advertise a repository and was permanently ineligible for any
+/// repo-qualified placement — the node had no way to say what it could serve
+/// even with the checkout sitting on its disk (#1622).
 fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
     let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
         .into_iter()
@@ -880,7 +886,7 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         capabilities,
         max_agents: node_max_agents(),
         tags: None,
-        repo_keys: None,
+        repo_keys: node_capacity_repos(),
         version: Some(broker_version.to_string()),
     }
 }
@@ -912,6 +918,33 @@ fn node_capacity_harnesses() -> Vec<String> {
         .collect()
 }
 
+/// The repository keys this node advertises, from `AGENT_RELAY_NODE_REPOS`
+/// (comma-separated `owner/name`, order-preserving, de-duplicated).
+///
+/// Absent yields `None`: the node advertises no repository at all, which is the
+/// behaviour every broker-served node had before this existed and keeps such a
+/// node eligible for placements that carry no repo constraint. A value that is
+/// present but contributes no entries yields `Some([])`, which
+/// `build_node_register` forwards verbatim so an operator can authoritatively
+/// clear a stale advertisement on the control plane rather than being stuck
+/// with one.
+///
+/// Entries are deliberately NOT validated here. `build_node_register` already
+/// treats the Fleet wire as a privacy boundary and drops anything that is not a
+/// bare `owner/name` key, so a second copy of that rule would sit one edit away
+/// from disagreeing with the one that actually guards the wire.
+fn node_capacity_repos() -> Option<Vec<String>> {
+    let raw = std::env::var("AGENT_RELAY_NODE_REPOS").ok()?;
+    let mut seen = std::collections::HashSet::new();
+    Some(
+        raw.split(',')
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .filter(|entry| seen.insert(entry.clone()))
+            .collect(),
+    )
+}
+
 /// Provider-level agent capacity, from `AGENT_RELAY_NODE_MAX_AGENTS`. Absent
 /// (0/unlimited) preserves the broker's historically unbounded capacity.
 fn node_max_agents() -> Option<u32> {
@@ -930,7 +963,50 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::{Mutex, MutexGuard};
 
+    /// The single lock every environment mutation in this module takes.
+    ///
+    /// It is not per-variable on purpose. `set_var` rewrites a process-global
+    /// environ table, so mutating one key races a concurrent read of any other
+    /// key, not just of itself. Giving `AGENT_RELAY_NODE_REPOS` its own mutex
+    /// let the repo tests run alongside the node-id tests and made
+    /// `node_id_env_guard_restores_original_node_env` fail intermittently.
     static NODE_ID_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct NodeReposEnvGuard {
+        _guard: MutexGuard<'static, ()>,
+        original: Option<OsString>,
+    }
+
+    impl Drop for NodeReposEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: these tests hold NODE_REPOS_ENV_MUTEX while mutating the
+            // process environment, serializing access within this test module
+            // until the inherited AGENT_RELAY_NODE_REPOS value is restored.
+            unsafe {
+                match &self.original {
+                    Some(value) => std::env::set_var("AGENT_RELAY_NODE_REPOS", value),
+                    None => std::env::remove_var("AGENT_RELAY_NODE_REPOS"),
+                }
+            }
+        }
+    }
+
+    fn set_node_repos_env(value: Option<&str>) -> NodeReposEnvGuard {
+        let guard = NODE_ID_ENV_MUTEX.lock().unwrap();
+        let original = std::env::var_os("AGENT_RELAY_NODE_REPOS");
+        // SAFETY: NODE_REPOS_ENV_MUTEX serializes environment mutations for these
+        // tests before any code under test observes AGENT_RELAY_NODE_REPOS.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var("AGENT_RELAY_NODE_REPOS", value),
+                None => std::env::remove_var("AGENT_RELAY_NODE_REPOS"),
+            }
+        }
+        NodeReposEnvGuard {
+            _guard: guard,
+            original,
+        }
+    }
 
     struct NodeIdEnvGuard {
         _guard: MutexGuard<'static, ()>,
@@ -1040,6 +1116,73 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
+
+    #[test]
+    fn bootstrap_node_manifest_advertises_no_repos_when_env_is_absent() {
+        // Backward compatibility, and the reason this is `Option`: every
+        // broker-served node that predates AGENT_RELAY_NODE_REPOS must keep
+        // advertising nothing rather than start advertising an empty set, which
+        // `build_node_register` forwards as an authoritative clear.
+        let _env = set_node_repos_env(None);
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        assert_eq!(manifest.repo_keys, None);
+    }
+
+    #[test]
+    fn bootstrap_node_manifest_advertises_configured_repo_keys() {
+        // Trimmed, order-preserving, de-duplicated — the same contract
+        // AGENT_RELAY_NODE_HARNESSES already has.
+        let _env = set_node_repos_env(Some(
+            " AgentWorkforce/factory ,AgentWorkforce/relay,,AgentWorkforce/factory ",
+        ));
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        assert_eq!(
+            manifest.repo_keys,
+            Some(vec![
+                "AgentWorkforce/factory".to_string(),
+                "AgentWorkforce/relay".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn bootstrap_node_manifest_forwards_an_explicitly_empty_value_as_a_clear() {
+        // Present-but-empty is distinct from absent: it is how an operator
+        // retracts a stale advertisement instead of being stuck with one.
+        let _env = set_node_repos_env(Some("  ,  "));
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        assert_eq!(manifest.repo_keys, Some(Vec::new()));
+    }
+
+    #[test]
+    fn configured_repo_paths_never_reach_the_fleet_wire() {
+        // The privacy property, proven through the real producer rather than a
+        // hand-built manifest: an operator who puts absolute paths in the env
+        // must not leak them onto the wire. `bootstrap_node_manifest` does not
+        // filter — `build_node_register` is the boundary — so this asserts the
+        // two halves actually compose.
+        let _env = set_node_repos_env(Some(
+            "/private/node/factory,AgentWorkforce/factory,../relay,AgentWorkforce/relay/extra",
+        ));
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        let register = crate::node_control::build_node_register(
+            &manifest,
+            "node-default",
+            "host-default",
+            "broker/1",
+            None,
+        );
+        assert_eq!(
+            register.repo_keys,
+            Some(vec!["AgentWorkforce/factory".to_string()]),
+            "only bare owner/name keys may cross the Fleet wire"
+        );
+        let serialized = serde_json::to_string(&register).unwrap();
+        assert!(
+            !serialized.contains("/private/node/factory"),
+            "an absolute checkout path must never be serialized: {serialized}"
+        );
     }
 
     #[test]
