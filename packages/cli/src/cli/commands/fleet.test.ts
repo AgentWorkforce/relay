@@ -722,6 +722,7 @@ describe('fleet command support', () => {
       relayfilePaths: ['/live-review/run-123/**'],
       forceProvision: true,
       providerId: 'e2b',
+      workloadProfile: 'long-running-agent',
       waitTimeoutMs: 90_000,
       name: 'e2b-codex',
     });
@@ -765,6 +766,17 @@ describe('fleet command support', () => {
   it('fleet spawn --sandbox deletes a freshly provisioned sandbox when dispatch fails', async () => {
     const placement = { spawn: vi.fn(async () => Promise.reject(new Error('dispatch failed'))) };
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-1',
+      nodeName: 'agent37-codex',
+      sandboxId: 'sandbox-1',
+      relayWorkspaceId: 'rw_abc',
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+      providerId: 'agent37' as const,
+    }));
     const errors: string[] = [];
     const program = new Command();
     program.exitOverride();
@@ -781,16 +793,7 @@ describe('fleet command support', () => {
           throw new Error('__exit__');
         }) as never,
       },
-      ensureCloudFleetSandbox: vi.fn(async () => ({
-        outcome: 'provisioned' as const,
-        cloudWorkspaceId: 'cloud-workspace',
-        nodeId: 'node-1',
-        nodeName: 'daytona-codex',
-        sandboxId: 'sandbox-1',
-        relayWorkspaceId: 'rw_abc',
-        relayfileMounted: true,
-        relayfileMountPath: '/workspace',
-      })),
+      ensureCloudFleetSandbox,
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -819,9 +822,13 @@ describe('fleet command support', () => {
     ).rejects.toThrow('__exit__');
 
     expect(errors.join('\n')).toContain('dispatch failed');
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(expect.objectContaining({
+      workloadProfile: 'long-running-agent',
+    }));
     expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
       cloudWorkspaceId: 'cloud-workspace',
       sandboxId: 'sandbox-1',
+      providerId: 'agent37',
     });
   });
 
@@ -1033,6 +1040,7 @@ describe('fleet command support', () => {
         sandboxId: 'sandbox-1',
         relayWorkspaceId: 'rw_abc',
         relayfileMounted: false,
+        providerId: 'agent37' as const,
       })),
       deleteCloudFleetSandbox: vi.fn(async () => Promise.reject(new Error('delete failed'))),
       createFleetWorkspaceClient: vi.fn() as never,
