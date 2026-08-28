@@ -103,6 +103,8 @@ export {
   type CloudFleetSandboxReady,
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,
+  type CloudFleetSandboxProviderId,
+  type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
 } from './fleet-sandbox.js';

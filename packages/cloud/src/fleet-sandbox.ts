@@ -57,8 +57,18 @@ export type EnsureCloudFleetSandboxInput = {
   maxAgents?: number;
   mountRelayfile?: boolean;
   forceProvision?: boolean;
+  /** Provider-neutral semantics; Cloud owns the provider decision. */
+  workloadProfile?: CloudFleetSandboxWorkloadProfile;
   waitTimeoutMs?: number;
 };
+
+export type CloudFleetSandboxWorkloadProfile = 'standard' | 'long-running-agent';
+export type CloudFleetSandboxProviderId =
+  | 'daytona'
+  | 'e2b'
+  | 'vercel'
+  | 'freestyle'
+  | 'agent37';
 
 export type CloudFleetSandboxReady = {
   outcome: 'provisioned';
@@ -69,6 +79,7 @@ export type CloudFleetSandboxReady = {
   relayWorkspaceId: string;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
+  providerId: CloudFleetSandboxProviderId;
 };
 
 export type CloudFleetSandboxReused = {
@@ -88,6 +99,7 @@ export type CloudFleetSandboxProvisioningTimeout = {
   relayWorkspaceId: string;
   nodeName: string;
   waitedMs: number;
+  providerId: CloudFleetSandboxProviderId;
 };
 
 export type EnsureCloudFleetSandboxResult =
@@ -166,6 +178,14 @@ function requiredString(payload: JsonRecord, key: string, context: string): stri
   return value;
 }
 
+function requiredProviderId(payload: JsonRecord): CloudFleetSandboxProviderId {
+  const value = requiredString(payload, 'providerId', 'Cloud fleet sandbox');
+  if (!['daytona', 'e2b', 'vercel', 'freestyle', 'agent37'].includes(value)) {
+    throw new Error('Cloud fleet sandbox response has an unknown providerId.');
+  }
+  return value as CloudFleetSandboxProviderId;
+}
+
 async function resolveCloudWorkspaceId(
   workspaceId: string,
   auth: Awaited<ReturnType<typeof ensureCloudSession>>['auth'],
@@ -210,6 +230,7 @@ function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): Ensu
       sandboxId: requiredString(payload, 'sandboxId', 'Cloud fleet sandbox'),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       relayfileMounted: payload.relayfileMounted,
+      providerId: requiredProviderId(payload),
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
@@ -236,6 +257,7 @@ function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): Ensu
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
+      providerId: requiredProviderId(payload),
     };
   }
 
@@ -274,6 +296,9 @@ export async function ensureCloudFleetSandbox(
           ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
+          ...(input.workloadProfile !== undefined
+            ? { workloadProfile: input.workloadProfile }
+            : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
         }),
       },
