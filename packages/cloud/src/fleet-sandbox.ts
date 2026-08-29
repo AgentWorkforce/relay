@@ -285,9 +285,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
-          ...(input.repos !== undefined && input.repos.length > 0
-            ? { repos: [...input.repos] }
-            : {}),
+          ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),
       },
       { interactive: false }
