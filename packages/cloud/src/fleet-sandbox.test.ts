@@ -98,6 +98,106 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('forwards a repos list into the ensure request body when the caller opts in', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'jit-repos-node',
+            sandboxId: 'sandbox-9',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      forceProvision: true,
+      repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+    });
+
+    const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
+    expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual({
+      workspaceId: CLOUD_WORKSPACE_ID,
+      requiredCapability: 'spawn:codex',
+      forceProvision: true,
+      repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+    });
+  });
+
+  it('omits repos from the body when the caller did not opt in', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'bare-node',
+            sandboxId: 'sandbox-10',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+    });
+
+    const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
+    const parsedBody = JSON.parse(String(ensureCall?.[2]?.body));
+    expect(parsedBody).not.toHaveProperty('repos');
+  });
+
+  it('omits repos when the caller passes an empty array', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'bare-node',
+            sandboxId: 'sandbox-11',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      repos: [],
+    });
+
+    const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
+    const parsedBody = JSON.parse(String(ensureCall?.[2]?.body));
+    expect(parsedBody).not.toHaveProperty('repos');
+  });
+
   it('preserves a bounded provisioning timeout so the CLI can report it', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({

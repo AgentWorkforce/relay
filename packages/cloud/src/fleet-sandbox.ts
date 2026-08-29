@@ -58,6 +58,16 @@ export type EnsureCloudFleetSandboxInput = {
   mountRelayfile?: boolean;
   forceProvision?: boolean;
   waitTimeoutMs?: number;
+  /**
+   * Repositories to clone into `/srv/agent-workforce/<name>` inside the
+   * provisioned sandbox. Each entry is a bare `owner/name`; cloud validates
+   * the shape on the wire before the sandbox script ever sees it.
+   *
+   * Required for the factory-cloud dispatch path so its worker_cwd
+   * (`/srv/agent-workforce/<repo>`) is resolvable on the JIT node. Cloud
+   * PR #3212 implements the ensure-side; this helper just plumbs it through.
+   */
+  repos?: readonly string[];
 };
 
 export type CloudFleetSandboxReady = {
@@ -275,6 +285,9 @@ export async function ensureCloudFleetSandbox(
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
+          ...(input.repos !== undefined && input.repos.length > 0
+            ? { repos: [...input.repos] }
+            : {}),
         }),
       },
       { interactive: false }
