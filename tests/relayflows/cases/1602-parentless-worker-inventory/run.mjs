@@ -61,7 +61,8 @@ export function isShimPath(candidate) {
   return false;
 }
 
-async function defaultRunOnce(command, args) {
+async function defaultRunOnce(command, args, options = {}) {
+  const { timeoutMs } = options;
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -69,14 +70,31 @@ async function defaultRunOnce(command, args) {
     });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let timer = null;
+    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // The child may already be gone; nothing to do.
+        }
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+    }
+    const finish = (result) => {
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString('utf8');
     });
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString('utf8');
     });
-    child.on('error', () => resolve({ code: 1, signal: null, stdout, stderr }));
-    child.on('close', (code, signal) => resolve({ code: code ?? 1, signal, stdout, stderr }));
+    child.on('error', () => finish({ code: 1, signal: null, stdout, stderr, timedOut }));
+    child.on('close', (code, signal) => finish({ code: code ?? 1, signal, stdout, stderr, timedOut }));
   });
 }
 
@@ -88,6 +106,11 @@ export async function resolveCargo(options = {}) {
     realpath: realpathFn = (p) => realpath(p).catch(() => p),
     readdir: readdirFn = (p) => readdir(p).catch(() => []),
     runOnce = defaultRunOnce,
+    // A hung version-manager shim (lock, network wait) must not wedge the
+    // whole probe. 5s is generous for a PATH lookup; a real hang means the
+    // shim itself is broken and the next resolver deserves a turn.
+    probeTimeoutMs = 5000,
+    log = (message) => console.error(message),
     extraSystemPaths = [
       '/usr/local/cargo/bin/cargo',
       '/opt/rust/bin/cargo',
@@ -139,9 +162,33 @@ export async function resolveCargo(options = {}) {
     }
     let result;
     try {
-      result = await runOnce(binary, args);
+      const timeoutSentinel = Symbol('probe-timeout');
+      let timer = null;
+      const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(timeoutSentinel), probeTimeoutMs);
+        if (typeof timer.unref === 'function') timer.unref();
+      });
+      try {
+        const raced = await Promise.race([
+          runOnce(binary, args, { timeoutMs: probeTimeoutMs }),
+          timeoutPromise,
+        ]);
+        if (raced === timeoutSentinel) {
+          log(`[resolveCargo] ${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms; treating as failed probe and trying next resolver`);
+          attempts.push(`${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms`);
+          continue;
+        }
+        result = raced;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     } catch (error) {
       attempts.push(`${tool} ${args.join(' ')}: threw ${error?.message ?? error}`);
+      continue;
+    }
+    if (result?.timedOut) {
+      log(`[resolveCargo] ${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms; treating as failed probe and trying next resolver`);
+      attempts.push(`${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms`);
       continue;
     }
     if (!result || result.code !== 0) {
