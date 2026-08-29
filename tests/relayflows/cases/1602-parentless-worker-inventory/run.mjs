@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
-import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { accessSync, constants as fsConstants, readdirSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const CASE_ID = '1602-parentless-worker-inventory';
 const MARKER = 'RELAY_PR_PROOF_OBSERVATION=';
@@ -37,48 +38,96 @@ function proofChildEnvironment() {
   return env;
 }
 
-async function isExecutable(filePath) {
-  try {
-    await access(filePath, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
+export class CargoNotResolvableError extends Error {
+  constructor(attempts) {
+    const detail = attempts
+      .map((a) => `${a.path} (${a.reason})`)
+      .join('; ');
+    super(
+      `could not resolve a working cargo executable; attempted: ${detail || '(no candidates)'}`
+    );
+    this.name = 'CargoNotResolvableError';
+    this.attempts = attempts;
   }
 }
 
-async function resolveCargo() {
-  const pathEntries = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  for (const entry of pathEntries) {
-    const candidate = path.join(entry, 'cargo');
-    if (!(await isExecutable(candidate))) continue;
-    const resolved = await realpath(candidate).catch(() => candidate);
-    if (path.basename(resolved) === 'cargo') return resolved;
-  }
+// Ground truth: a candidate is a real cargo iff `cargo --version` prints
+// `cargo <semver>` within a bounded budget. Node's execFileSync `timeout` +
+// `killSignal: 'SIGKILL'` is the OS calling kill(9), so a hung/blocking child
+// can't out-live the probe — no sentinel race, no SIGTERM→SIGKILL escalation,
+// no shim-vs-real heuristics.
+export function resolveCargo(options = {}) {
+  const {
+    env = process.env,
+    pathEntries = (env.PATH ?? '').split(path.delimiter).filter(Boolean),
+    timeoutMs = 3000,
+    extraSystemPaths = [
+      '/usr/local/bin/cargo',
+      '/opt/homebrew/bin/cargo',
+      '/root/.cargo/bin/cargo',
+      '/home/daytona/.cargo/bin/cargo',
+    ],
+  } = options;
 
-  const homes = new Set();
-  for (const entry of pathEntries) {
-    const normalized = entry.replaceAll('\\', '/');
-    for (const suffix of ['/.local/share/mise/shims', '/.cargo/bin']) {
-      if (normalized.endsWith(suffix)) homes.add(normalized.slice(0, -suffix.length));
+  const candidates = [];
+  const seen = new Set();
+  const add = (candidate) => {
+    if (!candidate || seen.has(candidate)) return;
+    seen.add(candidate);
+    candidates.push(candidate);
+  };
+
+  if (env.CARGO_HOME) add(path.join(env.CARGO_HOME, 'bin', 'cargo'));
+  if (env.HOME) add(path.join(env.HOME, '.cargo', 'bin', 'cargo'));
+  if (env.HOME) {
+    const toolchainsDir = path.join(env.HOME, '.rustup', 'toolchains');
+    let entries = [];
+    try {
+      entries = readdirSync(toolchainsDir);
+    } catch {
+      // no toolchains directory
+    }
+    for (const entry of entries.slice().sort().reverse()) {
+      add(path.join(toolchainsDir, entry, 'bin', 'cargo'));
     }
   }
-  if (process.env.RUSTUP_HOME) {
-    homes.add(path.dirname(path.resolve(process.env.RUSTUP_HOME)));
-  }
+  for (const entry of pathEntries) add(path.join(entry, 'cargo'));
+  for (const candidate of extraSystemPaths) add(candidate);
 
-  for (const home of homes) {
-    const toolchains = path.join(home, '.rustup', 'toolchains');
-    const entries = await readdir(toolchains).catch(() => []);
-    for (const entry of entries.sort().reverse()) {
-      const candidate = path.join(toolchains, entry, 'bin', 'cargo');
-      if (await isExecutable(candidate)) return candidate;
+  const attempts = [];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+    } catch {
+      attempts.push({ path: candidate, reason: 'missing or not executable' });
+      continue;
     }
+    let stdout;
+    try {
+      stdout = execFileSync(candidate, ['--version'], {
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+      });
+    } catch (error) {
+      const signal = error?.signal;
+      const status = error?.status;
+      const reason = signal
+        ? `killed by ${signal} after ${timeoutMs}ms`
+        : `exit ${status ?? 'unknown'}${error?.code ? ` (${error.code})` : ''}`;
+      attempts.push({ path: candidate, reason });
+      continue;
+    }
+    if (!/^cargo \d+\.\d+\.\d+/.test(stdout)) {
+      const preview = (stdout || '').slice(0, 80).replace(/\n/g, '\\n');
+      attempts.push({ path: candidate, reason: `unexpected --version output: ${preview}` });
+      continue;
+    }
+    return candidate;
   }
 
-  for (const candidate of ['/usr/local/cargo/bin/cargo', '/opt/rust/bin/cargo']) {
-    if (await isExecutable(candidate)) return candidate;
-  }
-  throw new Error('could not resolve a real Cargo executable outside a version-manager shim');
+  throw new CargoNotResolvableError(attempts);
 }
 
 function run(command, args, options = {}) {
@@ -479,7 +528,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
