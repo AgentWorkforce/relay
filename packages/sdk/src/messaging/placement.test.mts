@@ -501,6 +501,68 @@ describe('RelaycastMessagingClient placement', () => {
     ]);
   });
 
+  it('fails open on a node with no repo_keys field — absent is not "explicitly denies"', async () => {
+    // A node that has not opted into per-repo scoping (no `repo:*` tags, so
+    // `repo_keys` is absent from its roster row) must remain eligible for
+    // repo-scoped placements. Treating an absent field as a hard denial breaks
+    // every deployment that has not yet published tags — the entire fleet
+    // stopped accepting repo-scoped placements this way when the check first
+    // landed.
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'online',
+        live: true,
+        handlers_live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        // repo_keys deliberately omitted.
+      },
+    ]);
+
+    const ack = await client.placement.spawn({
+      capability: 'spawn:claude',
+      node: 'node-a',
+      repo: 'relay',
+      input: { name: 'worker-no-repo-keys', cli: 'claude' },
+    });
+
+    expect(ack.placement).toMatchObject({ node: 'node-a', repo: 'relay' });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('still denies when repo_keys is present but empty — explicit opt-out is honoured', async () => {
+    // The opt-in semantic is preserved for operators who deliberately publish
+    // `repo_keys: []`. Absent means permissive; empty means "this node hosts
+    // no repos".
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'online',
+        live: true,
+        handlers_live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: [],
+      },
+    ]);
+
+    await expect(
+      client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        input: { name: 'worker-empty-repo-keys', cli: 'claude' },
+        failFast: true,
+      })
+    ).rejects.toMatchObject({
+      name: 'RelayPlacementError',
+      code: 'unmapped_repo',
+      repo: 'relay',
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('isolates a throwing onReconcile hook so placement still drains', async () => {
     const { client, invoke, nodes } = createClient([
       {

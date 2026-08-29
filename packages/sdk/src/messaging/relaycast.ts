@@ -1112,7 +1112,17 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
 
   private nodeMapsRepo(node: RelayNode, repo: string | undefined): boolean {
     if (!repo) return true;
-    return Boolean(node.repoKeys?.includes(repo));
+    // Absent repoKeys means the node has not opted into per-repo scoping — treat
+    // it as permissive. An empty array (`repoKeys: []`) is still an explicit
+    // "no repos", so it continues to deny. This lets fleets that have not yet
+    // deployed `repo:*` tag advertisement stay live, while preserving opt-in
+    // behaviour for anyone who does publish tags. Without this fallback,
+    // `undefined` from `readRepoKeys` fails every repo-scoped placement across
+    // the whole fleet the moment `nodeMapsRepo` is enforced, because
+    // `undefined?.includes(...)` is `undefined` and `Boolean(undefined)` is
+    // `false` — an absent field would then read as "explicitly denies".
+    if (node.repoKeys === undefined) return true;
+    return node.repoKeys.includes(repo);
   }
 
   private async reconcilePlacement(
