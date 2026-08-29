@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
-import { access, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { accessSync, constants as fsConstants, readdirSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -38,214 +38,96 @@ function proofChildEnvironment() {
   return env;
 }
 
-async function isExecutable(filePath) {
-  try {
-    await access(filePath, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
+export class CargoNotResolvableError extends Error {
+  constructor(attempts) {
+    const detail = attempts
+      .map((a) => `${a.path} (${a.reason})`)
+      .join('; ');
+    super(
+      `could not resolve a working cargo executable; attempted: ${detail || '(no candidates)'}`
+    );
+    this.name = 'CargoNotResolvableError';
+    this.attempts = attempts;
   }
 }
 
-// A shim is a version-manager stub that dispatches to a real toolchain based
-// on the current directory / env. Even when it happens to work end-to-end,
-// invoking the toolchain directly is more predictable in a sandbox that has
-// nothing but a bare PATH, and avoids surprises like "cargo not found in
-// toolchain X" or shim env-loading failures.
-export function isShimPath(candidate) {
-  const normalized = candidate.replaceAll('\\', '/');
-  // Any `.../shims/<name>` path is a version-manager shim (rustup, mise, asdf).
-  if (/\/shims\/[^/]+$/.test(normalized)) return true;
-  // Volta wraps invocations through the binaries it installs in .volta/bin.
-  if (/\/\.volta\/bin\/[^/]+$/.test(normalized)) return true;
-  return false;
-}
-
-async function defaultRunOnce(command, args, options = {}) {
-  const { timeoutMs } = options;
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
-    });
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let timer = null;
-    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
-      timer = setTimeout(() => {
-        timedOut = true;
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          // The child may already be gone; nothing to do.
-        }
-      }, timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref();
-    }
-    const finish = (result) => {
-      if (timer) clearTimeout(timer);
-      resolve(result);
-    };
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
-    });
-    child.on('error', () => finish({ code: 1, signal: null, stdout, stderr, timedOut }));
-    child.on('close', (code, signal) => finish({ code: code ?? 1, signal, stdout, stderr, timedOut }));
-  });
-}
-
-export async function resolveCargo(options = {}) {
+// Ground truth: a candidate is a real cargo iff `cargo --version` prints
+// `cargo <semver>` within a bounded budget. Node's execFileSync `timeout` +
+// `killSignal: 'SIGKILL'` is the OS calling kill(9), so a hung/blocking child
+// can't out-live the probe — no sentinel race, no SIGTERM→SIGKILL escalation,
+// no shim-vs-real heuristics.
+export function resolveCargo(options = {}) {
   const {
     env = process.env,
     pathEntries = (env.PATH ?? '').split(path.delimiter).filter(Boolean),
-    isExecutable: isExec = isExecutable,
-    realpath: realpathFn = (p) => realpath(p).catch(() => p),
-    readdir: readdirFn = (p) => readdir(p).catch(() => []),
-    runOnce = defaultRunOnce,
-    // A hung version-manager shim (lock, network wait) must not wedge the
-    // whole probe. 5s is generous for a PATH lookup; a real hang means the
-    // shim itself is broken and the next resolver deserves a turn.
-    probeTimeoutMs = 5000,
-    log = (message) => console.error(message),
+    timeoutMs = 3000,
     extraSystemPaths = [
-      '/usr/local/cargo/bin/cargo',
-      '/opt/rust/bin/cargo',
+      '/usr/local/bin/cargo',
+      '/opt/homebrew/bin/cargo',
       '/root/.cargo/bin/cargo',
       '/home/daytona/.cargo/bin/cargo',
     ],
   } = options;
 
-  const attempts = [];
+  const candidates = [];
+  const seen = new Set();
+  const add = (candidate) => {
+    if (!candidate || seen.has(candidate)) return;
+    seen.add(candidate);
+    candidates.push(candidate);
+  };
 
-  // 1) A direct non-shim cargo on PATH. Rustup's symlink proxy is rejected by
-  //    the basename check (realpath's basename is "rustup"); hard-linked or
-  //    scripted shims (mise/asdf/volta/rustup) are rejected by isShimPath.
-  for (const entry of pathEntries) {
-    const candidate = path.join(entry, 'cargo');
-    if (!(await isExec(candidate))) continue;
-    const resolved = await realpathFn(candidate);
-    if (path.basename(resolved) !== 'cargo') {
-      attempts.push(`${candidate} -> ${resolved} (rejected: proxy, not named cargo)`);
-      continue;
-    }
-    if (isShimPath(candidate) || isShimPath(resolved)) {
-      attempts.push(`${resolved} (rejected: shim path)`);
-      continue;
-    }
-    return resolved;
-  }
-
-  // 2) Ask an installed version manager for the toolchain-selected cargo.
-  //    `rustup which cargo` (and mise/asdf equivalents) prints the resolved
-  //    real binary. This is the reliable path in Cloud sandboxes where only
-  //    shims sit on PATH.
-  for (const [tool, args] of [
-    ['rustup', ['which', 'cargo']],
-    ['mise', ['which', 'cargo']],
-    ['asdf', ['which', 'cargo']],
-  ]) {
-    let binary = null;
-    for (const entry of pathEntries) {
-      const candidate = path.join(entry, tool);
-      if (await isExec(candidate)) {
-        binary = candidate;
-        break;
-      }
-    }
-    if (!binary) {
-      attempts.push(`${tool}: not found on PATH`);
-      continue;
-    }
-    let result;
+  if (env.CARGO_HOME) add(path.join(env.CARGO_HOME, 'bin', 'cargo'));
+  if (env.HOME) add(path.join(env.HOME, '.cargo', 'bin', 'cargo'));
+  if (env.HOME) {
+    const toolchainsDir = path.join(env.HOME, '.rustup', 'toolchains');
+    let entries = [];
     try {
-      const timeoutSentinel = Symbol('probe-timeout');
-      let timer = null;
-      const timeoutPromise = new Promise((resolve) => {
-        timer = setTimeout(() => resolve(timeoutSentinel), probeTimeoutMs);
-        if (typeof timer.unref === 'function') timer.unref();
-      });
-      try {
-        const raced = await Promise.race([
-          runOnce(binary, args, { timeoutMs: probeTimeoutMs }),
-          timeoutPromise,
-        ]);
-        if (raced === timeoutSentinel) {
-          log(`[resolveCargo] ${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms; treating as failed probe and trying next resolver`);
-          attempts.push(`${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms`);
-          continue;
-        }
-        result = raced;
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    } catch (error) {
-      attempts.push(`${tool} ${args.join(' ')}: threw ${error?.message ?? error}`);
-      continue;
+      entries = readdirSync(toolchainsDir);
+    } catch {
+      // no toolchains directory
     }
-    if (result?.timedOut) {
-      log(`[resolveCargo] ${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms; treating as failed probe and trying next resolver`);
-      attempts.push(`${tool} ${args.join(' ')}: timed out after ${probeTimeoutMs}ms`);
-      continue;
-    }
-    if (!result || result.code !== 0) {
-      attempts.push(`${tool} ${args.join(' ')}: exit ${result?.code ?? 'unknown'}`);
-      continue;
-    }
-    const printed = (result.stdout || '')
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    if (!printed) {
-      attempts.push(`${tool} ${args.join(' ')}: no output`);
-      continue;
-    }
-    if (!(await isExec(printed))) {
-      attempts.push(`${tool} ${args.join(' ')} -> ${printed} (not executable)`);
-      continue;
-    }
-    if (path.basename(printed) !== 'cargo' || isShimPath(printed)) {
-      attempts.push(`${tool} ${args.join(' ')} -> ${printed} (rejected: still a shim)`);
-      continue;
-    }
-    return printed;
-  }
-
-  // 3) Enumerate rustup toolchains under any home we can plausibly infer.
-  const homes = new Set();
-  for (const entry of pathEntries) {
-    const normalized = entry.replaceAll('\\', '/');
-    for (const suffix of ['/.local/share/mise/shims', '/.cargo/bin', '/.asdf/shims']) {
-      if (normalized.endsWith(suffix)) homes.add(normalized.slice(0, -suffix.length));
-    }
-  }
-  if (env.HOME) homes.add(env.HOME);
-  if (env.CARGO_HOME) homes.add(path.dirname(path.resolve(env.CARGO_HOME)));
-  if (env.RUSTUP_HOME) homes.add(path.dirname(path.resolve(env.RUSTUP_HOME)));
-
-  for (const home of homes) {
-    const toolchains = path.join(home, '.rustup', 'toolchains');
-    const entries = await readdirFn(toolchains);
     for (const entry of entries.slice().sort().reverse()) {
-      const candidate = path.join(toolchains, entry, 'bin', 'cargo');
-      if (await isExec(candidate)) return candidate;
-      attempts.push(`${candidate} (missing/not executable)`);
+      add(path.join(toolchainsDir, entry, 'bin', 'cargo'));
     }
   }
+  for (const entry of pathEntries) add(path.join(entry, 'cargo'));
+  for (const candidate of extraSystemPaths) add(candidate);
 
-  // 4) System installs.
-  for (const candidate of extraSystemPaths) {
-    if (!(await isExec(candidate))) continue;
-    const resolved = await realpathFn(candidate);
-    if (path.basename(resolved) === 'cargo' && !isShimPath(resolved)) return resolved;
-    attempts.push(`${candidate} -> ${resolved} (rejected)`);
+  const attempts = [];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+    } catch {
+      attempts.push({ path: candidate, reason: 'missing or not executable' });
+      continue;
+    }
+    let stdout;
+    try {
+      stdout = execFileSync(candidate, ['--version'], {
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+      });
+    } catch (error) {
+      const signal = error?.signal;
+      const status = error?.status;
+      const reason = signal
+        ? `killed by ${signal} after ${timeoutMs}ms`
+        : `exit ${status ?? 'unknown'}${error?.code ? ` (${error.code})` : ''}`;
+      attempts.push({ path: candidate, reason });
+      continue;
+    }
+    if (!/^cargo \d+\.\d+\.\d+/.test(stdout)) {
+      const preview = (stdout || '').slice(0, 80).replace(/\n/g, '\\n');
+      attempts.push({ path: candidate, reason: `unexpected --version output: ${preview}` });
+      continue;
+    }
+    return candidate;
   }
 
-  const detail = attempts.length ? `; attempts: ${attempts.join('; ')}` : '';
-  throw new Error(`could not resolve a real Cargo executable outside a version-manager shim${detail}`);
+  throw new CargoNotResolvableError(attempts);
 }
 
 function run(command, args, options = {}) {

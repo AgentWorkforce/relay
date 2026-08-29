@@ -1,149 +1,65 @@
-// Unit tests for the Cargo resolver used by the 1602 PR-proof case runner.
+// Unit tests for the fail-fast Cargo resolver used by the 1602 PR-proof
+// case runner.
+//
+// Every test drops a real (fake) executable script into a temp directory and
+// exercises the resolver against it. The resolver's timeout is enforced by
+// Node's execFileSync `timeout` + `killSignal: 'SIGKILL'`, so a probe that
+// blocks forever is guaranteed to die within the budget.
 //
 // Run with:
 //   node --test tests/relayflows/cases/1602-parentless-worker-inventory/resolve-cargo.test.mjs
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isShimPath, resolveCargo } from './run.mjs';
+import { CargoNotResolvableError, resolveCargo } from './run.mjs';
 
-async function makeExecutable(filePath, body = '#!/bin/sh\nexit 0\n') {
+async function makeExecutable(filePath, body) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, body);
   await chmod(filePath, 0o755);
 }
 
+async function makeFakeCargo(filePath, { version = '1.75.0' } = {}) {
+  await makeExecutable(
+    filePath,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "cargo ${version} (fake)"\nfi\n`
+  );
+}
+
+async function makeHangingCargo(filePath) {
+  // Ignore SIGTERM so a hung probe survives a soft signal; only SIGKILL takes
+  // it out. Sleep in a small loop so `trap` can service the signal ignore.
+  await makeExecutable(
+    filePath,
+    '#!/bin/sh\ntrap "" TERM\nwhile true; do sleep 60; done\n'
+  );
+}
+
+async function makeWrongOutputCargo(filePath) {
+  await makeExecutable(filePath, '#!/bin/sh\necho "not cargo at all"\n');
+}
+
 async function makeTmpRoot(prefix) {
   const raw = await mkdtemp(path.join(os.tmpdir(), prefix));
-  // macOS resolves /var to /private/var — normalize once so string comparisons
-  // against paths inside `root` line up with the resolver's realpath output.
+  // macOS resolves /var to /private/var — normalize so string comparisons
+  // against paths inside the returned root line up.
   return realpath(raw);
 }
 
-test('isShimPath recognizes rustup, mise, asdf, and volta shim directories', () => {
-  assert.equal(isShimPath('/home/x/.local/share/mise/shims/cargo'), true);
-  assert.equal(isShimPath('/home/x/.asdf/shims/cargo'), true);
-  assert.equal(isShimPath('/root/.rustup/shims/cargo'), true);
-  assert.equal(isShimPath('/home/x/.volta/bin/cargo'), true);
-
-  // Real toolchain binaries — mise's installs/ and asdf's installs/ contain
-  // the real cargo, not a shim. Do not reject them.
-  assert.equal(isShimPath('/home/x/.local/share/mise/installs/rust/1.75.0/bin/cargo'), false);
-  assert.equal(isShimPath('/home/x/.asdf/installs/rust/1.75.0/bin/cargo'), false);
-  assert.equal(isShimPath('/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo'), false);
-  assert.equal(isShimPath('/usr/local/cargo/bin/cargo'), false);
-});
-
-test('resolveCargo skips a rustup symlink-proxy and walks toolchain dirs', async () => {
-  const root = await makeTmpRoot('resolve-cargo-proxy-');
-  try {
-    // rustup on PATH: real `rustup` binary, plus a `cargo` symlink pointing at
-    // rustup. Basename check rejects it (realpath's basename is `rustup`).
-    const cargoBin = path.join(root, 'cargo-bin');
-    await makeExecutable(path.join(cargoBin, 'rustup'));
-    await symlink(path.join(cargoBin, 'rustup'), path.join(cargoBin, 'cargo'));
-
-    const toolchainCargo = path.join(
-      root,
-      '.rustup',
-      'toolchains',
-      'stable-x86_64-unknown-linux-gnu',
-      'bin',
-      'cargo'
-    );
-    await makeExecutable(toolchainCargo);
-
-    // Force the toolchain walk by making `rustup which cargo` fail.
-    const runOnce = async () => ({ code: 1, signal: null, stdout: '', stderr: 'no toolchain' });
-
-    const resolved = await resolveCargo({
-      env: { PATH: cargoBin, HOME: root },
-      pathEntries: [cargoBin],
-      runOnce,
-      extraSystemPaths: [],
-    });
-    assert.equal(resolved, toolchainCargo);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo prefers the path printed by `rustup which cargo`', async () => {
-  const root = await makeTmpRoot('resolve-cargo-rustup-');
-  try {
-    // Put shims in a proper `shims/` dir so loop 1 rejects them.
-    const shimsDir = path.join(root, 'shims');
-    await makeExecutable(path.join(shimsDir, 'rustup'));
-    await makeExecutable(path.join(shimsDir, 'cargo'), '#!/bin/sh\necho shim\n');
-
-    const realCargo = path.join(root, 'toolchains', 'stable', 'bin', 'cargo');
-    await makeExecutable(realCargo);
-
-    const runOnce = async (command, args) => {
-      if (path.basename(command) === 'rustup' && args.join(' ') === 'which cargo') {
-        return { code: 0, signal: null, stdout: `${realCargo}\n`, stderr: '' };
-      }
-      return { code: 1, signal: null, stdout: '', stderr: '' };
-    };
-
-    const resolved = await resolveCargo({
-      env: { PATH: shimsDir, HOME: root },
-      pathEntries: [shimsDir],
-      runOnce,
-      extraSystemPaths: [],
-    });
-    assert.equal(resolved, realCargo);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo throws a diagnostic listing when nothing resolves', async () => {
-  const root = await makeTmpRoot('resolve-cargo-empty-');
-  try {
-    const shimsDir = path.join(root, '.local', 'share', 'mise', 'shims');
-    await makeExecutable(path.join(shimsDir, 'cargo'), '#!/bin/sh\necho mise-shim\n');
-
-    const runOnce = async () => ({ code: 1, signal: null, stdout: '', stderr: '' });
-
-    await assert.rejects(
-      resolveCargo({
-        env: { PATH: shimsDir, HOME: root },
-        pathEntries: [shimsDir],
-        runOnce,
-        extraSystemPaths: [],
-      }),
-      (error) => {
-        assert.match(error.message, /could not resolve a real Cargo executable/);
-        assert.match(error.message, /attempts:/);
-        assert.match(error.message, /rejected: shim path/);
-        return true;
-      }
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo returns a direct non-shim cargo on PATH when present', async () => {
-  const root = await makeTmpRoot('resolve-cargo-direct-');
+test('resolveCargo returns a direct hit on PATH when `cargo --version` looks right', async () => {
+  const root = await makeTmpRoot('resolve-cargo-path-');
   try {
     const binDir = path.join(root, 'bin');
     const cargo = path.join(binDir, 'cargo');
-    await makeExecutable(cargo);
+    await makeFakeCargo(cargo);
 
-    const runOnce = async () => {
-      throw new Error('should not be called when PATH already has a real cargo');
-    };
-
-    const resolved = await resolveCargo({
-      env: { PATH: binDir, HOME: root },
+    const resolved = resolveCargo({
+      env: { PATH: binDir },
       pathEntries: [binDir],
-      runOnce,
       extraSystemPaths: [],
     });
     assert.equal(resolved, cargo);
@@ -152,67 +68,27 @@ test('resolveCargo returns a direct non-shim cargo on PATH when present', async 
   }
 });
 
-test('resolveCargo prefers the path printed by `mise which cargo`', async () => {
-  const root = await makeTmpRoot('resolve-cargo-mise-');
-  try {
-    const shimsDir = path.join(root, '.local', 'share', 'mise', 'shims');
-    await makeExecutable(path.join(shimsDir, 'mise'));
-    await makeExecutable(path.join(shimsDir, 'cargo'), '#!/bin/sh\necho mise-shim\n');
-
-    const realCargo = path.join(root, '.local', 'share', 'mise', 'installs', 'rust', '1.75.0', 'bin', 'cargo');
-    await makeExecutable(realCargo);
-
-    const runOnce = async (command, args) => {
-      if (path.basename(command) === 'mise' && args.join(' ') === 'which cargo') {
-        return { code: 0, signal: null, stdout: `${realCargo}\n`, stderr: '' };
-      }
-      return { code: 1, signal: null, stdout: '', stderr: '' };
-    };
-
-    const resolved = await resolveCargo({
-      env: { PATH: shimsDir, HOME: root },
-      pathEntries: [shimsDir],
-      runOnce,
-      extraSystemPaths: [],
-    });
-    assert.equal(resolved, realCargo);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo prefers the path printed by `asdf which cargo`', async () => {
-  const root = await makeTmpRoot('resolve-cargo-asdf-');
-  try {
-    const shimsDir = path.join(root, '.asdf', 'shims');
-    await makeExecutable(path.join(shimsDir, 'asdf'));
-    await makeExecutable(path.join(shimsDir, 'cargo'), '#!/bin/sh\necho asdf-shim\n');
-
-    const realCargo = path.join(root, '.asdf', 'installs', 'rust', '1.75.0', 'bin', 'cargo');
-    await makeExecutable(realCargo);
-
-    const runOnce = async (command, args) => {
-      if (path.basename(command) === 'asdf' && args.join(' ') === 'which cargo') {
-        return { code: 0, signal: null, stdout: `${realCargo}\n`, stderr: '' };
-      }
-      return { code: 1, signal: null, stdout: '', stderr: '' };
-    };
-
-    const resolved = await resolveCargo({
-      env: { PATH: shimsDir, HOME: root },
-      pathEntries: [shimsDir],
-      runOnce,
-      extraSystemPaths: [],
-    });
-    assert.equal(resolved, realCargo);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo step 3 infers home from CARGO_HOME when PATH lacks shims', async () => {
+test('resolveCargo prefers CARGO_HOME/bin/cargo when it works', async () => {
   const root = await makeTmpRoot('resolve-cargo-cargohome-');
   try {
+    const cargoHome = path.join(root, '.cargo');
+    const cargo = path.join(cargoHome, 'bin', 'cargo');
+    await makeFakeCargo(cargo);
+
+    const resolved = resolveCargo({
+      env: { PATH: '', CARGO_HOME: cargoHome },
+      pathEntries: [],
+      extraSystemPaths: [],
+    });
+    assert.equal(resolved, cargo);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveCargo enumerates HOME/.rustup/toolchains/*/bin/cargo', async () => {
+  const root = await makeTmpRoot('resolve-cargo-rustup-');
+  try {
     const toolchainCargo = path.join(
       root,
       '.rustup',
@@ -221,19 +97,11 @@ test('resolveCargo step 3 infers home from CARGO_HOME when PATH lacks shims', as
       'bin',
       'cargo'
     );
-    await makeExecutable(toolchainCargo);
+    await makeFakeCargo(toolchainCargo);
 
-    // Empty PATH (nothing to probe), no HOME, but CARGO_HOME points at
-    // `<root>/.cargo`. `dirname(CARGO_HOME)` becomes `root`, so the toolchain
-    // walk under `<root>/.rustup/toolchains` finds the cargo.
-    const runOnce = async () => {
-      throw new Error('should not be called; no tools on PATH');
-    };
-
-    const resolved = await resolveCargo({
-      env: { PATH: '', CARGO_HOME: path.join(root, '.cargo') },
+    const resolved = resolveCargo({
+      env: { PATH: '', HOME: root },
       pathEntries: [],
-      runOnce,
       extraSystemPaths: [],
     });
     assert.equal(resolved, toolchainCargo);
@@ -242,86 +110,15 @@ test('resolveCargo step 3 infers home from CARGO_HOME when PATH lacks shims', as
   }
 });
 
-test('resolveCargo step 3 infers home from RUSTUP_HOME when PATH lacks shims', async () => {
-  const root = await makeTmpRoot('resolve-cargo-rustuphome-');
-  try {
-    const toolchainCargo = path.join(
-      root,
-      '.rustup',
-      'toolchains',
-      'nightly-x86_64-unknown-linux-gnu',
-      'bin',
-      'cargo'
-    );
-    await makeExecutable(toolchainCargo);
-
-    const runOnce = async () => {
-      throw new Error('should not be called; no tools on PATH');
-    };
-
-    // RUSTUP_HOME is `<root>/.rustup`; dirname gives `root`, so the toolchain
-    // walk under `<root>/.rustup/toolchains` succeeds.
-    const resolved = await resolveCargo({
-      env: { PATH: '', RUSTUP_HOME: path.join(root, '.rustup') },
-      pathEntries: [],
-      runOnce,
-      extraSystemPaths: [],
-    });
-    assert.equal(resolved, toolchainCargo);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo step 3 infers home from an asdf shims PATH entry', async () => {
-  const root = await makeTmpRoot('resolve-cargo-asdfhome-');
-  try {
-    // asdf shims dir sits on PATH but has no cargo shim in it, and no asdf
-    // binary — so steps 1 and 2 both fall through. Step 3 must strip the
-    // `/.asdf/shims` suffix to infer `<root>` as a home and walk toolchains.
-    const shimsDir = path.join(root, '.asdf', 'shims');
-    await mkdir(shimsDir, { recursive: true });
-
-    const toolchainCargo = path.join(
-      root,
-      '.rustup',
-      'toolchains',
-      'stable-x86_64-unknown-linux-gnu',
-      'bin',
-      'cargo'
-    );
-    await makeExecutable(toolchainCargo);
-
-    const runOnce = async () => ({ code: 1, signal: null, stdout: '', stderr: '' });
-
-    const resolved = await resolveCargo({
-      env: { PATH: shimsDir },
-      pathEntries: [shimsDir],
-      runOnce,
-      extraSystemPaths: [],
-    });
-    assert.equal(resolved, toolchainCargo);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('resolveCargo step 4 falls back to extraSystemPaths when nothing else resolves', async () => {
+test('resolveCargo falls back to extraSystemPaths when nothing else works', async () => {
   const root = await makeTmpRoot('resolve-cargo-system-');
   try {
     const systemCargo = path.join(root, 'opt', 'cargo', 'bin', 'cargo');
-    await makeExecutable(systemCargo);
+    await makeFakeCargo(systemCargo);
 
-    // Empty PATH, no HOME, nothing in step 3 — only the system-path fallback
-    // can resolve. Point extraSystemPaths at the fixture and expect a hit.
-    const runOnce = async () => {
-      throw new Error('should not be called; no tools on PATH');
-    };
-
-    const resolved = await resolveCargo({
+    const resolved = resolveCargo({
       env: { PATH: '' },
       pathEntries: [],
-      runOnce,
       extraSystemPaths: [systemCargo],
     });
     assert.equal(resolved, systemCargo);
@@ -330,45 +127,89 @@ test('resolveCargo step 4 falls back to extraSystemPaths when nothing else resol
   }
 });
 
-test('resolveCargo times out a hung version-manager probe and falls through to the next resolver', async () => {
-  const root = await makeTmpRoot('resolve-cargo-hung-');
+test('resolveCargo skips a candidate that prints unexpected --version output and picks the next one', async () => {
+  const root = await makeTmpRoot('resolve-cargo-badoutput-');
   try {
-    // Shims dir carries mise (which will hang) and asdf (which will succeed).
-    // rustup is absent, so it fails fast; mise hangs, timeout kicks in; asdf
-    // then answers with the real cargo. If the timeout doesn't fire, the
-    // test itself would time out on `node --test`.
-    const shimsDir = path.join(root, 'shims');
-    await makeExecutable(path.join(shimsDir, 'mise'));
-    await makeExecutable(path.join(shimsDir, 'asdf'));
+    // First candidate on PATH is a shim that prints garbage.
+    const badDir = path.join(root, 'bad', 'bin');
+    const badCargo = path.join(badDir, 'cargo');
+    await makeWrongOutputCargo(badCargo);
 
-    const realCargo = path.join(root, 'installs', 'rust', 'bin', 'cargo');
-    await makeExecutable(realCargo);
+    // Second candidate on PATH is the real thing.
+    const goodDir = path.join(root, 'good', 'bin');
+    const goodCargo = path.join(goodDir, 'cargo');
+    await makeFakeCargo(goodCargo);
 
-    const logged = [];
-    const runOnce = async (command, args) => {
-      if (path.basename(command) === 'mise') {
-        // Never resolves — simulates a hung shim (lock, network wait).
-        return new Promise(() => {});
-      }
-      if (path.basename(command) === 'asdf' && args.join(' ') === 'which cargo') {
-        return { code: 0, signal: null, stdout: `${realCargo}\n`, stderr: '' };
-      }
-      return { code: 1, signal: null, stdout: '', stderr: '' };
-    };
-
-    const resolved = await resolveCargo({
-      env: { PATH: shimsDir, HOME: root },
-      pathEntries: [shimsDir],
-      runOnce,
-      probeTimeoutMs: 75,
-      log: (message) => logged.push(message),
+    const resolved = resolveCargo({
+      env: { PATH: `${badDir}${path.delimiter}${goodDir}` },
+      pathEntries: [badDir, goodDir],
       extraSystemPaths: [],
     });
-    assert.equal(resolved, realCargo);
-    assert.ok(
-      logged.some((line) => line.includes('mise which cargo') && line.includes('timed out')),
-      `expected a diagnosable timeout log line; got: ${JSON.stringify(logged)}`
-    );
+    assert.equal(resolved, goodCargo);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test(
+  'resolveCargo throws CargoNotResolvableError when every candidate hangs past the timeout',
+  { timeout: 15_000 },
+  async () => {
+    const root = await makeTmpRoot('resolve-cargo-hung-');
+    try {
+      const hungA = path.join(root, 'a', 'cargo');
+      const hungB = path.join(root, 'b', 'cargo');
+      await makeHangingCargo(hungA);
+      await makeHangingCargo(hungB);
+
+      const timeoutMs = 400;
+      const started = Date.now();
+      let threw;
+      try {
+        resolveCargo({
+          env: { PATH: `${path.dirname(hungA)}${path.delimiter}${path.dirname(hungB)}` },
+          pathEntries: [path.dirname(hungA), path.dirname(hungB)],
+          timeoutMs,
+          extraSystemPaths: [],
+        });
+      } catch (error) {
+        threw = error;
+      }
+      const elapsed = Date.now() - started;
+
+      assert.ok(threw instanceof CargoNotResolvableError, `expected CargoNotResolvableError, got ${threw}`);
+      assert.equal(threw.attempts.length, 2, 'both hung candidates must be recorded');
+      for (const attempt of threw.attempts) {
+        assert.match(attempt.reason, /killed by SIGKILL after 400ms/);
+      }
+      assert.match(threw.message, /could not resolve a working cargo executable/);
+      // Two 400ms probes + SIGKILL should be under 5s even on a busy runner.
+      assert.ok(elapsed < 5000, `probes must respect timeout budget, elapsed=${elapsed}ms`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+);
+
+test('resolveCargo dedupes identical candidates across enumeration sources', async () => {
+  const root = await makeTmpRoot('resolve-cargo-dedupe-');
+  try {
+    const cargoHome = path.join(root, '.cargo');
+    const cargo = path.join(cargoHome, 'bin', 'cargo');
+    await makeFakeCargo(cargo);
+
+    // CARGO_HOME/bin/cargo, HOME/.cargo/bin/cargo, and the PATH-based candidate
+    // all resolve to the same string. Dedup must not double-execute it.
+    const resolved = resolveCargo({
+      env: {
+        PATH: path.join(cargoHome, 'bin'),
+        CARGO_HOME: cargoHome,
+        HOME: root,
+      },
+      pathEntries: [path.join(cargoHome, 'bin')],
+      extraSystemPaths: [cargo],
+    });
+    assert.equal(resolved, cargo);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
