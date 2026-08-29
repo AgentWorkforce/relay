@@ -306,6 +306,30 @@ test('resolveCargo step 3 infers home from an asdf shims PATH entry', async () =
   }
 });
 
+test('resolveCargo step 4 falls back to extraSystemPaths when nothing else resolves', async () => {
+  const root = await makeTmpRoot('resolve-cargo-system-');
+  try {
+    const systemCargo = path.join(root, 'opt', 'cargo', 'bin', 'cargo');
+    await makeExecutable(systemCargo);
+
+    // Empty PATH, no HOME, nothing in step 3 — only the system-path fallback
+    // can resolve. Point extraSystemPaths at the fixture and expect a hit.
+    const runOnce = async () => {
+      throw new Error('should not be called; no tools on PATH');
+    };
+
+    const resolved = await resolveCargo({
+      env: { PATH: '' },
+      pathEntries: [],
+      runOnce,
+      extraSystemPaths: [systemCargo],
+    });
+    assert.equal(resolved, systemCargo);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('resolveCargo times out a hung version-manager probe and falls through to the next resolver', async () => {
   const root = await makeTmpRoot('resolve-cargo-hung-');
   try {
