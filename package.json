@@ -102,7 +102,9 @@
     "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
     "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs"
+    "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
+    "relayflow": "relayflows",
+    "relayflow:run": "relayflows run"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",

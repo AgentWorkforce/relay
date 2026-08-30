@@ -1,0 +1,42 @@
+version: '1.0'
+name: relay-checkout-hello
+description: >
+  Zero-network proof that a Relayflow runs end-to-end from a fresh relay
+  checkout via `npm run relayflow:run`. Three deterministic shell steps chain
+  {{steps.X.output}} through the pipeline and the final step exits non-zero if
+  the expected marker is missing.
+swarm:
+  pattern: pipeline
+  channel: relay-checkout-hello
+  timeoutMs: 60000
+workflows:
+  - name: hello-from-checkout
+    steps:
+      - name: greet
+        type: deterministic
+        command: printf 'hello from the relay checkout\nmarker=OK\n'
+        captureOutput: true
+        failOnError: true
+
+      - name: upper
+        type: deterministic
+        dependsOn: [greet]
+        command: >
+          echo "{{steps.greet.output}}" |
+          tr '[:lower:]' '[:upper:]'
+        captureOutput: true
+        failOnError: true
+
+      - name: verify
+        type: deterministic
+        dependsOn: [upper]
+        command: |
+          output="{{steps.upper.output}}"
+          if echo "$output" | grep -q "MARKER=OK"; then
+            echo "RELAYFLOW_LOCAL_OK"
+          else
+            echo "RELAYFLOW_LOCAL_FAIL: unexpected output: $output" >&2
+            exit 1
+          fi
+        captureOutput: true
+        failOnError: true
