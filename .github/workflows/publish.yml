@@ -746,6 +746,13 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
+
   # Publish the per-platform broker packages first. @agent-relay/sdk declares
   # these as exact-version optionalDependencies, so they must exist on the
   # registry at the matching version before the SDK is published — otherwise
@@ -906,6 +913,13 @@ jobs:
           steps.publish_3.outcome == 'failure'
         run: exit 1
 
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.broker_pkg }}
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
+
   # Publish remaining packages in parallel. SDK runtime deps that are pinned by
   # exact version are published by publish-sdk-internal-deps before this matrix
   # can publish @agent-relay/sdk.
@@ -991,6 +1005,15 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+      # npm may acknowledge large packages before their metadata and tarball
+      # are readable. Keep downstream dependency publishers behind this gate.
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
+
   # Publish @agent-relay/harnesses and @agent-relay/evals after the
   # publish-packages matrix, which is where their exact-version workspace deps
   # (@agent-relay/sdk and @agent-relay/harness-driver) land on the registry.
@@ -1048,6 +1071,13 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
+
   # Publish @agent-relay/fleet after @agent-relay/harnesses lands on the
   # registry. fleet pins @agent-relay/{harnesses,harness-driver,sdk} by exact
   # version, so publishing it before harnesses exists would leave a window where
@@ -1096,6 +1126,13 @@ jobs:
             exit 0
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/fleet
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
 
   # package=main publishes only the root `agent-relay` tarball, but that
   # tarball pins several @agent-relay/* runtime dependencies to the freshly
@@ -1169,6 +1206,13 @@ jobs:
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
+
   # Publish brand package only (when selected)
   publish-brand-only:
     name: Publish Brand to NPM
@@ -1206,6 +1250,13 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/brand
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/brand
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
 
   # Publish SDK only (when selected)
   publish-sdk-only:
@@ -1259,6 +1310,13 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/sdk
         run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+      - name: Wait for published package readiness
+        if: github.event.inputs.dry_run != 'true'
+        working-directory: packages/sdk
+        run: |
+          PKG_SPEC=$(node -p "require('./package.json').name + '@' + require('./package.json').version")
+          node ../../scripts/wait-for-npm-package.mjs "$PKG_SPEC"
 
   # Publish Python SDK to PyPI as per-platform wheels with the broker binary
   # embedded. One wheel per (broker_artifact, plat_tag) — see issue #769.
@@ -1658,6 +1716,7 @@ jobs:
             exit 0
           fi
           npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
+          node scripts/wait-for-npm-package.mjs "agent-relay@${PKG_VERSION}"
           echo "published=true" >> "$GITHUB_OUTPUT"
 
   # Create git tag and release

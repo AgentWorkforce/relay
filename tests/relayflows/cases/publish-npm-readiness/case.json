@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "publish-npm-readiness",
+  "kind": "bugfix",
+  "title": "Wait for npm package metadata and tarball readiness before dependent publishes",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/publish-npm-readiness/run.mjs"]
+  },
+  "timeoutSeconds": 120,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "npm_publish_readiness_gate_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "npm_publish_waits_for_registry_tarball"
+    }
+  }
+}
