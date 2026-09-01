@@ -47,28 +47,153 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
 
-      - name: Cache Rust build
-        if: github.event_name != 'pull_request_target'
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          key: relayflow-pr-proof-linux-x64
-          cache-bin: false
-
       - name: Install musl tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools util-linux
 
       - name: Build exact static broker
         run: |
+          unset ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL
+          unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
+
+          BUILDER_USER=relay-proof-builder
+          BUILD_ROOT="$RUNNER_TEMP/relay-pr-proof-builder"
+          BUILDER_HOME="$BUILD_ROOT/home"
+          CARGO_HOME="$BUILD_ROOT/cargo-home"
+          CARGO_TARGET_DIR="$BUILD_ROOT/target"
+          BUILDER_TMPDIR="$BUILD_ROOT/tmp"
+          STAGING_DIR="$BUILD_ROOT/staging"
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$BUILDER_USER"
+          BUILDER_UID="$(id -u "$BUILDER_USER")"
+          BUILDER_GID="$(id -g "$BUILDER_USER")"
+
+          sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"
+          for directory in "$BUILDER_HOME" "$CARGO_HOME" "$CARGO_TARGET_DIR" "$BUILDER_TMPDIR"; do
+            sudo install -d -o "$BUILDER_UID" -g "$BUILDER_GID" -m 0700 "$directory"
+          done
+          install -d -m 0700 "$STAGING_DIR"
+
+          chmod -R go-w "$GITHUB_WORKSPACE"
+          sudo setpriv \
+            --reuid="$BUILDER_UID" \
+            --regid="$BUILDER_GID" \
+            --clear-groups \
+            --no-new-privs \
+            --bounding-set=-all \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            -- env -i PATH=/usr/bin:/bin sh -c '
+              status_value() {
+                sed -n "s/^$1:[[:space:]]*//p" /proc/self/status
+              }
+              test ! -w "$1"
+              test ! -w "$1/Cargo.toml"
+              test "$(id -G | wc -w)" -eq 1
+              for capability_set in CapInh CapPrm CapEff CapBnd CapAmb; do
+                test "$(status_value "$capability_set")" = 0000000000000000
+              done
+              test "$(status_value NoNewPrivs)" = 1
+            ' sh "$GITHUB_WORKSPACE"
+
+          WORKFLOW_COMMAND_TOKEN="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+          WORKFLOW_COMMANDS_SUSPENDED=0
+
+          resume_workflow_commands() {
+            if [ "$WORKFLOW_COMMANDS_SUSPENDED" -eq 1 ]; then
+              echo "::$WORKFLOW_COMMAND_TOKEN::"
+              WORKFLOW_COMMANDS_SUSPENDED=0
+            fi
+          }
+
+          kill_builder_processes() {
+            sudo pkill -KILL -u "$BUILDER_UID" >/dev/null 2>&1 || true
+            sudo pkill -KILL -U "$BUILDER_UID" >/dev/null 2>&1 || true
+            for _ in $(seq 1 100); do
+              if ! sudo pgrep -u "$BUILDER_UID" >/dev/null && \
+                ! sudo pgrep -U "$BUILDER_UID" >/dev/null; then
+                return 0
+              fi
+              sleep 0.1
+            done
+            echo "builder UID $BUILDER_UID still has live processes" >&2
+            sudo pgrep -a -u "$BUILDER_UID" >&2 || true
+            sudo pgrep -a -U "$BUILDER_UID" >&2 || true
+            return 1
+          }
+
+          cleanup_on_exit() {
+            original_status=$?
+            trap - EXIT
+            set +e
+            kill_builder_processes
+            cleanup_status=$?
+            resume_workflow_commands
+            if [ "$original_status" -ne 0 ]; then
+              exit "$original_status"
+            fi
+            exit "$cleanup_status"
+          }
+          trap cleanup_on_exit EXIT
+
           AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
-          export AGENT_RELAY_VERSION
-          RUSTFLAGS="-C target-feature=+crt-static" cargo build --locked --release \
-            --target x86_64-unknown-linux-musl --bin agent-relay-broker
+          TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable cargo)")"
+          CARGO_BIN="$TOOLCHAIN_BIN/cargo"
+
+          echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"
+          WORKFLOW_COMMANDS_SUSPENDED=1
+
+          BUILD_STATUS=0
+          sudo setpriv \
+            --reuid="$BUILDER_UID" \
+            --regid="$BUILDER_GID" \
+            --clear-groups \
+            --no-new-privs \
+            --bounding-set=-all \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            -- env -i \
+              HOME="$BUILDER_HOME" \
+              USER="$BUILDER_USER" \
+              LOGNAME="$BUILDER_USER" \
+              PATH="$TOOLCHAIN_BIN:/usr/local/bin:/usr/bin:/bin" \
+              CARGO_HOME="$CARGO_HOME" \
+              CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
+              TMPDIR="$BUILDER_TMPDIR" \
+              TMP="$BUILDER_TMPDIR" \
+              TEMP="$BUILDER_TMPDIR" \
+              AGENT_RELAY_VERSION="$AGENT_RELAY_VERSION" \
+              RUSTFLAGS="-C target-feature=+crt-static" \
+              "$CARGO_BIN" build \
+                --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+                --locked --release \
+                --target x86_64-unknown-linux-musl \
+                --bin agent-relay-broker || BUILD_STATUS=$?
+
+          KILL_STATUS=0
+          kill_builder_processes || KILL_STATUS=$?
+          resume_workflow_commands
+          trap - EXIT
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            exit "$BUILD_STATUS"
+          fi
+          if [ "$KILL_STATUS" -ne 0 ]; then
+            exit "$KILL_STATUS"
+          fi
+
+          BUILDER_BROKER="$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/agent-relay-broker"
+          sudo test -f "$BUILDER_BROKER"
+          sudo test ! -L "$BUILDER_BROKER"
+          sudo install -o "$RUNNER_UID" -g "$RUNNER_GID" -m 0755 \
+            "$BUILDER_BROKER" "$STAGING_DIR/agent-relay-broker"
 
       - name: Package attested artifact
         env:
-          BROKER_SOURCE: target/x86_64-unknown-linux-musl/release/agent-relay-broker
+          BROKER_SOURCE: ${{ runner.temp }}/relay-pr-proof-builder/staging/agent-relay-broker
         run: |
           mkdir -p relayflow-broker
           install -m 0755 "$BROKER_SOURCE" relayflow-broker/agent-relay-broker

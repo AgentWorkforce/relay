@@ -58,6 +58,22 @@ and supplies the selected executable as `RELAY_PR_PROOF_BROKER_BINARY`. The
 runner should invoke that binary directly instead of rebuilding it in Cloud.
 Cases without this requirement receive no broker binary.
 
+The broker producer deliberately performs a cold Rust build: it never restores
+or saves a Cargo build cache. Cargo and PR-authored build scripts run under a
+fresh dedicated OS user with no supplemental groups or capabilities, an empty
+environment, `no_new_privs`, empty inheritable, permitted, effective, bounding,
+and ambient capability sets, a read-only checkout, and isolated writable Cargo
+home, target, home, and temporary build directories delegated beneath a
+runner-owned private root. GitHub Actions cache/runtime credentials and
+the workflow command files (`GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, and
+`GITHUB_STEP_SUMMARY`) are not exposed, and stdout workflow commands are
+suspended around the build. Cleanup kills processes matching either the
+builder's effective or real UID and verifies none remain, including on build
+failure. Only after that check does the trusted runner copy the final regular
+broker file into runner-owned staging for packaging. The 30-minute producer
+deadline includes this cold-build cost; the dispatcher resolver adds separate
+queue and build headroom.
+
 The runner must finish with exit code zero after observing behavior and write:
 
 ```json

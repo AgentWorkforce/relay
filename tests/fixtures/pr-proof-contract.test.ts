@@ -1281,9 +1281,65 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('cancel-in-progress: true');
     expect(source).toContain("github.event_name != 'pull_request_target'");
     expect(source).toContain('github.event.pull_request.head.repo.full_name == github.repository');
-    expect(source).toContain('cargo build --locked --release');
+    expect(source).toContain('"$CARGO_BIN" build');
+    expect(source).not.toContain('Swatinem/rust-cache');
+    expect(source).not.toContain('actions/cache');
+    expect(source).not.toContain('Cache Rust build');
+    expect(source).toContain('--locked --release');
+    const cacheCredentialUnset = source.indexOf(
+      'unset ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL'
+    );
+    expect(cacheCredentialUnset).toBeGreaterThan(0);
+    expect(cacheCredentialUnset).toBeLessThan(source.indexOf('"$CARGO_BIN" build'));
+    const workflowFileUnset = source.indexOf(
+      'unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY'
+    );
+    const isolatedBuild = source.indexOf('-- env -i', source.indexOf('BUILD_STATUS=0'));
+    expect(workflowFileUnset).toBeGreaterThan(cacheCredentialUnset);
+    expect(workflowFileUnset).toBeLessThan(isolatedBuild);
+    const cargoBuild = source.indexOf('"$CARGO_BIN" build');
+    expect(isolatedBuild).toBeLessThan(cargoBuild);
+    const isolatedEnvironment = source.slice(isolatedBuild, cargoBuild);
+    for (const forbidden of [
+      'ACTIONS_CACHE_URL=',
+      'ACTIONS_RUNTIME_TOKEN=',
+      'ACTIONS_RUNTIME_URL=',
+      'ACTIONS_RESULTS_URL=',
+      'GITHUB_ENV=',
+      'GITHUB_PATH=',
+      'GITHUB_OUTPUT=',
+      'GITHUB_STEP_SUMMARY=',
+    ]) {
+      expect(isolatedEnvironment).not.toContain(forbidden);
+    }
+    expect(source).toContain('useradd --system --user-group --no-create-home');
+    expect(source).toContain('-o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"');
+    for (const flag of [
+      '--clear-groups',
+      '--no-new-privs',
+      '--bounding-set=-all',
+      '--inh-caps=-all',
+      '--ambient-caps=-all',
+    ]) {
+      expect(source.match(new RegExp(flag, 'g'))).toHaveLength(2);
+    }
+    expect(source).toContain('chmod -R go-w "$GITHUB_WORKSPACE"');
+    expect(source).toContain('test ! -w "$1/Cargo.toml"');
+    expect(source).toContain('test "$(id -G | wc -w)" -eq 1');
+    expect(source).toContain('for capability_set in CapInh CapPrm CapEff CapBnd CapAmb');
+    expect(source).toContain('test "$(status_value NoNewPrivs)" = 1');
+    expect(source).toContain('echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"');
+    expect(source).toContain('trap cleanup_on_exit EXIT');
+    expect(source).toContain('pkill -KILL -u "$BUILDER_UID"');
+    expect(source).toContain('pkill -KILL -U "$BUILDER_UID"');
+    expect(source).toContain('pgrep -u "$BUILDER_UID"');
+    expect(source).toContain('pgrep -U "$BUILDER_UID"');
+    const cleanup = source.indexOf('kill_builder_processes || KILL_STATUS=$?');
+    const stage = source.indexOf('"$BUILDER_BROKER" "$STAGING_DIR/agent-relay-broker"');
+    expect(cleanup).toBeGreaterThan(cargoBuild);
+    expect(stage).toBeGreaterThan(cleanup);
     expect(source).toContain(
-      "- name: Cache Rust build\n        if: github.event_name != 'pull_request_target'"
+      'BROKER_SOURCE: ${{ runner.temp }}/relay-pr-proof-builder/staging/agent-relay-broker'
     );
     expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
     expect(source).toContain('retention-days: 90');
