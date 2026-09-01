@@ -172,6 +172,19 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('rejects an explicitly empty Relayfile path list before provisioning', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:claude',
+        relayfilePaths: [],
+      })
+    ).rejects.toThrow('At least one Relayfile subtree path is required when relayfilePaths is provided.');
+
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
   it('requests and verifies an exact E2B provider', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({

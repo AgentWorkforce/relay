@@ -315,6 +315,9 @@ export async function ensureCloudFleetSandbox(
   const requiredCapability = input.requiredCapability.trim();
   if (!workspaceId) throw new Error('A workspace ID is required to provision a fleet sandbox.');
   if (!requiredCapability) throw new Error('A spawn capability is required to provision a fleet sandbox.');
+  if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
+    throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
+  }
 
   const session = await ensureCloudSession({
     apiUrl: options.apiUrl || defaultApiUrl(),
@@ -337,9 +340,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.name ? { name: input.name } : {}),
           ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
-          ...(input.relayfilePaths !== undefined && input.relayfilePaths.length > 0
-            ? { relayfilePaths: [...input.relayfilePaths] }
-            : {}),
+          ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
