@@ -20,6 +20,8 @@ export type CloudFleetSandboxRequestOptions = {
   timeoutMs?: number;
 };
 
+export type CloudFleetSandboxProviderId = 'daytona' | 'e2b';
+
 /**
  * Carries every safe identifier Cloud returned when provisioning failed after
  * the request may have created a billable sandbox.
@@ -28,6 +30,7 @@ export class CloudFleetSandboxProvisionError extends Error {
   readonly cloudWorkspaceId?: string;
   readonly sandboxId?: string;
   readonly nodeName?: string;
+  readonly providerId?: CloudFleetSandboxProviderId;
   readonly outcomeUnknown: boolean;
 
   constructor(
@@ -36,6 +39,7 @@ export class CloudFleetSandboxProvisionError extends Error {
       cloudWorkspaceId?: string;
       sandboxId?: string;
       nodeName?: string;
+      providerId?: CloudFleetSandboxProviderId;
       outcomeUnknown?: boolean;
       cause?: unknown;
     } = {}
@@ -45,6 +49,7 @@ export class CloudFleetSandboxProvisionError extends Error {
     this.cloudWorkspaceId = identity.cloudWorkspaceId;
     this.sandboxId = identity.sandboxId;
     this.nodeName = identity.nodeName;
+    this.providerId = identity.providerId;
     this.outcomeUnknown = identity.outcomeUnknown === true;
   }
 }
@@ -57,6 +62,8 @@ export type EnsureCloudFleetSandboxInput = {
   maxAgents?: number;
   mountRelayfile?: boolean;
   forceProvision?: boolean;
+  /** Constrain provisioning to a provider that Cloud has enabled for routing. */
+  providerId?: CloudFleetSandboxProviderId;
   waitTimeoutMs?: number;
   /**
    * Repositories to clone into `/srv/agent-workforce/<name>` inside the
@@ -79,6 +86,7 @@ export type CloudFleetSandboxReady = {
   relayWorkspaceId: string;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
+  providerId?: CloudFleetSandboxProviderId;
 };
 
 export type CloudFleetSandboxReused = {
@@ -98,6 +106,7 @@ export type CloudFleetSandboxProvisioningTimeout = {
   relayWorkspaceId: string;
   nodeName: string;
   waitedMs: number;
+  providerId?: CloudFleetSandboxProviderId;
 };
 
 export type EnsureCloudFleetSandboxResult =
@@ -108,6 +117,7 @@ export type EnsureCloudFleetSandboxResult =
 export type DeleteCloudFleetSandboxInput = {
   cloudWorkspaceId: string;
   sandboxId: string;
+  providerId?: CloudFleetSandboxProviderId;
 };
 
 function isObject(value: unknown): value is JsonRecord {
@@ -203,10 +213,39 @@ async function resolveCloudWorkspaceId(
   };
 }
 
-function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): EnsureCloudFleetSandboxResult {
+function readProviderId(payload: JsonRecord): CloudFleetSandboxProviderId | undefined {
+  const value = readString(payload, 'providerId');
+  if (value === undefined) return undefined;
+  if (value === 'daytona' || value === 'e2b') return value;
+  throw new Error('Cloud fleet sandbox response has an unknown providerId.');
+}
+
+function cleanupProviderId(
+  payload: JsonRecord,
+  requestedProviderId?: CloudFleetSandboxProviderId,
+): CloudFleetSandboxProviderId | undefined {
+  const payloadProviderId = readString(payload, 'providerId');
+  return payloadProviderId === 'daytona' || payloadProviderId === 'e2b'
+    ? payloadProviderId
+    : requestedProviderId;
+}
+
+function normalizeEnsureResult(
+  payload: unknown,
+  cloudWorkspaceId: string,
+  requestedProviderId?: CloudFleetSandboxProviderId,
+): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   const outcome = readString(payload, 'outcome');
   const nodeName = requiredString(payload, 'nodeName', 'Cloud fleet sandbox');
+  const providerId = readProviderId(payload);
+  if (requestedProviderId !== undefined && providerId !== requestedProviderId) {
+    throw new Error(
+      providerId === undefined
+        ? `Cloud did not prove requested provider ${requestedProviderId}.`
+        : `Cloud returned provider ${providerId} instead of requested provider ${requestedProviderId}.`,
+    );
+  }
 
   if (outcome === 'provisioned') {
     if (typeof payload.relayfileMounted !== 'boolean') {
@@ -220,6 +259,7 @@ function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): Ensu
       sandboxId: requiredString(payload, 'sandboxId', 'Cloud fleet sandbox'),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       relayfileMounted: payload.relayfileMounted,
+      ...(providerId === undefined ? {} : { providerId }),
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
@@ -246,6 +286,7 @@ function normalizeEnsureResult(payload: unknown, cloudWorkspaceId: string): Ensu
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
+      ...(providerId === undefined ? {} : { providerId }),
     };
   }
 
@@ -284,6 +325,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
+          ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),
@@ -300,6 +342,7 @@ export async function ensureCloudFleetSandbox(
       {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(input.name ? { nodeName: input.name } : {}),
+        ...(input.providerId ? { providerId: input.providerId } : {}),
         outcomeUnknown: true,
         cause: error,
       }
@@ -309,18 +352,23 @@ export async function ensureCloudFleetSandbox(
   if (!response.ok) {
     const error = endpointError('provision the fleet sandbox', response, payload);
     if (isObject(payload) && readString(payload, 'sandboxId')) {
+      const providerId = cleanupProviderId(payload, input.providerId);
       throw new CloudFleetSandboxProvisionError(error.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         sandboxId: readString(payload, 'sandboxId'),
         nodeName: readString(payload, 'nodeName') ?? input.name,
+        ...(providerId === undefined ? {} : { providerId }),
         cause: error,
       });
     }
     throw error;
   }
   try {
-    return normalizeEnsureResult(payload, resolved.cloudWorkspaceId);
+    return normalizeEnsureResult(payload, resolved.cloudWorkspaceId, input.providerId);
   } catch (error) {
+    const providerId = isObject(payload)
+      ? cleanupProviderId(payload, input.providerId)
+      : input.providerId;
     throw new CloudFleetSandboxProvisionError(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
       {
@@ -331,6 +379,7 @@ export async function ensureCloudFleetSandbox(
         ...(isObject(payload) && (readString(payload, 'nodeName') ?? input.name)
           ? { nodeName: readString(payload, 'nodeName') ?? input.name }
           : {}),
+        ...(providerId === undefined ? {} : { providerId }),
         outcomeUnknown: true,
         cause: error,
       }
@@ -338,7 +387,7 @@ export async function ensureCloudFleetSandbox(
   }
 }
 
-/** Best-effort-safe deletion for a Cloud-owned Daytona fleet sandbox. */
+/** Best-effort-safe deletion for a Cloud-owned fleet sandbox. */
 export async function deleteCloudFleetSandbox(
   input: DeleteCloudFleetSandboxInput,
   options: CloudFleetSandboxRequestOptions = {}
@@ -358,7 +407,10 @@ export async function deleteCloudFleetSandbox(
     {
       method: 'DELETE',
       signal,
-      body: JSON.stringify({ workspaceId: cloudWorkspaceId }),
+      body: JSON.stringify({
+        workspaceId: cloudWorkspaceId,
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
+      }),
     },
     { interactive: false }
   );
