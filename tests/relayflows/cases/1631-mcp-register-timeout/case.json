@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1631-mcp-register-timeout",
+  "kind": "bugfix",
+  "title": "Allow slow Relaycast registration to complete before timing out",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1631-mcp-register-timeout/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "mcp_register_times_out_before_slow_healthy_response"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "mcp_register_accepts_slow_healthy_response"
+    }
+  }
+}
