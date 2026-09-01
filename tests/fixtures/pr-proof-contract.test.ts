@@ -555,6 +555,31 @@ describe('exact broker artifact handoff', () => {
     }
   );
 
+  it('explains how to recover when the only exact artifact has expired', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async () =>
+      Response.json({
+        artifacts: [
+          {
+            name: `relayflow-broker-${sha}`,
+            expired: true,
+            updated_at: '2026-05-01T00:00:00Z',
+            workflow_run: { id: 42 },
+          },
+        ],
+      });
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow('expired after the 90-day retention window; update/rebase the PR onto current main');
+  });
+
   it('rejects an artifact whose workflow run belongs to another source SHA', async () => {
     const sha = '3'.repeat(40);
     const fetchImpl = async (url: string | URL | Request) => {
@@ -1120,6 +1145,7 @@ describe('trusted dispatcher source contract', () => {
     const cloudTimeoutMs = Number(dispatcher.match(/PR_PROOF_CLOUD_TIMEOUT_MS: '(\d+)'/)?.[1]);
     const brokerBuildMinutes = Number(resolver.match(/BROKER_BUILD_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
     const setupHeadroomMs = 5 * 60_000;
+    expect(resolver).toContain('const [base, head] = await Promise.all([');
     expect(dispatcherMinutes * 60_000).toBeGreaterThanOrEqual(
       brokerBuildMinutes * 60_000 + cloudTimeoutMs + setupHeadroomMs
     );

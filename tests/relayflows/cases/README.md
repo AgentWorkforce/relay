@@ -101,6 +101,13 @@ Reviewers must therefore confirm that the case invokes the supplied path
 directly with a neutral dynamic-loader environment and that the asserted
 behavior comes from that process.
 
+Broker artifacts are retained for 90 days. A PR that remains on the same base
+and head longer than that must be updated or rebased onto current `main`, then
+receive a refreshed head push before rerunning the proof. The trusted producer
+does not accept arbitrary historical SHAs for rebuild; push and scheduled
+builds keep current `main`, and same-repository PR events keep current heads,
+recoverable without widening the workflow's artifact provenance boundary.
+
 ## Execution and security
 
 The `pull_request_target` workflow checks out only the trusted base. It fetches

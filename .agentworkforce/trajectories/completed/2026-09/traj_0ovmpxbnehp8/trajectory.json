@@ -1,0 +1,69 @@
+{
+  "id": "traj_0ovmpxbnehp8",
+  "version": 1,
+  "task": {
+    "title": "Bound broker resolution and stale-PR recovery policy",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T19:31:50.141Z",
+  "completedAt": "2026-09-01T19:33:04.778Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T19:32:55.099Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_73acf1uhqt4t",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T19:32:55.099Z",
+      "endedAt": "2026-09-01T19:33:04.778Z",
+      "events": [
+        {
+          "ts": 1788291175100,
+          "type": "decision",
+          "content": "Resolve base and head artifacts concurrently: Resolve base and head artifacts concurrently",
+          "raw": {
+            "question": "Resolve base and head artifacts concurrently",
+            "chosen": "Resolve base and head artifacts concurrently",
+            "alternatives": [],
+            "reasoning": "Each exact-SHA producer may consume the full 30-minute build window. Promise.all keeps the pair within the single broker-resolution budget already composed into the 100-minute dispatcher deadline."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788291175508,
+          "type": "decision",
+          "content": "Require stale PRs to refresh after artifact retention: Require stale PRs to refresh after artifact retention",
+          "raw": {
+            "question": "Require stale PRs to refresh after artifact retention",
+            "chosen": "Require stale PRs to refresh after artifact retention",
+            "alternatives": [],
+            "reasoning": "The trusted producer intentionally cannot accept arbitrary historical SHAs. Exact artifacts expire after 90 days, so the resolver now emits an actionable update/rebase-and-push recovery and the case author guide documents that bounded policy."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made base/head broker resolution concurrent within one producer timeout, asserted that timing composition in the source contract, and documented/tested actionable recovery for exact artifacts beyond the 90-day retention boundary. Focused 65-test suite, typecheck, Prettier, syntax and diff checks pass.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bddb24e8bc1f59b0e2a372cd32d42136dbf31eb5",
+    "endRef": "bddb24e8bc1f59b0e2a372cd32d42136dbf31eb5"
+  }
+}

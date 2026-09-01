@@ -53,17 +53,20 @@ export async function resolveBrokerArtifact({
     throw new Error('broker artifact polling bounds are invalid');
   }
   const artifactName = `relayflow-broker-${sha}`;
+  let sawExpiredArtifact = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const listing = await githubJson(
       `${apiUrl}/repos/${repository}/actions/artifacts?name=${artifactName}&per_page=100`,
       token,
       fetchImpl
     );
-    const candidates = Array.isArray(listing.artifacts)
-      ? listing.artifacts
-          .filter((artifact) => artifact?.name === artifactName && !artifact.expired)
-          .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)))
+    const artifacts = Array.isArray(listing.artifacts)
+      ? listing.artifacts.filter((artifact) => artifact?.name === artifactName)
       : [];
+    sawExpiredArtifact ||= artifacts.some((artifact) => artifact.expired);
+    const candidates = artifacts
+      .filter((artifact) => !artifact.expired)
+      .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)));
 
     for (const artifact of candidates) {
       const runId = artifact.workflow_run?.id;
@@ -86,8 +89,11 @@ export async function resolveBrokerArtifact({
     if (attempt < maxAttempts) await sleepImpl(pollIntervalMs);
   }
 
+  const recovery = sawExpiredArtifact
+    ? ' The prior artifact expired after the 90-day retention window; update/rebase the PR onto current main and push a refreshed head to trigger trusted exact-SHA rebuilds.'
+    : '';
   throw new Error(
-    `No successful ${WORKFLOW_PATH} artifact named ${artifactName} after ${maxAttempts} attempts`
+    `No successful ${WORKFLOW_PATH} artifact named ${artifactName} after ${maxAttempts} attempts.${recovery}`
   );
 }
 
@@ -101,8 +107,10 @@ async function main() {
     throw new Error('GITHUB_OUTPUT, GITHUB_TOKEN, and GITHUB_REPOSITORY are required');
   }
   const input = JSON.parse(await readFile(inputPath, 'utf8'));
-  const base = await resolveBrokerArtifact({ apiUrl, repository, token, sha: input.baseSha });
-  const head = await resolveBrokerArtifact({ apiUrl, repository, token, sha: input.headSha });
+  const [base, head] = await Promise.all([
+    resolveBrokerArtifact({ apiUrl, repository, token, sha: input.baseSha }),
+    resolveBrokerArtifact({ apiUrl, repository, token, sha: input.headSha }),
+  ]);
   await appendFile(
     outputPath,
     [
