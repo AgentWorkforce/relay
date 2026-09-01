@@ -512,6 +512,24 @@ describe('exact broker artifact handoff', () => {
     ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
   });
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5])(
+    'rejects invalid polling interval %s before querying GitHub',
+    async (pollIntervalMs) => {
+      const fetchImpl = vi.fn();
+      await expect(
+        resolveBrokerArtifact({
+          apiUrl: 'https://api.github.test',
+          repository: 'AgentWorkforce/relay',
+          token: 'test-token',
+          sha: '3'.repeat(40),
+          fetchImpl,
+          pollIntervalMs,
+        })
+      ).rejects.toThrow('broker artifact polling bounds are invalid');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  );
+
   it('rejects an artifact whose workflow run belongs to another source SHA', async () => {
     const sha = '3'.repeat(40);
     const fetchImpl = async (url: string | URL | Request) => {

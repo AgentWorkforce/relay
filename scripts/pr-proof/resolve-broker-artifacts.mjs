@@ -43,7 +43,12 @@ export async function resolveBrokerArtifact({
   sleepImpl = sleep,
 }) {
   if (!SHA_RE.test(sha)) throw new Error('broker artifact SHA must be a full lowercase SHA');
-  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || pollIntervalMs < 0) {
+  if (
+    !Number.isInteger(maxAttempts) ||
+    maxAttempts < 1 ||
+    !Number.isInteger(pollIntervalMs) ||
+    pollIntervalMs < 0
+  ) {
     throw new Error('broker artifact polling bounds are invalid');
   }
   const artifactName = `relayflow-broker-${sha}`;

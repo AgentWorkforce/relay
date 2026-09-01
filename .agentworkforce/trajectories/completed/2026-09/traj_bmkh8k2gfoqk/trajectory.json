@@ -1,0 +1,57 @@
+{
+  "id": "traj_bmkh8k2gfoqk",
+  "version": 1,
+  "task": {
+    "title": "Harden PR 1632 broker artifact polling bounds",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T18:50:11.128Z",
+  "completedAt": "2026-09-01T18:50:46.412Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T18:50:46.002Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_z96ub71juce7",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T18:50:46.002Z",
+      "endedAt": "2026-09-01T18:50:46.412Z",
+      "events": [
+        {
+          "ts": 1788288646003,
+          "type": "decision",
+          "content": "Require integer polling bounds: Require integer polling bounds",
+          "raw": {
+            "question": "Require integer polling bounds",
+            "chosen": "Require integer polling bounds",
+            "alternatives": [],
+            "reasoning": "JavaScript comparisons do not reject NaN, and setTimeout normalizes non-finite delays. Validate both attempt count and interval as bounded integers so invalid configuration fails before querying GitHub or entering a tight loop."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Rejected NaN, infinite, fractional, and negative broker polling intervals before any GitHub request, with parameterized contract coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "c9f6766678eb3ea3e25f869c8907e334fe60cb9b",
+    "endRef": "c9f6766678eb3ea3e25f869c8907e334fe60cb9b"
+  }
+}
