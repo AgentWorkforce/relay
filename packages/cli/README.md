@@ -147,11 +147,12 @@ agent-relay fleet spawn codex \
 # Omit --node for automatic eligible-node placement.
 agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
 
-# Provision a fresh Daytona node, require the current Relayfile workspace to
-# mount at /workspace, wait for readiness, then spawn Codex there.
+# Provision a fresh E2B node, require the current Relayfile workspace to mount
+# at /workspace, wait for readiness, then spawn Codex there.
 agent-relay fleet spawn codex \
   --sandbox \
-  --name daytona-worker \
+  --sandbox-provider e2b \
+  --name e2b-worker \
   --task "Review the current workspace and wait for follow-up."
 
 agent-relay message dm send api-worker "Detailed task instructions"
@@ -172,11 +173,13 @@ login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
 Automatic placement and release need only the workspace key.
 
-The sandbox path provisions a fresh Daytona instance and makes the Relayfile
+The sandbox path provisions a fresh hosted instance and makes the Relayfile
 mount mandatory by default, so the spawned worker starts in `/workspace` and
-sees the same synced Relayfile workspace. Pass `--no-sandbox-relayfile` only
-when a deliberately bare sandbox is desired. If provisioning times out or the
-spawn fails, Relay asks Cloud to delete the newly created sandbox.
+sees the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
+`--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
+to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
+deliberately bare sandbox is desired. If provisioning times out or the spawn
+fails, Relay asks Cloud to delete the newly created sandbox.
 
 `--session-ref` is a real CLI resume, not a logical collaboration label. Pass
 the actual Claude session ID or Codex thread ID and target its origin node.

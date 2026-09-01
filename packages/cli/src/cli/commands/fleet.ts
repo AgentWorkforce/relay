@@ -5,6 +5,7 @@ import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  type CloudFleetSandboxProviderId,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
@@ -158,9 +159,10 @@ export function registerFleetCommands(
       .option('--target-node <name>', 'Alias for --node')
       .option(
         '--sandbox',
-        'Provision a fresh Cloud Daytona node, mount this Relayfile workspace, and spawn there'
+        'Provision a fresh Cloud sandbox node, mount this Relayfile workspace, and spawn there'
       )
-      .option('--sandbox-name <name>', 'Name for the provisioned Daytona fleet node')
+      .option('--sandbox-name <name>', 'Name for the provisioned sandbox fleet node')
+      .option('--sandbox-provider <provider>', 'Sandbox provider: daytona or e2b')
       .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
@@ -190,12 +192,25 @@ export function registerFleetCommands(
       let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const useSandbox = options.sandbox === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
+      const sandboxProviderText = optionalText(options.sandboxProvider, 'Sandbox provider');
+      const sandboxProvider: CloudFleetSandboxProviderId | undefined =
+        sandboxProviderText === undefined
+          ? undefined
+          : sandboxProviderText === 'daytona' || sandboxProviderText === 'e2b'
+            ? sandboxProviderText
+            : undefined;
+      if (sandboxProviderText !== undefined && sandboxProvider === undefined) {
+        throw new Error('--sandbox-provider must be daytona or e2b.');
+      }
       const mountSandboxRelayfile = options.sandboxRelayfile !== false;
       if (useSandbox && targetNode) {
         throw new Error('--sandbox cannot be combined with --node or --target-node.');
       }
       if (!useSandbox && sandboxName) {
         throw new Error('--sandbox-name requires --sandbox.');
+      }
+      if (!useSandbox && sandboxProvider) {
+        throw new Error('--sandbox-provider requires --sandbox.');
       }
       if (!useSandbox && options.sandboxRelayfile === false) {
         throw new Error('--no-sandbox-relayfile requires --sandbox.');
@@ -236,6 +251,7 @@ export function registerFleetCommands(
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
             forceProvision: true,
+            ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
             waitTimeoutMs: 90_000,
             name: requestedSandboxName,
           });
@@ -245,10 +261,11 @@ export function registerFleetCommands(
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: error.cloudWorkspaceId,
                 sandboxId: error.sandboxId,
+                ...(error.providerId === undefined ? {} : { providerId: error.providerId }),
               })
               .catch((cleanupError) => {
                 deps.warn(
-                  `Provisioning failed after Daytona created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
                     cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
                   }`
                 );
@@ -257,7 +274,7 @@ export function registerFleetCommands(
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
                 error.nodeName ?? requestedSandboxName
-              }' before retrying so a Daytona sandbox is not left running.`
+              }' before retrying so a sandbox is not left running.`
             );
           }
           throw error;
@@ -267,6 +284,7 @@ export function registerFleetCommands(
             .deleteCloudFleetSandbox({
               cloudWorkspaceId: sandbox.cloudWorkspaceId,
               sandboxId: sandbox.sandboxId,
+              ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
             })
             .catch((error) => {
               deps.warn(
@@ -276,7 +294,7 @@ export function registerFleetCommands(
               );
             });
           throw new Error(
-            `Daytona node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
+            `Sandbox node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
           );
         }
         if (
@@ -288,6 +306,7 @@ export function registerFleetCommands(
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
                 sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
               })
               .catch((error) => {
                 deps.warn(
@@ -297,7 +316,7 @@ export function registerFleetCommands(
                 );
               });
           }
-          throw new Error('Cloud returned a Daytona node without the required Relayfile mount.');
+          throw new Error('Cloud returned a sandbox node without the required Relayfile mount.');
         }
         targetNode = sandbox.nodeName;
         if (!workerCwd && sandbox.outcome === 'provisioned' && sandbox.relayfileMounted) {
@@ -366,6 +385,7 @@ export function registerFleetCommands(
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
                 sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
               })
               .catch((cleanupError) => {
                 deps.warn(

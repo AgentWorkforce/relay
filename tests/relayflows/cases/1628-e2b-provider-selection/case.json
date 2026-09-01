@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1628-e2b-provider-selection",
+  "kind": "feature",
+  "title": "Pin fleet sandbox provisioning and cleanup to E2B",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1628-e2b-provider-selection/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "sandbox_provider_selection_not_forwarded"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "e2b_provider_selection_forwarded_and_attributed"
+    }
+  }
+}

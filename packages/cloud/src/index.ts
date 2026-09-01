@@ -88,6 +88,7 @@ export {
   type CloudFleetSandboxProvisioningTimeout,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
+  type CloudFleetSandboxProviderId,
 } from './fleet-sandbox.js';
 
 export {

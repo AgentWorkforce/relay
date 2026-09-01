@@ -643,12 +643,12 @@ describe('fleet command support', () => {
     });
   });
 
-  it('fleet spawn --sandbox provisions Daytona, mounts Relayfile, and uses a temporary launcher', async () => {
+  it('fleet spawn --sandbox-provider e2b provisions E2B, mounts Relayfile, and uses a temporary launcher', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const placement = {
       spawn: vi.fn(async () => ({
         invocationId: 'inv_sandbox',
-        node: { name: 'daytona-codex' },
+        node: { name: 'e2b-codex' },
       })),
     };
     const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
@@ -663,9 +663,10 @@ describe('fleet command support', () => {
     const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
     const ensureCloudFleetSandbox = vi.fn(async () => ({
       outcome: 'provisioned' as const,
+      providerId: 'e2b' as const,
       cloudWorkspaceId: 'cloud-workspace',
       nodeId: 'node-1',
-      nodeName: 'daytona-codex',
+      nodeName: 'e2b-codex',
       sandboxId: 'sandbox-1',
       relayWorkspaceId: 'rw_abc',
       relayfileMounted: true,
@@ -698,8 +699,10 @@ describe('fleet command support', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--sandbox-provider',
+        'e2b',
         '--sandbox-name',
-        'daytona-codex',
+        'e2b-codex',
         '--name',
         'sandbox-worker',
         '--task',
@@ -715,8 +718,9 @@ describe('fleet command support', () => {
       maxAgents: 1,
       mountRelayfile: true,
       forceProvision: true,
+      providerId: 'e2b',
       waitTimeoutMs: 90_000,
-      name: 'daytona-codex',
+      name: 'e2b-codex',
     });
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -733,7 +737,7 @@ describe('fleet command support', () => {
     expect(placement.spawn).toHaveBeenCalledWith(
       expect.objectContaining({
         capability: 'spawn:codex',
-        node: 'daytona-codex',
+        node: 'e2b-codex',
         confirm: true,
         input: expect.objectContaining({
           name: 'sandbox-worker',
@@ -749,9 +753,9 @@ describe('fleet command support', () => {
     );
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
     expect(JSON.parse(logs[0]!)).toMatchObject({
-      sandbox: { nodeName: 'daytona-codex', relayfileMountPath: '/workspace' },
+      sandbox: { providerId: 'e2b', nodeName: 'e2b-codex', relayfileMountPath: '/workspace' },
       invocation: { invocationId: 'inv_sandbox' },
-      attachCommand: "agent-relay node agent attach 'sandbox-worker' --node 'daytona-codex' --mode drive",
+      attachCommand: "agent-relay node agent attach 'sandbox-worker' --node 'e2b-codex' --mode drive",
     });
   });
 
@@ -875,6 +879,70 @@ describe('fleet command support', () => {
     expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
       cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
       sandboxId: 'sandbox-1',
+    });
+  });
+
+  it('pins cleanup to the requested E2B provider when Cloud fails closed after provisioning', async () => {
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => {
+        throw new CloudFleetSandboxProvisionError('Cloud did not prove requested provider e2b.', {
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          sandboxId: 'sandbox-e2b',
+          nodeName: 'e2b-codex',
+          providerId: 'e2b',
+          outcomeUnknown: true,
+        });
+      }),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'e2b',
+          '--sandbox-name',
+          'e2b-codex',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      sandboxId: 'sandbox-e2b',
+      providerId: 'e2b',
     });
   });
 
