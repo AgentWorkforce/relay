@@ -1318,11 +1318,13 @@ describe('trusted dispatcher source contract', () => {
       expect(isolatedEnvironment).not.toContain(forbidden);
     }
     expect(source).toContain('useradd --system --user-group --no-create-home');
+    expect(source).toContain('BUILD_ROOT="/opt/relay-pr-proof-builder"');
     expect(source).toContain('-o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"');
     expect(source).toContain(
       'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"'
     );
     expect(source).toContain('test -x "$2/bin/cargo"');
+    expect(source).toContain('"$2/bin/cargo" --version >/dev/null');
     expect(source).toContain('test ! -w "$2/bin/cargo"');
     for (const flag of [
       '--clear-groups',
@@ -1366,9 +1368,7 @@ describe('trusted dispatcher source contract', () => {
     expect(killStatusBranch).toBeGreaterThan(cleanup);
     expect(buildStatusBranch).toBeGreaterThan(killStatusBranch);
     expect(stage).toBeGreaterThan(buildStatusBranch);
-    expect(source).toContain(
-      'BROKER_SOURCE: ${{ runner.temp }}/relay-pr-proof-builder/staging/agent-relay-broker'
-    );
+    expect(source).toContain('BROKER_SOURCE: /opt/relay-pr-proof-builder/staging/agent-relay-broker');
     expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
     expect(source).toContain("if: github.event_name != 'pull_request'");
     expect(source).toContain('retention-days: 90');

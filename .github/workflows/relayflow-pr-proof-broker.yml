@@ -61,7 +61,7 @@ jobs:
           unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
 
           BUILDER_USER=relay-proof-builder
-          BUILD_ROOT="$RUNNER_TEMP/relay-pr-proof-builder"
+          BUILD_ROOT="/opt/relay-pr-proof-builder"
           BUILDER_HOME="$BUILD_ROOT/home"
           CARGO_HOME="$BUILD_ROOT/cargo-home"
           CARGO_TARGET_DIR="$BUILD_ROOT/target"
@@ -103,6 +103,7 @@ jobs:
               test ! -w "$1"
               test ! -w "$1/Cargo.toml"
               test -x "$2/bin/cargo"
+              "$2/bin/cargo" --version >/dev/null
               test ! -w "$2"
               test ! -w "$2/bin/cargo"
               test "$(id -G | wc -w)" -eq 1
@@ -232,7 +233,7 @@ jobs:
 
       - name: Package attested artifact
         env:
-          BROKER_SOURCE: ${{ runner.temp }}/relay-pr-proof-builder/staging/agent-relay-broker
+          BROKER_SOURCE: /opt/relay-pr-proof-builder/staging/agent-relay-broker
         run: |
           mkdir -p relayflow-broker
           install -m 0755 "$BROKER_SOURCE" relayflow-broker/agent-relay-broker
