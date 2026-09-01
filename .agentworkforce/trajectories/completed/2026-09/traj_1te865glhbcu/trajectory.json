@@ -1,0 +1,57 @@
+{
+  "id": "traj_1te865glhbcu",
+  "version": 1,
+  "task": {
+    "title": "Compose PR 1632 dispatcher deadlines",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T19:06:48.489Z",
+  "completedAt": "2026-09-01T19:07:21.932Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T19:07:21.505Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0w3yka1ohxpz",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T19:07:21.505Z",
+      "endedAt": "2026-09-01T19:07:21.932Z",
+      "events": [
+        {
+          "ts": 1788289641505,
+          "type": "decision",
+          "content": "Give the dispatcher an explicit composed deadline: Give the dispatcher an explicit composed deadline",
+          "raw": {
+            "question": "Give the dispatcher an explicit composed deadline",
+            "chosen": "Give the dispatcher an explicit composed deadline",
+            "alternatives": [],
+            "reasoning": "The outer GitHub job must contain the 30-minute broker resolution bound, 60-minute Cloud client bound, and setup/reporting headroom. Raise it to 100 minutes and enforce the numeric relationship in a source-contract test so future child-timeout changes cannot silently exceed the envelope."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Raised the dispatcher envelope to 100 minutes and added a contract proving broker wait plus Cloud execution plus five minutes of setup headroom fits within it.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "101d7f2b19bd491bb3d9bad7048ea1ffb35f40ec",
+    "endRef": "101d7f2b19bd491bb3d9bad7048ea1ffb35f40ec"
+  }
+}

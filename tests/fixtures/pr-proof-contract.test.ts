@@ -1100,6 +1100,18 @@ describe('trusted dispatcher source contract', () => {
     expect(source).not.toContain('github.event.pull_request.head.sha }}');
   });
 
+  it('fits broker resolution, Cloud execution, and setup inside the dispatcher deadline', async () => {
+    const dispatcher = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
+    const resolver = await readFile('scripts/pr-proof/resolve-broker-artifacts.mjs', 'utf8');
+    const dispatcherMinutes = Number(dispatcher.match(/timeout-minutes: (\d+)/)?.[1]);
+    const cloudTimeoutMs = Number(dispatcher.match(/PR_PROOF_CLOUD_TIMEOUT_MS: '(\d+)'/)?.[1]);
+    const brokerBuildMinutes = Number(resolver.match(/BROKER_BUILD_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
+    const setupHeadroomMs = 5 * 60_000;
+    expect(dispatcherMinutes * 60_000).toBeGreaterThanOrEqual(
+      brokerBuildMinutes * 60_000 + cloudTimeoutMs + setupHeadroomMs
+    );
+  });
+
   it('builds proof brokers from an attested exact checkout without secrets', async () => {
     const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
     const triggerSection = source.slice(source.indexOf('on:'), source.indexOf('permissions:'));
