@@ -78,12 +78,14 @@ try {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const { port, stderr } = await waitForServerReady(server);
+  const cargo = resolveCargo();
 
   run(
-    'cargo',
+    cargo.command,
     ['build', '--locked', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'],
     targetDir,
-    'broker build'
+    'broker build',
+    cargo.env
   );
 
   const binaryPath = path.join(targetDir, 'target', 'debug', 'agent-relay-broker');
@@ -199,10 +201,31 @@ function isWithin(directory, candidate) {
   );
 }
 
-function run(command, args, cwd, label) {
+function resolveCargo() {
+  let command;
+  try {
+    command = execFileSync('which', ['cargo'], { encoding: 'utf8' }).trim();
+  } catch {
+    throw new Error(
+      'broker build requires Cargo in the proof sandbox; install a Rust toolchain before running this case'
+    );
+  }
+  if (!command) throw new Error('Cargo resolved to an empty executable path.');
+
+  const env = { ...process.env };
+  const cargoHome = path.dirname(path.dirname(command));
+  if (path.basename(cargoHome) === '.cargo') {
+    const originalHome = path.dirname(cargoHome);
+    env.CARGO_HOME = cargoHome;
+    env.RUSTUP_HOME = path.join(originalHome, '.rustup');
+  }
+  return { command, env };
+}
+
+function run(command, args, cwd, label, env = process.env) {
   const completed = spawnSync(command, args, {
     cwd,
-    env: process.env,
+    env,
     stdio: ['ignore', 'inherit', 'inherit'],
     timeout: COMMAND_TIMEOUT_MS,
   });
