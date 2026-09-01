@@ -1568,8 +1568,8 @@ jobs:
       (github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') &&
       needs.build.result == 'success' &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
-      (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
-      (needs.publish-fleet.result == 'success' || needs.publish-fleet.result == 'skipped') &&
+      (needs.publish-packages.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.publish-packages.result == 'skipped')) &&
+      (needs.publish-fleet.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.publish-fleet.result == 'skipped')) &&
       (needs.publish-main-runtime-deps.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-runtime-deps.result == 'skipped')) &&
       (needs.publish-main-harnesses.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-harnesses.result == 'skipped')) &&
       (needs.publish-main-fleet.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-fleet.result == 'skipped'))
