@@ -1003,6 +1003,8 @@ jobs:
     needs: [build, publish-packages]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
+    env:
+      PUBLISH_PACKAGE: ${{ matrix.package }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -1011,18 +1013,18 @@ jobs:
           - harnesses
           - evals
 
-    steps:
+    steps: &publish-harnesses-steps
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: build-output
           path: .
@@ -1032,12 +1034,12 @@ jobs:
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/${{ matrix.package }}
+        working-directory: packages/${{ env.PUBLISH_PACKAGE }}
         run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/${{ matrix.package }}
+        working-directory: packages/${{ env.PUBLISH_PACKAGE }}
         run: |
           set -euo pipefail
           PKG_NAME=$(node -p "require('./package.json').name")
@@ -1060,18 +1062,20 @@ jobs:
     needs: [build, publish-harnesses]
     runs-on: ubuntu-latest
     if: github.event.inputs.package == 'all'
-    steps:
+    env:
+      PUBLISH_PACKAGE: fleet
+    steps: &publish-fleet-steps
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: build-output
           path: .
@@ -1081,12 +1085,12 @@ jobs:
 
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/fleet
+        working-directory: packages/${{ env.PUBLISH_PACKAGE }}
         run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/fleet
+        working-directory: packages/${{ env.PUBLISH_PACKAGE }}
         run: |
           set -euo pipefail
           PKG_NAME=$(node -p "require('./package.json').name")
@@ -1114,6 +1118,7 @@ jobs:
           - cloud
           - config
           - sdk
+          - session
           - utils
           - harness-driver
 
@@ -1168,6 +1173,30 @@ jobs:
             exit 0
           fi
           npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+
+  # @agent-relay/harnesses pins the SDK and harness driver to the exact release
+  # version. Keep it after the main runtime dependency matrix so package=main
+  # cannot publish a root CLI whose harness dependency was never released.
+  publish-main-harnesses:
+    name: Publish main runtime dep harnesses
+    needs: [build, publish-main-runtime-deps]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
+    env:
+      PUBLISH_PACKAGE: harnesses
+    steps: *publish-harnesses-steps
+
+  # @agent-relay/fleet pins harnesses, the harness driver, and the SDK to the
+  # exact release version. It is the final package=main dependency in the
+  # ordered chain before the root CLI can be published.
+  publish-main-fleet:
+    name: Publish main runtime dep fleet
+    needs: [build, publish-main-harnesses]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease'
+    env:
+      PUBLISH_PACKAGE: fleet
+    steps: *publish-fleet-steps
 
   # Publish brand package only (when selected)
   publish-brand-only:
@@ -1520,7 +1549,16 @@ jobs:
   # Publish main package
   publish-main:
     name: Publish Main Package
-    needs: [build, verify-binaries, publish-packages, publish-fleet, publish-main-runtime-deps]
+    needs:
+      [
+        build,
+        verify-binaries,
+        publish-packages,
+        publish-fleet,
+        publish-main-runtime-deps,
+        publish-main-harnesses,
+        publish-main-fleet,
+      ]
     runs-on: ubuntu-latest
     outputs:
       published: ${{ steps.publish_root.outputs.published }}
@@ -1531,7 +1569,9 @@ jobs:
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
       (needs.publish-fleet.result == 'success' || needs.publish-fleet.result == 'skipped') &&
-      (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped')
+      (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped') &&
+      (needs.publish-main-harnesses.result == 'success' || needs.publish-main-harnesses.result == 'skipped') &&
+      (needs.publish-main-fleet.result == 'success' || needs.publish-main-fleet.result == 'skipped')
 
     steps:
       - name: Checkout code
@@ -1576,7 +1616,10 @@ jobs:
             exit 0
           fi
 
-          for _ in {1..12}; do
+          # npm can accept a provenance publish several minutes before the
+          # version becomes queryable. Give the registry a bounded ten-minute
+          # window instead of failing an otherwise successful release after two.
+          for attempt in {0..60}; do
             missing=()
             for spec in "${INTERNAL_DEPS[@]}"; do
               if npm view "$spec" version >/dev/null 2>&1; then
@@ -1592,7 +1635,9 @@ jobs:
             fi
 
             echo "Waiting for npm registry propagation: ${missing[*]}"
-            sleep 10
+            if [ "$attempt" -lt 60 ]; then
+              sleep 10
+            fi
           done
 
           echo "Timed out waiting for CLI @agent-relay/* dependencies:"
