@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1630-scoped-relayfile-sandbox-mount",
+  "kind": "feature",
+  "title": "Mount only requested Relayfile subtrees in a fleet sandbox",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1630-scoped-relayfile-sandbox-mount/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "relayfile_sandbox_paths_not_forwarded"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "relayfile_sandbox_paths_forwarded"
+    }
+  }
+}
