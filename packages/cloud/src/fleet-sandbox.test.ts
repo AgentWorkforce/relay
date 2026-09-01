@@ -165,9 +165,11 @@ describe('Cloud fleet sandbox client', () => {
     });
 
     const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
-    expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual(expect.objectContaining({
-      providerId: 'e2b',
-    }));
+    expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual(
+      expect.objectContaining({
+        providerId: 'e2b',
+      })
+    );
     expect(result).toEqual(expect.objectContaining({ providerId: 'e2b' }));
   });
 

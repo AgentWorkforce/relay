@@ -193,11 +193,12 @@ export function registerFleetCommands(
       const useSandbox = options.sandbox === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxProviderText = optionalText(options.sandboxProvider, 'Sandbox provider');
-      const sandboxProvider: CloudFleetSandboxProviderId | undefined = sandboxProviderText === undefined
-        ? undefined
-        : sandboxProviderText === 'daytona' || sandboxProviderText === 'e2b'
-          ? sandboxProviderText
-          : undefined;
+      const sandboxProvider: CloudFleetSandboxProviderId | undefined =
+        sandboxProviderText === undefined
+          ? undefined
+          : sandboxProviderText === 'daytona' || sandboxProviderText === 'e2b'
+            ? sandboxProviderText
+            : undefined;
       if (sandboxProviderText !== undefined && sandboxProvider === undefined) {
         throw new Error('--sandbox-provider must be daytona or e2b.');
       }

@@ -222,7 +222,7 @@ function readProviderId(payload: JsonRecord): CloudFleetSandboxProviderId | unde
 
 function cleanupProviderId(
   payload: JsonRecord,
-  requestedProviderId?: CloudFleetSandboxProviderId,
+  requestedProviderId?: CloudFleetSandboxProviderId
 ): CloudFleetSandboxProviderId | undefined {
   const payloadProviderId = readString(payload, 'providerId');
   return payloadProviderId === 'daytona' || payloadProviderId === 'e2b'
@@ -233,7 +233,7 @@ function cleanupProviderId(
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
-  requestedProviderId?: CloudFleetSandboxProviderId,
+  requestedProviderId?: CloudFleetSandboxProviderId
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   const outcome = readString(payload, 'outcome');
@@ -243,7 +243,7 @@ function normalizeEnsureResult(
     throw new Error(
       providerId === undefined
         ? `Cloud did not prove requested provider ${requestedProviderId}.`
-        : `Cloud returned provider ${providerId} instead of requested provider ${requestedProviderId}.`,
+        : `Cloud returned provider ${providerId} instead of requested provider ${requestedProviderId}.`
     );
   }
 
@@ -366,9 +366,7 @@ export async function ensureCloudFleetSandbox(
   try {
     return normalizeEnsureResult(payload, resolved.cloudWorkspaceId, input.providerId);
   } catch (error) {
-    const providerId = isObject(payload)
-      ? cleanupProviderId(payload, input.providerId)
-      : input.providerId;
+    const providerId = isObject(payload) ? cleanupProviderId(payload, input.providerId) : input.providerId;
     throw new CloudFleetSandboxProvisionError(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
       {
