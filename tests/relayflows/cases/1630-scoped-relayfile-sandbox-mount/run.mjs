@@ -124,12 +124,7 @@ const probeConfigSource = `export default {
 };\n`;
 
 try {
-  run(
-    'npm',
-    ['ci', '--ignore-scripts'],
-    targetDir,
-    'workspace dependency installation'
-  );
+  run('npm', ['ci', '--ignore-scripts'], targetDir, 'workspace dependency installation');
   run('npm', ['run', 'build:session'], targetDir, 'session package build');
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
