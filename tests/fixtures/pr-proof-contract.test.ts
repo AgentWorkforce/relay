@@ -769,10 +769,8 @@ describe('exact broker artifact handoff', () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
       const sha = '4'.repeat(40);
       const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
-      const privateRoot = path.join(root, 'private');
       const binaryPath = path.join(directory, 'agent-relay-broker');
       await mkdir(directory, { recursive: true });
-      await mkdir(privateRoot, { recursive: true });
       await copyFile('/bin/true', binaryPath);
       const binary = await readFile(binaryPath);
       const sha256 = createHash('sha256').update(binary).digest('hex');
@@ -796,12 +794,27 @@ describe('exact broker artifact handoff', () => {
           },
         },
         arm: 'base',
-        privateRoot,
         root,
       });
       try {
         expect(executable).not.toBeNull();
         await copyFile('/bin/false', binaryPath);
+        const chmodAttack = await runProcess('/bin/chmod', ['u-x', executable!.path], {
+          echo: false,
+          timeoutMs: 1_000,
+        });
+        expect(chmodAttack.exitCode).not.toBe(0);
+        const writeAttack = await runProcess(
+          '/bin/sh',
+          [
+            '-c',
+            'chmod u+w "$1" 2>/dev/null || true; cat /bin/false > "$1"',
+            'broker-memfd-attack',
+            executable!.path,
+          ],
+          { echo: false, timeoutMs: 1_000 }
+        );
+        expect(writeAttack.exitCode).not.toBe(0);
         const result = await runProcess(executable!.path, [], { echo: false, timeoutMs: 1_000 });
         expect(result).toMatchObject({ exitCode: 0, timedOut: false });
       } finally {
@@ -1158,6 +1171,10 @@ describe('trusted dispatcher source contract', () => {
     const source = await readFile('scripts/pr-proof/run-arm.mjs', 'utf8');
     expect(source).toContain('process.env.SANDBOX_ID');
     expect(source).not.toContain('process.env.DAYTONA_SANDBOX_ID');
+    expect(source).toContain('fcntl.F_ADD_SEALS');
+    expect(source).toContain('fcntl.F_SEAL_WRITE');
+    expect(source).toContain('F_SEAL_EXEC');
+    expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
   });
 
   it('uses one non-refreshing API key and cancels remote work on termination', async () => {

@@ -1,0 +1,57 @@
+{
+  "id": "traj_v8sktrvzqu6p",
+  "version": 1,
+  "task": {
+    "title": "Seal PR 1632 broker execution inode",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T19:23:35.898Z",
+  "completedAt": "2026-09-01T19:30:31.680Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T19:30:31.228Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_r65pw5mj2eua",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T19:30:31.228Z",
+      "endedAt": "2026-09-01T19:30:31.680Z",
+      "events": [
+        {
+          "ts": 1788291031228,
+          "type": "decision",
+          "content": "Execute exact-SHA brokers only from an exec-sealed memfd: Execute exact-SHA brokers only from an exec-sealed memfd",
+          "raw": {
+            "question": "Execute exact-SHA brokers only from an exec-sealed memfd",
+            "chosen": "Execute exact-SHA brokers only from an exec-sealed memfd",
+            "alternatives": [],
+            "reasoning": "A private unlinked file remained mutable through /proc by the same-UID PR runner. A trusted Python holder now creates a memfd, applies F_SEAL_SEAL|SHRINK|GROW|WRITE|EXEC, reports the full seal mask, and holds the inode for the runner lifetime. Linux validation proved chmod and overwrite fail while the original executable still runs. The proof boundary is documented as immutable exact-SHA bytes; PR-authored argv, environment, and semantic assertions remain reviewer-trusted."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Closed PR #1632 broker TOCTOU by replacing the unlinked file with a parent-managed exec-sealed memfd, adding fail-clear Python availability, Linux chmod/write tamper regression coverage, and documenting the review-trusted invocation boundary. Focused 64-test suite, typecheck, Prettier, syntax/diff checks, and direct Linux arm64 tamper validation pass.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "679cfe098629ad8f624c59fac1a05a7357cd1768",
+    "endRef": "679cfe098629ad8f624c59fac1a05a7357cd1768"
+  }
+}

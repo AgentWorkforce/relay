@@ -93,6 +93,14 @@ its red/green signatures express the claimed behavior. No generic runner can
 prove the honesty of arbitrary test code; this check supplies reproducible
 review evidence and is not a replacement for required code review.
 
+For broker cases, the wrapper's additional guarantee ends at artifact
+provenance and byte immutability: it binds the runner to a sealed executable
+built from the declared exact SHA. The PR-authored runner still chooses whether
+and how to launch that executable, including its arguments and environment.
+Reviewers must therefore confirm that the case invokes the supplied path
+directly with a neutral dynamic-loader environment and that the asserted
+behavior comes from that process.
+
 ## Execution and security
 
 The `pull_request_target` workflow checks out only the trusted base. It fetches

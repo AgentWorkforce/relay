@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, open, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { access, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +22,47 @@ import { runBoundedProcess } from './process-runner.mjs';
 import { loadBrokerArtifact } from './stage-broker-artifacts.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
+const REQUIRED_MEMFD_SEALS = 0x2f;
+const SEALED_BROKER_HOLDER = String.raw`
+import fcntl
+import json
+import os
+import sys
+
+size_line = sys.stdin.buffer.readline(32)
+size = int(size_line)
+payload = bytearray()
+while len(payload) < size:
+    chunk = sys.stdin.buffer.read(size - len(payload))
+    if not chunk:
+        raise RuntimeError("broker payload ended before declared size")
+    payload.extend(chunk)
+
+flags = os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+fd = os.memfd_create("relay-pr-proof-broker", flags)
+view = memoryview(payload)
+written = 0
+while written < len(view):
+    written += os.write(fd, view[written:])
+os.fchmod(fd, 0o500)
+os.lseek(fd, 0, os.SEEK_SET)
+
+F_SEAL_EXEC = 0x20
+seals = (
+    fcntl.F_SEAL_SEAL
+    | fcntl.F_SEAL_SHRINK
+    | fcntl.F_SEAL_GROW
+    | fcntl.F_SEAL_WRITE
+    | F_SEAL_EXEC
+)
+fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+actual_seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
+print(json.dumps({"fd": fd, "seals": actual_seals}), flush=True)
+
+# The trusted Node parent keeps stdin open for the complete case-runner
+# lifetime. EOF releases the sealed inode and exits the holder.
+sys.stdin.buffer.read(1)
+`;
 
 async function readObservationFile(filePath) {
   const resultFile = await open(
@@ -78,7 +120,88 @@ async function checkout(repository, sha, destination) {
   return actual;
 }
 
-export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, root = process.cwd() }) {
+async function startSealedBrokerHolder(contents) {
+  try {
+    await access('/usr/bin/python3', fsConstants.X_OK);
+  } catch {
+    throw new Error(
+      'secure broker execution requires executable /usr/bin/python3 in the Cloud proof sandbox'
+    );
+  }
+  const child = spawn('/usr/bin/python3', ['-c', SEALED_BROKER_HOLDER], {
+    env: {},
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let ready = false;
+  const closeResult = new Promise((resolve) => {
+    child.once('error', (error) => resolve({ error }));
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  const metadata = await new Promise((resolve, reject) => {
+    const fail = (error) => {
+      if (ready) return;
+      ready = true;
+      if (!child.stdin.destroyed) child.stdin.end();
+      child.kill('SIGKILL');
+      reject(error);
+    };
+    child.stdin.once('error', fail);
+    child.stdout.on('data', (chunk) => {
+      if (ready) return;
+      stdout += chunk.toString('utf8');
+      if (stdout.length > 4_096) {
+        fail(new Error('sealed broker holder emitted oversized metadata'));
+        return;
+      }
+      const newline = stdout.indexOf('\n');
+      if (newline < 0) return;
+      try {
+        const value = JSON.parse(stdout.slice(0, newline));
+        if (!Number.isInteger(value.fd) || value.fd < 0 || !Number.isInteger(value.seals)) {
+          throw new Error('sealed broker holder metadata is invalid');
+        }
+        ready = true;
+        resolve(value);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-8_000);
+    });
+    closeResult.then((result) => {
+      if (ready) return;
+      fail(
+        result.error ??
+          new Error(
+            `sealed broker holder exited before ready (${result.code ?? result.signal ?? 'unknown'}): ${stderr}`
+          )
+      );
+    });
+    child.stdin.write(`${contents.length}\n`);
+    child.stdin.write(contents);
+  });
+
+  const close = async () => {
+    if (!child.stdin.destroyed) child.stdin.end();
+    const result = await closeResult;
+    if (result.error) throw result.error;
+    if (result.code !== 0) {
+      throw new Error(
+        `sealed broker holder failed (${result.code ?? result.signal ?? 'unknown'}): ${stderr}`
+      );
+    }
+  };
+  return {
+    path: `/proc/${child.pid}/fd/${metadata.fd}`,
+    seals: metadata.seals,
+    close,
+  };
+}
+
+export async function openVerifiedBrokerExecutable({ input, arm, root = process.cwd() }) {
   const artifact = input.runtimeArtifacts?.broker?.[arm];
   if (!artifact) return null;
   if (process.platform !== 'linux') {
@@ -96,29 +219,32 @@ export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, ro
     throw new Error('broker artifact does not match its proof input binding');
   }
 
-  const privatePath = path.join(privateRoot, `verified-broker-${arm}`);
-  await writeFile(privatePath, loaded.contents, { flag: 'wx', mode: 0o500 });
-  const handle = await open(privatePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  const holder = await startSealedBrokerHolder(loaded.contents);
   try {
+    if ((holder.seals & REQUIRED_MEMFD_SEALS) !== REQUIRED_MEMFD_SEALS) {
+      throw new Error('broker memfd is missing required immutable seals');
+    }
+    const handle = await open(holder.path, fsConstants.O_RDONLY);
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size !== loaded.contents.length) {
-      throw new Error('private broker copy is not the verified regular file');
+      throw new Error('sealed broker copy is not the verified regular file');
     }
-    const privateSha256 = createHash('sha256')
-      .update(await handle.readFile())
-      .digest('hex');
-    if (privateSha256 !== loaded.artifact.sha256) {
-      throw new Error('private broker copy changed before execution binding');
+    try {
+      const sealedSha256 = createHash('sha256')
+        .update(await handle.readFile())
+        .digest('hex');
+      if (sealedSha256 !== loaded.artifact.sha256) {
+        throw new Error('sealed broker copy changed before execution binding');
+      }
+    } finally {
+      await handle.close();
     }
-    await handle.chmod(0o500);
-    await unlink(privatePath);
     return {
-      path: `/proc/${process.pid}/fd/${handle.fd}`,
-      handle,
+      path: holder.path,
+      handle: { close: holder.close },
     };
   } catch (error) {
-    await handle.close();
-    await rm(privatePath, { force: true });
+    await holder.close().catch(() => {});
     throw error;
   }
 }
@@ -194,7 +320,6 @@ export async function main() {
     const brokerExecutable = await openVerifiedBrokerExecutable({
       input,
       arm,
-      privateRoot: temporaryRoot,
     });
     const brokerPath = brokerExecutable?.path ?? null;
     brokerHandle = brokerExecutable?.handle ?? null;
