@@ -71,12 +71,16 @@ suspended around the build. Cleanup kills processes matching either the
 builder's effective or real UID and verifies none remain, including on build
 failure. Workflow-command parsing is restored only after that zero-process
 proof succeeds. Each process probe must return exactly the documented
-no-matches status; probe errors fail closed rather than masquerading as an empty
-process set. A reap failure keeps parsing suspended and takes precedence over
-the original build status. Only after successful cleanup does the trusted
-runner copy the final regular broker file into runner-owned staging for
-packaging. The 30-minute producer deadline includes this cold-build cost; the
-dispatcher resolver adds separate queue and build headroom.
+no-matches status. The trusted runner performs those probes as root so a
+`hidepid` mount cannot conceal builder-owned processes, maps match/no-match/error
+to distinct sentinel statuses, and accepts only two no-match sentinels. The root
+probe is non-interactive and runs with a clean, fixed environment and executable
+path. Probe or privilege-escalation errors therefore fail closed rather than
+masquerading as an empty process set. A reap failure keeps parsing suspended and
+takes precedence over the original build status. Only after successful cleanup
+does the trusted runner copy the final regular broker file into runner-owned
+staging for packaging. The 30-minute producer deadline includes this cold-build
+cost; the dispatcher resolver adds separate queue and build headroom.
 
 The runner must finish with exit code zero after observing behavior and write:
 

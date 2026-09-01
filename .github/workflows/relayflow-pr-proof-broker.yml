@@ -109,26 +109,43 @@ jobs:
             fi
           }
 
+          probe_builder_uid() {
+            selector="$1"
+            sudo --non-interactive env -i \
+              PATH=/usr/bin:/bin \
+              BUILDER_UID="$BUILDER_UID" \
+              /bin/sh -c '
+              probe_status=0
+              /usr/bin/pgrep "$1" "$BUILDER_UID" >/dev/null 2>&1 || probe_status=$?
+              case "$probe_status" in
+                0) exit 10 ;;
+                1) exit 11 ;;
+                *) exit 12 ;;
+              esac
+            ' sh "$selector"
+          }
+
           kill_builder_processes() {
             sudo pkill -KILL -u "$BUILDER_UID" >/dev/null 2>&1 || true
             sudo pkill -KILL -U "$BUILDER_UID" >/dev/null 2>&1 || true
             for _ in $(seq 1 100); do
               effective_probe_status=0
               real_probe_status=0
-              pgrep -u "$BUILDER_UID" >/dev/null 2>&1 || effective_probe_status=$?
-              pgrep -U "$BUILDER_UID" >/dev/null 2>&1 || real_probe_status=$?
-              if [ "$effective_probe_status" -gt 1 ] || [ "$real_probe_status" -gt 1 ]; then
-                echo "unable to prove builder UID process set is empty" >&2
-                return 1
-              fi
-              if [ "$effective_probe_status" -eq 1 ] && [ "$real_probe_status" -eq 1 ]; then
-                return 0
-              fi
+              probe_builder_uid -u || effective_probe_status=$?
+              probe_builder_uid -U || real_probe_status=$?
+              case "$effective_probe_status:$real_probe_status" in
+                11:11) return 0 ;;
+                10:10|10:11|11:10) ;;
+                *)
+                  echo "unable to prove builder UID process set is empty" >&2
+                  return 1
+                  ;;
+              esac
               sleep 0.1
             done
             echo "builder UID $BUILDER_UID still has live processes" >&2
-            pgrep -a -u "$BUILDER_UID" >&2 || true
-            pgrep -a -U "$BUILDER_UID" >&2 || true
+            sudo pgrep -a -u "$BUILDER_UID" >&2 || true
+            sudo pgrep -a -U "$BUILDER_UID" >&2 || true
             return 1
           }
 

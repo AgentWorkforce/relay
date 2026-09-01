@@ -1334,14 +1334,20 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('if [ "$KILL_STATUS" -eq 0 ]; then\n            resume_workflow_commands');
     expect(source).toContain('pkill -KILL -u "$BUILDER_UID"');
     expect(source).toContain('pkill -KILL -U "$BUILDER_UID"');
-    expect(source).toContain('pgrep -u "$BUILDER_UID" >/dev/null 2>&1 || effective_probe_status=$?');
-    expect(source).toContain('pgrep -U "$BUILDER_UID" >/dev/null 2>&1 || real_probe_status=$?');
-    expect(source).toContain(
-      'if [ "$effective_probe_status" -gt 1 ] || [ "$real_probe_status" -gt 1 ]; then'
-    );
-    expect(source).toContain(
-      'if [ "$effective_probe_status" -eq 1 ] && [ "$real_probe_status" -eq 1 ]; then'
-    );
+    expect(source).toContain('sudo --non-interactive env -i');
+    expect(source).toContain('PATH=/usr/bin:/bin');
+    expect(source).toContain('BUILDER_UID="$BUILDER_UID"');
+    expect(source).toContain('/bin/sh -c');
+    expect(source).toContain('/usr/bin/pgrep "$1" "$BUILDER_UID"');
+    expect(source).toContain('0) exit 10 ;;');
+    expect(source).toContain('1) exit 11 ;;');
+    expect(source).toContain('*) exit 12 ;;');
+    expect(source).toContain('probe_builder_uid -u || effective_probe_status=$?');
+    expect(source).toContain('probe_builder_uid -U || real_probe_status=$?');
+    expect(source).toContain('11:11) return 0 ;;');
+    expect(source).toContain('10:10|10:11|11:10) ;;');
+    expect(source).toContain('sudo pgrep -a -u "$BUILDER_UID"');
+    expect(source).toContain('sudo pgrep -a -U "$BUILDER_UID"');
     const cleanup = source.indexOf('kill_builder_processes || KILL_STATUS=$?');
     const killStatusBranch = source.indexOf('if [ "$KILL_STATUS" -ne 0 ]; then');
     const buildStatusBranch = source.indexOf('if [ "$BUILD_STATUS" -ne 0 ]; then');
