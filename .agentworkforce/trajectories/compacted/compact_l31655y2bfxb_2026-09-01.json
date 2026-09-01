@@ -1,0 +1,109 @@
+{
+  "id": "compact_l31655y2bfxb",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-01T21:02:11.812Z",
+  "sourceTrajectories": [
+    "traj_gc9h07nbc6k9"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T21:01:49.338Z",
+    "end": "2026-09-01T21:02:11.300Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Treat only pgrep status one as an empty UID set",
+          "chosen": "Treat only pgrep status one as an empty UID set",
+          "reasoning": "Negating pgrep conflated no matches with syntax or fatal probe errors. The trusted runner now captures real/effective UID probe statuses directly, accepts only two status-one results, and fails closed on any status above one before workflow commands can resume.",
+          "fromTrajectory": "traj_gc9h07nbc6k9"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": [],
+  "narrative": "This session closed the last Codex P1 review comment on PR #1632, hardening the trusted-runner cleanup path in `.github/workflows/relayflow-pr-proof-broker.yml`. The PR-authored broker build runs as an unprivileged builder UID under `sudo setpriv` with GitHub workflow-command parsing suspended (`WORKFLOW_COMMAND_TOKEN` / `WORKFLOW_COMMANDS_SUSPENDED`), so no PR-controlled process can emit `::set-output::`-style commands. `kill_builder_processes()` is the gate that must prove the builder UID owns zero live processes before `resume_workflow_commands` re-enables parsing. The old proof was `if ! sudo pgrep -u \"$BUILDER_UID\" && ! sudo pgrep -U \"$BUILDER_UID\"`, which is a boolean negation: it treats *any* non-zero exit as \"no matches,\" so a usage/syntax error, a missing binary, or a sudo failure (status 2, 126, 127, 1 from sudo itself) reads as a clean reap and unsuspends workflow-command parsing while builder processes may still be alive. The fix captures each probe's exit status directly instead of negating it: `effective_probe_status` from `pgrep -u \"$BUILDER_UID\"` and `real_probe_status` from `pgrep -U \"$BUILDER_UID\"`, each defaulted to 0 and assigned via `|| var=$?`. Only `-eq 1` on *both* probes proves an empty process set and returns 0; either status `-gt 1` prints `unable to prove builder UID process set is empty` to stderr and returns 1 immediately, before the retry loop can spin or parsing can resume. `sudo` was dropped from all four `pgrep` invocations (including the two `-a` diagnostic dumps in the timeout path) so sudo's own exit codes cannot be mistaken for pgrep's documented 0/1/2/3 contract — pgrep enumerates other UIDs without privilege. `cleanup_on_exit` was already fail-closed: a non-zero `cleanup_status` exits with that status and takes precedence over the original build status, skipping `resume_workflow_commands` entirely. Coverage went into the source-contract suite `tests/fixtures/pr-proof-contract.test.ts` (`describe('trusted dispatcher source contract')`), which asserts on the literal workflow YAML text rather than executing it: the two loose `expect(source).toContain('pgrep -u \"$BUILDER_UID\"')` assertions were replaced with four exact-string assertions pinning the status-capture lines and both the `-gt 1` fail-closed and `-eq 1 && -eq 1` success branches. `tests/relayflows/cases/README.md` documents the distinction — each probe must return exactly the documented no-matches status, and probe errors fail closed rather than masquerading as an empty process set. The focused contract run was 68 passed / 1 skipped (Linux-only case), with Prettier, actionlint, parsed Bash syntax, and the diff check all clean. This extends the prior compactions `compact_3w8vxbaxywtd` and `compact_yk93pl8j0xrp`; no unresolved questions remain on the PR.",
+  "decisions": [
+    {
+      "question": "How should the cleanup loop decide that the builder UID owns no live processes?",
+      "chosen": "Capture `pgrep` exit status directly into `effective_probe_status` / `real_probe_status` and require both to be exactly 1",
+      "reasoning": "`! pgrep ...` conflates pgrep's documented status 1 (no matches) with status 2 (syntax error), 3 (fatal), and shell-level 126/127. Under negation every one of those reads as proof of an empty process set.",
+      "impact": "A broken or unavailable probe can no longer unsuspend workflow-command parsing; the security property is now proven, not assumed."
+    },
+    {
+      "question": "What should happen when a probe returns a status above 1?",
+      "chosen": "Fail closed immediately — log `unable to prove builder UID process set is empty` to stderr and `return 1` before the retry sleep",
+      "reasoning": "A probe error is unrecoverable evidence loss, not a transient condition worth retrying; retrying would burn 10s and still resolve to the same unknown.",
+      "impact": "`cleanup_on_exit` propagates the non-zero status and exits without calling `resume_workflow_commands`, keeping parsing suspended and overriding the build status."
+    },
+    {
+      "question": "Keep `sudo` on the `pgrep` probes?",
+      "chosen": "Drop `sudo` from all four `pgrep` calls, including the `-a` diagnostic dumps",
+      "reasoning": "Reading another UID's process table needs no privilege, and sudo interposes its own exit codes (1 on auth/policy failure) that are indistinguishable from pgrep's 'no matches'.",
+      "impact": "The captured status now belongs unambiguously to pgrep, which is what the -gt 1 / -eq 1 branches are written against. `pkill` retains `sudo` because killing does require it."
+    },
+    {
+      "question": "How to test a shell function embedded in a GitHub Actions YAML `run:` block?",
+      "chosen": "Source-contract assertions — `expect(source).toContain(...)` on exact workflow text in `tests/fixtures/pr-proof-contract.test.ts`, plus a parsed-Bash syntax check",
+      "reasoning": "The privileged reap path cannot be executed in CI without a real builder UID and sudo; pinning the exact branch text is the available way to make regressions fail loudly.",
+      "impact": "Rewriting the probe logic without updating the contract breaks the suite. Assertions are brittle by design — that brittleness is the guard."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Never use `! cmd` as a proof of a security-relevant negative. Capture the status with `status=0; cmd || status=$?` and branch on the exact documented value.",
+      "rationale": "Boolean negation in POSIX sh maps every failure mode onto 'false', so error states silently satisfy safety checks.",
+      "scope": "All privileged shell in `.github/workflows/relayflow-pr-proof-broker.yml`; applies to any probe whose failure would unblock a gate."
+    },
+    {
+      "pattern": "Cleanup that gates a security transition must fail closed and take precedence over the wrapped operation's status — `cleanup_on_exit` exits with `cleanup_status` and skips `resume_workflow_commands` on any non-zero.",
+      "rationale": "A green build must not be able to launder a failed reap; the untrusted-process guarantee outranks the build result.",
+      "scope": "The trusted-runner PR-proof broker job and any future suspend/resume-around-untrusted-work pattern."
+    },
+    {
+      "pattern": "Workflow-YAML shell changes ship with matching exact-string assertions in the `trusted dispatcher source contract` describe block in `tests/fixtures/pr-proof-contract.test.ts` and a prose update in `tests/relayflows/cases/README.md`.",
+      "rationale": "The code lives in YAML where neither the type checker nor a unit-test harness reaches it; the source contract plus the README are the only durable specification.",
+      "scope": "Every edit to the PR-proof broker workflow."
+    },
+    {
+      "pattern": "Gate changes are verified with the focused contract run plus Prettier, actionlint, a parsed Bash syntax check, and a diff check before claiming green.",
+      "rationale": "actionlint and Bash parsing catch shell errors that a passing TS assertion on the same text cannot; string assertions prove presence, not validity.",
+      "scope": "CI-workflow work in this repo."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Exit-status semantics matter more than command choice: `pgrep`'s 0/1/2/3 contract is the entire safety argument, and negation erased it.",
+      "context": "The original reap check passed review and CI for multiple iterations because in the happy path it behaves identically — the difference only shows on a malformed or unavailable probe.",
+      "recommendation": "When a check answers 'is it safe to proceed', enumerate the command's full exit-status table and write the branch for each class, treating unknown as unsafe."
+    },
+    {
+      "lesson": "`sudo` wrapped around a read-only probe adds no capability and actively corrupts the status channel.",
+      "context": "`sudo pgrep` was inherited from the adjacent `sudo pkill` lines out of symmetry, not necessity.",
+      "recommendation": "Add `sudo` only where the operation genuinely needs privilege; strip it from probes whose exit status is being interpreted."
+    },
+    {
+      "lesson": "Reviewer-found P1s on this workflow have clustered on 'the check appears to pass when it actually failed to run' — the same class as the earlier fail-closed-on-reap fix (a249dcf40) and the trusted-dispatcher isolation fix (fe20fae2d).",
+      "context": "Three consecutive commits on `ci/pr-proof-broker-artifacts-0901` corrected different instances of a signal being trusted without proof it was produced.",
+      "recommendation": "Audit remaining gates in this workflow with the question 'what does this branch do if the evidence-producing command never ran?' rather than only 'is the logic right when it does run'."
+    },
+    {
+      "lesson": "The Linux-only skip in the focused 68-pass run is expected, not a coverage hole to chase on darwin.",
+      "context": "One contract case depends on Linux process/UID semantics unavailable on the macOS dev machine.",
+      "recommendation": "Report the skip explicitly alongside the pass count so the number is not read as full local coverage; the case runs in CI."
+    }
+  ],
+  "openQuestions": []
+}

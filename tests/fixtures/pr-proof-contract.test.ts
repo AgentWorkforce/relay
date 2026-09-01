@@ -1334,8 +1334,14 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('if [ "$KILL_STATUS" -eq 0 ]; then\n            resume_workflow_commands');
     expect(source).toContain('pkill -KILL -u "$BUILDER_UID"');
     expect(source).toContain('pkill -KILL -U "$BUILDER_UID"');
-    expect(source).toContain('pgrep -u "$BUILDER_UID"');
-    expect(source).toContain('pgrep -U "$BUILDER_UID"');
+    expect(source).toContain('pgrep -u "$BUILDER_UID" >/dev/null 2>&1 || effective_probe_status=$?');
+    expect(source).toContain('pgrep -U "$BUILDER_UID" >/dev/null 2>&1 || real_probe_status=$?');
+    expect(source).toContain(
+      'if [ "$effective_probe_status" -gt 1 ] || [ "$real_probe_status" -gt 1 ]; then'
+    );
+    expect(source).toContain(
+      'if [ "$effective_probe_status" -eq 1 ] && [ "$real_probe_status" -eq 1 ]; then'
+    );
     const cleanup = source.indexOf('kill_builder_processes || KILL_STATUS=$?');
     const killStatusBranch = source.indexOf('if [ "$KILL_STATUS" -ne 0 ]; then');
     const buildStatusBranch = source.indexOf('if [ "$BUILD_STATUS" -ne 0 ]; then');
