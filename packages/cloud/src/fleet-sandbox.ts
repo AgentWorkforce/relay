@@ -97,6 +97,7 @@ export type CloudFleetSandboxReused = {
   status: string;
   activeAgents: number | null;
   maxAgents: number | null;
+  providerId?: CloudFleetSandboxProviderId;
 };
 
 export type CloudFleetSandboxProvisioningTimeout = {
@@ -110,9 +111,7 @@ export type CloudFleetSandboxProvisioningTimeout = {
 };
 
 export type EnsureCloudFleetSandboxResult =
-  | CloudFleetSandboxReady
-  | CloudFleetSandboxReused
-  | CloudFleetSandboxProvisioningTimeout;
+  CloudFleetSandboxReady | CloudFleetSandboxReused | CloudFleetSandboxProvisioningTimeout;
 
 export type DeleteCloudFleetSandboxInput = {
   cloudWorkspaceId: string;
@@ -213,11 +212,17 @@ async function resolveCloudWorkspaceId(
   };
 }
 
-function readProviderId(payload: JsonRecord): CloudFleetSandboxProviderId | undefined {
+function readProviderId(
+  payload: JsonRecord,
+  exactProviderRequested: boolean
+): CloudFleetSandboxProviderId | undefined {
   const value = readString(payload, 'providerId');
   if (value === undefined) return undefined;
   if (value === 'daytona' || value === 'e2b') return value;
-  throw new Error('Cloud fleet sandbox response has an unknown providerId.');
+  if (exactProviderRequested) {
+    throw new Error('Cloud fleet sandbox response has an unknown providerId.');
+  }
+  return undefined;
 }
 
 function cleanupProviderId(
@@ -238,7 +243,7 @@ function normalizeEnsureResult(
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   const outcome = readString(payload, 'outcome');
   const nodeName = requiredString(payload, 'nodeName', 'Cloud fleet sandbox');
-  const providerId = readProviderId(payload);
+  const providerId = readProviderId(payload, requestedProviderId !== undefined);
   if (requestedProviderId !== undefined && providerId !== requestedProviderId) {
     throw new Error(
       providerId === undefined
@@ -275,6 +280,7 @@ function normalizeEnsureResult(
       status: requiredString(payload, 'status', 'Cloud fleet sandbox'),
       activeAgents: readNumber(payload, 'activeAgents') ?? null,
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
+      ...(providerId === undefined ? {} : { providerId }),
     };
   }
 

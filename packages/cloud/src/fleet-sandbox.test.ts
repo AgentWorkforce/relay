@@ -173,6 +173,74 @@ describe('Cloud fleet sandbox client', () => {
     expect(result).toEqual(expect.objectContaining({ providerId: 'e2b' }));
   });
 
+  it('preserves provider attribution on a reused sandbox response', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'reused',
+          providerId: 'e2b',
+          nodeId: 'node-e2b',
+          nodeName: 'e2b-reviewer',
+          status: 'online',
+          activeAgents: 0,
+          maxAgents: 1,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'e2b',
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        outcome: 'reused',
+        providerId: 'e2b',
+      })
+    );
+  });
+
+  it('keeps router-selected responses forward compatible when no exact provider was requested', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'future-provider',
+            nodeId: 'node-future',
+            nodeName: 'future-reviewer',
+            sandboxId: 'sandbox-future',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+      })
+    ).resolves.toEqual(
+      expect.objectContaining({
+        outcome: 'provisioned',
+        sandboxId: 'sandbox-future',
+      })
+    );
+  });
+
   it('rejects and preserves cleanup identity when Cloud cannot prove the requested provider', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
