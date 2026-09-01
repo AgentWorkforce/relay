@@ -181,6 +181,19 @@ to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
 fails, Relay asks Cloud to delete the newly created sandbox.
 
+Large workspaces should select only the live subtree an agent needs. Pass one
+or more explicit directory roots after `--sandbox-relayfile-path`; Cloud
+validates the `/path/**` form and materializes those roots before the agent
+starts:
+
+```bash
+agent-relay fleet spawn claude \
+  --sandbox \
+  --sandbox-relayfile-path '/live-review/run-123/**' \
+  --name reviewer \
+  --task 'Review the live draft under /live-review/run-123'
+```
+
 `--session-ref` is a real CLI resume, not a logical collaboration label. Pass
 the actual Claude session ID or Codex thread ID and target its origin node.
 `--cwd` must name an absolute directory that exists on the selected node. The

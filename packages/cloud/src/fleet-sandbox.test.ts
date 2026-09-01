@@ -135,6 +135,43 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('forwards bounded Relayfile mount paths into the ensure request body', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'scoped-reviewer',
+            sandboxId: 'sandbox-scoped',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:claude',
+      forceProvision: true,
+      relayfilePaths: ['/live-review/run-123/**'],
+    });
+
+    const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
+    expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual({
+      workspaceId: CLOUD_WORKSPACE_ID,
+      requiredCapability: 'spawn:claude',
+      forceProvision: true,
+      relayfilePaths: ['/live-review/run-123/**'],
+    });
+  });
+
   it('requests and verifies an exact E2B provider', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({

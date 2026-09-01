@@ -163,6 +163,10 @@ export function registerFleetCommands(
       )
       .option('--sandbox-name <name>', 'Name for the provisioned sandbox fleet node')
       .option('--sandbox-provider <provider>', 'Sandbox provider: daytona or e2b')
+      .option(
+        '--sandbox-relayfile-path <path...>',
+        'Mount only these Relayfile subtrees (each path must end in /**)'
+      )
       .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
@@ -203,6 +207,7 @@ export function registerFleetCommands(
         throw new Error('--sandbox-provider must be daytona or e2b.');
       }
       const mountSandboxRelayfile = options.sandboxRelayfile !== false;
+      const sandboxRelayfilePaths = optionalTextList(options.sandboxRelayfilePath, 'Sandbox Relayfile path');
       if (useSandbox && targetNode) {
         throw new Error('--sandbox cannot be combined with --node or --target-node.');
       }
@@ -214,6 +219,12 @@ export function registerFleetCommands(
       }
       if (!useSandbox && options.sandboxRelayfile === false) {
         throw new Error('--no-sandbox-relayfile requires --sandbox.');
+      }
+      if (!useSandbox && sandboxRelayfilePaths) {
+        throw new Error('--sandbox-relayfile-path requires --sandbox.');
+      }
+      if (!mountSandboxRelayfile && sandboxRelayfilePaths) {
+        throw new Error('--sandbox-relayfile-path cannot be combined with --no-sandbox-relayfile.');
       }
       const channel = optionalText(options.channel, 'Channel');
       const model = optionalText(options.model, 'Model');
@@ -250,6 +261,7 @@ export function registerFleetCommands(
             requiredCapability: `spawn:${cli}`,
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
+            ...(sandboxRelayfilePaths === undefined ? {} : { relayfilePaths: sandboxRelayfilePaths }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
             waitTimeoutMs: 90_000,
@@ -535,6 +547,15 @@ function requiredText(value: unknown, label: string): string {
 function optionalText(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   return requiredText(value, label);
+}
+
+function optionalTextList(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} is required.`);
+  }
+  const normalized = value.map((entry) => requiredText(entry, label));
+  return [...new Set(normalized)];
 }
 
 /** Quote untrusted names in the copy-pasteable attach command printed on success. */
