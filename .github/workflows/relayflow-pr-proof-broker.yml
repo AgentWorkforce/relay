@@ -3,20 +3,14 @@ name: RelayFlow PR Proof Broker
 on:
   push:
     branches: [main]
-    paths:
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/relayflow-pr-proof-broker.yml'
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
     paths:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/relayflow-pr-proof-broker.yml'
-  workflow_dispatch:
-
+      - 'tests/relayflows/cases/**'
 permissions:
   contents: read
 

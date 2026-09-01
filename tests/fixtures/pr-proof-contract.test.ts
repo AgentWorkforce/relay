@@ -496,6 +496,9 @@ describe('exact broker artifact handoff', () => {
       return Response.json({
         path: '.github/workflows/relayflow-pr-proof-broker.yml',
         conclusion: 'success',
+        head_sha: sha,
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
       });
     };
     await expect(
@@ -507,6 +510,170 @@ describe('exact broker artifact handoff', () => {
         fetchImpl,
       })
     ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+  });
+
+  it('rejects an artifact whose workflow run belongs to another source SHA', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: '4'.repeat(40),
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow(
+      `No successful .github/workflows/relayflow-pr-proof-broker.yml artifact named relayflow-broker-${sha} after 1 attempts`
+    );
+  });
+
+  it.each([
+    ['pull_request', 'feature/exact-broker'],
+    ['workflow_dispatch', 'main'],
+    ['push', 'feature/exact-broker'],
+  ])('rejects an artifact from untrusted event %s on %s', async (event, headBranch) => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event,
+        head_branch: headBranch,
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow(
+      `No successful .github/workflows/relayflow-pr-proof-broker.yml artifact named relayflow-broker-${sha} after 1 attempts`
+    );
+  });
+
+  it('accepts an exact artifact from a main push', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event: 'push',
+        head_branch: 'main',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+  });
+
+  it('waits for the exact broker workflow artifact to finish', async () => {
+    const sha = '3'.repeat(40);
+    let listingCalls = 0;
+    let sleeps = 0;
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        listingCalls += 1;
+        return Response.json({
+          artifacts:
+            listingCalls === 1
+              ? []
+              : [
+                  {
+                    name: `relayflow-broker-${sha}`,
+                    expired: false,
+                    updated_at: '2026-09-01T00:00:00Z',
+                    workflow_run: { id: 42 },
+                  },
+                ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 2,
+        pollIntervalMs: 25,
+        sleepImpl: async (milliseconds: number) => {
+          expect(milliseconds).toBe(25);
+          sleeps += 1;
+        },
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+    expect(listingCalls).toBe(2);
+    expect(sleeps).toBe(1);
   });
 
   it('verifies exact source provenance and binary digest before staging', async () => {
@@ -820,11 +987,19 @@ describe('trusted dispatcher source contract', () => {
 
   it('builds proof brokers from an attested exact checkout without secrets', async () => {
     const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
+    const triggerSection = source.slice(source.indexOf('on:'), source.indexOf('permissions:'));
+    const pushSection = source.slice(source.indexOf('  push:'), source.indexOf('  pull_request_target:'));
+    expect(triggerSection).toContain('  pull_request_target:');
+    expect(triggerSection).not.toContain('  pull_request:');
+    expect(triggerSection).not.toContain('  workflow_dispatch:');
     expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
     expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
     expect(source).toContain('persist-credentials: false');
+    expect(source).toContain('permissions:\n  contents: read');
     expect(source).toContain('cargo build --locked --release');
     expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
+    expect(source).toContain("- 'tests/relayflows/cases/**'");
+    expect(pushSection).not.toContain('paths:');
     expect(source).not.toContain('secrets.');
   });
 
