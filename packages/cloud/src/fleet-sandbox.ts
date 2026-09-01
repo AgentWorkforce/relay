@@ -111,7 +111,9 @@ export type CloudFleetSandboxProvisioningTimeout = {
 };
 
 export type EnsureCloudFleetSandboxResult =
-  CloudFleetSandboxReady | CloudFleetSandboxReused | CloudFleetSandboxProvisioningTimeout;
+  | CloudFleetSandboxReady
+  | CloudFleetSandboxReused
+  | CloudFleetSandboxProvisioningTimeout;
 
 export type DeleteCloudFleetSandboxInput = {
   cloudWorkspaceId: string;
