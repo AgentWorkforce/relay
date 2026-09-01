@@ -38,7 +38,8 @@ while len(payload) < size:
         raise RuntimeError("broker payload ended before declared size")
     payload.extend(chunk)
 
-flags = os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+MFD_EXEC = getattr(os, "MFD_EXEC", 0x10)
+flags = os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MFD_EXEC
 fd = os.memfd_create("relay-pr-proof-broker", flags)
 view = memoryview(payload)
 written = 0

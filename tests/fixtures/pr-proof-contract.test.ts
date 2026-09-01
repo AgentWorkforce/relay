@@ -745,7 +745,7 @@ describe('exact broker artifact handoff', () => {
     expect(sleeps).toBe(1);
   });
 
-  it('waits longer than the broker producer timeout by default', async () => {
+  it('waits through producer queue headroom and the broker timeout by default', async () => {
     let elapsedMs = 0;
     let listingCalls = 0;
     const fetchImpl = async () => {
@@ -763,9 +763,11 @@ describe('exact broker artifact handoff', () => {
           elapsedMs += milliseconds;
         },
       })
-    ).rejects.toThrow('after 182 attempts');
-    expect(listingCalls).toBe(182);
-    expect(elapsedMs).toBeGreaterThan(30 * 60_000);
+    ).rejects.toThrow(
+      'allows 10 minutes for Actions queue/start delay and 30 minutes for producer execution'
+    );
+    expect(listingCalls).toBe(242);
+    expect(elapsedMs).toBeGreaterThan(40 * 60_000);
   });
 
   it('verifies exact source provenance and binary digest before staging', async () => {
@@ -1143,11 +1145,19 @@ describe('trusted dispatcher source contract', () => {
     const resolver = await readFile('scripts/pr-proof/resolve-broker-artifacts.mjs', 'utf8');
     const dispatcherMinutes = Number(dispatcher.match(/timeout-minutes: (\d+)/)?.[1]);
     const cloudTimeoutMs = Number(dispatcher.match(/PR_PROOF_CLOUD_TIMEOUT_MS: '(\d+)'/)?.[1]);
-    const brokerBuildMinutes = Number(resolver.match(/BROKER_BUILD_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
+    const brokerProducerMinutes = Number(resolver.match(/BROKER_PRODUCER_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
+    const brokerQueueMinutes = Number(resolver.match(/BROKER_QUEUE_HEADROOM_MS = (\d+) \* 60_000/)?.[1]);
+    const pollIntervalMs = Number(
+      resolver.match(/RESOLVE_POLL_INTERVAL_MS = ([\d_]+)/)?.[1]?.replaceAll('_', '')
+    );
+    const pollSlackAttempts = Number(resolver.match(/RESOLVE_POLL_SLACK_ATTEMPTS = (\d+)/)?.[1]);
     const setupHeadroomMs = 5 * 60_000;
     expect(resolver).toContain('const [base, head] = await Promise.all([');
     expect(dispatcherMinutes * 60_000).toBeGreaterThanOrEqual(
-      brokerBuildMinutes * 60_000 + cloudTimeoutMs + setupHeadroomMs
+      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 +
+        pollSlackAttempts * pollIntervalMs +
+        cloudTimeoutMs +
+        setupHeadroomMs
     );
   });
 
@@ -1203,6 +1213,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('fcntl.F_ADD_SEALS');
     expect(source).toContain('fcntl.F_SEAL_WRITE');
     expect(source).toContain('F_SEAL_EXEC');
+    expect(source).toContain('MFD_EXEC = getattr(os, "MFD_EXEC", 0x10)');
+    expect(source).toContain('os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MFD_EXEC');
     expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
   });
 

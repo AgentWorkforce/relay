@@ -5,9 +5,13 @@ import { pathToFileURL } from 'node:url';
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 const WORKFLOW_PATH = '.github/workflows/relayflow-pr-proof-broker.yml';
-const BROKER_BUILD_TIMEOUT_MS = 30 * 60_000;
+const BROKER_PRODUCER_TIMEOUT_MS = 30 * 60_000;
+const BROKER_QUEUE_HEADROOM_MS = 10 * 60_000;
 const RESOLVE_POLL_INTERVAL_MS = 10_000;
-const MAX_RESOLVE_ATTEMPTS = Math.ceil(BROKER_BUILD_TIMEOUT_MS / RESOLVE_POLL_INTERVAL_MS) + 2;
+const RESOLVE_POLL_SLACK_ATTEMPTS = 2;
+const MAX_RESOLVE_ATTEMPTS =
+  Math.ceil((BROKER_PRODUCER_TIMEOUT_MS + BROKER_QUEUE_HEADROOM_MS) / RESOLVE_POLL_INTERVAL_MS) +
+  RESOLVE_POLL_SLACK_ATTEMPTS;
 
 function option(name, fallback = null) {
   const index = process.argv.indexOf(name);
@@ -93,7 +97,7 @@ export async function resolveBrokerArtifact({
     ? ' The prior artifact expired after the 90-day retention window; update/rebase the PR onto current main and push a refreshed head to trigger trusted exact-SHA rebuilds.'
     : '';
   throw new Error(
-    `No successful ${WORKFLOW_PATH} artifact named ${artifactName} after ${maxAttempts} attempts.${recovery}`
+    `No successful ${WORKFLOW_PATH} artifact named ${artifactName} after ${maxAttempts} attempts. The default resolver budget allows 10 minutes for Actions queue/start delay and 30 minutes for producer execution, plus poll slack.${recovery}`
   );
 }
 
