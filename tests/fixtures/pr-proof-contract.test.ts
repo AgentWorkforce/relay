@@ -50,7 +50,10 @@ import {
   verifyProtectedBrokerExecutable,
 } from '../../scripts/pr-proof/run-arm.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { resolveBrokerArtifact } from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
+import {
+  resolveBrokerArtifact,
+  resolveBrokerArtifactPair,
+} from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { inspectBrokerArtifact } from '../../scripts/pr-proof/stage-broker-artifacts.mjs';
 
@@ -542,7 +545,7 @@ describe('exact broker artifact handoff', () => {
     expect(inspectedRunIds).toEqual([44, 43, 42]);
   });
 
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5])(
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1.5, 2_147_483_648])(
     'rejects invalid polling interval %s before querying GitHub',
     async (pollIntervalMs) => {
       const fetchImpl = vi.fn();
@@ -750,6 +753,50 @@ describe('exact broker artifact handoff', () => {
     expect(sleeps).toBe(1);
   });
 
+  it('aborts the sibling exact-SHA lookup when either concurrent resolution fails', async () => {
+    const baseSha = '3'.repeat(40);
+    const headSha = '4'.repeat(40);
+    let beginBaseFailure: (() => void) | undefined;
+    const headSleeping = new Promise<void>((resolve) => {
+      beginBaseFailure = resolve;
+    });
+    let siblingAborted = false;
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes(`relayflow-broker-${baseSha}`)) {
+        await headSleeping;
+        return new Response('failed', { status: 500 });
+      }
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return Response.json({ artifacts: [] });
+    };
+    const sleepImpl = async (_milliseconds: number, { signal }: { signal: AbortSignal }) => {
+      beginBaseFailure?.();
+      await new Promise<never>((_resolve, reject) => {
+        const onAbort = () => {
+          siblingAborted = true;
+          reject(signal.reason);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+    };
+
+    await expect(
+      resolveBrokerArtifactPair({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        baseSha,
+        headSha,
+        fetchImpl,
+        maxAttempts: 2,
+        pollIntervalMs: 10_000,
+        sleepImpl,
+      })
+    ).rejects.toThrow('GitHub API 500');
+    expect(siblingAborted).toBe(true);
+  });
+
   it('waits through producer queue headroom and the broker timeout by default', async () => {
     let elapsedMs = 0;
     let listingCalls = 0;
@@ -771,8 +818,8 @@ describe('exact broker artifact handoff', () => {
     ).rejects.toThrow(
       'allows 10 minutes for Actions queue/start delay and 30 minutes for producer execution'
     );
-    expect(listingCalls).toBe(242);
-    expect(elapsedMs).toBeGreaterThan(40 * 60_000);
+    expect(listingCalls).toBe(243);
+    expect(elapsedMs).toBe(40 * 60_000 + 20_000);
   });
 
   it('verifies exact source provenance and binary digest before staging', async () => {

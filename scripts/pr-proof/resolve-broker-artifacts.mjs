@@ -11,7 +11,9 @@ const RESOLVE_POLL_INTERVAL_MS = 10_000;
 const RESOLVE_POLL_SLACK_ATTEMPTS = 2;
 const MAX_RESOLVE_ATTEMPTS =
   Math.ceil((BROKER_PRODUCER_TIMEOUT_MS + BROKER_QUEUE_HEADROOM_MS) / RESOLVE_POLL_INTERVAL_MS) +
+  1 +
   RESOLVE_POLL_SLACK_ATTEMPTS;
+const MAX_TIMER_MS = 2_147_483_647;
 
 function option(name, fallback = null) {
   const index = process.argv.indexOf(name);
@@ -27,14 +29,34 @@ function headers(token) {
   };
 }
 
-async function githubJson(url, token, fetchImpl) {
-  const response = await fetchImpl(url, { headers: headers(token) });
+function abortReason(signal) {
+  return signal?.reason instanceof Error ? signal.reason : new Error('Broker artifact resolution aborted');
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+async function githubJson(url, token, fetchImpl, signal) {
+  throwIfAborted(signal);
+  const response = await fetchImpl(url, { headers: headers(token), signal });
   if (!response.ok) throw new Error(`GitHub API ${response.status} for ${url}`);
   return response.json();
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function sleep(milliseconds, { signal } = {}) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export async function resolveBrokerArtifact({
@@ -46,13 +68,15 @@ export async function resolveBrokerArtifact({
   maxAttempts = MAX_RESOLVE_ATTEMPTS,
   pollIntervalMs = RESOLVE_POLL_INTERVAL_MS,
   sleepImpl = sleep,
+  signal,
 }) {
   if (!SHA_RE.test(sha)) throw new Error('broker artifact SHA must be a full lowercase SHA');
   if (
     !Number.isInteger(maxAttempts) ||
     maxAttempts < 1 ||
     !Number.isInteger(pollIntervalMs) ||
-    pollIntervalMs < 0
+    pollIntervalMs < 1 ||
+    pollIntervalMs > MAX_TIMER_MS
   ) {
     throw new Error('broker artifact polling bounds are invalid');
   }
@@ -62,7 +86,8 @@ export async function resolveBrokerArtifact({
     const listing = await githubJson(
       `${apiUrl}/repos/${repository}/actions/artifacts?name=${artifactName}&per_page=100`,
       token,
-      fetchImpl
+      fetchImpl,
+      signal
     );
     const artifacts = Array.isArray(listing.artifacts)
       ? listing.artifacts.filter((artifact) => artifact?.name === artifactName)
@@ -75,7 +100,12 @@ export async function resolveBrokerArtifact({
     for (const artifact of candidates) {
       const runId = artifact.workflow_run?.id;
       if (!Number.isInteger(runId) || runId < 1) continue;
-      const run = await githubJson(`${apiUrl}/repos/${repository}/actions/runs/${runId}`, token, fetchImpl);
+      const run = await githubJson(
+        `${apiUrl}/repos/${repository}/actions/runs/${runId}`,
+        token,
+        fetchImpl,
+        signal
+      );
       const trustedEvent =
         run.event === 'pull_request_target' ||
         (['push', 'schedule'].includes(run.event) && run.head_branch === 'main');
@@ -90,7 +120,7 @@ export async function resolveBrokerArtifact({
       return { artifactName, runId };
     }
 
-    if (attempt < maxAttempts) await sleepImpl(pollIntervalMs);
+    if (attempt < maxAttempts) await sleepImpl(pollIntervalMs, { signal });
   }
 
   const recovery = sawExpiredArtifact
@@ -99,6 +129,20 @@ export async function resolveBrokerArtifact({
   throw new Error(
     `No successful ${WORKFLOW_PATH} artifact named ${artifactName} after ${maxAttempts} attempts. The default resolver budget allows 10 minutes for Actions queue/start delay and 30 minutes for producer execution, plus poll slack.${recovery}`
   );
+}
+
+export async function resolveBrokerArtifactPair({ baseSha, headSha, ...options }) {
+  const controller = new AbortController();
+  const resolveOne = async (sha) => {
+    try {
+      return await resolveBrokerArtifact({ ...options, sha, signal: controller.signal });
+    } catch (error) {
+      controller.abort(error);
+      throw error;
+    }
+  };
+  const [base, head] = await Promise.all([resolveOne(baseSha), resolveOne(headSha)]);
+  return { base, head };
 }
 
 async function main() {
@@ -111,10 +155,13 @@ async function main() {
     throw new Error('GITHUB_OUTPUT, GITHUB_TOKEN, and GITHUB_REPOSITORY are required');
   }
   const input = JSON.parse(await readFile(inputPath, 'utf8'));
-  const [base, head] = await Promise.all([
-    resolveBrokerArtifact({ apiUrl, repository, token, sha: input.baseSha }),
-    resolveBrokerArtifact({ apiUrl, repository, token, sha: input.headSha }),
-  ]);
+  const { base, head } = await resolveBrokerArtifactPair({
+    apiUrl,
+    repository,
+    token,
+    baseSha: input.baseSha,
+    headSha: input.headSha,
+  });
   await appendFile(
     outputPath,
     [
