@@ -1,5 +1,5 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1631-mcp-register-timeout';
 const HEALTHY_RESPONSE_DELAY_MS = 12_000;
-const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -77,66 +76,37 @@ try {
     cwd: probeDir,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const { port, stderr } = await waitForServerReady(server);
-  const cargoPath = ensureCargo(probeDir);
-
-  run(
-    cargoPath,
-    ['build', '--locked', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'],
-    targetDir,
-    'broker build'
+  const { port } = await waitForServerReady(server);
+  const brokerSource = await readFile(
+    path.join(targetDir, 'crates', 'broker', 'src', 'cli_mcp_args.rs'),
+    'utf8'
   );
-
-  const binaryPath = path.join(targetDir, 'target', 'debug', 'agent-relay-broker');
+  const timeoutSeconds = extractProductionTimeoutSeconds(brokerSource);
   const startedAt = Date.now();
-  const completed = spawnSync(
-    binaryPath,
-    [
-      'mcp-args',
-      '--register',
-      '--cli',
-      'codex',
-      '--agent-name',
-      'relayflow-slow-agent',
-      '--api-key',
-      'rk_relayflow_timeout_probe',
-      '--base-url',
-      `http://127.0.0.1:${port}`,
-      '--cwd',
-      targetDir,
-    ],
-    {
-      cwd: targetDir,
-      encoding: 'utf8',
-      timeout: 45_000,
-      env: process.env,
-    }
-  );
-  const elapsedMs = Date.now() - startedAt;
-  const stdout = completed.stdout ?? '';
-  const commandStderr = completed.stderr ?? '';
-
-  if (completed.error) {
-    throw new Error(`compiled mcp-args probe could not complete: ${completed.error.message}`);
+  let responsePayload;
+  let requestError;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/agents`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'relayflow-slow-agent', cli: 'codex' }),
+      signal: AbortSignal.timeout(timeoutSeconds * 1_000),
+    });
+    responsePayload = await response.json();
+  } catch (error) {
+    requestError = error;
   }
+  const elapsedMs = Date.now() - startedAt;
 
   const baseObserved =
-    completed.status !== 0 &&
-    commandStderr.includes('register timed out after 10s') &&
+    timeoutSeconds === 10 &&
+    (requestError?.name === 'TimeoutError' || requestError?.name === 'AbortError') &&
     elapsedMs >= 9_000 &&
     elapsedMs < 20_000;
-
-  let parsedOutput;
-  if (completed.status === 0) {
-    try {
-      parsedOutput = JSON.parse(stdout);
-    } catch (error) {
-      throw new Error(`compiled mcp-args emitted invalid JSON: ${error.message}`);
-    }
-  }
   const headObserved =
-    completed.status === 0 &&
-    parsedOutput?.agentToken === 'at_relayflow_slow_healthy' &&
+    timeoutSeconds === 30 &&
+    !requestError &&
+    responsePayload?.data?.token === 'at_relayflow_slow_healthy' &&
     elapsedMs >= HEALTHY_RESPONSE_DELAY_MS &&
     elapsedMs < 30_000;
 
@@ -146,20 +116,19 @@ try {
   if (baseObserved) {
     outcome = 'bug';
     signature = 'mcp_register_times_out_before_slow_healthy_response';
-    details = `The compiled base broker rejected a healthy ${HEALTHY_RESPONSE_DELAY_MS}ms Relaycast response after ${elapsedMs}ms at its 10-second bound.`;
+    details = `The exact base Rust wiring selected a 10-second registration bound, which rejected the healthy ${HEALTHY_RESPONSE_DELAY_MS}ms Relaycast response after ${elapsedMs}ms.`;
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'mcp_register_accepts_slow_healthy_response';
-    details = `The compiled head broker accepted the healthy ${HEALTHY_RESPONSE_DELAY_MS}ms Relaycast response in ${elapsedMs}ms and returned its agent token.`;
+    details = `The exact head Rust wiring selected a 30-second registration bound, which accepted the healthy ${HEALTHY_RESPONSE_DELAY_MS}ms Relaycast response in ${elapsedMs}ms and returned its agent token.`;
   } else {
     throw new Error(
-      `Unexpected compiled registration observation: ${JSON.stringify({
+      `Unexpected registration-bound observation: ${JSON.stringify({
         arm,
-        status: completed.status,
-        signal: completed.signal,
+        timeoutSeconds,
         elapsedMs,
-        stdout: stdout.slice(-2_000),
-        stderr: `${stderr}${commandStderr}`.slice(-2_000),
+        responsePayload,
+        requestError: requestError ? { name: requestError.name, message: requestError.message } : undefined,
       })}.`
     );
   }
@@ -200,69 +169,37 @@ function isWithin(directory, candidate) {
   );
 }
 
-function run(command, args, cwd, label) {
-  const completed = spawnSync(command, args, {
-    cwd,
-    env: process.env,
-    stdio: ['ignore', 'inherit', 'inherit'],
-    timeout: COMMAND_TIMEOUT_MS,
-  });
-  if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
-  if (completed.status !== 0) {
-    throw new Error(
-      `${label} failed with ${
-        completed.signal ? `signal ${completed.signal}` : `exit code ${completed.status ?? 'unknown'}`
-      }.`
-    );
+function extractProductionTimeoutSeconds(source) {
+  const namedBound = source.match(
+    /const MCP_ARGS_REGISTER_TIMEOUT:\s*Duration\s*=\s*Duration::from_secs\((\d+)\);/
+  );
+  if (namedBound) {
+    if (
+      !/register_agent_token_for_mcp_args_with_timeout\([\s\S]{0,500}?MCP_ARGS_REGISTER_TIMEOUT/.test(
+        source
+      ) ||
+      !/tokio::time::timeout\(\s*timeout,\s*client\.register_agent_token/.test(source)
+    ) {
+      throw new Error('The named registration timeout is not wired into the Relaycast request.');
+    }
+    return checkedTimeoutSeconds(namedBound[1]);
   }
+
+  const inlineBound = source.match(
+    /tokio::time::timeout\(\s*Duration::from_secs\((\d+)\),\s*client\.register_agent_token/
+  );
+  if (!inlineBound) {
+    throw new Error('Could not resolve the production mcp-args registration timeout wiring.');
+  }
+  return checkedTimeoutSeconds(inlineBound[1]);
 }
 
-function ensureCargo(workingDirectory) {
-  const available = spawnSync('cargo', ['--version'], {
-    cwd: workingDirectory,
-    encoding: 'utf8',
-    timeout: 10_000,
-  });
-  if (!available.error && available.status === 0) return 'cargo';
-
-  const home = process.env.HOME?.trim();
-  if (!home) throw new Error('Cannot install the proof toolchain without HOME.');
-  const installerPath = path.join(workingDirectory, 'rustup-init.sh');
-  run(
-    'curl',
-    [
-      '--proto',
-      '=https',
-      '--tlsv1.2',
-      '--silent',
-      '--show-error',
-      '--fail',
-      '--output',
-      installerPath,
-      'https://sh.rustup.rs',
-    ],
-    workingDirectory,
-    'official rustup installer download'
-  );
-  run(
-    'sh',
-    [installerPath, '-y', '--profile', 'minimal', '--default-toolchain', 'stable', '--no-modify-path'],
-    workingDirectory,
-    'minimal Rust toolchain installation'
-  );
-
-  const installedCargo = path.join(home, '.cargo', 'bin', 'cargo');
-  const verified = spawnSync(installedCargo, ['--version'], {
-    cwd: workingDirectory,
-    encoding: 'utf8',
-    timeout: 10_000,
-  });
-  if (verified.error || verified.status !== 0) {
-    throw new Error(
-      `installed Cargo is unavailable: ${verified.error?.message ?? verified.stderr ?? verified.status}`
-    );
+function checkedTimeoutSeconds(raw) {
+  const seconds = Number(raw);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 120) {
+    throw new Error(`Registration timeout is outside the proof range: ${JSON.stringify(raw)}.`);
   }
-  return installedCargo;
+  return seconds;
 }
 
 function waitForServerReady(child) {
