@@ -126,12 +126,20 @@ const probeConfigSource = `export default {
 try {
   run(
     'npm',
-    ['ci', '--ignore-scripts', '--workspace', 'packages/cloud', '--include-workspace-root=false'],
+    ['ci', '--ignore-scripts'],
     targetDir,
-    'Cloud workspace dependency installation'
+    'workspace dependency installation'
   );
+  run('npm', ['run', 'build:session'], targetDir, 'session package build');
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
+  run('npm', ['run', 'build:utils'], targetDir, 'utilities package build');
+  run('npm', ['run', 'build:policy'], targetDir, 'policy package build');
+  run('npm', ['run', 'build:sdk'], targetDir, 'SDK package build');
+  run('npm', ['run', 'build:harness-driver'], targetDir, 'harness driver package build');
+  run('npm', ['run', 'build:harnesses'], targetDir, 'harnesses package build');
+  run('npm', ['run', 'build:fleet'], targetDir, 'fleet package build');
+  run('npm', ['run', 'build:cli'], targetDir, 'CLI package build');
 
   await writeGeneratedFile(probePath, probeSource);
   await writeGeneratedFile(probeConfigPath, probeConfigSource);
@@ -144,8 +152,13 @@ try {
   );
 
   const observation = JSON.parse(await readFile(probeObservationPath, 'utf8'));
-  const cliSource = await readFile(path.join(targetDir, 'packages/cli/src/cli/commands/fleet.ts'), 'utf8');
-  const cliHasScopedMountFlag = cliSource.includes("'--sandbox-relayfile-path <path...>'");
+  const cliHelp = runCapture(
+    process.execPath,
+    [path.join(targetDir, 'packages/cli/dist/cli/index.js'), 'fleet', 'spawn', '--help'],
+    targetDir,
+    'compiled fleet spawn help'
+  );
+  const cliHasScopedMountFlag = cliHelp.includes('--sandbox-relayfile-path <path...>');
   const requestedPaths = ['/live-review/run-123/**', '/live-review/run-123/reviews/**'];
   const baseObserved = observation.relayfilePaths === null && !cliHasScopedMountFlag;
   const headObserved =
@@ -242,4 +255,22 @@ function run(command, args, cwd, label, extraEnv = {}) {
       }.`
     );
   }
+}
+
+function runCapture(command, args, cwd, label, extraEnv = {}) {
+  const completed = spawnSync(command, args, {
+    cwd,
+    env: { ...process.env, ...extraEnv },
+    encoding: 'utf8',
+    timeout: COMMAND_TIMEOUT_MS,
+  });
+  if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
+  if (completed.status !== 0) {
+    throw new Error(
+      `${label} failed with ${
+        completed.signal ? `signal ${completed.signal}` : `exit code ${completed.status ?? 'unknown'}`
+      }: ${completed.stderr?.slice(-2000) ?? ''}`
+    );
+  }
+  return completed.stdout;
 }
