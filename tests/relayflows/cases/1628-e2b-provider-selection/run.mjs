@@ -5,6 +5,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1628-e2b-provider-selection';
+const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -216,6 +217,7 @@ function run(command, args, cwd, label, extraEnv = {}) {
     cwd,
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'inherit', 'inherit'],
+    timeout: COMMAND_TIMEOUT_MS,
   });
   if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
   if (completed.status !== 0) {
