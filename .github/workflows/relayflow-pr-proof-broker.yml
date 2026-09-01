@@ -131,11 +131,11 @@ jobs:
             set +e
             kill_builder_processes
             cleanup_status=$?
-            resume_workflow_commands
-            if [ "$original_status" -ne 0 ]; then
-              exit "$original_status"
+            if [ "$cleanup_status" -ne 0 ]; then
+              exit "$cleanup_status"
             fi
-            exit "$cleanup_status"
+            resume_workflow_commands
+            exit "$original_status"
           }
           trap cleanup_on_exit EXIT
 
@@ -175,14 +175,16 @@ jobs:
 
           KILL_STATUS=0
           kill_builder_processes || KILL_STATUS=$?
-          resume_workflow_commands
+          if [ "$KILL_STATUS" -eq 0 ]; then
+            resume_workflow_commands
+          fi
           trap - EXIT
 
-          if [ "$BUILD_STATUS" -ne 0 ]; then
-            exit "$BUILD_STATUS"
-          fi
           if [ "$KILL_STATUS" -ne 0 ]; then
             exit "$KILL_STATUS"
+          fi
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            exit "$BUILD_STATUS"
           fi
 
           BUILDER_BROKER="$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/agent-relay-broker"

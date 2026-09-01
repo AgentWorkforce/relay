@@ -1330,14 +1330,20 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('test "$(status_value NoNewPrivs)" = 1');
     expect(source).toContain('echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"');
     expect(source).toContain('trap cleanup_on_exit EXIT');
+    expect(source).toContain('if [ "$cleanup_status" -ne 0 ]; then\n              exit "$cleanup_status"');
+    expect(source).toContain('if [ "$KILL_STATUS" -eq 0 ]; then\n            resume_workflow_commands');
     expect(source).toContain('pkill -KILL -u "$BUILDER_UID"');
     expect(source).toContain('pkill -KILL -U "$BUILDER_UID"');
     expect(source).toContain('pgrep -u "$BUILDER_UID"');
     expect(source).toContain('pgrep -U "$BUILDER_UID"');
     const cleanup = source.indexOf('kill_builder_processes || KILL_STATUS=$?');
+    const killStatusBranch = source.indexOf('if [ "$KILL_STATUS" -ne 0 ]; then');
+    const buildStatusBranch = source.indexOf('if [ "$BUILD_STATUS" -ne 0 ]; then');
     const stage = source.indexOf('"$BUILDER_BROKER" "$STAGING_DIR/agent-relay-broker"');
     expect(cleanup).toBeGreaterThan(cargoBuild);
-    expect(stage).toBeGreaterThan(cleanup);
+    expect(killStatusBranch).toBeGreaterThan(cleanup);
+    expect(buildStatusBranch).toBeGreaterThan(killStatusBranch);
+    expect(stage).toBeGreaterThan(buildStatusBranch);
     expect(source).toContain(
       'BROKER_SOURCE: ${{ runner.temp }}/relay-pr-proof-builder/staging/agent-relay-broker'
     );
