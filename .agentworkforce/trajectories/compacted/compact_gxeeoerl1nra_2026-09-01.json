@@ -1,0 +1,98 @@
+{
+  "id": "compact_gxeeoerl1nra",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-01T21:26:50.187Z",
+  "sourceTrajectories": [
+    "traj_80sjlgbdgfry"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T21:26:48.761Z",
+    "end": "2026-09-01T21:26:49.388Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Preserve the l316 record as explicitly historical and superseded",
+          "chosen": "Preserve the l316 record as explicitly historical and superseded",
+          "reasoning": "Deleting the artifact would erase useful review history, while leaving its direct non-root pgrep claims in present tense contradicts PR head. Both JSON and Markdown now point to compact_dq76p869lqu0 as the current root sentinel contract.",
+          "fromTrajectory": "traj_80sjlgbdgfry"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": [],
+  "narrative": "A single short lead-only session (traj_80sjlgbdgfry, ~0m of wall time on branch `ci/pr-proof-broker-artifacts-0901`) did documentation-only cleanup on the compacted trajectory records introduced by PR #1632, the PR-proof broker artifact workflow (`.github/workflows/relayflow-pr-proof-broker.yml`). No runtime, workflow, or test code was touched; the entire diff is four files under `.agentworkforce/trajectories/compacted/` (`compact_l31655y2bfxb_2026-09-01.json`/`.md`, `compact_yk93pl8j0xrp_2026-09-01.md`, `compact_7vtl6izw94q9_2026-09-01.md`), 52 insertions / 77 deletions, with zero commits recorded in the trajectory itself. The substantive change was reconciling `compact_l31655y2bfxb` with PR head. That record described the builder-UID reap proof as unprivileged `pgrep -u \"$BUILDER_UID\"` / `pgrep -U \"$BUILDER_UID\"` with direct exit-status capture (`effective_probe_status` / `real_probe_status`, both required `-eq 1`, `-gt 1` fails closed, `sudo` deliberately stripped from all four probes). That design was later superseded by `compact_dq76p869lqu0`, which found it unsound: on a `/proc` mounted with `hidepid`, a non-root `pgrep` returns exit 1 for another UID's live processes — indistinguishable from a successful reap. The head implementation is `probe_builder_uid()` running `/usr/bin/pgrep` as root via `sudo --non-interactive env -i PATH=/usr/bin:/bin`, with the inner shell mapping outcomes to disjoint sentinels (`0) exit 10` match, `1) exit 11` no-match, `*) exit 12` error), the caller accepting only the pair `11:11`, retrying only `10:10|10:11|11:10`, and failing closed on everything else. Rather than delete the stale record, the session rewrote it as explicitly historical: a \"Historical intermediate only\" preamble, decision rows reframed as \"what was implemented at this historical intermediate stage\" vs \"what is the current cleanup proof\", trimmed conventions/lessons pointing at `compact_dq76p869lqu0`, and a closing \"Do not use the non-root status-one design from this historical record as the current contract.\" The rest was markdownlint hygiene across every compact PR #1632 introduced: MD058 blank lines inserted before the `## Key Decisions` tables in `compact_7vtl6izw94q9`, `compact_yk93pl8j0xrp`, and `compact_l31655y2bfxb` (and around its Conventions/Lessons/Open Questions/Stats sections), and MD047 trailing newlines added to files that ended `\\ No newline at end of file`. This follows a CodeRabbit MD058 finding on `compact_3w8vxbaxywtd_2026-09-01.md` fixed in the prior pass — this session generalized that fix to the remaining compacts. Validation was `trail doctor`, JSON parse of the rewritten `.json`, Prettier, diff check, and targeted MD047/MD058 lint; all passed. The retrospective records no unresolved questions on the PR itself.",
+  "decisions": [
+    {
+      "question": "Should the now-inaccurate `compact_l31655y2bfxb` record be deleted, left as-is, or annotated?",
+      "chosen": "Preserve it and mark it explicitly historical and superseded, in both the `.json` and the `.md`, pointing forward to `compact_dq76p869lqu0` as the current root-sentinel contract.",
+      "reasoning": "Deleting the artifact would erase useful review history showing why the non-root probe was tried and rejected; leaving its present-tense claims about direct non-root `pgrep -u`/`-U` status capture would contradict PR head, where the probe runs under `sudo` with 10/11/12 sentinels.",
+      "impact": "A future agent reading `compact_l31655y2bfxb` cannot mistake the `-eq 1` / `-gt 1` non-root design for the live contract; the record now names `hidepid` as the reason it was superseded and redirects to the durable record."
+    },
+    {
+      "question": "How aggressively should the superseded record's Key Decisions / Conventions / Lessons be trimmed?",
+      "chosen": "Collapse 4 decisions to 2 (one stating what the intermediate did, one naming the current proof), and reduce the conventions and lessons lists to the transferable points plus a pointer.",
+      "reasoning": "Detailed guidance written for a design that no longer exists reads as current advice; the generalizable claims (fail closed on wrapper errors; an absence check needs enough privilege to see what it claims is absent) survive the supersession, the `sudo`-stripping convention does not.",
+      "impact": "The historical record stays short and unambiguous; the still-valid conventions live on in `compact_dq76p869lqu0` rather than being duplicated in two conflicting forms."
+    },
+    {
+      "question": "Which markdown lint rules to fix and across what scope?",
+      "chosen": "Fix MD058 (blank line around tables/sections) and MD047 (single trailing newline) across every compact introduced by PR #1632, not just the file CodeRabbit flagged.",
+      "reasoning": "The MD058 finding on `compact_3w8vxbaxywtd_2026-09-01.md` was an instance of a pattern shared by all compacts generated in this PR series; fixing only the flagged file invites the same review comment on the next one.",
+      "impact": "`compact_7vtl6izw94q9`, `compact_yk93pl8j0xrp`, and `compact_l31655y2bfxb` are all lint-clean; the PR's docs stop generating repeat review noise."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Superseded compacted trajectories are annotated, never deleted: add a leading `Historical intermediate only; this record does not describe <PR> at its current head.` paragraph, name the superseding compact id inline, and close with an explicit `Do not use ... as the current contract.` sentence.",
+      "rationale": "The compacted record is the durable memory for future agents; silent deletion loses the rejected-alternative reasoning, and silent staleness actively misleads.",
+      "scope": "All files under `.agentworkforce/trajectories/compacted/` when a later session supersedes an earlier design."
+    },
+    {
+      "pattern": "Supersession is applied to both the `.json` and the `.md` of a compact, and the `.json` is re-parsed after editing.",
+      "rationale": "The JSON is what `trail` list/index tooling reads; a Markdown-only annotation leaves the machine-readable record asserting the obsolete design.",
+      "scope": "Any hand-edit of a compacted trajectory pair."
+    },
+    {
+      "pattern": "Compacted trajectory Markdown must satisfy MD058 (blank line before/after tables and section bodies) and MD047 (exactly one trailing newline); verify with a targeted markdownlint run plus Prettier before pushing.",
+      "rationale": "CodeRabbit flags these on PRs; `trail compact` output does not emit them by default, so every generated compact needs the fixup pass.",
+      "scope": "Every `.agentworkforce/trajectories/compacted/*.md` added or edited in a PR."
+    },
+    {
+      "pattern": "Docs-only trajectory cleanup is validated with `trail doctor` + JSON parse + Prettier + diff check + targeted lint, and reported as touching no runtime code.",
+      "rationale": "It keeps a documentation commit visibly distinct from the workflow/test commits in the same branch, so reviewers do not re-audit the security logic.",
+      "scope": "Trajectory-record maintenance commits on `ci/pr-proof-broker-artifacts-0901` and successors."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "A durable record of a rejected design is only useful if its status is on the record; otherwise it competes with the current contract as an equally authoritative source.",
+      "context": "`compact_l31655y2bfxb` described the non-root `pgrep` status-capture reap proof in present tense, three commits after `probe_builder_uid` replaced it with a root/sentinel design because `hidepid` makes a non-root exit 1 indistinguishable from a real empty process set.",
+      "recommendation": "When a session supersedes a prior approach, immediately edit the prior compact to say so and name the superseding id — treat it as part of the change, not a later cleanup."
+    },
+    {
+      "lesson": "A review comment about a lint rule on one generated file is a signal about the generator, not the file.",
+      "context": "CodeRabbit's MD058 finding on `compact_3w8vxbaxywtd_2026-09-01.md` was fixed in isolation in a previous pass; three sibling compacts from the same `trail compact` runs carried identical MD058/MD047 defects.",
+      "recommendation": "When fixing a lint finding on a generated artifact, sweep every artifact from the same generator in the branch in the same commit."
+    },
+    {
+      "lesson": "Documentation-integrity work on a security PR is load-bearing: the compacts are the only prose specification of a shell gate that lives inside YAML and is guarded only by string-level source assertions.",
+      "context": "The reap proof has no unit-testable behavior — it is pinned by `expect(source).toContain(...)` assertions in `tests/fixtures/pr-proof-contract.test.ts` plus prose in `tests/relayflows/cases/README.md` and the compacts.",
+      "recommendation": "Keep the compacts, the README prose, and the source-contract assertions in lockstep whenever the probe changes; stale prose is the same failure mode as stale assertions rubber-stamping a dead design."
+    }
+  ],
+  "openQuestions": []
+}
