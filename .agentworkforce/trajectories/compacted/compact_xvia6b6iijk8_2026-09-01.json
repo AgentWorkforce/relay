@@ -13,7 +13,7 @@
     "end": "2026-09-01T22:57:07.671Z"
   },
   "summary": {
-    "totalDecisions": 3,
+    "totalDecisions": 4,
     "totalEvents": 4,
     "uniqueAgents": [
       "default"
@@ -38,6 +38,17 @@
           "question": "Require the merged main producer artifact before pushing the case",
           "chosen": "Require the merged main producer artifact before pushing the case",
           "reasoning": "The case manifest requirement is meaningful only after a successful trusted push/main artifact exists; main commit 0ce2d56eec46242f4d736b195e6793d3b5d07007 produced and attested the exact static x86_64 broker before this branch was updated.",
+          "fromTrajectory": "traj_wjmw8hgo15u6"
+        }
+      ]
+    },
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Use a static x86_64-unknown-linux-musl broker artifact",
+          "chosen": "Use a static x86_64-unknown-linux-musl broker artifact",
+          "reasoning": "A statically linked musl broker runs in the Linux x64 proof sandbox without requiring Cargo or a matching glibc installation, while preserving exact-SHA provenance.",
           "fromTrajectory": "traj_wjmw8hgo15u6"
         }
       ]
