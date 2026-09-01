@@ -78,9 +78,10 @@ try {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const { port, stderr } = await waitForServerReady(server);
+  const cargoPath = ensureCargo(probeDir);
 
   run(
-    'cargo',
+    cargoPath,
     ['build', '--locked', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'],
     targetDir,
     'broker build'
@@ -214,6 +215,54 @@ function run(command, args, cwd, label) {
       }.`
     );
   }
+}
+
+function ensureCargo(workingDirectory) {
+  const available = spawnSync('cargo', ['--version'], {
+    cwd: workingDirectory,
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  if (!available.error && available.status === 0) return 'cargo';
+
+  const home = process.env.HOME?.trim();
+  if (!home) throw new Error('Cannot install the proof toolchain without HOME.');
+  const installerPath = path.join(workingDirectory, 'rustup-init.sh');
+  run(
+    'curl',
+    [
+      '--proto',
+      '=https',
+      '--tlsv1.2',
+      '--silent',
+      '--show-error',
+      '--fail',
+      '--output',
+      installerPath,
+      'https://sh.rustup.rs',
+    ],
+    workingDirectory,
+    'official rustup installer download'
+  );
+  run(
+    'sh',
+    [installerPath, '-y', '--profile', 'minimal', '--default-toolchain', 'stable', '--no-modify-path'],
+    workingDirectory,
+    'minimal Rust toolchain installation'
+  );
+
+  const installedCargo = path.join(home, '.cargo', 'bin', 'cargo');
+  const verified = spawnSync(installedCargo, ['--version'], {
+    cwd: workingDirectory,
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  if (verified.error || verified.status !== 0) {
+    throw new Error(
+      `installed Cargo is unavailable: ${verified.error?.message ?? verified.stderr ?? verified.status}`
+    );
+  }
+  return installedCargo;
 }
 
 function waitForServerReady(child) {
