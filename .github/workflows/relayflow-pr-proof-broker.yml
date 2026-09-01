@@ -5,6 +5,9 @@ on:
     branches: [main]
   schedule:
     - cron: '17 3 * * 1'
+  pull_request:
+    paths:
+      - '.github/workflows/relayflow-pr-proof-broker.yml'
   pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
@@ -17,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: relayflow-pr-proof-broker-${{ github.event.pull_request.head.sha || github.sha }}
+  group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -26,7 +29,7 @@ env:
 
 jobs:
   build:
-    name: Build exact Linux broker
+    name: ${{ github.event_name == 'pull_request' && 'Validate PR-head Linux broker' || 'Build exact Linux broker' }}
     if: >-
       github.event_name != 'pull_request_target' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -80,7 +83,7 @@ jobs:
           HOST_TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable cargo)")"
           HOST_TOOLCHAIN_ROOT="$(dirname "$HOST_TOOLCHAIN_BIN")"
           ISOLATED_TOOLCHAIN_ROOT="$BUILD_ROOT/toolchain"
-          install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"
+          sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"
           cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"
           chmod -R u=rwX,go=rX "$ISOLATED_TOOLCHAIN_ROOT"
 
@@ -246,6 +249,7 @@ jobs:
           '
 
       - name: Upload exact broker
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: relayflow-broker-${{ env.SOURCE_SHA }}
