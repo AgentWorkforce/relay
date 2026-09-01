@@ -1329,6 +1329,8 @@ describe('trusted dispatcher source contract', () => {
       'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"'
     );
     expect(source).toContain('cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"');
+    expect(source).toContain('TOOLCHAIN_BIN="$ISOLATED_TOOLCHAIN_ROOT/bin"');
+    expect(source).toContain('CARGO_BIN="$TOOLCHAIN_BIN/cargo"');
     expect(source).toContain('test -r "$1/Cargo.toml"');
     expect(source).toContain('test -x "$2/bin/cargo"');
     expect(source).toContain('"$2/bin/cargo" --version >/dev/null');
