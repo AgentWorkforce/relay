@@ -3,8 +3,10 @@ name: RelayFlow PR Proof Broker
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
       - 'crates/**'
       - 'Cargo.toml'
@@ -84,4 +86,4 @@ jobs:
           name: relayflow-broker-${{ env.SOURCE_SHA }}
           path: relayflow-broker
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90

@@ -597,6 +597,7 @@ describe('exact broker artifact handoff', () => {
     ['pull_request', 'feature/exact-broker'],
     ['workflow_dispatch', 'main'],
     ['push', 'feature/exact-broker'],
+    ['schedule', 'feature/exact-broker'],
   ])('rejects an artifact from untrusted event %s on %s', async (event, headBranch) => {
     const sha = '3'.repeat(40);
     const fetchImpl = async (url: string | URL | Request) => {
@@ -635,7 +636,7 @@ describe('exact broker artifact handoff', () => {
     );
   });
 
-  it('accepts an exact artifact from a main push', async () => {
+  it.each(['push', 'schedule'])('accepts an exact artifact from a main %s', async (event) => {
     const sha = '3'.repeat(40);
     const fetchImpl = async (url: string | URL | Request) => {
       const value = String(url);
@@ -655,7 +656,7 @@ describe('exact broker artifact handoff', () => {
         path: '.github/workflows/relayflow-pr-proof-broker.yml',
         conclusion: 'success',
         head_sha: sha,
-        event: 'push',
+        event,
         head_branch: 'main',
       });
     };
@@ -1080,7 +1081,10 @@ describe('trusted dispatcher source contract', () => {
     const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
     const triggerSection = source.slice(source.indexOf('on:'), source.indexOf('permissions:'));
     const pushSection = source.slice(source.indexOf('  push:'), source.indexOf('  pull_request_target:'));
+    expect(triggerSection).toContain('  schedule:');
+    expect(triggerSection).toContain("cron: '17 3 * * 1'");
     expect(triggerSection).toContain('  pull_request_target:');
+    expect(triggerSection).toContain('types: [opened, synchronize, reopened, edited, ready_for_review]');
     expect(triggerSection).not.toContain('  pull_request:');
     expect(triggerSection).not.toContain('  workflow_dispatch:');
     expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
@@ -1089,6 +1093,7 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('permissions:\n  contents: read');
     expect(source).toContain('cargo build --locked --release');
     expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
+    expect(source).toContain('retention-days: 90');
     expect(source).toContain("- 'tests/relayflows/cases/**'");
     expect(pushSection).not.toContain('paths:');
     expect(source).not.toContain('secrets.');

@@ -69,7 +69,8 @@ export async function resolveBrokerArtifact({
       if (!Number.isInteger(runId) || runId < 1) continue;
       const run = await githubJson(`${apiUrl}/repos/${repository}/actions/runs/${runId}`, token, fetchImpl);
       const trustedEvent =
-        run.event === 'pull_request_target' || (run.event === 'push' && run.head_branch === 'main');
+        run.event === 'pull_request_target' ||
+        (['push', 'schedule'].includes(run.event) && run.head_branch === 'main');
       if (
         run.path !== WORKFLOW_PATH ||
         run.conclusion !== 'success' ||
