@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -43,7 +43,12 @@ import {
   preparedRunIdFromOutput,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { openVerifiedBrokerExecutable, runProcess } from '../../scripts/pr-proof/run-arm.mjs';
+import {
+  openVerifiedBrokerExecutable,
+  runLandlockedProcess,
+  runProcess,
+  verifyProtectedBrokerExecutable,
+} from '../../scripts/pr-proof/run-arm.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { resolveBrokerArtifact } from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -791,14 +796,18 @@ describe('exact broker artifact handoff', () => {
   });
 
   it.skipIf(process.platform !== 'linux')(
-    'executes an anonymous verified broker inode after the staged path is replaced',
+    'keeps a stable self-spawning broker immutable under the case Landlock policy',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
       const sha = '4'.repeat(40);
       const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
       const binaryPath = path.join(directory, 'agent-relay-broker');
+      const privateRoot = path.join(root, 'private');
+      const writableRoot = path.join(root, 'writable');
       await mkdir(directory, { recursive: true });
-      await copyFile('/bin/true', binaryPath);
+      await mkdir(privateRoot);
+      await mkdir(writableRoot);
+      await copyFile('/bin/sh', binaryPath);
       const binary = await readFile(binaryPath);
       const sha256 = createHash('sha256').update(binary).digest('hex');
       await writeFile(
@@ -821,31 +830,75 @@ describe('exact broker artifact handoff', () => {
           },
         },
         arm: 'base',
+        privateRoot,
         root,
       });
       try {
         expect(executable).not.toBeNull();
         await copyFile('/bin/false', binaryPath);
-        const chmodAttack = await runProcess('/bin/chmod', ['u-x', executable!.path], {
+        const processOptions = {
+          writableRoots: [writableRoot],
+          cwd: writableRoot,
           echo: false,
-          timeoutMs: 1_000,
-        });
-        expect(chmodAttack.exitCode).not.toBe(0);
-        const writeAttack = await runProcess(
+          timeoutMs: 2_000,
+        };
+        const chmodAttack = await runLandlockedProcess(
+          '/bin/chmod',
+          ['u+w', executable!.path],
+          processOptions
+        );
+        expect(chmodAttack).toMatchObject({ exitCode: 0, timedOut: false });
+        await expect(
+          verifyProtectedBrokerExecutable({
+            brokerPath: executable!.path,
+            expectedSha256: executable!.sha256,
+            expectedSize: executable!.size,
+          })
+        ).rejects.toThrow('protected broker inode metadata changed');
+
+        const writeAttack = await runLandlockedProcess(
           '/bin/sh',
-          [
-            '-c',
-            'chmod u+w "$1" 2>/dev/null || true; cat /bin/false > "$1"',
-            'broker-memfd-attack',
-            executable!.path,
-          ],
-          { echo: false, timeoutMs: 1_000 }
+          ['-c', 'cat /bin/false > "$1"', 'broker-write-attack', executable!.path],
+          processOptions
         );
         expect(writeAttack.exitCode).not.toBe(0);
-        const result = await runProcess(executable!.path, [], { echo: false, timeoutMs: 1_000 });
-        expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+        await chmod(executable!.path, 0o500);
+
+        for (const attack of ['truncate -s 0 "$1"', 'rm "$1"', 'mv "$1" "$2/moved"', 'ln "$1" "$2/alias"']) {
+          const attackResult = await runLandlockedProcess(
+            '/bin/sh',
+            ['-c', attack, 'broker-path-attack', executable!.path, writableRoot],
+            processOptions
+          );
+          expect(attackResult.exitCode).not.toBe(0);
+        }
+        const allowedWrite = await runLandlockedProcess(
+          '/bin/sh',
+          ['-c', 'printf allowed > "$1/allowed"', 'allowed-write', writableRoot],
+          processOptions
+        );
+        expect(allowedWrite).toMatchObject({ exitCode: 0, timedOut: false });
+
+        const selfSpawn = await runLandlockedProcess(
+          executable!.path,
+          [
+            '-c',
+            'actual=$(readlink /proc/$$/exe) && [ "$actual" = "$1" ] && "$actual" -c "exit 0"',
+            'broker-self-spawn',
+            executable!.path,
+          ],
+          processOptions
+        );
+        expect(selfSpawn).toMatchObject({ exitCode: 0, timedOut: false });
+        await expect(
+          verifyProtectedBrokerExecutable({
+            brokerPath: executable!.path,
+            expectedSha256: executable!.sha256,
+            expectedSize: executable!.size,
+          })
+        ).resolves.toBeUndefined();
       } finally {
-        await executable?.handle.close();
+        if (executable) await chmod(executable.directory, 0o700);
         await rm(root, { recursive: true, force: true });
       }
     }
@@ -1210,11 +1263,20 @@ describe('trusted dispatcher source contract', () => {
     const source = await readFile('scripts/pr-proof/run-arm.mjs', 'utf8');
     expect(source).toContain('process.env.SANDBOX_ID');
     expect(source).not.toContain('process.env.DAYTONA_SANDBOX_ID');
-    expect(source).toContain('fcntl.F_ADD_SEALS');
-    expect(source).toContain('fcntl.F_SEAL_WRITE');
-    expect(source).toContain('F_SEAL_EXEC');
-    expect(source).toContain('MFD_EXEC = getattr(os, "MFD_EXEC", 0x10)');
-    expect(source).toContain('os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MFD_EXEC');
+    expect(source).toContain('SYS_LANDLOCK_CREATE_RULESET = 444');
+    expect(source).toContain('SYS_LANDLOCK_RESTRICT_SELF = 446');
+    expect(source).toContain('secure broker execution requires Landlock ABI >= 3');
+    expect(source).toContain('WRITE_FILE = 1 << 1');
+    expect(source).toContain('REFER = 1 << 13');
+    expect(source).toContain('TRUNCATE = 1 << 14');
+    expect(source).toContain('PR_SET_NO_NEW_PRIVS = 38');
+    expect(source).toContain('CAP_SYS_PTRACE = 19');
+    expect(source).toContain('CAP_SYS_ADMIN = 21');
+    expect(source).toContain('secure broker execution refuses {name}');
+    expect(source).toContain('await handle.close();\n    await chmod(privateDirectory, 0o500);');
+    expect(source).toContain('writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir]');
+    expect(source).not.toContain('writableRoots: [temporaryRoot');
+    expect(source).not.toContain('memfd_create');
     expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
   });
 

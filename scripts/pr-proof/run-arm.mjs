@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,47 +21,130 @@ import { runBoundedProcess } from './process-runner.mjs';
 import { loadBrokerArtifact } from './stage-broker-artifacts.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
-const REQUIRED_MEMFD_SEALS = 0x2f;
-const SEALED_BROKER_HOLDER = String.raw`
-import fcntl
+const LANDLOCK_CASE_LAUNCHER = String.raw`
+import ctypes
 import json
 import os
 import sys
 
-size_line = sys.stdin.buffer.readline(32)
-size = int(size_line)
-payload = bytearray()
-while len(payload) < size:
-    chunk = sys.stdin.buffer.read(size - len(payload))
-    if not chunk:
-        raise RuntimeError("broker payload ended before declared size")
-    payload.extend(chunk)
+SYS_LANDLOCK_CREATE_RULESET = 444
+SYS_LANDLOCK_ADD_RULE = 445
+SYS_LANDLOCK_RESTRICT_SELF = 446
+LANDLOCK_CREATE_RULESET_VERSION = 1
+LANDLOCK_RULE_PATH_BENEATH = 1
+PR_SET_NO_NEW_PRIVS = 38
 
-MFD_EXEC = getattr(os, "MFD_EXEC", 0x10)
-flags = os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | MFD_EXEC
-fd = os.memfd_create("relay-pr-proof-broker", flags)
-view = memoryview(payload)
-written = 0
-while written < len(view):
-    written += os.write(fd, view[written:])
-os.fchmod(fd, 0o500)
-os.lseek(fd, 0, os.SEEK_SET)
-
-F_SEAL_EXEC = 0x20
-seals = (
-    fcntl.F_SEAL_SEAL
-    | fcntl.F_SEAL_SHRINK
-    | fcntl.F_SEAL_GROW
-    | fcntl.F_SEAL_WRITE
-    | F_SEAL_EXEC
+WRITE_FILE = 1 << 1
+REMOVE_DIR = 1 << 4
+REMOVE_FILE = 1 << 5
+MAKE_CHAR = 1 << 6
+MAKE_DIR = 1 << 7
+MAKE_REG = 1 << 8
+MAKE_SOCK = 1 << 9
+MAKE_FIFO = 1 << 10
+MAKE_BLOCK = 1 << 11
+MAKE_SYM = 1 << 12
+REFER = 1 << 13
+TRUNCATE = 1 << 14
+MUTATION_RIGHTS = (
+    WRITE_FILE
+    | REMOVE_DIR
+    | REMOVE_FILE
+    | MAKE_CHAR
+    | MAKE_DIR
+    | MAKE_REG
+    | MAKE_SOCK
+    | MAKE_FIFO
+    | MAKE_BLOCK
+    | MAKE_SYM
+    | REFER
+    | TRUNCATE
 )
-fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
-actual_seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
-print(json.dumps({"fd": fd, "seals": actual_seals}), flush=True)
 
-# The trusted Node parent keeps stdin open for the complete case-runner
-# lifetime. EOF releases the sealed inode and exits the holder.
-sys.stdin.buffer.read(1)
+class RulesetAttr(ctypes.Structure):
+    _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+
+class PathBeneathAttr(ctypes.Structure):
+    _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+
+with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+    status_lines = status_file.readlines()
+effective_capabilities = next(
+    (int(line.split()[1], 16) for line in status_lines if line.startswith("CapEff:")),
+    None,
+)
+if effective_capabilities is None:
+    raise RuntimeError("secure broker execution could not determine effective Linux capabilities")
+CAP_SYS_PTRACE = 19
+CAP_SYS_ADMIN = 21
+for capability, name in (
+    (CAP_SYS_PTRACE, "CAP_SYS_PTRACE"),
+    (CAP_SYS_ADMIN, "CAP_SYS_ADMIN"),
+):
+    if effective_capabilities & (1 << capability):
+        raise RuntimeError(f"secure broker execution refuses {name}")
+
+def syscall(number, *args):
+    result = libc.syscall(number, *args)
+    if result < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return result
+
+abi = syscall(
+    SYS_LANDLOCK_CREATE_RULESET,
+    ctypes.c_void_p(),
+    ctypes.c_size_t(0),
+    ctypes.c_uint32(LANDLOCK_CREATE_RULESET_VERSION),
+)
+if abi < 3:
+    raise RuntimeError(f"secure broker execution requires Landlock ABI >= 3, found {abi}")
+
+ruleset_attr = RulesetAttr(MUTATION_RIGHTS)
+ruleset_fd = syscall(
+    SYS_LANDLOCK_CREATE_RULESET,
+    ctypes.byref(ruleset_attr),
+    ctypes.sizeof(ruleset_attr),
+    ctypes.c_uint32(0),
+)
+
+def allow_path(path, rights):
+    path_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+    try:
+        rule = PathBeneathAttr(rights, path_fd)
+        syscall(
+            SYS_LANDLOCK_ADD_RULE,
+            ruleset_fd,
+            ctypes.c_uint32(LANDLOCK_RULE_PATH_BENEATH),
+            ctypes.byref(rule),
+            ctypes.c_uint32(0),
+        )
+    finally:
+        os.close(path_fd)
+
+writable_roots = json.loads(sys.argv[1])
+if not isinstance(writable_roots, list) or not writable_roots:
+    raise RuntimeError("Landlock writable roots are required")
+for writable_root in writable_roots:
+    if not isinstance(writable_root, str) or not os.path.isabs(writable_root):
+        raise RuntimeError("Landlock writable roots must be absolute paths")
+    allow_path(writable_root, MUTATION_RIGHTS)
+
+for writable_device in ("/dev/null", "/dev/tty", "/dev/ptmx"):
+    if os.path.exists(writable_device):
+        allow_path(writable_device, WRITE_FILE)
+
+if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, ctypes.c_uint32(0))
+os.close(ruleset_fd)
+
+command = sys.argv[2]
+os.execvpe(command, [command, *sys.argv[3:]], os.environ)
 `;
 
 async function readObservationFile(filePath) {
@@ -121,7 +203,7 @@ async function checkout(repository, sha, destination) {
   return actual;
 }
 
-async function startSealedBrokerHolder(contents) {
+export async function runLandlockedProcess(command, args, { writableRoots, ...options }) {
   try {
     await access('/usr/bin/python3', fsConstants.X_OK);
   } catch {
@@ -129,80 +211,17 @@ async function startSealedBrokerHolder(contents) {
       'secure broker execution requires executable /usr/bin/python3 in the Cloud proof sandbox'
     );
   }
-  const child = spawn('/usr/bin/python3', ['-c', SEALED_BROKER_HOLDER], {
-    env: {},
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  let stdout = '';
-  let stderr = '';
-  let ready = false;
-  const closeResult = new Promise((resolve) => {
-    child.once('error', (error) => resolve({ error }));
-    child.once('close', (code, signal) => resolve({ code, signal }));
-  });
-  const metadata = await new Promise((resolve, reject) => {
-    const fail = (error) => {
-      if (ready) return;
-      ready = true;
-      if (!child.stdin.destroyed) child.stdin.end();
-      child.kill('SIGKILL');
-      reject(error);
-    };
-    child.stdin.once('error', fail);
-    child.stdout.on('data', (chunk) => {
-      if (ready) return;
-      stdout += chunk.toString('utf8');
-      if (stdout.length > 4_096) {
-        fail(new Error('sealed broker holder emitted oversized metadata'));
-        return;
-      }
-      const newline = stdout.indexOf('\n');
-      if (newline < 0) return;
-      try {
-        const value = JSON.parse(stdout.slice(0, newline));
-        if (!Number.isInteger(value.fd) || value.fd < 0 || !Number.isInteger(value.seals)) {
-          throw new Error('sealed broker holder metadata is invalid');
-        }
-        ready = true;
-        resolve(value);
-      } catch (error) {
-        fail(error);
-      }
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-8_000);
-    });
-    closeResult.then((result) => {
-      if (ready) return;
-      fail(
-        result.error ??
-          new Error(
-            `sealed broker holder exited before ready (${result.code ?? result.signal ?? 'unknown'}): ${stderr}`
-          )
-      );
-    });
-    child.stdin.write(`${contents.length}\n`);
-    child.stdin.write(contents);
-  });
-
-  const close = async () => {
-    if (!child.stdin.destroyed) child.stdin.end();
-    const result = await closeResult;
-    if (result.error) throw result.error;
-    if (result.code !== 0) {
-      throw new Error(
-        `sealed broker holder failed (${result.code ?? result.signal ?? 'unknown'}): ${stderr}`
-      );
-    }
-  };
-  return {
-    path: `/proc/${child.pid}/fd/${metadata.fd}`,
-    seals: metadata.seals,
-    close,
-  };
+  if (!Array.isArray(writableRoots) || writableRoots.some((root) => !path.isAbsolute(root))) {
+    throw new Error('Landlock writable roots must be absolute paths');
+  }
+  return runProcess(
+    '/usr/bin/python3',
+    ['-c', LANDLOCK_CASE_LAUNCHER, JSON.stringify(writableRoots), command, ...args],
+    options
+  );
 }
 
-export async function openVerifiedBrokerExecutable({ input, arm, root = process.cwd() }) {
+export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, root = process.cwd() }) {
   const artifact = input.runtimeArtifacts?.broker?.[arm];
   if (!artifact) return null;
   if (process.platform !== 'linux') {
@@ -219,34 +238,57 @@ export async function openVerifiedBrokerExecutable({ input, arm, root = process.
   if (JSON.stringify(loaded.artifact) !== JSON.stringify(artifact)) {
     throw new Error('broker artifact does not match its proof input binding');
   }
+  if (!path.isAbsolute(privateRoot)) {
+    throw new Error('private broker root must be an absolute path');
+  }
 
-  const holder = await startSealedBrokerHolder(loaded.contents);
+  const privateDirectory = path.join(privateRoot, `verified-broker-${arm}`);
+  const privatePath = path.join(privateDirectory, 'agent-relay-broker');
+  await mkdir(privateDirectory, { mode: 0o700 });
+  await writeFile(privatePath, loaded.contents, { flag: 'wx', mode: 0o500 });
+  await chmod(privatePath, 0o500);
+  const handle = await open(privatePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
-    if ((holder.seals & REQUIRED_MEMFD_SEALS) !== REQUIRED_MEMFD_SEALS) {
-      throw new Error('broker memfd is missing required immutable seals');
-    }
-    const handle = await open(holder.path, fsConstants.O_RDONLY);
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size !== loaded.contents.length) {
-      throw new Error('sealed broker copy is not the verified regular file');
+      throw new Error('private broker copy is not the verified regular file');
     }
-    try {
-      const sealedSha256 = createHash('sha256')
-        .update(await handle.readFile())
-        .digest('hex');
-      if (sealedSha256 !== loaded.artifact.sha256) {
-        throw new Error('sealed broker copy changed before execution binding');
-      }
-    } finally {
-      await handle.close();
+    const privateSha256 = createHash('sha256')
+      .update(await handle.readFile())
+      .digest('hex');
+    if (privateSha256 !== loaded.artifact.sha256) {
+      throw new Error('private broker copy changed before execution binding');
     }
+    await handle.close();
+    await chmod(privateDirectory, 0o500);
     return {
-      path: holder.path,
-      handle: { close: holder.close },
+      path: privatePath,
+      directory: privateDirectory,
+      sha256: loaded.artifact.sha256,
+      size: loaded.contents.length,
     };
   } catch (error) {
-    await holder.close().catch(() => {});
+    await handle.close().catch(() => {});
+    await rm(privateDirectory, { recursive: true, force: true });
     throw error;
+  }
+}
+
+export async function verifyProtectedBrokerExecutable({ brokerPath, expectedSha256, expectedSize }) {
+  const handle = await open(brokerPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== expectedSize || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o500) {
+      throw new Error('protected broker inode metadata changed during case execution');
+    }
+    const actualSha256 = createHash('sha256')
+      .update(await handle.readFile())
+      .digest('hex');
+    if (actualSha256 !== expectedSha256) {
+      throw new Error('protected broker bytes changed during case execution');
+    }
+  } finally {
+    await handle.close();
   }
 }
 
@@ -255,17 +297,21 @@ function sanitizedCaseEnvironment({
   targetDir,
   harnessDir,
   resultPath,
+  scratchDir,
   input,
   arm,
   brokerPath,
 }) {
-  const allowed = ['PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'TMP', 'TEMP', 'SYSTEMROOT', 'WINDIR'];
+  const allowed = ['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR'];
   const env = Object.fromEntries(
     allowed.map((key) => [key, process.env[key]]).filter((entry) => typeof entry[1] === 'string' && entry[1])
   );
   return {
     ...env,
     HOME: temporaryHome,
+    TMPDIR: scratchDir,
+    TMP: scratchDir,
+    TEMP: scratchDir,
     CI: '1',
     AGENT_RELAY_TELEMETRY_DISABLED: '1',
     RELAY_PR_PROOF_ARM: arm,
@@ -300,13 +346,17 @@ export async function main() {
   const harnessDir = path.join(temporaryRoot, 'harness');
   const targetDir = path.join(temporaryRoot, 'target');
   const temporaryHome = path.join(temporaryRoot, 'home');
-  const resultPath = path.join(temporaryRoot, 'observation.json');
+  const resultDir = path.join(temporaryRoot, 'result');
+  const resultPath = path.join(resultDir, 'observation.json');
+  const scratchDir = path.join(temporaryRoot, 'scratch');
+  const brokerDirectory = path.join(temporaryRoot, `verified-broker-${arm}`);
   const targetSha = arm === 'base' ? input.baseSha : input.headSha;
   const evidencePath = path.join(ARTIFACT_ROOT, `${arm}.json`);
-  let brokerHandle = null;
 
   try {
-    await mkdir(temporaryHome, { recursive: true });
+    await Promise.all(
+      [temporaryHome, resultDir, scratchDir].map((directory) => mkdir(directory, { recursive: true }))
+    );
     const harnessSha = await checkout(input.repository, input.headSha, harnessDir);
     const actualTargetSha = await checkout(input.repository, targetSha, targetDir);
 
@@ -321,24 +371,31 @@ export async function main() {
     const brokerExecutable = await openVerifiedBrokerExecutable({
       input,
       arm,
+      privateRoot: temporaryRoot,
     });
     const brokerPath = brokerExecutable?.path ?? null;
-    brokerHandle = brokerExecutable?.handle ?? null;
 
     const [command, ...args] = input.manifest.runner.command;
-    const result = await runProcess(command, args, {
+    const processOptions = {
       cwd: harnessDir,
       env: sanitizedCaseEnvironment({
         temporaryHome,
         targetDir,
         harnessDir,
         resultPath,
+        scratchDir,
         input,
         arm,
         brokerPath,
       }),
       timeoutMs: input.manifest.timeoutSeconds * 1000,
-    });
+    };
+    const result = brokerExecutable
+      ? await runLandlockedProcess(command, args, {
+          ...processOptions,
+          writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir],
+        })
+      : await runProcess(command, args, processOptions);
     if (result.timedOut) {
       throw new Error(
         `Case runner exceeded ${input.manifest.timeoutSeconds}s; a timeout cannot count as expected-red evidence`
@@ -348,6 +405,13 @@ export async function main() {
       throw new Error(
         `Case runner failed with exit ${result.exitCode}; expected-red behavior must be reported as a successful structured observation`
       );
+    }
+    if (brokerExecutable) {
+      await verifyProtectedBrokerExecutable({
+        brokerPath: brokerExecutable.path,
+        expectedSha256: brokerExecutable.sha256,
+        expectedSize: brokerExecutable.size,
+      });
     }
 
     let observationJson;
@@ -387,7 +451,9 @@ export async function main() {
     console.log(`PR_PROOF_ARM_COMPLETE arm=${arm} case=${input.caseId} sandbox=${sandboxId}`);
   } finally {
     try {
-      await brokerHandle?.close();
+      await chmod(brokerDirectory, 0o700).catch((error) => {
+        if (error?.code !== 'ENOENT') throw error;
+      });
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }

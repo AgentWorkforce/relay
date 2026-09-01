@@ -94,12 +94,23 @@ prove the honesty of arbitrary test code; this check supplies reproducible
 review evidence and is not a replacement for required code review.
 
 For broker cases, the wrapper's additional guarantee ends at artifact
-provenance and byte immutability: it binds the runner to a sealed executable
-built from the declared exact SHA. The PR-authored runner still chooses whether
-and how to launch that executable, including its arguments and environment.
-Reviewers must therefore confirm that the case invokes the supplied path
-directly with a neutral dynamic-loader environment and that the asserted
-behavior comes from that process.
+provenance and executable immutability. It copies the verified bytes to a
+stable private path, closes every broker file descriptor, and launches the case
+under a fail-closed Landlock policy that denies writes, truncation, removal,
+replacement, renames, and hard links outside the case's explicit writable
+directories. The stable path means broker self-spawns through
+`current_exe()` keep working. The wrapper verifies the broker's link count,
+mode, size, and digest again after the runner exits. Landlock does not mediate
+`chmod`; a runner can change the mode and make its own proof fail, but cannot
+use that mode change to bypass the content and path-mutation policy.
+
+The PR-authored runner still chooses whether and how to launch that executable,
+including its arguments and environment. Reviewers must therefore confirm that
+the case invokes the supplied path directly with a neutral dynamic-loader
+environment and that the asserted behavior comes from that process. The Cloud
+sandbox must provide `/usr/bin/python3`, Landlock ABI 3 or newer, and no
+effective `CAP_SYS_PTRACE` or `CAP_SYS_ADMIN`; the wrapper fails closed when
+those prerequisites are absent.
 
 Broker artifacts are retained for 90 days. A PR that remains on the same base
 and head longer than that must be updated or rebased onto current `main`, then
