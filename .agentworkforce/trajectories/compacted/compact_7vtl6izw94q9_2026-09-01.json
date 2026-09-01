@@ -213,9 +213,9 @@
     },
     {
       "question": "Should PR-authored broker builds share the Rust cache?",
-      "chosen": "Skip the cache action entirely for the pull_request_target event",
+      "chosen": "Historical intermediate: skip caching only for `pull_request_target`; superseded by `compact_yk93pl8j0xrp`, which removes caching from every producer event",
       "reasoning": "pull_request_target executes PR Cargo build scripts; restoring or saving in the trusted push/schedule cache namespace would let PR output contaminate trusted builds.",
-      "impact": "Trusted main builds keep caching; PR builds are cache-isolated at the cost of cold-build time (accounted for in the 40m20s bound)."
+      "impact": "The current producer always builds cold and isolates PR-authored Cargo under a dedicated UID; the 40m20s resolver bound covers the cold build."
     },
     {
       "question": "What happens when a PR's exact broker artifact has expired?",
