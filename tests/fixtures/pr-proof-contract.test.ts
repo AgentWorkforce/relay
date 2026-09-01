@@ -720,6 +720,29 @@ describe('exact broker artifact handoff', () => {
     expect(sleeps).toBe(1);
   });
 
+  it('waits longer than the broker producer timeout by default', async () => {
+    let elapsedMs = 0;
+    let listingCalls = 0;
+    const fetchImpl = async () => {
+      listingCalls += 1;
+      return Response.json({ artifacts: [] });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha: '3'.repeat(40),
+        fetchImpl,
+        sleepImpl: async (milliseconds: number) => {
+          elapsedMs += milliseconds;
+        },
+      })
+    ).rejects.toThrow('after 182 attempts');
+    expect(listingCalls).toBe(182);
+    expect(elapsedMs).toBeGreaterThan(30 * 60_000);
+  });
+
   it('verifies exact source provenance and binary digest before staging', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-'));
     const sha = '4'.repeat(40);

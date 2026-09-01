@@ -5,8 +5,9 @@ import { pathToFileURL } from 'node:url';
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 const WORKFLOW_PATH = '.github/workflows/relayflow-pr-proof-broker.yml';
-const MAX_RESOLVE_ATTEMPTS = 120;
+const BROKER_BUILD_TIMEOUT_MS = 30 * 60_000;
 const RESOLVE_POLL_INTERVAL_MS = 10_000;
+const MAX_RESOLVE_ATTEMPTS = Math.ceil(BROKER_BUILD_TIMEOUT_MS / RESOLVE_POLL_INTERVAL_MS) + 2;
 
 function option(name, fallback = null) {
   const index = process.argv.indexOf(name);

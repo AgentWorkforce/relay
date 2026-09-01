@@ -1,0 +1,57 @@
+{
+  "id": "traj_y51c07g5i7am",
+  "version": 1,
+  "task": {
+    "title": "Align PR 1632 resolver and producer timeouts",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T19:05:30.501Z",
+  "completedAt": "2026-09-01T19:06:02.894Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T19:06:02.489Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lz1y868dmyx6",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T19:06:02.489Z",
+      "endedAt": "2026-09-01T19:06:02.894Z",
+      "events": [
+        {
+          "ts": 1788289562490,
+          "type": "decision",
+          "content": "Derive resolver wait from producer timeout: Derive resolver wait from producer timeout",
+          "raw": {
+            "question": "Derive resolver wait from producer timeout",
+            "chosen": "Derive resolver wait from producer timeout",
+            "alternatives": [],
+            "reasoning": "The broker workflow permits 30 minutes, so a fixed 20-minute resolver budget can fail before a valid cold build completes. Derive 182 attempts from the 30-minute producer bound and 10-second interval, giving 30m10s of wait while two worst-case sequential resolutions still fit within the 70-minute dispatcher timeout."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Aligned broker artifact polling with the 30-minute producer timeout and added deterministic coverage proving the default wait exceeds that bound without wall-clock delay.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "aab34418e04e1059348a92dad1a23a866645059b",
+    "endRef": "aab34418e04e1059348a92dad1a23a866645059b"
+  }
+}
