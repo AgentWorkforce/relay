@@ -1,4 +1,4 @@
-# Trajectory Compaction: Sep 2, 2026 - Sep 2, 2026
+# Trajectory Compaction: 2026-09-01 - 2026-09-01
 
 > **Status:** ✅ Completed
 
