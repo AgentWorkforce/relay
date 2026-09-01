@@ -1,0 +1,53 @@
+{
+  "id": "traj_wme5pp0xvt3p",
+  "version": 1,
+  "task": {
+    "title": "Raise mcp-args registration timeout for reliable Cloud RelayFlows"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T17:38:39.736Z",
+  "completedAt": "2026-09-01T17:42:30.729Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T17:39:31.487Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_6oo6f0w1m5ud",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T17:39:31.487Z",
+      "endedAt": "2026-09-01T17:42:30.729Z",
+      "events": [
+        {
+          "ts": 1788284371487,
+          "type": "decision",
+          "content": "Raise the broker registration bound to 30 seconds and keep Cloud's bounded retry layer: Raise the broker registration bound to 30 seconds and keep Cloud's bounded retry layer",
+          "raw": {
+            "question": "Raise the broker registration bound to 30 seconds and keep Cloud's bounded retry layer",
+            "chosen": "Raise the broker registration bound to 30 seconds and keep Cloud's bounded retry layer",
+            "alternatives": [],
+            "reasoning": "The live base arm registered successfully, while the head arm exhausted three identical 10-second client deadlines. A longer per-request bound addresses the actual latency boundary and avoids relying only on repeated token-rotating POSTs; 30 seconds matches the broker fleet registration allowance."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Raised mcp-args Relaycast registration timeout from 10s to 30s, added a deterministic bounded-timeout regression test, updated the patch changelog, and validated formatting, clippy, and the full 1,042-test broker suite.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3e4ab43002c55cb5b9e149d691aa7d4ce43d9ca5",
+    "endRef": "3e4ab43002c55cb5b9e149d691aa7d4ce43d9ca5"
+  }
+}

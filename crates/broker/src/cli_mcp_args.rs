@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::McpArgsCommand;
 
+const MCP_ARGS_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct McpArgsOutput {
@@ -130,6 +132,23 @@ async fn register_agent_token_for_mcp_args(
     api_key: Option<String>,
     base_url: Option<String>,
 ) -> Result<RegisteredMcpArgsToken> {
+    register_agent_token_for_mcp_args_with_timeout(
+        cli,
+        agent_name,
+        api_key,
+        base_url,
+        MCP_ARGS_REGISTER_TIMEOUT,
+    )
+    .await
+}
+
+async fn register_agent_token_for_mcp_args_with_timeout(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    timeout: Duration,
+) -> Result<RegisteredMcpArgsToken> {
     let api_key = api_key
         .or_else(|| std::env::var("RELAY_API_KEY").ok())
         .filter(|value| !value.trim().is_empty())
@@ -151,14 +170,14 @@ async fn register_agent_token_for_mcp_args(
     );
 
     let agent_token = match tokio::time::timeout(
-        Duration::from_secs(10),
+        timeout,
         client.register_agent_token(agent_name, Some(&cli_lower)),
     )
     .await
     {
         Ok(Ok(token)) => token,
         Ok(Err(error)) => return Err(map_register_agent_token_error(error)),
-        Err(error) => bail!("register timed out after 10s: {error}"),
+        Err(error) => bail!("register timed out after {timeout:?}: {error}"),
     };
 
     Ok(RegisteredMcpArgsToken {
@@ -606,6 +625,47 @@ mod tests {
 
         assert!(config_json.contains("at_live_register_test_token"));
         register_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn register_timeout_remains_bounded() {
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(200)
+                .delay(Duration::from_millis(300))
+                .json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent_too_slow",
+                        "workspace_id": "ws_register_test",
+                        "name": "test-agent",
+                        "token": "at_live_too_slow",
+                        "status": "online",
+                        "created_at": "2026-01-01T00:00:00.000Z"
+                    }
+                }));
+        });
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            register_agent_token_for_mcp_args_with_timeout(
+                "codex",
+                "test-agent",
+                Some("rk_live_test".to_string()),
+                Some(server.base_url()),
+                Duration::from_millis(30),
+            ),
+        )
+        .await
+        .expect("the injected 30ms registration bound must finish within the outer guard");
+        let error = match outcome {
+            Ok(_) => panic!("the delayed registration must time out"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("register timed out after 30ms"));
+        register_mock.assert_hits(1);
     }
 
     #[tokio::test]

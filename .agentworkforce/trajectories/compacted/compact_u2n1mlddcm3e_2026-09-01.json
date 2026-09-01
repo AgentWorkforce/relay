@@ -1,0 +1,38 @@
+{
+  "id": "compact_u2n1mlddcm3e",
+  "version": 1,
+  "type": "compacted",
+  "status": "completed",
+  "compactedAt": "2026-09-01T23:13:22.954Z",
+  "sourceTrajectories": [
+    "traj_vt13wbc5d0ue"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T23:13:01.295Z",
+    "end": "2026-09-01T23:13:08.254Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Align compacted decision counts and groups at four",
+          "chosen": "Align compacted decision counts and groups at four",
+          "reasoning": "Exact-head CodeRabbit review correctly found the generated JSON counted and grouped only three of the four decisions rendered in the canonical decisions array and companion Markdown.",
+          "fromTrajectory": "traj_vt13wbc5d0ue"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
