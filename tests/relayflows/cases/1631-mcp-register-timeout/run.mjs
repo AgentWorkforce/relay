@@ -1,5 +1,6 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -7,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1631-mcp-register-timeout';
 const HEALTHY_RESPONSE_DELAY_MS = 12_000;
-const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
+const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
 
@@ -78,17 +79,7 @@ try {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const { port, stderr } = await waitForServerReady(server);
-  const cargo = resolveCargo();
 
-  run(
-    cargo.command,
-    ['build', '--locked', '-p', 'agent-relay-broker', '--bin', 'agent-relay-broker'],
-    targetDir,
-    'broker build',
-    cargo.env
-  );
-
-  const binaryPath = path.join(targetDir, 'target', 'debug', 'agent-relay-broker');
   const startedAt = Date.now();
   const completed = spawnSync(
     binaryPath,
@@ -193,50 +184,22 @@ function requiredDirectory(name) {
   return path.resolve(requiredValue(name));
 }
 
+async function requiredExecutable(name) {
+  const candidate = path.resolve(requiredValue(name));
+  try {
+    await access(candidate, fsConstants.R_OK | fsConstants.X_OK);
+  } catch {
+    throw new Error(`${name} must name a readable executable file.`);
+  }
+  return candidate;
+}
+
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
   return (
     relative === '' ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
   );
-}
-
-function resolveCargo() {
-  let command;
-  try {
-    command = execFileSync('which', ['cargo'], { encoding: 'utf8' }).trim();
-  } catch {
-    throw new Error(
-      'broker build requires Cargo in the proof sandbox; install a Rust toolchain before running this case'
-    );
-  }
-  if (!command) throw new Error('Cargo resolved to an empty executable path.');
-
-  const env = { ...process.env };
-  const cargoHome = path.dirname(path.dirname(command));
-  if (path.basename(cargoHome) === '.cargo') {
-    const originalHome = path.dirname(cargoHome);
-    env.CARGO_HOME = cargoHome;
-    env.RUSTUP_HOME = path.join(originalHome, '.rustup');
-  }
-  return { command, env };
-}
-
-function run(command, args, cwd, label, env = process.env) {
-  const completed = spawnSync(command, args, {
-    cwd,
-    env,
-    stdio: ['ignore', 'inherit', 'inherit'],
-    timeout: COMMAND_TIMEOUT_MS,
-  });
-  if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
-  if (completed.status !== 0) {
-    throw new Error(
-      `${label} failed with ${
-        completed.signal ? `signal ${completed.signal}` : `exit code ${completed.status ?? 'unknown'}`
-      }.`
-    );
-  }
 }
 
 function waitForServerReady(child) {

@@ -3,6 +3,7 @@
   "id": "1631-mcp-register-timeout",
   "kind": "bugfix",
   "title": "Allow slow Relaycast registration to complete before timing out",
+  "requirements": ["broker-linux-x64"],
   "runner": {
     "command": ["node", "tests/relayflows/cases/1631-mcp-register-timeout/run.mjs"]
   },

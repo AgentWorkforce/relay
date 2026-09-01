@@ -1,0 +1,181 @@
+{
+  "id": "compact_xvia6b6iijk8",
+  "version": 1,
+  "type": "compacted",
+  "status": "completed",
+  "compactedAt": "2026-09-01T22:57:17.844Z",
+  "sourceTrajectories": [
+    "traj_wjmw8hgo15u6",
+    "traj_trk7srsfm34v"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T17:56:23.260Z",
+    "end": "2026-09-01T22:57:07.671Z"
+  },
+  "summary": {
+    "totalDecisions": 3,
+    "totalEvents": 4,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Use the trusted exact-SHA broker artifact instead of compiling in the Cloud case",
+          "chosen": "Use the trusted exact-SHA broker artifact instead of compiling in the Cloud case",
+          "reasoning": "Daytona proof sandboxes lack Cargo and outbound bootstrap is unavailable; the merged producer now supplies a provenance-bound static broker that the case executes directly through RELAY_PR_PROOF_BROKER_BINARY.",
+          "fromTrajectory": "traj_wjmw8hgo15u6"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Require the merged main producer artifact before pushing the case",
+          "chosen": "Require the merged main producer artifact before pushing the case",
+          "reasoning": "The case manifest requirement is meaningful only after a successful trusted push/main artifact exists; main commit 0ce2d56eec46242f4d736b195e6793d3b5d07007 produced and attested the exact static x86_64 broker before this branch was updated.",
+          "fromTrajectory": "traj_wjmw8hgo15u6"
+        }
+      ]
+    },
+    {
+      "category": "performance",
+      "decisions": [
+        {
+          "question": "Install the official minimal Rust toolchain only when Cargo is absent",
+          "chosen": "Install the official minimal Rust toolchain only when Cargo is absent",
+          "reasoning": "The Daytona proof image lacks Cargo, while the case must execute the exact compiled base and head binaries. Reusing Cargo when present keeps local and cached runs fast; official rustup provides the missing compiler inside the disposable proof sandbox.",
+          "fromTrajectory": "traj_trk7srsfm34v"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".agentworkforce/trajectories/compacted/compact_3w8vxbaxywtd_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_3w8vxbaxywtd_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_7vtl6izw94q9_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_7vtl6izw94q9_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_dq76p869lqu0_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_dq76p869lqu0_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_gxeeoerl1nra_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_gxeeoerl1nra_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_l31655y2bfxb_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_l31655y2bfxb_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_tymzpv504qnm_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_tymzpv504qnm_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_ydmm178ruoov_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_ydmm178ruoov_2026-09-01.md",
+    ".agentworkforce/trajectories/compacted/compact_yk93pl8j0xrp_2026-09-01.json",
+    ".agentworkforce/trajectories/compacted/compact_yk93pl8j0xrp_2026-09-01.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_afah9gf7hi8z/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_afah9gf7hi8z/trajectory.json",
+    ".github/workflows/relayflow-pr-proof-broker.yml",
+    ".github/workflows/relayflow-pr-proof.yml",
+    "scripts/pr-proof/contract.mjs",
+    "scripts/pr-proof/prepare.mjs",
+    "scripts/pr-proof/resolve-broker-artifacts.mjs",
+    "scripts/pr-proof/run-arm.mjs",
+    "scripts/pr-proof/stage-broker-artifacts.mjs",
+    "tests/fixtures/pr-proof-contract.test.ts",
+    "tests/relayflows/cases/README.md"
+  ],
+  "commits": [
+    "3812985c1",
+    "0ce2d56ee",
+    "31624bbb5"
+  ],
+  "narrative": "Two sessions on branch `fix/mcp-register-timeout-0901` worked the same problem: RelayFlow PR-proof case `1631-mcp-register-timeout` must execute the *real* compiled `agent-relay-broker mcp-args --register` path on both arms, so that the base broker demonstrably fails (10s register bound) and the head broker demonstrably succeeds against a healthy-but-slow Relaycast. The blocker is environmental — the Daytona proof sandbox has no Cargo and no usable outbound bootstrap. The first session (17:56) answered this inside the case: `run.mjs` grew a `resolveCargo()` helper that shelled out to `which cargo`, derived `CARGO_HOME`/`RUSTUP_HOME` from the resolved binary's `.cargo` parent, installed the official minimal rustup toolchain when Cargo was absent, ran `cargo build --locked -p agent-relay-broker --bin agent-relay-broker` under a 5-minute `COMMAND_TIMEOUT_MS`, and probed `target/debug/agent-relay-broker`. The second, four-hour session superseded that entirely. Instead of building in the sandbox, the case now consumes a trusted, provenance-bound artifact produced on main. `.github/workflows/relayflow-pr-proof-broker.yml` checks out the exact `SOURCE_SHA`, asserts `git rev-parse HEAD` equals it, and builds a static `x86_64-unknown-linux-musl` broker as an unprivileged `relay-proof-builder` user under `/opt/relay-pr-proof-builder` with CI escape hatches unset (`ACTIONS_CACHE_URL`, `ACTIONS_RUNTIME_TOKEN`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, …). `scripts/pr-proof/resolve-broker-artifacts.mjs` polls the Actions API for the artifact matching a full lowercase SHA (10s interval, sized to a 30-min producer timeout plus 10-min queue headroom); `stage-broker-artifacts.mjs` lands it at `.relayflow/pr-proof-binaries/<arm>/agent-relay-broker` beside a `broker-manifest.json` (`version:1`, `sourceSha`, `sha256`) and re-verifies it via `O_NOFOLLOW` reads, a 1B–100MB size bound, and a SHA-256 recompute. `openVerifiedBrokerExecutable()` in `run-arm.mjs` re-checks the artifact against its proof-input binding, refuses non-Linux sandboxes, and copies the bytes into a `0o700` private directory at mode `0o500` before exporting the path as `RELAY_PR_PROOF_BROKER_BINARY`. The resulting `run.mjs` diff is −50/+14: `resolveCargo()`, `run()`, and the whole build step are gone, replaced by `await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY')` (an `access(R_OK|X_OK)` check). Everything else about the probe is unchanged and deliberately exact: the target checkout's HEAD must equal `RELAY_PR_PROOF_BASE_SHA`/`HEAD_SHA`; the runner must physically live under `RELAY_PR_PROOF_HARNESS_DIR` (`isWithin`); a throwaway Node HTTP server on `127.0.0.1:0` answers `POST /v1/agents` after `HEALTHY_RESPONSE_DELAY_MS = 12_000`; the base signature requires non-zero exit **and** stderr containing `register timed out after 10s` **and** `9_000 <= elapsedMs < 20_000`; the head signature requires exit 0 **and** parsed `agentToken === 'at_relayflow_slow_healthy'` **and** `12_000 <= elapsedMs < 30_000`. `case.json` gained `\"requirements\": [\"broker-linux-x64\"]`, which `contract.mjs` validates as a unique array of only `BROKER_RUNTIME_REQUIREMENT` and which flips `broker_artifacts_required` in `prepare.mjs`. Local artifact handoff reproduced base-timeout and head-success; contract tests, Prettier, Node syntax, the Rust timeout unit test, and diff gates are green. The pushed head still owes its exact Cloud red-green proof, and both case files remain uncommitted in the working tree.",
+  "decisions": [
+    {
+      "question": "How should the proof case obtain the exact base and head broker binaries when the Daytona sandbox has no Cargo?",
+      "chosen": "Consume a trusted exact-SHA broker artifact produced by `.github/workflows/relayflow-pr-proof-broker.yml` and handed in as `RELAY_PR_PROOF_BROKER_BINARY`, rather than compiling in-sandbox.",
+      "reasoning": "Proof sandboxes lack Cargo and outbound bootstrap is unavailable; a CI-side producer can build a static musl broker under an isolated unprivileged user with CI env unset, then attest it by `sourceSha` + `sha256` so the consumer verifies rather than trusts.",
+      "impact": "`run.mjs` lost `resolveCargo()`, `run()`, `COMMAND_TIMEOUT_MS`, and the `cargo build --locked` step (−50 lines); the case no longer installs or discovers any toolchain, and the trust boundary moves from the sandbox to a provenance-checked CI job."
+    },
+    {
+      "question": "Should `run.mjs` install the official minimal rustup toolchain when Cargo is missing? (first session)",
+      "chosen": "Yes — install minimal rustup only when `which cargo` fails, reuse Cargo when present. Later superseded.",
+      "reasoning": "At the time it was the only way to execute the exact compiled base/head binaries in an image without Cargo, while keeping local and cached runs fast.",
+      "impact": "Superseded within hours: it put an unpinned network toolchain install inside the disposable proof sandbox, made runtime dependent on rustup availability, and made the executed binary's provenance unverifiable."
+    },
+    {
+      "question": "Can the case declare `requirements: [\"broker-linux-x64\"]` before a producer artifact exists on main?",
+      "chosen": "No — require the merged main producer artifact first; the case was pushed only after main commit `0ce2d56eec46242f4d736b195e6793d3b5d07007` produced and attested the exact static x86_64 broker.",
+      "reasoning": "A manifest requirement is only meaningful once a successful trusted push/main artifact exists to satisfy it; declaring it earlier yields a case that cannot resolve its own inputs.",
+      "impact": "Established a merge ordering: producer workflow (#1632 `31624bbb5`, #1633 `0ce2d56ee`) lands on main before the consuming case declares the requirement."
+    },
+    {
+      "question": "Debug binary from `target/debug` vs a static release artifact?",
+      "chosen": "Static `x86_64-unknown-linux-musl` build from the producer workflow.",
+      "reasoning": "A statically linked musl binary runs in the proof sandbox without matching glibc or toolchain, which is what makes the no-Cargo consumer viable.",
+      "impact": "Case is pinned to Linux x64; `openVerifiedBrokerExecutable()` throws `broker-linux-x64 proof artifacts require a Linux proof sandbox` off-platform."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "A proof runner verifies its inputs rather than producing them: `requiredExecutable()` (`access(R_OK|X_OK)`), target-checkout `git rev-parse HEAD` equality against `RELAY_PR_PROOF_BASE_SHA`/`HEAD_SHA`, and `isWithin(harnessDir, runnerPath)`.",
+      "rationale": "Guarantees the observed behavior belongs to the exact SHA under proof and that the runner code itself came from the head harness checkout, not a mutated target tree.",
+      "scope": "All `tests/relayflows/cases/*/run.mjs` runners."
+    },
+    {
+      "pattern": "Runtime binaries are staged under `.relayflow/pr-proof-binaries/<arm>/` with a sibling `broker-manifest.json` (`version:1`, `sourceSha`, `sha256`) and re-verified on load: `O_NOFOLLOW` open, 1B–100MB size bound, SHA-256 recompute, path-escape check against the staging root, and byte-for-byte comparison with the proof input binding.",
+      "rationale": "Provenance must be re-checked at the point of execution, not just at staging time; the manifest binds the binary to an exact source SHA.",
+      "scope": "`scripts/pr-proof/stage-broker-artifacts.mjs`, `resolve-broker-artifacts.mjs`, `run-arm.mjs`."
+    },
+    {
+      "pattern": "Verified executables are copied into a fresh `0o700` private directory and written `{ flag: 'wx', mode: 0o500 }` before execution, and case processes run through `runLandlockedProcess` with explicit absolute `writableRoots` (requires executable `/usr/bin/python3`).",
+      "rationale": "Prevents TOCTOU replacement of the verified binary and confines the case's writes.",
+      "scope": "`scripts/pr-proof/run-arm.mjs`."
+    },
+    {
+      "pattern": "Case capability needs are declared as `requirements` in `case.json` and validated centrally (`BROKER_RUNTIME_REQUIREMENT = 'broker-linux-x64'`; unique array, no unknown entries), which drives `broker_artifacts_required` in `prepare.mjs`.",
+      "rationale": "Keeps environment provisioning declarative and rejects arbitrary requirement strings at contract-validation time.",
+      "scope": "`scripts/pr-proof/contract.mjs`, `prepare.mjs`, `tests/fixtures/pr-proof-contract.test.ts`, documented in `tests/relayflows/cases/README.md`."
+    },
+    {
+      "pattern": "Arm classification is conjunctive and bounded — exit status AND error text AND an elapsed-time window (base: `status != 0`, stderr `register timed out after 10s`, 9s–20s; head: `status == 0`, `agentToken === 'at_relayflow_slow_healthy'`, 12s–30s) — and anything else throws with the last 2KB of stdout/stderr instead of being classified.",
+      "rationale": "A timeout bug is only proven by *when* it fails, not merely that it failed; an unmatched observation is an inconclusive run, never a silent pass.",
+      "scope": "RelayFlow bugfix cases asserting timing behavior."
+    },
+    {
+      "pattern": "The CI producer builds under a dedicated unprivileged user with CI escape hatches unset (`ACTIONS_CACHE_URL`, `ACTIONS_RUNTIME_TOKEN`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, `GITHUB_STEP_SUMMARY`) and asserts checkout provenance before compiling.",
+      "rationale": "A build that produces a trusted artifact must not be able to write back into the workflow's own control surfaces or caches.",
+      "scope": "`.github/workflows/relayflow-pr-proof-broker.yml`."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Bootstrapping a toolchain inside a disposable proof sandbox trades a missing dependency for an unverifiable one.",
+      "context": "The first session's `resolveCargo()` + minimal-rustup install made the case runnable in principle, but the executed binary's provenance then depended on network state and rustup defaults rather than an attested source SHA.",
+      "recommendation": "When a proof environment lacks a builder, move the build to a provenance-checked producer and have the consumer verify (`sourceSha` + `sha256`) — do not teach the consumer to build."
+    },
+    {
+      "lesson": "A declarative capability requirement is a promise the pipeline must already be able to keep.",
+      "context": "`requirements: [\"broker-linux-x64\"]` was deliberately withheld until the producer workflow was merged and had emitted an attested artifact on main (`0ce2d56ee`).",
+      "recommendation": "Land producer + resolver + stager first, confirm a real artifact exists for the target SHA, then flip the consuming manifest."
+    },
+    {
+      "lesson": "Reproducing red-green locally with a hand-fed artifact de-risks the Cloud run but does not replace it.",
+      "context": "Local artifact handoff reproduced the base timeout and head success, and focused contract/Prettier/syntax/Rust-timeout/diff gates passed — yet the retrospective still records the pushed head as owing its exact Cloud red-green proof.",
+      "recommendation": "Treat a local handoff as a smoke test of the runner's logic; the artifact-resolution and Landlock paths only exercise in the real sandbox."
+    },
+    {
+      "lesson": "Deriving toolchain roots from a discovered binary path is fragile heuristics.",
+      "context": "The deleted `resolveCargo()` inferred `CARGO_HOME`/`RUSTUP_HOME` by walking two directories up from `which cargo` and pattern-matching on a `.cargo` basename — silently wrong for any non-rustup install layout.",
+      "recommendation": "Prefer supplying an absolute, verified path via an explicit environment contract (`RELAY_PR_PROOF_BROKER_BINARY`) over path-shape inference."
+    }
+  ],
+  "openQuestions": [
+    "The pushed head of `fix/mcp-register-timeout-0901` has not yet produced its exact Cloud red-green proof; the artifact-resolution, Landlock, and `/usr/bin/python3` requirements are unexercised in a real Daytona sandbox.",
+    "`tests/relayflows/cases/1631-mcp-register-timeout/case.json` and `run.mjs` remain modified-but-uncommitted in the working tree — the artifact-backed runner is not yet on the branch head.",
+    "The base arm needs a producer artifact for the *base* SHA, which relies on that SHA having been built by a prior main push; behavior when the base SHA predates the producer workflow (or its run has aged out of Actions artifact retention) is unverified.",
+    "`resolve-broker-artifacts.mjs` polls up to ~40 minutes while `case.json` sets `timeoutSeconds: 900` — whether resolution time is accounted for outside the case timeout has not been confirmed end-to-end.",
+    "The `pull_request_target` trigger on the producer workflow is gated to same-repo PRs, so fork PRs touching `crates/**` will have no broker artifact; the fallback behavior for those PRs is unspecified."
+  ]
+}
