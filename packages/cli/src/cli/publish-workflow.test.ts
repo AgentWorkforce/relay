@@ -13,6 +13,7 @@ type WorkflowJob = {
 };
 
 type PublishWorkflow = {
+  env?: Record<string, string>;
   jobs: Record<string, WorkflowJob>;
 };
 
@@ -62,6 +63,33 @@ describe('package=main publish dependency chain', () => {
     expect(jobs['publish-main']?.needs).toEqual(
       expect.arrayContaining(['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet'])
     );
+
+    const publishMainIf = jobs['publish-main']?.if;
+    for (const job of [
+      'publish-main-runtime-deps',
+      'publish-main-harnesses',
+      'publish-main-fleet',
+    ]) {
+      expect(publishMainIf).toContain(
+        `(needs.${job}.result == 'success' || (github.event.inputs.package == 'all' && needs.${job}.result == 'skipped'))`
+      );
+    }
+  });
+
+  it('passes the untrusted npm tag to publish commands through a quoted environment variable', () => {
+    const workflow = loadPublishWorkflow();
+    expect(workflow.env?.NPM_TAG).toBe('${{ github.event.inputs.tag }}');
+
+    const publishCommands = Object.values(workflow.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .map((step) => step.run ?? '')
+      .filter((run) => run.includes('npm publish'));
+
+    expect(publishCommands.length).toBeGreaterThan(0);
+    for (const command of publishCommands) {
+      expect(command).toContain('--tag "$NPM_TAG"');
+      expect(command).not.toContain('github.event.inputs.tag');
+    }
   });
 
   it('allows enough time for provenance-published versions to become queryable', () => {

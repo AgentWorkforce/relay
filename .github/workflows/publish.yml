@@ -69,6 +69,7 @@ permissions:
 env:
   NPM_CONFIG_FUND: false
   AGENT_RELAY_TELEMETRY_DISABLED: 1
+  NPM_TAG: ${{ github.event.inputs.tag }}
   WITHDRAWN_STABLE_TAG_PATTERN: '^(v6\.3\.6)$'
 
 jobs:
@@ -731,7 +732,7 @@ jobs:
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
@@ -744,7 +745,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # Publish the per-platform broker packages first. @agent-relay/sdk declares
   # these as exact-version optionalDependencies, so they must exist on the
@@ -841,7 +842,7 @@ jobs:
         working-directory: packages/${{ matrix.broker_pkg }}
         run: |
           echo "Dry run - would publish @agent-relay/${{ matrix.broker_pkg }}"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       # Retry up to 3 times — npm registry occasionally flakes and we cannot
       # reuse the version on rerun, so transient failures must be absorbed
@@ -859,7 +860,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
       - name: Wait before retry
         if: github.event.inputs.dry_run != 'true' && steps.publish_1.outcome == 'failure'
@@ -878,7 +879,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
       - name: Wait before retry
         if: github.event.inputs.dry_run != 'true' && steps.publish_2.outcome == 'failure'
@@ -896,7 +897,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
       - name: Fail if all publish attempts failed
         if: >-
@@ -976,7 +977,7 @@ jobs:
           else
             echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
           fi
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
@@ -989,7 +990,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # Publish @agent-relay/harnesses and @agent-relay/evals after the
   # publish-packages matrix, which is where their exact-version workspace deps
@@ -1035,7 +1036,7 @@ jobs:
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ env.PUBLISH_PACKAGE }}
-        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
@@ -1048,7 +1049,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # Publish @agent-relay/fleet after @agent-relay/harnesses lands on the
   # registry. fleet pins @agent-relay/{harnesses,harness-driver,sdk} by exact
@@ -1086,7 +1087,7 @@ jobs:
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ env.PUBLISH_PACKAGE }}
-        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
@@ -1099,7 +1100,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # package=main publishes only the root `agent-relay` tarball, but that
   # tarball pins several @agent-relay/* runtime dependencies to the freshly
@@ -1159,7 +1160,7 @@ jobs:
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ matrix.package }}
-        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
         if: github.event.inputs.dry_run != 'true'
@@ -1172,7 +1173,7 @@ jobs:
             echo "${PKG_NAME}@${PKG_VERSION} already exists on npm; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # @agent-relay/harnesses pins the SDK and harness driver to the exact release
   # version. Keep it after the main runtime dependency matrix so package=main
@@ -1229,12 +1230,12 @@ jobs:
         working-directory: packages/brand
         run: |
           echo "Dry run - would publish @agent-relay/brand"
-          npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+          npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish Brand to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/brand
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # Publish SDK only (when selected)
   publish-sdk-only:
@@ -1282,12 +1283,12 @@ jobs:
       - name: Dry run check
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/sdk
-        run: npm publish --dry-run --access public --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish SDK to NPM
         if: github.event.inputs.dry_run != 'true'
         working-directory: packages/sdk
-        run: npm publish --access public --provenance --tag ${{ github.event.inputs.tag }} --ignore-scripts
+        run: npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # Publish Python SDK to PyPI as per-platform wheels with the broker binary
   # embedded. One wheel per (broker_artifact, plat_tag) — see issue #769.
@@ -1569,9 +1570,9 @@ jobs:
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && github.event.inputs.package == 'cli-prerelease')) &&
       (needs.publish-packages.result == 'success' || needs.publish-packages.result == 'skipped') &&
       (needs.publish-fleet.result == 'success' || needs.publish-fleet.result == 'skipped') &&
-      (needs.publish-main-runtime-deps.result == 'success' || needs.publish-main-runtime-deps.result == 'skipped') &&
-      (needs.publish-main-harnesses.result == 'success' || needs.publish-main-harnesses.result == 'skipped') &&
-      (needs.publish-main-fleet.result == 'success' || needs.publish-main-fleet.result == 'skipped')
+      (needs.publish-main-runtime-deps.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-runtime-deps.result == 'skipped')) &&
+      (needs.publish-main-harnesses.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-harnesses.result == 'skipped')) &&
+      (needs.publish-main-fleet.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-fleet.result == 'skipped'))
 
     steps:
       - name: Checkout code
@@ -1689,7 +1690,7 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         run: |
           echo "Dry run - would publish agent-relay@${{ needs.build.outputs.new_version }}"
-          npm publish "$NPM_TARBALL" --dry-run --access public --tag "${{ github.event.inputs.tag }}"
+          npm publish "$NPM_TARBALL" --dry-run --access public --tag "$NPM_TAG"
 
       - name: Publish to NPM
         id: publish_root
@@ -1702,7 +1703,7 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          npm publish "$NPM_TARBALL" --access public --provenance --tag "${{ github.event.inputs.tag }}"
+          npm publish "$NPM_TARBALL" --access public --provenance --tag "$NPM_TAG"
           echo "published=true" >> "$GITHUB_OUTPUT"
 
   # Create git tag and release
