@@ -2,6 +2,7 @@
   "id": "compact_ydmm178ruoov",
   "version": 1,
   "type": "compacted",
+  "status": "completed",
   "compactedAt": "2026-09-01T22:02:18.823Z",
   "sourceTrajectories": [
     "traj_8ebzqrpfmgpe"
@@ -75,7 +76,7 @@
     {
       "question": "How does an unprivileged dedicated build UID reach the Rust toolchain when it cannot traverse /home/runner?",
       "chosen": "Stage a private read-only toolchain copy at $BUILD_ROOT/toolchain via `cp -a --reflink=auto` from the resolved rustup stable root, owned by RUNNER_UID:BUILDER_GID mode 0750, then `chmod -R u=rwX,go=rX`.",
-      "reasoning": "Opening up /home/runner would dissolve the isolation the dedicated UID exists to provide. A reflink copy of only the resolved toolchain is cheap and gives the builder exactly one executable it can read but not modify. TOOLCHAIN_BIN switched from `rustup which` output to `$ISOLATED_TOOLCHAIN_ROOT/bin`.",
+      "reasoning": "Opening up /home/runner would dissolve the isolation the dedicated UID exists to provide. A reflink copy of only the resolved toolchain is cheap and gives the builder the staged toolchain binaries it can read but not modify. TOOLCHAIN_BIN switched from `rustup which` output to `$ISOLATED_TOOLCHAIN_ROOT/bin`.",
       "impact": "Builder-side preflight can now positively prove cargo is executable and non-writable; the runner home stays opaque to the untrusted UID."
     },
     {
