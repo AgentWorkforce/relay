@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -139,8 +140,8 @@ try {
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
 
-  await writeFile(probePath, probeSource, { encoding: 'utf8' });
-  await writeFile(probeConfigPath, probeConfigSource, { encoding: 'utf8' });
+  await writeGeneratedFile(probePath, probeSource);
+  await writeGeneratedFile(probeConfigPath, probeConfigSource);
   run(
     'npm',
     ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, probeConfigPath)],
@@ -210,6 +211,32 @@ function isWithin(directory, candidate) {
     relative === '' ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
   );
+}
+
+async function writeGeneratedFile(targetPath, source) {
+  try {
+    const existing = await lstat(targetPath);
+    if (!existing.isFile()) {
+      throw new Error(`Refusing to replace non-regular generated file ${targetPath}.`);
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  const temporaryPath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    const handle = await open(temporaryPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(source, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    // Same-directory rename replaces a regular destination or a raced symlink
+    // itself; it never follows that destination outside the proof checkout.
+    await rename(temporaryPath, targetPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 function run(command, args, cwd, label, extraEnv = {}) {
