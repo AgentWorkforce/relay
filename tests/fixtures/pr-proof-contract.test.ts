@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -43,6 +44,10 @@ import {
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { runProcess } from '../../scripts/pr-proof/run-arm.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { resolveBrokerArtifact } from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { inspectBrokerArtifact } from '../../scripts/pr-proof/stage-broker-artifacts.mjs';
 
 const BASE_SHA = '1'.repeat(40);
 const HEAD_SHA = '2'.repeat(40);
@@ -68,6 +73,7 @@ function manifest(kind = 'bugfix') {
     runner: {
       command: ['node', `tests/relayflows/cases/${CASE_ID}/run.mjs`],
     },
+    requirements: [],
     timeoutSeconds: 900,
     expected: {
       base: {
@@ -205,6 +211,17 @@ describe('RelayFlow case manifest', () => {
     expect(() => validateCaseManifest(invalid, { caseId: CASE_ID, kind: 'feature' })).toThrow(
       /Invalid RelayFlow case manifest/
     );
+  });
+
+  it('accepts only the exact broker runtime requirement', () => {
+    const brokerManifest = { ...manifest(), requirements: ['broker-linux-x64'] };
+    expect(validateCaseManifest(brokerManifest, { caseId: CASE_ID, kind: 'bugfix' })).toEqual(brokerManifest);
+    expect(() =>
+      validateCaseManifest(
+        { ...manifest(), requirements: ['broker-linux-x64', 'arbitrary-tool'] },
+        { caseId: CASE_ID, kind: 'bugfix' }
+      )
+    ).toThrow(PrProofContractError);
   });
 });
 
@@ -421,6 +438,95 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT).toBeUndefined();
+  });
+});
+
+describe('exact broker artifact handoff', () => {
+  it('requires exact per-arm broker provenance when the case requests it', () => {
+    const brokerManifest = { ...manifest(), requirements: ['broker-linux-x64'] };
+    const rawInput = {
+      version: 1,
+      repository: 'AgentWorkforce/relay',
+      pullRequest: 1610,
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+      caseId: CASE_ID,
+      kind: 'bugfix',
+      handoffNonce: HANDOFF_NONCE,
+      manifest: brokerManifest,
+    };
+    expect(() => validateProofInput(rawInput)).toThrow(PrProofContractError);
+    expect(
+      validateProofInput({
+        ...rawInput,
+        runtimeArtifacts: {
+          broker: {
+            base: {
+              path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+              sha256: '5'.repeat(64),
+              sourceSha: BASE_SHA,
+            },
+            head: {
+              path: '.relayflow/pr-proof-binaries/head/agent-relay-broker',
+              sha256: '6'.repeat(64),
+              sourceSha: HEAD_SHA,
+            },
+          },
+        },
+      })
+    ).toMatchObject({ runtimeArtifacts: { broker: { base: { sourceSha: BASE_SHA } } } });
+  });
+
+  it('resolves only a successful artifact from the dedicated workflow', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+  });
+
+  it('verifies exact source provenance and binary digest before staging', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-'));
+    const sha = '4'.repeat(40);
+    const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
+    const binary = Buffer.from('exact broker fixture');
+    const sha256 = createHash('sha256').update(binary).digest('hex');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'agent-relay-broker'), binary);
+    await writeFile(
+      path.join(directory, 'broker-manifest.json'),
+      JSON.stringify({ version: 1, sourceSha: sha, sha256 })
+    );
+    await expect(inspectBrokerArtifact({ arm: 'base', expectedSha: sha, root })).resolves.toEqual({
+      path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+      sha256,
+      sourceSha: sha,
+    });
+    await rm(root, { recursive: true, force: true });
   });
 });
 
@@ -705,7 +811,21 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
     expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
     expect(source).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
+    expect(source).toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
+    expect(source).toContain('resolve-broker-artifacts.mjs');
+    expect(source).toContain('stage-broker-artifacts.mjs');
+    expect(source).toContain('actions: read');
     expect(source).not.toContain('github.event.pull_request.head.sha }}');
+  });
+
+  it('builds proof brokers from an attested exact checkout without secrets', async () => {
+    const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
+    expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
+    expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
+    expect(source).toContain('persist-credentials: false');
+    expect(source).toContain('cargo build --locked --release');
+    expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
+    expect(source).not.toContain('secrets.');
   });
 
   it('gates head execution on deterministic base evidence', async () => {

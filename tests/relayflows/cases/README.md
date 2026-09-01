@@ -22,6 +22,7 @@ Create `tests/relayflows/cases/<case-id>/case.json` plus the runner named by its
   "runner": {
     "command": ["node", "tests/relayflows/cases/1591-application-ack-reconnect/run.mjs"]
   },
+  "requirements": [],
   "timeoutSeconds": 900,
   "expected": {
     "base": {
@@ -49,6 +50,13 @@ The wrapper supplies:
 - `RELAY_PR_PROOF_HARNESS_DIR`: checkout of the exact head SHA
 - `RELAY_PR_PROOF_RESULT_PATH`: destination for the observation JSON
 - `RELAY_PR_PROOF_BASE_SHA` and `RELAY_PR_PROOF_HEAD_SHA`
+
+Rust broker behavior cases can declare `"requirements": ["broker-linux-x64"]`.
+The trusted dispatcher then resolves Linux broker artifacts built from the exact
+base and head SHAs, verifies their source-SHA manifests and SHA-256 digests,
+and supplies the selected executable as `RELAY_PR_PROOF_BROKER_BINARY`. The
+runner should invoke that binary directly instead of rebuilding it in Cloud.
+Cases without this requirement receive no broker binary.
 
 The runner must finish with exit code zero after observing behavior and write:
 
@@ -101,9 +109,10 @@ The RelayFlow is explicitly fail-fast with zero retries. Automatic repair
 agents are disabled: a rejected observation is evidence to report, never an
 invitation to edit the harness or artifacts until the gate passes.
 
-The action temporarily adds the generated `.relayflow/pr-proof-input.json` to
-the runner's git index because Cloud code sync uploads git-known paths. It does
-not commit or push the generated file.
+The action temporarily adds the generated `.relayflow/pr-proof-input.json` and,
+when requested, the verified exact-SHA broker binaries to the runner's git
+index because Cloud code sync uploads git-known paths. It does not commit or
+push the generated files.
 
 Fork PRs do not receive Cloud credentials. A maintainer must reproduce the
 change and its case on a same-repository branch before merge. Non-functional

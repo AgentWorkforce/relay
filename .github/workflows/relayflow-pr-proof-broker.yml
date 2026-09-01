@@ -1,0 +1,93 @@
+name: RelayFlow PR Proof Broker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/relayflow-pr-proof-broker.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/relayflow-pr-proof-broker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relayflow-pr-proof-broker-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  build:
+    name: Build exact Linux broker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Verify checkout provenance
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: relayflow-pr-proof-linux-x64
+          cache-bin: false
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build exact static broker
+        run: |
+          AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
+          export AGENT_RELAY_VERSION
+          RUSTFLAGS="-C target-feature=+crt-static" cargo build --locked --release \
+            --target x86_64-unknown-linux-musl --bin agent-relay-broker
+
+      - name: Package attested artifact
+        env:
+          BROKER_SOURCE: target/x86_64-unknown-linux-musl/release/agent-relay-broker
+        run: |
+          mkdir -p relayflow-broker
+          install -m 0755 "$BROKER_SOURCE" relayflow-broker/agent-relay-broker
+          node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            import { readFile, writeFile } from "node:fs/promises";
+            const binary = await readFile("relayflow-broker/agent-relay-broker");
+            const manifest = {
+              version: 1,
+              sourceSha: process.env.SOURCE_SHA,
+              sha256: createHash("sha256").update(binary).digest("hex"),
+            };
+            await writeFile("relayflow-broker/broker-manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          '
+
+      - name: Upload exact broker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relayflow-broker-${{ env.SOURCE_SHA }}
+          path: relayflow-broker
+          if-no-files-found: error
+          retention-days: 7

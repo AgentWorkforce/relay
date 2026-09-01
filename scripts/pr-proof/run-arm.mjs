@@ -17,6 +17,7 @@ import {
 } from './contract.mjs';
 import { uploadCloudEvidence, validateCloudEvidenceEnvironment } from './cloud-storage.mjs';
 import { runBoundedProcess } from './process-runner.mjs';
+import { inspectBrokerArtifact } from './stage-broker-artifacts.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
 
@@ -76,7 +77,33 @@ async function checkout(repository, sha, destination) {
   return actual;
 }
 
-function sanitizedCaseEnvironment({ temporaryHome, targetDir, harnessDir, resultPath, input, arm }) {
+async function verifiedBrokerPath(input, arm) {
+  const artifact = input.runtimeArtifacts?.broker?.[arm];
+  if (!artifact) return null;
+  const root = process.cwd();
+  const artifactPath = path.resolve(root, artifact.path);
+  const expectedRoot = path.join(root, '.relayflow', 'pr-proof-binaries') + path.sep;
+  if (!artifactPath.startsWith(expectedRoot)) throw new Error('broker artifact escaped its staging root');
+  const inspected = await inspectBrokerArtifact({
+    arm,
+    expectedSha: arm === 'base' ? input.baseSha : input.headSha,
+    root,
+  });
+  if (JSON.stringify(inspected) !== JSON.stringify(artifact)) {
+    throw new Error('broker artifact does not match its proof input binding');
+  }
+  return artifactPath;
+}
+
+function sanitizedCaseEnvironment({
+  temporaryHome,
+  targetDir,
+  harnessDir,
+  resultPath,
+  input,
+  arm,
+  brokerPath,
+}) {
   const allowed = ['PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'TMP', 'TEMP', 'SYSTEMROOT', 'WINDIR'];
   const env = Object.fromEntries(
     allowed.map((key) => [key, process.env[key]]).filter((entry) => typeof entry[1] === 'string' && entry[1])
@@ -94,6 +121,7 @@ function sanitizedCaseEnvironment({ temporaryHome, targetDir, harnessDir, result
     RELAY_PR_PROOF_TARGET_DIR: targetDir,
     RELAY_PR_PROOF_HARNESS_DIR: harnessDir,
     RELAY_PR_PROOF_RESULT_PATH: resultPath,
+    ...(brokerPath ? { RELAY_PR_PROOF_BROKER_BINARY: brokerPath } : {}),
   };
 }
 
@@ -134,6 +162,7 @@ export async function main() {
     if (JSON.stringify(headManifest) !== JSON.stringify(input.manifest)) {
       throw new Error('Staged case manifest does not match the exact PR head checkout');
     }
+    const brokerPath = await verifiedBrokerPath(input, arm);
 
     const [command, ...args] = input.manifest.runner.command;
     const result = await runProcess(command, args, {
@@ -145,6 +174,7 @@ export async function main() {
         resultPath,
         input,
         arm,
+        brokerPath,
       }),
       timeoutMs: input.manifest.timeoutSeconds * 1000,
     });
