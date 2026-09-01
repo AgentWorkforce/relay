@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: relayflow-pr-proof-broker-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   AGENT_RELAY_TELEMETRY_DISABLED: 1

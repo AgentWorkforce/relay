@@ -1,0 +1,57 @@
+{
+  "id": "traj_ybvq3quk7lzv",
+  "version": 1,
+  "task": {
+    "title": "Cancel duplicate PR 1632 broker producers",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T19:18:04.671Z",
+  "completedAt": "2026-09-01T19:18:33.370Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T19:18:32.892Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lbcmsyicfeqy",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T19:18:32.892Z",
+      "endedAt": "2026-09-01T19:18:33.370Z",
+      "events": [
+        {
+          "ts": 1788290312893,
+          "type": "decision",
+          "content": "Cancel superseded same-SHA broker builds: Cancel superseded same-SHA broker builds",
+          "raw": {
+            "question": "Cancel superseded same-SHA broker builds",
+            "chosen": "Cancel superseded same-SHA broker builds",
+            "alternatives": [],
+            "reasoning": "Edited and ready-for-review events may retrigger the same exact source SHA. Because the producer is deterministic and keyed by source SHA, keeping an older run consumes resources and can extend artifact availability beyond one producer bound without adding evidence. Cancel the previous same-SHA run when its replacement starts."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Enabled cancellation for superseded same-SHA broker producers and added source-contract coverage for the SHA-keyed concurrency group and cancellation policy.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6fe55495446d22ab87cfd1fab97df6f19d561af3",
+    "endRef": "6fe55495446d22ab87cfd1fab97df6f19d561af3"
+  }
+}

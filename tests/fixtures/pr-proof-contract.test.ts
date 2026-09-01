@@ -1126,6 +1126,10 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
     expect(source).toContain('persist-credentials: false');
     expect(source).toContain('permissions:\n  contents: read');
+    expect(source).toContain(
+      'group: relayflow-pr-proof-broker-${{ github.event.pull_request.head.sha || github.sha }}'
+    );
+    expect(source).toContain('cancel-in-progress: true');
     expect(source).toContain("github.event_name != 'pull_request_target'");
     expect(source).toContain('github.event.pull_request.head.repo.full_name == github.repository');
     expect(source).toContain('cargo build --locked --release');
