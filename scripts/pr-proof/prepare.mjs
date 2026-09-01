@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  BROKER_RUNTIME_REQUIREMENT,
   INPUT_PATH,
   PR_PROOF_VERSION,
   PrProofContractError,
@@ -226,7 +227,15 @@ export async function main() {
   // passed strict type/path/SHA/manifest validation plus a final PR snapshot.
   // codeql[js/http-to-file-access]
   await writeFile(outputPath, `${JSON.stringify(proofInput, null, 2)}\n`);
-  await writeGithubOutput({ required: true, case_id: caseId, input_path: outputPath }, githubOutput);
+  await writeGithubOutput(
+    {
+      required: true,
+      case_id: caseId,
+      input_path: outputPath,
+      broker_artifacts_required: manifest.requirements.includes(BROKER_RUNTIME_REQUIREMENT),
+    },
+    githubOutput
+  );
   await writeSummary(
     [
       '## RelayFlow PR proof',

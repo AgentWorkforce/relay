@@ -4,12 +4,18 @@ export const PR_PROOF_VERSION = 1;
 export const CASE_ROOT = 'tests/relayflows/cases';
 export const INPUT_PATH = '.relayflow/pr-proof-input.json';
 export const ARTIFACT_ROOT = '.workflow-artifacts/pr-proof';
+export const BROKER_RUNTIME_REQUIREMENT = 'broker-linux-x64';
 
 const CASE_ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SIGNATURE_RE = /^[a-z0-9](?:[a-z0-9._:-]{0,127})$/;
 const HANDOFF_NONCE_RE = /^[0-9a-f]{32}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const BROKER_ARTIFACT_PATHS = {
+  base: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+  head: '.relayflow/pr-proof-binaries/head/agent-relay-broker',
+};
 const MAX_OBSERVATION_DETAILS_LENGTH = 4_000;
 const REQUIRED_TITLE_RE = /^(feat|fix)(?:\([^)]*\))?!?:/i;
 const TYPE_MARKER_RE = /^\s*-\s*Change type:\s*`([^`]+)`\s*<!--\s*relay-pr-proof:type\s*-->\s*$/im;
@@ -205,6 +211,17 @@ export function validateCaseManifest(value, { caseId, kind } = {}) {
   const base = validateExpectation(expected?.base, 'expected.base', baseOutcome, errors);
   const head = validateExpectation(expected?.head, 'expected.head', 'fixed', errors);
 
+  const requirements = manifest.requirements === undefined ? [] : manifest.requirements;
+  if (
+    !Array.isArray(requirements) ||
+    requirements.some((entry) => entry !== BROKER_RUNTIME_REQUIREMENT) ||
+    new Set(requirements).size !== requirements.length
+  ) {
+    errors.push(
+      `case manifest requirements must be a unique array containing only ${BROKER_RUNTIME_REQUIREMENT}`
+    );
+  }
+
   if (errors.length > 0) {
     throw new PrProofContractError('Invalid RelayFlow case manifest', errors);
   }
@@ -215,6 +232,7 @@ export function validateCaseManifest(value, { caseId, kind } = {}) {
     kind: manifestKind,
     title,
     runner: { command: command.map((entry) => entry.trim()) },
+    requirements: [...requirements],
     timeoutSeconds,
     expected: { base, head },
   };
@@ -253,6 +271,36 @@ export function validateProofInput(value) {
     if (error instanceof PrProofContractError) errors.push(...error.details);
     else throw error;
   }
+
+  let runtimeArtifacts = null;
+  const brokerRequired = manifest?.requirements.includes(BROKER_RUNTIME_REQUIREMENT);
+  if (brokerRequired) {
+    const artifacts = assertObject(input.runtimeArtifacts, 'proof input runtimeArtifacts', errors);
+    const broker = assertObject(artifacts?.broker, 'proof input runtimeArtifacts.broker', errors);
+    const arms = {};
+    for (const arm of ['base', 'head']) {
+      const artifact = assertObject(broker?.[arm], `proof input runtimeArtifacts.broker.${arm}`, errors);
+      const artifactPath = nonEmptyString(artifact?.path);
+      const sha256 = nonEmptyString(artifact?.sha256);
+      const sourceSha = nonEmptyString(artifact?.sourceSha);
+      const expectedSourceSha = arm === 'base' ? baseSha : headSha;
+      if (artifactPath !== BROKER_ARTIFACT_PATHS[arm]) {
+        errors.push(`proof input runtimeArtifacts.broker.${arm}.path is invalid`);
+      }
+      if (!sha256 || !SHA256_RE.test(sha256)) {
+        errors.push(`proof input runtimeArtifacts.broker.${arm}.sha256 is invalid`);
+      }
+      if (sourceSha !== expectedSourceSha) {
+        errors.push(`proof input runtimeArtifacts.broker.${arm}.sourceSha is invalid`);
+      }
+      if (artifactPath && sha256 && sourceSha) {
+        arms[arm] = { path: artifactPath, sha256, sourceSha };
+      }
+    }
+    runtimeArtifacts = broker ? { broker: arms } : null;
+  } else if (input.runtimeArtifacts !== undefined) {
+    errors.push('proof input runtimeArtifacts are not allowed unless the case declares a requirement');
+  }
   if (errors.length > 0) throw new PrProofContractError('Invalid PR proof input', errors);
 
   return {
@@ -265,6 +313,7 @@ export function validateProofInput(value) {
     kind,
     handoffNonce,
     manifest,
+    ...(runtimeArtifacts ? { runtimeArtifacts } : {}),
   };
 }
 
