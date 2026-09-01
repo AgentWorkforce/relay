@@ -191,7 +191,7 @@ agent-relay fleet spawn claude \
   --sandbox \
   --sandbox-relayfile-path '/live-review/run-123/**' \
   --name reviewer \
-  --task 'Review the live draft under /live-review/run-123'
+  --task 'Review the live draft under /workspace/live-review/run-123'
 ```
 
 `--session-ref` is a real CLI resume, not a logical collaboration label. Pass
