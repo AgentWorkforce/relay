@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -43,7 +43,7 @@ import {
   preparedRunIdFromOutput,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { runProcess } from '../../scripts/pr-proof/run-arm.mjs';
+import { openVerifiedBrokerExecutable, runProcess } from '../../scripts/pr-proof/run-arm.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { resolveBrokerArtifact } from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -479,11 +479,30 @@ describe('exact broker artifact handoff', () => {
 
   it('resolves only a successful artifact from the dedicated workflow', async () => {
     const sha = '3'.repeat(40);
+    const inspectedRunIds: number[] = [];
     const fetchImpl = async (url: string | URL | Request) => {
       const value = String(url);
       if (value.includes('/actions/artifacts?')) {
         return Response.json({
           artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: true,
+              updated_at: '2026-09-01T00:04:00Z',
+              workflow_run: { id: 46 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:03:00Z',
+              workflow_run: { id: 44 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:02:00Z',
+              workflow_run: { id: 43 },
+            },
             {
               name: `relayflow-broker-${sha}`,
               expired: false,
@@ -493,9 +512,14 @@ describe('exact broker artifact handoff', () => {
           ],
         });
       }
+      const runId = Number(value.split('/').at(-1));
+      inspectedRunIds.push(runId);
       return Response.json({
-        path: '.github/workflows/relayflow-pr-proof-broker.yml',
-        conclusion: 'success',
+        path:
+          runId === 43
+            ? '.github/workflows/untrusted-broker.yml'
+            : '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: runId === 44 ? 'failure' : 'success',
         head_sha: sha,
         event: 'pull_request_target',
         head_branch: 'feature/exact-broker',
@@ -510,6 +534,7 @@ describe('exact broker artifact handoff', () => {
         fetchImpl,
       })
     ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+    expect(inspectedRunIds).toEqual([44, 43, 42]);
   });
 
   it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5])(
@@ -713,6 +738,54 @@ describe('exact broker artifact handoff', () => {
     });
     await rm(root, { recursive: true, force: true });
   });
+
+  it.skipIf(process.platform !== 'linux')(
+    'executes an anonymous verified broker inode after the staged path is replaced',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
+      const sha = '4'.repeat(40);
+      const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
+      const privateRoot = path.join(root, 'private');
+      const binaryPath = path.join(directory, 'agent-relay-broker');
+      await mkdir(directory, { recursive: true });
+      await mkdir(privateRoot, { recursive: true });
+      await copyFile('/bin/true', binaryPath);
+      const binary = await readFile(binaryPath);
+      const sha256 = createHash('sha256').update(binary).digest('hex');
+      await writeFile(
+        path.join(directory, 'broker-manifest.json'),
+        JSON.stringify({ version: 1, sourceSha: sha, sha256 })
+      );
+
+      const executable = await openVerifiedBrokerExecutable({
+        input: {
+          baseSha: sha,
+          headSha: '5'.repeat(40),
+          runtimeArtifacts: {
+            broker: {
+              base: {
+                path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+                sha256,
+                sourceSha: sha,
+              },
+            },
+          },
+        },
+        arm: 'base',
+        privateRoot,
+        root,
+      });
+      try {
+        expect(executable).not.toBeNull();
+        await copyFile('/bin/false', binaryPath);
+        const result = await runProcess(executable!.path, [], { echo: false, timeoutMs: 1_000 });
+        expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+      } finally {
+        await executable?.handle.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 });
 
 describe('process timeout contract', () => {

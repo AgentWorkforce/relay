@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, open, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,7 +18,7 @@ import {
 } from './contract.mjs';
 import { uploadCloudEvidence, validateCloudEvidenceEnvironment } from './cloud-storage.mjs';
 import { runBoundedProcess } from './process-runner.mjs';
-import { inspectBrokerArtifact } from './stage-broker-artifacts.mjs';
+import { loadBrokerArtifact } from './stage-broker-artifacts.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
 
@@ -77,22 +78,49 @@ async function checkout(repository, sha, destination) {
   return actual;
 }
 
-async function verifiedBrokerPath(input, arm) {
+export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, root = process.cwd() }) {
   const artifact = input.runtimeArtifacts?.broker?.[arm];
   if (!artifact) return null;
-  const root = process.cwd();
+  if (process.platform !== 'linux') {
+    throw new Error('broker-linux-x64 proof artifacts require a Linux proof sandbox');
+  }
   const artifactPath = path.resolve(root, artifact.path);
   const expectedRoot = path.join(root, '.relayflow', 'pr-proof-binaries') + path.sep;
   if (!artifactPath.startsWith(expectedRoot)) throw new Error('broker artifact escaped its staging root');
-  const inspected = await inspectBrokerArtifact({
+  const loaded = await loadBrokerArtifact({
     arm,
     expectedSha: arm === 'base' ? input.baseSha : input.headSha,
     root,
   });
-  if (JSON.stringify(inspected) !== JSON.stringify(artifact)) {
+  if (JSON.stringify(loaded.artifact) !== JSON.stringify(artifact)) {
     throw new Error('broker artifact does not match its proof input binding');
   }
-  return artifactPath;
+
+  const privatePath = path.join(privateRoot, `verified-broker-${arm}`);
+  await writeFile(privatePath, loaded.contents, { flag: 'wx', mode: 0o500 });
+  const handle = await open(privatePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== loaded.contents.length) {
+      throw new Error('private broker copy is not the verified regular file');
+    }
+    const privateSha256 = createHash('sha256')
+      .update(await handle.readFile())
+      .digest('hex');
+    if (privateSha256 !== loaded.artifact.sha256) {
+      throw new Error('private broker copy changed before execution binding');
+    }
+    await handle.chmod(0o500);
+    await unlink(privatePath);
+    return {
+      path: `/proc/${process.pid}/fd/${handle.fd}`,
+      handle,
+    };
+  } catch (error) {
+    await handle.close();
+    await rm(privatePath, { force: true });
+    throw error;
+  }
 }
 
 function sanitizedCaseEnvironment({
@@ -148,6 +176,7 @@ export async function main() {
   const resultPath = path.join(temporaryRoot, 'observation.json');
   const targetSha = arm === 'base' ? input.baseSha : input.headSha;
   const evidencePath = path.join(ARTIFACT_ROOT, `${arm}.json`);
+  let brokerHandle = null;
 
   try {
     await mkdir(temporaryHome, { recursive: true });
@@ -162,7 +191,13 @@ export async function main() {
     if (JSON.stringify(headManifest) !== JSON.stringify(input.manifest)) {
       throw new Error('Staged case manifest does not match the exact PR head checkout');
     }
-    const brokerPath = await verifiedBrokerPath(input, arm);
+    const brokerExecutable = await openVerifiedBrokerExecutable({
+      input,
+      arm,
+      privateRoot: temporaryRoot,
+    });
+    const brokerPath = brokerExecutable?.path ?? null;
+    brokerHandle = brokerExecutable?.handle ?? null;
 
     const [command, ...args] = input.manifest.runner.command;
     const result = await runProcess(command, args, {
@@ -225,7 +260,11 @@ export async function main() {
     await uploadCloudEvidence(input, arm, evidence);
     console.log(`PR_PROOF_ARM_COMPLETE arm=${arm} case=${input.caseId} sandbox=${sandboxId}`);
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    try {
+      await brokerHandle?.close();
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
   }
 }
 

@@ -31,7 +31,7 @@ async function readRegularFile(filePath, maxBytes) {
   }
 }
 
-export async function inspectBrokerArtifact({ arm, expectedSha, root = process.cwd() }) {
+export async function loadBrokerArtifact({ arm, expectedSha, root = process.cwd() }) {
   if (!['base', 'head'].includes(arm) || !SHA_RE.test(expectedSha)) {
     throw new Error('broker artifact arm or source SHA is invalid');
   }
@@ -64,7 +64,14 @@ export async function inspectBrokerArtifact({ arm, expectedSha, root = process.c
   } finally {
     await binaryFile.handle.close();
   }
-  return { path: binaryRelativePath, sha256: manifest.sha256, sourceSha: expectedSha };
+  return {
+    artifact: { path: binaryRelativePath, sha256: manifest.sha256, sourceSha: expectedSha },
+    contents: binaryFile.contents,
+  };
+}
+
+export async function inspectBrokerArtifact(options) {
+  return (await loadBrokerArtifact(options)).artifact;
 }
 
 async function main() {
