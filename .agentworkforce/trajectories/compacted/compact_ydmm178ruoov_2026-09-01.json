@@ -1,0 +1,156 @@
+{
+  "id": "compact_ydmm178ruoov",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-01T22:02:18.823Z",
+  "sourceTrajectories": [
+    "traj_8ebzqrpfmgpe"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T21:47:03.842Z",
+    "end": "2026-09-01T22:02:10.038Z"
+  },
+  "summary": {
+    "totalDecisions": 4,
+    "totalEvents": 5,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Stage a private read-only toolchain copy inside the isolated build root",
+          "chosen": "Stage a private read-only toolchain copy inside the isolated build root",
+          "reasoning": "The dedicated UID cannot safely traverse /home/runner. A reflink/copy of only the resolved Rust toolchain preserves isolation without opening the runner home, and builder-side preflight proves cargo is executable but non-writable.",
+          "fromTrajectory": "traj_8ebzqrpfmgpe"
+        },
+        {
+          "question": "Place the isolated broker build root on an executable filesystem",
+          "chosen": "Place the isolated broker build root on an executable filesystem",
+          "reasoning": "The PR-head Ubuntu run proved that runner.temp/_temp is mounted noexec: mode checks passed but kernel execution of the copied Cargo returned EACCES. Using a root-created /opt/relay-pr-proof-builder keeps ownership and dedicated-UID isolation while allowing Cargo, rustc helpers, and build scripts to execute. The preflight now runs isolated cargo --version to fail before workflow-command suspension if execution is unavailable.",
+          "fromTrajectory": "traj_8ebzqrpfmgpe"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Separate trusted broker production from PR-head workflow self-validation",
+          "chosen": "Separate trusted broker production from PR-head workflow self-validation",
+          "reasoning": "pull_request_target always executes the default-branch workflow, so a workflow-only fix cannot validate its own YAML there. A workflow-path-only pull_request lane runs the PR-head definition with contents:read and no secrets, uses an event-qualified concurrency/check name, and skips artifact upload; trusted pull_request_target/push/schedule production and resolver event rejection remain unchanged. The toolchain copy directory must be created with sudo because the runner cannot chgrp to the fresh dedicated builder group.",
+          "fromTrajectory": "traj_8ebzqrpfmgpe"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Stage the exact source tree beside the isolated builder",
+          "chosen": "Stage the exact source tree beside the isolated builder",
+          "reasoning": "The dedicated UID cannot traverse GitHub's /home/runner workspace ancestors. The trusted runner now uses git archive of verified SOURCE_SHA to materialize only committed files under runner-owned /opt/relay-pr-proof-builder/source, marks that tree read-only to the builder, and Cargo builds that manifest. Preflight requires the manifest to be readable as well as non-writable, preventing inaccessible paths from falsely passing a negative write test.",
+          "fromTrajectory": "traj_8ebzqrpfmgpe"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/relayflow-pr-proof-broker.yml",
+    "tests/fixtures/pr-proof-contract.test.ts"
+  ],
+  "commits": [
+    "4cb736219",
+    "34f6e0129",
+    "55b980136",
+    "ee751c139"
+  ],
+  "narrative": "A single 15-minute session (2026-09-01) repaired `.github/workflows/relayflow-pr-proof-broker.yml`, the trusted producer that builds the exact static `agent-relay-broker` musl binary for RelayFlow PR proofs. The producer had just landed via #1632 (commit 31624bbb5) with a hardened sandbox — a dedicated `relay-proof-builder` system UID created with `useradd --system --user-group --no-create-home`, `sudo setpriv --clear-groups --no-new-privs` with all capability sets zeroed, `::stop-commands::` workflow-command suspension around the build, process reap on exit, and artifact upload only on trusted events. The first trusted run on main failed on integration-only permission defects that no local check could have caught. Four commits (ee751c139, 55b980136, 34f6e0129, 4cb736219) fixed them, each treating the fail-closed CI failure as an integration probe, and each paired with matching assertions in `tests/fixtures/pr-proof-contract.test.ts` (`trusted dispatcher source contract`). The defect chain: (1) the dedicated UID cannot traverse `/home/runner`, so the host rustup toolchain was unreachable — fixed by `cp -a --reflink=auto` of `$(dirname $(dirname $(rustup which --toolchain stable cargo)))` into `$BUILD_ROOT/toolchain`, created with `sudo install -d -o $RUNNER_UID -g $BUILDER_GID -m 0750` (sudo is required because the runner cannot chgrp into the freshly created builder group) and then `chmod -R u=rwX,go=rX`. (2) A workflow-only fix cannot validate itself under `pull_request_target`, which always runs the default-branch YAML — fixed by adding a `pull_request` trigger scoped to `paths: ['.github/workflows/relayflow-pr-proof-broker.yml']`, an event-qualified concurrency group and job name, and `if: github.event_name != 'pull_request'` on the `upload-artifact` step so the PR-head lane never publishes trusted artifacts. (3) That PR-head lane then proved `$RUNNER_TEMP` is mounted `noexec`: mode checks passed but executing the copied cargo returned EACCES — fixed by moving `BUILD_ROOT` to a root-created `/opt/relay-pr-proof-builder`, and the preflight now runs `\"$2/bin/cargo\" --version` before workflow-command suspension so execution failures surface with readable logs. (4) The same traversal problem hit the checkout itself — fixed by `git archive --format=tar \"$SOURCE_SHA\" | tar -xf - -C \"$ISOLATED_SOURCE_ROOT\"`, materializing only committed files under `/opt/relay-pr-proof-builder/source`, with cargo now pointed at `--manifest-path \"$ISOLATED_SOURCE_ROOT/Cargo.toml\"`. The preflight assertion set grew accordingly and now requires readability as well as non-writability (`test -r \"$1/Cargo.toml\"`, `test -x \"$2/bin/cargo\"`, `test ! -w \"$2/bin/cargo\"`) — the earlier version tested only `test ! -w`, which an inaccessible path passes vacuously. Outcome: an exact PR-head cold musl build (run 33563884626) passed in 3m24s. The dedicated UID, empty capabilities, no-new-privileges, read-only source and toolchain, process reap, and trusted-event artifact boundary were preserved through every fix; `BROKER_SOURCE` moved from `${{ runner.temp }}/…` to `/opt/relay-pr-proof-builder/staging/agent-relay-broker`.",
+  "decisions": [
+    {
+      "question": "How does an unprivileged dedicated build UID reach the Rust toolchain when it cannot traverse /home/runner?",
+      "chosen": "Stage a private read-only toolchain copy at $BUILD_ROOT/toolchain via `cp -a --reflink=auto` from the resolved rustup stable root, owned by RUNNER_UID:BUILDER_GID mode 0750, then `chmod -R u=rwX,go=rX`.",
+      "reasoning": "Opening up /home/runner would dissolve the isolation the dedicated UID exists to provide. A reflink copy of only the resolved toolchain is cheap and gives the builder exactly one executable it can read but not modify. TOOLCHAIN_BIN switched from `rustup which` output to `$ISOLATED_TOOLCHAIN_ROOT/bin`.",
+      "impact": "Builder-side preflight can now positively prove cargo is executable and non-writable; the runner home stays opaque to the untrusted UID."
+    },
+    {
+      "question": "How can a fix to a pull_request_target workflow validate its own YAML, given that event always runs the default-branch definition?",
+      "chosen": "Add a separate `pull_request` lane scoped to the workflow file path only, with event-qualified concurrency/job name and `if: github.event_name != 'pull_request'` on artifact upload.",
+      "reasoning": "The PR-head lane runs the proposed YAML with `contents: read` and no secrets, so it exercises the real sandbox without ever producing a trusted artifact. Trusted `pull_request_target`/`push`/`schedule` production and the resolver's event rejection are untouched.",
+      "impact": "Workflow changes are now self-validating on the PR that proposes them; this is how defects (3) and (4) were found before merge rather than on main."
+    },
+    {
+      "question": "Where should the isolated build root live?",
+      "chosen": "A root-created `/opt/relay-pr-proof-builder` instead of `$RUNNER_TEMP/relay-pr-proof-builder`.",
+      "reasoning": "The PR-head Ubuntu run proved runner.temp/_temp is mounted noexec: mode bits looked correct but kernel execution of the copied cargo returned EACCES. /opt keeps root-controlled ownership and dedicated-UID isolation while permitting cargo, rustc helpers, and build scripts to execute.",
+      "impact": "BROKER_SOURCE and the packaging step now reference the absolute /opt path; the contract test asserts `BUILD_ROOT=\"/opt/relay-pr-proof-builder\"`."
+    },
+    {
+      "question": "How does the builder read the source tree when it cannot traverse the GitHub workspace ancestors?",
+      "chosen": "`git archive` the verified SOURCE_SHA into `/opt/relay-pr-proof-builder/source`, mark it read-only to the builder, and build that manifest.",
+      "reasoning": "git archive materializes only committed files at the attested SHA — no untracked residue, no dependence on the workspace's ancestor permissions — and keeps the exact-source guarantee the proof depends on.",
+      "impact": "`--manifest-path` moved to $ISOLATED_SOURCE_ROOT/Cargo.toml; `chmod -R go-w \"$GITHUB_WORKSPACE\"` remains but is no longer the build input."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Every preflight assertion must pair a negative permission test with a positive access test: `test -r \"$1/Cargo.toml\"` alongside `test ! -w`, and `test -x \"$2/bin/cargo\"` plus an actual `cargo --version` execution alongside `test ! -w \"$2/bin/cargo\"`.",
+      "rationale": "A path the UID cannot reach at all passes a bare `test ! -w` vacuously — the original preflight would have green-lit a completely inaccessible tree.",
+      "scope": "Any fail-closed sandbox preflight in `.github/workflows/relayflow-pr-proof-broker.yml`."
+    },
+    {
+      "pattern": "Run the executability probe before `::stop-commands::` suspension, not after.",
+      "rationale": "Workflow-command suspension hides the failure detail; failing early keeps the EACCES diagnosis readable in the run log.",
+      "scope": "The `Build exact static broker` step ordering."
+    },
+    {
+      "pattern": "A workflow file that runs under `pull_request_target` gets a companion path-scoped `pull_request` lane that exercises the PR-head definition with contents:read, no secrets, event-qualified concurrency group and job name, and no artifact upload.",
+      "rationale": "pull_request_target executes the default-branch YAML, so a workflow-only change is otherwise unverifiable until after merge.",
+      "scope": "Trusted-producer workflows in `.github/workflows/`."
+    },
+    {
+      "pattern": "Every structural change to the producer workflow lands with a matching literal-string assertion in `tests/fixtures/pr-proof-contract.test.ts` (`trusted dispatcher source contract`), including ordering assertions (cleanup < killStatusBranch < buildStatusBranch < stage).",
+      "rationale": "The security properties live in shell text inside YAML, where nothing else type-checks them; string-pinning is what prevents silent regression of the isolation boundary.",
+      "scope": "tests/fixtures/pr-proof-contract.test.ts."
+    },
+    {
+      "pattern": "Directories the untrusted builder must read are created with `sudo install -d -o \"$RUNNER_UID\" -g \"$BUILDER_GID\" -m 0750` then `chmod -R u=rwX,go=rX`.",
+      "rationale": "The runner cannot chgrp into the freshly created dedicated builder group, so sudo is mandatory for the initial create; runner owns, builder group reads only.",
+      "scope": "Isolated source and toolchain staging in the broker producer."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "POSIX mode bits are not proof of executability — `$RUNNER_TEMP`/`_temp` on GitHub's Ubuntu runners is mounted noexec, so `test -x` passed while the kernel returned EACCES on exec.",
+      "context": "Defect (3): the copied cargo satisfied every mode check and still could not run.",
+      "recommendation": "Whenever staging binaries into a scratch directory in CI, actually invoke the binary (`cargo --version`) as the probe, and prefer a root-created /opt path over runner temp."
+    },
+    {
+      "lesson": "Hardening that isolates a UID also isolates it from the things it needs; the checkout and the toolchain both sat behind /home/runner ancestors the dedicated UID could not traverse.",
+      "context": "Defects (1) and (4) were the same traversal problem surfacing in two places, one run apart.",
+      "recommendation": "When introducing a dedicated-UID sandbox, enumerate every input path up front (source, toolchain, cargo home, target dir) and stage each into the isolation root rather than discovering them one CI failure at a time."
+    },
+    {
+      "lesson": "Fail-closed CI is an effective integration probe, but only if the workflow can run its own proposed definition — the first three failures were only diagnosable because a PR-head lane was added.",
+      "context": "pull_request_target always runs the default-branch YAML, so the initial toolchain fix could not be validated except by merging to main.",
+      "recommendation": "Add the self-validation lane as part of the initial trusted-workflow design, not as a retrofit after the first main-branch failure."
+    },
+    {
+      "lesson": "Negative permission assertions silently pass on inaccessible paths, so a preflight built only from `test ! -w` gives false confidence.",
+      "context": "The pre-fix preflight asserted `test ! -w \"$1\"` / `test ! -w \"$1/Cargo.toml\"` with no readability check.",
+      "recommendation": "Pair every 'cannot write' assertion with a 'can read/execute' assertion in security preflights."
+    }
+  ],
+  "openQuestions": [
+    "Does `cp -a --reflink=auto` of the rustup toolchain into /opt add meaningful cold-run cost on runners without reflink support (non-btrfs/xfs), and is the 3m24s cold musl build time stable across scheduled runs?",
+    "The `chmod -R go-w \"$GITHUB_WORKSPACE\"` line survives but the build no longer uses the workspace as input — is it still load-bearing or dead hardening that should be removed?",
+    "The workflow currently runs only on ephemeral `ubuntu-latest` hosts and its EXIT trap reaps builder processes rather than deleting the fixed `/opt` tree. If it ever moves to self-hosted runners, should it first assert that `/opt/relay-pr-proof-builder` is absent and then explicitly remove it after process reap?",
+    "Workflow-definition changes use the path-scoped untrusted `pull_request` lane, while crate and Cargo changes use the trusted base-defined `pull_request_target` lane against the exact PR source. Is that split documented clearly enough to prevent anyone from treating validation-lane artifacts as trusted inputs?",
+    "No changelog entry was added for this CI-only change; the CLAUDE.md changelog policy's treatment of internal CI workflow fixes is not explicitly settled."
+  ]
+}
