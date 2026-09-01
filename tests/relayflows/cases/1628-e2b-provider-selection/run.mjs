@@ -139,8 +139,8 @@ try {
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
 
-  await writeFile(probePath, probeSource, { encoding: 'utf8', flag: 'wx' });
-  await writeFile(probeConfigPath, probeConfigSource, { encoding: 'utf8', flag: 'wx' });
+  await writeFile(probePath, probeSource, { encoding: 'utf8' });
+  await writeFile(probeConfigPath, probeConfigSource, { encoding: 'utf8' });
   run(
     'npm',
     ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, probeConfigPath)],

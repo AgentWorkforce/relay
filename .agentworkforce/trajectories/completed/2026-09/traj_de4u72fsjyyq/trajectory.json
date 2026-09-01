@@ -1,0 +1,57 @@
+{
+  "id": "traj_de4u72fsjyyq",
+  "version": 1,
+  "task": {
+    "title": "Finalize and release E2B fleet provider CLI",
+    "source": {
+      "system": "plain",
+      "id": "relay#1628"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T09:16:36.054Z",
+  "completedAt": "2026-09-01T09:18:23.432Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T09:18:22.564Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_956k15i37bzl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T09:18:22.564Z",
+      "endedAt": "2026-09-01T09:18:23.432Z",
+      "events": [
+        {
+          "ts": 1788254302564,
+          "type": "decision",
+          "content": "Overwrite fixed-name RelayFlow probe files on rerun: Overwrite fixed-name RelayFlow probe files on rerun",
+          "raw": {
+            "question": "Overwrite fixed-name RelayFlow probe files on rerun",
+            "chosen": "Overwrite fixed-name RelayFlow probe files on rerun",
+            "alternatives": [],
+            "reasoning": "A killed proof can leave stale files; deterministic reruns must regenerate them while the finally block still removes normal-run artifacts."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made the E2B provider proof restart-safe and revalidated 51 focused tests, Cloud and CLI builds, and exact-head RelayFlow proof.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "db5f3afb6f30d1486677e26af7066bee16b60ca0",
+    "endRef": "db5f3afb6f30d1486677e26af7066bee16b60ca0"
+  }
+}
