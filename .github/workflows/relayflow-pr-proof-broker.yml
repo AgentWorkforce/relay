@@ -57,11 +57,13 @@ jobs:
 
       - name: Build exact static broker
         run: |
+          set -o pipefail
           unset ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL
           unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
 
           BUILDER_USER=relay-proof-builder
           BUILD_ROOT="/opt/relay-pr-proof-builder"
+          ISOLATED_SOURCE_ROOT="$BUILD_ROOT/source"
           BUILDER_HOME="$BUILD_ROOT/home"
           CARGO_HOME="$BUILD_ROOT/cargo-home"
           CARGO_TARGET_DIR="$BUILD_ROOT/target"
@@ -79,6 +81,10 @@ jobs:
             sudo install -d -o "$BUILDER_UID" -g "$BUILDER_GID" -m 0700 "$directory"
           done
           install -d -m 0700 "$STAGING_DIR"
+
+          sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_SOURCE_ROOT"
+          git archive --format=tar "$SOURCE_SHA" | tar -xf - -C "$ISOLATED_SOURCE_ROOT"
+          chmod -R u=rwX,go=rX "$ISOLATED_SOURCE_ROOT"
 
           HOST_TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable cargo)")"
           HOST_TOOLCHAIN_ROOT="$(dirname "$HOST_TOOLCHAIN_BIN")"
@@ -100,6 +106,7 @@ jobs:
               status_value() {
                 sed -n "s/^$1:[[:space:]]*//p" /proc/self/status
               }
+              test -r "$1/Cargo.toml"
               test ! -w "$1"
               test ! -w "$1/Cargo.toml"
               test -x "$2/bin/cargo"
@@ -111,7 +118,7 @@ jobs:
                 test "$(status_value "$capability_set")" = 0000000000000000
               done
               test "$(status_value NoNewPrivs)" = 1
-            ' sh "$GITHUB_WORKSPACE" "$ISOLATED_TOOLCHAIN_ROOT"
+            ' sh "$ISOLATED_SOURCE_ROOT" "$ISOLATED_TOOLCHAIN_ROOT"
 
           WORKFLOW_COMMAND_TOKEN="$(tr -d '-' </proc/sys/kernel/random/uuid)"
           WORKFLOW_COMMANDS_SUSPENDED=0
@@ -206,7 +213,7 @@ jobs:
               AGENT_RELAY_VERSION="$AGENT_RELAY_VERSION" \
               RUSTFLAGS="-C target-feature=+crt-static" \
               "$CARGO_BIN" build \
-                --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+                --manifest-path "$ISOLATED_SOURCE_ROOT/Cargo.toml" \
                 --locked --release \
                 --target x86_64-unknown-linux-musl \
                 --bin agent-relay-broker || BUILD_STATUS=$?
