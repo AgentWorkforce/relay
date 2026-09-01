@@ -27,6 +27,9 @@ env:
 jobs:
   build:
     name: Build exact Linux broker
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
