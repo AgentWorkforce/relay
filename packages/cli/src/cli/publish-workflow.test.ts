@@ -65,11 +65,7 @@ describe('package=main publish dependency chain', () => {
     );
 
     const publishMainIf = jobs['publish-main']?.if;
-    for (const job of [
-      'publish-main-runtime-deps',
-      'publish-main-harnesses',
-      'publish-main-fleet',
-    ]) {
+    for (const job of ['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet']) {
       expect(publishMainIf).toContain(
         `(needs.${job}.result == 'success' || (github.event.inputs.package == 'all' && needs.${job}.result == 'skipped'))`
       );
