@@ -1264,21 +1264,26 @@ describe('trusted dispatcher source contract', () => {
   it('builds proof brokers from an attested exact checkout without secrets', async () => {
     const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
     const triggerSection = source.slice(source.indexOf('on:'), source.indexOf('permissions:'));
-    const pushSection = source.slice(source.indexOf('  push:'), source.indexOf('  pull_request_target:'));
+    const pushSection = source.slice(source.indexOf('  push:'), source.indexOf('  pull_request:'));
     expect(triggerSection).toContain('  schedule:');
     expect(triggerSection).toContain("cron: '17 3 * * 1'");
+    expect(triggerSection).toContain(
+      "  pull_request:\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
+    );
     expect(triggerSection).toContain('  pull_request_target:');
     expect(triggerSection).toContain('types: [opened, synchronize, reopened, edited, ready_for_review]');
-    expect(triggerSection).not.toContain('  pull_request:');
     expect(triggerSection).not.toContain('  workflow_dispatch:');
     expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
     expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
     expect(source).toContain('persist-credentials: false');
     expect(source).toContain('permissions:\n  contents: read');
     expect(source).toContain(
-      'group: relayflow-pr-proof-broker-${{ github.event.pull_request.head.sha || github.sha }}'
+      'group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}'
     );
     expect(source).toContain('cancel-in-progress: true');
+    expect(source).toContain(
+      "name: ${{ github.event_name == 'pull_request' && 'Validate PR-head Linux broker' || 'Build exact Linux broker' }}"
+    );
     expect(source).toContain("github.event_name != 'pull_request_target'");
     expect(source).toContain('github.event.pull_request.head.repo.full_name == github.repository');
     expect(source).toContain('"$CARGO_BIN" build');
@@ -1313,7 +1318,27 @@ describe('trusted dispatcher source contract', () => {
       expect(isolatedEnvironment).not.toContain(forbidden);
     }
     expect(source).toContain('useradd --system --user-group --no-create-home');
+    expect(source).toContain('BUILD_ROOT="/opt/relay-pr-proof-builder"');
+    expect(source).toContain('ISOLATED_SOURCE_ROOT="$BUILD_ROOT/source"');
     expect(source).toContain('-o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"');
+    expect(source).toContain(
+      'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_SOURCE_ROOT"'
+    );
+    expect(source).toContain('git archive --format=tar "$SOURCE_SHA" | tar -xf - -C "$ISOLATED_SOURCE_ROOT"');
+    expect(source).toContain(
+      'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"'
+    );
+    expect(source).toContain('cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"');
+    expect(source).toContain('TOOLCHAIN_BIN="$ISOLATED_TOOLCHAIN_ROOT/bin"');
+    expect(source).toContain('CARGO_BIN="$TOOLCHAIN_BIN/cargo"');
+    expect(source).toContain('test -r "$1/Cargo.toml"');
+    expect(source).toContain('test -x "$2/bin/cargo"');
+    expect(source).toContain('"$2/bin/cargo" --version >/dev/null');
+    expect(source).toContain('test ! -w "$2/bin/cargo"');
+    const isolatedWorkingDirectory = source.indexOf('cd "$ISOLATED_SOURCE_ROOT"');
+    expect(isolatedWorkingDirectory).toBeGreaterThan(0);
+    expect(isolatedWorkingDirectory).toBeLessThan(isolatedBuild);
+    expect(source).toContain('--manifest-path "$ISOLATED_SOURCE_ROOT/Cargo.toml"');
     for (const flag of [
       '--clear-groups',
       '--no-new-privs',
@@ -1356,10 +1381,9 @@ describe('trusted dispatcher source contract', () => {
     expect(killStatusBranch).toBeGreaterThan(cleanup);
     expect(buildStatusBranch).toBeGreaterThan(killStatusBranch);
     expect(stage).toBeGreaterThan(buildStatusBranch);
-    expect(source).toContain(
-      'BROKER_SOURCE: ${{ runner.temp }}/relay-pr-proof-builder/staging/agent-relay-broker'
-    );
+    expect(source).toContain('BROKER_SOURCE: /opt/relay-pr-proof-builder/staging/agent-relay-broker');
     expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
+    expect(source).toContain("if: github.event_name != 'pull_request'");
     expect(source).toContain('retention-days: 90');
     expect(source).toContain("- 'tests/relayflows/cases/**'");
     expect(pushSection).not.toContain('paths:');
