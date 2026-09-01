@@ -77,6 +77,13 @@ jobs:
           done
           install -d -m 0700 "$STAGING_DIR"
 
+          HOST_TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable cargo)")"
+          HOST_TOOLCHAIN_ROOT="$(dirname "$HOST_TOOLCHAIN_BIN")"
+          ISOLATED_TOOLCHAIN_ROOT="$BUILD_ROOT/toolchain"
+          install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"
+          cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"
+          chmod -R u=rwX,go=rX "$ISOLATED_TOOLCHAIN_ROOT"
+
           chmod -R go-w "$GITHUB_WORKSPACE"
           sudo setpriv \
             --reuid="$BUILDER_UID" \
@@ -92,12 +99,15 @@ jobs:
               }
               test ! -w "$1"
               test ! -w "$1/Cargo.toml"
+              test -x "$2/bin/cargo"
+              test ! -w "$2"
+              test ! -w "$2/bin/cargo"
               test "$(id -G | wc -w)" -eq 1
               for capability_set in CapInh CapPrm CapEff CapBnd CapAmb; do
                 test "$(status_value "$capability_set")" = 0000000000000000
               done
               test "$(status_value NoNewPrivs)" = 1
-            ' sh "$GITHUB_WORKSPACE"
+            ' sh "$GITHUB_WORKSPACE" "$ISOLATED_TOOLCHAIN_ROOT"
 
           WORKFLOW_COMMAND_TOKEN="$(tr -d '-' </proc/sys/kernel/random/uuid)"
           WORKFLOW_COMMANDS_SUSPENDED=0
@@ -164,7 +174,7 @@ jobs:
           trap cleanup_on_exit EXIT
 
           AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
-          TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable cargo)")"
+          TOOLCHAIN_BIN="$ISOLATED_TOOLCHAIN_ROOT/bin"
           CARGO_BIN="$TOOLCHAIN_BIN/cargo"
 
           echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"
