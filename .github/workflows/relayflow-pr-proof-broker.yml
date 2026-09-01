@@ -192,6 +192,7 @@ jobs:
           WORKFLOW_COMMANDS_SUSPENDED=1
 
           BUILD_STATUS=0
+          cd "$ISOLATED_SOURCE_ROOT"
           sudo setpriv \
             --reuid="$BUILDER_UID" \
             --regid="$BUILDER_GID" \
