@@ -1172,6 +1172,9 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain("github.event_name != 'pull_request_target'");
     expect(source).toContain('github.event.pull_request.head.repo.full_name == github.repository');
     expect(source).toContain('cargo build --locked --release');
+    expect(source).toContain(
+      "- name: Cache Rust build\n        if: github.event_name != 'pull_request_target'"
+    );
     expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
     expect(source).toContain('retention-days: 90');
     expect(source).toContain("- 'tests/relayflows/cases/**'");

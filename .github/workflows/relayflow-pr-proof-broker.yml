@@ -48,6 +48,7 @@ jobs:
           targets: x86_64-unknown-linux-musl
 
       - name: Cache Rust build
+        if: github.event_name != 'pull_request_target'
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           key: relayflow-pr-proof-linux-x64

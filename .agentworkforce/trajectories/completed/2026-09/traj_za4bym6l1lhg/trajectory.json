@@ -1,0 +1,57 @@
+{
+  "id": "traj_za4bym6l1lhg",
+  "version": 1,
+  "task": {
+    "title": "Isolate PR broker builds from trusted Rust cache",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1632"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-01T19:39:43.328Z",
+  "completedAt": "2026-09-01T19:40:02.317Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-01T19:40:01.910Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xn4bjipnd5xv",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-01T19:40:01.910Z",
+      "endedAt": "2026-09-01T19:40:02.317Z",
+      "events": [
+        {
+          "ts": 1788291601910,
+          "type": "decision",
+          "content": "Disable Rust caching for PR-authored broker builds: Disable Rust caching for PR-authored broker builds",
+          "raw": {
+            "question": "Disable Rust caching for PR-authored broker builds",
+            "chosen": "Disable Rust caching for PR-authored broker builds",
+            "alternatives": [],
+            "reasoning": "pull_request_target executes PR Cargo build scripts. Skipping the cache action entirely for that event prevents PR output from being restored or saved in the trusted push/schedule cache namespace, while trusted main builds retain caching."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Prevented same-repository pull_request_target broker builds from using the trusted Rust cache and added a workflow source-contract assertion. Focused 65-test suite, actionlint, Prettier, and diff checks pass.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "067f2bf29d690a75d1441a506408f8ecc29fdc29",
+    "endRef": "067f2bf29d690a75d1441a506408f8ecc29fdc29"
+  }
+}
