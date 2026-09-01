@@ -1,0 +1,310 @@
+{
+  "id": "compact_7vtl6izw94q9",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-01T20:15:48.194Z",
+  "sourceTrajectories": [
+    "traj_fncycc6sne49",
+    "traj_h0b8u7mgccpt",
+    "traj_8j7i3qiufp6g",
+    "traj_za4bym6l1lhg",
+    "traj_0ovmpxbnehp8",
+    "traj_v8sktrvzqu6p",
+    "traj_ybvq3quk7lzv",
+    "traj_7upwean9um3p",
+    "traj_1te865glhbcu",
+    "traj_y51c07g5i7am",
+    "traj_vpzkjusz7quh",
+    "traj_nhrrk2odz7z1",
+    "traj_bmkh8k2gfoqk",
+    "traj_axhofz5iqf3a"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T18:38:22.553Z",
+    "end": "2026-09-01T20:15:29.935Z"
+  },
+  "summary": {
+    "totalDecisions": 19,
+    "totalEvents": 22,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Request executable memfds explicitly",
+          "chosen": "Request executable memfds explicitly",
+          "reasoning": "Hardened Linux with vm.memfd_noexec=1 creates legacy memfds non-executable. The holder now passes MFD_EXEC (raw 0x10 fallback), then still requires F_SEAL_EXEC and all immutable content seals. A disposable PID namespace at vm.memfd_noexec=1 reported seals 0x3f and executed successfully.",
+          "fromTrajectory": "traj_8j7i3qiufp6g"
+        },
+        {
+          "question": "Disable Rust caching for PR-authored broker builds",
+          "chosen": "Disable Rust caching for PR-authored broker builds",
+          "reasoning": "pull_request_target executes PR Cargo build scripts. Skipping the cache action entirely for that event prevents PR output from being restored or saved in the trusted push/schedule cache namespace, while trusted main builds retain caching.",
+          "fromTrajectory": "traj_za4bym6l1lhg"
+        },
+        {
+          "question": "Compile only same-repository pull request heads",
+          "chosen": "Compile only same-repository pull request heads",
+          "reasoning": "pull_request_target workflow logic is trusted, but checking out and compiling a fork head can execute fork-controlled Cargo build scripts in that runner context. Gate the build job so push and schedule remain enabled while pull_request_target requires the head repository to equal github.repository. Fork PRs are already rejected by the proof dispatcher.",
+          "fromTrajectory": "traj_7upwean9um3p"
+        },
+        {
+          "question": "Keep exact pull_request_target run head-SHA binding",
+          "chosen": "Keep exact pull_request_target run head-SHA binding",
+          "reasoning": "GitHub Actions REST run 33546658507 directly reports head_sha d5ceea85ac339b79a9c3b664581eabdac5e9c7c7 and the associated PR object separately reports base SHA 3e4ab43002c55cb5b9e149d691aa7d4ce43d9ca5. This live API evidence supports exact run.head_sha validation despite GITHUB_SHA context semantics.",
+          "fromTrajectory": "traj_vpzkjusz7quh"
+        },
+        {
+          "question": "Require exact workflow-run SHA and continuous base artifact coverage",
+          "chosen": "Require exact workflow-run SHA and continuous base artifact coverage",
+          "reasoning": "Artifact names and self-authored manifests alone do not bind a successful producer run to the requested source SHA. Also, path-filtering main pushes leaves no artifact for an unrelated new base commit. The resolver now checks run.head_sha, main produces every exact base, and any changed RelayFlow case produces its exact head broker.",
+          "fromTrajectory": "traj_axhofz5iqf3a"
+        },
+        {
+          "question": "Trust only default-branch broker producers and poll for completion",
+          "chosen": "Trust only default-branch broker producers and poll for completion",
+          "reasoning": "Use a pull_request_target workflow with contents:read, no persisted checkout credentials, and no secrets so workflow logic comes from the trusted default branch while building the requested PR SHA. Resolve only successful exact-path runs whose head SHA equals the request and whose event is pull_request_target or a main-branch push; bounded polling closes the dispatcher/build race without accepting pull_request or workflow_dispatch artifacts.",
+          "fromTrajectory": "traj_axhofz5iqf3a"
+        }
+      ]
+    },
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Budget independent producer scheduling skew",
+          "chosen": "Budget independent producer scheduling skew",
+          "reasoning": "The broker producer and dispatcher are separate workflows, so the producer's 30-minute job clock may start after the resolver. The resolver now allows 10 minutes of queue/start delay plus 30 minutes execution and explicit poll slack; the dispatcher grows to 110 minutes to contain resolution, 60-minute Cloud execution, and 5-minute setup headroom.",
+          "fromTrajectory": "traj_8j7i3qiufp6g"
+        },
+        {
+          "question": "Resolve base and head artifacts concurrently",
+          "chosen": "Resolve base and head artifacts concurrently",
+          "reasoning": "Each exact-SHA producer may consume the full 30-minute build window. Promise.all keeps the pair within the single broker-resolution budget already composed into the 100-minute dispatcher deadline.",
+          "fromTrajectory": "traj_0ovmpxbnehp8"
+        },
+        {
+          "question": "Cancel superseded same-SHA broker builds",
+          "chosen": "Cancel superseded same-SHA broker builds",
+          "reasoning": "Edited and ready-for-review events may retrigger the same exact source SHA. Because the producer is deterministic and keyed by source SHA, keeping an older run consumes resources and can extend artifact availability beyond one producer bound without adding evidence. Cancel the previous same-SHA run when its replacement starts.",
+          "fromTrajectory": "traj_ybvq3quk7lzv"
+        },
+        {
+          "question": "Derive resolver wait from producer timeout",
+          "chosen": "Derive resolver wait from producer timeout",
+          "reasoning": "The broker workflow permits 30 minutes, so a fixed 20-minute resolver budget can fail before a valid cold build completes. Derive 182 attempts from the 30-minute producer bound and 10-second interval, giving 30m10s of wait while two worst-case sequential resolutions still fit within the 70-minute dispatcher timeout.",
+          "fromTrajectory": "traj_y51c07g5i7am"
+        },
+        {
+          "question": "Refresh exact artifacts only through trusted lifecycle events",
+          "chosen": "Refresh exact artifacts only through trusted lifecycle events",
+          "reasoning": "Retain artifacts for 90 days, rebuild PR heads on the same trusted edited and ready-for-review events as the dispatcher, and schedule a weekly current-main build for repositories with no recent pushes. Scheduled artifacts remain acceptable only when the Actions run is successful, exact-SHA, exact-path, and reports head_branch main; workflow_dispatch remains rejected.",
+          "fromTrajectory": "traj_vpzkjusz7quh"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Supersede memfd execution with a stable Landlock-protected broker path",
+          "chosen": "Supersede memfd execution with a stable Landlock-protected broker path",
+          "reasoning": "The final bridge no longer uses an anonymous inode or memfd because Rust broker self-spawns require current_exe to remain a reusable path. The trusted parent copies and rehashes exact-SHA bytes into a private 0500 path, closes every broker fd, then runs the case under Landlock ABI 3 or newer with mutation access granted only to explicit sibling writable roots. Post-run link-count, mode, size, and SHA-256 verification fails closed. Linux tests prove current_exe self-spawn succeeds and write, truncate, unlink, rename, and hard-link attacks fail.",
+          "fromTrajectory": "traj_fncycc6sne49"
+        },
+        {
+          "question": "Execute exact-SHA brokers only from an exec-sealed memfd",
+          "chosen": "Execute exact-SHA brokers only from an exec-sealed memfd",
+          "reasoning": "A private unlinked file remained mutable through /proc by the same-UID PR runner. A trusted Python holder now creates a memfd, applies F_SEAL_SEAL|SHRINK|GROW|WRITE|EXEC, reports the full seal mask, and holds the inode for the runner lifetime. Linux validation proved chmod and overwrite fail while the original executable still runs. The proof boundary is documented as immutable exact-SHA bytes; PR-authored argv, environment, and semantic assertions remain reviewer-trusted.",
+          "fromTrajectory": "traj_v8sktrvzqu6p"
+        },
+        {
+          "question": "Give the dispatcher an explicit composed deadline",
+          "chosen": "Give the dispatcher an explicit composed deadline",
+          "reasoning": "The outer GitHub job must contain the 30-minute broker resolution bound, 60-minute Cloud client bound, and setup/reporting headroom. Raise it to 100 minutes and enforce the numeric relationship in a source-contract test so future child-timeout changes cannot silently exceed the envelope.",
+          "fromTrajectory": "traj_1te865glhbcu"
+        }
+      ]
+    },
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Require stale PRs to refresh after artifact retention",
+          "chosen": "Require stale PRs to refresh after artifact retention",
+          "reasoning": "The trusted producer intentionally cannot accept arbitrary historical SHAs. Exact artifacts expire after 90 days, so the resolver now emits an actionable update/rebase-and-push recovery and the case author guide documents that bounded policy.",
+          "fromTrajectory": "traj_0ovmpxbnehp8"
+        },
+        {
+          "question": "Execute the verified broker through a parent-held anonymous inode",
+          "chosen": "Execute the verified broker through a parent-held anonymous inode",
+          "reasoning": "A PR-authored runner can replace any staged checkout path after digest verification. Copy the already-verified bytes into a private mode-0500 file, rehash the copy, open it read-only, unlink it, and expose only the trusted parent process fd path while holding the handle for the runner lifetime. Replacing the staged path can no longer change the executed inode.",
+          "fromTrajectory": "traj_nhrrk2odz7z1"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Make 243 polls and 242 waits the canonical resolver bound",
+          "chosen": "Make 243 polls and 242 waits the canonical resolver bound",
+          "reasoning": "The final resolver allows 10 minutes for independent Actions queue/start delay plus the producer's 30-minute execution deadline and two 10-second polling intervals of slack. Because the initial lookup consumes no wait, the exact bound is 243 polls, 242 waits, and 40m20s. Base and head resolve concurrently, and a shared AbortController cancels the sibling lookup on first failure. The 110-minute dispatcher contains this one resolution window, the 60-minute Cloud deadline, and five minutes of setup headroom.",
+          "fromTrajectory": "traj_fncycc6sne49"
+        }
+      ]
+    },
+    {
+      "category": "naming",
+      "decisions": [
+        {
+          "question": "Use a stable private broker path protected by inherited Landlock mutation denial",
+          "chosen": "Use a stable private broker path protected by inherited Landlock mutation denial",
+          "reasoning": "The prior anonymous memfd preserved verified bytes but broke Rust current_exe self-spawn. A dedicated 0500 path plus Landlock ABI>=3 denies write, truncate, unlink, rename, replacement, and hard-link attacks while preserving current_exe. The trusted parent closes the verification fd before launch, exposes only sibling writable roots, refuses SYS_PTRACE/SYS_ADMIN, and rechecks link count, mode, size, and SHA-256 after execution.",
+          "fromTrajectory": "traj_h0b8u7mgccpt"
+        }
+      ]
+    },
+    {
+      "category": "database",
+      "decisions": [
+        {
+          "question": "Require integer polling bounds",
+          "chosen": "Require integer polling bounds",
+          "reasoning": "JavaScript comparisons do not reject NaN, and setTimeout normalizes non-finite delays. Validate both attempt count and interval as bounded integers so invalid configuration fails before querying GitHub or entering a tight loop.",
+          "fromTrajectory": "traj_bmkh8k2gfoqk"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": [],
+  "narrative": "Across fourteen short lead-only sessions on branch `ci/pr-proof-broker-artifacts-0901`, PR #1632 was iterated from a naive \"download a broker artifact\" bridge into a fully provenance-bound, tamper-evident CI proof pipeline. The first pass (18:38) established the trust model: the broker producer runs as a `pull_request_target` workflow so its logic always comes from the trusted default branch, with `contents: read`, no persisted checkout credentials, and no secrets, while still compiling the requested PR SHA. The resolver was tightened to accept only Actions runs that are successful, exact-path, and whose `run.head_sha` equals the requested SHA, with event restricted to `pull_request_target` or a main-branch push (`pull_request` and `workflow_dispatch` artifacts are rejected outright); main was changed to produce an artifact for every base SHA rather than path-filtering, so an unrelated new base commit never leaves the resolver empty. Subsequent hardening added integer validation of polling bounds (NaN/Infinity/fractional/negative rejected before any GitHub request, since JS comparisons don't reject NaN and `setTimeout` normalizes non-finite delays), a same-repository head gate on the build job so fork-controlled Cargo build scripts can never run in the trusted runner, SHA-keyed concurrency with cancellation of superseded same-SHA producers, disabling the Rust cache action entirely for `pull_request_target` so PR-authored build output never enters the trusted push/schedule cache namespace, 90-day retention with rebuilds on `edited`/`ready_for_review` plus a weekly exact-main refresh, and an actionable rebase-and-push recovery message when a stale PR falls past the retention boundary. The execution-integrity thread went through three generations before landing. Generation 1 (18:53) copied verified bytes into a private mode-0500 file, rehashed the copy, opened it read-only, unlinked it, and executed via the trusted parent's `/proc/<pid>/fd` path — closing the staged-path TOCTOU. Generation 2 (19:23) found that a same-UID PR runner could still mutate a private unlinked file through `/proc`, so it moved to a Python-held `memfd` sealed with `F_SEAL_SEAL|SHRINK|GROW|WRITE|EXEC`, later extended (19:45) with explicit `MFD_EXEC` (raw `0x10` fallback) after discovering that hardened kernels with `vm.memfd_noexec=1` create legacy memfds non-executable; a disposable PID namespace at that sysctl reported seal mask `0x3f` and executed successfully. Generation 3 (19:56) superseded both: anonymous inodes break Rust's `current_exe`, which the broker needs for self-spawn. The final design executes from a stable private 0500 path protected by inherited Landlock (ABI >= 3) mutation denial — the trusted parent closes the verification fd before launch, grants mutation access only to explicit sibling writable roots, refuses `SYS_PTRACE`/`SYS_ADMIN`, and re-verifies link count, mode, size, and SHA-256 after the run, failing closed. Linux regression tests prove `current_exe` self-spawn still works while write, truncate, unlink, rename, replacement, and hard-link attacks all fail. The timing envelope was recomputed three times as facts accumulated. An initial 182-poll/30m10s bound (derived from the 30-minute producer timeout at a 10s interval, inside a 70-minute dispatcher) gave way to a 100-minute dispatcher, then to the canonical final state: 243 polls and 242 waits = 40m20s, budgeting 10 minutes of independent Actions queue/start skew (producer and dispatcher are separate workflows with independent job clocks) plus the producer's 30-minute execution deadline plus two 10-second polling intervals of slack — the exact bound is 243 rather than 242 polls because the initial lookup consumes no wait. Base and head resolve concurrently under a shared `AbortController` that cancels the sibling lookup on first failure, so the pair fits in one resolution window; the 110-minute dispatcher contains that 40m20s, the 60-minute Cloud client deadline, and 5 minutes of setup headroom, with the numeric relationship asserted in a source-contract test so future child-timeout edits cannot silently overflow the envelope. Validation at the end was green: full suite 149 files / 2275 tests, focused 64/65-test contract suites, typecheck, actionlint, Prettier, syntax and diff checks, plus direct Linux arm64 tamper validation.",
+  "decisions": [
+    {
+      "question": "How long should the resolver wait for an exact-SHA broker artifact?",
+      "chosen": "243 polls / 242 waits at a 10s interval = 40m20s, superseding the earlier 182-poll/30m10s bound",
+      "reasoning": "The producer and dispatcher are independent workflows, so the producer's 30-minute job clock may start well after the resolver begins. The budget is 10 min queue/start skew + 30 min execution + two 10s polling intervals of slack; the initial lookup consumes no wait, making the exact count 243 polls and 242 waits.",
+      "impact": "Cold builds and queued producers no longer fail a valid resolution; the bound is asserted numerically in a source-contract test."
+    },
+    {
+      "question": "How to execute the verified broker so a same-UID PR runner cannot tamper with it?",
+      "chosen": "A stable private 0500 path executed under inherited Landlock ABI >= 3 mutation denial, superseding both the anonymous unlinked inode and the exec-sealed memfd",
+      "reasoning": "memfd preserved verified bytes but broke Rust `current_exe`, which the broker requires for self-spawn. A dedicated stable path plus Landlock denies write, truncate, unlink, rename, replacement, and hard-link while keeping `current_exe` usable.",
+      "impact": "Broker self-spawn works in proofs; content and path mutation are denied, with post-run link-count/mode/size/SHA-256 verification failing closed."
+    },
+    {
+      "question": "How does the resolver bind an artifact to the requested source SHA?",
+      "chosen": "Validate `run.head_sha` against the request, plus exact path, success status, and trusted event (`pull_request_target` or main push); main produces every base SHA",
+      "reasoning": "Artifact names and self-authored manifests do not bind a producer run to a source SHA, and path-filtered main pushes leave unrelated new base commits without artifacts. Live Actions REST evidence (run 33546658507, head_sha d5ceea85ac339b79a9c3b664581eabdac5e9c7c7; PR base 3e4ab43002c55cb5b9e149d691aa7d4ce43d9ca5) confirmed head_sha semantics for pull_request_target despite GITHUB_SHA context differences.",
+      "impact": "Spoofed or mismatched artifacts are rejected; `pull_request` and `workflow_dispatch` artifacts are never accepted."
+    },
+    {
+      "question": "Should fork PRs be compiled by the trusted producer?",
+      "chosen": "Gate the build job so pull_request_target requires head repo == github.repository; push and schedule stay enabled",
+      "reasoning": "pull_request_target workflow logic is trusted, but checking out and compiling a fork head executes fork-controlled Cargo build scripts in the trusted runner context. Fork PRs are already rejected by the proof dispatcher.",
+      "impact": "Fork-controlled code cannot execute in the trusted builder while same-repo PR artifact production is preserved."
+    },
+    {
+      "question": "Should PR-authored broker builds share the Rust cache?",
+      "chosen": "Skip the cache action entirely for the pull_request_target event",
+      "reasoning": "pull_request_target executes PR Cargo build scripts; restoring or saving in the trusted push/schedule cache namespace would let PR output contaminate trusted builds.",
+      "impact": "Trusted main builds keep caching; PR builds are cache-isolated at the cost of cold-build time (accounted for in the 40m20s bound)."
+    },
+    {
+      "question": "What happens when a PR's exact broker artifact has expired?",
+      "chosen": "Emit an actionable update/rebase-and-push recovery and document the bounded policy in the case-author guide",
+      "reasoning": "The trusted producer intentionally cannot accept arbitrary historical SHAs, and exact artifacts expire after 90 days.",
+      "impact": "Stale PRs get a clear remediation path instead of an opaque resolution failure."
+    },
+    {
+      "question": "How to bound the outer dispatcher job?",
+      "chosen": "110 minutes, enforced by a source-contract test asserting resolution + Cloud execution + setup headroom fits",
+      "reasoning": "The envelope must contain one 40m20s broker resolution window, the 60-minute Cloud client bound, and ~5 minutes of setup/reporting headroom.",
+      "impact": "Child-timeout changes cannot silently exceed the job envelope; grew from 70 → 100 → 110 minutes as inner bounds were corrected."
+    },
+    {
+      "question": "Should duplicate same-SHA producers be allowed to run?",
+      "chosen": "SHA-keyed concurrency group with cancel-in-progress",
+      "reasoning": "`edited` and `ready_for_review` events retrigger the same source SHA; the producer is deterministic, so an older run only burns resources and can stretch artifact availability past one producer bound without adding evidence.",
+      "impact": "Deterministic, resource-bounded artifact production."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Encode timing relationships as source-contract tests, not comments — assert that poll count × interval, producer timeout, Cloud deadline, and setup headroom fit within the declared job timeout",
+      "rationale": "Timeouts are split across separate workflow files and drift silently; a numeric assertion makes overflow a test failure.",
+      "scope": "All RelayFlow proof CI workflows and their resolver code"
+    },
+    {
+      "pattern": "Validate resolver configuration as bounded integers before issuing any network request",
+      "rationale": "JS comparisons do not reject NaN and setTimeout normalizes non-finite delays, so an invalid interval degrades into a tight loop against the GitHub API.",
+      "scope": "Broker artifact resolver polling parameters"
+    },
+    {
+      "pattern": "Fail closed on integrity: re-verify link count, mode, size, and SHA-256 after execution, and treat any mismatch as proof failure",
+      "rationale": "Pre-execution digest checks are TOCTOU-vulnerable when a same-UID PR runner shares the filesystem.",
+      "scope": "Trusted broker execution bridge on Linux"
+    },
+    {
+      "pattern": "Trusted-parent/untrusted-child split: the parent verifies, closes its verification fd, restricts the sandbox (Landlock roots, no SYS_PTRACE/SYS_ADMIN), then launches",
+      "rationale": "Keeps the verification handle out of the untrusted process while granting only explicit sibling writable roots.",
+      "scope": "Broker proof execution"
+    },
+    {
+      "pattern": "Document the proof boundary explicitly: immutable exact-SHA bytes are machine-guaranteed; PR-authored argv, environment, and semantic assertions remain reviewer-trusted",
+      "rationale": "Prevents over-claiming what the hardening proves during review.",
+      "scope": "PR #1632 reviewer documentation and case-author guide"
+    },
+    {
+      "pattern": "Run the full test suite sequentially, never in parallel with typecheck",
+      "rationale": "Typecheck rebuilds package dist directories and races the test run; the same 2275-test suite passed cleanly when rerun sequentially.",
+      "scope": "Local validation in this monorepo"
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Hardening that preserves bytes can still break runtime behavior — memfd kept the verified image intact but destroyed Rust's `current_exe`, which the broker needs to self-spawn",
+      "context": "Two full generations (anonymous inode, then exec-sealed memfd) were built and validated before the self-spawn regression forced the Landlock redesign.",
+      "recommendation": "When sandboxing an executable, enumerate the runtime introspection it depends on (`current_exe`, `/proc/self/exe`, argv[0] re-exec) before choosing an execution vector."
+    },
+    {
+      "lesson": "Kernel hardening policy silently changes syscall defaults — `vm.memfd_noexec=1` makes legacy memfds non-executable",
+      "context": "Discovered while validating memfd portability; fixed by passing MFD_EXEC (raw 0x10 fallback) and requiring F_SEAL_EXEC, verified in a disposable PID namespace reporting seal mask 0x3f.",
+      "recommendation": "Validate low-level syscall assumptions under hardened sysctls in a throwaway namespace, not just on the dev host."
+    },
+    {
+      "lesson": "Independent workflows have independent job clocks — deriving a wait purely from the producer's own timeout under-budgets by the entire queue/start delay",
+      "context": "The 182-poll bound derived from the 30-minute producer timeout could still fail because the producer's clock starts after the resolver's.",
+      "recommendation": "Always add an explicit queue/start-skew allowance plus interval slack when one workflow polls for another's output."
+    },
+    {
+      "lesson": "pull_request_target trusts the workflow file, not the code it checks out",
+      "context": "Two separate fixes were needed — gating the build to same-repo heads, and disabling the Rust cache — because PR Cargo build scripts execute in that trusted context.",
+      "recommendation": "Audit every trusted-context side effect (checkout, build scripts, caches, artifact namespaces) whenever a workflow uses pull_request_target."
+    },
+    {
+      "lesson": "Private and unlinked is not immutable when the attacker shares the UID",
+      "context": "The mode-0500 unlinked file from generation 1 was still mutable through /proc by the same-UID runner.",
+      "recommendation": "Reason about /proc reachability and same-UID access explicitly; prefer kernel-enforced denial (seals or Landlock) over filesystem permissions alone."
+    },
+    {
+      "lesson": "Retention boundaries are part of the trust model, not an operational detail",
+      "context": "The producer intentionally refuses arbitrary historical SHAs, so 90-day artifact expiry becomes a hard failure for stale PRs.",
+      "recommendation": "Pair every fail-closed provenance rule with a documented, actionable recovery path in the user-facing guide."
+    }
+  ],
+  "openQuestions": [
+    "The proof boundary is explicitly limited to immutable exact-SHA broker bytes — PR-authored argv, environment, and semantic assertions remain reviewer-trusted, so a malicious case can still shape what the trusted binary is asked to do.",
+    "The Landlock bridge requires ABI >= 3; behavior on older kernels or non-Linux runners (and whether the proof degrades or hard-fails there) is not recorded in these trajectories.",
+    "No files-changed or commit list is attached to any trajectory, so the concrete resolver/workflow file paths behind the 243-poll bound and the Landlock launcher must be recovered from the five branch commits (a8e4df123 back to 067f2bf29).",
+    "Cold PR broker builds now run cache-less by design; whether the 30-minute producer timeout plus 10-minute skew allowance holds for a genuinely cold Rust build is unvalidated against real cold-build wall-clock data.",
+    "The weekly scheduled main refresh is accepted only when the run reports head_branch main — the behavior for repositories with long push gaps between weekly refreshes has not been exercised end to end."
+  ]
+}
