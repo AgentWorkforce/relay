@@ -1645,6 +1645,7 @@ mod tests {
 
     #[tokio::test]
     async fn verified_write_boundary_includes_output_still_queued_for_consumer() {
+        eprintln!("relay-pty-live-proof stage=spawn-start");
         #[cfg(unix)]
         let script = "printf 'same-echo\\n'; IFS= read -r line; printf '%s\\n' \"$line\"";
         #[cfg(unix)]
@@ -1675,71 +1676,115 @@ mod tests {
         // instead of PowerShell, but retain a bounded startup allowance.
         #[cfg(windows)]
         let harness_timeout = Duration::from_secs(10);
+        eprintln!("relay-pty-live-proof stage=spawned");
 
-        // Do not drain rx. Wait until the intended initial marker has reached
-        // the parsed grid, rather than accepting an unrelated startup VT
-        // chunk merely because it incremented `output_sequence`.
-        timeout(harness_timeout, async {
-            while !pty.screen_text().contains("same-echo") {
-                tokio::task::yield_now().await;
+        let proof = timeout(Duration::from_secs(30), async {
+            // Do not drain rx. Wait until the intended initial marker has
+            // reached the parsed grid, rather than accepting an unrelated
+            // startup VT chunk merely because it incremented
+            // `output_sequence`.
+            timeout(harness_timeout, async {
+                while !pty.screen_text().contains("same-echo") {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "initial same-echo marker did not reach the parsed grid".to_string())?;
+            eprintln!("relay-pty-live-proof stage=parsed-marker");
+
+            // On Windows, the reader holds `output_order` across its blocking
+            // ConPTY ReadFile. Requiring the lock to be unavailable proves
+            // this submission exercises CancelSynchronousIo rather than
+            // slipping into the short gap before the reader starts its next
+            // read.
+            #[cfg(windows)]
+            timeout(harness_timeout, async {
+                while pty.output_order.try_lock().is_some() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "Windows reader never blocked in ReadFile".to_string())?;
+            #[cfg(windows)]
+            eprintln!("relay-pty-live-proof stage=blocked-read-proven");
+            #[cfg(unix)]
+            eprintln!("relay-pty-live-proof stage=reader-idle-proven");
+
+            // The child is idle in `read` here. Verified submission must wake
+            // an idle Windows ConPTY reader (and must not be serialized behind
+            // Unix readiness polling), while retaining the synchronous API.
+            let submitted_at = std::time::Instant::now();
+            let (ack, boundary) = pty
+                .submit_write_paced_with_output_boundary(submitted, Duration::ZERO)
+                .map_err(|error| format!("verified write admission failed: {error}"))?;
+            if submitted_at.elapsed() >= Duration::from_secs(1) {
+                return Err("verified write admission stalled behind an idle PTY read".to_string());
             }
-        })
-        .await
-        .expect("initial same-echo marker should reach the parsed grid");
+            eprintln!(
+                "relay-pty-live-proof stage=submit-admitted boundary={boundary} elapsed_ms={}",
+                submitted_at.elapsed().as_millis()
+            );
 
-        // On Windows, the reader holds `output_order` across its blocking
-        // ConPTY ReadFile. Requiring the lock to be unavailable proves this
-        // submission exercises CancelSynchronousIo rather than slipping into
-        // the short gap before the reader starts its next read.
-        #[cfg(windows)]
-        timeout(harness_timeout, async {
-            while pty.output_order.try_lock().is_some() {
-                tokio::task::yield_now().await;
+            match timeout(harness_timeout, ack).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => return Err(format!("PTY write failed: {error}")),
+                Ok(Err(error)) => return Err(format!("PTY write acknowledgement lost: {error}")),
+                Err(_) => return Err("PTY write acknowledgement timed out".to_string()),
             }
-        })
-        .await
-        .expect("Windows reader should block in ReadFile while awaiting input");
+            eprintln!("relay-pty-live-proof stage=write-ack");
 
-        // The child is idle in `read` here. Verified submission must wake an
-        // idle Windows ConPTY reader (and must not be serialized behind Unix
-        // readiness polling), while retaining the synchronous API.
-        let submitted_at = std::time::Instant::now();
-        let (ack, boundary) = pty
-            .submit_write_paced_with_output_boundary(submitted, Duration::ZERO)
-            .expect("queue verified write");
-        assert!(
-            submitted_at.elapsed() < Duration::from_secs(1),
-            "verified write admission stalled behind an idle PTY read"
-        );
-        ack.await
-            .expect("write drainer should reply")
-            .expect("write should reach child");
-
-        let mut saw_stale = false;
-        let mut saw_fresh = false;
-        while let Ok(Some(chunk)) = timeout(harness_timeout, rx.recv()).await {
-            let text = String::from_utf8_lossy(chunk.as_bytes());
-            if text.contains("same-echo") {
-                if chunk.sequence() <= boundary {
-                    saw_stale = true;
-                } else {
-                    saw_fresh = true;
+            let mut saw_stale = false;
+            let mut saw_fresh = false;
+            // Deliberately no per-receive timeout: the outer watchdog is one
+            // absolute bound that cannot be renewed by endless control chunks.
+            while let Some(chunk) = rx.recv().await {
+                let text = String::from_utf8_lossy(chunk.as_bytes());
+                if text.contains("same-echo") {
+                    if chunk.sequence() <= boundary {
+                        saw_stale = true;
+                        eprintln!(
+                            "relay-pty-live-proof stage=stale-output sequence={} boundary={boundary}",
+                            chunk.sequence()
+                        );
+                    } else {
+                        saw_fresh = true;
+                        eprintln!(
+                            "relay-pty-live-proof stage=fresh-output sequence={} boundary={boundary}",
+                            chunk.sequence()
+                        );
+                    }
+                }
+                if saw_stale && saw_fresh {
+                    break;
                 }
             }
-            if saw_stale && saw_fresh {
-                break;
-            }
-        }
 
-        assert!(
-            saw_stale,
-            "the forced pre-submission chunk must be at or below the returned boundary"
-        );
-        assert!(
-            saw_fresh,
-            "the child echo read after submission must be above the returned boundary"
-        );
-        let _ = pty.shutdown();
+            if !saw_stale {
+                return Err(
+                    "forced pre-submission chunk was not at or below the boundary".to_string(),
+                );
+            }
+            if !saw_fresh {
+                return Err("child echo was not above the returned boundary".to_string());
+            }
+            Ok::<(), String>(())
+        })
+        .await;
+
+        eprintln!("relay-pty-live-proof stage=shutdown-start");
+        drop(rx);
+        // `shutdown` uses a bounded two-second post-kill wait. The CI step's
+        // own two-minute timeout remains the outermost fail-safe for platform
+        // calls (such as TerminateProcess) that the test cannot preempt.
+        let shutdown = pty.shutdown();
+        eprintln!("relay-pty-live-proof stage=shutdown-complete result={shutdown:?}");
+        shutdown.expect("live proof PTY should shut down cleanly");
+
+        match proof {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("live PTY boundary proof failed: {error}"),
+            Err(_) => panic!("live PTY boundary proof exceeded 30-second watchdog"),
+        }
     }
 
     #[test]
