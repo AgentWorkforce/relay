@@ -68,7 +68,9 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
         .next()
         .filter(|part| !part.is_empty())
         .unwrap_or(cli);
-    (basename.eq_ignore_ascii_case("claude") || basename.eq_ignore_ascii_case("claude.exe"))
+    ["claude", "claude.exe", "claude.cmd", "claude.bat"]
+        .iter()
+        .any(|candidate| basename.eq_ignore_ascii_case(candidate))
         .then_some(CLAUDE_INJECTION_SUBMIT_DELAY)
 }
 
@@ -2163,6 +2165,14 @@ mod tests {
         assert_eq!(injection_submit_followup_delay("claude"), expected);
         assert_eq!(
             injection_submit_followup_delay("/usr/local/bin/Claude.EXE"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.CMD"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.BAT"),
             expected
         );
         assert_eq!(injection_submit_followup_delay("codex"), None);
