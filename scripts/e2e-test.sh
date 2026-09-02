@@ -242,9 +242,11 @@ log_info "All CLI command tests passed!"
 log_phase "Phase 3: Final Down Check"
 
 log_info "Testing: agent-relay node down (with 15s timeout)"
-if ! run_with_timeout 15 "$CLI_CMD" node down --timeout 10000; then
-  EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
+DOWN_EXIT=0
+run_with_timeout 15 "$CLI_CMD" node down --timeout 10000 || DOWN_EXIT=$?
+if [ "$DOWN_EXIT" -ne 0 ]; then
+  EXIT_CODE=$DOWN_EXIT
+  if [ "$EXIT_CODE" -eq 124 ]; then
     log_error "down command timed out (hung for >15s)"
     exit 1
   else
@@ -255,10 +257,23 @@ else
   log_info "  down command completed without hanging"
 fi
 
-# Verify broker is actually stopped
-STATUS_OUTPUT=$(run_with_timeout 5 "$CLI_CMD" node status 2>/dev/null || true)
-if echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
-  log_error "Broker still reported as running after down command"
+# The broker can finish its already-bounded graceful shutdown just after the
+# CLI's own wait expires. Poll the real process effect for a short grace window
+# instead of treating one racing RUNNING snapshot as permanent. A timed-out
+# status probe is not evidence of absence and therefore never counts as stopped.
+BROKER_STOPPED=false
+STATUS_OUTPUT=""
+for _ in 1 2 3 4 5; do
+  STATUS_EXIT=0
+  STATUS_OUTPUT=$(run_with_timeout 3 "$CLI_CMD" node status 2>/dev/null) || STATUS_EXIT=$?
+  if [ $STATUS_EXIT -eq 0 ] && ! echo "$STATUS_OUTPUT" | grep -q "Status: RUNNING"; then
+    BROKER_STOPPED=true
+    break
+  fi
+  sleep 1
+done
+if [ "$BROKER_STOPPED" != true ]; then
+  log_error "Broker stop was not confirmed after down command"
   echo "$STATUS_OUTPUT"
   exit 1
 fi
