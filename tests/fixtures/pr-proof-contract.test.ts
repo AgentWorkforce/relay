@@ -1735,9 +1735,9 @@ describe('classification reads the diff, not the title', () => {
     ].join('\n');
 
   it('treats a workflow-only change as non-runtime', () => {
-    expect(
-      runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/pr-proof/contract.mjs'])
-    ).toBe(false);
+    expect(runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
+      false
+    );
   });
 
   it('treats any broker or package source change as runtime', () => {
@@ -1820,9 +1820,7 @@ describe('classification reads the diff, not the title', () => {
    * docs/ must not read as a docs-only change.
    */
   it('treats a runtime file renamed into an exempt directory as runtime', () => {
-    expect(runtimeSurfaceChanged(['docs/old-fleet.rs', 'crates/broker/src/runtime/fleet.rs'])).toBe(
-      true
-    );
+    expect(runtimeSurfaceChanged(['docs/old-fleet.rs', 'crates/broker/src/runtime/fleet.rs'])).toBe(true);
   });
 
   /**
@@ -1890,9 +1888,9 @@ describe('RelayFlow proof changed-file collection', () => {
     await withStubbedFetch(
       (async () => jsonResponse(page)) as unknown as typeof globalThis.fetch,
       async () => {
-        await expect(pullRequestFiles('https://api.github.test', 'o/r', 1, 't')).rejects.toMatchObject(
-          { ambiguousScope: true }
-        );
+        await expect(pullRequestFiles('https://api.github.test', 'o/r', 1, 't')).rejects.toMatchObject({
+          ambiguousScope: true,
+        });
       }
     );
   });
