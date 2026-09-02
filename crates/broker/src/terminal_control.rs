@@ -136,6 +136,24 @@ pub(crate) enum TerminalFromCloud {
     },
     #[serde(rename = "terminal.close")]
     Close { session_id: String },
+    /// Request the broker flush the session agent's parked queue. The broker
+    /// replies with `TerminalToCloud::FlushPending` on success or
+    /// `TerminalToCloud::Error` on failure.
+    ///
+    /// Unlike `SetDeliveryMode` this is permitted from a `view` session. A
+    /// flush drains an already-held queue; it does not change the agent's
+    /// delivery mode, so it cannot corrupt a concurrent driver's mode
+    /// bookkeeping. Requiring `drive` here would mean an operator running
+    /// `node agent message flush --node` had to claim the single drive slot
+    /// and lock out whoever was actually attached.
+    #[serde(rename = "terminal.flush_pending")]
+    FlushPending {
+        session_id: String,
+        /// Caller-assigned correlation token echoed in the reply so a delayed
+        /// response cannot be mis-applied to a later request.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
     /// Request the broker flip the inbound delivery mode for the session's
     /// agent. The broker replies with `TerminalToCloud::DeliveryMode` on
     /// success or `TerminalToCloud::Error` on failure.
@@ -233,6 +251,20 @@ pub(crate) enum TerminalToCloud {
         flushed: usize,
         matched: bool,
         revision: String,
+    },
+    /// Reply to `TerminalFromCloud::FlushPending`. Carries the same four
+    /// fields as `POST /api/spawned/{name}/flush` so the CLI renders an
+    /// identical result whether it went local or over a node.
+    #[serde(rename = "terminal.flush_pending")]
+    FlushPending {
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        flushed: usize,
+        dead_lettered: usize,
+        held: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        blocked_reason: Option<String>,
     },
 }
 

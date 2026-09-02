@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1593-flush-node-registry",
+  "kind": "bugfix",
+  "title": "node agent message flush cannot reach an agent on another node",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1593-flush-node-registry/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "flush_cannot_target_a_remote_node"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "flush_reaches_the_agents_own_node"
+    }
+  }
+}
