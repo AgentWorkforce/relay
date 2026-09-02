@@ -73,6 +73,17 @@ function offersNodeOption(cliEntry, subcommand) {
     timeout: 60_000,
     maxBuffer: 8 * 1024 * 1024,
   });
+  // A spawn failure is NOT an observation. Without this, a timed-out or
+  // un-spawnable `--help` yields empty output and reports `offered: false` —
+  // which on the head arm looks exactly like the base defect and could report
+  // `flush_cannot_target_a_remote_node` for a CLI that actually has the option.
+  if (result.error) {
+    throw new Error(
+      `--help probe for '${subcommand}' failed to run: ${result.error.message}${
+        result.signal ? ` (signal ${result.signal})` : ''
+      }`
+    );
+  }
   const text = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   return { offered: /--node\s+<node>/.test(text), text };
 }
@@ -95,6 +106,15 @@ function acceptsNodeArgument(cliEntry, subcommand) {
       env: { ...process.env, RELAY_SKIP_TELEMETRY: '1' },
     }
   );
+  // Same reasoning as the help probe: a spawn failure here would report
+  // `rejectedAsUnknown: false`, which on the base arm mimics the fixed
+  // behaviour. Only a real, parsed CLI response may become an observation.
+  // A `timeout` kill is expected on head (the command reaches a real proxy
+  // attempt), so a killed process is tolerated — but an inability to spawn at
+  // all is not.
+  if (result.error && !result.signal) {
+    throw new Error(`--node parse probe for '${subcommand}' failed to run: ${result.error.message}`);
+  }
   const text = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   return { rejectedAsUnknown: /unknown option .*--node/i.test(text), text };
 }
