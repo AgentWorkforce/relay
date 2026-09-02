@@ -1292,6 +1292,63 @@ describe('startFleetNodeAttachProxy flush route', () => {
   });
 
   /**
+   * Requested in review on #1643: the terminal protocol permits a reply with no
+   * request_id, and the proxy always sends one. A no-id `terminal.flush_pending`
+   * frame is therefore never ours, and accepting it would resolve the caller's
+   * flush with an unrelated node's result — a fabricated success.
+   */
+  it('ignores a flush reply that carries no request_id and waits for the real one', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-noid',
+      node: 'node-remote',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'manual_flush');
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+      if (frame.type === 'terminal.flush_pending') {
+        // Decoy: correct type, no request_id, wrong numbers.
+        socket.send(
+          JSON.stringify({
+            type: 'terminal.flush_pending',
+            session_id: SESSION_ID,
+            flushed: 99,
+            dead_lettered: 99,
+            held: 99,
+            blocked_reason: 'decoy',
+          })
+        );
+        setTimeout(() => {
+          socket.send(
+            JSON.stringify({
+              type: 'terminal.flush_pending',
+              session_id: SESSION_ID,
+              request_id: frame.request_id,
+              flushed: 3,
+              dead_lettered: 0,
+              held: 0,
+              blocked_reason: null,
+            })
+          );
+        }, 20);
+      }
+    });
+
+    const result = await postFlush(proxy, 'agent-noid');
+    expect(result.status).toBe(200);
+    // The decoy must not have won.
+    expect(result.body).toMatchObject({ flushed: 3, dead_lettered: 0, blocked_reason: null });
+  });
+
+  /**
    * A session-level error carrying no request_id must NOT resolve a pending
    * flush. Flush is a new frame with no older-broker compatibility to preserve,
    * so an unrelated failure resolving it would be a false result — the exact

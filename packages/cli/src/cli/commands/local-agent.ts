@@ -634,7 +634,30 @@ async function withDeliveryModeClient<T>(
     ...(workspaceKey ? { workspaceKey } : {}),
   });
   try {
-    return await run(createBrokerClient({ url: proxy.brokerUrl, apiKey: proxy.apiKey }, deps.fetch));
+    return await run(
+      createBrokerClient(
+        {
+          url: proxy.brokerUrl,
+          apiKey: proxy.apiKey,
+          // The proxy can legitimately spend its full reconnect/readiness
+          // budget (162.5s) before a request reaches the loopback handler.
+          // Without this the client used the harness driver's 30s default and
+          // could report a timeout while the proxy went on to apply the
+          // mutation — leaving the operator unsure whether the flush or mode
+          // change actually happened.
+          requestTimeoutMs: proxy.requestTimeoutMs,
+        },
+        deps.fetch
+      )
+    );
+  } catch (error) {
+    // The local path reports failures through deps.error/deps.exit inside
+    // runLocalBroker. Without this the remote path rejected the Commander
+    // action instead, so a remote `agent_not_found` or terminal-session
+    // failure surfaced differently from the identical local failure.
+    deps.error(`Error: ${describeError(error)}`);
+    deps.exit(1);
+    return undefined;
   } finally {
     await proxy.close();
   }

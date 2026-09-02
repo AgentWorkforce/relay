@@ -1032,7 +1032,11 @@ export async function startFleetNodeAttachProxy(
         }
       } else if (frame.type === 'terminal.flush_pending') {
         const frameRid = typeof frame.request_id === 'string' ? frame.request_id : undefined;
-        if (pendingFlush && (frameRid === undefined || frameRid === pendingFlush.requestId)) {
+        // Exact match only. The proxy always sends a request_id, and unlike
+        // delivery-mode there is no older-broker reply shape to stay
+        // compatible with, so a reply without one is not ours — accepting it
+        // would resolve the caller's flush with an unrelated result.
+        if (pendingFlush && frameRid === pendingFlush.requestId) {
           const pending = pendingFlush;
           pendingFlush = null;
           clearTimeout(pending.timer);
