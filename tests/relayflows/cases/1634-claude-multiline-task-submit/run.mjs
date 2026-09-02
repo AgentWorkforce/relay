@@ -7,6 +7,8 @@ import process from 'node:process';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
+import { createTaskSubmissionObserver } from './task-observation.mjs';
+
 const CASE_ID = '1634-claude-multiline-task-submit';
 const SUBMIT_BOUNDARY_MS = 150;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
@@ -44,21 +46,43 @@ process.stdin.resume();
 process.stdout.write('Welcome back Relay!\r\n❯');
 
 let lastBodyByteAt = performance.now();
-let sawBody = false;
+let composer = '';
 let decided = false;
+
+function composerContainsCompleteTask() {
+  return (
+    composer.includes('Review the live source.') &&
+    composer.includes('Write the requested review artifact when complete.')
+  );
+}
+
+function runSubmittedTask(gapMs) {
+  const marker = composerContainsCompleteTask() ? 'TASK_STARTED' : 'TASK_REJECTED';
+  process.stdout.write('\r\n' + marker + ' gap_ms=' + gapMs + '\r\n');
+  composer = '';
+}
 
 process.stdin.on('data', (chunk) => {
   for (const byte of chunk) {
     const now = performance.now();
-    if (byte === 13 && sawBody && !decided) {
+    if (byte === 13 && composer.length > 0 && !decided) {
       const gapMs = Math.round(now - lastBodyByteAt);
-      const marker = gapMs >= thresholdMs ? 'TASK_STARTED' : 'TASK_PARKED';
-      process.stdout.write('\r\n' + marker + ' gap_ms=' + gapMs + '\r\n');
+      if (gapMs < thresholdMs) {
+        // Model Claude's multiline paste composer: Enter inside the paste
+        // burst becomes another composer newline instead of submitting.
+        composer += '\n';
+        process.stdout.write('\r\nTASK_PARKED gap_ms=' + gapMs + '\r\n');
+      } else {
+        // A distinct Enter after the paste boundary submits the composer. The
+        // task handler independently checks that the full multiline brief was
+        // received before reporting a start.
+        runSubmittedTask(gapMs);
+      }
       decided = true;
       continue;
     }
     if (byte !== 13) {
-      sawBody = true;
+      composer += String.fromCharCode(byte);
       lastBodyByteAt = now;
     }
   }
@@ -109,19 +133,17 @@ try {
     },
   });
 
-  const observation = await frames.waitFor(
+  const taskObserver = createTaskSubmissionObserver();
+  let taskObservation;
+  await frames.waitFor(
     (frame) => {
-      if (frame.type !== 'worker_stream') return false;
-      const chunk = frame.payload?.chunk;
-      if (typeof chunk !== 'string') return false;
-      return chunk.includes('TASK_STARTED') || chunk.includes('TASK_PARKED');
+      taskObservation = taskObserver.observe(frame);
+      return taskObservation !== undefined;
     },
     20_000,
     'task submission marker'
   );
-  const chunk = observation.payload.chunk;
-  const marker = chunk.includes('TASK_STARTED') ? 'TASK_STARTED' : 'TASK_PARKED';
-  const gapMs = Number(/gap_ms=(\d+)/.exec(chunk)?.[1]);
+  const { marker, gapMs, output } = taskObservation;
 
   let outcome;
   let signature;
@@ -129,13 +151,13 @@ try {
   if (marker === 'TASK_PARKED' && Number.isFinite(gapMs) && gapMs < SUBMIT_BOUNDARY_MS) {
     outcome = 'bug';
     signature = 'claude_multiline_task_left_in_composer';
-    details = `The compiled broker sent Claude's submit key in the multiline paste burst (${gapMs}ms boundary), so the fake production-shaped Claude TUI left the task parked.`;
+    details = `The compiled broker's Enter arrived ${gapMs}ms after the body in the deterministic Claude composer model; the model retained it as a multiline newline and left the task unsubmitted.`;
   } else if (marker === 'TASK_STARTED' && Number.isFinite(gapMs) && gapMs >= SUBMIT_BOUNDARY_MS) {
     outcome = 'fixed';
     signature = 'claude_multiline_task_submitted';
-    details = `The compiled broker delivered Claude's submit key as a distinct delayed PTY write after ${gapMs}ms, so the fake production-shaped Claude TUI started the multiline task.`;
+    details = `The compiled broker delivered Enter as a distinct PTY write after ${gapMs}ms; the deterministic Claude composer model submitted the complete multiline brief and its task handler started it.`;
   } else {
-    throw new Error(`Unexpected task marker ${JSON.stringify({ marker, gapMs, chunk })}.`);
+    throw new Error(`Unexpected task marker ${JSON.stringify({ marker, gapMs, output })}.`);
   }
 
   await mkdir(path.dirname(resultPath), { recursive: true });

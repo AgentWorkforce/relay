@@ -11,6 +11,8 @@ use crate::{
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
+const VERIFICATION_OUTPUT_MAX_BYTES: usize = 16_000;
+const VERIFICATION_OUTPUT_KEEP_BYTES: usize = 12_000;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
@@ -101,6 +103,11 @@ pub(crate) struct PendingVerification {
     pub delivery_id: DeliveryId,
     pub event_id: EventId,
     pub expected_echo: String,
+    /// Absolute PTY-output byte offset captured immediately before this
+    /// delivery was submitted. Echo verification must never inspect bytes
+    /// before this boundary: an identical earlier delivery may still be in
+    /// the retained output tail.
+    pub output_boundary: usize,
     pub injected_at: std::time::Instant,
     pub attempts: usize,
     pub max_attempts: usize,
@@ -110,6 +117,67 @@ pub(crate) struct PendingVerification {
     pub from: String,
     pub body: String,
     pub target: MessageTarget,
+}
+
+/// A bounded PTY-output tail with absolute, monotonic byte offsets.
+///
+/// Trimming advances `base_offset` instead of resetting positions, so a
+/// delivery's submission boundary remains meaningful for both output that
+/// races ahead of its write acknowledgement and output observed later.
+#[derive(Debug, Default)]
+pub(crate) struct VerificationOutput {
+    buffer: String,
+    base_offset: usize,
+    end_offset: usize,
+}
+
+impl VerificationOutput {
+    /// Absolute offset at which the next observed output byte will begin.
+    pub(crate) fn boundary(&self) -> usize {
+        self.end_offset
+    }
+
+    pub(crate) fn push_str(&mut self, text: &str) {
+        self.buffer.push_str(text);
+        self.end_offset = self.end_offset.saturating_add(text.len());
+        if self.buffer.len() > VERIFICATION_OUTPUT_MAX_BYTES {
+            let start = crate::util::ansi::floor_char_boundary(
+                &self.buffer,
+                self.buffer.len() - VERIFICATION_OUTPUT_KEEP_BYTES,
+            );
+            self.buffer.drain(..start);
+            self.base_offset = self.base_offset.saturating_add(start);
+        }
+    }
+
+    /// Retained output observed at or after `boundary`.
+    pub(crate) fn since(&self, boundary: usize) -> &str {
+        if boundary <= self.base_offset {
+            return &self.buffer;
+        }
+        if boundary >= self.end_offset {
+            return "";
+        }
+
+        let relative = boundary - self.base_offset;
+        debug_assert!(self.buffer.is_char_boundary(relative));
+        &self.buffer[relative..]
+    }
+
+    pub(crate) fn retained(&self) -> &str {
+        &self.buffer
+    }
+}
+
+/// Check a delivery only against output observed after its own submission.
+pub(crate) fn pending_verification_echo_seen(
+    output: &VerificationOutput,
+    verification: &PendingVerification,
+) -> bool {
+    check_echo_in_output(
+        output.since(verification.output_boundary),
+        &verification.expected_echo,
+    )
 }
 
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
@@ -201,6 +269,52 @@ mod tests {
             output,
             "Relay message from Bob in #general [evt_2]: status update"
         ));
+    }
+
+    #[test]
+    fn verification_ignores_an_identical_echo_before_the_submission_boundary() {
+        let expected = "Relay message from Alice [evt_repeat]: same body";
+        let mut output = VerificationOutput::default();
+        output.push_str(expected);
+        let output_boundary = output.boundary();
+        let verification = PendingVerification {
+            delivery_id: "delivery-repeat".into(),
+            event_id: "evt-repeat".into(),
+            expected_echo: expected.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Alice".to_string(),
+            body: "same body".to_string(),
+            target: "Worker".into(),
+        };
+
+        assert!(!pending_verification_echo_seen(&output, &verification));
+        output.push_str("\nnew output\n");
+        assert!(!pending_verification_echo_seen(&output, &verification));
+        output.push_str(expected);
+        assert!(pending_verification_echo_seen(&output, &verification));
+    }
+
+    #[test]
+    fn verification_offsets_remain_monotonic_when_the_tail_is_trimmed() {
+        let mut output = VerificationOutput::default();
+        output.push_str("old echo");
+        let old_boundary = output.boundary();
+        output.push_str(&"x".repeat(VERIFICATION_OUTPUT_MAX_BYTES));
+        let after_first_trim = output.boundary();
+
+        assert!(after_first_trim > old_boundary);
+        assert_eq!(output.since(old_boundary), output.retained());
+
+        let current_boundary = output.boundary();
+        output.push_str("fresh echo");
+        assert_eq!(output.since(current_boundary), "fresh echo");
+        assert!(output.boundary() > after_first_trim);
     }
 
     #[test]

@@ -23,9 +23,9 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        check_echo_in_output, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        pending_verification_echo_seen, DeliveryOutcome, PendingActivity, PendingVerification,
+        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
+        ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -165,11 +165,13 @@ enum PendingWrapWrite {
     Initial {
         pending: PendingWrapInjection,
         injection: String,
+        output_boundary: usize,
         include_reminder: bool,
     },
     Retry {
         verification: PendingVerification,
         injection: String,
+        output_boundary: usize,
         include_reminder: bool,
     },
 }
@@ -202,13 +204,13 @@ fn wrap_injection_timer_allowed(has_pending_write_ack: bool) -> bool {
 /// present and the delivery was confirmed immediately.
 fn queue_or_confirm_wrap_verification(
     verification: PendingVerification,
-    echo_buffer: &str,
+    output: &VerificationOutput,
     activity_detector: Option<&ActivityDetector>,
     throttle: &mut ThrottleState,
     pending_verifications: &mut VecDeque<PendingVerification>,
     pending_activities: &mut VecDeque<PendingActivity>,
 ) -> bool {
-    if !check_echo_in_output(echo_buffer, &verification.expected_echo) {
+    if !pending_verification_echo_seen(output, &verification) {
         pending_verifications.push_back(verification);
         return false;
     }
@@ -1194,7 +1196,7 @@ pub(crate) async fn run_wrap(
         None
     };
     let mut throttle = ThrottleState::default();
-    let mut echo_buffer = String::new();
+    let mut echo_buffer = VerificationOutput::default();
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1363,15 +1365,11 @@ pub(crate) async fn run_wrap(
 
                         // Accumulate echo buffer for verification matching
                         echo_buffer.push_str(&text);
-                        if echo_buffer.len() > 16_000 {
-                            let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
-                            echo_buffer = echo_buffer[start..].to_string();
-                        }
 
                         // Check pending verifications against new output
                         let mut verified_indices = Vec::new();
                         for (i, pv) in pending_verifications.iter().enumerate() {
-                            if check_echo_in_output(&echo_buffer, &pv.expected_echo) {
+                            if pending_verification_echo_seen(&echo_buffer, pv) {
                                 verified_indices.push(i);
                             }
                         }
@@ -1843,6 +1841,7 @@ pub(crate) async fn run_wrap(
                         pending.workspace_alias.as_deref(),
                     );
                     let mut bytes = injection.as_bytes().to_vec();
+                    let output_boundary = echo_buffer.boundary();
                     let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
                     {
                         // Claude needs Enter in a later PTY write to close its
@@ -1866,6 +1865,7 @@ pub(crate) async fn run_wrap(
                             let pending_write = PendingWrapWrite::Initial {
                                 pending,
                                 injection,
+                                output_boundary,
                                 include_reminder,
                             };
                             pending_wrap_writes.push(Box::pin(async move {
@@ -1891,6 +1891,7 @@ pub(crate) async fn run_wrap(
                     PendingWrapWrite::Initial {
                         pending,
                         injection,
+                        output_boundary,
                         include_reminder,
                     } => {
                         if let Some(error) = error {
@@ -1920,6 +1921,7 @@ pub(crate) async fn run_wrap(
                             delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
                             expected_echo: injection,
+                            output_boundary,
                             injected_at: Instant::now(),
                             attempts: 1,
                             max_attempts: MAX_VERIFICATION_ATTEMPTS,
@@ -1942,6 +1944,7 @@ pub(crate) async fn run_wrap(
                     PendingWrapWrite::Retry {
                         mut verification,
                         injection,
+                        output_boundary,
                         include_reminder,
                     } => {
                         if let Some(error) = error {
@@ -1971,6 +1974,7 @@ pub(crate) async fn run_wrap(
                             "wrap: delivery re-injection confirmed (retry)"
                         );
                         verification.expected_echo = injection;
+                        verification.output_boundary = output_boundary;
                         verification.injected_at = Instant::now();
                         queue_or_confirm_wrap_verification(
                             verification,
@@ -2044,6 +2048,7 @@ pub(crate) async fn run_wrap(
                         pv.workspace_alias.as_deref(),
                     );
                     let mut bytes = injection.as_bytes().to_vec();
+                    let output_boundary = echo_buffer.boundary();
                     let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
                     {
                         pty.submit_write_paced_with_followup(
@@ -2061,6 +2066,7 @@ pub(crate) async fn run_wrap(
                             let pending_write = PendingWrapWrite::Retry {
                                 verification: pv,
                                 injection,
+                                output_boundary,
                                 include_reminder,
                             };
                             pending_wrap_writes.push(Box::pin(async move {
@@ -2161,7 +2167,7 @@ mod tests {
         STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{
-        PendingVerification, ThrottleState, MAX_VERIFICATION_ATTEMPTS,
+        PendingVerification, ThrottleState, VerificationOutput, MAX_VERIFICATION_ATTEMPTS,
     };
     use crate::ids::{DeliveryId, EventId, MessageTarget};
     use std::collections::VecDeque;
@@ -2219,10 +2225,14 @@ mod tests {
     #[test]
     fn echo_arriving_before_write_ack_is_confirmed_immediately() {
         let injection = "multiline task\nwith a delayed submit";
-        let verification = PendingVerification {
+        let mut output = VerificationOutput::default();
+        output.push_str(&format!("stale composer echo: {injection}"));
+        let output_boundary = output.boundary();
+        let verification = || PendingVerification {
             delivery_id: DeliveryId::new("delivery-before-ack"),
             event_id: EventId::new("event-before-ack"),
             expected_echo: injection.to_string(),
+            output_boundary,
             injected_at: Instant::now(),
             attempts: 1,
             max_attempts: MAX_VERIFICATION_ATTEMPTS,
@@ -2237,9 +2247,21 @@ mod tests {
         let mut pending_verifications = VecDeque::new();
         let mut pending_activities = VecDeque::new();
 
+        let stale = queue_or_confirm_wrap_verification(
+            verification(),
+            &output,
+            None,
+            &mut throttle,
+            &mut pending_verifications,
+            &mut pending_activities,
+        );
+        assert!(!stale, "a retained pre-submission echo is stale");
+        pending_verifications.clear();
+
+        output.push_str(&format!("\nnew composer echo: {injection}"));
         let confirmed = queue_or_confirm_wrap_verification(
-            verification,
-            &format!("composer echo: {injection}"),
+            verification(),
+            &output,
             None,
             &mut throttle,
             &mut pending_verifications,
