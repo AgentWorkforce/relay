@@ -1422,7 +1422,12 @@ for case_dir in "$CASE_ROOT"/*/; do
   #
   # Emits, newline separated: timeoutSeconds, expected head signature,
   # needs-broker flag, then each runner.command element.
-  meta=$(node --input-type=module -e "
+  # Written to a file rather than captured: command substitution strips NUL
+  # bytes, which are the delimiter that makes this transport safe.
+  meta_file="${ARTIFACTS}/corpus-$case_id.meta"
+  meta_err="${ARTIFACTS}/corpus-$case_id.meta.err"
+  rm -f "$meta_file" "$meta_err"
+  node --input-type=module -e "
 import { validateCaseManifest, BROKER_RUNTIME_REQUIREMENT } from './scripts/pr-proof/contract.mjs';
 import fs from 'node:fs';
 const id = process.argv[1];
@@ -1431,15 +1436,20 @@ try {
   const sig = m.expected?.head?.signature;
   if (!sig) throw new Error('manifest declares no expected.head.signature');
   const needsBroker = (m.requirements ?? []).includes(BROKER_RUNTIME_REQUIREMENT) ? '1' : '';
-  process.stdout.write([m.timeoutSeconds, sig, needsBroker, ...m.runner.command].join('\n'));
+    // NUL TERMINATED, not merely separated: a newline is legal inside a runner
+  // argument and would otherwise split one argument into two before the case
+  // ever runs, and 'read -d' needs the final field terminated too or it drops
+  // the last command element.
+  const fields = [m.timeoutSeconds, sig, needsBroker, ...m.runner.command];
+  process.stdout.write(fields.map((f) => String(f) + '\0').join(''));
 } catch (error) {
   // Report the contract's own reasons, not a node stack trace: the skip line is
   // the only thing a reader sees for a case that never ran.
   process.stderr.write((error?.details ?? [error?.message ?? String(error)]).join('; '));
   process.exit(1);
 }
-" "$case_id" "$manifest" 2>&1) || {
-    skip_check "corpus: $case_id" "manifest rejected by the proof contract: $(printf '%s' "$meta" | tr '\n' ' ' | tail -c 200)"
+" "$case_id" "$manifest" >"$meta_file" 2>"$meta_err" || {
+    skip_check "corpus: $case_id" "manifest rejected by the proof contract: $(tr '\n' ' ' < "$meta_err" 2>/dev/null | tail -c 200)"
     continue
   }
 
@@ -1449,7 +1459,7 @@ try {
   runner_exe=""
   meta_line=0
   set --
-  while IFS= read -r meta_value; do
+  while IFS= read -r -d '' meta_value; do
     meta_line=$((meta_line + 1))
     case "$meta_line" in
       1) case_timeout="$meta_value" ;;
@@ -1458,9 +1468,7 @@ try {
       4) runner_exe="$meta_value" ;;
       *) set -- "$@" "$meta_value" ;;
     esac
-  done <<CASE_META
-$meta
-CASE_META
+  done < "$meta_file"
 
   if [ -z "$expected" ] || [ -z "$runner_exe" ] || [ "$#" -eq 0 ] || [ -z "$case_timeout" ]; then
     skip_check "corpus: $case_id" "manifest did not yield a runnable command and expected signature"
