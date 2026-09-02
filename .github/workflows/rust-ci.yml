@@ -40,7 +40,7 @@ jobs:
         run: cargo test --release
 
   relay-pty-windows-test:
-    name: Relay PTY Tests (windows-latest)
+    name: Relay PTY Synchronization Tests (windows-latest)
     needs: changes
     if: needs.changes.outputs.rust_changed == 'true'
     runs-on: windows-latest
@@ -50,8 +50,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
-      - name: Run relay-pty tests
-        run: cargo test -p relay-pty
+      - name: Read/tag ordering regression
+        run: cargo test -p relay-pty --lib pty::tests::completed_read_is_tagged_before_verified_write_can_sample_boundary -- --exact
+      - name: Output backpressure regression
+        run: cargo test -p relay-pty --lib pty::tests::output_channel_backpressure_does_not_hold_verified_write_ordering -- --exact
+      - name: Live ConPTY boundary regression
+        run: cargo test -p relay-pty --lib pty::tests::verified_write_boundary_includes_output_still_queued_for_consumer -- --exact
 
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})

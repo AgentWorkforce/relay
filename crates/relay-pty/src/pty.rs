@@ -1654,13 +1654,13 @@ mod tests {
 
         #[cfg(windows)]
         let (pty, mut rx) = PtySession::spawn(
-            "powershell.exe",
+            "cmd.exe",
             &[
-                "-NoLogo".into(),
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                "[Console]::Out.WriteLine('same-echo'); $line = [Console]::In.ReadLine(); [Console]::Out.WriteLine($line)".into(),
+                "/D".into(),
+                "/Q".into(),
+                "/V:ON".into(),
+                "/C".into(),
+                "echo same-echo&set /P line=&echo !line!".into(),
             ],
             24,
             80,
@@ -1669,11 +1669,17 @@ mod tests {
         // Enter is carriage return on a Windows ConPTY input stream.
         #[cfg(windows)]
         let submitted = b"same-echo\r".to_vec();
+        #[cfg(unix)]
+        let harness_timeout = Duration::from_secs(2);
+        // Windows hosted runners can be cold; cmd.exe is intentionally used
+        // instead of PowerShell, but retain a bounded startup allowance.
+        #[cfg(windows)]
+        let harness_timeout = Duration::from_secs(10);
 
         // Do not drain rx. Wait until the intended initial marker has reached
         // the parsed grid, rather than accepting an unrelated startup VT
         // chunk merely because it incremented `output_sequence`.
-        timeout(Duration::from_secs(2), async {
+        timeout(harness_timeout, async {
             while !pty.screen_text().contains("same-echo") {
                 tokio::task::yield_now().await;
             }
@@ -1686,7 +1692,7 @@ mod tests {
         // submission exercises CancelSynchronousIo rather than slipping into
         // the short gap before the reader starts its next read.
         #[cfg(windows)]
-        timeout(Duration::from_secs(2), async {
+        timeout(harness_timeout, async {
             while pty.output_order.try_lock().is_some() {
                 tokio::task::yield_now().await;
             }
@@ -1711,7 +1717,7 @@ mod tests {
 
         let mut saw_stale = false;
         let mut saw_fresh = false;
-        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+        while let Ok(Some(chunk)) = timeout(harness_timeout, rx.recv()).await {
             let text = String::from_utf8_lossy(chunk.as_bytes());
             if text.contains("same-echo") {
                 if chunk.sequence() <= boundary {
