@@ -45,6 +45,7 @@ const fakeClaudePath = path.join(binDir, 'claude');
 // split the byte marker the effect oracle searches for.
 const positiveNonce = `R${expectedSha.slice(0, 8)}${arm[0]}`;
 const negativeNonce = `U${expectedSha.slice(0, 8)}${arm[0]}`;
+const selfNonce = `S${expectedSha.slice(0, 8)}${arm[0]}`;
 const fakeClaudeSource = String.raw`#!/usr/bin/env node
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
@@ -160,6 +161,12 @@ try {
     );
   }
 
+  const self = await api('/api/send', {
+    method: 'POST',
+    body: JSON.stringify({ to: '@self', from: RECIPIENT, text: selfNonce, mode: 'steer' }),
+  });
+  const selfScreen = await waitForSnapshot(api, selfNonce, 20_000);
+
   const negative = await api('/api/send', {
     method: 'POST',
     body: JSON.stringify({ to: OFFLINE_RECIPIENT, text: negativeNonce, mode: 'steer' }),
@@ -183,12 +190,15 @@ try {
   const finalScreen = finalSnapshot.body?.screen ?? '';
 
   const positiveInjectionCount = occurrences(positiveScreen, positiveNonce);
+  const selfInjectionCount = occurrences(selfScreen, selfNonce);
   const negativeInjectionCount = occurrences(finalScreen, negativeNonce);
-  const deliveryEffectDiscriminates = positiveInjectionCount === 1 && negativeInjectionCount === 0;
+  const deliveryEffectDiscriminates =
+    positiveInjectionCount === 1 && selfInjectionCount === 1 && negativeInjectionCount === 0;
   if (!deliveryEffectDiscriminates) {
     throw new Error(
       `The must-fire/must-not-fire PTY control did not discriminate: ${JSON.stringify({
         positiveInjectionCount,
+        selfInjectionCount,
         negativeInjectionCount,
         finalScreen: finalScreen.slice(-2_000),
       })}`
@@ -211,7 +221,11 @@ try {
       !('recipient_status' in body)
   );
   const sharedObservationControls =
-    unknown.status === 200 && unknown.body?.relaycast_published === true && nonRecipientFieldsOmitted;
+    self.status === 200 &&
+    self.body?.relaycast_published === true &&
+    unknown.status === 200 &&
+    unknown.body?.relaycast_published === true &&
+    nonRecipientFieldsOmitted;
   const baseObserved =
     sharedObservationControls &&
     positive.status === 200 &&
@@ -224,6 +238,8 @@ try {
     !('delivery_status' in negative.body) &&
     !('recipient_live' in unknown.body) &&
     !('recipient_status' in unknown.body) &&
+    !('recipient_live' in self.body) &&
+    !('recipient_status' in self.body) &&
     equivalentExceptEventId(positive.body, negative.body);
   const headObserved =
     sharedObservationControls &&
@@ -237,6 +253,8 @@ try {
     positive.body?.recipient_status === 'active' &&
     negative.body?.recipient_live === false &&
     negative.body?.recipient_status === 'offline' &&
+    self.body?.recipient_live === true &&
+    self.body?.recipient_status === 'active' &&
     unknown.status === 200 &&
     unknown.body?.relaycast_published === true &&
     unknown.body?.recipient_live === null &&
@@ -276,6 +294,7 @@ try {
         arm,
         positive,
         negative,
+        self,
         unknown,
         nonRecipientResponses,
         brokerStderr,
@@ -295,6 +314,7 @@ try {
       details,
       evidence: {
         positiveInjectionCount,
+        selfInjectionCount,
         negativeInjectionCount,
         relaycastPublications: relaycast.state.directMessages.length + relaycast.state.channelMessages.length,
         unknownProbeReported: unknown.body?.recipient_status ?? 'omitted',

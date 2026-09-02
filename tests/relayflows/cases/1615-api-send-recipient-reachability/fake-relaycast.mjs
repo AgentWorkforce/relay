@@ -113,7 +113,7 @@ export async function startFakeRelaycast({
           created_at: '2026-09-02T00:00:00.000Z',
         },
       });
-      if (body?.to === recipientName) {
+      if (body?.to === recipientName || body?.to === '@self') {
         setTimeout(() => {
           sendText(state.nodeSocket, {
             type: 'deliver',

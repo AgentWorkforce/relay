@@ -1247,6 +1247,7 @@ impl BrokerRuntime {
                 }
                 let relaycast_start = Instant::now();
                 let recipient_name = match to.kind() {
+                    MessageTargetKind::Worker("@self") => Some(publish_from.to_string()),
                     MessageTargetKind::Worker(name) => Some(name.to_string()),
                     MessageTargetKind::Channel(_)
                     | MessageTargetKind::Thread
