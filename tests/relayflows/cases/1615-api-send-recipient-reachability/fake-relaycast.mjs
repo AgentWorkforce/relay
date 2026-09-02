@@ -25,10 +25,10 @@ export async function startFakeRelaycast({
     let body;
     try {
       body = await readJson(request);
-    } catch (error) {
+    } catch {
       sendJson(response, 400, {
         ok: false,
-        error: { code: 'invalid_json', message: error instanceof Error ? error.message : String(error) },
+        error: { code: 'invalid_json', message: 'Request body must be valid JSON.' },
       });
       return;
     }

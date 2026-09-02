@@ -116,6 +116,7 @@ try {
   const api = async (pathname, { timeoutMs = 15_000, ...options } = {}) => {
     const response = await fetch(`${brokerUrl}${pathname}`, {
       ...options,
+      redirect: 'error',
       headers: {
         'content-type': 'application/json',
         'x-api-key': API_KEY,
