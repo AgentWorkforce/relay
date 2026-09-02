@@ -8,7 +8,7 @@ use std::{
         mpsc as std_mpsc, Arc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -22,9 +22,15 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::{
+    collections::VecDeque,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+};
 #[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::{
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    time::Instant,
+};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
@@ -41,6 +47,7 @@ use windows_sys::Win32::{
 /// healthy interaction sees fewer than a handful of pending writes at
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
+#[cfg(windows)]
 const OUTPUT_ORDERING_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Why [`PtySession::submit_write`] refused to enqueue.
@@ -72,6 +79,7 @@ pub enum PtyWriteSubmitError {
 
     /// The output reader could not yield ordering promptly enough to admit a
     /// verified write. The write was not queued, so callers may retry it.
+    #[cfg(windows)]
     #[error("timed out acquiring pty output ordering for verified write")]
     OrderingTimeout,
 
@@ -433,15 +441,16 @@ pub struct PtySession {
     /// after a caller sampled the watermark but before its write was queued.
     output_order: Arc<Mutex<()>>,
     /// Unix readiness probe shared with verified-write admission. Admission
-    /// checks it while holding `output_order` and hands the lock fairly to the
-    /// reader whenever output is already readable.
+    /// counts buffered bytes through this descriptor while holding
+    /// `output_order`, reserving their pre-boundary sequence without waiting
+    /// for the reader or downstream consumer.
     #[cfg(unix)]
     poll_fd: Arc<OwnedFd>,
-    /// Becomes true only after the Unix reader has drained output and exited.
-    /// It prevents a persistent EOF/HUP readiness notification from making
-    /// verified-write admission spin forever after reader teardown.
+    /// Byte-accurate sequence reservations for output already buffered in the
+    /// Unix PTY at a verified-write boundary. The reader consumes these later,
+    /// so admission never depends on downstream output-channel capacity.
     #[cfg(unix)]
-    output_reader_done: Arc<AtomicBool>,
+    unix_output_reservations: Arc<Mutex<UnixOutputReservations>>,
     /// Set while a Windows verified write is waiting for `output_order`.
     /// A cancelled ConPTY reader observes this before starting another
     /// blocking ReadFile, yielding the lock to the submitter instead.
@@ -452,6 +461,20 @@ pub struct PtySession {
     /// `output_order`; the handle never exposes the PTY itself.
     #[cfg(windows)]
     reader_cancel: ReaderCancel,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct UnixOutputReservation {
+    remaining: usize,
+    sequence: u64,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct UnixOutputReservations {
+    entries: VecDeque<UnixOutputReservation>,
+    total_bytes: usize,
 }
 
 #[cfg(windows)]
@@ -726,8 +749,8 @@ where
     read_and_tag_output_locked(reader, buf, output_sequence, after_read)
 }
 
-/// Variant used when the caller already owns `output_order` (Unix needs to
-/// re-check readiness and perform the read under one uninterrupted guard).
+/// Variant used when the caller already owns `output_order`.
+#[cfg(any(windows, test))]
 fn read_and_tag_output_locked<R, F>(
     reader: &mut R,
     buf: &mut [u8],
@@ -750,19 +773,19 @@ where
 }
 
 #[cfg(unix)]
-fn pty_is_readable(fd: &OwnedFd, timeout_ms: libc::c_int) -> io::Result<bool> {
+fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
     let mut descriptor = libc::pollfd {
         fd: fd.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
     };
     loop {
-        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
         if ready > 0 {
-            return Ok(true);
+            return Ok(());
         }
         if ready == 0 {
-            return Ok(false);
+            continue;
         }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::Interrupted {
@@ -772,36 +795,85 @@ fn pty_is_readable(fd: &OwnedFd, timeout_ms: libc::c_int) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
-fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
-    if pty_is_readable(fd, -1)? {
-        Ok(())
-    } else {
-        unreachable!("an infinite poll cannot time out")
+fn pty_readable_bytes(fd: &OwnedFd) -> io::Result<usize> {
+    let mut available: libc::c_int = 0;
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::FIONREAD, &mut available) } < 0 {
+        return Err(io::Error::last_os_error());
     }
+    Ok(available.max(0) as usize)
 }
 
+/// Reserve one producer sequence for every byte already buffered in the Unix
+/// PTY but not covered by an earlier boundary. The caller holds
+/// `output_order`, so the reader cannot consume bytes while the kernel count
+/// is compared with outstanding reservations.
 #[cfg(unix)]
-fn acquire_output_order_for_write<'a>(
-    output_order: &'a Mutex<()>,
+fn reserve_readable_output(
     poll_fd: &OwnedFd,
-    output_reader_done: &AtomicBool,
-) -> Result<parking_lot::MutexGuard<'a, ()>> {
-    let deadline = Instant::now() + OUTPUT_ORDERING_TIMEOUT;
-    loop {
-        let guard = output_order.lock();
-        if output_reader_done.load(Ordering::Acquire) || !pty_is_readable(poll_fd, 0)? {
-            return Ok(guard);
-        }
-
-        // Readiness became visible before this admission linearization point.
-        // Hand the lock to the already-woken reader so it can read and tag the
-        // stale bytes before we sample the producer watermark.
-        parking_lot::MutexGuard::unlock_fair(guard);
-        if Instant::now() >= deadline {
-            return Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
-        }
-        thread::yield_now();
+    reservations: &Mutex<UnixOutputReservations>,
+    output_sequence: &AtomicU64,
+) -> io::Result<()> {
+    let available = pty_readable_bytes(poll_fd)?;
+    let mut reservations = reservations.lock();
+    if available > reservations.total_bytes {
+        let sequence = output_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let remaining = available - reservations.total_bytes;
+        reservations.entries.push_back(UnixOutputReservation {
+            remaining,
+            sequence,
+        });
+        reservations.total_bytes += remaining;
     }
+    Ok(())
+}
+
+/// Read one Unix output chunk and apply any byte reservations created by
+/// verified-write admission. A read can straddle the old/new boundary, so the
+/// returned ranges split the buffer precisely instead of assigning one
+/// sequence to the whole read.
+#[cfg(unix)]
+fn read_and_tag_unix_output<R: Read + ?Sized>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_order: &Mutex<()>,
+    reservations: &Mutex<UnixOutputReservations>,
+    output_sequence: &AtomicU64,
+) -> io::Result<Option<Vec<(usize, usize, u64)>>> {
+    let _order_guard = output_order.lock();
+    let n = reader.read(buf)?;
+    if n == 0 {
+        return Ok(None);
+    }
+
+    let mut tagged = Vec::new();
+    let mut offset = 0;
+    let mut reservations = reservations.lock();
+    while offset < n {
+        let Some(front) = reservations.entries.front_mut() else {
+            break;
+        };
+        let take = front.remaining.min(n - offset);
+        let sequence = front.sequence;
+        front.remaining -= take;
+        let finished = front.remaining == 0;
+        reservations.total_bytes -= take;
+        if finished {
+            reservations.entries.pop_front();
+        }
+        tagged.push((offset, offset + take, sequence));
+        offset += take;
+    }
+    drop(reservations);
+
+    if offset < n {
+        let sequence = output_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        tagged.push((offset, n, sequence));
+    }
+    Ok(Some(tagged))
 }
 
 #[cfg(unix)]
@@ -857,11 +929,15 @@ impl PtySession {
         followup: Option<FollowupWrite>,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
         #[cfg(unix)]
-        let _order_guard = acquire_output_order_for_write(
-            &self.output_order,
-            &self.poll_fd,
-            &self.output_reader_done,
-        )?;
+        let _order_guard = {
+            let guard = self.output_order.lock();
+            reserve_readable_output(
+                &self.poll_fd,
+                &self.unix_output_reservations,
+                &self.output_sequence,
+            )?;
+            guard
+        };
 
         #[cfg(windows)]
         let order_guard = {
@@ -984,9 +1060,9 @@ impl PtySession {
         #[cfg(unix)]
         let poll_fd_reader = poll_fd.clone();
         #[cfg(unix)]
-        let output_reader_done = Arc::new(AtomicBool::new(false));
+        let unix_output_reservations = Arc::new(Mutex::new(UnixOutputReservations::default()));
         #[cfg(unix)]
-        let output_reader_done_thread = output_reader_done.clone();
+        let unix_output_reservations_reader = unix_output_reservations.clone();
         #[cfg(windows)]
         let write_admission_pending = Arc::new(AtomicBool::new(false));
         #[cfg(windows)]
@@ -1000,18 +1076,15 @@ impl PtySession {
                 }
 
                 #[cfg(unix)]
-                let tagged = {
-                    let _order_guard = output_order_reader.lock();
-                    match pty_is_readable(&poll_fd_reader, 0) {
-                        Ok(true) => read_and_tag_output_locked(
-                            &mut *reader,
-                            &mut buf,
-                            &output_sequence_reader,
-                            |_| {},
-                        ),
-                        Ok(false) => continue,
-                        Err(error) => Err(error),
-                    }
+                let tagged = match read_and_tag_unix_output(
+                    &mut *reader,
+                    &mut buf,
+                    &output_order_reader,
+                    &unix_output_reservations_reader,
+                    &output_sequence_reader,
+                ) {
+                    Ok(Some(tagged)) => tagged,
+                    Ok(None) | Err(_) => break,
                 };
 
                 #[cfg(windows)]
@@ -1031,15 +1104,12 @@ impl PtySession {
                 #[cfg(windows)]
                 let tagged = match tagged {
                     Err(error) if read_was_cancelled(&error) => continue,
-                    other => other,
-                };
-
-                let (n, sequence) = match tagged {
-                    Ok(Some(tagged)) => tagged,
+                    Ok(Some((n, sequence))) => vec![(0, n, sequence)],
                     Ok(None) | Err(_) => break,
                 };
 
-                {
+                for (start, end, sequence) in tagged {
+                    let bytes = &buf[start..end];
                     // Lock order: processor THEN term. `resize`
                     // takes the same order; matching prevents
                     // deadlock and ensures bytes are never
@@ -1054,25 +1124,26 @@ impl PtySession {
                     // writer lock taken by the drainer thread.
                     let mut processor_guard = processor_clone.lock();
                     let mut term_guard = term_clone.lock();
-                    processor_guard.advance(&mut *term_guard, &buf[..n]);
+                    processor_guard.advance(&mut *term_guard, bytes);
                     // Publish the grid's consumed byte offset while
                     // still holding the term lock, so a concurrent
                     // snapshot reader (which also locks `term`) reads
                     // the offset that matches the grid it renders.
-                    consumed_offset_reader.fetch_add(n as u64, Ordering::Release);
-                }
-                if tx
-                    .blocking_send(PtyOutput {
-                        bytes: buf[..n].to_vec(),
-                        sequence,
-                    })
-                    .is_err()
-                {
-                    break;
+                    consumed_offset_reader.fetch_add(bytes.len() as u64, Ordering::Release);
+                    drop(term_guard);
+                    drop(processor_guard);
+
+                    if tx
+                        .blocking_send(PtyOutput {
+                            bytes: bytes.to_vec(),
+                            sequence,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
             }
-            #[cfg(unix)]
-            output_reader_done_thread.store(true, Ordering::Release);
         });
 
         #[cfg(windows)]
@@ -1099,7 +1170,7 @@ impl PtySession {
                 #[cfg(unix)]
                 poll_fd,
                 #[cfg(unix)]
-                output_reader_done,
+                unix_output_reservations,
                 #[cfg(windows)]
                 write_admission_pending,
                 #[cfg(windows)]
@@ -1588,9 +1659,9 @@ impl PtySession {
 mod tests {
     #[cfg(unix)]
     use super::{
-        acquire_output_order_for_write, duplicate_poll_fd_cloexec, pty_is_readable,
-        read_and_tag_output_locked, resolve_command_path, resolve_command_path_with,
-        wait_for_pty_readable,
+        duplicate_poll_fd_cloexec, read_and_tag_unix_output, reserve_readable_output,
+        resolve_command_path, resolve_command_path_with, wait_for_pty_readable,
+        UnixOutputReservations,
     };
     use super::{
         read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
@@ -1610,7 +1681,7 @@ mod tests {
         collections::VecDeque,
         env,
         io::{self, Cursor, Read},
-        sync::atomic::{AtomicBool, AtomicU64, Ordering},
+        sync::atomic::{AtomicU64, Ordering},
     };
     use tokio::{
         sync::mpsc,
@@ -1987,64 +2058,51 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn readable_output_is_tagged_before_unix_boundary_admission() {
-        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+    fn readable_output_is_reserved_before_unix_boundary_admission() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
         writer.write_all(b"stale").unwrap();
 
-        let poll_fd = Arc::new(duplicate_poll_fd_cloexec(reader.as_raw_fd()).unwrap());
-        let output_order = Arc::new(Mutex::new(()));
-        let output_sequence = Arc::new(AtomicU64::new(0));
-        let output_reader_done = Arc::new(AtomicBool::new(false));
-        let (readiness_seen_tx, readiness_seen_rx) = std_mpsc::channel();
-        let (release_reader_tx, release_reader_rx) = std_mpsc::channel();
+        let poll_fd = duplicate_poll_fd_cloexec(reader.as_raw_fd()).unwrap();
+        let output_order = Mutex::new(());
+        let reservations = Mutex::new(UnixOutputReservations::default());
+        let output_sequence = AtomicU64::new(0);
 
-        let reader_poll_fd = poll_fd.clone();
-        let reader_order = output_order.clone();
-        let reader_sequence = output_sequence.clone();
-        let reader_thread = std::thread::spawn(move || {
-            wait_for_pty_readable(&reader_poll_fd).unwrap();
-            readiness_seen_tx.send(()).unwrap();
-            // Reproduce the reviewed race exactly: readiness has returned,
-            // but the reader is descheduled before it can acquire ordering.
-            release_reader_rx.recv().unwrap();
-
-            let _guard = reader_order.lock();
-            assert!(pty_is_readable(&reader_poll_fd, 0).unwrap());
-            let mut buf = [0u8; 16];
-            read_and_tag_output_locked(&mut reader, &mut buf, &reader_sequence, |_| {})
-                .unwrap()
-                .unwrap()
-        });
-        readiness_seen_rx.recv().unwrap();
-
-        let submit_order = output_order.clone();
-        let submit_poll_fd = poll_fd.clone();
-        let submit_reader_done = output_reader_done.clone();
-        let submit_sequence = output_sequence.clone();
-        let (boundary_tx, boundary_rx) = std_mpsc::channel();
-        let submitter = std::thread::spawn(move || {
-            let guard =
-                acquire_output_order_for_write(&submit_order, &submit_poll_fd, &submit_reader_done)
-                    .unwrap();
-            let boundary = submit_sequence.load(Ordering::Acquire);
-            drop(guard);
-            boundary_tx.send(boundary).unwrap();
-        });
-
+        // Reproduce the original poll-to-lock gap, but deliberately do not
+        // start the reader afterward: this models a reader blocked on a full
+        // downstream channel. Admission must reserve the kernel-buffered
+        // bytes immediately rather than waiting for consumer progress.
+        wait_for_pty_readable(&poll_fd).unwrap();
+        let admitted_at = std::time::Instant::now();
+        let guard = output_order.lock();
+        reserve_readable_output(&poll_fd, &reservations, &output_sequence).unwrap();
+        let boundary = output_sequence.load(Ordering::Acquire);
+        drop(guard);
         assert!(
-            boundary_rx
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err(),
-            "Unix admission overtook output whose readiness was already observed"
+            admitted_at.elapsed() < std::time::Duration::from_millis(100),
+            "kernel-buffered output reservation depended on downstream drain"
         );
-        release_reader_tx.send(()).unwrap();
 
-        let (_, stale_sequence) = reader_thread.join().unwrap();
-        let boundary = boundary_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("admission proceeds after the reader tags stale output");
-        submitter.join().unwrap();
-        assert!(stale_sequence <= boundary);
+        // Model a later kernel read that coalesces the reserved stale bytes
+        // with fresh post-write output. The helper must split the read at the
+        // exact reserved-byte boundary.
+        let mut combined = Cursor::new(b"stalefresh".to_vec());
+        let mut buf = [0u8; 16];
+        let tagged = read_and_tag_unix_output(
+            &mut combined,
+            &mut buf,
+            &output_order,
+            &reservations,
+            &output_sequence,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tagged,
+            vec![
+                (0, b"stale".len(), boundary),
+                (b"stale".len(), b"stalefresh".len(), boundary + 1),
+            ]
+        );
     }
 
     #[cfg(unix)]

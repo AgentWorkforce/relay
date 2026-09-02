@@ -54,7 +54,10 @@ jobs:
         with:
           cache-bin: false
       - name: Run relay-pty tests (excluding known legacy Windows failures)
-        run: cargo test -p relay-pty -- --skip shutdown_terminates --skip spawn_overrides_dumb_term_for_pty_children
+        run: cargo test -p relay-pty -- --skip shutdown_terminates --skip spawn_overrides_dumb_term_for_pty_children --skip verified_write_boundary_includes_output_still_queued_for_consumer
+      - name: Live ConPTY boundary regression
+        run: cargo test -p relay-pty --lib pty::tests::verified_write_boundary_includes_output_still_queued_for_consumer -- --exact --nocapture
+        timeout-minutes: 2
 
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
