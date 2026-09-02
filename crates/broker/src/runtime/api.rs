@@ -37,6 +37,24 @@ fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
         .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
 }
 
+/// Resolve the named recipient whose presence accompanies an HTTP send.
+/// Normalize at this boundary so direct runtime requests cannot publish to a
+/// trimmed target while observing a whitespace-padded agent name.
+pub(super) fn recipient_name_for_reachability(
+    to: &MessageTarget,
+    publish_from: &str,
+) -> Option<String> {
+    let normalized_target = MessageTarget::new(to.trim());
+    match normalized_target.kind() {
+        MessageTargetKind::Worker("@self") => Some(publish_from.to_string()),
+        MessageTargetKind::Worker(name) => Some(name.to_string()),
+        MessageTargetKind::Channel(_)
+        | MessageTargetKind::Thread
+        | MessageTargetKind::DirectMessage(_)
+        | MessageTargetKind::Conversation(_) => None,
+    }
+}
+
 /// Scopes granted to observer tokens minted via `/api/observer-token`: broad
 /// read access to workspace activity, deliberately excluding anything
 /// write/spawn-capable (unlike the raw `rk_live_...` workspace key this
@@ -1246,15 +1264,7 @@ impl BrokerRuntime {
                     );
                 }
                 let relaycast_start = Instant::now();
-                let normalized_target = MessageTarget::new(&normalized_to);
-                let recipient_name = match normalized_target.kind() {
-                    MessageTargetKind::Worker("@self") => Some(publish_from.to_string()),
-                    MessageTargetKind::Worker(name) => Some(name.to_string()),
-                    MessageTargetKind::Channel(_)
-                    | MessageTargetKind::Thread
-                    | MessageTargetKind::DirectMessage(_)
-                    | MessageTargetKind::Conversation(_) => None,
-                };
+                let recipient_name = recipient_name_for_reachability(&to, publish_from);
                 // Keep the publication deadline scoped to publication. The
                 // reachability read has its own short bound; putting both
                 // futures under this timeout would let a slow observation
