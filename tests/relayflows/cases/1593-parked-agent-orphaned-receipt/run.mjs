@@ -136,6 +136,11 @@ try {
   //    identity and retires the previous cursor, and nothing rolls that back.
   //    The failure is expected here and is part of what makes this reachable.
   fake.stdin.write(`${JSON.stringify({ cmd: 'rotate_agent_id', name: AGENT })}\n`);
+  //    Wait for the fake to acknowledge the rotation before spawning. Writing to
+  //    its stdin and spawning immediately races: if `agent.register` lands
+  //    before the fake reads the command it replies with the OLD identity, no
+  //    rebind happens, and the case silently stops exercising the orphan path.
+  await waitForEvent((e) => e.event === 'rotate_armed' && e.name === AGENT, 'the identity rotation to arm');
   //    A duplicate spawn that SUCCEEDS would invalidate the whole observation,
   //    so require the rejection rather than merely tolerating it.
   let duplicateSpawnRejected = false;
@@ -177,6 +182,22 @@ try {
     const acked = fakeEvents.filter((event) => event.event === 'delivery_ack');
     if (acked.length > 0) {
       throw new Error(`A retired identity's receipt must never be ACKed, saw ${JSON.stringify(acked)}.`);
+    }
+
+    // An empty queue is not the claim — the claim is that the agent can receive
+    // again. Send a fresh message under the live identity and require that this
+    // one actually injects, so a silent removal that leaves the queue broken
+    // cannot pass as a fix.
+    fake.stdin.write(
+      `${JSON.stringify({ cmd: 'deliver', agent: AGENT, seq: 1, msgId: 'msg_proof_2', body: 'post-recovery probe' })}\n`
+    );
+    await waitFor(async () => (await pendingCount(api)) === 1, 'the follow-up message to park');
+    const recovery = await api('POST', `/api/spawned/${AGENT}/flush`, undefined);
+    if (recovery.flushed !== 1) {
+      throw new Error(
+        `The queue did not recover: follow-up flush returned ${JSON.stringify(recovery)}. ` +
+          'Clearing the orphan is only a fix if later messages are then deliverable.'
+      );
     }
   }
 
