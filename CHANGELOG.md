@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Broker now accepts Relaycast `context.update` node frames instead of logging every one as an invalid frame, and surfaces `delivery.failed`/`delivery.deferred` to the sending agent as a `message_delivery_failed` event so a DM to an unreachable agent is no longer silently lost.
 - Broker drops a worker's cached Relaycast registration when Relaycast reports `agent.identity_taken_over`, so the next operation re-registers instead of failing on a revoked token.
 
+## [11.10.1] - 2026-09-02
+
+### Fixed
+
+- Claude workers now start multiline tasks delivered by `fleet spawn --task` instead of leaving the brief unsubmitted in the composer.
+- `agent-relay node agent attach` no longer loses input typed while its drive or passthrough stream reconnects, while still refusing to replay into a different worker.
+
 ## [11.10.0] - 2026-09-02
 
 ### Added
