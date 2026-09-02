@@ -625,15 +625,22 @@ async function withDeliveryModeClient<T>(
   // hold/auto must claim drive. That is honest — they take control of the
   // agent's inbound delivery — but it means they contend with an attached
   // driver, which a flush does not.
-  const proxy = await startFleetNodeAttachProxy({
-    agent: name,
-    node,
-    mode: sessionMode,
-    env: deps.env,
-    fetch: deps.fetch,
-    ...(workspaceKey ? { workspaceKey } : {}),
-  });
+  // `startFleetNodeAttachProxy` throws `FleetNodeAttachError` for
+  // node_not_found / node_unreachable / control_plane_timeout. Creating it
+  // outside the try meant those rejected the Commander action directly and
+  // bypassed the very error contract this block exists to honour — only
+  // `agent_not_found`, raised inside `run`, was actually covered. It is now
+  // created inside, and closed in `finally` only if it was created.
+  let proxy: Awaited<ReturnType<typeof startFleetNodeAttachProxy>> | undefined;
   try {
+    proxy = await startFleetNodeAttachProxy({
+      agent: name,
+      node,
+      mode: sessionMode,
+      env: deps.env,
+      fetch: deps.fetch,
+      ...(workspaceKey ? { workspaceKey } : {}),
+    });
     return await run(
       createBrokerClient(
         {
@@ -659,7 +666,7 @@ async function withDeliveryModeClient<T>(
     deps.exit(1);
     return undefined;
   } finally {
-    await proxy.close();
+    if (proxy) await proxy.close();
   }
 }
 

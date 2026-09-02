@@ -136,9 +136,6 @@ pub(crate) enum TerminalFromCloud {
     },
     #[serde(rename = "terminal.close")]
     Close { session_id: String },
-    /// Request the broker flip the inbound delivery mode for the session's
-    /// agent. The broker replies with `TerminalToCloud::DeliveryMode` on
-    /// success or `TerminalToCloud::Error` on failure.
     /// Request the broker flush the session agent's parked queue. The broker
     /// replies with `TerminalToCloud::FlushPending` on success or
     /// `TerminalToCloud::Error` on failure.
@@ -157,6 +154,9 @@ pub(crate) enum TerminalFromCloud {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
+    /// Request the broker flip the inbound delivery mode for the session's
+    /// agent. The broker replies with `TerminalToCloud::DeliveryMode` on
+    /// success or `TerminalToCloud::Error` on failure.
     #[serde(rename = "terminal.set_delivery_mode")]
     SetDeliveryMode {
         session_id: String,

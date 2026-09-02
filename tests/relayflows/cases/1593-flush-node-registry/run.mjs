@@ -67,6 +67,10 @@ function offersNodeOption(cliEntry, subcommand) {
   const result = spawnSync(process.execPath, [cliEntry, 'node', 'agent', 'message', subcommand, '--help'], {
     cwd: targetDir,
     encoding: 'utf8',
+    // spawnSync is synchronous: an unbounded --help that stalls would block
+    // until the case's whole 900s budget expired, surfacing as a timeout with
+    // no indication of which probe hung.
+    timeout: 60_000,
     maxBuffer: 8 * 1024 * 1024,
   });
   const text = `${result.stdout ?? ''}${result.stderr ?? ''}`;

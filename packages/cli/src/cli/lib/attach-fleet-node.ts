@@ -894,7 +894,18 @@ export async function startFleetNodeAttachProxy(
       const flush = pendingFlush;
       pendingFlush = null;
       clearTimeout(flush.timer);
-      flush.reject(error);
+      // A flush never changes delivery mode, so it must not inherit the
+      // delivery-mode disconnect wording. An operator debugging a failed flush
+      // would otherwise be told the "delivery-mode change" was interrupted —
+      // pointing at an operation their command never performed.
+      const flushError =
+        error.code === 'delivery_mode_disconnected'
+          ? new FleetNodeAttachError(
+              'terminal transport disconnected while the flush was in flight',
+              'flush_disconnected'
+            )
+          : error;
+      flush.reject(flushError);
     }
     if (!pendingDeliveryMode) return;
     const pending = pendingDeliveryMode;
