@@ -491,14 +491,14 @@ describe('verify-features escalation status', () => {
       const filterPid = Number((await readFile(pidFile, 'utf8')).trim());
       expect(Number.isSafeInteger(filterPid)).toBe(true);
       await new Promise((resolve) => setTimeout(resolve, 100));
-      let descendantAlive = true;
+      let processState = '';
       try {
-        process.kill(filterPid, 0);
+        const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(filterPid)]);
+        processState = result.stdout.trim();
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ESRCH') descendantAlive = false;
-        else throw error;
+        if ((error as { code?: number }).code !== 1) throw error;
       }
-      expect(descendantAlive).toBe(false);
+      expect(processState === '' || processState.startsWith('Z')).toBe(true);
     }
   );
 
