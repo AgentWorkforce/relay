@@ -4,8 +4,9 @@
   "task": {
     "title": "Fix fleet spawn task submission in Claude"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-02T01:08:36.291Z",
+  "completedAt": "2026-09-02T01:36:25.125Z",
   "agents": [
     {
       "name": "default",
@@ -19,11 +20,12 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-02T01:08:36.922Z",
+      "endedAt": "2026-09-02T01:36:25.125Z",
       "events": [
         {
           "ts": 1788311316923,
           "type": "decision",
-          "content": "Use an atomic delayed follow-up Enter for Claude multiline injections: Use an atomic delayed follow-up Enter for Claude multiline injections",
+          "content": "Use an atomic delayed follow-up Enter for Claude multiline injections",
           "raw": {
             "question": "Use an atomic delayed follow-up Enter for Claude multiline injections",
             "chosen": "Use an atomic delayed follow-up Enter for Claude multiline injections",
@@ -35,7 +37,7 @@
         {
           "ts": 1788311870000,
           "type": "decision",
-          "content": "Raised the pending changelog heading to [Unreleased - Patch]: Raised the pending changelog heading to [Unreleased - Patch]",
+          "content": "Raised the pending changelog heading to [Unreleased - Patch]",
           "raw": {
             "question": "Raised the pending changelog heading to [Unreleased - Patch]",
             "chosen": "Raised the pending changelog heading to [Unreleased - Patch]",
@@ -68,12 +70,30 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Fixed Claude multiline fleet task submission with an atomic delayed Enter, honest PTY write acknowledgements, echo-race handling, Windows shim coverage, and exact base/head RelayFlow proof.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "81a2bd7dd",
+    "32c727d09",
+    "aee898b37"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_wsqage1z48l4/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/wrap.rs",
+    "crates/relay-pty/src/pty.rs",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/case.json",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
-    "endRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc"
+    "endRef": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a",
+    "traceId": "52531508-652c-4679-b1d1-58d5d0c57f64"
   }
 }
