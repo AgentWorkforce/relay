@@ -1329,11 +1329,129 @@ exit 0
 `,
   });
 
+  // ── Phase 10b: RelayFlow proof-case regression corpus ────────────────────
+  //
+  // Every merged feature/bug-fix PR leaves behind a case under
+  // tests/relayflows/cases/ that discriminates the bug: a `base` arm that
+  // reproduces it and a `head` arm that does not. Those cases are the sharpest
+  // regression assets this repo has — each one is a real end-to-end
+  // reproduction someone already paid to build and get right.
+  //
+  // They were also, until this tier, run exactly once each. The PR-proof
+  // dispatcher selects only the single case a PR declares, and
+  // `scripts/pr-proof/prepare.mjs` hard-fails a PR that changes any other case
+  // ("A PR must change exactly its one declared RelayFlow case"), so a later PR
+  // cannot re-run an earlier proof even in principle. Reintroduce a fixed bug
+  // and nothing notices.
+  //
+  // This tier re-runs the corpus head-only against the current checkout and
+  // requires each case to still report its `head` signature. A case that now
+  // reports its `base` signature is a regression of that exact bug, named.
+  //
+  // Head-only is deliberate. Outside a PR there is no meaningful base SHA, and
+  // asserting the fixed behaviour is the property we actually want to hold on
+  // main. A case whose runner cannot execute at all is recorded as a skip with
+  // its cause, never as a pass — an unrunnable proof must not read as a
+  // verified one.
+  wf.step('relayflow-corpus', {
+    type: 'deterministic',
+    dependsOn: ['critical-paths'],
+    captureOutput: true,
+    failOnError: false,
+    command: String.raw`
+set -uo pipefail
+
+TIER="relayflow-corpus"
+LOG="${ARTIFACTS}/relayflow-corpus.log"
+${PRELUDE}
+
+echo "=== RelayFlow proof-case regression corpus ===" | tee "$LOG"
+
+CASE_TMPDIR="$TMPDIR"
+[ -n "$CASE_TMPDIR" ] || CASE_TMPDIR=/tmp
+
+CASE_ROOT="tests/relayflows/cases"
+if [ ! -d "$CASE_ROOT" ]; then
+  skip_check "relayflow corpus" "no $CASE_ROOT in this checkout"
+  finish_tier
+  exit 0
+fi
+
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+if [ -z "$HEAD_SHA" ]; then
+  skip_check "relayflow corpus" "checkout has no resolvable HEAD"
+  finish_tier
+  exit 0
+fi
+
+# The broker cases need a broker binary built from THIS checkout. Without one
+# they are skipped with that cause rather than silently passing.
+BROKER_BIN=""
+for candidate in "target/release/agent-relay-broker" "target/debug/agent-relay-broker"; do
+  if [ -x "$candidate" ]; then BROKER_BIN="$PWD/$candidate"; break; fi
+done
+
+for case_dir in "$CASE_ROOT"/*/; do
+  case_id=$(basename "$case_dir")
+  manifest="$case_dir/case.json"
+  [ -f "$manifest" ] || continue
+
+  expected=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$manifest','utf8')).expected?.head?.signature ?? '')" 2>/dev/null || echo "")
+  runner=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));process.stdout.write((m.runner?.command??[])[1]??'')" 2>/dev/null || echo "")
+  needs_broker=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));process.stdout.write((m.requirements??[]).some(r=>String(r).startsWith('broker-'))?'1':'')" 2>/dev/null || echo "")
+
+  if [ -z "$expected" ] || [ -z "$runner" ]; then
+    skip_check "corpus: $case_id" "manifest is missing runner.command or expected.head.signature"
+    continue
+  fi
+  if [ -n "$needs_broker" ] && [ -z "$BROKER_BIN" ]; then
+    skip_check "corpus: $case_id" "case requires a broker binary and none is built in this checkout"
+    continue
+  fi
+
+  result_file="${ARTIFACTS}/corpus-$case_id.json"
+  case_log="${ARTIFACTS}/corpus-$case_id.log"
+
+  # Each case gets a clean environment for the same reason the cases themselves
+  # do: inheriting this runner's RELAY_* credentials points the process under
+  # test at production instead of the instance it stands up.
+  if env -i \
+      PATH="$PATH" HOME="$HOME" TMPDIR="$CASE_TMPDIR" \
+      RELAY_PR_PROOF_ARM=head \
+      RELAY_PR_PROOF_TARGET_DIR="$PWD" \
+      RELAY_PR_PROOF_HARNESS_DIR="$PWD" \
+      RELAY_PR_PROOF_HEAD_SHA="$HEAD_SHA" \
+      RELAY_PR_PROOF_RESULT_PATH="$result_file" \
+      RELAY_PR_PROOF_BROKER_BINARY="$BROKER_BIN" \
+      node "$runner" >"$case_log" 2>&1; then
+    actual=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$result_file','utf8')).signature ?? '')" 2>/dev/null || echo "")
+    [ -n "$actual" ] || actual="<no signature>"
+    if [ "$actual" = "$expected" ]; then
+      echo "  PASS  corpus: $case_id ($actual)" | tee -a "$LOG"
+      record "$TIER" "corpus: $case_id" pass ""
+    else
+      echo "  FAIL  corpus: $case_id (expected $expected, got $actual)" | tee -a "$LOG"
+      record "$TIER" "corpus: $case_id" fail "expected head signature $expected, observed $actual; a base signature here means this exact bug is back"
+    fi
+  else
+    # A runner that exits non-zero proved nothing — it is an infrastructure
+    # fault, not a verified case. Record it as a failure so it is visible, with
+    # the tail that explains it.
+    echo "  FAIL  corpus: $case_id (runner exited non-zero)" | tee -a "$LOG"
+    record "$TIER" "corpus: $case_id" fail "runner exited non-zero: $(tail -c 300 "$case_log" 2>/dev/null)"
+  fi
+done
+
+finish_tier
+exit 0
+`,
+  });
+
   // ── Phase 11: cleanup ────────────────────────────────────────────────────
 
   wf.step('cleanup', {
     type: 'deterministic',
-    dependsOn: ['critical-paths'],
+    dependsOn: ['relayflow-corpus'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
