@@ -1885,6 +1885,32 @@ describe('RelayFlow proof changed-file collection', () => {
   });
 
   /**
+   * A short diff returns on the first page, so pagination itself needs its own
+   * cover: if accumulation regressed to keeping only the last page, runtime
+   * files from earlier pages would silently drop out of the list and the PR
+   * could read as non-runtime.
+   */
+  it('accumulates files across every page of a multi-page diff', async () => {
+    const lastPage = 3;
+    await withStubbedFetch(
+      (async (url: string) => {
+        const page = Number(new URL(String(url)).searchParams.get('page'));
+        // Pages 1 and 2 are full; page 3 is short and ends pagination.
+        const size = page < lastPage ? 100 : 40;
+        return jsonResponse(Array.from({ length: size }, (_, i) => ({ filename: `docs/p${page}-f${i}.md` })));
+      }) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toHaveLength(240);
+        // One from every page, not just the last.
+        expect(files).toContain('docs/p1-f0.md');
+        expect(files).toContain('docs/p2-f0.md');
+        expect(files).toContain('docs/p3-f39.md');
+      }
+    );
+  });
+
+  /**
    * GitHub caps this endpoint at 3,000 files, so a full 30th page cannot be
    * told apart from a truncated diff. Refusing is the only safe answer:
    * classifying on a truncated list would let runtime files past the cap go
