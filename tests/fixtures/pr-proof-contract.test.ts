@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,8 +62,32 @@ const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
 const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
-const HAS_TRUSTED_LANDLOCK_RUNTIME =
-  process.platform === 'linux' && existsSync('/usr/bin/python3') && existsSync('/usr/bin/sudo');
+
+function hasTrustedLandlockRuntime() {
+  if (
+    process.platform !== 'linux' ||
+    !existsSync('/usr/bin/python3') ||
+    !existsSync('/usr/bin/sudo') ||
+    typeof process.getuid !== 'function' ||
+    typeof process.getgid !== 'function'
+  ) {
+    return false;
+  }
+
+  const uid = process.getuid();
+  const gid = process.getgid();
+  if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) {
+    return false;
+  }
+
+  const sudoProbe = spawnSync('/usr/bin/sudo', ['-n', '--', '/bin/true'], {
+    stdio: 'ignore',
+    timeout: 2_000,
+  });
+  return sudoProbe.error === undefined && sudoProbe.status === 0;
+}
+
+const HAS_TRUSTED_LANDLOCK_RUNTIME = hasTrustedLandlockRuntime();
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
