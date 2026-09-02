@@ -869,9 +869,7 @@ export class HarnessDriverClient {
    * for a queue the broker could not drain. `held` and `blockedReason` carry
    * that distinction (see relay#1593). Older brokers omit both fields.
    */
-  async flushPending(
-    name: string
-  ): Promise<{ flushed: number; held?: number; blockedReason?: string }> {
+  async flushPending(name: string): Promise<{ flushed: number; held?: number; blockedReason?: string }> {
     const result = await this.transport.request<{
       flushed?: unknown;
       held?: unknown;
@@ -880,9 +878,7 @@ export class HarnessDriverClient {
     return {
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
       ...(typeof result.held === 'number' ? { held: result.held } : {}),
-      ...(typeof result.blocked_reason === 'string'
-        ? { blockedReason: result.blocked_reason }
-        : {}),
+      ...(typeof result.blocked_reason === 'string' ? { blockedReason: result.blocked_reason } : {}),
     };
   }
 
