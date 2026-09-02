@@ -1,0 +1,89 @@
+{
+  "id": "traj_amm49zai5ffq",
+  "version": 1,
+  "task": {
+    "title": "Fix attach buffered-input replay after verified reconnect"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T06:42:47.917Z",
+  "completedAt": "2026-09-02T07:17:52.447Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T07:17:21.855Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_2q2qskuzuc6u",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T07:17:21.855Z",
+      "endedAt": "2026-09-02T07:17:52.447Z",
+      "events": [
+        {
+          "ts": 1788333441860,
+          "type": "decision",
+          "content": "Replay outage input automatically only after positive same-worker identity verification: Replay outage input automatically only after positive same-worker identity verification",
+          "raw": {
+            "question": "Replay outage input automatically only after positive same-worker identity verification",
+            "chosen": "Replay outage input automatically only after positive same-worker identity verification",
+            "alternatives": [],
+            "reasoning": "Drive attach is a raw interactive stream; prompting would require intercepting terminal control data and stall the session. A positive PID/context match preserves destination safety, while rejected or unavailable identity discards the buffer and detaches."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788333442702,
+          "type": "decision",
+          "content": "Bound each outage buffer at 64 KiB and poison the whole pending buffer on overflow or replay refusal: Bound each outage buffer at 64 KiB and poison the whole pending buffer on overflow or replay refusal",
+          "raw": {
+            "question": "Bound each outage buffer at 64 KiB and poison the whole pending buffer on overflow or replay refusal",
+            "chosen": "Bound each outage buffer at 64 KiB and poison the whole pending buffer on overflow or replay refusal",
+            "alternatives": [],
+            "reasoning": "The bound accommodates human typeahead through the retry window but caps paste and mouse-report floods. Whole-buffer discard prevents a truncated prefix or suffix from becoming a different executable command."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788333443524,
+          "type": "decision",
+          "content": "Do not replay the live write whose rejection initiated recovery: Do not replay the live write whose rejection initiated recovery",
+          "raw": {
+            "question": "Do not replay the live write whose rejection initiated recovery",
+            "chosen": "Do not replay the live write whose rejection initiated recovery",
+            "alternatives": [],
+            "reasoning": "That write may have crossed the socket before its acknowledgement failed, so replay would risk duplicate execution. Only input observed after recovery starts is known not to have been sent."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788333444318,
+          "type": "decision",
+          "content": "Classify defect A as relaycast-cloud hard terminal-session expiry: Classify defect A as relaycast-cloud hard terminal-session expiry",
+          "raw": {
+            "question": "Classify defect A as relaycast-cloud hard terminal-session expiry",
+            "chosen": "Classify defect A as relaycast-cloud hard terminal-session expiry",
+            "alternatives": [],
+            "reasoning": "A read-only production probe reproduced session_expired and WebSocket close 4002 at 602.999 seconds; local attach has no Relaycast terminal-session lease, explaining cross-node specificity."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reproduced the cross-node input drop as Relaycast's hard 10-minute terminal-session expiry, then fixed relay attach recovery to retain a 64 KiB outage buffer and replay it only after positive same-worker identity verification. Added real-path and unit must-fire/must-not-fire coverage plus overflow safety; 176 focused tests, CLI typecheck, diff check, and changed-file lint pass.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "daf8a7c7c2dcaf240798dec351d3ddd2176950fd",
+    "endRef": "daf8a7c7c2dcaf240798dec351d3ddd2176950fd"
+  }
+}

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Claude workers now start multiline tasks delivered by `fleet spawn --task` instead of leaving the brief unsubmitted in the composer.
+- Drive and passthrough attach now retain bounded input during stream recovery and replay it only after verifying the replacement belongs to the same worker.
 
 ## [11.10.0] - 2026-09-02
 

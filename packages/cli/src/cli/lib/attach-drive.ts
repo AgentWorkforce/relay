@@ -1044,18 +1044,16 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       if (outcome.forward.length > 0) {
         const stream = inputStream;
         // A dead or missing stream is a liveness event, not a per-keystroke
-        // error. Drop this input silently — recovery has already announced
-        // itself — rather than emitting a line for every byte the terminal
-        // sends us. Input during the outage is dropped, not buffered: replaying
-        // stale keystrokes into a recovered PTY would execute them out of
-        // context, which is worse than losing them.
+        // error. Recovery announces it once and buffers decoded input behind a
+        // strict same-worker identity gate.
         //
         // Skip only the *forwarding*; fall through to the action loop below.
         // Ctrl+C can share a chunk with ordinary bytes, and returning here
         // would swallow the detach — leaving the human unable to escape a
         // broken session, which is worse than the flood.
         if (!inputRecovery.isUsable(stream)) {
-          inputRecovery.recover('stream closed');
+          const decoded = inputDecoder.write(outcome.forward);
+          inputRecovery.recover('stream closed', decoded);
         } else {
           // Decode through the stateful UTF-8 decoder so a multi-byte character
           // split across stdin chunks is forwarded intact rather than as U+FFFD.

@@ -2299,9 +2299,10 @@ describe('runDriveSession — lost PTY input stream', () => {
     expect(inputStreams).toHaveLength(4);
   });
 
-  it('recovers and routes later keystrokes to the replacement stream', async () => {
-    // Fails if reopen "succeeds" but input still goes nowhere — i.e. if the
-    // session reports recovery it did not actually achieve.
+  it('MUST-FIRE: replays input typed during the outage after the same worker is verified', async () => {
+    // This is the real drive-session path: stdin reaches the recovery helper
+    // while its stream handle is null, then the replacement passes the worker
+    // identity gate. The buffered input must arrive before later keystrokes.
     const { deps, sockets, stdin, logs, inputStreams } = createHarness({
       reopenOpenErrors: [undefined],
     });
@@ -2309,7 +2310,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     await openSocket(sockets);
 
     inputStreams[0].killFromServer();
-    stdin.type(Buffer.from('lost'));
+    stdin.type(Buffer.from('typed during outage'));
     await settleRecovery();
 
     expect(inputStreams).toHaveLength(2);
@@ -2318,10 +2319,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     stdin.type(Buffer.from('typed after recovery'));
     await settleRecovery(5);
 
-    expect(inputStreams[1].writes.join('')).toBe('typed after recovery');
-    // The keystroke sent during the outage was dropped, not replayed: feeding
-    // stale input into a recovered PTY would execute it out of context.
-    expect(inputStreams[1].writes.join('')).not.toContain('lost');
+    expect(inputStreams[1].writes.join('')).toBe('typed during outagetyped after recovery');
 
     stdin.type(Buffer.from([0x03]));
     expect(await sessionPromise).toBe(0);
@@ -2353,7 +2351,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     expect(errors.map((a) => String(a[0])).filter((l) => l.includes('could not be reopened'))).toEqual([]);
   });
 
-  it('refuses a reopen that landed on a different worker process', async () => {
+  it('MUST-NOT-FIRE: discards buffered input when the replacement is a different worker', async () => {
     // THE IDENTITY ASSERTION. The input stream is reopened *by name*, and a
     // name is not an identity. If the worker was replaced, a socket that opens
     // successfully would route the human's keystrokes into a different PTY.
@@ -2367,7 +2365,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     await openSocket(sockets);
 
     inputStreams[0].killFromServer();
-    stdin.type(Buffer.from('a'));
+    stdin.type(Buffer.from('private command'));
 
     expect(await sessionPromise).toBe(1);
 
@@ -2377,6 +2375,7 @@ describe('runDriveSession — lost PTY input stream', () => {
     expect(refusal).toBeDefined();
     expect(refusal).toContain('pid-1');
     expect(refusal).toContain('pid-2');
+    expect(refusal).toContain('Discarded 15 buffered bytes');
 
     // The replacement socket was opened but must have been closed unused —
     // nothing may be written to a stream we could not vouch for.

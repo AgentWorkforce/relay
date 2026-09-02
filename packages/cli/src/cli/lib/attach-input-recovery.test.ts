@@ -366,6 +366,46 @@ describe('recover', () => {
     expect(h.logs.filter((l) => l.includes('reconnected'))).toHaveLength(1);
     expect(h.first.closed).toBe(true); // the dead handle was released
   });
+
+  it('MUST-FIRE: replays buffered input only after the replacement passes identity verification', async () => {
+    const verify = vi.fn(async () => ({ ok: true as const }));
+    const h = harness({ verifyIdentity: verify });
+
+    h.recovery.recover('stream closed');
+    h.recovery.bufferInput('typed during outage');
+    await settle();
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(h.opened[0].writes).toEqual(['typed during outage']);
+    expect(h.logs.some((line) => line.includes('Replayed 19 buffered bytes'))).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: discards buffered input when identity verification rejects the replacement', async () => {
+    const h = harness({
+      verifyIdentity: async () => ({ ok: false, reason: 'worker process changed' }),
+    });
+
+    h.recovery.recover('stream closed');
+    h.recovery.bufferInput('private command');
+    await settle();
+
+    expect(h.opened[0].writes).toEqual([]);
+    expect(h.opened[0].closed).toBe(true);
+    expect(h.errors.some((line) => line.includes('Discarded 15 buffered bytes'))).toBe(true);
+  });
+
+  it('discards the complete pending buffer on overflow instead of replaying a truncated command', async () => {
+    const h = harness({ bufferLimitBytes: 4 });
+
+    h.recovery.recover('stream closed');
+    h.recovery.bufferInput('abc');
+    h.recovery.bufferInput('de');
+    await settle();
+
+    expect(h.opened[0].writes).toEqual([]);
+    expect(h.logs.some((line) => line.includes('4-byte safety limit'))).toBe(true);
+    expect(h.logs.some((line) => line.includes('Discarded 5 buffered bytes'))).toBe(true);
+  });
 });
 
 describe('isWriteRefusedRejection', () => {
