@@ -37,6 +37,18 @@
             "reasoning": "Concurrent runs must not reset each other's receipts, while downstream conformance already consumes the stable top-level checks.jsonl and verdict.json contract."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788369375480,
+          "type": "decision",
+          "content": "Applied all six exact-head review dispositions and validated their deterministic contracts",
+          "raw": {
+            "question": "How should the six exact-head findings be closed?",
+            "chosen": "Redact fixer evidence, fail closed on reset, prove all five failed-state writes, rewrite two changelog entries around observable outcomes, and serialize artifact access.",
+            "alternatives": [],
+            "reasoning": "Each finding was independently valid and needed a code or documentation change plus targeted proof before its thread could be resolved."
+          },
+          "significance": "high"
         }
       ]
     }
@@ -46,12 +58,22 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [],
-  "filesChanged": [],
+  "commits": [
+    "0f73f7f22054a13d41bde6df64eb1f3b7096f74c"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/trajectory.json",
+    "CHANGELOG.md",
+    "scripts/verify-features/escalation-status.mjs",
+    "tests/fixtures/verify-features-escalation.test.ts",
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+    "workflows/verify-features.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "ec47846ad95a47b0d3098a29aa25c79857aa6ed3",
-    "endRef": "ec47846ad95a47b0d3098a29aa25c79857aa6ed3"
+    "endRef": "0f73f7f22054a13d41bde6df64eb1f3b7096f74c"
   }
 }

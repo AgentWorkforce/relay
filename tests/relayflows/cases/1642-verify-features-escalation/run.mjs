@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const CASE_ID = '1642-verify-features-escalation';
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -32,6 +32,7 @@ if (!isWithin(harnessDir, runnerPath)) {
 
 const workflowPath = path.join(targetDir, 'workflows/verify-features.ts');
 const statusToolPath = path.join(targetDir, 'scripts/verify-features/escalation-status.mjs');
+const runArtifactsToolPath = path.join(targetDir, 'scripts/verify-features/run-artifacts.mjs');
 const workflowSource = await readFile(workflowPath, 'utf8');
 
 let outcome;
@@ -85,6 +86,22 @@ if (arm === 'base') {
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-'));
   try {
+    const { prepareRunArtifacts } = await import(pathToFileURL(runArtifactsToolPath).href);
+    const artifactsRoot = path.join(temporaryRoot, 'artifacts');
+    const runA = prepareRunArtifacts(artifactsRoot, 'verify-proof-a', 'proof-a');
+    await writeFile(path.join(runA, 'verdict.json'), '{"runId":"proof-a"}\n');
+    const runB = prepareRunArtifacts(artifactsRoot, 'verify-proof-b', 'proof-b');
+    await writeFile(path.join(runB, 'checks.jsonl'), '{"run":"proof-b"}\n');
+    if ((await readFile(path.join(runA, 'verdict.json'), 'utf8')) !== '{"runId":"proof-a"}\n') {
+      throw new Error('Head workflow run A evidence was overwritten by run B.');
+    }
+    try {
+      await readFile(path.join(artifactsRoot, 'verdict.json'), 'utf8');
+      throw new Error('Head workflow exposed run A verdict after run B became current.');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+
     const failedChannels = [
       ['slack_primary', 'auth_token_missing'],
       ['slack_followup', 'auth_token_missing'],
@@ -120,7 +137,7 @@ if (arm === 'base') {
     outcome = 'fixed';
     signature = 'escalation_delivery_failures_exit_nonzero';
     details =
-      'The exact head delivery audit exited non-zero and named all five failed Slack, GitHub issue, draft PR, and PostHog contracts; the workflow wires that audit to a non-zero process exit and carries the required Slack channel.';
+      'The exact head isolates overlapping run evidence, makes an incomplete current run visible, and its delivery audit exits non-zero while naming all five failed Slack, GitHub issue, draft PR, and PostHog contracts.';
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

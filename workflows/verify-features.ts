@@ -69,18 +69,19 @@
 
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { hostname } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { workflow } from '@relayflows/core';
 
-const ARTIFACTS = '.workflow-artifacts/verify-features';
+import { prepareRunArtifacts } from '../scripts/verify-features/run-artifacts.mjs';
+
+const ARTIFACTS_ROOT = '.workflow-artifacts/verify-features';
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
 const RUN_NONCE = randomUUID().slice(0, 8);
 const RUN_ID = `verify-${TIMESTAMP}-${RUN_NONCE}`;
+const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
 const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
 const ESCALATION_STATUS_TOOL = 'scripts/verify-features/escalation-status.mjs';
-const INVOCATION_LOCK = `${ARTIFACTS}.lock`;
 
 /** Unique suffix so a run never collides with existing workspace state. */
 const SUFFIX = `vf-${RUN_NONCE}`;
@@ -89,77 +90,6 @@ const SUFFIX = `vf-${RUN_NONCE}`;
 const FIX_BRANCH = `fix/${RUN_ID}`;
 
 const AUTOFIX = process.env.VERIFY_AUTOFIX !== '0';
-
-type InvocationLockOwner = {
-  runId: string;
-  pid: number;
-  hostname: string;
-  acquiredAt: string;
-};
-
-function readInvocationLockOwner(): InvocationLockOwner | null {
-  try {
-    return JSON.parse(readFileSync(`${INVOCATION_LOCK}/owner.json`, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function lockOwnerIsRunning(owner: InvocationLockOwner | null): boolean {
-  if (!owner || owner.hostname !== hostname() || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) {
-    return true;
-  }
-  try {
-    process.kill(owner.pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-}
-
-function acquireInvocationLock(): void {
-  mkdirSync(ARTIFACTS, { recursive: true });
-  try {
-    mkdirSync(INVOCATION_LOCK);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    const owner = readInvocationLockOwner();
-    if (lockOwnerIsRunning(owner)) {
-      const detail = owner
-        ? `run ${owner.runId} (pid ${owner.pid} on ${owner.hostname})`
-        : 'an unreadable owner record';
-      throw new Error(`verify-features invocation already active: ${detail}`);
-    }
-    rmSync(INVOCATION_LOCK, { recursive: true, force: true });
-    mkdirSync(INVOCATION_LOCK);
-  }
-
-  const owner: InvocationLockOwner = {
-    runId: RUN_ID,
-    pid: process.pid,
-    hostname: hostname(),
-    acquiredAt: new Date().toISOString(),
-  };
-  try {
-    writeFileSync(`${INVOCATION_LOCK}/owner.json`, `${JSON.stringify(owner, null, 2)}\n`, {
-      flag: 'wx',
-    });
-  } catch (error) {
-    rmSync(INVOCATION_LOCK, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-function releaseInvocationLock(): void {
-  const owner = readInvocationLockOwner();
-  if (owner?.runId === RUN_ID && owner.pid === process.pid && owner.hostname === hostname()) {
-    rmSync(INVOCATION_LOCK, { recursive: true, force: true });
-  } else {
-    console.error(
-      `[verify-features] invocation lock ownership changed; refusing to remove ${INVOCATION_LOCK}`
-    );
-  }
-}
 
 /**
  * A literal backtick.
@@ -2870,75 +2800,71 @@ exit 1
   });
 
   const dryRun = process.env.DRY_RUN === '1';
-  if (!dryRun) acquireInvocationLock();
-  try {
-    const result = await wf.run({ dryRun, cwd: process.cwd() });
+  if (!dryRun) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
+  const result = await wf.run({ dryRun, cwd: process.cwd() });
 
-    // A dry run plans the graph without executing it, so there is no verdict to
-    // read and nothing to enforce. Bail before the checks below, which would
-    // otherwise report a validated plan as harness breakage.
-    if (dryRun || !('status' in result)) {
-      return;
+  // A dry run plans the graph without executing it, so there is no verdict to
+  // read and nothing to enforce. Bail before the checks below, which would
+  // otherwise report a validated plan as harness breakage.
+  if (dryRun || !('status' in result)) {
+    return;
+  }
+
+  // ── Post-run: make the process exit code tell the truth ──────────────────
+  //
+  // The previous version awaited run() and discarded the result, so a run with
+  // four failing checks still exited 0 and every scheduler saw success. Read
+  // the verdict directly rather than trusting the runner's row status, and
+  // fail closed when the verdict is missing.
+
+  let verdict: {
+    runId?: string;
+    verdict?: string;
+    reasons?: string[];
+    totals?: Record<string, number>;
+  } | null = null;
+  if (existsSync(VERDICT_FILE)) {
+    try {
+      verdict = JSON.parse(readFileSync(VERDICT_FILE, 'utf8'));
+    } catch (err) {
+      console.error(`[verify-features] verdict.json is unreadable: ${(err as Error).message}`);
     }
+  }
 
-    // ── Post-run: make the process exit code tell the truth ──────────────────
-    //
-    // The previous version awaited run() and discarded the result, so a run with
-    // four failing checks still exited 0 and every scheduler saw success. Read
-    // the verdict directly rather than trusting the runner's row status, and
-    // fail closed when the verdict is missing.
+  if (!verdict || verdict.runId !== RUN_ID) {
+    console.error(
+      `[verify-features] no verdict for run ${RUN_ID} at ${VERDICT_FILE} — treating this run as FAILED. ` +
+        `The verification pipeline did not complete; this is harness breakage, not a clean run.`
+    );
+    process.exitCode = 2;
+    return;
+  }
 
-    let verdict: {
-      runId?: string;
-      verdict?: string;
-      reasons?: string[];
-      totals?: Record<string, number>;
-    } | null = null;
-    if (existsSync(VERDICT_FILE)) {
-      try {
-        verdict = JSON.parse(readFileSync(VERDICT_FILE, 'utf8'));
-      } catch (err) {
-        console.error(`[verify-features] verdict.json is unreadable: ${(err as Error).message}`);
-      }
-    }
+  const totals = verdict.totals ?? {};
+  console.log(
+    `[verify-features] verdict=${verdict.verdict} ` +
+      `pass=${totals.pass ?? '?'} fail=${totals.fail ?? '?'} skip=${totals.skip ?? '?'} ` +
+      `(workflow row status: ${'status' in result ? String(result.status) : 'unknown'})`
+  );
 
-    if (!verdict || verdict.runId !== RUN_ID) {
+  if (verdict.verdict !== 'PASS') {
+    console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
+    const escalationAudit = spawnSync(
+      process.execPath,
+      [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'],
+      { cwd: process.cwd(), encoding: 'utf8' }
+    );
+    if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
+    if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
+    if (escalationAudit.status !== 0) {
       console.error(
-        `[verify-features] no verdict for run ${RUN_ID} at ${VERDICT_FILE} — treating this run as FAILED. ` +
-          `The verification pipeline did not complete; this is harness breakage, not a clean run.`
+        `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
+          `(audit exit ${escalationAudit.status ?? 'unknown'})`
       );
       process.exitCode = 2;
-      return;
+    } else {
+      process.exitCode = 1;
     }
-
-    const totals = verdict.totals ?? {};
-    console.log(
-      `[verify-features] verdict=${verdict.verdict} ` +
-        `pass=${totals.pass ?? '?'} fail=${totals.fail ?? '?'} skip=${totals.skip ?? '?'} ` +
-        `(workflow row status: ${'status' in result ? String(result.status) : 'unknown'})`
-    );
-
-    if (verdict.verdict !== 'PASS') {
-      console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
-      const escalationAudit = spawnSync(
-        process.execPath,
-        [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'],
-        { cwd: process.cwd(), encoding: 'utf8' }
-      );
-      if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
-      if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
-      if (escalationAudit.status !== 0) {
-        console.error(
-          `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
-            `(audit exit ${escalationAudit.status ?? 'unknown'})`
-        );
-        process.exitCode = 2;
-      } else {
-        process.exitCode = 1;
-      }
-    }
-  } finally {
-    if (!dryRun) releaseInvocationLock();
   }
 }
 

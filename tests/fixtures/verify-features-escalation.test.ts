@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -15,8 +17,10 @@ import {
   writeAlertEnvelope,
   writeEscalationStatus,
 } from '../../scripts/verify-features/escalation-status.mjs';
+import { prepareRunArtifacts } from '../../scripts/verify-features/run-artifacts.mjs';
 
 const temporaryDirectories: string[] = [];
+const execFileAsync = promisify(execFile);
 
 function workflowStep(source: string, name: string): string {
   const start = source.indexOf(`wf.step('${name}', {`);
@@ -68,8 +72,9 @@ describe('verify-features escalation status', () => {
     expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
     expect(setup).toContain('reset "${ARTIFACTS}"');
     expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
-    expect(source).toContain('acquireInvocationLock()');
-    expect(source).toContain('releaseInvocationLock()');
+    expect(source).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
+    expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
+    expect(source).not.toContain('INVOCATION_LOCK');
     expect(fileIssue).toContain('ISSUE_RC=$?');
     expect(fileIssue).toContain('[ "$ISSUE_RC" -eq 0 ] && [ -n "$ISSUE_URL" ]');
     expect(openPr).toContain('PR_RC=$?');
@@ -272,6 +277,53 @@ describe('verify-features escalation status', () => {
         code: 'ENOENT',
       });
     }
+  });
+
+  it('isolates overlapping runs while atomically advancing canonical artifact paths', async () => {
+    const root = await artifacts();
+    const runA = prepareRunArtifacts(root, 'verify-run-a', 'nonce-a');
+    await writeFile(path.join(runA, 'checks.jsonl'), '{"run":"a"}\n');
+    await writeFile(path.join(runA, 'verdict.json'), '{"runId":"a"}\n');
+
+    const runB = prepareRunArtifacts(root, 'verify-run-b', 'nonce-b');
+    await writeFile(path.join(runB, 'checks.jsonl'), '{"run":"b"}\n');
+
+    expect(await readFile(path.join(runA, 'checks.jsonl'), 'utf8')).toContain('"a"');
+    expect(await readFile(path.join(root, 'checks.jsonl'), 'utf8')).toContain('"b"');
+    await expect(readFile(path.join(root, 'verdict.json'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    await writeFile(path.join(runB, 'verdict.json'), '{"runId":"b"}\n');
+    expect(await readFile(path.join(root, 'verdict.json'), 'utf8')).toContain('"b"');
+  });
+
+  it('keeps every run intact when independent processes publish concurrently', async () => {
+    const root = await artifacts();
+    const moduleUrl = new URL('../../scripts/verify-features/run-artifacts.mjs', import.meta.url).href;
+    const runIds = Array.from({ length: 8 }, (_, index) => `verify-concurrent-${index}`);
+    const childScript = `
+      const { writeFileSync } = await import('node:fs');
+      const path = await import('node:path');
+      const { prepareRunArtifacts } = await import(${JSON.stringify(moduleUrl)});
+      const artifacts = prepareRunArtifacts(process.argv[1], process.argv[2], process.argv[3]);
+      writeFileSync(path.join(artifacts, 'checks.jsonl'), process.argv[2]);
+    `;
+
+    await Promise.all(
+      runIds.map((runId, index) =>
+        execFileAsync(
+          process.execPath,
+          ['--input-type=module', '--eval', childScript, root, runId, `nonce-${index}`],
+          { timeout: 10_000 }
+        )
+      )
+    );
+
+    for (const runId of runIds) {
+      expect(await readFile(path.join(root, 'runs', runId, 'checks.jsonl'), 'utf8')).toBe(runId);
+    }
+    expect(runIds).toContain(await readFile(path.join(root, 'checks.jsonl'), 'utf8'));
   });
 
   it('rejects prototype names and incomplete delivery receipts', async () => {

@@ -30,3 +30,19 @@ Addressed six exact-head Cubic findings with evidence redaction, invocation seri
 *Agent: default*
 
 - Preserved the canonical artifact paths by serializing workflow invocations with an ownership-checked lock: Preserved the canonical artifact paths by serializing workflow invocations with an ownership-checked lock
+- Applied the remaining exact-head dispositions: redacted fixer evidence, made setup reset fail closed, required five-channel failed-state proof wiring, and rewrote the two changelog entries around observable outcomes.
+
+---
+
+## Artifacts
+
+**Commit:** `0f73f7f22054a13d41bde6df64eb1f3b7096f74c`
+
+**Files changed:**
+- `.agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/summary.md`
+- `.agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/trajectory.json`
+- `CHANGELOG.md`
+- `scripts/verify-features/escalation-status.mjs`
+- `tests/fixtures/verify-features-escalation.test.ts`
+- `tests/relayflows/cases/1642-verify-features-escalation/run.mjs`
+- `workflows/verify-features.ts`
