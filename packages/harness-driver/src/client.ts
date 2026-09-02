@@ -44,6 +44,7 @@ import type {
   SpawnHeadlessInput,
   SpawnPtyInput,
   SendMessageInput,
+  SendMessageResult,
   ListAgent,
   FleetInventoryAgent,
 } from './types.js';
@@ -1138,7 +1139,7 @@ export class HarnessDriverClient {
 
   // ── Messaging ──────────────────────────────────────────────────────
 
-  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
+  async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
     try {
       return await this.transport.request('/api/send', {
         method: 'POST',

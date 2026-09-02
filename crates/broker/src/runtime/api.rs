@@ -1246,7 +1246,18 @@ impl BrokerRuntime {
                     );
                 }
                 let relaycast_start = Instant::now();
-                match timeout(
+                let recipient_name = match to.kind() {
+                    MessageTargetKind::Worker(name) => Some(name.to_string()),
+                    MessageTargetKind::Channel(_)
+                    | MessageTargetKind::Thread
+                    | MessageTargetKind::DirectMessage(_)
+                    | MessageTargetKind::Conversation(_) => None,
+                };
+                // Keep the publication deadline scoped to publication. The
+                // reachability read has its own short bound; putting both
+                // futures under this timeout would let a slow observation
+                // turn an already-accepted DM into an HTTP send failure.
+                let publish = timeout(
                     relaycast_timeout,
                     selected_workspace.http_client.send_with_mode(
                         &normalized_to,
@@ -1255,9 +1266,21 @@ impl BrokerRuntime {
                         publish_from,
                         reply_thread_id,
                     ),
-                )
-                .await
-                {
+                );
+                let recipient_probe = async {
+                    match recipient_name.as_deref() {
+                        Some(name) => Some(
+                            selected_workspace
+                                .http_client
+                                .recipient_reachability(name)
+                                .await,
+                        ),
+                        None => None,
+                    }
+                };
+                let (publish_result, recipient_reachability) =
+                    tokio::join!(publish, recipient_probe);
+                match publish_result {
                     Ok(Ok(())) => {
                         tracing::info!(
                             target = "relay_broker::http_api",
@@ -1282,17 +1305,20 @@ impl BrokerRuntime {
                             event_emit_timeout,
                         )
                         .await;
-                        if reply
-                            .send(Ok(json!({
-                                "success": true,
-                                "event_id": event_id,
-                                "relaycast_published": true,
-                                "local": false,
-                                "workspace_id": selected_workspace_id,
-                                "workspace_alias": selected_workspace_alias,
-                            })))
-                            .is_err()
-                        {
+                        let mut response = json!({
+                            "success": true,
+                            "event_id": event_id,
+                            "relaycast_published": true,
+                            "delivery_status": "published_unconfirmed",
+                            "local": false,
+                            "workspace_id": selected_workspace_id,
+                            "workspace_alias": selected_workspace_alias,
+                        });
+                        if let Some(reachability) = recipient_reachability {
+                            response["recipient_live"] = json!(reachability.live);
+                            response["recipient_status"] = json!(reachability.status);
+                        }
+                        if reply.send(Ok(response)).is_err() {
                             tracing::warn!(
                                 target = "relay_broker::http_api",
 
