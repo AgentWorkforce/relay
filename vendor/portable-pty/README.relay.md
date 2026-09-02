@@ -23,3 +23,8 @@ idle reads, cloned-reader behavior, output round-trip, EOF, and handle
 noninheritability. `uuid` is the only added dependency; the empty
 `cargo-clippy` feature declares the compatibility cfg already present in the
 upstream source for modern Cargo check-cfg.
+
+Because this vendored crate is intentionally excluded from the root workspace,
+its committed `Cargo.lock` pins the standalone primitive-test dependency graph.
+CI invokes that manifest with `--locked`; product builds continue to use the
+root lockfile and its path-patched `portable-pty` entry.

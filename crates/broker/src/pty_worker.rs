@@ -228,6 +228,14 @@ fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
     }
 }
 
+fn trailing_output_at_char_boundary(output: &str, max_bytes: usize) -> &str {
+    if output.len() <= max_bytes {
+        return output;
+    }
+    let start = floor_char_boundary(output, output.len() - max_bytes);
+    &output[start..]
+}
+
 fn codex_agent_relay_boot_expected(cli: &str, args: &[String]) -> bool {
     cli_basename(cli).eq_ignore_ascii_case("codex")
         && args.iter().any(|arg| {
@@ -1540,11 +1548,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // dashboard can surface the CLI's last output.
                         let retained_output = echo_buffer.retained();
                         let clean = strip_ansi(&retained_output);
-                        let trimmed = if clean.len() > 2000 {
-                            &clean[clean.len() - 2000..]
-                        } else {
-                            &clean
-                        };
+                        let trimmed = trailing_output_at_char_boundary(&clean, 2000);
                         if !trimmed.is_empty() {
                             tracing::info!(
                                 target: "agent_relay::worker::pty",
@@ -2093,13 +2097,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     });
                     if !late_output.is_empty() {
                         let clean = strip_ansi(&late_output);
-                        // Truncate to avoid huge payloads; last 2000 chars
+                        // Truncate to avoid huge payloads; last 2000 bytes
                         // are most likely to contain the error message.
-                        let trimmed = if clean.len() > 2000 {
-                            &clean[clean.len() - 2000..]
-                        } else {
-                            &clean
-                        };
+                        let trimmed = trailing_output_at_char_boundary(&clean, 2000);
                         exit_payload["last_output"] = json!(trimmed);
                     }
                     let _ = send_frame(&out_tx, "agent_exit", None, exit_payload).await;
@@ -2188,6 +2188,25 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailing_output_tail_floors_a_split_four_byte_character() {
+        let output = format!("🙂{}", "x".repeat(1999));
+        assert_eq!(output.len(), 2003);
+        let tail = trailing_output_at_char_boundary(&output, 2000);
+        assert!(tail.starts_with('🙂'));
+        assert_eq!(tail, output);
+    }
+
+    #[test]
+    fn trailing_output_tail_keeps_valid_multibyte_suffix() {
+        let output = format!("prefix🙂{}", "é".repeat(1000));
+        let tail = trailing_output_at_char_boundary(&output, 2000);
+        assert!(tail.is_char_boundary(0));
+        assert!(tail.ends_with('é'));
+        assert!(tail.len() >= 2000);
+        assert!(tail.len() <= 2003);
+    }
 
     #[test]
     fn codex_defaults_to_bulk_injection() {

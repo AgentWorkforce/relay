@@ -33,6 +33,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
 const OUTPUT_ORDERING_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(unix)]
+const UNIX_READINESS_POLL_SLICE: Duration = Duration::from_millis(5);
 #[cfg(windows)]
 const WINDOWS_IDLE_READ_DELAY: Duration = Duration::from_millis(1);
 
@@ -424,7 +426,7 @@ pub struct PtySession {
     /// `WouldBlock` while idle. This does not participate in product control
     /// flow; it lets the live Windows regression distinguish a genuinely
     /// nonblocking reader from a lucky submission between reads.
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     reader_observed_would_block: Arc<AtomicBool>,
 }
 
@@ -670,6 +672,7 @@ impl OutputBoundaryContext<'_> {
 /// after the bytes have been copied from the PTY and before they are tagged.
 /// Production passes a no-op; deterministic tests pause there to prove a
 /// submitter cannot sample a boundary in the old read-complete/pre-tag gap.
+#[cfg(any(windows, test))]
 fn read_and_tag_output<R, F>(
     reader: &mut R,
     buf: &mut [u8],
@@ -682,6 +685,19 @@ where
     F: FnOnce(usize),
 {
     let _order_guard = output_order.lock();
+    read_and_tag_output_under_guard(reader, buf, output_sequence, after_read)
+}
+
+fn read_and_tag_output_under_guard<R, F>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_sequence: &AtomicU64,
+    after_read: F,
+) -> io::Result<Option<(usize, u64)>>
+where
+    R: Read + ?Sized,
+    F: FnOnce(usize),
+{
     let n = reader.read(buf)?;
     after_read(n);
     if n == 0 {
@@ -694,24 +710,66 @@ where
 }
 
 #[cfg(unix)]
-fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
+enum BoundedReadResult {
+    Idle,
+    Eof,
+    Output(usize, u64),
+}
+
+#[cfg(unix)]
+fn wait_for_pty_readable(fd: &OwnedFd, timeout: Duration) -> io::Result<bool> {
     let mut descriptor = libc::pollfd {
         fd: fd.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
     };
+    let timeout_ms = timeout.as_millis().clamp(1, libc::c_int::MAX as u128) as libc::c_int;
     loop {
-        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if ready > 0 {
-            return Ok(());
+            return Ok(true);
         }
         if ready == 0 {
-            continue;
+            return Ok(false);
         }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
+    }
+}
+
+/// Own one bounded Unix readiness slice under the same ordering lock used by
+/// verified-write admission, then read and tag before releasing it.
+///
+/// Polling outside the lock left a poll-return/read gap: a verified write could
+/// sample its boundary after stale output was known readable but before the
+/// reader tagged it. The finite poll timeout keeps idle PTYs from holding the
+/// lock indefinitely. Once this sole reader observes readiness, its immediate
+/// read cannot be consumed by a competing reader.
+#[cfg(unix)]
+fn read_ready_and_tag_output<R, F, G>(
+    poll_fd: &OwnedFd,
+    reader: &mut R,
+    buf: &mut [u8],
+    output_order: &Mutex<()>,
+    output_sequence: &AtomicU64,
+    after_ready: F,
+    after_read: G,
+) -> io::Result<BoundedReadResult>
+where
+    R: Read + ?Sized,
+    F: FnOnce(),
+    G: FnOnce(usize),
+{
+    let _order_guard = output_order.lock();
+    if !wait_for_pty_readable(poll_fd, UNIX_READINESS_POLL_SLICE)? {
+        return Ok(BoundedReadResult::Idle);
+    }
+    after_ready();
+    match read_and_tag_output_under_guard(reader, buf, output_sequence, after_read)? {
+        Some((n, sequence)) => Ok(BoundedReadResult::Output(n, sequence)),
+        None => Ok(BoundedReadResult::Eof),
     }
 }
 
@@ -856,18 +914,29 @@ impl PtySession {
         let output_sequence_reader = output_sequence.clone();
         let output_order = Arc::new(Mutex::new(()));
         let output_order_reader = output_order.clone();
-        #[cfg(windows)]
+        #[cfg(all(windows, test))]
         let reader_observed_would_block = Arc::new(AtomicBool::new(false));
-        #[cfg(windows)]
+        #[cfg(all(windows, test))]
         let reader_observed_would_block_thread = reader_observed_would_block.clone();
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 #[cfg(unix)]
-                if wait_for_pty_readable(&poll_fd).is_err() {
-                    break;
-                }
+                let tagged = match read_ready_and_tag_output(
+                    &poll_fd,
+                    &mut *reader,
+                    &mut buf,
+                    &output_order_reader,
+                    &output_sequence_reader,
+                    || {},
+                    |_| {},
+                ) {
+                    Ok(BoundedReadResult::Idle) => continue,
+                    Ok(BoundedReadResult::Output(n, sequence)) => Some((n, sequence)),
+                    Ok(BoundedReadResult::Eof) | Err(_) => None,
+                };
 
+                #[cfg(windows)]
                 let tagged = read_and_tag_output(
                     &mut *reader,
                     &mut buf,
@@ -879,16 +948,18 @@ impl PtySession {
                 #[cfg(windows)]
                 let tagged = match tagged {
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        #[cfg(test)]
                         reader_observed_would_block_thread.store(true, Ordering::Release);
                         thread::sleep(WINDOWS_IDLE_READ_DELAY);
                         continue;
                     }
-                    other => other,
+                    Ok(tagged) => tagged,
+                    Err(_) => None,
                 };
 
                 let (n, sequence) = match tagged {
-                    Ok(Some(tagged)) => tagged,
-                    Ok(None) | Err(_) => break,
+                    Some(tagged) => tagged,
+                    None => break,
                 };
 
                 {
@@ -942,7 +1013,7 @@ impl PtySession {
                 consumed_offset,
                 output_sequence,
                 output_order,
-                #[cfg(windows)]
+                #[cfg(all(windows, test))]
                 reader_observed_would_block,
             },
             rx,
@@ -1429,7 +1500,10 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::{duplicate_poll_fd_cloexec, resolve_command_path, resolve_command_path_with};
+    use super::{
+        duplicate_poll_fd_cloexec, read_ready_and_tag_output, resolve_command_path,
+        resolve_command_path_with, BoundedReadResult,
+    };
     use super::{
         read_and_tag_output, GridSize, Mutex, OutputBoundaryContext, PtyOutput, PtySession,
         PtyWriteSubmitError, DEFAULT_NO_PID_EXIT_THRESHOLD,
@@ -1438,14 +1512,14 @@ mod tests {
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
-    #[cfg(unix)]
-    use std::os::fd::AsRawFd;
     use std::{
         collections::VecDeque,
         env,
         io::{self, Cursor, Read},
         sync::atomic::{AtomicU64, Ordering},
     };
+    #[cfg(unix)]
+    use std::{io::Write, os::fd::AsRawFd, os::unix::net::UnixStream};
     use tokio::{
         sync::mpsc,
         time::{timeout, Duration},
@@ -1814,6 +1888,86 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(fresh_sequence > boundary);
+        assert!(matches!(
+            write_rx.recv().unwrap(),
+            WriteMsg::UserInput { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_output_cannot_be_overtaken_before_its_read_and_tag() {
+        let (mut reader_source, mut writer_source) = UnixStream::pair().unwrap();
+        writer_source.write_all(b"same-echo").unwrap();
+        let poll_fd = duplicate_poll_fd_cloexec(reader_source.as_raw_fd()).unwrap();
+        let output_order = Arc::new(Mutex::new(()));
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let (ready_tx, ready_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+
+        let reader_order = output_order.clone();
+        let reader_sequence = output_sequence.clone();
+        let reader = std::thread::spawn(move || {
+            let mut buf = [0u8; 32];
+            read_ready_and_tag_output(
+                &poll_fd,
+                &mut reader_source,
+                &mut buf,
+                &reader_order,
+                &reader_sequence,
+                || {
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+                |_| {},
+            )
+            .unwrap()
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader owns the ordering guard as soon as poll reports readiness");
+
+        let (write_tx, write_rx) = std_mpsc::sync_channel(WRITE_QUEUE_DEPTH);
+        let no_pid = Arc::new(AtomicU32::new(0));
+        let submit_order = output_order.clone();
+        let submit_sequence = output_sequence.clone();
+        let (submitted_tx, submitted_rx) = std_mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            let result = OutputBoundaryContext {
+                output_order: &submit_order,
+                output_sequence: &submit_sequence,
+                write_tx: &write_tx,
+                no_pid_alive_checks: &no_pid,
+            }
+            .enqueue(
+                b"same-echo\n".to_vec(),
+                Duration::ZERO,
+                None,
+                Duration::from_secs(1),
+            );
+            submitted_tx.send(result).unwrap();
+        });
+        assert!(
+            submitted_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "verified submission overtook output already reported readable"
+        );
+
+        release_tx.send(()).unwrap();
+        let stale_sequence = match reader.join().unwrap() {
+            BoundedReadResult::Output(n, sequence) => {
+                assert_eq!(n, b"same-echo".len());
+                sequence
+            }
+            _ => panic!("reader did not consume the ready output"),
+        };
+        let (_ack, boundary) = submitted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("submitter proceeds after ready output is read and tagged")
+            .unwrap();
+        submitter.join().unwrap();
+        assert!(stale_sequence <= boundary);
         assert!(matches!(
             write_rx.recv().unwrap(),
             WriteMsg::UserInput { .. }

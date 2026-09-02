@@ -8,25 +8,6 @@ use relaycast::{
 /// when the caller doesn't supply one.
 const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
 
-/// How long the broker waits for a worker's `write_pty_response` before it
-/// fails a PTY input ack. Keeps `PtyInputStream.send()` from hanging forever
-/// when a worker wedges or dies mid-write; the deadline sweep in `reap_tick`
-/// enforces it. Measured (relay#1544) at ~100-150ms p50 / <1s worst case for a
-/// single write's local pipe → drainer round-trip against a real driven
-/// coding agent under load (idle-thinking and actively streaming output
-/// alike, on a machine running two dozen concurrent agents) — 5s leaves
-/// ample headroom for that round trip without being raised on a guess.
-///
-/// Firing this deadline does NOT mean the worker is dead: a confirmed-dead
-/// worker is reaped independently and fails its pending requests immediately
-/// via `fail_for_worker` (`WorkerDisappeared`), well before this deadline
-/// would elapse. A `Timeout` here just means ONE write didn't get an ack in
-/// time — e.g. the worker was transiently busy, or cross-node network jitter
-/// added latency this local measurement can't see — so `handle_pty_input_ws`
-/// deliberately keeps the whole PTY input connection open when this is what
-/// fires (`pty_input_error_is_connection_fatal`); only that one write fails.
-const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// `/model` writes use the same worker-owned stdin writer as protocol frames.
 /// Never let the runtime actor wait on its completion without a deadline.
 const DEFAULT_SET_MODEL_TIMEOUT: Duration = Duration::from_secs(5);

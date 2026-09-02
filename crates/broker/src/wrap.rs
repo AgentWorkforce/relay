@@ -34,7 +34,7 @@ use crate::cli::command_parse::parse_cli_command;
 use crate::runtime::{
     action_targets_self, channels_from_csv, connect_relay, ensure_runtime_paths, env_flag_enabled,
     extract_mcp_message_ids, get_terminal_size, terminal_cols, terminal_rows, RelaySession,
-    RelaySessionOptions, RelayWorkspace,
+    RelaySessionOptions, RelayWorkspace, PTY_INPUT_ACK_TIMEOUT,
 };
 use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
@@ -58,7 +58,6 @@ pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(1
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
-
 /// Claude Code treats multiline input and a trailing Enter received in the
 /// same paste burst as editor content, leaving the task parked in its composer.
 /// Give its submit key a distinct, delayed PTY write. Other harnesses retain
@@ -181,15 +180,47 @@ enum PendingWrapWrite {
     },
 }
 
-type PendingWrapWriteAck = (
-    PendingWrapWrite,
-    std::result::Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>,
-);
+type WrapDrainerAck =
+    std::result::Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>;
+
+enum PendingWrapWriteAck {
+    Settled {
+        pending_write: Box<PendingWrapWrite>,
+        ack: WrapDrainerAck,
+    },
+    /// Deliberately omits `PendingWrapWrite`: timed-out bytes may be partially
+    /// written, so the delivery must be dropped with the retiring PTY rather
+    /// than becoming available to any retry path.
+    TimedOut { event_id: EventId },
+}
+
 type PendingWrapWriteAckFuture = Pin<Box<dyn Future<Output = PendingWrapWriteAck> + Send>>;
 
-fn wrap_write_ack_error(
-    ack: std::result::Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>,
-) -> Option<String> {
+impl PendingWrapWrite {
+    fn event_id(&self) -> EventId {
+        match self {
+            Self::Initial { pending, .. } => pending.event_id.clone(),
+            Self::Retry { verification, .. } => verification.event_id.clone(),
+        }
+    }
+}
+
+async fn await_wrap_write_ack(
+    pending_write: PendingWrapWrite,
+    ack_rx: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
+    timeout: Duration,
+) -> PendingWrapWriteAck {
+    let event_id = pending_write.event_id();
+    match tokio::time::timeout(timeout, ack_rx).await {
+        Ok(ack) => PendingWrapWriteAck::Settled {
+            pending_write: Box::new(pending_write),
+            ack,
+        },
+        Err(_) => PendingWrapWriteAck::TimedOut { event_id },
+    }
+}
+
+fn wrap_write_ack_error(ack: WrapDrainerAck) -> Option<String> {
     match ack {
         Ok(Ok(())) => None,
         Ok(Err(error)) => Some(error.to_string()),
@@ -1878,9 +1909,11 @@ pub(crate) async fn run_wrap(
                                 output_boundary,
                                 include_reminder,
                             };
-                            pending_wrap_writes.push(Box::pin(async move {
-                                (pending_write, ack_rx.await)
-                            }));
+                            pending_wrap_writes.push(Box::pin(await_wrap_write_ack(
+                                pending_write,
+                                ack_rx,
+                                PTY_INPUT_ACK_TIMEOUT,
+                            )));
                         }
                         Err(error) => {
                             tracing::warn!(
@@ -1894,7 +1927,19 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            Some((pending_write, ack)) = pending_wrap_writes.next(), if !pending_wrap_writes.is_empty() => {
+            Some(write_ack) = pending_wrap_writes.next(), if !pending_wrap_writes.is_empty() => {
+                let (pending_write, ack) = match write_ack {
+                    PendingWrapWriteAck::Settled { pending_write, ack } => (*pending_write, ack),
+                    PendingWrapWriteAck::TimedOut { event_id } => {
+                        tracing::error!(
+                            event_id = %event_id,
+                            timeout_ms = PTY_INPUT_ACK_TIMEOUT.as_millis(),
+                            "PTY injection acknowledgement timed out; retiring wrap PTY without retry"
+                        );
+                        running = false;
+                        continue;
+                    }
+                };
                 let error = wrap_write_ack_error(ack);
 
                 match pending_write {
@@ -2078,9 +2123,11 @@ pub(crate) async fn run_wrap(
                                 output_boundary,
                                 include_reminder,
                             };
-                            pending_wrap_writes.push(Box::pin(async move {
-                                (pending_write, ack_rx.await)
-                            }));
+                            pending_wrap_writes.push(Box::pin(await_wrap_write_ack(
+                                pending_write,
+                                ack_rx,
+                                PTY_INPUT_ACK_TIMEOUT,
+                            )));
                         }
                         Err(error) => {
                             tracing::warn!(
@@ -2171,9 +2218,10 @@ pub(crate) async fn run_wrap(
 #[cfg(test)]
 mod tests {
     use super::{
-        buffer_and_drain_stdin, drain_stdin_buffer, injection_submit_followup_delay,
-        queue_or_confirm_wrap_verification, wrap_injection_timer_allowed, wrap_write_ack_error,
-        STDIN_PENDING_MAX_CHUNKS,
+        await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
+        injection_submit_followup_delay, queue_or_confirm_wrap_verification,
+        wrap_injection_timer_allowed, wrap_write_ack_error, PendingWrapInjection, PendingWrapWrite,
+        PendingWrapWriteAck, STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{
         PendingVerification, ThrottleState, VerificationOutput, MAX_VERIFICATION_ATTEMPTS,
@@ -2229,6 +2277,34 @@ mod tests {
         let error = wrap_write_ack_error(ack_rx.await)
             .expect("a dropped drainer ack must reject the compound write");
         assert!(error.contains("drainer exited"));
+    }
+
+    #[tokio::test]
+    async fn timed_out_wrap_ack_retires_without_returning_delivery_for_retry() {
+        let (_ack_tx, ack_rx) = tokio::sync::oneshot::channel::<io::Result<()>>();
+        let pending_write = PendingWrapWrite::Initial {
+            pending: PendingWrapInjection {
+                from: "reviewer".to_string(),
+                event_id: EventId::new("event-ack-timeout"),
+                workspace_id: None,
+                workspace_alias: None,
+                body: "review this".to_string(),
+                target: MessageTarget::new("claude-worker"),
+                queued_at: Instant::now(),
+            },
+            injection: "possibly-partial-input".to_string(),
+            output_boundary: 7,
+            include_reminder: false,
+        };
+
+        match await_wrap_write_ack(pending_write, ack_rx, Duration::from_millis(10)).await {
+            PendingWrapWriteAck::TimedOut { event_id } => {
+                assert_eq!(event_id.as_str(), "event-ack-timeout");
+            }
+            PendingWrapWriteAck::Settled { .. } => {
+                panic!("an unacknowledged wrap write must time out and retire the PTY")
+            }
+        }
     }
 
     #[test]

@@ -63,8 +63,8 @@ function runSubmittedTask(gapMs) {
 }
 
 process.stdin.on('data', (chunk) => {
+  const now = performance.now();
   for (const byte of chunk) {
-    const now = performance.now();
     if (byte === 13 && composer.length > 0 && !decided) {
       const gapMs = Math.round(now - lastBodyByteAt);
       if (gapMs < thresholdMs) {

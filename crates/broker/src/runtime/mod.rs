@@ -66,6 +66,12 @@ const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_HTTP_API_RELAYCAST_SEND_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_OBSERVER_TOKEN_TIMEOUT_MS: u64 = 20_000;
 const DEFAULT_HTTP_API_EVENT_EMIT_TIMEOUT_MS: u64 = 200;
+/// How long a broker surface waits for a PTY write acknowledgement. Measured
+/// (relay#1544) at ~100-150ms p50 / <1s worst case under load; five seconds
+/// leaves ample headroom while bounding a wedged drainer. HTTP input fails only
+/// the affected write, while wrap retires its local PTY because an unobserved
+/// acknowledgement can mean the injection was written only partially.
+pub(crate) const PTY_INPUT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 static TRACING_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 mod api;
