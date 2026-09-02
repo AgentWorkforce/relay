@@ -63,10 +63,13 @@ function runSubmittedTask(gapMs) {
 }
 
 process.stdin.on('data', (chunk) => {
+  // One read is one delivery burst. Reusing its arrival timestamp prevents
+  // per-byte processing pauses from making Body+Enter in the same chunk look
+  // like a delayed submit.
+  const receivedAt = performance.now();
   for (const byte of chunk) {
-    const now = performance.now();
     if (byte === 13 && composer.length > 0 && !decided) {
-      const gapMs = Math.round(now - lastBodyByteAt);
+      const gapMs = Math.round(receivedAt - lastBodyByteAt);
       if (gapMs < thresholdMs) {
         // Model Claude's multiline paste composer: Enter inside the paste
         // burst becomes another composer newline instead of submitting.
@@ -83,7 +86,7 @@ process.stdin.on('data', (chunk) => {
     }
     if (byte !== 13) {
       composer += String.fromCharCode(byte);
-      lastBodyByteAt = now;
+      lastBodyByteAt = receivedAt;
     }
   }
 });

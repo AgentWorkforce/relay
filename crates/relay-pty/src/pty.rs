@@ -8,7 +8,7 @@ use std::{
         mpsc as std_mpsc, Arc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -24,10 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(windows)]
-use std::{
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    time::Instant,
-};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
@@ -44,7 +41,6 @@ use windows_sys::Win32::{
 /// healthy interaction sees fewer than a handful of pending writes at
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
-#[cfg(windows)]
 const OUTPUT_ORDERING_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Why [`PtySession::submit_write`] refused to enqueue.
@@ -74,9 +70,8 @@ pub enum PtyWriteSubmitError {
     #[error("pty write queue is closed (drainer exited)")]
     DrainerExited,
 
-    /// The Windows reader could not be interrupted promptly enough to admit
-    /// a verified write. The write was not queued, so callers may retry it.
-    #[cfg(windows)]
+    /// The output reader could not yield ordering promptly enough to admit a
+    /// verified write. The write was not queued, so callers may retry it.
     #[error("timed out acquiring pty output ordering for verified write")]
     OrderingTimeout,
 
@@ -437,6 +432,21 @@ pub struct PtySession {
     /// admission. Without this lock, output could be assigned a new sequence
     /// after a caller sampled the watermark but before its write was queued.
     output_order: Arc<Mutex<()>>,
+    /// Unix readiness probe shared with verified-write admission. Admission
+    /// checks it while holding `output_order` and hands the lock fairly to the
+    /// reader whenever output is already readable.
+    #[cfg(unix)]
+    poll_fd: Arc<OwnedFd>,
+    /// Becomes true only after the Unix reader has drained output and exited.
+    /// It prevents a persistent EOF/HUP readiness notification from making
+    /// verified-write admission spin forever after reader teardown.
+    #[cfg(unix)]
+    output_reader_done: Arc<AtomicBool>,
+    /// Set while a Windows verified write is waiting for `output_order`.
+    /// A cancelled ConPTY reader observes this before starting another
+    /// blocking ReadFile, yielding the lock to the submitter instead.
+    #[cfg(windows)]
+    write_admission_pending: Arc<AtomicBool>,
     /// Duplicated native handle for the reader thread. Windows verified writes
     /// use it to interrupt an idle synchronous ConPTY read before acquiring
     /// `output_order`; the handle never exposes the PTY itself.
@@ -700,6 +710,7 @@ fn enqueue_user_write(
 /// after the bytes have been copied from the PTY and before they are tagged.
 /// Production passes a no-op; deterministic tests pause there to prove a
 /// submitter cannot sample a boundary in the old read-complete/pre-tag gap.
+#[cfg(any(windows, test))]
 fn read_and_tag_output<R, F>(
     reader: &mut R,
     buf: &mut [u8],
@@ -712,6 +723,21 @@ where
     F: FnOnce(usize),
 {
     let _order_guard = output_order.lock();
+    read_and_tag_output_locked(reader, buf, output_sequence, after_read)
+}
+
+/// Variant used when the caller already owns `output_order` (Unix needs to
+/// re-check readiness and perform the read under one uninterrupted guard).
+fn read_and_tag_output_locked<R, F>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_sequence: &AtomicU64,
+    after_read: F,
+) -> io::Result<Option<(usize, u64)>>
+where
+    R: Read + ?Sized,
+    F: FnOnce(usize),
+{
     let n = reader.read(buf)?;
     after_read(n);
     if n == 0 {
@@ -724,24 +750,57 @@ where
 }
 
 #[cfg(unix)]
-fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
+fn pty_is_readable(fd: &OwnedFd, timeout_ms: libc::c_int) -> io::Result<bool> {
     let mut descriptor = libc::pollfd {
         fd: fd.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
     };
     loop {
-        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if ready > 0 {
-            return Ok(());
+            return Ok(true);
         }
         if ready == 0 {
-            continue;
+            return Ok(false);
         }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
+    if pty_is_readable(fd, -1)? {
+        Ok(())
+    } else {
+        unreachable!("an infinite poll cannot time out")
+    }
+}
+
+#[cfg(unix)]
+fn acquire_output_order_for_write<'a>(
+    output_order: &'a Mutex<()>,
+    poll_fd: &OwnedFd,
+    output_reader_done: &AtomicBool,
+) -> Result<parking_lot::MutexGuard<'a, ()>> {
+    let deadline = Instant::now() + OUTPUT_ORDERING_TIMEOUT;
+    loop {
+        let guard = output_order.lock();
+        if output_reader_done.load(Ordering::Acquire) || !pty_is_readable(poll_fd, 0)? {
+            return Ok(guard);
+        }
+
+        // Readiness became visible before this admission linearization point.
+        // Hand the lock to the already-woken reader so it can read and tag the
+        // stale bytes before we sample the producer watermark.
+        parking_lot::MutexGuard::unlock_fair(guard);
+        if Instant::now() >= deadline {
+            return Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
+        }
+        thread::yield_now();
     }
 }
 
@@ -798,24 +857,33 @@ impl PtySession {
         followup: Option<FollowupWrite>,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
         #[cfg(unix)]
-        let _order_guard = self.output_order.lock();
+        let _order_guard = acquire_output_order_for_write(
+            &self.output_order,
+            &self.poll_fd,
+            &self.output_reader_done,
+        )?;
 
         #[cfg(windows)]
-        let _order_guard = {
+        let order_guard = {
+            self.write_admission_pending.store(true, Ordering::Release);
             let deadline = Instant::now() + OUTPUT_ORDERING_TIMEOUT;
-            loop {
+            let result = loop {
                 if let Some(guard) = self.output_order.try_lock() {
-                    break guard;
+                    break Ok(guard);
                 }
-                self.reader_cancel
-                    .interrupt_read()
-                    .map_err(PtyWriteSubmitError::OrderingWake)?;
+                if let Err(error) = self.reader_cancel.interrupt_read() {
+                    break Err(anyhow::Error::new(PtyWriteSubmitError::OrderingWake(error)));
+                }
                 if Instant::now() >= deadline {
-                    return Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
+                    break Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
                 }
                 thread::yield_now();
-            }
+            };
+            self.write_admission_pending.store(false, Ordering::Release);
+            result
         };
+        #[cfg(windows)]
+        let _order_guard = order_guard?;
 
         let boundary = self.output_sequence.load(Ordering::Acquire);
         let ack = enqueue_user_write(
@@ -861,14 +929,14 @@ impl PtySession {
         let child_pid = child.process_id();
 
         #[cfg(unix)]
-        let poll_fd = {
+        let poll_fd = Arc::new({
             let master_fd = pair
                 .master
                 .as_raw_fd()
                 .context("pty master does not expose a pollable descriptor")?;
             duplicate_poll_fd_cloexec(master_fd)
                 .context("failed to duplicate pty descriptor for readiness polling")?
-        };
+        });
 
         let mut reader = pair
             .master
@@ -913,14 +981,45 @@ impl PtySession {
         let output_sequence_reader = output_sequence.clone();
         let output_order = Arc::new(Mutex::new(()));
         let output_order_reader = output_order.clone();
+        #[cfg(unix)]
+        let poll_fd_reader = poll_fd.clone();
+        #[cfg(unix)]
+        let output_reader_done = Arc::new(AtomicBool::new(false));
+        #[cfg(unix)]
+        let output_reader_done_thread = output_reader_done.clone();
+        #[cfg(windows)]
+        let write_admission_pending = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        let write_admission_pending_reader = write_admission_pending.clone();
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 #[cfg(unix)]
-                if wait_for_pty_readable(&poll_fd).is_err() {
+                if wait_for_pty_readable(&poll_fd_reader).is_err() {
                     break;
                 }
 
+                #[cfg(unix)]
+                let tagged = {
+                    let _order_guard = output_order_reader.lock();
+                    match pty_is_readable(&poll_fd_reader, 0) {
+                        Ok(true) => read_and_tag_output_locked(
+                            &mut *reader,
+                            &mut buf,
+                            &output_sequence_reader,
+                            |_| {},
+                        ),
+                        Ok(false) => continue,
+                        Err(error) => Err(error),
+                    }
+                };
+
+                #[cfg(windows)]
+                while write_admission_pending_reader.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+
+                #[cfg(windows)]
                 let tagged = read_and_tag_output(
                     &mut *reader,
                     &mut buf,
@@ -972,6 +1071,8 @@ impl PtySession {
                     break;
                 }
             }
+            #[cfg(unix)]
+            output_reader_done_thread.store(true, Ordering::Release);
         });
 
         #[cfg(windows)]
@@ -995,6 +1096,12 @@ impl PtySession {
                 consumed_offset,
                 output_sequence,
                 output_order,
+                #[cfg(unix)]
+                poll_fd,
+                #[cfg(unix)]
+                output_reader_done,
+                #[cfg(windows)]
+                write_admission_pending,
                 #[cfg(windows)]
                 reader_cancel,
             },
@@ -1480,7 +1587,11 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::{duplicate_poll_fd_cloexec, resolve_command_path, resolve_command_path_with};
+    use super::{
+        acquire_output_order_for_write, duplicate_poll_fd_cloexec, pty_is_readable,
+        read_and_tag_output_locked, resolve_command_path, resolve_command_path_with,
+        wait_for_pty_readable,
+    };
     use super::{
         read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
         DEFAULT_NO_PID_EXIT_THRESHOLD,
@@ -1490,12 +1601,16 @@ mod tests {
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
     #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixStream;
     use std::{
         collections::VecDeque,
         env,
         io::{self, Cursor, Read},
-        sync::atomic::{AtomicU64, Ordering},
+        sync::atomic::{AtomicBool, AtomicU64, Ordering},
     };
     use tokio::{
         sync::mpsc,
@@ -1868,6 +1983,68 @@ mod tests {
             write_rx.recv().unwrap(),
             WriteMsg::UserInput { .. }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_output_is_tagged_before_unix_boundary_admission() {
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"stale").unwrap();
+
+        let poll_fd = Arc::new(duplicate_poll_fd_cloexec(reader.as_raw_fd()).unwrap());
+        let output_order = Arc::new(Mutex::new(()));
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let output_reader_done = Arc::new(AtomicBool::new(false));
+        let (readiness_seen_tx, readiness_seen_rx) = std_mpsc::channel();
+        let (release_reader_tx, release_reader_rx) = std_mpsc::channel();
+
+        let reader_poll_fd = poll_fd.clone();
+        let reader_order = output_order.clone();
+        let reader_sequence = output_sequence.clone();
+        let reader_thread = std::thread::spawn(move || {
+            wait_for_pty_readable(&reader_poll_fd).unwrap();
+            readiness_seen_tx.send(()).unwrap();
+            // Reproduce the reviewed race exactly: readiness has returned,
+            // but the reader is descheduled before it can acquire ordering.
+            release_reader_rx.recv().unwrap();
+
+            let _guard = reader_order.lock();
+            assert!(pty_is_readable(&reader_poll_fd, 0).unwrap());
+            let mut buf = [0u8; 16];
+            read_and_tag_output_locked(&mut reader, &mut buf, &reader_sequence, |_| {})
+                .unwrap()
+                .unwrap()
+        });
+        readiness_seen_rx.recv().unwrap();
+
+        let submit_order = output_order.clone();
+        let submit_poll_fd = poll_fd.clone();
+        let submit_reader_done = output_reader_done.clone();
+        let submit_sequence = output_sequence.clone();
+        let (boundary_tx, boundary_rx) = std_mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            let guard =
+                acquire_output_order_for_write(&submit_order, &submit_poll_fd, &submit_reader_done)
+                    .unwrap();
+            let boundary = submit_sequence.load(Ordering::Acquire);
+            drop(guard);
+            boundary_tx.send(boundary).unwrap();
+        });
+
+        assert!(
+            boundary_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "Unix admission overtook output whose readiness was already observed"
+        );
+        release_reader_tx.send(()).unwrap();
+
+        let (_, stale_sequence) = reader_thread.join().unwrap();
+        let boundary = boundary_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("admission proceeds after the reader tags stale output");
+        submitter.join().unwrap();
+        assert!(stale_sequence <= boundary);
     }
 
     #[cfg(unix)]

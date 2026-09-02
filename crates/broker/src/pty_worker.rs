@@ -1541,7 +1541,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let retained_output = echo_buffer.retained();
                         let clean = strip_ansi(&retained_output);
                         let trimmed = if clean.len() > 2000 {
-                            &clean[clean.len() - 2000..]
+                            let start = floor_char_boundary(&clean, clean.len() - 2000);
+                            &clean[start..]
                         } else {
                             &clean
                         };
@@ -2096,7 +2097,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Truncate to avoid huge payloads; last 2000 chars
                         // are most likely to contain the error message.
                         let trimmed = if clean.len() > 2000 {
-                            &clean[clean.len() - 2000..]
+                            let start = floor_char_boundary(&clean, clean.len() - 2000);
+                            &clean[start..]
                         } else {
                             &clean
                         };

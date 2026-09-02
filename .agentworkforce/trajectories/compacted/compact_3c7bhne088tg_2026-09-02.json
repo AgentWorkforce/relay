@@ -11,7 +11,7 @@
     "end": "2026-09-02T01:57:25.154Z"
   },
   "summary": {
-    "totalDecisions": 1,
+    "totalDecisions": 2,
     "totalEvents": 2,
     "uniqueAgents": [
       "default"
@@ -25,6 +25,12 @@
           "question": "Keep wrap injections single-flight until each PTY write acknowledgement settles",
           "chosen": "Keep wrap injections single-flight until each PTY write acknowledgement settles",
           "reasoning": "Deferring MCP reminder accounting until write confirmation is correct only if a second delivery cannot make its reminder decision during the first Claude injection's 250 ms acknowledgement window.",
+          "fromTrajectory": "traj_2zcybmcp5e7a"
+        },
+        {
+          "question": "Fix the race by reverting deferred reminder accounting, or by adding a concurrency guard?",
+          "chosen": "Add the guard; keep accounting deferred to write confirmation.",
+          "reasoning": "The deferred-accounting design is the desired semantics, so the missing concurrency invariant should be enforced rather than unwinding the write-confirmation model.",
           "fromTrajectory": "traj_2zcybmcp5e7a"
         }
       ]
