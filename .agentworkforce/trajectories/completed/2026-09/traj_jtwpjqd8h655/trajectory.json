@@ -1,0 +1,101 @@
+{
+  "id": "traj_jtwpjqd8h655",
+  "version": 1,
+  "task": {
+    "title": "Close final shared-worktree and retention findings on PR #1642",
+    "source": {
+      "system": "plain",
+      "id": "PR-1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T19:16:51.647Z",
+  "completedAt": "2026-09-02T19:29:32.035Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T19:16:52.232Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_uvhmarlcz1zh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T19:16:52.232Z",
+      "endedAt": "2026-09-02T19:29:32.035Z",
+      "events": [
+        {
+          "ts": 1788376612236,
+          "type": "decision",
+          "content": "Isolate each verification invocation in a detached git worktree: Isolate each verification invocation in a detached git worktree",
+          "raw": {
+            "question": "Isolate each verification invocation in a detached git worktree",
+            "chosen": "Isolate each verification invocation in a detached git worktree",
+            "alternatives": [],
+            "reasoning": "Run-scoped evidence prevents artifact collisions but does not isolate autofix branch switches, commits, integrity checks, or PR creation. A unique worktree gives the whole DAG an independent git index and HEAD without reintroducing a stale-lock protocol."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788377365600,
+          "type": "decision",
+          "content": "Retain only marker-complete verifier histories: Retain only marker-complete verifier histories",
+          "raw": {
+            "question": "Retain only marker-complete verifier histories",
+            "chosen": "Retain only marker-complete verifier histories",
+            "alternatives": [],
+            "reasoning": "Completion markers distinguish immutable evidence from active overlapping invocations; atomic rename claims make concurrent pruning idempotent, and the canonical run is always protected."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788377366269,
+          "type": "reflection",
+          "content": "Both final findings have executable controls: simultaneous detached worktrees preserve independent git state, and racing retention processes converge without deleting the active run.",
+          "raw": {
+            "focalPoints": [
+              "git-isolation",
+              "artifact-retention",
+              "concurrency"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:git-isolation",
+            "focal:artifact-retention",
+            "focal:concurrency",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Isolated each verifier invocation in a detached git worktree, added concurrency-safe bounded artifact retention, and expanded unit and exact-head proof coverage for both controls.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [
+    "ce7325d65"
+  ],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "scripts/verify-features/run-artifacts.d.mts",
+    "scripts/verify-features/run-artifacts.mjs",
+    "scripts/verify-features/run-worktree.d.mts",
+    "scripts/verify-features/run-worktree.mjs",
+    "tests/fixtures/verify-features-escalation.test.ts",
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+    "workflows/verify-features.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e984c9c7e560c38cc4f01f91ab7e62892db5d1f2",
+    "endRef": "ce7325d65c95fbcb111586f39a64f95dd469d73a",
+    "traceId": "4105b363-1635-4761-826f-059b4d9785f3"
+  }
+}
