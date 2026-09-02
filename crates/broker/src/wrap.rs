@@ -170,13 +170,13 @@ enum PendingWrapWrite {
     Initial {
         pending: PendingWrapInjection,
         injection: String,
-        output_boundary: usize,
+        output_boundary: u64,
         include_reminder: bool,
     },
     Retry {
         verification: PendingVerification,
         injection: String,
-        output_boundary: usize,
+        output_boundary: u64,
         include_reminder: bool,
     },
 }
@@ -1304,6 +1304,11 @@ pub(crate) async fn run_wrap(
             chunk = pty_rx.recv() => {
                 match chunk {
                     Some(chunk) => {
+                        // Preserve the producer-assigned read sequence before
+                        // any async handling. Output already queued when an
+                        // injection is submitted must remain ineligible as its
+                        // echo even though this arm consumes it afterward.
+                        echo_buffer.push_output(chunk.sequence(), chunk.as_bytes());
                         // Passthrough to user's terminal
                         use tokio::io::AsyncWriteExt;
                         let _ = stdout.write_all(&chunk).await;
@@ -1371,9 +1376,6 @@ pub(crate) async fn run_wrap(
                             pty_auto.handle_gemini_trust(&text, &pty).await;
                             pty_auto.handle_claude_trust(&text, &pty).await;
                         }
-
-                        // Accumulate echo buffer for verification matching
-                        echo_buffer.push_str(&text);
 
                         // Check pending verifications against new output
                         let mut verified_indices = Vec::new();
@@ -1850,14 +1852,13 @@ pub(crate) async fn run_wrap(
                         pending.workspace_alias.as_deref(),
                     );
                     let mut bytes = injection.as_bytes().to_vec();
-                    let output_boundary = echo_buffer.boundary();
                     let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
                     {
                         // Claude needs Enter in a later PTY write to close its
                         // multiline paste boundary. The relay-pty compound
                         // command keeps that delayed write atomic with the body
                         // and acknowledges only after both writes succeed.
-                        pty.submit_write_paced_with_followup(
+                        pty.submit_write_paced_with_followup_and_output_boundary(
                             bytes,
                             Duration::ZERO,
                             delay,
@@ -1867,10 +1868,10 @@ pub(crate) async fn run_wrap(
                         // Other harnesses retain the established single-write
                         // body-plus-Enter shape.
                         bytes.extend_from_slice(b"\r");
-                        pty.submit_write(bytes)
+                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
                     };
                     match write {
-                        Ok(ack_rx) => {
+                        Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Initial {
                                 pending,
                                 injection,
@@ -2057,10 +2058,9 @@ pub(crate) async fn run_wrap(
                         pv.workspace_alias.as_deref(),
                     );
                     let mut bytes = injection.as_bytes().to_vec();
-                    let output_boundary = echo_buffer.boundary();
                     let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
                     {
-                        pty.submit_write_paced_with_followup(
+                        pty.submit_write_paced_with_followup_and_output_boundary(
                             bytes,
                             Duration::ZERO,
                             delay,
@@ -2068,10 +2068,10 @@ pub(crate) async fn run_wrap(
                         )
                     } else {
                         bytes.extend_from_slice(b"\r");
-                        pty.submit_write(bytes)
+                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
                     };
                     match write {
-                        Ok(ack_rx) => {
+                        Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Retry {
                                 verification: pv,
                                 injection,
@@ -2241,8 +2241,10 @@ mod tests {
     fn echo_arriving_before_write_ack_is_confirmed_immediately() {
         let injection = "multiline task\nwith a delayed submit";
         let mut output = VerificationOutput::default();
-        output.push_str(&format!("stale composer echo: {injection}"));
-        let output_boundary = output.boundary();
+        output.push_output(1, b"older output\n");
+        // Sequence 2 was assigned by the PTY reader before this wrap write
+        // was queued, even though wrap has not consumed the chunk yet.
+        let output_boundary = 2;
         let verification = || PendingVerification {
             delivery_id: DeliveryId::new("delivery-before-ack"),
             event_id: EventId::new("event-before-ack"),
@@ -2262,6 +2264,8 @@ mod tests {
         let mut pending_verifications = VecDeque::new();
         let mut pending_activities = VecDeque::new();
 
+        output.push_output(2, format!("stale composer echo: {injection}").as_bytes());
+
         let stale = queue_or_confirm_wrap_verification(
             verification(),
             &output,
@@ -2273,9 +2277,10 @@ mod tests {
         assert!(!stale, "a retained pre-submission echo is stale");
         pending_verifications.clear();
 
-        output.push_str(&format!(
-            "\nnew composer echo: {injection}\nTool: Write(review.md)"
-        ));
+        output.push_output(
+            3,
+            format!("\nnew composer echo: {injection}\nTool: Write(review.md)").as_bytes(),
+        );
         let confirmed = queue_or_confirm_wrap_verification(
             verification(),
             &output,

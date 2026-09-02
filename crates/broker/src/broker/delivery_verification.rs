@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    borrow::Cow,
+    collections::VecDeque,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::{json, Value};
 
@@ -103,11 +107,11 @@ pub(crate) struct PendingVerification {
     pub delivery_id: DeliveryId,
     pub event_id: EventId,
     pub expected_echo: String,
-    /// Absolute PTY-output byte offset captured immediately before this
-    /// delivery was submitted. Echo verification must never inspect bytes
-    /// before this boundary: an identical earlier delivery may still be in
-    /// the retained output tail.
-    pub output_boundary: usize,
+    /// Receive-time PTY-output sequence captured atomically with queueing this
+    /// delivery. Echo verification must never inspect chunks at or before this
+    /// boundary: an identical earlier delivery may still be queued between the
+    /// PTY reader and this event loop.
+    pub output_boundary: u64,
     pub injected_at: std::time::Instant,
     pub attempts: usize,
     pub max_attempts: usize,
@@ -119,53 +123,88 @@ pub(crate) struct PendingVerification {
     pub target: MessageTarget,
 }
 
-/// A bounded PTY-output tail with absolute, monotonic byte offsets.
-///
-/// Trimming advances `base_offset` instead of resetting positions, so a
-/// delivery's submission boundary remains meaningful for both output that
-/// races ahead of its write acknowledgement and output observed later.
-#[derive(Debug, Default)]
-pub(crate) struct VerificationOutput {
-    buffer: String,
-    base_offset: usize,
+#[derive(Debug)]
+struct VerificationSegment {
+    sequence: u64,
+    start_offset: usize,
     end_offset: usize,
 }
 
+/// A bounded raw PTY-output tail indexed by producer-assigned read sequence.
+///
+/// The producer sequence, rather than consumer append position, lets a
+/// delivery exclude an earlier chunk that was still queued when its write was
+/// submitted. Raw bytes are retained so split UTF-8 cannot move bytes across a
+/// sequence boundary; conversion is delayed until matching.
+#[derive(Debug, Default)]
+pub(crate) struct VerificationOutput {
+    buffer: Vec<u8>,
+    base_offset: usize,
+    end_offset: usize,
+    last_sequence: u64,
+    segments: VecDeque<VerificationSegment>,
+}
+
 impl VerificationOutput {
-    /// Absolute offset at which the next observed output byte will begin.
-    pub(crate) fn boundary(&self) -> usize {
-        self.end_offset
+    /// Producer sequence of the latest output appended by this consumer.
+    pub(crate) fn boundary(&self) -> u64 {
+        self.last_sequence
     }
 
+    /// Append a producer-tagged raw PTY read.
+    pub(crate) fn push_output(&mut self, sequence: u64, bytes: &[u8]) {
+        debug_assert!(
+            sequence > self.last_sequence,
+            "PTY output sequences must be strictly monotonic"
+        );
+        let start_offset = self.end_offset;
+        self.buffer.extend_from_slice(bytes);
+        self.end_offset = self.end_offset.saturating_add(bytes.len());
+        self.last_sequence = sequence;
+        self.segments.push_back(VerificationSegment {
+            sequence,
+            start_offset,
+            end_offset: self.end_offset,
+        });
+        self.trim();
+    }
+
+    /// Test/helper append that behaves like the next producer read.
+    #[cfg(test)]
     pub(crate) fn push_str(&mut self, text: &str) {
-        self.buffer.push_str(text);
-        self.end_offset = self.end_offset.saturating_add(text.len());
+        self.push_output(self.last_sequence.saturating_add(1), text.as_bytes());
+    }
+
+    fn trim(&mut self) {
         if self.buffer.len() > VERIFICATION_OUTPUT_MAX_BYTES {
-            let start = crate::util::ansi::floor_char_boundary(
-                &self.buffer,
-                self.buffer.len() - VERIFICATION_OUTPUT_KEEP_BYTES,
-            );
+            let start = self.buffer.len() - VERIFICATION_OUTPUT_KEEP_BYTES;
             self.buffer.drain(..start);
             self.base_offset = self.base_offset.saturating_add(start);
+            while self
+                .segments
+                .front()
+                .is_some_and(|segment| segment.end_offset <= self.base_offset)
+            {
+                self.segments.pop_front();
+            }
         }
     }
 
-    /// Retained output observed at or after `boundary`.
-    pub(crate) fn since(&self, boundary: usize) -> &str {
-        if boundary <= self.base_offset {
-            return &self.buffer;
-        }
-        if boundary >= self.end_offset {
-            return "";
-        }
-
-        let relative = boundary - self.base_offset;
-        debug_assert!(self.buffer.is_char_boundary(relative));
-        &self.buffer[relative..]
+    /// Retained output read after the supplied producer sequence.
+    pub(crate) fn since(&self, boundary: u64) -> Cow<'_, str> {
+        let Some(segment) = self
+            .segments
+            .iter()
+            .find(|segment| segment.sequence > boundary)
+        else {
+            return Cow::Borrowed("");
+        };
+        let start = segment.start_offset.max(self.base_offset) - self.base_offset;
+        String::from_utf8_lossy(&self.buffer[start..])
     }
 
-    pub(crate) fn retained(&self) -> &str {
-        &self.buffer
+    pub(crate) fn retained(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.buffer)
     }
 }
 
@@ -174,10 +213,8 @@ pub(crate) fn pending_verification_echo_seen(
     output: &VerificationOutput,
     verification: &PendingVerification,
 ) -> bool {
-    check_echo_in_output(
-        output.since(verification.output_boundary),
-        &verification.expected_echo,
-    )
+    let observed = output.since(verification.output_boundary);
+    check_echo_in_output(&observed, &verification.expected_echo)
 }
 
 /// Return a verification whose echo arrived before the PTY write ack was
@@ -216,7 +253,7 @@ pub(crate) fn pending_activity_from_confirmed_output(
         event_id: verification.event_id.clone(),
         expected_echo: verification.expected_echo.clone(),
         verified_at: Instant::now(),
-        output_buffer: output.since(verification.output_boundary).to_string(),
+        output_buffer: output.since(verification.output_boundary).into_owned(),
         detector: detector.clone(),
     }
 }
@@ -361,6 +398,45 @@ mod tests {
         assert!(!pending_verification_echo_seen(&output, &verification));
         output.push_str(expected);
         assert!(pending_verification_echo_seen(&output, &verification));
+    }
+
+    #[test]
+    fn verification_ignores_matching_output_queued_before_write_submission() {
+        let expected = "Relay message from Alice [evt-queued]: same body";
+        let mut output = VerificationOutput::default();
+        output.push_output(1, b"already consumed\n");
+
+        // The producer has already assigned sequence 2, but this consumer has
+        // not dequeued it yet. Queueing the write atomically returns that
+        // producer watermark rather than the consumer's older boundary.
+        let output_boundary = 2;
+        let verification = PendingVerification {
+            delivery_id: "delivery-queued".into(),
+            event_id: "evt-queued".into(),
+            expected_echo: expected.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Alice".to_string(),
+            body: "same body".to_string(),
+            target: "Worker".into(),
+        };
+
+        output.push_output(2, expected.as_bytes());
+        assert!(
+            !pending_verification_echo_seen(&output, &verification),
+            "a matching chunk assigned before write submission must stay stale"
+        );
+
+        output.push_output(3, expected.as_bytes());
+        assert!(
+            pending_verification_echo_seen(&output, &verification),
+            "the same echo read after write submission must verify"
+        );
     }
 
     #[test]

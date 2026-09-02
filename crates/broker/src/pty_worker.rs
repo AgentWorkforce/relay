@@ -119,10 +119,10 @@ struct ActiveInjection {
     stage: InjectionStage,
     next_at: tokio::time::Instant,
     injection_text: Option<String>,
-    /// Absolute PTY-output boundary captured immediately before Body+Enter is
-    /// submitted. Verification must ignore any identical retained echo from
-    /// an earlier delivery.
-    output_boundary: Option<usize>,
+    /// Receive-time PTY-output sequence captured atomically with submitting
+    /// Body+Enter. Verification must ignore any identical earlier chunk,
+    /// including one still queued for this event loop.
+    output_boundary: Option<u64>,
     /// Popped under a `flush_injections` exemption (or marked by the flush
     /// frame while already in flight): the deadline arm may advance this
     /// injection even while the interactive hold is active. A human asked
@@ -1208,6 +1208,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         last_pty_output_time = Instant::now();
                         reported_idle = false;
                         mcp_reminder_throttle.note_output_bytes(chunk.len());
+                        // Preserve the producer-assigned read sequence before
+                        // decoding. A queued pre-submission chunk must remain
+                        // stale even when this select arm consumes it later.
+                        echo_buffer.push_output(chunk.sequence(), chunk.as_bytes());
                         // Child is provably alive — reset the no-PID exit counter.
                         pty.reset_no_pid_checks();
                         startup_total_bytes = startup_total_bytes.saturating_add(chunk.len());
@@ -1363,9 +1367,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
                         pty_auto.handle_claude_trust(&text, &pty).await;
-
-                        // Accumulate echo buffer for verification matching
-                        echo_buffer.push_str(&text);
 
                         // Detect KIND: continuity commands in PTY output.
                         // Only scan when no echo verifications are pending to avoid false-positives
@@ -1526,18 +1527,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // any incomplete trailing UTF-8 bytes (no further
                         // chunks will arrive to complete them) before the
                         // stream_buffer flush so they reach worker_stream
-                        // and echo_buffer like normal output.
+                        // like normal stream output. The raw bytes were already
+                        // added to echo_buffer with their producer sequence.
                         let tail = utf8_decoder.flush();
                         if !tail.is_empty() {
                             stream_buffer.push_str(&tail);
-                            echo_buffer.push_str(&tail);
                         }
                         // Flush any buffered stream output before sending
                         // agent_exit to preserve output ordering.
                         flush_stream_buffer!();
                         // Emit agent_exit with any echo_buffer tail so the
                         // dashboard can surface the CLI's last output.
-                        let clean = strip_ansi(echo_buffer.retained());
+                        let retained_output = echo_buffer.retained();
+                        let clean = strip_ansi(&retained_output);
                         let trimmed = if clean.len() > 2000 {
                             &clean[clean.len() - 2000..]
                         } else {
@@ -1718,11 +1720,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // verification) still waits for this ack in the
                         // injection-ack arm.
                         let mut bytes = injection.clone().into_bytes();
-                        let output_boundary = echo_buffer.boundary();
                         let write = if let Some(delay) =
                             injection_submit_followup_delay(&resolved_cli)
                         {
-                            pty.submit_write_paced_with_followup(
+                            pty.submit_write_paced_with_followup_and_output_boundary(
                                 bytes,
                                 inject_rate,
                                 delay,
@@ -1730,10 +1731,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             )
                         } else {
                             bytes.extend_from_slice(b"\r");
-                            pty.submit_write_paced(bytes, inject_rate)
+                            pty.submit_write_paced_with_output_boundary(bytes, inject_rate)
                         };
                         match write {
-                            Ok(ack_rx) => {
+                            Ok((ack_rx, output_boundary)) => {
                                 inj.injection_text = Some(injection);
                                 inj.output_boundary = Some(output_boundary);
                                 inj.stage = InjectionStage::Finalize;
@@ -2712,8 +2713,10 @@ mod tests {
     fn echo_arriving_before_worker_write_ack_is_confirmed_immediately() {
         let injection = "From: Lead\nReview this change";
         let mut output = VerificationOutput::default();
-        output.push_str(&format!("stale composer echo: {injection}"));
-        let output_boundary = output.boundary();
+        output.push_output(1, b"older output\n");
+        // Sequence 2 was assigned by the reader before the write was queued,
+        // but this worker has not consumed that matching chunk yet.
+        let output_boundary = 2;
         let verification = || PendingVerification {
             delivery_id: "del_echo_before_ack".into(),
             event_id: "evt_echo_before_ack".into(),
@@ -2731,6 +2734,8 @@ mod tests {
         };
         let mut pending_verifications = VecDeque::new();
 
+        output.push_output(2, format!("stale composer echo: {injection}").as_bytes());
+
         let stale = queue_or_take_confirmed_verification(
             verification(),
             &output,
@@ -2739,9 +2744,10 @@ mod tests {
         assert!(stale.is_none(), "a retained pre-submission echo is stale");
         pending_verifications.clear();
 
-        output.push_str(&format!(
-            "\nnew composer echo: {injection}\nTool: Write(review.md)"
-        ));
+        output.push_output(
+            3,
+            format!("\nnew composer echo: {injection}\nTool: Write(review.md)").as_bytes(),
+        );
         let confirmed = queue_or_take_confirmed_verification(
             verification(),
             &output,

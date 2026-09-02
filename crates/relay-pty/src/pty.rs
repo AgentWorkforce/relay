@@ -312,6 +312,41 @@ impl GridSize {
 /// prefer a several-minute grace over a 30s false positive.
 pub const DEFAULT_NO_PID_EXIT_THRESHOLD: u32 = 60;
 
+/// One raw PTY read tagged at the producer, before it enters the async queue.
+///
+/// The sequence lets consumers distinguish output that was already read (but
+/// still queued) when they submit input from output read after that submission.
+/// Assigning it in the reader thread avoids a consumer-side `select!` race.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PtyOutput {
+    bytes: Vec<u8>,
+    sequence: u64,
+}
+
+impl PtyOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+impl std::ops::Deref for PtyOutput {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+impl AsRef<[u8]> for PtyOutput {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
     /// Single producer side of the FIFO write queue. All PTY writes —
@@ -364,6 +399,15 @@ pub struct PtySession {
     /// buffered stream chunks the snapshot already reflects and apply only
     /// the ones that came after.
     consumed_offset: Arc<AtomicU64>,
+    /// Sequence assigned as soon as the reader obtains a PTY output chunk,
+    /// before grid parsing or async queue admission. Consumers sample this
+    /// producer watermark when submitting input so output that was already
+    /// queued cannot be mistaken for the input's echo.
+    output_sequence: Arc<AtomicU64>,
+    /// Linearizes producer sequence assignment with verified input queue
+    /// admission. Without this lock, output could be assigned a new sequence
+    /// after a caller sampled the watermark but before its write was queued.
+    output_order: Arc<Mutex<()>>,
 }
 
 fn needs_sane_term_override() -> bool {
@@ -571,12 +615,30 @@ fn enqueue_user_write(
 }
 
 impl PtySession {
+    fn enqueue_write_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup: Option<FollowupWrite>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        let _order_guard = self.output_order.lock();
+        let boundary = self.output_sequence.load(Ordering::Acquire);
+        let ack = enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            followup,
+        )?;
+        Ok((ack, boundary))
+    }
+
     pub fn spawn(
         command: &str,
         args: &[String],
         rows: u16,
         cols: u16,
-    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+    ) -> Result<(Self, mpsc::Receiver<PtyOutput>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -642,12 +704,26 @@ impl PtySession {
         let processor_clone = processor.clone();
         let consumed_offset = Arc::new(AtomicU64::new(0));
         let consumed_offset_reader = consumed_offset.clone();
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let output_sequence_reader = output_sequence.clone();
+        let output_order = Arc::new(Mutex::new(()));
+        let output_order_reader = output_order.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Publish identity at read time, before any lock or
+                        // bounded-channel wait. A submission that observes
+                        // this watermark must treat this chunk as pre-existing
+                        // even if its consumer has not dequeued it yet.
+                        let sequence = {
+                            let _order_guard = output_order_reader.lock();
+                            output_sequence_reader
+                                .fetch_add(1, Ordering::AcqRel)
+                                .saturating_add(1)
+                        };
                         {
                             // Lock order: processor THEN term. `resize`
                             // takes the same order; matching prevents
@@ -668,7 +744,13 @@ impl PtySession {
                             // the offset that matches the grid it renders.
                             consumed_offset_reader.fetch_add(n as u64, Ordering::Release);
                         }
-                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        if tx
+                            .blocking_send(PtyOutput {
+                                bytes: buf[..n].to_vec(),
+                                sequence,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -689,6 +771,8 @@ impl PtySession {
                 term,
                 processor,
                 consumed_offset,
+                output_sequence,
+                output_order,
             },
             rx,
         ))
@@ -758,6 +842,20 @@ impl PtySession {
         enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace, None)
     }
 
+    /// Queue a paced input atomically with the receive-time output watermark.
+    ///
+    /// The returned boundary is the latest producer sequence that precedes
+    /// this queue admission. Output carrying a sequence at or below it cannot
+    /// be evidence that this write reached the child, even if that output was
+    /// still waiting in the async receive queue when the write was submitted.
+    pub fn submit_write_paced_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(bytes, pace, None)
+    }
+
     /// Submit a paced primary payload followed by a delayed second write as
     /// one indivisible FIFO command.
     ///
@@ -776,6 +874,25 @@ impl PtySession {
         enqueue_user_write(
             &self.write_tx,
             &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            Some(FollowupWrite {
+                delay: followup_delay,
+                bytes: followup_bytes,
+            }),
+        )
+    }
+
+    /// Queue a compound paced write atomically with its receive-time output
+    /// watermark. See [`submit_write_paced_with_output_boundary`].
+    pub fn submit_write_paced_with_followup_and_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup_delay: Duration,
+        followup_bytes: Vec<u8>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(
             bytes,
             pace,
             Some(FollowupWrite {
@@ -1285,6 +1402,59 @@ mod tests {
         assert_eq!(
             snap_offset, total,
             "snapshot offset must match consumed offset"
+        );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn verified_write_boundary_includes_output_still_queued_for_consumer() {
+        let script = "printf 'same-echo\\n'; IFS= read -r line; printf '%s\\n' \"$line\"";
+        let (pty, mut rx) = PtySession::spawn("sh", &["-c".into(), script.into()], 24, 80).unwrap();
+
+        // Do not drain rx. Wait until the reader has assigned the initial
+        // output a sequence, forcing it to remain queued at submission time.
+        timeout(Duration::from_secs(2), async {
+            while pty
+                .output_sequence
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial PTY output should be assigned a producer sequence");
+
+        let (ack, boundary) = pty
+            .submit_write_paced_with_output_boundary(b"same-echo\n".to_vec(), Duration::ZERO)
+            .expect("queue verified write");
+        ack.await
+            .expect("write drainer should reply")
+            .expect("write should reach child");
+
+        let mut saw_stale = false;
+        let mut saw_fresh = false;
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            let text = String::from_utf8_lossy(chunk.as_bytes());
+            if text.contains("same-echo") {
+                if chunk.sequence() <= boundary {
+                    saw_stale = true;
+                } else {
+                    saw_fresh = true;
+                }
+            }
+            if saw_stale && saw_fresh {
+                break;
+            }
+        }
+
+        assert!(
+            saw_stale,
+            "the forced pre-submission chunk must be at or below the returned boundary"
+        );
+        assert!(
+            saw_fresh,
+            "the child echo read after submission must be above the returned boundary"
         );
         let _ = pty.shutdown();
     }
