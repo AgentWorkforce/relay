@@ -46,20 +46,19 @@ async function githubJson(url, token) {
  */
 export async function pullRequestFiles(apiUrl, repository, number, token) {
   const files = [];
-  const maxPages = 30; // 100 per page = 3,000 files
-  // One page past the cap distinguishes "exactly 3,000 files" (page 31 is
-  // empty, scope is known) from "more than 3,000" (page 31 has entries).
-  // Stopping at page 30 rejected an exactly-3,000-file PR as ambiguous.
-  for (let page = 1; page <= maxPages + 1; page += 1) {
+  // GitHub caps this endpoint: "Responses include a maximum of 3000 files."
+  // Page 31 is therefore empty for a 3,000-file PR AND for a 30,000-file one,
+  // so an empty probe page proves nothing — it cannot tell a complete diff from
+  // a truncated one. A full 30th page stays ambiguous and refuses, because
+  // classifying on a truncated list would let runtime files past the cap go
+  // unseen and the PR read as non-runtime.
+  const maxPages = 30; // 100 per page = the 3,000-file API cap
+  for (let page = 1; page <= maxPages; page += 1) {
     const batch = await githubJson(
       `${apiUrl}/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
       token
     );
     if (!Array.isArray(batch)) throw new Error('GitHub pull request files response was not an array');
-    if (page > maxPages) {
-      if (batch.length === 0) return files;
-      break;
-    }
     for (const entry of batch) {
       // A rename reports only its destination in `filename`. Moving a runtime
       // file into docs/ or tests/ would otherwise read as a non-runtime change,
@@ -71,7 +70,7 @@ export async function pullRequestFiles(apiUrl, repository, number, token) {
     if (batch.length < 100) return files;
   }
   const ambiguous = new Error(
-    'PR changes more than 3,000 files; RelayFlow proof dispatch refuses ambiguous scope'
+    'PR reaches the 3,000-file GitHub API cap; RelayFlow proof dispatch refuses a possibly truncated diff'
   );
   // Not a transport failure: scope this large must not be resolved by falling
   // back to the title, so this one escapes the caller's catch.

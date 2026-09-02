@@ -1885,34 +1885,32 @@ describe('RelayFlow proof changed-file collection', () => {
   });
 
   /**
-   * Page 30 returning a full 100 means "3,000 so far", not "more than 3,000".
-   * Probing one page past the cap tells those apart; stopping at 30 rejected an
-   * exactly-3,000-file PR as ambiguous scope.
+   * GitHub caps this endpoint at 3,000 files, so a full 30th page cannot be
+   * told apart from a truncated diff. Refusing is the only safe answer:
+   * classifying on a truncated list would let runtime files past the cap go
+   * unseen and the PR read as non-runtime.
+   *
+   * The stub is page-aware and returns distinct filenames per page, so the
+   * test fails if pagination stalls on page 1 instead of advancing.
    */
-  it('accepts a PR with exactly 3,000 changed files', async () => {
-    const full = Array.from({ length: 100 }, (_, i) => ({ filename: `packages/cli/src/f${i}.ts` }));
-    let calls = 0;
+  it('refuses a diff that reaches the 3,000-file API cap', async () => {
+    const pagesRequested: number[] = [];
     await withStubbedFetch(
-      (async () => {
-        calls += 1;
-        return jsonResponse(calls <= 30 ? full : []);
+      (async (url: string) => {
+        const page = Number(new URL(String(url)).searchParams.get('page'));
+        pagesRequested.push(page);
+        return jsonResponse(
+          Array.from({ length: 100 }, (_, i) => ({
+            filename: `packages/cli/src/p${page}-f${i}.ts`,
+          }))
+        );
       }) as unknown as typeof globalThis.fetch,
-      async () => {
-        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
-        expect(files).toHaveLength(3000);
-        expect(calls).toBe(31);
-      }
-    );
-  });
-
-  it('tags an over-large PR so it cannot fall back to the title', async () => {
-    const page = Array.from({ length: 100 }, (_, i) => ({ filename: `packages/cli/src/f${i}.ts` }));
-    await withStubbedFetch(
-      (async () => jsonResponse(page)) as unknown as typeof globalThis.fetch,
       async () => {
         await expect(pullRequestFiles('https://api.github.test', 'o/r', 1, 't')).rejects.toMatchObject({
           ambiguousScope: true,
         });
+        // Exactly the 30 capped pages, each requested once and in order.
+        expect(pagesRequested).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
       }
     );
   });
