@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Claude workers now start multiline tasks delivered by `fleet spawn --task` instead of leaving the brief unsubmitted in the composer.
+- `agent-relay node agent attach` no longer loses input typed while its drive or passthrough stream reconnects, while still refusing to replay into a different worker.
 
 ## [11.10.0] - 2026-09-02
 
