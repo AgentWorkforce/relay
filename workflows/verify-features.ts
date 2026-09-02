@@ -234,8 +234,9 @@ gated_check() {
 # CLI is outside this checkout, running more commands would produce precise but
 # meaningless results about a published binary.
 abort_for_invalid_provenance() {
-  if grep -q '^VERIFY_PROVENANCE_VALID=0$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
+  if ! grep -q '^VERIFY_PROVENANCE_VALID=1$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
     _cli_path=$(grep '^VERIFY_CLI_PATH=' "$ARTIFACTS/provenance.env" 2>/dev/null | cut -d= -f2- || true)
+    if [ -z "$_cli_path" ]; then _cli_path="missing provenance evidence"; fi
     echo "  FAIL  tier-aborted-invalid-provenance (CLI: $_cli_path)" | tee -a "$LOG"
     record "$TIER" "tier-aborted-invalid-provenance" fail \
       "feature checks were not run because CLI provenance is invalid for this checkout: $_cli_path"

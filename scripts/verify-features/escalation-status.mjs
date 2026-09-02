@@ -36,7 +36,7 @@ export function redactAlertText(value) {
 }
 
 function assertChannel(channel) {
-  if (!(channel in STATUS_FILES)) {
+  if (!Object.hasOwn(STATUS_FILES, channel)) {
     throw new Error(`unknown escalation channel: ${channel}`);
   }
 }
@@ -98,6 +98,7 @@ export function resetEscalationArtifacts(artifacts) {
     'verdict.json',
     'provenance.env',
     'caps.env',
+    'autofix.env',
     'issue-url.txt',
     'pr-url.txt',
     'failure-assessment.json',
@@ -113,7 +114,13 @@ export function readEscalationStatus(artifacts, channel) {
   assertChannel(channel);
   try {
     const record = JSON.parse(readFileSync(statusPath(artifacts, channel), 'utf8'));
-    if (record.channel !== channel || !VALID_STATES.has(record.state)) {
+    if (
+      record?.schemaVersion !== 1 ||
+      record.channel !== channel ||
+      !VALID_STATES.has(record.state) ||
+      typeof record.detail !== 'string' ||
+      (record.url !== undefined && typeof record.url !== 'string')
+    ) {
       throw new Error('invalid record');
     }
     return record;

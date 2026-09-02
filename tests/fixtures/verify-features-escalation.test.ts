@@ -61,6 +61,7 @@ describe('verify-features escalation status', () => {
     expect(capabilities).toMatch(/timeout:\s*10_000|timeout:\s*10000/);
     expect(capabilities).toContain('ARTIFACTS="${ARTIFACTS}"');
     expect(source).toContain('abort_for_invalid_provenance');
+    expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('failure-assessment.json');
     expect(source).toContain('relay-alert-envelope/1');
     expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
@@ -223,7 +224,7 @@ describe('verify-features escalation status', () => {
 
   it('clears stale delivery receipts before a new run', async () => {
     const directory = await artifacts();
-    for (const file of ['verdict.json', 'provenance.env', 'caps.env']) {
+    for (const file of ['verdict.json', 'provenance.env', 'caps.env', 'autofix.env']) {
       await writeFile(path.join(directory, file), 'stale run');
     }
     for (const channel of [
@@ -240,11 +241,27 @@ describe('verify-features escalation status', () => {
     resetEscalationArtifacts(directory);
 
     expect(escalationAuditFailures(directory)).toHaveLength(5);
-    for (const file of ['verdict.json', 'provenance.env', 'caps.env']) {
+    for (const file of ['verdict.json', 'provenance.env', 'caps.env', 'autofix.env']) {
       await expect(readFile(path.join(directory, file), 'utf8')).rejects.toMatchObject({
         code: 'ENOENT',
       });
     }
+  });
+
+  it('rejects prototype names and incomplete delivery receipts', async () => {
+    const directory = await artifacts();
+
+    expect(() =>
+      writeEscalationStatus(directory, 'toString' as never, 'delivered', 'invalid channel')
+    ).toThrow('unknown escalation channel: toString');
+
+    await writeFile(
+      path.join(directory, 'escalation-slack-primary.json'),
+      JSON.stringify({ channel: 'slack_primary', state: 'delivered' })
+    );
+    expect(escalationChannelAuditFailure(directory, 'slack_primary')).toBe(
+      'Slack primary alert failed: no valid escalation-slack-primary.json was produced'
+    );
   });
 
   it('redacts credentials from stored escalation URLs', async () => {
