@@ -1386,11 +1386,26 @@ if [ -z "$HEAD_SHA" ]; then
   exit 0
 fi
 
-# The broker cases need a broker binary built from THIS checkout. Without one
-# they are skipped with that cause rather than silently passing.
+# The broker cases need a broker binary built from THIS checkout. A leftover
+# binary under target/ is worse than none: the case would run green against an
+# OLD broker and report a head signature that says nothing about this commit.
+#
+# Provenance is established by age. If any broker source, Cargo.toml or
+# Cargo.lock is newer than the binary, the binary predates the tree and is
+# refused. This is deliberately conservative: on a fresh checkout every file
+# carries checkout time, so a cached target/ is rejected and the cases skip
+# with that cause rather than producing a false result.
 BROKER_BIN=""
+BROKER_SKIP_REASON="no broker binary is built in this checkout"
 for candidate in "target/release/agent-relay-broker" "target/debug/agent-relay-broker"; do
-  if [ -x "$candidate" ]; then BROKER_BIN="$PWD/$candidate"; break; fi
+  [ -x "$candidate" ] || continue
+  newer_source=$(find crates Cargo.toml Cargo.lock -newer "$candidate" -type f -print 2>/dev/null | head -n 1 || true)
+  if [ -n "$newer_source" ]; then
+    BROKER_SKIP_REASON="broker binary $candidate is older than $newer_source, so it was not built from this checkout"
+    continue
+  fi
+  BROKER_BIN="$PWD/$candidate"
+  break
 done
 
 for case_dir in "$CASE_ROOT"/*/; do
@@ -1430,7 +1445,7 @@ RUNNER_ARGS
     continue
   fi
   if [ -n "$needs_broker" ] && [ -z "$BROKER_BIN" ]; then
-    skip_check "corpus: $case_id" "case requires a broker binary and none is built in this checkout"
+    skip_check "corpus: $case_id" "case requires a broker binary: $BROKER_SKIP_REASON"
     continue
   fi
 
