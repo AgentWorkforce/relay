@@ -1195,7 +1195,12 @@ pub(crate) fn build_node_register(
     }
 }
 
-fn is_placement_repo_key(value: &str) -> bool {
+/// Whether `value` is a placement-safe `owner/name` repository key.
+///
+/// The Fleet wire is a privacy boundary: anything that is path-shaped or
+/// otherwise malformed must never be serialized, on either the `repo_keys`
+/// channel or the `repo:<key>` tag channel that placement falls back to.
+pub(crate) fn is_placement_repo_key(value: &str) -> bool {
     let mut segments = value.split('/');
     let Some(owner) = segments.next() else {
         return false;
