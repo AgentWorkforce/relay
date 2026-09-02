@@ -62,6 +62,8 @@ const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
 const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
+const HAS_TRUSTED_LANDLOCK_RUNTIME =
+  process.platform === 'linux' && existsSync('/usr/bin/python3') && existsSync('/usr/bin/sudo');
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -842,7 +844,7 @@ describe('exact broker artifact handoff', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'isolates trusted bootstrap imports from the case working directory',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-bootstrap-import-'));
@@ -869,7 +871,7 @@ describe('exact broker artifact handoff', () => {
     }
   );
 
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'allows private PTY allocation only after dropping bootstrap privileges',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-openpty-'));
@@ -938,7 +940,7 @@ describe('exact broker artifact handoff', () => {
     }
   );
 
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'isolates case PTYs from an occupied outer devpts namespace',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-occupied-devpts-'));
@@ -1033,7 +1035,7 @@ describe('exact broker artifact handoff', () => {
     }
   );
 
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'prevents the case from reacquiring sudo after no_new_privs',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-no-sudo-'));
@@ -1051,7 +1053,7 @@ describe('exact broker artifact handoff', () => {
     }
   );
 
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'keeps a stable self-spawning broker immutable under the case Landlock policy',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
