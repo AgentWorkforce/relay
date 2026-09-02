@@ -6,7 +6,7 @@ use crate::{
         DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
-    node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision},
+    node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
         TerminalToCloud, TERMINAL_CLOSE_RESERVE,
@@ -1655,6 +1655,10 @@ fn fleet_spawn_action_result(
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct FlushPendingRelayResult {
     pub(super) flushed: usize,
+    /// Messages removed from the parked queue and dead-lettered instead of
+    /// injected, because their Relaycast identity is no longer the one that
+    /// holds this worker's name. See the `Orphaned` arm of the flush loop.
+    pub(super) dead_lettered: usize,
     pub(super) failure: Option<String>,
 }
 
@@ -1664,26 +1668,31 @@ pub(super) struct FlushPendingRelayResult {
 ///
 /// relay#1310 design note: unlike `handle_fleet_deliver`'s `DrainNow` path,
 /// this loop's ack timing is intentionally **not** deferred to echo
-/// verification in this change. Each item's `can_ack_receipt` precondition
-/// (`node_control.rs`) requires the *previous* item's ack to have already
-/// committed, since `acked_up_to_seq` is a strictly ordered cumulative
-/// cursor; committing here happens synchronously in this one loop so a
-/// multi-item backlog drains in a single call. Deferring commit to async
-/// echo confirmation would stall the loop after the first item — the second
-/// item's `can_ack_receipt` check would never pass until the first item's
-/// echo resolves — turning a batch drain into a call-per-item serialization.
+/// verification in this change. An item's `Ready` classification
+/// (`FleetDeliveryBook::receipt_ackability` in `node_control.rs`) requires the
+/// *previous* item's ack to have already committed, since `acked_up_to_seq` is
+/// a strictly ordered cumulative cursor; committing here happens synchronously
+/// in this one loop so a multi-item backlog drains in a single call. Deferring
+/// commit to async echo confirmation would stall the loop after the first item
+/// — the second item would never classify `Ready` until the first item's echo
+/// resolves — turning a batch drain into a call-per-item serialization.
 /// A real fix needs an ack-cursor model that tolerates a pipeline of
 /// outstanding (unconfirmed) commits, which is a separate, larger change;
 /// this flush path still acks on write, not on echo, until that lands.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn flush_pending_relay_messages(
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     workers: &mut WorkerRegistry,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
+    obligation_store: &mut crate::obligation::ObligationStore,
     worker_name: &WorkerName,
     retry_interval: Duration,
 ) -> FlushPendingRelayResult {
     let mut result = FlushPendingRelayResult::default();
+    let mut dropped_dead_letter_events = 0usize;
 
     loop {
         let next = delivery_states
@@ -1694,14 +1703,80 @@ pub(super) async fn flush_pending_relay_messages(
             break;
         };
 
-        if let Some(receipt) = queued.relaycast_receipt.as_ref() {
-            if !fleet_delivery_book.can_ack_receipt(receipt) {
-                result.failure = Some(format!(
-                    "delivery sequence {} for '{}' is not the next ACKable receipt",
-                    receipt.seq, receipt.agent
-                ));
-                break;
+        // A message with no receipt (one restored across a broker restart —
+        // `relaycast_receipt` is `#[serde(skip)]`) has nothing to ACK and is
+        // simply injected, which is what `None` models here.
+        let ackability = queued
+            .relaycast_receipt
+            .as_ref()
+            .map(|receipt| fleet_delivery_book.receipt_ackability(receipt));
+
+        if let (Some(ReceiptAckability::Blocked), Some(receipt)) =
+            (ackability, queued.relaycast_receipt.as_ref())
+        {
+            result.failure = Some(format!(
+                "delivery sequence {} for '{}' is not the next ACKable receipt",
+                receipt.seq, receipt.agent
+            ));
+            break;
+        }
+
+        // An orphaned receipt is dead-lettered, never injected. Its Relaycast
+        // identity is no longer the one bound to this worker's name, so the
+        // process holding the name now may be a different agent generation —
+        // injecting would hand one identity's private messages to another.
+        // Dead-lettering unjams the queue (the actual relay#1593 harm was
+        // permanent deafness to *every subsequent* message) while keeping the
+        // orphan visible and replayable through `node deadletters` rather than
+        // silently dropped, which relay#1593 explicitly asks for. No ACK is
+        // sent, so Relaycast keeps ownership and its unread accounting is
+        // untouched.
+        if let (Some(ReceiptAckability::Orphaned { reason }), Some(receipt)) =
+            (ackability, queued.relaycast_receipt.as_ref())
+        {
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                agent = %receipt.agent,
+                agent_id = %receipt.agent_id,
+                seq = receipt.seq,
+                msg_id = %receipt.msg_id,
+                reason = reason.as_str(),
+                "dead-lettering a parked message whose Relaycast identity no longer holds this \
+                 worker's name; it is not injected because the name may now belong to a \
+                 different agent generation"
+            );
+            if !dead_letter_parked_message(
+                sdk_out_tx,
+                dead_letters,
+                DeadLetterEntry::from_parked_message(
+                    worker_name,
+                    relay_delivery_for_pending_message(&queued),
+                    queued.queued_at_ms,
+                    &format!("orphaned_delivery_receipt:{}", reason.as_str()),
+                ),
+            ) {
+                dropped_dead_letter_events += 1;
             }
+            // A boomerang obligation outlives the queue entry it was registered
+            // for. This message is never being delivered, so cancel it rather
+            // than let maintenance keep reminding the recipient about a message
+            // they never received.
+            if let Some(event_id) = queued.event_id.as_deref() {
+                if obligation_store.cancel(event_id) {
+                    tracing::info!(
+                        target = "relay_broker::fleet",
+                        worker = %worker_name,
+                        msg_id = %event_id,
+                        "cancelled the boomerang obligation for a dead-lettered parked message"
+                    );
+                }
+            }
+            let removed = delivery_states
+                .get_mut(worker_name)
+                .and_then(|state| state.pending.pop_front());
+            debug_assert_eq!(removed.as_ref(), Some(&queued));
+            result.dead_lettered += 1;
+            continue;
         }
 
         if let Err(error) =
@@ -1712,7 +1787,9 @@ pub(super) async fn flush_pending_relay_messages(
             break;
         }
 
-        if let Some(receipt) = queued.relaycast_receipt.as_ref() {
+        if let (Some(ReceiptAckability::Ready), Some(receipt)) =
+            (ackability, queued.relaycast_receipt.as_ref())
+        {
             let Some(up_to_seq) = fleet_delivery_book.commit_acked_receipt(receipt) else {
                 result.failure = Some(format!(
                     "delivery sequence {} for '{}' could not advance the ACK cursor",
@@ -1742,6 +1819,16 @@ pub(super) async fn flush_pending_relay_messages(
             .and_then(|state| state.pending.pop_front());
         debug_assert_eq!(removed.as_ref(), Some(&queued));
         result.flushed += 1;
+    }
+
+    if dropped_dead_letter_events > 0 {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            worker = %worker_name,
+            dropped_dead_letter_events,
+            "dead-letter records were retained, but some SDK events were dropped because the \
+             outbound channel was unavailable"
+        );
     }
 
     result

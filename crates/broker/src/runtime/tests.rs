@@ -612,16 +612,24 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
     delivery_book.commit_received(&second);
     let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
 
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
     let result = super::fleet::flush_pending_relay_messages(
         &mut delivery_states,
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
         &worker_name,
         Duration::from_secs(1),
     )
     .await;
 
+    let _ = &mut sdk_out_rx;
     assert_eq!(result.flushed, 2);
     assert_eq!(result.failure, None);
     assert!(delivery_states[&worker_name].pending.is_empty());
@@ -636,6 +644,415 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
             other => panic!("expected delivery ACK {expected_seq}, got {other:?}"),
         }
     }
+    assert!(fleet_control_rx.try_recv().is_err());
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// relay#1593 / #1559: a parked (`manual_flush`) queue must not be jammed
+/// forever by a receipt whose Relaycast identity is no longer the live one.
+///
+/// The agent re-registers while messages sit parked — a spawn-time
+/// `agent.register`, a token identity resolve, or an inventory repair all call
+/// `bind_authoritative_identity`, which retires the previous `agent_id` and
+/// drops its ACK cursor. The parked messages still carry receipts stamped with
+/// the retired `agent_id`, so the ACK gate can never be satisfied for them
+/// again. Before the fix the flush stopped at the head message and
+/// returned `flushed: 0` for the rest of the worker's life: the agent went
+/// permanently deaf while `send_dm` kept returning `recipientMatched: true`.
+#[tokio::test]
+async fn manual_flush_dead_letters_messages_whose_identity_was_rebound() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&first));
+    state.accept_inbound(held_fleet_message(&second));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    // The agent re-registers under a fresh Relaycast identity while its queue
+    // is parked. This retires `agent-worker-a` and drops its cursor.
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a-respawned");
+    assert_eq!(
+        delivery_book.received_up_to_seq("agent-worker-a"),
+        0,
+        "the retired identity's cursor must be gone — this is the precondition under test"
+    );
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(
+        result.flushed, 0,
+        "a retired identity's messages must not be injected into whoever holds the name now"
+    );
+    assert_eq!(
+        result.dead_lettered, 2,
+        "an orphaned receipt must not jam the parked queue — it is dead-lettered so the queue \
+         drains and the agent hears everything that comes after"
+    );
+    assert_eq!(result.failure, None);
+    assert!(
+        delivery_states[&worker_name].pending.is_empty(),
+        "the queue must be unjammed"
+    );
+    assert_eq!(dead_letters.len(), 2, "the orphans must be recoverable");
+    assert!(
+        dead_letters
+            .iter()
+            .all(|entry| entry.reason == "orphaned_delivery_receipt:identity_retired"),
+        "the dead-letter reason must name why the receipt could not be delivered"
+    );
+    // The store alone is not the observable surface: a dashboard or SDK client
+    // only learns about these through the event stream, so assert the frames.
+    for expected_delivery_id in ["delivery-1", "delivery-2"] {
+        let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+            .await
+            .expect("dead_letter_added should emit for every orphan")
+            .expect("sdk_out_tx should remain open");
+        assert_eq!(frame.payload["kind"], "dead_letter_added");
+        assert_eq!(frame.payload["delivery_id"], expected_delivery_id);
+        assert_eq!(
+            frame.payload["reason"],
+            "orphaned_delivery_receipt:identity_retired"
+        );
+    }
+    // Nothing is ACKed: the receipts belong to a retired identity, so the
+    // engine keeps ownership and its own redelivery policy is unchanged.
+    assert!(
+        fleet_control_rx.try_recv().is_err(),
+        "a retired identity's receipt must never advance an ACK cursor"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// A full SDK event channel must not turn a maximum-size orphan flush into
+/// `MAX_PENDING_PER_WORKER` consecutive timeout waits on the runtime loop.
+#[tokio::test]
+async fn manual_flush_dead_letter_events_do_not_serialize_backpressure_timeouts() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    let mut delivery_book = FleetDeliveryBook::default();
+    for seq in 1..=crate::types::MAX_PENDING_PER_WORKER as u64 {
+        let deliver = fleet_deliver(seq);
+        state.accept_inbound(held_fleet_message(&deliver));
+        delivery_book.commit_received(&deliver);
+    }
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a-respawned");
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+
+    let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(1);
+    sdk_out_tx
+        .try_send(ProtocolEnvelope {
+            v: crate::protocol::PROTOCOL_VERSION,
+            msg_type: "event".to_string(),
+            request_id: None,
+            payload: json!({ "kind": "channel_occupier" }),
+        })
+        .expect("the SDK channel should start full");
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        super::fleet::flush_pending_relay_messages(
+            &mut delivery_states,
+            &mut workers,
+            &mut delivery_book,
+            &fleet_control_tx,
+            &sdk_out_tx,
+            &mut dead_letters,
+            &mut obligation_store,
+            &worker_name,
+            Duration::from_secs(1),
+        ),
+    )
+    .await
+    .expect("a full event channel must not add one timeout per dead letter");
+
+    assert_eq!(
+        result.dead_lettered,
+        crate::types::MAX_PENDING_PER_WORKER,
+        "event backpressure must not prevent the queue from draining"
+    );
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    assert_eq!(dead_letters.len(), crate::types::MAX_PENDING_PER_WORKER);
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// Same jam, reached without a re-registration: a node-control resume
+/// handshake re-seeds the cursor at Relaycast's authoritative position
+/// (`seed_cursor` sets `acked == received == up_to_seq`). Messages parked
+/// below that position can never satisfy `seq == acked + 1` again.
+#[tokio::test]
+async fn manual_flush_dead_letters_messages_left_behind_by_a_reseeded_cursor() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&first));
+    state.accept_inbound(held_fleet_message(&second));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    // Reconnect: Relaycast reports it has already accounted for seq 2.
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a");
+    delivery_book.seed_cursor("worker-a", "agent-worker-a", 2);
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 0);
+    assert_eq!(
+        result.dead_lettered, 2,
+        "already-accounted receipts must clear the queue, not hold it forever"
+    );
+    assert_eq!(result.failure, None);
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    assert_eq!(dead_letters.len(), 2, "the orphans must be recoverable");
+    assert!(
+        dead_letters
+            .iter()
+            .all(|entry| entry.reason == "orphaned_delivery_receipt:cursor_moved_past"),
+        "a re-seeded cursor must be distinguishable from a retired identity"
+    );
+    for expected_delivery_id in ["delivery-1", "delivery-2"] {
+        let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+            .await
+            .expect("dead_letter_added should emit for every orphan")
+            .expect("sdk_out_tx should remain open");
+        assert_eq!(frame.payload["kind"], "dead_letter_added");
+        assert_eq!(frame.payload["delivery_id"], expected_delivery_id);
+        assert_eq!(
+            frame.payload["reason"],
+            "orphaned_delivery_receipt:cursor_moved_past"
+        );
+    }
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 2);
+    assert!(
+        fleet_control_rx.try_recv().is_err(),
+        "no ACK regression below the seeded cursor"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// cubic review finding on PR #1639: a boomerang obligation outlives the queue
+/// entry it was registered for. Dead-lettering an orphaned parked message
+/// without cancelling its obligation leaves maintenance firing up to three
+/// boomerang reminders at a recipient about a message that never reached them.
+#[tokio::test]
+async fn manual_flush_cancels_the_obligation_of_a_dead_lettered_parked_message() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&first));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a-respawned");
+
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+    obligation_store.register(
+        "message-1".to_string(),
+        "Alice".to_string(),
+        worker_name.to_string(),
+        Duration::from_millis(1),
+    );
+    // Pre-condition: without the cancel this obligation is due and would fire.
+    assert_eq!(
+        obligation_store
+            .drain_due(
+                Instant::now() + Duration::from_secs(1),
+                Duration::from_millis(1)
+            )
+            .len(),
+        1,
+        "the obligation must be live before the flush"
+    );
+    obligation_store = crate::obligation::ObligationStore::default();
+    obligation_store.register(
+        "message-1".to_string(),
+        "Alice".to_string(),
+        worker_name.to_string(),
+        Duration::from_millis(1),
+    );
+
+    let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(16);
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.dead_lettered, 1);
+    assert!(
+        obligation_store
+            .drain_due(
+                Instant::now() + Duration::from_secs(1),
+                Duration::from_millis(1)
+            )
+            .is_empty(),
+        "a dead-lettered message must not keep boomeranging at its recipient"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// cubic review finding on PR #1639: an `agent_id` can move to a *different
+/// name* while the old name still holds a parked queue. `bind_identity` carries
+/// the cursor across and rewrites `cursor.agent_name`, so a lookup by
+/// `agent_id` alone still finds a live cursor and would classify the stale
+/// receipt `Ready`. Committing it makes `commit_acked_receipt` rewrite
+/// `cursor.agent_name` back to the old name and ACK against it, after which
+/// `observe` rejects every delivery for the identity's current name as an
+/// identity conflict — corrupting a healthy agent to unjam a stale one.
+#[tokio::test]
+async fn manual_flush_orphans_a_receipt_whose_identity_now_answers_to_another_name() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&first));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+
+    // The identity keeps its agent_id but is rebound to a different name.
+    delivery_book.bind_authoritative_identity("worker-b", "agent-worker-a");
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 0);
+    assert_eq!(result.dead_lettered, 1);
+    assert!(
+        fleet_control_rx.try_recv().is_err(),
+        "a receipt for a superseded name binding must never emit an ACK"
+    );
+    assert_eq!(
+        delivery_book.active_agent_id("worker-b"),
+        Some("agent-worker-a"),
+        "the live name binding must survive the stale queue's flush"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// The guard that must survive the fix: a genuine ordering gap (seq 2 parked
+/// while seq 1 is still outstanding) still stops the flush, so held frames are
+/// never ACKed out of order.
+#[tokio::test]
+async fn manual_flush_still_stops_on_a_genuine_sequence_gap() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let expected = vec![held_fleet_message(&second)];
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    // Reuse the exact expected message: `held_fleet_message` stamps
+    // `queued_at_ms` with the current millisecond, so building it twice can
+    // differ across a tick boundary and flake the snapshot comparison.
+    state.accept_inbound(expected[0].clone());
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    // Both were received, but seq 1 is still unACKed on the auto-inject path,
+    // so seq 2 is not yet `acked + 1`.
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 0);
+    assert!(
+        result.failure.is_some(),
+        "an out-of-order receipt must still hold the queue"
+    );
+    assert_eq!(delivery_states[&worker_name].pending_snapshot(), expected);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
     assert!(fleet_control_rx.try_recv().is_err());
 
     cleanup_worker_registry(workers).await;
@@ -664,11 +1081,18 @@ async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
     delivery_book.commit_received(&second);
     let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
 
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
     let result = super::fleet::flush_pending_relay_messages(
         &mut delivery_states,
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
         &worker_name,
         Duration::from_millis(50),
     )
