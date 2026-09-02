@@ -615,7 +615,7 @@ ${ENV_DEFAULTS}
 
 echo "=== Capability probe ===" | tee "$LOG"
 
-if grep -q '^VERIFY_PROVENANCE_VALID=0$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
+if ! grep -q '^VERIFY_PROVENANCE_VALID=1$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
   echo "  ABORT  capability probes not run: CLI provenance is invalid" | tee -a "$LOG"
   for _name in broker workspace cloud gh git_repo jq slack provider_claude provider_codex provider_opencode provider_gemini provider_any; do
     echo "$_name=0" >> "$CAPS"

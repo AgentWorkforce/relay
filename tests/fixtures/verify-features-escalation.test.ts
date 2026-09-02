@@ -60,6 +60,7 @@ describe('verify-features escalation status', () => {
     expect(followup).toMatch(/dependsOn:\s*\[\s*['"]open-pr['"]\s*,\s*['"]slack-alert['"]\s*\]/);
     expect(capabilities).toMatch(/timeout:\s*10_000|timeout:\s*10000/);
     expect(capabilities).toContain('ARTIFACTS="${ARTIFACTS}"');
+    expect(capabilities).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('abort_for_invalid_provenance');
     expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('failure-assessment.json');
