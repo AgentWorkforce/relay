@@ -745,6 +745,46 @@ fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+fn duplicate_poll_fd_cloexec(fd: libc::c_int) -> io::Result<OwnedFd> {
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate >= 0 {
+        // SAFETY: `F_DUPFD_CLOEXEC` returned a new descriptor owned here.
+        return Ok(unsafe { OwnedFd::from_raw_fd(duplicate) });
+    }
+
+    let atomic_error = io::Error::last_os_error();
+    if atomic_error.raw_os_error() != Some(libc::EINVAL) {
+        return Err(atomic_error);
+    }
+
+    // Older kernels can reject F_DUPFD_CLOEXEC even when libc exposes it.
+    // Fall back to dup+fcntl, taking ownership immediately so every later
+    // error path closes the duplicate instead of leaking it.
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `dup` returned a new descriptor owned here. `OwnedFd` closes it
+    // if either fcntl below fails.
+    let duplicate = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe {
+        libc::fcntl(
+            duplicate.as_raw_fd(),
+            libc::F_SETFD,
+            flags | libc::FD_CLOEXEC,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(duplicate)
+}
+
 #[cfg(windows)]
 fn read_was_cancelled(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
@@ -826,13 +866,8 @@ impl PtySession {
                 .master
                 .as_raw_fd()
                 .context("pty master does not expose a pollable descriptor")?;
-            let duplicate = unsafe { libc::dup(master_fd) };
-            if duplicate < 0 {
-                return Err(io::Error::last_os_error())
-                    .context("failed to duplicate pty descriptor for readiness polling");
-            }
-            // SAFETY: `dup` returned a new descriptor owned by this scope.
-            unsafe { OwnedFd::from_raw_fd(duplicate) }
+            duplicate_poll_fd_cloexec(master_fd)
+                .context("failed to duplicate pty descriptor for readiness polling")?
         };
 
         let mut reader = pair
@@ -1444,16 +1479,18 @@ impl PtySession {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::{duplicate_poll_fd_cloexec, resolve_command_path, resolve_command_path_with};
     use super::{
         read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
         DEFAULT_NO_PID_EXIT_THRESHOLD,
     };
-    #[cfg(unix)]
-    use super::{resolve_command_path, resolve_command_path_with};
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
     use std::{
         collections::VecDeque,
         env,
@@ -1608,8 +1645,30 @@ mod tests {
 
     #[tokio::test]
     async fn verified_write_boundary_includes_output_still_queued_for_consumer() {
+        #[cfg(unix)]
         let script = "printf 'same-echo\\n'; IFS= read -r line; printf '%s\\n' \"$line\"";
+        #[cfg(unix)]
         let (pty, mut rx) = PtySession::spawn("sh", &["-c".into(), script.into()], 24, 80).unwrap();
+        #[cfg(unix)]
+        let submitted = b"same-echo\n".to_vec();
+
+        #[cfg(windows)]
+        let (pty, mut rx) = PtySession::spawn(
+            "powershell.exe",
+            &[
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "[Console]::Out.WriteLine('same-echo'); $line = [Console]::In.ReadLine(); [Console]::Out.WriteLine($line)".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        // Enter is carriage return on a Windows ConPTY input stream.
+        #[cfg(windows)]
+        let submitted = b"same-echo\r".to_vec();
 
         // Do not drain rx. Wait until the reader has assigned the initial
         // output a sequence, forcing it to remain queued at submission time.
@@ -1630,7 +1689,7 @@ mod tests {
         // readiness polling), while retaining the synchronous API.
         let submitted_at = std::time::Instant::now();
         let (ack, boundary) = pty
-            .submit_write_paced_with_output_boundary(b"same-echo\n".to_vec(), Duration::ZERO)
+            .submit_write_paced_with_output_boundary(submitted, Duration::ZERO)
             .expect("queue verified write");
         assert!(
             submitted_at.elapsed() < Duration::from_secs(1),
@@ -1748,6 +1807,22 @@ mod tests {
             write_rx.recv().unwrap(),
             WriteMsg::UserInput { .. }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polling_descriptor_is_created_close_on_exec() {
+        let source = std::fs::File::open("/dev/null").unwrap();
+        let duplicate = duplicate_poll_fd_cloexec(source.as_raw_fd()).unwrap();
+        assert_ne!(duplicate.as_raw_fd(), source.as_raw_fd());
+
+        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "F_GETFD failed: {}", io::Error::last_os_error());
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "polling descriptor must not leak into unrelated child processes"
+        );
     }
 
     #[test]

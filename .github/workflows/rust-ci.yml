@@ -39,6 +39,20 @@ jobs:
       - name: Run Rust tests (release)
         run: cargo test --release
 
+  relay-pty-windows-test:
+    name: Relay PTY Tests (windows-latest)
+    needs: changes
+    if: needs.changes.outputs.rust_changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Run relay-pty tests
+        run: cargo test -p relay-pty
+
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
     needs: changes
