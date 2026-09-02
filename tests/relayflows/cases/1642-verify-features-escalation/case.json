@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1642-verify-features-escalation",
+  "kind": "bugfix",
+  "title": "Fail the verifier when escalation delivery is lost",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1642-verify-features-escalation/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "escalation_delivery_failures_exit_zero"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "escalation_delivery_failures_exit_nonzero"
+    }
+  }
+}
