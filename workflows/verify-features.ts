@@ -52,11 +52,12 @@
  *
  * ## Environment
  *
- *   VERIFY_SLACK_CHANNEL    Slack channel for failures. Default #relay-health.
+ *   VERIFY_SLACK_CHANNEL    Required Slack channel ID for failures.
  *   VERIFY_AUTOFIX          "0" disables the issue/fix/PR path. Default on.
  *   VERIFY_ALLOW_CLI_DRIFT  "1" downgrades a CLI-vs-repo version mismatch from
  *                           a failure to a warning.
- *   POSTHOG_API_KEY         Enables PostHog emission. Host: POSTHOG_HOST.
+ *   POSTHOG_API_KEY         Delivers PostHog evidence. On FAIL, a missing key
+ *                           is recorded as a failed escalation. Host: POSTHOG_HOST.
  *   NIGHTCTO_EVIDENCE_URL   Enables infra escalation to NightCTO.
  *   NIGHTCTO_EVIDENCE_TOKEN Bearer token for the above.
  *   CLOUD_API_URL           Required for Slack delivery. Slack posts go through
@@ -74,6 +75,7 @@ const ARTIFACTS = '.workflow-artifacts/verify-features';
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
 const RUN_ID = `verify-${TIMESTAMP}`;
 const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
+const ESCALATION_STATUS_TOOL = 'scripts/verify-features/escalation-status.mjs';
 
 /** Unique suffix so a run never collides with existing workspace state. */
 const SUFFIX = `vf-${Date.now()}`;
@@ -81,14 +83,6 @@ const SUFFIX = `vf-${Date.now()}`;
 /** Canonical fix branch. RUN_ID already carries the "verify-" prefix. */
 const FIX_BRANCH = `fix/${RUN_ID}`;
 
-/**
- * Slack destination, as a channel ID.
- *
- * An ID rather than a #name because the cloud-relay runtime does not implement
- * channel resolution — `resolveChannel` is unsupported there, so a "#name" only
- * works if Slack itself accepts it for that workspace. An ID always resolves.
- */
-const SLACK_CHANNEL = process.env.VERIFY_SLACK_CHANNEL ?? 'C0AEKNLDNKW';
 const AUTOFIX = process.env.VERIFY_AUTOFIX !== '0';
 
 /**
@@ -231,6 +225,20 @@ gated_check() {
   fi
 }
 
+# Provenance is a validity precondition, not one ordinary feature check. If the
+# CLI is outside this checkout, running more commands would produce precise but
+# meaningless results about a published binary.
+abort_for_invalid_provenance() {
+  if grep -q '^VERIFY_PROVENANCE_VALID=0$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
+    _cli_path=$(grep '^VERIFY_CLI_PATH=' "$ARTIFACTS/provenance.env" 2>/dev/null | cut -d= -f2- || true)
+    echo "  FAIL  tier-aborted-invalid-provenance (CLI: $_cli_path)" | tee -a "$LOG"
+    record "$TIER" "tier-aborted-invalid-provenance" fail \
+      "feature checks were not run because CLI provenance is invalid for this checkout: $_cli_path"
+    return 0
+  fi
+  return 1
+}
+
 finish_tier() {
   echo "" | tee -a "$LOG"
   echo "$TIER result: $PASS passed, $FAIL failed, $SKIP skipped" | tee -a "$LOG"
@@ -350,17 +358,18 @@ posthog_capture() {
   _props="$2"
   if [ -z "$POSTHOG_API_KEY" ]; then
     echo "  [posthog] POSTHOG_API_KEY unset — not emitting $_event"
-    return 0
+    return 1
   fi
   _body=$(printf '{"api_key":"%s","event":"%s","distinct_id":"relay-verify-features","properties":%s}' \
     "$POSTHOG_API_KEY" "$_event" "$_props")
-  if curl -sS -m 15 -X POST "$POSTHOG_HOST/capture/" \
+  if curl -fsS -m 15 -X POST "$POSTHOG_HOST/capture/" \
       -H 'content-type: application/json' -d "$_body" >/dev/null 2>&1; then
     echo "  [posthog] emitted $_event"
+    return 0
   else
-    echo "  [posthog] emit failed (non-fatal): $_event"
+    echo "  [posthog] emit failed: $_event"
+    return 1
   fi
-  return 0
 }
 `;
 
@@ -428,7 +437,9 @@ Failure contract:
   - A check that cannot run   => SKIP with a stated cause. Never a pass.
 
 A FAIL posts to Slack, opens a GitHub issue, and attempts a fix on a branch
-with a draft PR. A failure of the harness itself escalates to NightCTO.
+with a draft PR. A failure of the harness itself escalates to NightCTO. Each
+Slack attempt also emits a credential-free relay-alert-envelope/1 artifact for
+a trusted scheduler postback; an envelope is a handoff, not a delivery receipt.
 EOF
 `,
   });
@@ -500,6 +511,7 @@ CLI_PATH=$(command -v relay 2>/dev/null || echo "not-found")
 CLI_VERSION=$(relay version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 REPO_VERSION=$(node -e 'try{process.stdout.write(require("./package.json").version)}catch(e){process.stdout.write("unknown")}' 2>/dev/null || echo "unknown")
 GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+PROVENANCE_VALID=1
 
 echo "  relay path:     $CLI_PATH" | tee -a "$LOG"
 echo "  relay version:  $CLI_VERSION" | tee -a "$LOG"
@@ -515,8 +527,10 @@ echo "  git sha:        $GIT_SHA" | tee -a "$LOG"
 } > "${ARTIFACTS}/provenance.env"
 
 if [ "$CLI_PATH" = "not-found" ]; then
+  PROVENANCE_VALID=0
   record "$TIER" "cli-present" fail "relay is not on PATH"
   echo "  FAIL  relay is not on PATH" | tee -a "$LOG"
+  echo "VERIFY_PROVENANCE_VALID=$PROVENANCE_VALID" >> "${ARTIFACTS}/provenance.env"
   exit 0
 fi
 record "$TIER" "cli-present" pass ""
@@ -529,6 +543,7 @@ elif [ "$CLI_VERSION" = "$REPO_VERSION" ]; then
 elif [ "$VERIFY_ALLOW_CLI_DRIFT" = "1" ]; then
   skip_check "cli-matches-repo" "CLI $CLI_VERSION != repo $REPO_VERSION (drift allowed by env)"
 else
+  PROVENANCE_VALID=0
   echo "  FAIL  cli-matches-repo: verifying $CLI_VERSION but repo is $REPO_VERSION" | tee -a "$LOG"
   record "$TIER" "cli-matches-repo" fail "CLI under test is $CLI_VERSION but the repo is $REPO_VERSION; results do not describe this checkout"
 fi
@@ -544,6 +559,7 @@ echo "  resolved CLI: $CLI_REAL" | tee -a "$LOG"
 echo "  repo root:    $REPO_REAL" | tee -a "$LOG"
 
 if [ -z "$REPO_ROOT" ]; then
+  PROVENANCE_VALID=0
   # Falling back to $PWD would only prove the binary sits under the current
   # directory, which is not provenance. Say so instead of claiming a pass.
   skip_check "cli-belongs-to-checkout" "not a git checkout — cannot establish which tree the CLI was built from"
@@ -555,17 +571,15 @@ case "$CLI_REAL" in
     record "$TIER" "cli-belongs-to-checkout" pass ""
     ;;
   *)
-    if [ "$VERIFY_ALLOW_CLI_DRIFT" = "1" ]; then
-      skip_check "cli-belongs-to-checkout" "CLI at $CLI_REAL is outside $REPO_REAL (allowed by env)"
-    else
-      echo "  FAIL  cli-belongs-to-checkout: $CLI_REAL is outside $REPO_REAL" | tee -a "$LOG"
-      record "$TIER" "cli-belongs-to-checkout" fail "the CLI under test resolves to $CLI_REAL, outside this checkout ($REPO_REAL); a matching version number does not make it this branch's build"
-    fi
+    PROVENANCE_VALID=0
+    echo "  FAIL  cli-belongs-to-checkout: $CLI_REAL is outside $REPO_REAL" | tee -a "$LOG"
+    record "$TIER" "cli-belongs-to-checkout" fail "the CLI under test resolves to $CLI_REAL, outside this checkout ($REPO_REAL); a matching version number does not make it this branch's build"
     ;;
 esac
 
 fi
 
+echo "VERIFY_PROVENANCE_VALID=$PROVENANCE_VALID" >> "${ARTIFACTS}/provenance.env"
 finish_tier
 exit 0
 `,
@@ -593,15 +607,38 @@ ${ENV_DEFAULTS}
 
 echo "=== Capability probe ===" | tee "$LOG"
 
+if grep -q '^VERIFY_PROVENANCE_VALID=0$' "$ARTIFACTS/provenance.env" 2>/dev/null; then
+  echo "  ABORT  capability probes not run: CLI provenance is invalid" | tee -a "$LOG"
+  for _name in broker workspace cloud gh git_repo jq slack provider_claude provider_codex provider_opencode provider_gemini provider_any; do
+    echo "$_name=0" >> "$CAPS"
+  done
+  cat "$CAPS"
+  exit 0
+fi
+
 probe() {
   _name="$1"
   _cmd="$2"
-  if eval "$_cmd" >/dev/null 2>&1; then
+  PROBE_COMMAND="$_cmd" node -e '
+    const { spawnSync } = require("node:child_process");
+    const result = spawnSync("/bin/sh", ["-c", process.env.PROBE_COMMAND], {
+      stdio: "ignore",
+      timeout: 10000,
+    });
+    if (result.error && result.error.code === "ETIMEDOUT") process.exit(124);
+    process.exit(result.status === 0 ? 0 : 1);
+  '
+  _rc=$?
+  if [ "$_rc" -eq 0 ]; then
     echo "$_name=1" >> "$CAPS"
     echo "  YES  $_name" | tee -a "$LOG"
   else
     echo "$_name=0" >> "$CAPS"
-    echo "  no   $_name" | tee -a "$LOG"
+    if [ "$_rc" -eq 124 ]; then
+      echo "  no   $_name (probe timed out after 10s)" | tee -a "$LOG"
+    else
+      echo "  no   $_name" | tee -a "$LOG"
+    fi
   fi
 }
 
@@ -644,6 +681,7 @@ LOG="${ARTIFACTS}/tier1.log"
 ${PRELUDE}
 
 echo "=== Tier 1: CLI Health and Command Discovery ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 run_check "relay version"          "relay version"            "[0-9]\+\.[0-9]"
 run_check "relay --help"           "relay --help"             "Usage"
@@ -686,6 +724,7 @@ LOG="${ARTIFACTS}/tier2.log"
 ${PRELUDE}
 
 echo "=== Tier 2: Broker Lifecycle and Node Agents ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 run_check "node status shows running" "relay node status"        "running"
 run_check "node metrics"             "relay node metrics"        "."
@@ -731,6 +770,7 @@ CHANNEL="vf-channel-${SUFFIX}"
 MSG_TEXT="verify-msg-${SUFFIX}"
 
 echo "=== Tier 3: Channels, Messages, Threads, Reactions, Inbox ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 # Parse the JSON token field rather than matching any long-ish string:
 # "agent register" on an existing name prints that the agent already exists,
@@ -824,6 +864,7 @@ AGENT_B="vf-bob-${SUFFIX}"
 CHANNEL="vf-private-${SUFFIX}"
 
 echo "=== Tier 4: Cross-Agent DMs, Invites, Read Receipts, Files ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 TOKEN_A=$(relay agent register "$AGENT_A" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
 TOKEN_B=$(relay agent register "$AGENT_B" 2>&1 | grep -o '"token": *"[^"]*"' | head -1 | sed 's/.*: *"//;s/".*//' || echo "")
@@ -923,6 +964,7 @@ LOG="${ARTIFACTS}/tier5.log"
 ${PRELUDE}
 
 echo "=== Tier 5: Cloud, Fleet, Integrations, Skills, Reflex ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 if ! have_cap cloud; then
   echo "  Cloud capability absent — every tier 5 check is a stated SKIP." | tee -a "$LOG"
@@ -1020,6 +1062,7 @@ LOG="${ARTIFACTS}/tier6.log"
 ${PRELUDE}
 
 echo "=== Tier 6: Managed Agents, Harnesses, PTY, SDK ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 # Discovery works without credentials and catches a removed subcommand.
 run_check "node agent spawn --help"   "relay node agent spawn --help"   "Usage"
@@ -1096,6 +1139,7 @@ LOG="${ARTIFACTS}/critical-paths.log"
 ${PRELUDE}
 
 echo "=== Critical Paths (see .agentworkforce/features/critical-paths.md) ===" | tee "$LOG"
+if abort_for_invalid_provenance; then finish_tier; exit 0; fi
 
 # ── CP1: local broker lifecycle ──────────────────────────────────────────
 # Uses an isolated state dir so bringing the broker down cannot disturb the
@@ -1720,11 +1764,14 @@ set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
 RUN_ID="${RUN_ID}"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
 ${POSTHOG_FN}
 
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
-  echo "  [posthog] no verdict.json — nothing to emit"
+  node "$STATUS_TOOL" write "$ARTIFACTS" posthog failed \
+    "no verdict.json; PostHog run evidence could not be built"
+  echo "POSTHOG_FAILED: no verdict.json"
   exit 0
 fi
 
@@ -1767,10 +1814,35 @@ for (const failure of failures.slice(0, 50)) {
 }
 PHEOF
 
+TOTAL=$(wc -l < "$ARTIFACTS/posthog-payloads.txt" 2>/dev/null | tr -d ' ' || true)
+if [ -z "$TOTAL" ]; then TOTAL=0; fi
+if [ -z "$POSTHOG_API_KEY" ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" posthog failed \
+    "$TOTAL event(s) dropped: POSTHOG_API_KEY is unset"
+  echo "POSTHOG_FAILED: $TOTAL event(s) dropped because POSTHOG_API_KEY is unset"
+  exit 0
+fi
+
+DELIVERED=0
+FAILED=0
 while IFS="$(printf '\t')" read -r event props; do
   [ -n "$event" ] || continue
-  posthog_capture "$event" "$props"
+  if posthog_capture "$event" "$props"; then
+    DELIVERED=$((DELIVERED + 1))
+  else
+    FAILED=$((FAILED + 1))
+  fi
 done < "$ARTIFACTS/posthog-payloads.txt"
+
+if [ "$FAILED" -eq 0 ] && [ "$DELIVERED" -eq "$TOTAL" ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" posthog delivered \
+    "$DELIVERED/$TOTAL event(s) delivered"
+  echo "POSTHOG_DELIVERED: $DELIVERED/$TOTAL event(s)"
+else
+  node "$STATUS_TOOL" write "$ARTIFACTS" posthog failed \
+    "$FAILED/$TOTAL event(s) failed; $DELIVERED delivered"
+  echo "POSTHOG_FAILED: $FAILED/$TOTAL event(s) failed"
+fi
 
 exit 0
 `,
@@ -1855,26 +1927,31 @@ exit 0
 
   wf.step('slack-alert', {
     type: 'deterministic',
-    dependsOn: ['verdict'],
+    dependsOn: ['verdict', 'emit-posthog', 'file-issue'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
-CHANNEL="${SLACK_CHANNEL}"
+CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
 ${SLACK_POST_FN}
 
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
-  echo "SLACK_SKIPPED: no verdict.json to report"
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+    "no verdict.json to report"
+  echo "SLACK_FAILED: no verdict.json to report"
   exit 0
 fi
 
 VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
 
 if [ "$VERDICT" = "PASS" ]; then
-  echo "SLACK_SKIPPED: verdict is PASS — not alerting"
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary not_applicable \
+    "verdict is PASS"
+  echo "SLACK_NOT_APPLICABLE: verdict is PASS — not alerting"
   exit 0
 fi
 
@@ -1916,7 +1993,28 @@ lines.push('Artifacts: ${BT}' + artifacts + '${BT}');
 process.stdout.write(lines.join('\n'));
 SLACKEOF
 
-slack_post "$CHANNEL" "$ARTIFACTS/slack-message.txt" || true
+{
+  echo ""
+  node "$STATUS_TOOL" render-initial "$ARTIFACTS"
+} >> "$ARTIFACTS/slack-message.txt"
+
+node "$STATUS_TOOL" redact-file "$ARTIFACTS/slack-message.txt"
+if [ -z "$CHANNEL" ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+    "VERIFY_SLACK_CHANNEL is unset; no destination was assumed"
+elif slack_post "$CHANNEL" "$ARTIFACTS/slack-message.txt"; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary delivered \
+    "failure alert posted to $CHANNEL"
+else
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+    "failure alert could not be posted to $CHANNEL"
+fi
+if [ -n "$CHANNEL" ]; then
+  node "$STATUS_TOOL" envelope "$ARTIFACTS" primary "${RUN_ID}" "$CHANNEL" \
+    "$ARTIFACTS/slack-message.txt" slack_primary
+else
+  echo "ALERT_ENVELOPE_FAILED: VERIFY_SLACK_CHANNEL is required"
+fi
 exit 0
 `,
   });
@@ -1973,28 +2071,40 @@ set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
 AUTOFIX="${AUTOFIX ? '1' : '0'}"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
 
 if [ "$AUTOFIX" != "1" ]; then
-  echo "ISSUE_SKIPPED: VERIFY_AUTOFIX=0"
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue disabled \
+    "VERIFY_AUTOFIX=0; operator disabled GitHub escalation"
+  echo "ISSUE_DISABLED: VERIFY_AUTOFIX=0"
   exit 0
 fi
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
-  echo "ISSUE_SKIPPED: no verdict.json"
-  exit 0
-fi
-if ! command -v gh >/dev/null 2>&1; then
-  echo "ISSUE_SKIPPED: gh CLI not available"
-  exit 0
-fi
-if ! gh auth status >/dev/null 2>&1; then
-  echo "ISSUE_SKIPPED: gh is not authenticated"
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue failed \
+    "no verdict.json; cannot file a trustworthy issue"
+  echo "ISSUE_FAILED: no verdict.json"
   exit 0
 fi
 
 VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
 if [ "$VERDICT" = "PASS" ]; then
-  echo "ISSUE_SKIPPED: verdict is PASS"
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue not_applicable \
+    "verdict is PASS"
+  echo "ISSUE_NOT_APPLICABLE: verdict is PASS"
+  exit 0
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue failed \
+    "gh CLI is not available"
+  echo "ISSUE_FAILED: gh CLI not available"
+  exit 0
+fi
+if ! gh auth status >/dev/null 2>&1; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue failed \
+    "gh is not authenticated"
+  echo "ISSUE_FAILED: gh is not authenticated"
   exit 0
 fi
 
@@ -2047,8 +2157,12 @@ ISSUE_URL=$(gh issue create --title "$TITLE" --body-file "$ARTIFACTS/issue-body.
 
 if [ -n "$ISSUE_URL" ]; then
   echo "$ISSUE_URL" > "$ARTIFACTS/issue-url.txt"
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue delivered \
+    "issue created" "$ISSUE_URL"
   echo "ISSUE_CREATED: $ISSUE_URL"
 else
+  node "$STATUS_TOOL" write "$ARTIFACTS" github_issue failed \
+    "gh issue create produced no URL"
   echo "ISSUE_FAILED: gh issue create produced no URL"
 fi
 
@@ -2099,9 +2213,20 @@ per-tier logs in ${ARTIFACTS}/ for detail.
    later gate counts them and will reject the branch if the count drops.
 4. Re-run the specific failing tier after your fix and paste the real output as
    evidence. A fix with no re-run is not a fix.
-5. If a failure is environmental (no cloud login, no provider CLI, expired
-   credentials), do NOT patch code. Report it as environmental and change
-   nothing — those cases are already recorded as SKIPs or escalated to NightCTO.
+5. Classify EVERY failed check separately. "Environmental" is allowed only
+   with concrete evidence from a named command/log proving the missing external
+   prerequisite. A blanket statement that all failures are environmental is
+   invalid. If evidence is insufficient, use category \`unknown\`, not
+   \`environmental\`.
+6. A \`cli-belongs-to-checkout\` failure is category \`provenance\`, never
+   environmental: it means the run exercised a different artifact and the
+   remaining results are not evidence about this checkout.
+7. A failure whose evidence contains \`Recovery authority does not match the
+   expected agent identity\` is category \`identity\`, never environmental or
+   "missing broker". Preserve that exact evidence for human review.
+8. If a failure is genuinely environmental (no cloud login, no provider CLI,
+   expired credentials), do NOT patch code. Explain the evidence and change
+   nothing for that specific failure.
 
 ## Deliverables
 
@@ -2113,6 +2238,19 @@ Write a file \`${ARTIFACTS}/fix-summary.md\` containing:
 - \`Environmental:\` any failures you deliberately did not patch, and why.
 - \`Assertions changed:\` any verification check you modified, with justification,
   or "none".
+
+Also write \`${ARTIFACTS}/failure-assessment.json\` as a JSON array with exactly
+one object per entry in verdict.json's failure arrays. Every object must have:
+
+- \`tier\` and \`check\`: exact strings from verdict.json.
+- \`category\`: one of \`product\`, \`provenance\`, \`identity\`,
+  \`environmental\`, or \`unknown\`.
+- \`evidence\`: the concrete log line or command output supporting the category.
+- \`reasoning\`: why that evidence supports the category and whether code changed.
+
+The integrity gate rejects missing entries, evidence-free environmental claims,
+and provenance/identity failures mislabeled as environmental. This assessment is
+included in the Slack follow-up so a human can disagree with your judgement.
 
 Commit your work on the branch. Do NOT open a pull request — a later step does
 that. Do NOT merge anything.`,
@@ -2153,6 +2291,74 @@ if [ -f "$ARTIFACTS/verdict.json" ]; then
     echo "INTEGRITY=not-applicable" > "$ARTIFACTS/fix-integrity.env"
     exit 0
   fi
+fi
+
+# A fixer that labels everything "environmental" without evidence is not a
+# fix. Validate one explicit assessment per failed check before considering the
+# branch or PR state.
+node <<'ASSESSMENTEOF'
+const fs = require('node:fs');
+const artifacts = process.env.VERIFY_ARTIFACTS || '.workflow-artifacts/verify-features';
+const verdict = JSON.parse(fs.readFileSync(artifacts + '/verdict.json', 'utf8'));
+const assessments = JSON.parse(fs.readFileSync(artifacts + '/failure-assessment.json', 'utf8'));
+const allowed = new Set(['product', 'provenance', 'identity', 'environmental', 'unknown']);
+const expected = [];
+for (const [tier, bucket] of Object.entries(verdict.tiers)) {
+  for (const failure of bucket.failures) expected.push({ tier, ...failure });
+}
+const errors = [];
+if (!Array.isArray(assessments)) {
+  errors.push('failure-assessment.json must be an array');
+} else {
+  const byKey = new Map();
+  for (const assessment of assessments) {
+    const key = String(assessment.tier) + '\0' + String(assessment.check);
+    if (byKey.has(key)) errors.push('duplicate assessment: ' + assessment.tier + '/' + assessment.check);
+    byKey.set(key, assessment);
+  }
+  for (const failure of expected) {
+    const key = failure.tier + '\0' + failure.check;
+    const assessment = byKey.get(key);
+    if (!assessment) {
+      errors.push('missing assessment: ' + failure.tier + '/' + failure.check);
+      continue;
+    }
+    if (!allowed.has(assessment.category)) errors.push('invalid category: ' + key);
+    if (String(assessment.evidence || '').trim().length < 5) errors.push('missing evidence: ' + key);
+    if (String(assessment.reasoning || '').trim().length < 10) errors.push('missing reasoning: ' + key);
+    const provenanceFailure =
+      failure.tier === 'provenance' ||
+      String(failure.check).includes('invalid-provenance') ||
+      String(failure.reason).includes('provenance is invalid for this checkout');
+    if (provenanceFailure && assessment.category !== 'provenance') {
+      errors.push('provenance failure mislabeled as ' + assessment.category + ': ' + key);
+    }
+    const identityEvidence = String(failure.reason) + '\n' + String(assessment.evidence || '');
+    if (
+      identityEvidence.includes('Recovery authority does not match the expected agent identity') &&
+      assessment.category !== 'identity'
+    ) {
+      errors.push('recovery-authority failure mislabeled as ' + assessment.category + ': ' + key);
+    }
+    if (assessment.category === 'environmental' && String(assessment.evidence || '').trim().length < 20) {
+      errors.push('environmental assessment lacks concrete evidence: ' + key);
+    }
+  }
+  if (byKey.size !== expected.length) {
+    errors.push('assessment count ' + byKey.size + ' does not match failure count ' + expected.length);
+  }
+}
+if (errors.length > 0) {
+  for (const error of errors) console.error('ASSESSMENT_INVALID: ' + error);
+  process.exit(1);
+}
+console.log('ASSESSMENT_OK: ' + expected.length + ' failure(s) classified with evidence');
+ASSESSMENTEOF
+ASSESSMENT_RC=$?
+if [ "$ASSESSMENT_RC" -ne 0 ]; then
+  echo "INTEGRITY_FAIL: fixer did not provide a valid per-failure assessment"
+  echo "INTEGRITY=fail" > "$ARTIFACTS/fix-integrity.env"
+  exit 0
 fi
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -2229,35 +2435,61 @@ exit 0
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
+AUTOFIX="${AUTOFIX ? '1' : '0'}"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 
 if [ ! -f "$ARTIFACTS/fix-integrity.env" ]; then
-  echo "PR_SKIPPED: no integrity result — the fix path did not complete"
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
+    "no integrity result; the fix path did not complete"
+  echo "PR_FAILED: no integrity result — the fix path did not complete"
   exit 0
 fi
 
 . "$ARTIFACTS/fix-integrity.env"
 
 if [ "$INTEGRITY" != "ok" ]; then
-  echo "PR_SKIPPED: integrity gate returned '$INTEGRITY' — not opening a PR"
+  PR_STATE="failed"
+  PR_PREFIX="PR_FAILED"
+  if [ "$AUTOFIX" != "1" ]; then
+    PR_STATE="disabled"
+    PR_PREFIX="PR_DISABLED"
+  elif [ -f "$ARTIFACTS/verdict.json" ]; then
+    VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json" 2>/dev/null || true)
+    if [ "$VERDICT" = "PASS" ]; then
+      PR_STATE="not_applicable"
+      PR_PREFIX="PR_NOT_APPLICABLE"
+    fi
+  fi
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr "$PR_STATE" \
+    "integrity gate returned '$INTEGRITY'; no validated fix commit exists"
+  echo "$PR_PREFIX: integrity gate returned '$INTEGRITY' — not opening a PR"
   exit 0
 fi
 if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
-  echo "PR_SKIPPED: gh unavailable or unauthenticated"
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
+    "gh is unavailable or unauthenticated"
+  echo "PR_FAILED: gh unavailable or unauthenticated"
   exit 0
 fi
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 if [ "$BRANCH" = "main" ]; then
-  echo "PR_SKIPPED: refusing to open a PR from main"
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
+    "fixer remained on main; refusing to open a PR"
+  echo "PR_FAILED: refusing to open a PR from main"
   exit 0
 fi
 
 if git diff --quiet HEAD 2>/dev/null && [ -z "$(git log origin/main..HEAD --oneline 2>/dev/null)" ]; then
-  echo "PR_SKIPPED: no commits on $BRANCH relative to origin/main"
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
+    "no fix commits on $BRANCH relative to origin/main"
+  echo "PR_FAILED: no commits on $BRANCH relative to origin/main"
   exit 0
 fi
 
 git push -u origin "$BRANCH" 2>&1 | tail -3 || {
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
+    "could not push $BRANCH"
   echo "PR_FAILED: could not push $BRANCH"
   exit 0
 }
@@ -2296,12 +2528,16 @@ PR_URL=$(gh pr create --draft --title "fix: feature verification failures (${RUN
 
 if [ -n "$PR_URL" ]; then
   echo "$PR_URL" > "$ARTIFACTS/pr-url.txt"
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr delivered \
+    "draft PR created" "$PR_URL"
   echo "PR_CREATED: $PR_URL"
   if [ -f "$ARTIFACTS/issue-url.txt" ]; then
     gh issue comment "$(cat "$ARTIFACTS/issue-url.txt")" \
       --body "Draft fix PR opened: $PR_URL" >/dev/null 2>&1 || true
   fi
 else
+  node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
+    "gh pr create produced no URL"
   echo "PR_FAILED: gh pr create produced no URL"
 fi
 
@@ -2313,46 +2549,167 @@ exit 0
 
   wf.step('slack-followup', {
     type: 'deterministic',
-    dependsOn: ['open-pr'],
+    dependsOn: ['open-pr', 'slack-alert'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
-CHANNEL="${SLACK_CHANNEL}"
+CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
 ${SLACK_POST_FN}
 
-ISSUE=$(cat "$ARTIFACTS/issue-url.txt" 2>/dev/null || true)
-PR=$(cat "$ARTIFACTS/pr-url.txt" 2>/dev/null || true)
+if [ ! -f "$ARTIFACTS/verdict.json" ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
+    "no verdict.json; final escalation status could not be built"
+  echo "FOLLOWUP_FAILED: no verdict.json"
+  exit 0
+fi
 
-if [ -z "$ISSUE" ] && [ -z "$PR" ]; then
-  echo "FOLLOWUP_SKIPPED: no issue or PR to report"
+VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
+if [ "$VERDICT" = "PASS" ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup not_applicable \
+    "verdict is PASS"
+  echo "FOLLOWUP_NOT_APPLICABLE: verdict is PASS"
   exit 0
 fi
 
 FOLLOWUP="$ARTIFACTS/slack-followup.txt"
 {
   echo "Follow-up for \`${RUN_ID}\`:"
-  [ -n "$ISSUE" ] && echo "• Issue: $ISSUE"
-  if [ -n "$PR" ]; then
-    echo "• Draft fix PR: $PR"
-  else
-    echo "• No fix PR — the fix attempt did not pass the integrity gate. Needs a human."
-  fi
+  node "$STATUS_TOOL" render-final "$ARTIFACTS"
 } > "$FOLLOWUP"
 
-slack_post "$CHANNEL" "$FOLLOWUP" || true
+node "$STATUS_TOOL" redact-file "$FOLLOWUP"
+if [ -z "$CHANNEL" ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
+    "VERIFY_SLACK_CHANNEL is unset; no destination was assumed"
+elif slack_post "$CHANNEL" "$FOLLOWUP"; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup delivered \
+    "final escalation status posted to $CHANNEL"
+else
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
+    "final escalation status could not be posted to $CHANNEL"
+fi
+if [ -n "$CHANNEL" ]; then
+  node "$STATUS_TOOL" envelope "$ARTIFACTS" followup "${RUN_ID}" "$CHANNEL" \
+    "$FOLLOWUP" slack_followup
+else
+  echo "ALERT_ENVELOPE_FAILED: VERIFY_SLACK_CHANNEL is required"
+fi
 exit 0
 `,
   });
 
-  // ── Phase 22: enforce the verdict ────────────────────────────────────────
+  // Each delivery contract gets its own terminal leaf gate. Failing the
+  // delivery step itself would prune downstream reporting; leaf gates make the
+  // summary red per channel while siblings continue to the final Slack status.
+  const escalationChannelGates = [
+    {
+      step: 'enforce-posthog-delivery',
+      dependency: 'emit-posthog',
+      channel: 'posthog',
+      requiresAutofix: false,
+    },
+    {
+      step: 'enforce-github-issue-delivery',
+      dependency: 'file-issue',
+      channel: 'github_issue',
+      requiresAutofix: true,
+    },
+    {
+      step: 'enforce-draft-pr-delivery',
+      dependency: 'open-pr',
+      channel: 'draft_pr',
+      requiresAutofix: true,
+    },
+    {
+      step: 'enforce-slack-primary-delivery',
+      dependency: 'slack-alert',
+      channel: 'slack_primary',
+      requiresAutofix: false,
+    },
+    {
+      step: 'enforce-slack-followup-delivery',
+      dependency: 'slack-followup',
+      channel: 'slack_followup',
+      requiresAutofix: false,
+    },
+  ] as const;
+
+  for (const gate of escalationChannelGates) {
+    wf.step(gate.step, {
+      type: 'deterministic',
+      dependsOn: [gate.dependency],
+      captureOutput: true,
+      failOnError: true,
+      command: String.raw`
+set -uo pipefail
+
+ARTIFACTS="${ARTIFACTS}"
+AUTOFIX="${AUTOFIX ? '1' : '0'}"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
+CHANNEL="${gate.channel}"
+REQUIRES_AUTOFIX="${gate.requiresAutofix ? '1' : '0'}"
+
+if [ ! -f "$ARTIFACTS/verdict.json" ]; then
+  echo "ESCALATION_CHANNEL_AUDIT_FAIL: no verdict.json"
+  exit 2
+fi
+
+VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
+if [ "$VERDICT" = "PASS" ]; then
+  echo "ESCALATION_CHANNEL_AUDIT_NOT_APPLICABLE: verdict is PASS"
+  exit 0
+fi
+
+REQUIRED=1
+if [ "$REQUIRES_AUTOFIX" = "1" ] && [ "$AUTOFIX" != "1" ]; then REQUIRED=0; fi
+node "$STATUS_TOOL" audit-channel "$ARTIFACTS" "$CHANNEL" "$REQUIRED"
+`,
+    });
+  }
+
+  // ── Phase 22: enforce escalation delivery ───────────────────────────────
   //
-  // Terminal step, and the only one that fails on a bad result. Nothing
-  // depends on it, so its failure cannot block the escalation steps above —
-  // it exists to colour the run red after all reporting has happened.
+  // The delivery steps stay exit-zero so a missing credential cannot prune the
+  // downstream fix and Slack-reporting subtree. This terminal audit turns their
+  // machine-readable status back into an independently red workflow row.
+
+  wf.step('enforce-escalations', {
+    type: 'deterministic',
+    dependsOn: ['slack-followup'],
+    captureOutput: true,
+    failOnError: true,
+    command: String.raw`
+set -uo pipefail
+
+ARTIFACTS="${ARTIFACTS}"
+AUTOFIX="${AUTOFIX ? '1' : '0'}"
+STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
+
+if [ ! -f "$ARTIFACTS/verdict.json" ]; then
+  echo "ESCALATION_AUDIT_FAIL: no verdict.json"
+  exit 2
+fi
+
+VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
+if [ "$VERDICT" = "PASS" ]; then
+  echo "ESCALATION_AUDIT_NOT_APPLICABLE: verdict is PASS"
+  exit 0
+fi
+
+node "$STATUS_TOOL" audit "$ARTIFACTS" "$AUTOFIX"
+`,
+  });
+
+  // ── Phase 23: enforce the verdict ────────────────────────────────────────
+  //
+  // Terminal step for the product verdict. Nothing depends on it, so its
+  // failure cannot block escalation; enforce-escalations independently colours
+  // broken reporting red after the complete fix/reporting chain finishes.
   //
   // Deliberately does NOT depend on the fix chain (attempt-fix → fix-integrity
   // → open-pr → slack-followup). A step failure marks its whole downstream
@@ -2389,7 +2746,7 @@ exit 1
 `,
   });
 
-  const result = await wf.run();
+  const result = await wf.run({ dryRun: process.env.DRY_RUN === '1', cwd: process.cwd() });
 
   // A dry run plans the graph without executing it, so there is no verdict to
   // read and nothing to enforce. Bail before the checks below, which would
