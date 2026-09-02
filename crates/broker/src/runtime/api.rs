@@ -1279,35 +1279,18 @@ impl BrokerRuntime {
                         reply_thread_id,
                     ),
                 );
-                let recipient_probe = async {
-                    match recipient_name.as_deref() {
-                        Some(name) => Some(
-                            selected_workspace
-                                .http_client
-                                .recipient_reachability(name)
-                                .await,
-                        ),
-                        None => None,
-                    }
-                };
-                tokio::pin!(publish);
-                tokio::pin!(recipient_probe);
-                // If publication fails first, drop the now-irrelevant
-                // best-effort probe immediately. Waiting for its full timeout
-                // would delay the error response and stall this runtime actor.
-                // A successful publication still waits for the observation
-                // required by the response contract.
-                let (publish_result, recipient_reachability) = tokio::select! {
-                    result = &mut publish => {
-                        let reachability = if matches!(&result, Ok(Ok(()))) {
-                            recipient_probe.await
-                        } else {
-                            None
-                        };
-                        (result, reachability)
-                    }
-                    reachability = &mut recipient_probe => (publish.await, reachability),
-                };
+                // Start the best-effort observation alongside publication, but
+                // keep its independent deadline off the serialized runtime
+                // actor. On successful publication a detached response task
+                // awaits the observation and fulfils this request; meanwhile
+                // the actor can process unrelated API and runtime events. A
+                // failed publication aborts the now-irrelevant observation and
+                // still replies immediately from this actor.
+                let recipient_probe = recipient_name.map(|name| {
+                    let http_client = selected_workspace.http_client.clone();
+                    tokio::spawn(async move { http_client.recipient_reachability(&name).await })
+                });
+                let publish_result = publish.await;
                 match publish_result {
                     Ok(Ok(())) => {
                         tracing::info!(
@@ -1333,29 +1316,58 @@ impl BrokerRuntime {
                             event_emit_timeout,
                         )
                         .await;
-                        let mut response = json!({
-                            "success": true,
-                            "event_id": event_id,
-                            "relaycast_published": true,
-                            "delivery_status": "published_unconfirmed",
-                            "local": false,
-                            "workspace_id": selected_workspace_id,
-                            "workspace_alias": selected_workspace_alias,
-                        });
-                        if let Some(reachability) = recipient_reachability {
-                            response["recipient_live"] = json!(reachability.live);
-                            response["recipient_status"] = json!(reachability.status);
-                        }
-                        if reply.send(Ok(response)).is_err() {
-                            tracing::warn!(
+                        let response_event_id = event_id.clone();
+                        let response_to = normalized_to.clone();
+                        let response_start = request_start;
+                        let _send_reply_task = tokio::spawn(async move {
+                            let recipient_reachability = match recipient_probe {
+                                Some(probe) => match probe.await {
+                                    Ok(reachability) => Some(reachability),
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::http_api",
+                                            event_id = %response_event_id,
+                                            error = %error,
+                                            "recipient reachability task ended without an observation"
+                                        );
+                                        None
+                                    }
+                                },
+                                None => None,
+                            };
+                            let mut response = json!({
+                                "success": true,
+                                "event_id": response_event_id,
+                                "relaycast_published": true,
+                                "delivery_status": "published_unconfirmed",
+                                "local": false,
+                                "workspace_id": selected_workspace_id,
+                                "workspace_alias": selected_workspace_alias,
+                            });
+                            if let Some(reachability) = recipient_reachability {
+                                response["recipient_live"] = json!(reachability.live);
+                                response["recipient_status"] = json!(reachability.status);
+                            }
+                            if reply.send(Ok(response)).is_err() {
+                                tracing::warn!(
+                                    target = "relay_broker::http_api",
+                                    event_id = %response_event_id,
+                                    "broker HTTP API reply channel closed before relaycast response"
+                                );
+                            }
+                            tracing::info!(
                                 target = "relay_broker::http_api",
-
-                                event_id = %event_id,
-                                "broker HTTP API reply channel closed before relaycast response"
+                                event_id = %response_event_id,
+                                to = %response_to,
+                                total_ms = %response_start.elapsed().as_millis(),
+                                "HTTP API send request handling complete"
                             );
-                        }
+                        });
                     }
                     Ok(Err(error)) => {
+                        if let Some(probe) = recipient_probe {
+                            probe.abort();
+                        }
                         tracing::warn!(
                             target = "relay_broker::http_api",
 
@@ -1378,6 +1390,9 @@ impl BrokerRuntime {
                         }
                     }
                     Err(_) => {
+                        if let Some(probe) = recipient_probe {
+                            probe.abort();
+                        }
                         tracing::warn!(
                             target = "relay_broker::http_api",
 
@@ -1408,8 +1423,8 @@ impl BrokerRuntime {
 
                     event_id = %event_id,
                     to = %normalized_to,
-                    total_ms = %request_start.elapsed().as_millis(),
-                    "HTTP API send request handling complete"
+                    actor_ms = %request_start.elapsed().as_millis(),
+                    "HTTP API send runtime actor released"
                 );
             }
             ListenApiRequest::List { reply } => {

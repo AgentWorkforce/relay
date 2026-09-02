@@ -153,10 +153,39 @@ try {
   }
   await waitForSnapshot(api, 'RELAYFLOW_RECIPIENT_READY', 20_000);
 
-  const positive = await api('/api/send', {
+  let positiveSettled = false;
+  const positivePromise = api('/api/send', {
     method: 'POST',
     body: JSON.stringify({ to: RECIPIENT, text: positiveNonce, mode: 'steer' }),
+  }).finally(() => {
+    positiveSettled = true;
   });
+  let runtimeResponsiveDuringProbe;
+  if (arm === 'head') {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    let concurrentSnapshot;
+    const snapshotStartedAt = performance.now();
+    try {
+      concurrentSnapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
+        timeoutMs: 400,
+      });
+    } catch {
+      concurrentSnapshot = undefined;
+    }
+    const snapshotElapsedMs = performance.now() - snapshotStartedAt;
+    runtimeResponsiveDuringProbe =
+      !positiveSettled && concurrentSnapshot?.status === 200 && snapshotElapsedMs < 400;
+    if (!runtimeResponsiveDuringProbe) {
+      throw new Error(
+        `Slow reachability probe blocked the serialized runtime actor: ${JSON.stringify({
+          positiveSettled,
+          concurrentSnapshot,
+          snapshotElapsedMs,
+        })}`
+      );
+    }
+  }
+  const positive = await positivePromise;
   let positiveScreen;
   try {
     positiveScreen = await waitForSnapshot(api, positiveNonce, 20_000);
@@ -357,6 +386,7 @@ try {
         unknownProbeReported: unknown.body?.recipient_status ?? 'omitted',
         nonRecipientFieldsOmitted,
         failedSendReturnedBeforeProbe: failed.status >= 400 && failedSendElapsedMs < 1_000,
+        runtimeResponsiveDuringProbe,
         teardownProved,
       },
     })}\n`,
