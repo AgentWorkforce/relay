@@ -15,6 +15,7 @@ on:
         type: number
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
   statuses: write
@@ -27,7 +28,7 @@ jobs:
   proof:
     name: RelayFlow PR proof dispatcher
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 110
     steps:
       - name: Checkout trusted base
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -72,12 +73,48 @@ jobs:
           test -n "$CLOUD_API_URL"
           test -n "$CLOUD_API_KEY"
 
+      - name: Resolve exact broker artifacts
+        if: steps.prepare.outputs.broker_artifacts_required == 'true'
+        id: brokers
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/pr-proof/resolve-broker-artifacts.mjs
+          --input .relayflow/pr-proof-input.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Download exact base broker
+        if: steps.prepare.outputs.broker_artifacts_required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.brokers.outputs.base_name }}
+          run-id: ${{ steps.brokers.outputs.base_run_id }}
+          github-token: ${{ github.token }}
+          path: .relayflow/pr-proof-binaries/base
+
+      - name: Download exact head broker
+        if: steps.prepare.outputs.broker_artifacts_required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.brokers.outputs.head_name }}
+          run-id: ${{ steps.brokers.outputs.head_run_id }}
+          github-token: ${{ github.token }}
+          path: .relayflow/pr-proof-binaries/head
+
+      - name: Verify and bind exact broker artifacts
+        if: steps.prepare.outputs.broker_artifacts_required == 'true'
+        run: node scripts/pr-proof/stage-broker-artifacts.mjs --input .relayflow/pr-proof-input.json
+
       # Cloud code sync intentionally uploads only paths known to git. Add the
       # generated, validated input to this disposable runner's index so it is
       # present in the Cloud workspace; this does not create a commit or push.
       - name: Include proof input in Cloud code sync
         if: steps.prepare.outputs.required == 'true'
-        run: git add -f -- .relayflow/pr-proof-input.json
+        run: |
+          git add -f -- .relayflow/pr-proof-input.json
+          if [[ "${{ steps.prepare.outputs.broker_artifacts_required }}" == "true" ]]; then
+            git add -f -- .relayflow/pr-proof-binaries
+          fi
 
       - name: Install the released Agent Relay CLI
         if: steps.prepare.outputs.required == 'true'

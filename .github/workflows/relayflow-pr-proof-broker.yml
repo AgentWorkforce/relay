@@ -1,0 +1,267 @@
+name: RelayFlow PR Proof Broker
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  pull_request:
+    paths:
+      - '.github/workflows/relayflow-pr-proof-broker.yml'
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/relayflow-pr-proof-broker.yml'
+      - 'tests/relayflows/cases/**'
+permissions:
+  contents: read
+
+concurrency:
+  group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  build:
+    name: ${{ github.event_name == 'pull_request' && 'Validate PR-head Linux broker' || 'Build exact Linux broker' }}
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Verify checkout provenance
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools util-linux
+
+      - name: Build exact static broker
+        run: |
+          set -o pipefail
+          unset ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL
+          unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
+
+          BUILDER_USER=relay-proof-builder
+          BUILD_ROOT="/opt/relay-pr-proof-builder"
+          ISOLATED_SOURCE_ROOT="$BUILD_ROOT/source"
+          BUILDER_HOME="$BUILD_ROOT/home"
+          CARGO_HOME="$BUILD_ROOT/cargo-home"
+          CARGO_TARGET_DIR="$BUILD_ROOT/target"
+          BUILDER_TMPDIR="$BUILD_ROOT/tmp"
+          STAGING_DIR="$BUILD_ROOT/staging"
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+
+          sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$BUILDER_USER"
+          BUILDER_UID="$(id -u "$BUILDER_USER")"
+          BUILDER_GID="$(id -g "$BUILDER_USER")"
+
+          sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"
+          for directory in "$BUILDER_HOME" "$CARGO_HOME" "$CARGO_TARGET_DIR" "$BUILDER_TMPDIR"; do
+            sudo install -d -o "$BUILDER_UID" -g "$BUILDER_GID" -m 0700 "$directory"
+          done
+          install -d -m 0700 "$STAGING_DIR"
+
+          sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_SOURCE_ROOT"
+          git archive --format=tar "$SOURCE_SHA" | tar -xf - -C "$ISOLATED_SOURCE_ROOT"
+          chmod -R u=rwX,go=rX "$ISOLATED_SOURCE_ROOT"
+
+          HOST_TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain stable cargo)")"
+          HOST_TOOLCHAIN_ROOT="$(dirname "$HOST_TOOLCHAIN_BIN")"
+          ISOLATED_TOOLCHAIN_ROOT="$BUILD_ROOT/toolchain"
+          sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"
+          cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"
+          chmod -R u=rwX,go=rX "$ISOLATED_TOOLCHAIN_ROOT"
+
+          chmod -R go-w "$GITHUB_WORKSPACE"
+          sudo setpriv \
+            --reuid="$BUILDER_UID" \
+            --regid="$BUILDER_GID" \
+            --clear-groups \
+            --no-new-privs \
+            --bounding-set=-all \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            -- env -i PATH=/usr/bin:/bin sh -c '
+              status_value() {
+                sed -n "s/^$1:[[:space:]]*//p" /proc/self/status
+              }
+              test -r "$1/Cargo.toml"
+              test ! -w "$1"
+              test ! -w "$1/Cargo.toml"
+              test -x "$2/bin/cargo"
+              "$2/bin/cargo" --version >/dev/null
+              test ! -w "$2"
+              test ! -w "$2/bin/cargo"
+              test "$(id -G | wc -w)" -eq 1
+              for capability_set in CapInh CapPrm CapEff CapBnd CapAmb; do
+                test "$(status_value "$capability_set")" = 0000000000000000
+              done
+              test "$(status_value NoNewPrivs)" = 1
+            ' sh "$ISOLATED_SOURCE_ROOT" "$ISOLATED_TOOLCHAIN_ROOT"
+
+          WORKFLOW_COMMAND_TOKEN="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+          WORKFLOW_COMMANDS_SUSPENDED=0
+
+          resume_workflow_commands() {
+            if [ "$WORKFLOW_COMMANDS_SUSPENDED" -eq 1 ]; then
+              echo "::$WORKFLOW_COMMAND_TOKEN::"
+              WORKFLOW_COMMANDS_SUSPENDED=0
+            fi
+          }
+
+          probe_builder_uid() {
+            selector="$1"
+            sudo --non-interactive env -i \
+              PATH=/usr/bin:/bin \
+              BUILDER_UID="$BUILDER_UID" \
+              /bin/sh -c '
+              probe_status=0
+              /usr/bin/pgrep "$1" "$BUILDER_UID" >/dev/null 2>&1 || probe_status=$?
+              case "$probe_status" in
+                0) exit 10 ;;
+                1) exit 11 ;;
+                *) exit 12 ;;
+              esac
+            ' sh "$selector"
+          }
+
+          kill_builder_processes() {
+            sudo pkill -KILL -u "$BUILDER_UID" >/dev/null 2>&1 || true
+            sudo pkill -KILL -U "$BUILDER_UID" >/dev/null 2>&1 || true
+            for _ in $(seq 1 100); do
+              effective_probe_status=0
+              real_probe_status=0
+              probe_builder_uid -u || effective_probe_status=$?
+              probe_builder_uid -U || real_probe_status=$?
+              case "$effective_probe_status:$real_probe_status" in
+                11:11) return 0 ;;
+                10:10|10:11|11:10) ;;
+                *)
+                  echo "unable to prove builder UID process set is empty" >&2
+                  return 1
+                  ;;
+              esac
+              sleep 0.1
+            done
+            echo "builder UID $BUILDER_UID still has live processes" >&2
+            sudo pgrep -a -u "$BUILDER_UID" >&2 || true
+            sudo pgrep -a -U "$BUILDER_UID" >&2 || true
+            return 1
+          }
+
+          cleanup_on_exit() {
+            original_status=$?
+            trap - EXIT
+            set +e
+            kill_builder_processes
+            cleanup_status=$?
+            if [ "$cleanup_status" -ne 0 ]; then
+              exit "$cleanup_status"
+            fi
+            resume_workflow_commands
+            exit "$original_status"
+          }
+          trap cleanup_on_exit EXIT
+
+          AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
+          TOOLCHAIN_BIN="$ISOLATED_TOOLCHAIN_ROOT/bin"
+          CARGO_BIN="$TOOLCHAIN_BIN/cargo"
+
+          echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"
+          WORKFLOW_COMMANDS_SUSPENDED=1
+
+          BUILD_STATUS=0
+          cd "$ISOLATED_SOURCE_ROOT"
+          sudo setpriv \
+            --reuid="$BUILDER_UID" \
+            --regid="$BUILDER_GID" \
+            --clear-groups \
+            --no-new-privs \
+            --bounding-set=-all \
+            --inh-caps=-all \
+            --ambient-caps=-all \
+            -- env -i \
+              HOME="$BUILDER_HOME" \
+              USER="$BUILDER_USER" \
+              LOGNAME="$BUILDER_USER" \
+              PATH="$TOOLCHAIN_BIN:/usr/local/bin:/usr/bin:/bin" \
+              CARGO_HOME="$CARGO_HOME" \
+              CARGO_TARGET_DIR="$CARGO_TARGET_DIR" \
+              TMPDIR="$BUILDER_TMPDIR" \
+              TMP="$BUILDER_TMPDIR" \
+              TEMP="$BUILDER_TMPDIR" \
+              AGENT_RELAY_VERSION="$AGENT_RELAY_VERSION" \
+              RUSTFLAGS="-C target-feature=+crt-static" \
+              "$CARGO_BIN" build \
+                --manifest-path "$ISOLATED_SOURCE_ROOT/Cargo.toml" \
+                --locked --release \
+                --target x86_64-unknown-linux-musl \
+                --bin agent-relay-broker || BUILD_STATUS=$?
+
+          KILL_STATUS=0
+          kill_builder_processes || KILL_STATUS=$?
+          if [ "$KILL_STATUS" -eq 0 ]; then
+            resume_workflow_commands
+          fi
+          trap - EXIT
+
+          if [ "$KILL_STATUS" -ne 0 ]; then
+            exit "$KILL_STATUS"
+          fi
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            exit "$BUILD_STATUS"
+          fi
+
+          BUILDER_BROKER="$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/agent-relay-broker"
+          sudo test -f "$BUILDER_BROKER"
+          sudo test ! -L "$BUILDER_BROKER"
+          sudo install -o "$RUNNER_UID" -g "$RUNNER_GID" -m 0755 \
+            "$BUILDER_BROKER" "$STAGING_DIR/agent-relay-broker"
+
+      - name: Package attested artifact
+        env:
+          BROKER_SOURCE: /opt/relay-pr-proof-builder/staging/agent-relay-broker
+        run: |
+          mkdir -p relayflow-broker
+          install -m 0755 "$BROKER_SOURCE" relayflow-broker/agent-relay-broker
+          node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            import { readFile, writeFile } from "node:fs/promises";
+            const binary = await readFile("relayflow-broker/agent-relay-broker");
+            const manifest = {
+              version: 1,
+              sourceSha: process.env.SOURCE_SHA,
+              sha256: createHash("sha256").update(binary).digest("hex"),
+            };
+            await writeFile("relayflow-broker/broker-manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          '
+
+      - name: Upload exact broker
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relayflow-broker-${{ env.SOURCE_SHA }}
+          path: relayflow-broker
+          if-no-files-found: error
+          retention-days: 90

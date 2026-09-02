@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -42,7 +43,19 @@ import {
   preparedRunIdFromOutput,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { runProcess } from '../../scripts/pr-proof/run-arm.mjs';
+import {
+  openVerifiedBrokerExecutable,
+  runLandlockedProcess,
+  runProcess,
+  verifyProtectedBrokerExecutable,
+} from '../../scripts/pr-proof/run-arm.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  resolveBrokerArtifact,
+  resolveBrokerArtifactPair,
+} from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { inspectBrokerArtifact } from '../../scripts/pr-proof/stage-broker-artifacts.mjs';
 
 const BASE_SHA = '1'.repeat(40);
 const HEAD_SHA = '2'.repeat(40);
@@ -68,6 +81,7 @@ function manifest(kind = 'bugfix') {
     runner: {
       command: ['node', `tests/relayflows/cases/${CASE_ID}/run.mjs`],
     },
+    requirements: [],
     timeoutSeconds: 900,
     expected: {
       base: {
@@ -205,6 +219,17 @@ describe('RelayFlow case manifest', () => {
     expect(() => validateCaseManifest(invalid, { caseId: CASE_ID, kind: 'feature' })).toThrow(
       /Invalid RelayFlow case manifest/
     );
+  });
+
+  it('accepts only the exact broker runtime requirement', () => {
+    const brokerManifest = { ...manifest(), requirements: ['broker-linux-x64'] };
+    expect(validateCaseManifest(brokerManifest, { caseId: CASE_ID, kind: 'bugfix' })).toEqual(brokerManifest);
+    expect(() =>
+      validateCaseManifest(
+        { ...manifest(), requirements: ['broker-linux-x64', 'arbitrary-tool'] },
+        { caseId: CASE_ID, kind: 'bugfix' }
+      )
+    ).toThrow(PrProofContractError);
   });
 });
 
@@ -422,6 +447,509 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT).toBeUndefined();
   });
+});
+
+describe('exact broker artifact handoff', () => {
+  it('requires exact per-arm broker provenance when the case requests it', () => {
+    const brokerManifest = { ...manifest(), requirements: ['broker-linux-x64'] };
+    const rawInput = {
+      version: 1,
+      repository: 'AgentWorkforce/relay',
+      pullRequest: 1610,
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+      caseId: CASE_ID,
+      kind: 'bugfix',
+      handoffNonce: HANDOFF_NONCE,
+      manifest: brokerManifest,
+    };
+    expect(() => validateProofInput(rawInput)).toThrow(PrProofContractError);
+    expect(
+      validateProofInput({
+        ...rawInput,
+        runtimeArtifacts: {
+          broker: {
+            base: {
+              path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+              sha256: '5'.repeat(64),
+              sourceSha: BASE_SHA,
+            },
+            head: {
+              path: '.relayflow/pr-proof-binaries/head/agent-relay-broker',
+              sha256: '6'.repeat(64),
+              sourceSha: HEAD_SHA,
+            },
+          },
+        },
+      })
+    ).toMatchObject({ runtimeArtifacts: { broker: { base: { sourceSha: BASE_SHA } } } });
+  });
+
+  it('resolves only a successful artifact from the dedicated workflow', async () => {
+    const sha = '3'.repeat(40);
+    const inspectedRunIds: number[] = [];
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: true,
+              updated_at: '2026-09-01T00:04:00Z',
+              workflow_run: { id: 46 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:03:00Z',
+              workflow_run: { id: 44 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:02:00Z',
+              workflow_run: { id: 43 },
+            },
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      const runId = Number(value.split('/').at(-1));
+      inspectedRunIds.push(runId);
+      return Response.json({
+        path:
+          runId === 43
+            ? '.github/workflows/untrusted-broker.yml'
+            : '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: runId === 44 ? 'failure' : 'success',
+        head_sha: sha,
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+    expect(inspectedRunIds).toEqual([44, 43, 42]);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1.5, 2_147_483_648])(
+    'rejects invalid polling interval %s before querying GitHub',
+    async (pollIntervalMs) => {
+      const fetchImpl = vi.fn();
+      await expect(
+        resolveBrokerArtifact({
+          apiUrl: 'https://api.github.test',
+          repository: 'AgentWorkforce/relay',
+          token: 'test-token',
+          sha: '3'.repeat(40),
+          fetchImpl,
+          pollIntervalMs,
+        })
+      ).rejects.toThrow('broker artifact polling bounds are invalid');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  );
+
+  it('explains how to recover when the only exact artifact has expired', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async () =>
+      Response.json({
+        artifacts: [
+          {
+            name: `relayflow-broker-${sha}`,
+            expired: true,
+            updated_at: '2026-05-01T00:00:00Z',
+            workflow_run: { id: 42 },
+          },
+        ],
+      });
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow('expired after the 90-day retention window; update/rebase the PR onto current main');
+  });
+
+  it('rejects an artifact whose workflow run belongs to another source SHA', async () => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: '4'.repeat(40),
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow(
+      `No successful .github/workflows/relayflow-pr-proof-broker.yml artifact named relayflow-broker-${sha} after 1 attempts`
+    );
+  });
+
+  it.each([
+    ['pull_request', 'feature/exact-broker'],
+    ['workflow_dispatch', 'main'],
+    ['push', 'feature/exact-broker'],
+    ['schedule', 'feature/exact-broker'],
+  ])('rejects an artifact from untrusted event %s on %s', async (event, headBranch) => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event,
+        head_branch: headBranch,
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 1,
+      })
+    ).rejects.toThrow(
+      `No successful .github/workflows/relayflow-pr-proof-broker.yml artifact named relayflow-broker-${sha} after 1 attempts`
+    );
+  });
+
+  it.each(['push', 'schedule'])('accepts an exact artifact from a main %s', async (event) => {
+    const sha = '3'.repeat(40);
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        return Response.json({
+          artifacts: [
+            {
+              name: `relayflow-broker-${sha}`,
+              expired: false,
+              updated_at: '2026-09-01T00:00:00Z',
+              workflow_run: { id: 42 },
+            },
+          ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event,
+        head_branch: 'main',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+  });
+
+  it('waits for the exact broker workflow artifact to finish', async () => {
+    const sha = '3'.repeat(40);
+    let listingCalls = 0;
+    let sleeps = 0;
+    const fetchImpl = async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.includes('/actions/artifacts?')) {
+        listingCalls += 1;
+        return Response.json({
+          artifacts:
+            listingCalls === 1
+              ? []
+              : [
+                  {
+                    name: `relayflow-broker-${sha}`,
+                    expired: false,
+                    updated_at: '2026-09-01T00:00:00Z',
+                    workflow_run: { id: 42 },
+                  },
+                ],
+        });
+      }
+      return Response.json({
+        path: '.github/workflows/relayflow-pr-proof-broker.yml',
+        conclusion: 'success',
+        head_sha: sha,
+        event: 'pull_request_target',
+        head_branch: 'feature/exact-broker',
+      });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha,
+        fetchImpl,
+        maxAttempts: 2,
+        pollIntervalMs: 25,
+        sleepImpl: async (milliseconds: number) => {
+          expect(milliseconds).toBe(25);
+          sleeps += 1;
+        },
+      })
+    ).resolves.toEqual({ artifactName: `relayflow-broker-${sha}`, runId: 42 });
+    expect(listingCalls).toBe(2);
+    expect(sleeps).toBe(1);
+  });
+
+  it('aborts the sibling exact-SHA lookup when either concurrent resolution fails', async () => {
+    const baseSha = '3'.repeat(40);
+    const headSha = '4'.repeat(40);
+    let beginBaseFailure: (() => void) | undefined;
+    const headSleeping = new Promise<void>((resolve) => {
+      beginBaseFailure = resolve;
+    });
+    let siblingAborted = false;
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes(`relayflow-broker-${baseSha}`)) {
+        await headSleeping;
+        return new Response('failed', { status: 500 });
+      }
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return Response.json({ artifacts: [] });
+    };
+    const sleepImpl = async (_milliseconds: number, { signal }: { signal: AbortSignal }) => {
+      beginBaseFailure?.();
+      await new Promise<never>((_resolve, reject) => {
+        const onAbort = () => {
+          siblingAborted = true;
+          reject(signal.reason);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+    };
+
+    await expect(
+      resolveBrokerArtifactPair({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        baseSha,
+        headSha,
+        fetchImpl,
+        maxAttempts: 2,
+        pollIntervalMs: 10_000,
+        sleepImpl,
+      })
+    ).rejects.toThrow('GitHub API 500');
+    expect(siblingAborted).toBe(true);
+  });
+
+  it('waits through producer queue headroom and the broker timeout by default', async () => {
+    let elapsedMs = 0;
+    let listingCalls = 0;
+    const fetchImpl = async () => {
+      listingCalls += 1;
+      return Response.json({ artifacts: [] });
+    };
+    await expect(
+      resolveBrokerArtifact({
+        apiUrl: 'https://api.github.test',
+        repository: 'AgentWorkforce/relay',
+        token: 'test-token',
+        sha: '3'.repeat(40),
+        fetchImpl,
+        sleepImpl: async (milliseconds: number) => {
+          elapsedMs += milliseconds;
+        },
+      })
+    ).rejects.toThrow(
+      'allows 10 minutes for Actions queue/start delay and 30 minutes for producer execution'
+    );
+    expect(listingCalls).toBe(243);
+    expect(elapsedMs).toBe(40 * 60_000 + 20_000);
+  });
+
+  it('verifies exact source provenance and binary digest before staging', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-'));
+    const sha = '4'.repeat(40);
+    const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
+    const binary = Buffer.from('exact broker fixture');
+    const sha256 = createHash('sha256').update(binary).digest('hex');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'agent-relay-broker'), binary);
+    await writeFile(
+      path.join(directory, 'broker-manifest.json'),
+      JSON.stringify({ version: 1, sourceSha: sha, sha256 })
+    );
+    await expect(inspectBrokerArtifact({ arm: 'base', expectedSha: sha, root })).resolves.toEqual({
+      path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+      sha256,
+      sourceSha: sha,
+    });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'keeps a stable self-spawning broker immutable under the case Landlock policy',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
+      const sha = '4'.repeat(40);
+      const directory = path.join(root, '.relayflow', 'pr-proof-binaries', 'base');
+      const binaryPath = path.join(directory, 'agent-relay-broker');
+      const privateRoot = path.join(root, 'private');
+      const writableRoot = path.join(root, 'writable');
+      await mkdir(directory, { recursive: true });
+      await mkdir(privateRoot);
+      await mkdir(writableRoot);
+      await copyFile('/bin/sh', binaryPath);
+      const binary = await readFile(binaryPath);
+      const sha256 = createHash('sha256').update(binary).digest('hex');
+      await writeFile(
+        path.join(directory, 'broker-manifest.json'),
+        JSON.stringify({ version: 1, sourceSha: sha, sha256 })
+      );
+
+      const executable = await openVerifiedBrokerExecutable({
+        input: {
+          baseSha: sha,
+          headSha: '5'.repeat(40),
+          runtimeArtifacts: {
+            broker: {
+              base: {
+                path: '.relayflow/pr-proof-binaries/base/agent-relay-broker',
+                sha256,
+                sourceSha: sha,
+              },
+            },
+          },
+        },
+        arm: 'base',
+        privateRoot,
+        root,
+      });
+      try {
+        expect(executable).not.toBeNull();
+        await copyFile('/bin/false', binaryPath);
+        const processOptions = {
+          writableRoots: [writableRoot],
+          cwd: writableRoot,
+          echo: false,
+          timeoutMs: 2_000,
+        };
+        const chmodAttack = await runLandlockedProcess(
+          '/bin/chmod',
+          ['u+w', executable!.path],
+          processOptions
+        );
+        expect(chmodAttack).toMatchObject({ exitCode: 0, timedOut: false });
+        await expect(
+          verifyProtectedBrokerExecutable({
+            brokerPath: executable!.path,
+            expectedSha256: executable!.sha256,
+            expectedSize: executable!.size,
+          })
+        ).rejects.toThrow('protected broker inode metadata changed');
+
+        const writeAttack = await runLandlockedProcess(
+          '/bin/sh',
+          ['-c', 'cat /bin/false > "$1"', 'broker-write-attack', executable!.path],
+          processOptions
+        );
+        expect(writeAttack.exitCode).not.toBe(0);
+        await chmod(executable!.path, 0o500);
+
+        for (const attack of ['truncate -s 0 "$1"', 'rm "$1"', 'mv "$1" "$2/moved"', 'ln "$1" "$2/alias"']) {
+          const attackResult = await runLandlockedProcess(
+            '/bin/sh',
+            ['-c', attack, 'broker-path-attack', executable!.path, writableRoot],
+            processOptions
+          );
+          expect(attackResult.exitCode).not.toBe(0);
+        }
+        const allowedWrite = await runLandlockedProcess(
+          '/bin/sh',
+          ['-c', 'printf allowed > "$1/allowed"', 'allowed-write', writableRoot],
+          processOptions
+        );
+        expect(allowedWrite).toMatchObject({ exitCode: 0, timedOut: false });
+
+        const selfSpawn = await runLandlockedProcess(
+          executable!.path,
+          [
+            '-c',
+            'actual=$(readlink /proc/$$/exe) && [ "$actual" = "$1" ] && "$actual" -c "exit 0"',
+            'broker-self-spawn',
+            executable!.path,
+          ],
+          processOptions
+        );
+        expect(selfSpawn).toMatchObject({ exitCode: 0, timedOut: false });
+        await expect(
+          verifyProtectedBrokerExecutable({
+            brokerPath: executable!.path,
+            expectedSha256: executable!.sha256,
+            expectedSize: executable!.size,
+          })
+        ).resolves.toBeUndefined();
+      } finally {
+        if (executable) await chmod(executable.directory, 0o700);
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 });
 
 describe('process timeout contract', () => {
@@ -705,7 +1233,161 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
     expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
     expect(source).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
+    expect(source).toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
+    expect(source).toContain('resolve-broker-artifacts.mjs');
+    expect(source).toContain('stage-broker-artifacts.mjs');
+    expect(source).toContain('actions: read');
     expect(source).not.toContain('github.event.pull_request.head.sha }}');
+  });
+
+  it('fits broker resolution, Cloud execution, and setup inside the dispatcher deadline', async () => {
+    const dispatcher = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
+    const resolver = await readFile('scripts/pr-proof/resolve-broker-artifacts.mjs', 'utf8');
+    const dispatcherMinutes = Number(dispatcher.match(/timeout-minutes: (\d+)/)?.[1]);
+    const cloudTimeoutMs = Number(dispatcher.match(/PR_PROOF_CLOUD_TIMEOUT_MS: '(\d+)'/)?.[1]);
+    const brokerProducerMinutes = Number(resolver.match(/BROKER_PRODUCER_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
+    const brokerQueueMinutes = Number(resolver.match(/BROKER_QUEUE_HEADROOM_MS = (\d+) \* 60_000/)?.[1]);
+    const pollIntervalMs = Number(
+      resolver.match(/RESOLVE_POLL_INTERVAL_MS = ([\d_]+)/)?.[1]?.replaceAll('_', '')
+    );
+    const pollSlackAttempts = Number(resolver.match(/RESOLVE_POLL_SLACK_ATTEMPTS = (\d+)/)?.[1]);
+    const setupHeadroomMs = 5 * 60_000;
+    expect(resolver).toContain('const [base, head] = await Promise.all([');
+    expect(dispatcherMinutes * 60_000).toBeGreaterThanOrEqual(
+      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 +
+        pollSlackAttempts * pollIntervalMs +
+        cloudTimeoutMs +
+        setupHeadroomMs
+    );
+  });
+
+  it('builds proof brokers from an attested exact checkout without secrets', async () => {
+    const source = await readFile('.github/workflows/relayflow-pr-proof-broker.yml', 'utf8');
+    const triggerSection = source.slice(source.indexOf('on:'), source.indexOf('permissions:'));
+    const pushSection = source.slice(source.indexOf('  push:'), source.indexOf('  pull_request:'));
+    expect(triggerSection).toContain('  schedule:');
+    expect(triggerSection).toContain("cron: '17 3 * * 1'");
+    expect(triggerSection).toContain(
+      "  pull_request:\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
+    );
+    expect(triggerSection).toContain('  pull_request_target:');
+    expect(triggerSection).toContain('types: [opened, synchronize, reopened, edited, ready_for_review]');
+    expect(triggerSection).not.toContain('  workflow_dispatch:');
+    expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
+    expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
+    expect(source).toContain('persist-credentials: false');
+    expect(source).toContain('permissions:\n  contents: read');
+    expect(source).toContain(
+      'group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}'
+    );
+    expect(source).toContain('cancel-in-progress: true');
+    expect(source).toContain(
+      "name: ${{ github.event_name == 'pull_request' && 'Validate PR-head Linux broker' || 'Build exact Linux broker' }}"
+    );
+    expect(source).toContain("github.event_name != 'pull_request_target'");
+    expect(source).toContain('github.event.pull_request.head.repo.full_name == github.repository');
+    expect(source).toContain('"$CARGO_BIN" build');
+    expect(source).not.toContain('Swatinem/rust-cache');
+    expect(source).not.toContain('actions/cache');
+    expect(source).not.toContain('Cache Rust build');
+    expect(source).toContain('--locked --release');
+    const cacheCredentialUnset = source.indexOf(
+      'unset ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL'
+    );
+    expect(cacheCredentialUnset).toBeGreaterThan(0);
+    expect(cacheCredentialUnset).toBeLessThan(source.indexOf('"$CARGO_BIN" build'));
+    const workflowFileUnset = source.indexOf(
+      'unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY'
+    );
+    const isolatedBuild = source.indexOf('-- env -i', source.indexOf('BUILD_STATUS=0'));
+    expect(workflowFileUnset).toBeGreaterThan(cacheCredentialUnset);
+    expect(workflowFileUnset).toBeLessThan(isolatedBuild);
+    const cargoBuild = source.indexOf('"$CARGO_BIN" build');
+    expect(isolatedBuild).toBeLessThan(cargoBuild);
+    const isolatedEnvironment = source.slice(isolatedBuild, cargoBuild);
+    for (const forbidden of [
+      'ACTIONS_CACHE_URL=',
+      'ACTIONS_RUNTIME_TOKEN=',
+      'ACTIONS_RUNTIME_URL=',
+      'ACTIONS_RESULTS_URL=',
+      'GITHUB_ENV=',
+      'GITHUB_PATH=',
+      'GITHUB_OUTPUT=',
+      'GITHUB_STEP_SUMMARY=',
+    ]) {
+      expect(isolatedEnvironment).not.toContain(forbidden);
+    }
+    expect(source).toContain('useradd --system --user-group --no-create-home');
+    expect(source).toContain('BUILD_ROOT="/opt/relay-pr-proof-builder"');
+    expect(source).toContain('ISOLATED_SOURCE_ROOT="$BUILD_ROOT/source"');
+    expect(source).toContain('-o "$RUNNER_UID" -g "$BUILDER_GID" -m 0710 "$BUILD_ROOT"');
+    expect(source).toContain(
+      'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_SOURCE_ROOT"'
+    );
+    expect(source).toContain('git archive --format=tar "$SOURCE_SHA" | tar -xf - -C "$ISOLATED_SOURCE_ROOT"');
+    expect(source).toContain(
+      'sudo install -d -o "$RUNNER_UID" -g "$BUILDER_GID" -m 0750 "$ISOLATED_TOOLCHAIN_ROOT"'
+    );
+    expect(source).toContain('cp -a --reflink=auto "$HOST_TOOLCHAIN_ROOT/." "$ISOLATED_TOOLCHAIN_ROOT/"');
+    expect(source).toContain('TOOLCHAIN_BIN="$ISOLATED_TOOLCHAIN_ROOT/bin"');
+    expect(source).toContain('CARGO_BIN="$TOOLCHAIN_BIN/cargo"');
+    expect(source).toContain('test -r "$1/Cargo.toml"');
+    expect(source).toContain('test -x "$2/bin/cargo"');
+    expect(source).toContain('"$2/bin/cargo" --version >/dev/null');
+    expect(source).toContain('test ! -w "$2/bin/cargo"');
+    const isolatedWorkingDirectory = source.indexOf('cd "$ISOLATED_SOURCE_ROOT"');
+    expect(isolatedWorkingDirectory).toBeGreaterThan(0);
+    expect(isolatedWorkingDirectory).toBeLessThan(isolatedBuild);
+    expect(source).toContain('--manifest-path "$ISOLATED_SOURCE_ROOT/Cargo.toml"');
+    for (const flag of [
+      '--clear-groups',
+      '--no-new-privs',
+      '--bounding-set=-all',
+      '--inh-caps=-all',
+      '--ambient-caps=-all',
+    ]) {
+      expect(source.match(new RegExp(flag, 'g'))).toHaveLength(2);
+    }
+    expect(source).toContain('chmod -R go-w "$GITHUB_WORKSPACE"');
+    expect(source).toContain('test ! -w "$1/Cargo.toml"');
+    expect(source).toContain('test "$(id -G | wc -w)" -eq 1');
+    expect(source).toContain('for capability_set in CapInh CapPrm CapEff CapBnd CapAmb');
+    expect(source).toContain('test "$(status_value NoNewPrivs)" = 1');
+    expect(source).toContain('echo "::stop-commands::$WORKFLOW_COMMAND_TOKEN"');
+    expect(source).toContain('trap cleanup_on_exit EXIT');
+    expect(source).toContain('if [ "$cleanup_status" -ne 0 ]; then\n              exit "$cleanup_status"');
+    expect(source).toContain('if [ "$KILL_STATUS" -eq 0 ]; then\n            resume_workflow_commands');
+    expect(source).toContain('pkill -KILL -u "$BUILDER_UID"');
+    expect(source).toContain('pkill -KILL -U "$BUILDER_UID"');
+    expect(source).toContain('sudo --non-interactive env -i');
+    expect(source).toContain('PATH=/usr/bin:/bin');
+    expect(source).toContain('BUILDER_UID="$BUILDER_UID"');
+    expect(source).toContain('/bin/sh -c');
+    expect(source).toContain('/usr/bin/pgrep "$1" "$BUILDER_UID"');
+    expect(source).toContain('0) exit 10 ;;');
+    expect(source).toContain('1) exit 11 ;;');
+    expect(source).toContain('*) exit 12 ;;');
+    expect(source).toContain('probe_builder_uid -u || effective_probe_status=$?');
+    expect(source).toContain('probe_builder_uid -U || real_probe_status=$?');
+    expect(source).toContain('11:11) return 0 ;;');
+    expect(source).toContain('10:10|10:11|11:10) ;;');
+    expect(source).toContain('sudo pgrep -a -u "$BUILDER_UID"');
+    expect(source).toContain('sudo pgrep -a -U "$BUILDER_UID"');
+    const cleanup = source.indexOf('kill_builder_processes || KILL_STATUS=$?');
+    const killStatusBranch = source.indexOf('if [ "$KILL_STATUS" -ne 0 ]; then');
+    const buildStatusBranch = source.indexOf('if [ "$BUILD_STATUS" -ne 0 ]; then');
+    const stage = source.indexOf('"$BUILDER_BROKER" "$STAGING_DIR/agent-relay-broker"');
+    expect(cleanup).toBeGreaterThan(cargoBuild);
+    expect(killStatusBranch).toBeGreaterThan(cleanup);
+    expect(buildStatusBranch).toBeGreaterThan(killStatusBranch);
+    expect(stage).toBeGreaterThan(buildStatusBranch);
+    expect(source).toContain('BROKER_SOURCE: /opt/relay-pr-proof-builder/staging/agent-relay-broker');
+    expect(source).toContain('name: relayflow-broker-${{ env.SOURCE_SHA }}');
+    expect(source).toContain("if: github.event_name != 'pull_request'");
+    expect(source).toContain('retention-days: 90');
+    expect(source).toContain("- 'tests/relayflows/cases/**'");
+    expect(pushSection).not.toContain('paths:');
+    expect(source).not.toContain('secrets.');
   });
 
   it('gates head execution on deterministic base evidence', async () => {
@@ -726,6 +1408,21 @@ describe('trusted dispatcher source contract', () => {
     const source = await readFile('scripts/pr-proof/run-arm.mjs', 'utf8');
     expect(source).toContain('process.env.SANDBOX_ID');
     expect(source).not.toContain('process.env.DAYTONA_SANDBOX_ID');
+    expect(source).toContain('SYS_LANDLOCK_CREATE_RULESET = 444');
+    expect(source).toContain('SYS_LANDLOCK_RESTRICT_SELF = 446');
+    expect(source).toContain('secure broker execution requires Landlock ABI >= 3');
+    expect(source).toContain('WRITE_FILE = 1 << 1');
+    expect(source).toContain('REFER = 1 << 13');
+    expect(source).toContain('TRUNCATE = 1 << 14');
+    expect(source).toContain('PR_SET_NO_NEW_PRIVS = 38');
+    expect(source).toContain('CAP_SYS_PTRACE = 19');
+    expect(source).toContain('CAP_SYS_ADMIN = 21');
+    expect(source).toContain('secure broker execution refuses {name}');
+    expect(source).toContain('await handle.close();\n    await chmod(privateDirectory, 0o500);');
+    expect(source).toContain('writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir]');
+    expect(source).not.toContain('writableRoots: [temporaryRoot');
+    expect(source).not.toContain('memfd_create');
+    expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
   });
 
   it('uses one non-refreshing API key and cancels remote work on termination', async () => {

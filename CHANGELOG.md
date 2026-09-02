@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay fleet spawn --sandbox-relayfile-path <path...>` mounts only the requested Relayfile subtrees so agents can start against large shared workspaces without materializing unrelated files.
 
+## [11.9.1] - 2026-09-01
+
+### Fixed
+
+- `agent-relay mcp-args --register` now allows up to 30 seconds for Relaycast registration before failing, preventing healthy but slow Cloud workflow agents from timing out at the previous 10-second boundary.
+
 ## [11.9.0] - 2026-09-01
 
 ### Added

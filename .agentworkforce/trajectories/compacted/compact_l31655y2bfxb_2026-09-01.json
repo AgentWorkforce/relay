@@ -1,0 +1,78 @@
+{
+  "id": "compact_l31655y2bfxb",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-01T21:02:11.812Z",
+  "sourceTrajectories": [
+    "traj_gc9h07nbc6k9"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T21:01:49.338Z",
+    "end": "2026-09-01T21:02:11.300Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "How did the intermediate cleanup implementation distinguish an empty builder UID set from a probe error?",
+          "chosen": "Historical intermediate: capture direct non-root pgrep statuses and accept two status-one results",
+          "reasoning": "This removed the earlier boolean-negation bug, but it was later found insufficient because procfs hidepid can make another UID's live processes invisible to a non-root observer.",
+          "fromTrajectory": "traj_gc9h07nbc6k9"
+        },
+        {
+          "question": "What design supersedes this historical intermediate?",
+          "chosen": "Use the privileged 10/11/12 sentinel probe documented by compact_dq76p869lqu0",
+          "reasoning": "PR head runs pgrep as root through a clean, non-interactive sudo wrapper and accepts only 11:11, so hidden processes and wrapper errors fail closed.",
+          "fromTrajectory": "traj_gc9h07nbc6k9"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": [],
+  "narrative": "Historical intermediate only; this record does not describe PR #1632 at its current head. This session replaced a negated pgrep cleanup check with direct, non-root pgrep status capture. That intermediate required both effective-UID and real-UID probes to return pgrep status 1 and treated statuses above 1 as errors. A later review found that procfs hidepid can conceal another UID's processes from a non-root observer while still returning status 1, so the direct-probe approach was superseded. The final implementation and validation are documented in compact_dq76p869lqu0: probe_builder_uid runs /usr/bin/pgrep as root through sudo --non-interactive and env -i with a fixed PATH, maps match/no-match/error to sentinels 10/11/12, accepts only the pair 11:11, retries only explicit match pairs, and fails closed for every wrapper or probe error. The final diagnostic pgrep calls also run under sudo. Workflow-command parsing still resumes only after that privileged zero-process proof succeeds, and cleanup failure still takes precedence over the Cargo result. Do not use the non-root status-one design from this historical record as the current contract.",
+  "decisions": [
+    {
+      "question": "What was implemented at this historical intermediate stage?",
+      "chosen": "Capture direct non-root pgrep exit statuses and require both to equal 1",
+      "reasoning": "This correctly distinguished pgrep's own no-match status from syntax and fatal errors, fixing the narrower boolean-negation flaw.",
+      "impact": "Superseded: under procfs hidepid, a non-root status 1 is not proof that another UID owns no live processes."
+    },
+    {
+      "question": "What is the current cleanup proof?",
+      "chosen": "The privileged sentinel-mapped design in compact_dq76p869lqu0",
+      "reasoning": "Root visibility prevents hidepid false negatives, while the clean non-interactive wrapper maps pgrep match, no-match, and error to disjoint 10/11/12 statuses.",
+      "impact": "Only 11:11 proves an empty real/effective UID process set; every ambiguous status fails closed."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Treat this compact as a historical, superseded step; compact_dq76p869lqu0 is the durable current cleanup contract.",
+      "rationale": "Keeping the intermediate reasoning is useful only when it cannot be mistaken for the implementation at PR head.",
+      "scope": "PR #1632 builder-UID cleanup documentation."
+    },
+    {
+      "pattern": "A security-relevant absence check must have enough privilege to observe everything it claims is absent and must fail closed on wrapper errors.",
+      "rationale": "A precise tool exit code is still unsound when visibility restrictions make a live process look absent.",
+      "scope": "Process-reap gates in trusted CI workflows."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "Fixing exit-status handling is not enough if the observer lacks complete visibility.",
+      "context": "The intermediate non-root pgrep check distinguished status 1 from statuses above 1, but hidepid could still produce status 1 while builder-owned processes were alive.",
+      "recommendation": "Use the final root sentinel wrapper from compact_dq76p869lqu0 and accept only the explicit no-match sentinel pair."
+    }
+  ],
+  "openQuestions": []
+}
