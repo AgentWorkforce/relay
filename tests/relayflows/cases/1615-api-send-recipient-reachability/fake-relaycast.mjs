@@ -22,7 +22,16 @@ export async function startFakeRelaycast({
   };
 
   const server = http.createServer(async (request, response) => {
-    const body = await readJson(request);
+    let body;
+    try {
+      body = await readJson(request);
+    } catch (error) {
+      sendJson(response, 400, {
+        ok: false,
+        error: { code: 'invalid_json', message: error instanceof Error ? error.message : String(error) },
+      });
+      return;
+    }
     const pathname = new URL(request.url ?? '/', 'http://relayflow.invalid').pathname;
 
     if (request.method === 'POST' && pathname === '/v1/agents') {
@@ -174,7 +183,7 @@ export async function startFakeRelaycast({
     socket.once('close', () => sockets.delete(socket));
   });
 
-  server.on('upgrade', (request, socket) => {
+  server.on('upgrade', (request, socket, head) => {
     const key = request.headers['sec-websocket-key'];
     if (typeof key !== 'string') {
       socket.destroy();
@@ -191,29 +200,33 @@ export async function startFakeRelaycast({
     );
     const pathname = new URL(request.url ?? '/', 'http://relayflow.invalid').pathname;
     if (pathname === '/v1/node/ws') state.nodeSocket = socket;
-    attachFrameReader(socket, (frame) => {
-      if (frame.opcode === 0x9) {
-        sendFrame(socket, 0xa, frame.payload);
-        return;
-      }
-      if (frame.opcode !== 0x1) return;
-      const message = JSON.parse(frame.payload.toString('utf8'));
-      state.nodeFrames.push(message);
-      if (message.type === 'agent.register') {
-        sendText(socket, {
-          type: 'reply',
-          v: 1,
-          id: message.id,
-          ok: true,
-          data: {
-            agent_id: state.agentId,
-            token: 'at_relayflow_recipient',
-            name: message.name,
-            delivery_ack_seq: 0,
-          },
-        });
-      }
-    });
+    attachFrameReader(
+      socket,
+      (frame) => {
+        if (frame.opcode === 0x9) {
+          sendFrame(socket, 0xa, frame.payload);
+          return;
+        }
+        if (frame.opcode !== 0x1) return;
+        const message = JSON.parse(frame.payload.toString('utf8'));
+        state.nodeFrames.push(message);
+        if (message.type === 'agent.register') {
+          sendText(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: {
+              agent_id: state.agentId,
+              token: 'at_relayflow_recipient',
+              name: message.name,
+              delivery_ack_seq: 0,
+            },
+          });
+        }
+      },
+      head
+    );
   });
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -243,9 +256,9 @@ async function readJson(request) {
   return raw ? JSON.parse(raw) : undefined;
 }
 
-function attachFrameReader(socket, onFrame) {
-  let buffered = Buffer.alloc(0);
-  socket.on('data', (chunk) => {
+function attachFrameReader(socket, onFrame, initialData = Buffer.alloc(0)) {
+  let buffered = Buffer.from(initialData);
+  const consume = (chunk) => {
     buffered = Buffer.concat([buffered, chunk]);
     while (true) {
       const decoded = decodeFrame(buffered);
@@ -253,7 +266,9 @@ function attachFrameReader(socket, onFrame) {
       buffered = buffered.subarray(decoded.consumed);
       onFrame(decoded);
     }
-  });
+  };
+  socket.on('data', consume);
+  if (buffered.length > 0) consume(Buffer.alloc(0));
 }
 
 function decodeFrame(buffer) {

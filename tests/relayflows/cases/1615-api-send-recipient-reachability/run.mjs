@@ -113,7 +113,7 @@ try {
   });
 
   const connection = await waitForConnection(path.join(stateDir, 'connection.json'), broker);
-  const api = async (pathname, options = {}) => {
+  const api = async (pathname, { timeoutMs = 15_000, ...options } = {}) => {
     const response = await fetch(`${connection.url}${pathname}`, {
       ...options,
       headers: {
@@ -121,7 +121,7 @@ try {
         'x-api-key': API_KEY,
         ...(options.headers ?? {}),
       },
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const raw = await response.text();
     let body;
@@ -133,7 +133,11 @@ try {
     return { status: response.status, body };
   };
 
-  await waitFor(async () => (await api('/api/session')).status === 200, 30_000, 'broker readiness');
+  await waitFor(
+    async () => (await api('/api/session', { timeoutMs: 2_000 })).status === 200,
+    30_000,
+    'broker readiness'
+  );
   const spawned = await api('/api/spawn', {
     method: 'POST',
     body: JSON.stringify({
@@ -156,7 +160,9 @@ try {
   try {
     positiveScreen = await waitForSnapshot(api, positiveNonce, 20_000);
   } catch (error) {
-    const snapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`);
+    const snapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
+      timeoutMs: 2_000,
+    });
     throw new Error(
       `${error.message}; positive=${JSON.stringify(positive)}; nodeFrames=${JSON.stringify(
         relaycast.state.nodeFrames
@@ -205,7 +211,9 @@ try {
     );
   }
   await new Promise((resolve) => setTimeout(resolve, 250));
-  const finalSnapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`);
+  const finalSnapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
+    timeoutMs: 2_000,
+  });
   const finalScreen = finalSnapshot.body?.screen ?? '';
 
   const positiveInjectionCount = occurrences(positiveScreen, positiveNonce);
@@ -288,7 +296,12 @@ try {
     throw new Error(`Recipient release failed during teardown: ${JSON.stringify(released)}`);
   }
   await waitFor(
-    async () => (await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`)).status === 404,
+    async () =>
+      (
+        await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
+          timeoutMs: 2_000,
+        })
+      ).status === 404,
     10_000,
     'recipient absence after release'
   );
@@ -381,7 +394,9 @@ async function waitForConnection(connectionPath, child) {
 async function waitForSnapshot(api, marker, timeoutMs) {
   return waitFor(
     async () => {
-      const snapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`);
+      const snapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
+        timeoutMs: 2_000,
+      });
       if (snapshot.status !== 200) return false;
       const screen = snapshot.body?.screen ?? '';
       return screen.includes(marker) ? screen : false;
