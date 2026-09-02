@@ -244,8 +244,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'relayflow_v2_run_forwarded_and_schedule_refused';
-    details =
-      `The head Cloud SDK forwarded explicit v2 for the immediate run, preserved omitted-selector scheduling, and refused explicit v2 scheduling with the exact unsupported error before auth, filesystem, or network access.`;
+    details = `The head Cloud SDK forwarded explicit v2 for the immediate run, preserved omitted-selector scheduling, and refused explicit v2 scheduling with the exact unsupported error before auth, filesystem, or network access.`;
   } else {
     throw new Error(`Unexpected Relayflow version observation: ${JSON.stringify(observation)}.`);
   }
