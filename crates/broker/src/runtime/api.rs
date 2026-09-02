@@ -2301,6 +2301,8 @@ impl BrokerRuntime {
                             workers,
                             fleet_delivery_book,
                             fleet_control_tx,
+                            sdk_out_tx,
+                            dead_letters,
                             &name,
                             delivery_retry_interval,
                         )
@@ -2431,6 +2433,8 @@ impl BrokerRuntime {
                         workers,
                         fleet_delivery_book,
                         fleet_control_tx,
+                        sdk_out_tx,
+                        dead_letters,
                         &name,
                         delivery_retry_interval,
                     )
@@ -2497,6 +2501,7 @@ impl BrokerRuntime {
                         .unwrap_or(0);
                     let _ = reply.send(Ok(FlushPendingOk {
                         flushed,
+                        dead_lettered: flush_result.dead_lettered,
                         held,
                         blocked_reason: flush_result.failure,
                     }));

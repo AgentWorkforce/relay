@@ -295,28 +295,32 @@ impl std::error::Error for AgentResultRouteError {}
 /// `matched` is `true` on an applied set. It is `false` when either compare-and-
 /// set guard misses, in which case `mode` and `revision` report the current
 /// unchanged state and `flushed` is `0`.
-/// Outcome of `POST /api/spawned/{name}/flush`.
-///
-/// `flushed` alone cannot distinguish "the queue was empty" from "the queue is
-/// jammed and I injected nothing", and that ambiguity is what made relay#1593
-/// expensive to diagnose — a bare `{"flushed": 0}` was read as a null result
-/// when it was a swallowed failure. `held` and `blocked_reason` say which.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct FlushPendingOk {
-    /// Messages injected into the worker by this call.
-    pub flushed: usize,
-    /// Messages still parked in the queue when the flush stopped.
-    pub held: usize,
-    /// Why the flush stopped short, when it did.
-    pub blocked_reason: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetInboundDeliveryModeOk {
     pub mode: InboundDeliveryMode,
     pub flushed: usize,
     pub matched: bool,
     pub revision: u64,
+}
+
+/// Outcome of `POST /api/spawned/{name}/flush`.
+///
+/// `flushed` alone cannot distinguish "the queue was empty" from "the queue is
+/// jammed and I injected nothing", and that ambiguity is what made relay#1593
+/// expensive to diagnose — a bare `{"flushed": 0}` was read as a null result
+/// when it was a swallowed failure. The other three fields say which.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FlushPendingOk {
+    /// Messages injected into the worker by this call.
+    pub flushed: usize,
+    /// Messages removed from the queue and dead-lettered instead of injected,
+    /// because their Relaycast identity no longer holds the worker's name.
+    /// Inspect them with `agent-relay node deadletters`.
+    pub dead_lettered: usize,
+    /// Messages still parked in the queue when the flush stopped.
+    pub held: usize,
+    /// Why the flush stopped short, when it did.
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2508,8 +2512,14 @@ async fn listen_api_get_pending(
 
 /// `POST /api/spawned/{name}/flush` → `{ "flushed": N }`.
 ///
+/// Responds `{ "flushed", "dead_lettered", "held", "blocked_reason" }`.
+///
 /// Injects queued messages into the worker in FIFO order and stops at the first
-/// failure, retaining that message and its suffix for a later attempt. The
+/// failure, retaining that message and its suffix for a later attempt. A
+/// message whose Relaycast identity no longer holds this worker's name is
+/// dead-lettered rather than injected and counts in `dead_lettered`, never
+/// `flushed`. `held` is what remained parked and `blocked_reason` says why the
+/// flush stopped, so a jammed queue is distinguishable from an empty one. The
 /// inbound delivery mode is *not* changed — a caller still in `manual_flush`
 /// delivery mode will continue to queue newly-arriving messages. When a drive
 /// session's interactive hold is active, the broker follows the handoff with a
@@ -2536,6 +2546,7 @@ async fn listen_api_flush_pending(
             axum::http::StatusCode::OK,
             axum::Json(json!({
                 "flushed": result.flushed,
+                "dead_lettered": result.dead_lettered,
                 "held": result.held,
                 "blocked_reason": result.blocked_reason,
             })),
@@ -5944,6 +5955,7 @@ mod auth_tests {
                     assert_eq!(name, "worker-a");
                     let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
                         flushed: 5,
+                        dead_lettered: 0,
                         held: 0,
                         blocked_reason: None,
                     }));
@@ -5968,7 +5980,59 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(
             body,
-            json!({ "flushed": 5, "held": 0, "blocked_reason": null })
+            json!({ "flushed": 5, "dead_lettered": 0, "held": 0, "blocked_reason": null })
+        );
+        replier.await.expect("replier should complete");
+    }
+
+    /// The observability contract's load-bearing case: a flush that injected
+    /// nothing because the queue is jammed must be distinguishable from a
+    /// flush that injected nothing because the queue was empty.
+    #[tokio::test]
+    async fn flush_route_reports_a_blocked_queue_distinctly_from_an_empty_one() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::FlushPending { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
+                        flushed: 0,
+                        dead_lettered: 1,
+                        held: 3,
+                        blocked_reason: Some(
+                            "delivery sequence 7 for 'worker-a' is not the next ACKable receipt"
+                                .to_string(),
+                        ),
+                    }));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/flush")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({
+                "flushed": 0,
+                "dead_lettered": 1,
+                "held": 3,
+                "blocked_reason":
+                    "delivery sequence 7 for 'worker-a' is not the next ACKable receipt",
+            }),
+            "a jammed queue must not render identically to an empty one"
         );
         replier.await.expect("replier should complete");
     }

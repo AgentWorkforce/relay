@@ -1110,13 +1110,28 @@ impl FleetDeliveryBook {
         receipt: &RelaycastDeliveryReceipt,
     ) -> ReceiptAckability {
         let Some(cursor) = self.agents.get(receipt.agent_id.as_str()) else {
-            // The identity this receipt was stamped with is gone. It cannot
-            // come back either: `bind_identity` refuses to re-adopt a retired
-            // `agent_id`, so no later frame will recreate this cursor.
+            // The identity this receipt was stamped with is gone. A later
+            // `bind_authoritative_identity` for the same `agent_id` can clear
+            // its retired marker and re-adopt it, but that rebuilds the cursor
+            // from Relaycast's own position — it never restores this receipt's
+            // place in the old sequence, so the receipt stays un-ACKable either
+            // way.
             return ReceiptAckability::Orphaned {
                 reason: OrphanedReceiptReason::IdentityRetired,
             };
         };
+        if cursor.agent_name != receipt.agent {
+            // The `agent_id` is live but now answers to a different name: the
+            // identity moved and `bind_identity` carried its cursor across
+            // (`cursor.agent_name = agent`). This receipt belongs to the old
+            // name binding. Committing it would rewrite `cursor.agent_name`
+            // back through `commit_acked_receipt` and ACK against the wrong
+            // name, after which `observe` would reject every delivery for the
+            // identity's *current* name as an identity conflict.
+            return ReceiptAckability::Orphaned {
+                reason: OrphanedReceiptReason::IdentityRetired,
+            };
+        }
         if receipt.seq == 0 {
             return ReceiptAckability::Ready;
         }

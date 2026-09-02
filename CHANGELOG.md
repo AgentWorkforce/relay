@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A held agent no longer goes permanently deaf when its Relaycast identity is rebound or its delivery cursor is re-seeded while messages are parked: the flush now delivers those messages instead of stopping on them forever, so `agent message flush` / `agent message auto` can wake a parked agent again. A genuine out-of-order sequence still holds the queue.
+- `node agent message flush` and `node agent message auto` now wake a held agent that had become permanently unreachable, instead of returning `flushed: 0` forever. An undeliverable message is dead-lettered with a reason rather than blocking the queue, and a genuine out-of-order sequence still holds it.
 
 ### Added
 
-- `POST /api/spawned/{name}/flush` now returns `held` and `blocked_reason` alongside `flushed`, so `agent-relay node agent message flush` distinguishes an empty queue from one the broker could not drain.
+- `POST /api/spawned/{name}/flush` now returns `dead_lettered`, `held`, and `blocked_reason` alongside `flushed`, so an empty queue is distinguishable from one the broker could not drain. Exposed on the harness-driver and Swift SDK clients.
 
 ## [11.10.0] - 2026-09-02
 

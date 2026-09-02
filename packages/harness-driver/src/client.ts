@@ -866,17 +866,22 @@ export class HarnessDriverClient {
    * Flush a held agent's parked queue.
    *
    * `flushed` on its own is ambiguous: 0 reads the same for an empty queue and
-   * for a queue the broker could not drain. `held` and `blockedReason` carry
-   * that distinction (see relay#1593). Older brokers omit both fields.
+   * for a queue the broker could not drain. `deadLettered`, `held` and
+   * `blockedReason` carry that distinction (see relay#1593). Older brokers omit
+   * all three.
    */
-  async flushPending(name: string): Promise<{ flushed: number; held?: number; blockedReason?: string }> {
+  async flushPending(
+    name: string
+  ): Promise<{ flushed: number; deadLettered?: number; held?: number; blockedReason?: string }> {
     const result = await this.transport.request<{
       flushed?: unknown;
+      dead_lettered?: unknown;
       held?: unknown;
       blocked_reason?: unknown;
     }>(`/api/spawned/${encodeURIComponent(name)}/flush`, { method: 'POST' });
     return {
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      ...(typeof result.dead_lettered === 'number' ? { deadLettered: result.dead_lettered } : {}),
       ...(typeof result.held === 'number' ? { held: result.held } : {}),
       ...(typeof result.blocked_reason === 'string' ? { blockedReason: result.blocked_reason } : {}),
     };

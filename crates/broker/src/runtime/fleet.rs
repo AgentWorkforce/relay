@@ -1655,6 +1655,10 @@ fn fleet_spawn_action_result(
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct FlushPendingRelayResult {
     pub(super) flushed: usize,
+    /// Messages removed from the parked queue and dead-lettered instead of
+    /// injected, because their Relaycast identity is no longer the one that
+    /// holds this worker's name. See the `Orphaned` arm of the flush loop.
+    pub(super) dead_lettered: usize,
     pub(super) failure: Option<String>,
 }
 
@@ -1675,11 +1679,14 @@ pub(super) struct FlushPendingRelayResult {
 /// A real fix needs an ack-cursor model that tolerates a pipeline of
 /// outstanding (unconfirmed) commits, which is a separate, larger change;
 /// this flush path still acks on write, not on echo, until that lands.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn flush_pending_relay_messages(
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     workers: &mut WorkerRegistry,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
     worker_name: &WorkerName,
     retry_interval: Duration,
 ) -> FlushPendingRelayResult {
@@ -1712,21 +1719,19 @@ pub(super) async fn flush_pending_relay_messages(
             break;
         }
 
-        if let Err(error) =
-            try_inject_pending_relay_message_once(workers, worker_name, &queued, retry_interval)
-                .await
-        {
-            result.failure = Some(error.to_string());
-            break;
-        }
-
+        // An orphaned receipt is dead-lettered, never injected. Its Relaycast
+        // identity is no longer the one bound to this worker's name, so the
+        // process holding the name now may be a different agent generation —
+        // injecting would hand one identity's private messages to another.
+        // Dead-lettering unjams the queue (the actual relay#1593 harm was
+        // permanent deafness to *every subsequent* message) while keeping the
+        // orphan visible and replayable through `node deadletters` rather than
+        // silently dropped, which relay#1593 explicitly asks for. No ACK is
+        // sent, so Relaycast keeps ownership and its unread accounting is
+        // untouched.
         if let (Some(ReceiptAckability::Orphaned { reason }), Some(receipt)) =
             (ackability, queued.relaycast_receipt.as_ref())
         {
-            // Delivered, deliberately un-ACKed. Withholding the ACK is the
-            // safe half of the old behaviour; withholding the *message* was
-            // the bug (relay#1593) — it left the agent permanently deaf
-            // behind a head-of-line receipt that could never clear.
             tracing::warn!(
                 target = "relay_broker::fleet",
                 agent = %receipt.agent,
@@ -1734,9 +1739,35 @@ pub(super) async fn flush_pending_relay_messages(
                 seq = receipt.seq,
                 msg_id = %receipt.msg_id,
                 reason = reason.as_str(),
-                "injected a parked message whose Relaycast identity can no longer be ACKed; \
-                 Relaycast retains ownership of the frame"
+                "dead-lettering a parked message whose Relaycast identity no longer holds this \
+                 worker's name; it is not injected because the name may now belong to a \
+                 different agent generation"
             );
+            dead_letter_parked_message(
+                sdk_out_tx,
+                dead_letters,
+                DeadLetterEntry::from_parked_message(
+                    worker_name,
+                    relay_delivery_for_pending_message(&queued),
+                    queued.queued_at_ms,
+                    &format!("orphaned_delivery_receipt:{}", reason.as_str()),
+                ),
+            )
+            .await;
+            let removed = delivery_states
+                .get_mut(worker_name)
+                .and_then(|state| state.pending.pop_front());
+            debug_assert_eq!(removed.as_ref(), Some(&queued));
+            result.dead_lettered += 1;
+            continue;
+        }
+
+        if let Err(error) =
+            try_inject_pending_relay_message_once(workers, worker_name, &queued, retry_interval)
+                .await
+        {
+            result.failure = Some(error.to_string());
+            break;
         }
 
         if let (Some(ReceiptAckability::Ready), Some(receipt)) =

@@ -776,12 +776,12 @@ pub(crate) async fn try_inject_pending_relay_message(
 /// retry queue. Manual-flush callers keep the original message at the head of
 /// their FIFO on failure, along with its Relaycast receipt, so retrying cannot
 /// race a second broker-owned copy of the same delivery.
-pub(crate) async fn try_inject_pending_relay_message_once(
-    workers: &mut WorkerRegistry,
-    worker_name: &str,
-    msg: &PendingRelayMessage,
-    retry_interval: Duration,
-) -> Result<()> {
+/// Rebuild the `RelayDelivery` a parked message was queued from.
+///
+/// Shared by the injection path and the dead-letter path so a message that is
+/// discarded instead of injected is recorded under the same delivery and event
+/// ids the worker would have seen.
+pub(crate) fn relay_delivery_for_pending_message(msg: &PendingRelayMessage) -> RelayDelivery {
     let event_id = msg
         .event_id
         .clone()
@@ -791,7 +791,7 @@ pub(crate) async fn try_inject_pending_relay_message_once(
         .as_ref()
         .map(|receipt| receipt.delivery_id.clone())
         .unwrap_or_else(|| DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())));
-    let delivery = RelayDelivery {
+    RelayDelivery {
         delivery_id,
         event_id,
         workspace_id: msg.workspace_id.clone(),
@@ -802,7 +802,16 @@ pub(crate) async fn try_inject_pending_relay_message_once(
         thread_id: msg.thread_id.clone(),
         priority: Some(msg.priority),
         injection_mode: msg.mode.clone(),
-    };
+    }
+}
+
+pub(crate) async fn try_inject_pending_relay_message_once(
+    workers: &mut WorkerRegistry,
+    worker_name: &str,
+    msg: &PendingRelayMessage,
+    retry_interval: Duration,
+) -> Result<()> {
+    let delivery = relay_delivery_for_pending_message(msg);
 
     timeout(retry_interval, workers.deliver(worker_name, delivery))
         .await
