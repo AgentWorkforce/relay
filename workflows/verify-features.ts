@@ -642,10 +642,23 @@ probe() {
   PROBE_COMMAND="$_cmd" node -e '
     const { spawnSync } = require("node:child_process");
     const result = spawnSync("/bin/sh", ["-c", process.env.PROBE_COMMAND], {
+      detached: process.platform !== "win32",
       stdio: "ignore",
       timeout: 10000,
     });
-    if (result.error && result.error.code === "ETIMEDOUT") process.exit(124);
+    if (result.error && result.error.code === "ETIMEDOUT") {
+      if (result.pid && process.platform === "win32") {
+        spawnSync("taskkill", ["/pid", String(result.pid), "/T", "/F"], {
+          stdio: "ignore",
+          timeout: 5000,
+        });
+      } else if (result.pid) {
+        try {
+          process.kill(-result.pid, "SIGKILL");
+        } catch {}
+      }
+      process.exit(124);
+    }
     process.exit(result.status === 0 ? 0 : 1);
   '
   _rc=$?
@@ -2343,7 +2356,7 @@ fi
 # A fixer that labels everything "environmental" without evidence is not a
 # fix. Validate one explicit assessment per failed check before considering the
 # branch or PR state.
-node <<'ASSESSMENTEOF'
+VERIFY_ARTIFACTS="$ARTIFACTS" node <<'ASSESSMENTEOF'
 const fs = require('node:fs');
 const artifacts = process.env.VERIFY_ARTIFACTS || '.workflow-artifacts/verify-features';
 const verdict = JSON.parse(fs.readFileSync(artifacts + '/verdict.json', 'utf8'));

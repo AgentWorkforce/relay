@@ -26,6 +26,10 @@ import { prepareRunWorktree, removeRunWorktree } from '../../scripts/verify-feat
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
+const workflowSourcePromise = readFile(
+  fileURLToPath(new URL('../../workflows/verify-features.ts', import.meta.url)),
+  'utf8'
+);
 
 function workflowStep(source: string, name: string): string {
   const start = source.indexOf(`wf.step('${name}', {`);
@@ -46,18 +50,21 @@ afterEach(async () => {
 });
 
 describe('verify-features escalation status', () => {
-  it('wires loud delivery enforcement and bounded provenance-safe probes', async () => {
-    const source = await readFile(
-      fileURLToPath(new URL('../../workflows/verify-features.ts', import.meta.url)),
-      'utf8'
-    );
-
+  it('bounds capability probes and fails closed on invalid provenance', async () => {
+    const source = await workflowSourcePromise;
     const capabilities = workflowStep(source, 'capabilities');
-    const setup = workflowStep(source, 'setup');
-    const primaryAlert = workflowStep(source, 'slack-alert');
-    const emitPosthog = workflowStep(source, 'emit-posthog');
-    const fileIssue = workflowStep(source, 'file-issue');
-    const openPr = workflowStep(source, 'open-pr');
+    expect(capabilities).toMatch(/timeout:\s*10_000|timeout:\s*10000/);
+    expect(capabilities).toContain('detached: process.platform !== "win32"');
+    expect(capabilities).toContain('process.kill(-result.pid, "SIGKILL")');
+    expect(capabilities).toContain('ARTIFACTS="${ARTIFACTS}"');
+    expect(capabilities).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
+    expect(source).toContain('abort_for_invalid_provenance');
+    expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
+    expect(source).toContain('verdict.runId !== RUN_ID');
+  });
+
+  it('audits every mandatory escalation independently of the workflow DAG', async () => {
+    const source = await workflowSourcePromise;
     const followup = workflowStep(source, 'slack-followup');
 
     expect(workflowStep(source, 'enforce-escalations')).toContain(
@@ -67,29 +74,19 @@ describe('verify-features escalation status', () => {
     expect(source).toMatch(/step:\s*['"]enforce-github-issue-delivery['"]/);
     expect(source).toMatch(/step:\s*['"]enforce-draft-pr-delivery['"]/);
     expect(followup).toMatch(/dependsOn:\s*\[\s*['"]open-pr['"]\s*,\s*['"]slack-alert['"]\s*\]/);
-    expect(capabilities).toMatch(/timeout:\s*10_000|timeout:\s*10000/);
-    expect(capabilities).toContain('ARTIFACTS="${ARTIFACTS}"');
-    expect(capabilities).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
-    expect(source).toContain('abort_for_invalid_provenance');
-    expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('failure-assessment.json');
     expect(source).toContain('relay-alert-envelope/1');
-    expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
-    expect(setup).toContain('reset "${ARTIFACTS}"');
-    expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
-    expect(source).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
-    expect(source).toContain('await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
-    expect(source).toContain('await removeRunWorktree(REPO_ROOT, RUN_WORKTREE)');
-    expect(source).toContain('const result = await wf.run({ dryRun, cwd: REPO_ROOT })');
-    for (const mutatingStep of [
-      workflowStep(source, 'attempt-fix'),
-      workflowStep(source, 'fix-integrity'),
-      workflowStep(source, 'open-pr'),
-    ]) {
-      expect(mutatingStep).toContain('cwd: RUN_WORKTREE');
-    }
-    expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
-    expect(source).not.toContain('INVOCATION_LOCK');
+    expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
+  });
+
+  it('records explicit failed receipts for every delivery primitive', async () => {
+    const source = await workflowSourcePromise;
+    const primaryAlert = workflowStep(source, 'slack-alert');
+    const emitPosthog = workflowStep(source, 'emit-posthog');
+    const fileIssue = workflowStep(source, 'file-issue');
+    const openPr = workflowStep(source, 'open-pr');
+    const followup = workflowStep(source, 'slack-followup');
+
     expect(fileIssue).toContain('ISSUE_RC=$?');
     expect(fileIssue).toContain('[ "$ISSUE_RC" -eq 0 ] && [ -n "$ISSUE_URL" ]');
     expect(openPr).toContain('PR_RC=$?');
@@ -99,13 +96,35 @@ describe('verify-features escalation status', () => {
     expect(emitPosthog).toContain('if [ "$TOTAL" -eq 0 ]');
     expect(primaryAlert).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
     expect(followup).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
-    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
-    expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
-    expect(source).toContain('verdict.runId !== RUN_ID');
-    expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
     expect(source).not.toContain('ISSUE_SKIPPED: gh is not authenticated');
     expect(source).not.toContain('PR_SKIPPED: gh unavailable or unauthenticated');
     expect(source).not.toContain('FOLLOWUP_SKIPPED: no issue or PR to report');
+  });
+
+  it('isolates artifacts and all mutating fix steps per invocation', async () => {
+    const source = await workflowSourcePromise;
+    const setup = workflowStep(source, 'setup');
+
+    expect(setup).toContain('reset "${ARTIFACTS}"');
+    expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
+    expect(source).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
+    expect(source).toContain('await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
+    expect(source).toContain('await removeRunWorktree(REPO_ROOT, RUN_WORKTREE)');
+    expect(source).toContain('const result = await wf.run({ dryRun, cwd: REPO_ROOT })');
+    for (const mutatingStep of ['attempt-fix', 'fix-integrity', 'open-pr']) {
+      expect(workflowStep(source, mutatingStep)).toContain('cwd: RUN_WORKTREE');
+    }
+    expect(workflowStep(source, 'fix-integrity')).toContain('VERIFY_ARTIFACTS="$ARTIFACTS" node');
+    expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
+    expect(source).not.toContain('INVOCATION_LOCK');
+  });
+
+  it('preserves the required Slack target and dry-run/run identity controls', async () => {
+    const source = await workflowSourcePromise;
+
+    expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
+    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
+    expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
   });
 
   it('puts a failed issue delivery in the first Slack alert', async () => {
@@ -159,6 +178,17 @@ describe('verify-features escalation status', () => {
     expect(message).toContain('*NO DRAFT FIX PR WAS OPENED. Human follow-up is required.*');
     expect(message).toContain('environmental=1, identity=1, provenance=1');
     expect(message).toContain('provenance/cli-belongs-to-checkout: provenance');
+  });
+
+  it('reports a valid empty fixer assessment without calling it unavailable', async () => {
+    const directory = await artifacts();
+    await writeFile(path.join(directory, 'failure-assessment.json'), '[]\n');
+
+    const message = renderFinalEscalationStatus(directory);
+
+    expect(message).toContain('no individual check failures');
+    expect(message).toContain('failed verdict contained no per-check failure records');
+    expect(message).not.toContain('Fixer assessment unavailable');
   });
 
   it('redacts credentials from fixer evidence in the final alert', async () => {
@@ -313,6 +343,16 @@ describe('verify-features escalation status', () => {
     expect(await readFile(path.join(root, 'verdict.json'), 'utf8')).toContain('"b"');
   });
 
+  it('replaces existing canonical symlinks through the Windows-safe path', async () => {
+    const root = await artifacts();
+    prepareRunArtifacts(root, 'verify-windows-a', 'windows-a', { platform: 'win32' });
+    const runB = prepareRunArtifacts(root, 'verify-windows-b', 'windows-b', { platform: 'win32' });
+    await writeFile(path.join(runB, 'checks.jsonl'), 'windows-b\n');
+
+    expect(await readlink(path.join(root, 'current'))).toBe('runs/verify-windows-b');
+    expect(await readFile(path.join(root, 'checks.jsonl'), 'utf8')).toBe('windows-b\n');
+  });
+
   it('keeps every run intact when independent processes publish concurrently', async () => {
     const root = await artifacts();
     const moduleUrl = new URL('../../scripts/verify-features/run-artifacts.mjs', import.meta.url).href;
@@ -458,7 +498,7 @@ describe('verify-features escalation status', () => {
 
   it.skipIf(process.platform === 'win32')(
     'kills checkout-filter descendants when worktree creation times out',
-    async () => {
+    async ({ skip }) => {
       const repo = await artifacts();
       await execFileAsync('git', ['-C', repo, 'init']);
       await writeFile(path.join(repo, 'fixture.txt'), 'base\n');
@@ -488,19 +528,42 @@ describe('verify-features escalation status', () => {
         prepareRunWorktree(repo, await artifacts(), 'verify-timeout', { timeoutMs: 200 })
       ).rejects.toThrow('timed out after 200ms');
 
-      const filterPid = Number((await readFile(pidFile, 'utf8')).trim());
-      expect(Number.isSafeInteger(filterPid)).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      let processState = '';
+      let pidText;
       try {
-        const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(filterPid)]);
-        processState = result.stdout.trim();
+        pidText = await readFile(pidFile, 'utf8');
       } catch (error) {
-        if ((error as { code?: number }).code !== 1) throw error;
+        if ((error as { code?: string }).code === 'ENOENT') {
+          skip('git did not start the checkout filter before the timeout');
+          return;
+        }
+        throw error;
+      }
+      const filterPid = Number(pidText.trim());
+      expect(Number.isSafeInteger(filterPid)).toBe(true);
+      let processState = '';
+      const settleDeadline = Date.now() + 2_000;
+      while (Date.now() < settleDeadline) {
+        try {
+          const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(filterPid)]);
+          processState = result.stdout.trim();
+        } catch (error) {
+          if ((error as { code?: number }).code !== 1) throw error;
+          processState = '';
+        }
+        if (processState === '' || processState.startsWith('Z')) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
       expect(processState === '' || processState.startsWith('Z')).toBe(true);
     }
   );
+
+  it('rejects worktree timeouts beyond the Node timer limit', async () => {
+    await expect(
+      prepareRunWorktree(await artifacts(), await artifacts(), 'verify-timeout-overflow', {
+        timeoutMs: 2_147_483_648,
+      })
+    ).rejects.toThrow('timeoutMs must be an integer between 1 and 2147483647');
+  });
 
   it('rejects prototype names and incomplete delivery receipts', async () => {
     const directory = await artifacts();

@@ -20,6 +20,7 @@ const expectedSha =
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
   encoding: 'utf8',
+  timeout: COMMAND_TIMEOUT_MS,
 }).trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
@@ -65,25 +66,38 @@ if (arm === 'base') {
   details =
     'The exact base workflow labels unauthenticated issue/PR delivery and a missing follow-up as SKIPPED while providing no escalation receipt audit executable.';
 } else {
-  if (!workflowSource.includes('C0AEKNLDNKW')) {
-    throw new Error('Head workflow does not target the required Slack channel C0AEKNLDNKW.');
-  }
-  for (const integrationMarker of [
-    "[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS",
-    'if (escalationAudit.status !== 0)',
-    'ESCALATION DELIVERY FAILED independently of the workflow DAG',
-    'process.exitCode = 2',
-    'const result = await wf.run({ dryRun, cwd: REPO_ROOT })',
-  ]) {
-    if (!workflowSource.includes(integrationMarker)) {
-      throw new Error(`Head workflow does not wire fail-loud escalation audit: ${integrationMarker}`);
-    }
-  }
+  // The executable checks below prove the helpers' behavior. Source inspection
+  // is still required to prove that the workflow actually invokes those
+  // helpers; running the full credential-bearing scheduler from this isolated,
+  // credential-free proof sandbox would test a different security boundary.
+  assertWorkflowPattern(
+    workflowSource,
+    /VERIFY_SLACK_CHANNEL\s*=\s*['"]C0AEKNLDNKW['"]/,
+    'required Slack channel C0AEKNLDNKW'
+  );
+  assertWorkflowPattern(
+    workflowSource,
+    /\[\s*ESCALATION_STATUS_TOOL\s*,\s*['"]audit['"]\s*,\s*ARTIFACTS/,
+    'post-run escalation audit invocation'
+  );
+  assertWorkflowPattern(
+    workflowSource,
+    /if\s*\(\s*escalationAudit\.status\s*!==\s*0\s*\)/,
+    'non-zero escalation audit branch'
+  );
+  assertWorkflowPattern(
+    workflowSource,
+    /process\.exitCode\s*=\s*2/,
+    'non-zero process exit after failed escalation audit'
+  );
+  assertWorkflowPattern(
+    workflowSource,
+    /wf\.run\s*\(\s*\{\s*dryRun\s*,\s*cwd\s*:\s*REPO_ROOT\s*\}\s*\)/,
+    'source-checkout workflow execution'
+  );
   for (const mutatingStep of ['attempt-fix', 'fix-integrity', 'open-pr']) {
-    const start = workflowSource.indexOf(`wf.step('${mutatingStep}', {`);
-    const end = workflowSource.indexOf("\n  wf.step('", start + 1);
-    const stepSource = workflowSource.slice(start, end === -1 ? workflowSource.length : end);
-    if (start === -1 || !stepSource.includes('cwd: RUN_WORKTREE')) {
+    const stepSource = workflowStep(workflowSource, mutatingStep);
+    if (!/cwd\s*:\s*RUN_WORKTREE/.test(stepSource)) {
       throw new Error(`Head workflow does not isolate mutating step ${mutatingStep}.`);
     }
   }
@@ -237,6 +251,19 @@ function runStatusTool(statusTool, args, expectedStatus) {
       )}; stderr=${JSON.stringify(completed.stderr)}.`
     );
   }
+}
+
+function assertWorkflowPattern(source, pattern, label) {
+  if (!pattern.test(source)) throw new Error(`Head workflow does not wire ${label}.`);
+}
+
+function workflowStep(source, name) {
+  const startPattern = new RegExp(`wf\\.step\\s*\\(\\s*(['"])${name}\\1\\s*,\\s*\\{`, 'm');
+  const match = startPattern.exec(source);
+  if (!match) throw new Error(`Head workflow does not define mutating step ${name}.`);
+  const remainder = source.slice(match.index + match[0].length);
+  const next = /\n\s*wf\.step\s*\(/.exec(remainder);
+  return source.slice(match.index, next ? match.index + match[0].length + next.index : source.length);
 }
 
 function requiredValue(name) {

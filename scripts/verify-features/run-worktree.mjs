@@ -3,6 +3,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 const COMMAND_TIMEOUT_MS = 60_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const TREE_KILL_TIMEOUT_MS = 5_000;
 const MAX_ERROR_OUTPUT = 64 * 1024;
 
 function assertPathSegment(value, label) {
@@ -16,33 +18,51 @@ function appendBounded(current, chunk) {
 }
 
 function terminateProcessTree(child) {
-  if (!child.pid) return;
+  if (!child.pid) return Promise.resolve();
   if (process.platform === 'win32') {
-    const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-      stdio: 'ignore',
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallback);
+        resolve();
+      };
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      });
+      const fallback = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish();
+      }, TREE_KILL_TIMEOUT_MS);
+      killer.on('error', () => {
+        child.kill('SIGKILL');
+        finish();
+      });
+      killer.on('close', (code) => {
+        if (code !== 0) child.kill('SIGKILL');
+        finish();
+      });
     });
-    killer.on('error', () => child.kill('SIGKILL'));
-    killer.on('close', (code) => {
-      if (code !== 0) child.kill('SIGKILL');
-    });
-    killer.unref();
-    return;
   }
   try {
     process.kill(-child.pid, 'SIGKILL');
   } catch {
     child.kill('SIGKILL');
   }
+  return Promise.resolve();
 }
 
 function git(repoRoot, args, timeoutMs) {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
-    throw new Error('timeoutMs must be a positive integer');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMER_DELAY_MS) {
+    throw new Error(`timeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
   }
   return new Promise((resolve, reject) => {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let termination = Promise.resolve();
+    let settled = false;
     const child = spawn('git', ['-C', repoRoot, ...args], {
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -57,15 +77,25 @@ function git(repoRoot, args, timeoutMs) {
     });
     const timeout = setTimeout(() => {
       timedOut = true;
-      terminateProcessTree(child);
+      termination = terminateProcessTree(child);
+      void termination.then(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms`));
+      });
     }, timeoutMs);
     child.on('error', (error) => {
       clearTimeout(timeout);
+      if (settled) return;
+      settled = true;
       reject(error);
     });
-    child.on('close', (code, signal) => {
+    child.on('close', async (code, signal) => {
       clearTimeout(timeout);
+      if (settled) return;
+      settled = true;
       if (timedOut) {
+        await termination;
         reject(new Error(`git ${args.join(' ')} timed out after ${timeoutMs}ms`));
       } else if (code !== 0) {
         reject(

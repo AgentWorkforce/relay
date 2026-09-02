@@ -142,9 +142,7 @@ function statusLine(record) {
 function readAssessment(artifacts) {
   try {
     const assessments = JSON.parse(readFileSync(path.join(artifacts, 'failure-assessment.json'), 'utf8'));
-    if (!Array.isArray(assessments) || assessments.length === 0) {
-      throw new Error('empty assessment');
-    }
+    if (!Array.isArray(assessments)) throw new Error('assessment is not an array');
     if (
       assessments.some(
         (assessment) =>
@@ -166,6 +164,12 @@ function readAssessment(artifacts) {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([category, count]) => `${category}=${count}`)
       .join(', ');
+    if (assessments.length === 0) {
+      return {
+        summary: 'no individual check failures',
+        details: ['    ↳ the failed verdict contained no per-check failure records'],
+      };
+    }
     const details = assessments.slice(0, 20).map((assessment) => {
       const evidence = redactAlertText(String(assessment.evidence || 'no evidence'))
         .replace(/\s+/g, ' ')

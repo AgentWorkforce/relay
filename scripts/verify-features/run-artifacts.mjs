@@ -39,11 +39,28 @@ function assertPathSegment(value, label) {
   }
 }
 
-function replaceWithSymlink(linkPath, target, nonce, type) {
+function replaceWithSymlink(linkPath, target, nonce, type, platform = process.platform) {
   const temporaryLink = `${linkPath}.${nonce}.tmp`;
   rmSync(temporaryLink, { force: true });
   try {
     symlinkSync(target, temporaryLink, type);
+    // Windows cannot atomically replace an existing symlink with rename.
+    // A brief missing latest-run pointer is preferable to making every
+    // verifier invocation after the first fail during setup.
+    if (platform === 'win32') {
+      let lastError;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        rmSync(linkPath, { force: true });
+        try {
+          renameSync(temporaryLink, linkPath);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+        }
+      }
+      throw lastError;
+    }
     renameSync(temporaryLink, linkPath);
   } finally {
     rmSync(temporaryLink, { force: true });
@@ -54,10 +71,11 @@ function replaceWithSymlink(linkPath, target, nonce, type) {
  * Give every verifier invocation private writable state while preserving the
  * historical top-level artifact paths for consumers. The canonical links all
  * point through one `current` symlink, so switching that symlink publishes a
- * whole run atomically; a crashed newest run stays visibly incomplete instead
- * of exposing an older verdict as current.
+ * whole run atomically on POSIX and through a retrying replacement on Windows;
+ * a crashed newest run stays visibly incomplete instead of exposing an older
+ * verdict as current.
  */
-export function prepareRunArtifacts(root, runId, nonce) {
+export function prepareRunArtifacts(root, runId, nonce, { platform = process.platform } = {}) {
   assertPathSegment(runId, 'runId');
   assertPathSegment(nonce, 'nonce');
 
@@ -67,9 +85,9 @@ export function prepareRunArtifacts(root, runId, nonce) {
   mkdirSync(artifacts, { recursive: false });
 
   for (const file of CANONICAL_FILES) {
-    replaceWithSymlink(path.join(root, file), path.posix.join('current', file), nonce, 'file');
+    replaceWithSymlink(path.join(root, file), path.posix.join('current', file), nonce, 'file', platform);
   }
-  replaceWithSymlink(path.join(root, 'current'), path.posix.join('runs', runId), nonce, 'dir');
+  replaceWithSymlink(path.join(root, 'current'), path.posix.join('runs', runId), nonce, 'dir', platform);
   pruneRunArtifacts(root, { currentRunId: runId });
   return artifacts;
 }
