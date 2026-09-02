@@ -33,6 +33,7 @@ describe('HarnessDriverClient.sendMessage', () => {
     const result = await client.sendMessage({ to: 'queued-worker', text: 'hello' });
 
     expect(result).toMatchObject({
+      targets: [],
       relaycast_published: true,
       delivery_status: 'published_unconfirmed',
       recipient_live: false,

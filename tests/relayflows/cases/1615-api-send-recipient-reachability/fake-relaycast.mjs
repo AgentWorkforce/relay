@@ -3,12 +3,18 @@ import http from 'node:http';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-export async function startFakeRelaycast({ recipientName, offlineRecipientName, agentReadDelayMs = 0 }) {
+export async function startFakeRelaycast({
+  recipientName,
+  offlineRecipientName,
+  unknownRecipientName,
+  agentReadDelayMs = 0,
+}) {
   const sockets = new Set();
   const state = {
     agentId: `agent_${recipientName.replaceAll('-', '_')}`,
     brokerRegistrations: 0,
     directMessages: [],
+    channelMessages: [],
     nodeFrames: [],
     nodeSocket: undefined,
   };
@@ -38,6 +44,13 @@ export async function startFakeRelaycast({ recipientName, offlineRecipientName, 
         await new Promise((resolve) => setTimeout(resolve, agentReadDelayMs));
       }
       const name = decodeURIComponent(pathname.slice('/v1/agents/'.length));
+      if (name === unknownRecipientName) {
+        sendJson(response, 503, {
+          ok: false,
+          error: { code: 'unavailable', message: 'deterministic reachability outage' },
+        });
+        return;
+      }
       if (name !== recipientName && name !== offlineRecipientName) {
         sendJson(response, 404, {
           ok: false,
@@ -56,6 +69,28 @@ export async function startFakeRelaycast({ recipientName, offlineRecipientName, 
           persona: null,
           metadata: {},
           channels: [],
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/v1/channels/general/messages') {
+      state.channelMessages.push(body);
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          id: `msg_channel_${state.channelMessages.length}`,
+          agent_name: 'relayflow-1615-broker',
+          agent_id: 'agent_relayflow_broker',
+          text: body?.text ?? '',
+          blocks: null,
+          metadata: {},
+          attachments: [],
+          created_at: '2026-09-02T00:00:00.000Z',
+          reply_count: 0,
+          reactions: [],
+          read_by_count: 0,
+          injection_mode: body?.mode ?? 'wait',
         },
       });
       return;

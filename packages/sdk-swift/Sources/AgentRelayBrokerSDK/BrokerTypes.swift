@@ -579,21 +579,70 @@ public struct SendMessageResult: Codable, Sendable {
     /// empty array when absent. It is retained for parity with the TS driver's
     /// `{ event_id, targets }` result shape.
     public var targets: [String]
+    /// Whether the broker accepted the request.
+    public var success: Bool?
+    /// Durable Relaycast publication; this is not recipient delivery proof.
+    public var relaycastPublished: Bool?
+    /// Current broker contract is `published_unconfirmed` after publication.
+    public var deliveryStatus: String?
+    /// Best-effort Relaycast presence for a named recipient. `nil` means the
+    /// observation was unavailable or the target was not a named recipient.
+    public var recipientLive: Bool?
+    /// Effective Relaycast status observed for a named recipient.
+    public var recipientStatus: String?
+    public var local: Bool?
+    public var workspaceId: String?
+    public var workspaceAlias: String?
 
     enum CodingKeys: String, CodingKey {
         case eventId = "event_id"
         case targets
+        case success
+        case relaycastPublished = "relaycast_published"
+        case deliveryStatus = "delivery_status"
+        case recipientLive = "recipient_live"
+        case recipientStatus = "recipient_status"
+        case local
+        case workspaceId = "workspace_id"
+        case workspaceAlias = "workspace_alias"
     }
 
-    public init(eventId: String, targets: [String] = []) {
+    public init(
+        eventId: String,
+        targets: [String] = [],
+        success: Bool? = nil,
+        relaycastPublished: Bool? = nil,
+        deliveryStatus: String? = nil,
+        recipientLive: Bool? = nil,
+        recipientStatus: String? = nil,
+        local: Bool? = nil,
+        workspaceId: String? = nil,
+        workspaceAlias: String? = nil
+    ) {
         self.eventId = eventId
         self.targets = targets
+        self.success = success
+        self.relaycastPublished = relaycastPublished
+        self.deliveryStatus = deliveryStatus
+        self.recipientLive = recipientLive
+        self.recipientStatus = recipientStatus
+        self.local = local
+        self.workspaceId = workspaceId
+        self.workspaceAlias = workspaceAlias
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.eventId = try container.decode(String.self, forKey: .eventId)
         self.targets = try container.decodeIfPresent([String].self, forKey: .targets) ?? []
+        self.success = try container.decodeIfPresent(Bool.self, forKey: .success)
+        self.relaycastPublished = try container.decodeIfPresent(Bool.self, forKey: .relaycastPublished)
+        self.deliveryStatus = try container.decodeIfPresent(String.self, forKey: .deliveryStatus)
+        self.recipientLive = try container.decodeIfPresent(Bool.self, forKey: .recipientLive)
+        self.recipientStatus = try container.decodeIfPresent(String.self, forKey: .recipientStatus)
+        self.local = try container.decodeIfPresent(Bool.self, forKey: .local)
+        self.workspaceId = try container.decodeIfPresent(String.self, forKey: .workspaceId)
+        self.workspaceAlias = try container.decodeIfPresent(String.self, forKey: .workspaceAlias)
     }
 }
 

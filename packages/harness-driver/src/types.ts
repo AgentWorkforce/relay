@@ -135,7 +135,7 @@ export interface SendMessageInput {
  * recipient fields because they do not name one agent. */
 export interface SendMessageResult {
   event_id: string;
-  targets?: string[];
+  targets: string[];
   success?: boolean;
   relaycast_published?: boolean;
   delivery_status?: 'published_unconfirmed';

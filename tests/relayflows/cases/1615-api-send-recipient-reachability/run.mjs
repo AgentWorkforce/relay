@@ -11,6 +11,7 @@ import { startFakeRelaycast } from './fake-relaycast.mjs';
 const CASE_ID = '1615-api-send-recipient-reachability';
 const RECIPIENT = 'relayflow-live-recipient';
 const OFFLINE_RECIPIENT = 'relayflow-offline-recipient';
+const UNKNOWN_RECIPIENT = 'relayflow-unknown-recipient';
 const API_KEY = 'br_relayflow_1615';
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -63,10 +64,11 @@ try {
   relaycast = await startFakeRelaycast({
     recipientName: RECIPIENT,
     offlineRecipientName: OFFLINE_RECIPIENT,
+    unknownRecipientName: UNKNOWN_RECIPIENT,
     // The publish itself completes immediately. Keeping the independent
     // reachability read slower than the configured publish deadline proves a
     // best-effort probe cannot turn durable acceptance into a send failure.
-    agentReadDelayMs: 250,
+    agentReadDelayMs: 750,
   });
 
   broker = spawn(
@@ -162,6 +164,20 @@ try {
     method: 'POST',
     body: JSON.stringify({ to: OFFLINE_RECIPIENT, text: negativeNonce, mode: 'steer' }),
   });
+  const unknown = await api('/api/send', {
+    method: 'POST',
+    body: JSON.stringify({ to: UNKNOWN_RECIPIENT, text: 'unknown-probe-control' }),
+  });
+  const nonRecipientTargets = ['#general', 'thread', 'dm_relayflow_existing', 'conv_relayflow_existing'];
+  const nonRecipientResponses = [];
+  for (const target of nonRecipientTargets) {
+    nonRecipientResponses.push(
+      await api('/api/send', {
+        method: 'POST',
+        body: JSON.stringify({ to: target, text: `non-recipient-control:${target}` }),
+      })
+    );
+  }
   await new Promise((resolve) => setTimeout(resolve, 250));
   const finalSnapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`);
   const finalScreen = finalSnapshot.body?.screen ?? '';
@@ -178,13 +194,26 @@ try {
       })}`
     );
   }
-  if (relaycast.state.directMessages.length !== 2) {
+  const controlledPublications = relaycast.state.directMessages.filter(
+    (message) => message?.to === RECIPIENT || message?.to === OFFLINE_RECIPIENT
+  );
+  if (controlledPublications.length !== 2) {
     throw new Error(
-      `Expected both controls to cross the real broker publish boundary, observed ${relaycast.state.directMessages.length}.`
+      `Expected both delivery controls to cross the real broker publish boundary, observed ${controlledPublications.length}.`
     );
   }
 
+  const nonRecipientFieldsOmitted = nonRecipientResponses.every(
+    ({ status, body }) =>
+      status === 200 &&
+      body?.relaycast_published === true &&
+      !('recipient_live' in body) &&
+      !('recipient_status' in body)
+  );
+  const sharedObservationControls =
+    unknown.status === 200 && unknown.body?.relaycast_published === true && nonRecipientFieldsOmitted;
   const baseObserved =
+    sharedObservationControls &&
     positive.status === 200 &&
     negative.status === 200 &&
     positive.body?.success === true &&
@@ -193,8 +222,11 @@ try {
     negative.body?.relaycast_published === true &&
     !('delivery_status' in positive.body) &&
     !('delivery_status' in negative.body) &&
+    !('recipient_live' in unknown.body) &&
+    !('recipient_status' in unknown.body) &&
     equivalentExceptEventId(positive.body, negative.body);
   const headObserved =
+    sharedObservationControls &&
     positive.status === 200 &&
     negative.status === 200 &&
     positive.body?.success === true &&
@@ -204,7 +236,12 @@ try {
     positive.body?.recipient_live === true &&
     positive.body?.recipient_status === 'active' &&
     negative.body?.recipient_live === false &&
-    negative.body?.recipient_status === 'offline';
+    negative.body?.recipient_status === 'offline' &&
+    unknown.status === 200 &&
+    unknown.body?.relaycast_published === true &&
+    unknown.body?.recipient_live === null &&
+    unknown.body?.recipient_status === 'unknown' &&
+    nonRecipientFieldsOmitted;
 
   const released = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}`, {
     method: 'DELETE',
@@ -235,7 +272,14 @@ try {
       'The real head broker published both DMs, injected only the routable nonce, and separately reported live versus offline recipient observations without claiming delivery.';
   } else {
     throw new Error(
-      `Unexpected /api/send observation: ${JSON.stringify({ arm, positive, negative, brokerStderr })}`
+      `Unexpected /api/send observation: ${JSON.stringify({
+        arm,
+        positive,
+        negative,
+        unknown,
+        nonRecipientResponses,
+        brokerStderr,
+      })}`
     );
   }
 
@@ -252,7 +296,9 @@ try {
       evidence: {
         positiveInjectionCount,
         negativeInjectionCount,
-        relaycastPublications: relaycast.state.directMessages.length,
+        relaycastPublications: relaycast.state.directMessages.length + relaycast.state.channelMessages.length,
+        unknownProbeReported: unknown.body?.recipient_status ?? 'omitted',
+        nonRecipientFieldsOmitted,
         teardownProved,
       },
     })}\n`,

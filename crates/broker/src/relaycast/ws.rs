@@ -120,6 +120,18 @@ fn agent_is_known_offline(agent: &relaycast::Agent) -> bool {
     matches!(agent.status.as_str(), "offline" | "released" | "inactive")
 }
 
+/// Relaycast activity states that still identify a connected, addressable
+/// worker. This is intentionally broader than [`agent_is_live`]: that helper
+/// is a fail-closed credential-rotation guard whose historical contract only
+/// recognizes `active` / `online`, while a send-time observation must report
+/// the engine's `idle`, `blocked`, and `waiting` states as reachable too.
+fn agent_is_reachable(agent: &relaycast::Agent) -> bool {
+    matches!(
+        agent.status.as_str(),
+        "active" | "online" | "idle" | "blocked" | "waiting"
+    )
+}
+
 /// Bound on the `ImpersonateExisting` presence probe (`relay.get_agent`).
 /// Matches the existing `RELAYCAST_HTTP_TIMEOUT` convention for this same
 /// call in `auth.rs`'s legacy-identity reclaim path — not chosen for snappy
@@ -218,7 +230,7 @@ impl RelaycastHttpClient {
         match tokio::time::timeout(SEND_RECIPIENT_PROBE_TIMEOUT, relay.get_agent(agent_name)).await
         {
             Ok(Ok(agent)) => {
-                let live = if agent_is_live(&agent) {
+                let live = if agent_is_reachable(&agent) {
                     Some(true)
                 } else if agent_is_known_offline(&agent) {
                     Some(false)
@@ -1548,8 +1560,14 @@ mod tests {
     #[tokio::test]
     async fn recipient_reachability_reports_effective_live_and_offline_states() {
         for (name, status, expected_live) in [
-            ("live-worker", "active", true),
-            ("queued-worker", "offline", false),
+            ("active-worker", "active", true),
+            ("online-worker", "online", true),
+            ("idle-worker", "idle", true),
+            ("blocked-worker", "blocked", true),
+            ("waiting-worker", "waiting", true),
+            ("offline-worker", "offline", false),
+            ("released-worker", "released", false),
+            ("inactive-worker", "inactive", false),
         ] {
             let server = MockServer::start();
             let probe = server.mock(|when, then| {
