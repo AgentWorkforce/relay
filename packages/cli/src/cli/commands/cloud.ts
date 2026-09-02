@@ -1052,12 +1052,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
-    .option(
-      '--relayflow-version <version>',
-      'Relayflow engine generation: v1 or v2',
-      parseRelayflowVersion,
-      'v1'
-    )
+    .option('--relayflow-version <version>', 'Relayflow engine generation: v1 or v2', parseRelayflowVersion)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
     .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
@@ -1085,7 +1080,15 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         let success = false;
         let errorClass: string | undefined;
         try {
-          const result = await runWorkflow(workflow, options);
+          const { relayflowVersion: selectedRelayflowVersion, ...runOptions } = options;
+          const result = await runWorkflow(workflow, {
+            ...runOptions,
+            ...(selectedRelayflowVersion
+              ? { relayflowVersion: selectedRelayflowVersion }
+              : options.resume
+                ? {}
+                : { relayflowVersion: 'v1' }),
+          });
           if (options.json) {
             deps.log(JSON.stringify(result, null, 2));
           } else {

@@ -660,6 +660,19 @@ describe('registerCloudCommands', () => {
     );
   });
 
+  it('cloud run leaves the stored engine version authoritative when resuming', async () => {
+    const { program } = createHarness();
+    cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-v2', status: 'pending' });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml', '--resume', 'run-v2']);
+
+    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({ resume: 'run-v2' })
+    );
+    expect(cloudMocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
+  });
+
   it('status requires a runId argument', () => {
     const { program } = createHarness();
     const cloud = program.commands.find((command) => command.name() === 'cloud');
