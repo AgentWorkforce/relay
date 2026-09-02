@@ -1,0 +1,81 @@
+{
+  "id": "traj_3vy7xxildx91",
+  "version": 1,
+  "task": {
+    "title": "Eliminate PR #1642 invocation-lock races and close exact-head review",
+    "source": {
+      "system": "plain",
+      "id": "PR-1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T17:57:38.801Z",
+  "completedAt": "2026-09-02T18:02:14.698Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T17:57:39.527Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_kqqr2q9arb1s",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T17:57:39.527Z",
+      "endedAt": "2026-09-02T18:02:14.698Z",
+      "events": [
+        {
+          "ts": 1788371859531,
+          "type": "decision",
+          "content": "Replace shared-artifact locking with run-scoped artifacts and an atomic canonical pointer: Replace shared-artifact locking with run-scoped artifacts and an atomic canonical pointer",
+          "raw": {
+            "question": "Replace shared-artifact locking with run-scoped artifacts and an atomic canonical pointer",
+            "chosen": "Replace shared-artifact locking with run-scoped artifacts and an atomic canonical pointer",
+            "alternatives": [],
+            "reasoning": "Portable filesystem primitives cannot safely reclaim a stale shared lock with compare-and-delete semantics. Unique run directories eliminate write collisions; atomically swapped relative symlinks preserve the established top-level artifact paths and make the newest invocation fail visibly if incomplete."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788372134166,
+          "type": "decision",
+          "content": "Proved concurrency with eight independent Node processes and the exact-head RelayFlow case: Proved concurrency with eight independent Node processes and the exact-head RelayFlow case",
+          "raw": {
+            "question": "Proved concurrency with eight independent Node processes and the exact-head RelayFlow case",
+            "chosen": "Proved concurrency with eight independent Node processes and the exact-head RelayFlow case",
+            "alternatives": [],
+            "reasoning": "Source assertions would not catch filesystem publication races. The process-level stress test verifies every run directory remains intact, while the proof verifies the canonical path exposes the newest incomplete run instead of a stale verdict."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Replaced the racy shared-artifact lock with UUID-scoped run directories and atomic canonical symlinks, added process-level concurrency and exact-head proof coverage, and repaired the prior review trajectory's commit/file evidence.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [
+    "4e83a0465"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/trajectory.json",
+    "CHANGELOG.md",
+    "scripts/verify-features/run-artifacts.d.mts",
+    "scripts/verify-features/run-artifacts.mjs",
+    "tests/fixtures/verify-features-escalation.test.ts",
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+    "workflows/verify-features.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "0f73f7f22054a13d41bde6df64eb1f3b7096f74c",
+    "endRef": "4e83a04650563753d59ab49574b05f444d33e291",
+    "traceId": "55885b9a-16fc-488d-b365-c3268e37ed85"
+  }
+}
