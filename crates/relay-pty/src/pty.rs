@@ -1670,19 +1670,29 @@ mod tests {
         #[cfg(windows)]
         let submitted = b"same-echo\r".to_vec();
 
-        // Do not drain rx. Wait until the reader has assigned the initial
-        // output a sequence, forcing it to remain queued at submission time.
+        // Do not drain rx. Wait until the intended initial marker has reached
+        // the parsed grid, rather than accepting an unrelated startup VT
+        // chunk merely because it incremented `output_sequence`.
         timeout(Duration::from_secs(2), async {
-            while pty
-                .output_sequence
-                .load(std::sync::atomic::Ordering::Acquire)
-                == 0
-            {
+            while !pty.screen_text().contains("same-echo") {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("initial PTY output should be assigned a producer sequence");
+        .expect("initial same-echo marker should reach the parsed grid");
+
+        // On Windows, the reader holds `output_order` across its blocking
+        // ConPTY ReadFile. Requiring the lock to be unavailable proves this
+        // submission exercises CancelSynchronousIo rather than slipping into
+        // the short gap before the reader starts its next read.
+        #[cfg(windows)]
+        timeout(Duration::from_secs(2), async {
+            while pty.output_order.try_lock().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Windows reader should block in ReadFile while awaiting input");
 
         // The child is idle in `read` here. Verified submission must wake an
         // idle Windows ConPTY reader (and must not be serialized behind Unix
