@@ -628,6 +628,36 @@ describe('registerCloudCommands', () => {
     expect(optionNames).toContain('--resume');
     expect(optionNames).toContain('--start-from');
     expect(optionNames).toContain('--previous-run-id');
+    expect(optionNames).toContain('--relayflow-version');
+  });
+
+  it('cloud run rejects a mistyped relayflow generation before submission', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'run',
+        'workflow.yaml',
+        '--relayflow-version',
+        'V2',
+      ])
+    ).rejects.toThrow(/v1, v2/);
+    expect(cloudMocks.runWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('cloud run defaults new CLI submissions to the v1 engine', async () => {
+    const { program } = createHarness();
+    cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-v1', status: 'pending' });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
+
+    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({ relayflowVersion: 'v1' })
+    );
   });
 
   it('status requires a runId argument', () => {
@@ -663,6 +693,8 @@ describe('registerCloudCommands', () => {
       '0 * * * *',
       '--name',
       'Hourly eval',
+      '--relayflow-version',
+      'v2',
       '--env',
       'AI_CLI_UPDATES_DRY_RUN=true',
       '--env',
@@ -674,6 +706,7 @@ describe('registerCloudCommands', () => {
       expect.objectContaining({
         cron: '0 * * * *',
         name: 'Hourly eval',
+        relayflowVersion: 'v2',
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
@@ -732,6 +765,7 @@ describe('registerCloudCommands', () => {
       expect.objectContaining({
         at: '2026-05-10T09:00:00Z',
         name: 'One-off eval',
+        relayflowVersion: 'v1',
       })
     );
     expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('cron');
@@ -826,7 +860,20 @@ describe('registerCloudCommands', () => {
       },
     });
 
-    await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'run',
+      'workflow.yaml',
+      '--relayflow-version',
+      'v2',
+    ]);
+
+    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({ relayflowVersion: 'v2' })
+    );
 
     expect(deps.log).toHaveBeenCalledWith('Patches:');
     expect(deps.log).toHaveBeenCalledWith(

@@ -397,6 +397,20 @@ describe('runWorkflow code sync', () => {
     });
   }
 
+  it('sends an explicit relayflow engine generation with a run', async () => {
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(
+      workflowPath,
+      ['version: "1.0"', 'swarm:', '  pattern: dag', 'agents: []', 'workflows: []'].join('\n')
+    );
+    const runBodies: unknown[] = [];
+    mockPrepareAndRun(runBodies);
+
+    await runWorkflow(workflowPath, { syncCode: false, relayflowVersion: 'v2' });
+
+    expect(runBodies[0]).toMatchObject({ relayflowVersion: 'v2' });
+  });
+
   it('uploads one tarball per declared path and sends paths[]', async () => {
     await mkdir('cloud', { recursive: true });
     await mkdir('relay', { recursive: true });
@@ -685,6 +699,7 @@ describe('workflow schedules', () => {
     const result = await scheduleWorkflow(workflowPath, {
       cron: '0 * * * *',
       name: 'Hourly eval',
+      relayflowVersion: 'v2',
       envSecrets: {
         AI_CLI_UPDATES_DRY_RUN: 'true',
         AI_CLI_UPDATES_ONLY: 'codex',
@@ -699,6 +714,7 @@ describe('workflow schedules', () => {
       timezone: 'UTC',
       workflowRequest: {
         fileType: 'yaml',
+        relayflowVersion: 'v2',
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',

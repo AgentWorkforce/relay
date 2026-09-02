@@ -31,6 +31,7 @@ import {
   IDENTITY_FILE_PATH,
   type WhoAmIResponse,
   type WorkflowFileType,
+  type RelayflowVersion,
   type WorkflowSchedule,
 } from '@agent-relay/cloud';
 
@@ -129,6 +130,13 @@ function parseWorkflowFileType(value: string): WorkflowFileType {
     return value;
   }
   throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
+}
+
+function parseRelayflowVersion(value: string): RelayflowVersion {
+  if (value === 'v1' || value === 'v2') {
+    return value;
+  }
+  throw new InvalidArgumentError('Expected Relayflow version to be one of: v1, v2');
 }
 
 function parseEnvAssignment(value: string, previous: Record<string, string> = {}): Record<string, string> {
@@ -1044,6 +1052,12 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option(
+      '--relayflow-version <version>',
+      'Relayflow engine generation: v1 or v2',
+      parseRelayflowVersion,
+      'v1'
+    )
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
     .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
@@ -1059,6 +1073,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
+          relayflowVersion?: RelayflowVersion;
           syncCode?: boolean;
           resume?: string;
           startFrom?: string;
@@ -1108,6 +1123,12 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option(
+      '--relayflow-version <version>',
+      'Relayflow engine generation for scheduled runs: v1 or v2',
+      parseRelayflowVersion,
+      'v1'
+    )
     .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
     .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
     .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
@@ -1126,6 +1147,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
+          relayflowVersion?: RelayflowVersion;
           cron?: string;
           at?: string;
           timezone?: string;

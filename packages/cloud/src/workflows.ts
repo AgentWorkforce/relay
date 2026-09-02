@@ -10,6 +10,7 @@ import { ensureAuthenticated, authorizedApiFetch } from './auth.js';
 import { WorkflowApiKeyClient } from './api-client.js';
 import {
   defaultApiUrl,
+  type RunWorkflowOptions,
   type WorkflowFileType,
   type RunWorkflowResponse,
   type ScheduleWorkflowOptions,
@@ -48,15 +49,6 @@ type PrepareWorkflowResponse = {
   workflowStorage?: {
     backend?: 's3' | 'cloud-api';
   };
-};
-
-type RunWorkflowOptions = {
-  apiUrl?: string;
-  fileType?: WorkflowFileType;
-  syncCode?: boolean;
-  resume?: string;
-  startFrom?: string;
-  previousRunId?: string;
 };
 
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
@@ -256,6 +248,9 @@ export async function runWorkflow(
     workflow: input.workflow,
     fileType: input.fileType,
   };
+  if (options.relayflowVersion) {
+    requestBody.relayflowVersion = options.relayflowVersion;
+  }
   if (options.resume) {
     requestBody.resume = options.resume;
   }
@@ -466,6 +461,7 @@ export async function scheduleWorkflow(
     workflowRequest: {
       workflow: input.workflow,
       fileType: input.fileType,
+      ...(options.relayflowVersion ? { relayflowVersion: options.relayflowVersion } : {}),
       ...(input.sourceFileType ? { sourceFileType: input.sourceFileType } : {}),
       ...(options.envSecrets && Object.keys(options.envSecrets).length > 0
         ? { envSecrets: options.envSecrets }

@@ -175,6 +175,7 @@ export type WorkspaceSecretRecord = {
 };
 
 export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+export type RelayflowVersion = 'v1' | 'v2';
 
 export type PathSubmission = {
   name: string;
@@ -189,6 +190,7 @@ export type PathSubmission = {
 export type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
+  relayflowVersion?: RelayflowVersion;
   syncCode?: boolean;
   resume?: string;
   startFrom?: string;
@@ -244,6 +246,7 @@ export type WorkflowSchedule = {
 export type ScheduleWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
+  relayflowVersion?: RelayflowVersion;
   name?: string;
   description?: string;
   cron?: string;
