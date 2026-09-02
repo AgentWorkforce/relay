@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Added
+
+- `npm run relayflow:run <file>` from the relay repo root runs a Relayflow YAML, TypeScript, or Python file via the hoisted `@relayflows/cli` binary, so a checkout can prove a workflow without a separate `@relayflows/cli` install or a `packages/cli` build. `npm run relayflow` dispatches to any `relayflows` subcommand. `examples/relayflows/hello.yaml` is a network-free deterministic proof used by contributors.
 
 ## [11.10.0] - 2026-09-02
 
