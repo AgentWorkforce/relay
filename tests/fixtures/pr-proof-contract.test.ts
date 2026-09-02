@@ -15,6 +15,7 @@ import {
   PrProofContractError,
   changedRelayFlowCaseIds,
   classifyPullRequest,
+  runtimeSurfaceChanged,
   validateCaseManifest,
   validateEvidence,
   validateObservation,
@@ -1719,5 +1720,86 @@ describe('trusted dispatcher source contract', () => {
     expect(marker).toBeGreaterThan(0);
     expect(marker).toBeLessThan(upload);
     expect(marker).toBeLessThan(launch);
+  });
+});
+
+describe('classification reads the diff, not the title', () => {
+  const nonFunctional = (caseId = 'n/a') =>
+    [
+      `- Change type: \`non-functional\` <!-- relay-pr-proof:type -->`,
+      `- RelayFlow case: \`${caseId}\` <!-- relay-pr-proof:case -->`,
+    ].join('\n');
+
+  it('treats a workflow-only change as non-runtime', () => {
+    expect(
+      runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/verify-features/status.mjs'])
+    ).toBe(false);
+  });
+
+  it('treats any broker or package source change as runtime', () => {
+    expect(runtimeSurfaceChanged(['crates/broker/src/runtime/fleet.rs'])).toBe(true);
+    expect(runtimeSurfaceChanged(['packages/cli/src/cli/commands/local-agent.ts'])).toBe(true);
+  });
+
+  it('fails closed for a path the allowlist has never seen', () => {
+    // A new top-level directory must not become proof-exempt by default.
+    expect(runtimeSurfaceChanged(['some-brand-new-top-level/thing.ts'])).toBe(true);
+  });
+
+  /**
+   * The defect this closes, direction 1: a `fix(` PR that only edits a
+   * scheduled workflow was told its change type "cannot be non-functional",
+   * so it had to fabricate a runtime proof it could not honestly build.
+   */
+  it('accepts non-functional on a fix( PR that changes no runtime file', () => {
+    const result = classifyPullRequest({
+      title: 'fix(workflow): fail loudly on alert delivery',
+      body: nonFunctional(),
+      changedFiles: ['workflows/verify-features.ts', 'CHANGELOG.md'],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.required).toBe(false);
+  });
+
+  it('still rejects non-functional when the same PR touches runtime code', () => {
+    const result = classifyPullRequest({
+      title: 'fix(workflow): fail loudly on alert delivery',
+      body: nonFunctional(),
+      changedFiles: ['workflows/verify-features.ts', 'crates/broker/src/runtime/fleet.rs'],
+    });
+    expect(result.errors.join(' ')).toContain('changes runtime files');
+  });
+
+  /**
+   * Direction 2, and the more serious hole: the gate was bypassable by wording.
+   * A runtime change titled `chore(` required no proof at all.
+   */
+  it('requires a proof for a runtime change even when the title is chore(', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: '',
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
+    });
+    expect(result.required).toBe(true);
+  });
+
+  it('does not require a proof for a chore( PR that only touches docs', () => {
+    const result = classifyPullRequest({
+      title: 'chore(docs): clarify attach modes',
+      body: nonFunctional(),
+      changedFiles: ['docs/attach.md', 'README.md'],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.required).toBe(false);
+  });
+
+  it('falls back to title-only behaviour when the diff is unavailable', () => {
+    // changedFiles omitted: preserve the previous contract rather than
+    // silently exempting a change nobody inspected.
+    const result = classifyPullRequest({
+      title: 'fix(broker): reconnect dead links',
+      body: nonFunctional(),
+    });
+    expect(result.errors.join(' ')).toContain('cannot be non-functional');
   });
 });

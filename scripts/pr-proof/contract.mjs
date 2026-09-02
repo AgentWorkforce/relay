@@ -79,10 +79,50 @@ export function parsePrProofMetadata(body = '') {
   };
 }
 
-export function classifyPullRequest({ title = '', body = '' }) {
+/**
+ * Paths that cannot change what a user's `agent-relay` actually does.
+ *
+ * The proof gate exists to stop a runtime behaviour change landing without a
+ * red/green demonstration. Scheduled workflow definitions, CI config, docs,
+ * tooling scripts and test corpora are none of those: nothing here is executed
+ * by an installed CLI or broker.
+ *
+ * Deliberately an allowlist, so it fails CLOSED. A path this list has never
+ * heard of counts as runtime and still demands a proof — a new top-level
+ * directory should not silently become proof-exempt.
+ */
+const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
+  /^workflows\//,
+  /^docs\//,
+  /^\.github\//,
+  /^\.agentworkforce\//,
+  /^scripts\//,
+  /^tests\//,
+  /^[^/]*\.md$/,
+]);
+
+/**
+ * True when at least one changed file can alter shipped runtime behaviour.
+ *
+ * This is what decides whether a proof is required — NOT the PR title. Reading
+ * the title alone was wrong in both directions: a `fix(` PR touching only a
+ * scheduled workflow was forced to invent a runtime proof it could not honestly
+ * build, and a `chore(`-titled PR editing the broker skipped the gate
+ * altogether. A gate that can be bypassed by wording is not a gate.
+ */
+export function runtimeSurfaceChanged(files = []) {
+  return files
+    .filter((file) => typeof file === 'string' && file.trim())
+    .some((file) => !NON_RUNTIME_PATH_PATTERNS.some((pattern) => pattern.test(file)));
+}
+
+export function classifyPullRequest({ title = '', body = '', changedFiles = null }) {
   const metadata = parsePrProofMetadata(body);
   const conventionalKind = REQUIRED_TITLE_RE.exec(title)?.[1]?.toLowerCase() ?? null;
   const titleKind = conventionalKind === 'feat' ? 'feature' : conventionalKind === 'fix' ? 'bugfix' : null;
+  // `null` means the caller could not determine the diff; fall back to the old
+  // title-only behaviour rather than silently exempting an unknown change.
+  const touchesRuntime = changedFiles === null ? null : runtimeSurfaceChanged(changedFiles);
   const errors = [];
 
   if (metadata.changeTypeCount === 0) {
@@ -100,8 +140,8 @@ export function classifyPullRequest({ title = '', body = '' }) {
 
   if (!metadata.changeType) {
     return {
-      required: Boolean(titleKind),
-      kind: titleKind,
+      required: Boolean(titleKind) || touchesRuntime === true,
+      kind: titleKind ?? (touchesRuntime === true ? 'bugfix' : null),
       caseId: null,
       metadata,
       errors,
@@ -117,15 +157,31 @@ export function classifyPullRequest({ title = '', body = '' }) {
 
   const metadataKind =
     metadata.changeType === 'feature' || metadata.changeType === 'bugfix' ? metadata.changeType : null;
-  if (titleKind && metadata.changeType === 'non-functional') {
-    errors.push(`PR title declares a ${titleKind}, so the change type cannot be non-functional`);
+  // A `non-functional` declaration is checked against the DIFF, not the title.
+  // Rejecting it purely because the title says `fix(` forced workflow-only and
+  // docs-only PRs to fabricate a runtime proof they could not honestly build.
+  if (titleKind && metadata.changeType === 'non-functional' && touchesRuntime !== false) {
+    errors.push(
+      touchesRuntime === true
+        ? `PR title declares a ${titleKind} and this PR changes runtime files, so the change type cannot be non-functional`
+        : `PR title declares a ${titleKind}, so the change type cannot be non-functional`
+    );
   }
   if (titleKind && metadataKind && titleKind !== metadataKind) {
     errors.push(`PR title declares ${titleKind}, but the PR body declares ${metadataKind}`);
   }
 
-  const required = Boolean(metadataKind || titleKind);
-  const kind = metadataKind ?? titleKind;
+  // Decided by the diff wherever the diff is known:
+  //   runtime touched            -> a proof is required, whatever the title says
+  //   nothing runtime + declared -> non-functional is legitimate, even for `fix(`
+  //   diff unknown               -> previous title-only behaviour
+  const required =
+    touchesRuntime === true
+      ? true
+      : touchesRuntime === false && metadata.changeType === 'non-functional'
+        ? false
+        : Boolean(metadataKind || titleKind);
+  const kind = required ? (metadataKind ?? titleKind ?? 'bugfix') : null;
   if (required) {
     if (!metadata.caseId || metadata.caseId === 'n/a') {
       errors.push('Feature and bug-fix PRs must declare exactly one RelayFlow case id');

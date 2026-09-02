@@ -153,7 +153,14 @@ export async function main() {
   }
   const snapshot = pullRequestSnapshot(pullRequest);
 
-  const classification = classifyPullRequest({ title: pullRequest.title, body: pullRequest.body ?? '' });
+  // Fetch the diff BEFORE classifying: whether a proof is required is decided
+  // by what changed, not by how the title was worded.
+  const changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
+  const classification = classifyPullRequest({
+    title: pullRequest.title,
+    body: pullRequest.body ?? '',
+    changedFiles,
+  });
   if (classification.errors.length > 0) {
     throw new PrProofContractError(
       'Pull request does not satisfy the RelayFlow proof contract',
@@ -179,7 +186,6 @@ export async function main() {
 
   const caseId = classification.caseId;
   const manifestPath = caseManifestPath(caseId);
-  const changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
   const caseRoot = path.posix.dirname(manifestPath) + '/';
   const changedCaseIds = changedRelayFlowCaseIds(changedFiles);
   if (!changedFiles.some((file) => file === manifestPath || file.startsWith(caseRoot))) {
