@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1640-cloud-relayflow-version",
+  "kind": "feature",
+  "title": "Select the Relayflow engine generation in Cloud workflow submissions",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1640-cloud-relayflow-version/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "relayflow_version_not_forwarded"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "relayflow_version_forwarded_for_run_and_schedule"
+    }
+  }
+}
