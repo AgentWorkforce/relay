@@ -190,6 +190,13 @@ fn wrap_write_ack_error(
     }
 }
 
+/// Keep wrap injections single-flight until the PTY drainer confirms the
+/// previous write. Besides preserving delivery order, this ensures an MCP
+/// reminder is recorded before the next delivery decides whether to include it.
+fn wrap_injection_timer_allowed(has_pending_write_ack: bool) -> bool {
+    !has_pending_write_ack
+}
+
 /// Start echo verification after a PTY write ack without missing output that
 /// raced ahead of the ack select arm. Returns `true` when the echo was already
 /// present and the delivery was confirmed immediately.
@@ -1789,7 +1796,8 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            _ = pending_injection_interval.tick() => {
+            _ = pending_injection_interval.tick(),
+                if wrap_injection_timer_allowed(!pending_wrap_writes.is_empty()) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
                 // over a new automated injection — see the auto-responder gate
                 // above for why.
@@ -2149,7 +2157,8 @@ pub(crate) async fn run_wrap(
 mod tests {
     use super::{
         buffer_and_drain_stdin, drain_stdin_buffer, injection_submit_followup_delay,
-        queue_or_confirm_wrap_verification, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
+        queue_or_confirm_wrap_verification, wrap_injection_timer_allowed, wrap_write_ack_error,
+        STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{
         PendingVerification, ThrottleState, MAX_VERIFICATION_ATTEMPTS,
@@ -2199,6 +2208,12 @@ mod tests {
         let error = wrap_write_ack_error(ack_rx.await)
             .expect("a dropped drainer ack must reject the compound write");
         assert!(error.contains("drainer exited"));
+    }
+
+    #[test]
+    fn wrap_injection_timer_waits_for_the_previous_write_ack() {
+        assert!(wrap_injection_timer_allowed(false));
+        assert!(!wrap_injection_timer_allowed(true));
     }
 
     #[test]
