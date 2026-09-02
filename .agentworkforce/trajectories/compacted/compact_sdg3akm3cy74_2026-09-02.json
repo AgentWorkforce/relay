@@ -1,0 +1,37 @@
+{
+  "id": "compact_sdg3akm3cy74",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-02T08:42:43.905Z",
+  "sourceTrajectories": [
+    "traj_nffzz6lphzhh"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T08:42:34.656Z",
+    "end": "2026-09-02T08:42:43.300Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Keep the reconciled tree that replaces Windows CancelSynchronousIo with a nonblocking private ConPTY byte pipe",
+          "chosen": "Keep the reconciled tree that replaces Windows CancelSynchronousIo with a nonblocking private ConPTY byte pipe",
+          "reasoning": "The concurrent alternative retained the cancellation call that hung in hosted Windows CI. The reconciled merge preserves its Git ancestry without force-pushing while retaining the locally audited implementation byte-for-byte.",
+          "fromTrajectory": "traj_nffzz6lphzhh"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
