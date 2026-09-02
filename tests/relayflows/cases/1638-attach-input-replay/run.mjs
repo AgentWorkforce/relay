@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1638-attach-input-replay';
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+const ACCEPTED_INPUT = 'typed during outage';
+const REJECTED_INPUT = 'private command';
+const REJECTED_DISCARD_MESSAGE = `Discarded ${Buffer.byteLength(REJECTED_INPUT, 'utf8')} buffered bytes`;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -113,8 +116,8 @@ test('observes verified replay and rejected-identity discard through production 
   const observationPath = process.env.RELAY_PR1638_OBSERVATION_PATH;
   if (!observationPath) throw new Error('Missing RELAY_PR1638_OBSERVATION_PATH.');
 
-  const accepted = await observeRecovery(true, 'typed during outage');
-  const rejected = await observeRecovery(false, 'private command');
+  const accepted = await observeRecovery(true, ${JSON.stringify(ACCEPTED_INPUT)});
+  const rejected = await observeRecovery(false, ${JSON.stringify(REJECTED_INPUT)});
   await writeFile(observationPath, JSON.stringify({ accepted, rejected }), 'utf8');
 });
 `;
@@ -146,11 +149,11 @@ try {
     ? observation.rejected.errors.join('\n')
     : '';
   const baseObserved =
-    acceptedWrites === '' && rejectedWrites === '' && !rejectedErrors.includes('Discarded 15 buffered bytes');
+    acceptedWrites === '' && rejectedWrites === '' && !rejectedErrors.includes(REJECTED_DISCARD_MESSAGE);
   const headObserved =
-    acceptedWrites === 'typed during outage' &&
+    acceptedWrites === ACCEPTED_INPUT &&
     rejectedWrites === '' &&
-    rejectedErrors.includes('Discarded 15 buffered bytes');
+    rejectedErrors.includes(REJECTED_DISCARD_MESSAGE);
 
   let outcome;
   let signature;
@@ -163,8 +166,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'verified_attach_outage_input_replayed';
-    details =
-      'The head recovery replayed all 19 outage bytes after a positive identity verdict and forwarded zero bytes after a negative verdict, reporting all 15 discarded bytes.';
+    details = `The head recovery replayed all ${Buffer.byteLength(ACCEPTED_INPUT, 'utf8')} outage bytes after a positive identity verdict and forwarded zero bytes after a negative verdict, reporting all ${Buffer.byteLength(REJECTED_INPUT, 'utf8')} discarded bytes.`;
   } else {
     throw new Error(`Unexpected attach replay observation: ${JSON.stringify(observation)}.`);
   }

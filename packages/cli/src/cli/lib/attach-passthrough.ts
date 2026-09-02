@@ -421,7 +421,7 @@ export async function runPassthroughSession(
     const parser = new PassthroughKeybindParser();
     // Stateful UTF-8 decoder for forwarded stdin — a multi-byte character split
     // across stdin chunks would otherwise become U+FFFD. See attach-drive.ts.
-    const inputDecoder = new StringDecoder('utf8');
+    let inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
     const isTtyOutput = initialLocalSize !== null;
@@ -584,6 +584,9 @@ export async function runPassthroughSession(
       },
       openStream: () => deps.openInputStream(connection, name),
       onRollback: () => predictiveEcho?.rollback(),
+      onBufferedInputDiscarded: () => {
+        inputDecoder = new StringDecoder('utf8');
+      },
       onExhausted: () => finish(1),
       verifyIdentity: async () => {
         if (attachedWorkerIdentity === null) {

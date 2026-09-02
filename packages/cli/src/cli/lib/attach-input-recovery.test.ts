@@ -14,7 +14,10 @@ class FakeStream implements CliPtyInputStream {
   closeReason?: string;
   readonly writes: string[] = [];
 
-  constructor(private readonly openError?: Error) {}
+  constructor(
+    private readonly openError?: Error,
+    private readonly sendHook?: (data: string) => Promise<void>
+  ) {}
 
   async waitUntilOpen(): Promise<void> {
     if (this.openError) throw this.openError;
@@ -23,6 +26,7 @@ class FakeStream implements CliPtyInputStream {
   async send(data: string): Promise<{ name: string; bytes_written: number }> {
     if (this.closed) throw new Error('PTY input stream is closed');
     this.writes.push(data);
+    await this.sendHook?.(data);
     return { name: 'agent', bytes_written: data.length };
   }
 
@@ -381,8 +385,10 @@ describe('recover', () => {
   });
 
   it('MUST-NOT-FIRE: discards buffered input when identity verification rejects the replacement', async () => {
+    const resetDecoder = vi.fn();
     const h = harness({
       verifyIdentity: async () => ({ ok: false, reason: 'worker process changed' }),
+      onBufferedInputDiscarded: resetDecoder,
     });
 
     h.recovery.recover('stream closed');
@@ -392,6 +398,7 @@ describe('recover', () => {
     expect(h.opened[0].writes).toEqual([]);
     expect(h.opened[0].closed).toBe(true);
     expect(h.errors.some((line) => line.includes('Discarded 15 buffered bytes'))).toBe(true);
+    expect(resetDecoder).toHaveBeenCalledTimes(1);
   });
 
   it('discards the complete pending buffer on overflow instead of replaying a truncated command', async () => {
@@ -405,6 +412,62 @@ describe('recover', () => {
     expect(h.opened[0].writes).toEqual([]);
     expect(h.logs.some((line) => line.includes('4-byte safety limit'))).toBe(true);
     expect(h.logs.some((line) => line.includes('Discarded 5 buffered bytes'))).toBe(true);
+  });
+
+  it('sends a replay payload at most once when its local acknowledgement deadline expires', async () => {
+    const replacement = new FakeStream(undefined, () => new Promise(() => {}));
+    const h = harness({
+      attemptTimeoutMs: 10,
+      openStream: () => replacement,
+    });
+
+    h.recovery.recover('stream closed', 'only once');
+    await settle(40);
+
+    expect(replacement.writes).toEqual(['only once']);
+    expect(h.recovery.isRecovering()).toBe(false);
+    expect(h.getCurrent()).toBe(replacement);
+    expect(h.logs.some((line) => line.includes('sent once but not confirmed'))).toBe(true);
+  });
+
+  it('retries a failed replacement without replaying its delivery-ambiguous payload twice', async () => {
+    const firstReplacement = new FakeStream(undefined, async () => {
+      throw Object.assign(new Error('replacement socket failed'), { code: 'input_stream_error' });
+    });
+    const secondReplacement = new FakeStream();
+    const replacements = [firstReplacement, secondReplacement];
+    const h = harness({ openStream: () => replacements.shift() ?? new FakeStream() });
+
+    h.recovery.recover('stream closed', 'at most once');
+    await settle(40);
+
+    expect(firstReplacement.writes).toEqual(['at most once']);
+    expect(firstReplacement.closed).toBe(true);
+    expect(secondReplacement.writes).toEqual([]);
+    expect(h.getCurrent()).toBe(secondReplacement);
+    expect(h.logs.some((line) => line.includes('sent once but not confirmed'))).toBe(true);
+  });
+
+  it('does not adopt a replacement when the session settles during replay', async () => {
+    let releaseSend: (() => void) | undefined;
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const replacement = new FakeStream(undefined, () => sendGate);
+    const h = harness({ openStream: () => replacement });
+
+    h.recovery.recover('stream closed', 'queued input');
+    await settle(10);
+    expect(replacement.writes).toEqual(['queued input']);
+
+    h.settle();
+    h.recovery.cancel();
+    releaseSend?.();
+    await settle(20);
+
+    expect(replacement.closed).toBe(true);
+    expect(h.getCurrent()).toBeNull();
+    expect(h.recovery.isRecovering()).toBe(false);
   });
 });
 

@@ -777,7 +777,7 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
     // buffers a trailing incomplete sequence until the next chunk completes it.
     // Detach scanning still runs on raw bytes upstream (0x03 can't appear inside
     // a multi-byte sequence), so this only touches the forwarded payload.
-    const inputDecoder = new StringDecoder('utf8');
+    let inputDecoder = new StringDecoder('utf8');
     let inputStream: CliPtyInputStream | null = null;
     const cleanupSignals: Array<() => void> = [];
     const isTtyOutput = state.initialLocalSize !== null;
@@ -1011,6 +1011,9 @@ function runDriveSessionLoop(state: DriveSessionState, deps: DriveDependencies):
       },
       openStream: () => deps.openInputStream(connection, name),
       onRollback: () => predictiveEcho?.rollback(),
+      onBufferedInputDiscarded: () => {
+        inputDecoder = new StringDecoder('utf8');
+      },
       onExhausted: () => finish(1),
       verifyIdentity: async () => {
         // Fail closed in both directions: if we never learned who we attached
