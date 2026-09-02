@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,6 +33,7 @@ if (!isWithin(harnessDir, runnerPath)) {
 const workflowPath = path.join(targetDir, 'workflows/verify-features.ts');
 const statusToolPath = path.join(targetDir, 'scripts/verify-features/escalation-status.mjs');
 const runArtifactsToolPath = path.join(targetDir, 'scripts/verify-features/run-artifacts.mjs');
+const runWorktreeToolPath = path.join(targetDir, 'scripts/verify-features/run-worktree.mjs');
 const workflowSource = await readFile(workflowPath, 'utf8');
 
 let outcome;
@@ -86,7 +87,10 @@ if (arm === 'base') {
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-'));
   try {
-    const { prepareRunArtifacts } = await import(pathToFileURL(runArtifactsToolPath).href);
+    const { markRunArtifactsComplete, prepareRunArtifacts, pruneRunArtifacts } = await import(
+      pathToFileURL(runArtifactsToolPath).href
+    );
+    const { prepareRunWorktree, removeRunWorktree } = await import(pathToFileURL(runWorktreeToolPath).href);
     const artifactsRoot = path.join(temporaryRoot, 'artifacts');
     const runA = prepareRunArtifacts(artifactsRoot, 'verify-proof-a', 'proof-a');
     await writeFile(path.join(runA, 'verdict.json'), '{"runId":"proof-a"}\n');
@@ -101,6 +105,62 @@ if (arm === 'base') {
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
+
+    const retentionRoot = path.join(temporaryRoot, 'retention');
+    for (let index = 0; index < 6; index += 1) {
+      const runId = `verify-retained-${index}`;
+      const run = prepareRunArtifacts(retentionRoot, runId, `retained-${index}`);
+      markRunArtifactsComplete(run, runId);
+    }
+    prepareRunArtifacts(retentionRoot, 'verify-retention-active', 'retention-active');
+    pruneRunArtifacts(retentionRoot, {
+      currentRunId: 'verify-retention-active',
+      keepCompleted: 2,
+    });
+    const retainedRuns = await readdir(path.join(retentionRoot, 'runs'));
+    if (retainedRuns.filter((name) => name.startsWith('verify-retained-')).length !== 2) {
+      throw new Error(`Head retention did not bound completed history: ${retainedRuns.join(',')}`);
+    }
+    if (!retainedRuns.includes('verify-retention-active')) {
+      throw new Error('Head retention removed the current incomplete run.');
+    }
+
+    const gitRepo = path.join(temporaryRoot, 'git-repo');
+    await mkdir(gitRepo);
+    execFileSync('git', ['-C', gitRepo, 'init'], { stdio: 'ignore' });
+    await writeFile(path.join(gitRepo, 'fixture.txt'), 'base\n');
+    execFileSync('git', ['-C', gitRepo, 'add', 'fixture.txt']);
+    execFileSync(
+      'git',
+      [
+        '-C',
+        gitRepo,
+        '-c',
+        'user.name=Relay Proof',
+        '-c',
+        'user.email=relay-proof@example.invalid',
+        'commit',
+        '-m',
+        'fixture',
+      ],
+      { stdio: 'ignore' }
+    );
+    const worktreeRoot = path.join(temporaryRoot, 'git-worktrees');
+    const worktreeA = prepareRunWorktree(gitRepo, worktreeRoot, 'verify-worktree-a');
+    const worktreeB = prepareRunWorktree(gitRepo, worktreeRoot, 'verify-worktree-b');
+    await writeFile(path.join(worktreeA, 'fixture.txt'), 'worktree-a\n');
+    await writeFile(path.join(worktreeB, 'fixture.txt'), 'worktree-b\n');
+    if ((await readFile(path.join(gitRepo, 'fixture.txt'), 'utf8')) !== 'base\n') {
+      throw new Error('Head verifier worktree changed the source checkout.');
+    }
+    if ((await readFile(path.join(worktreeA, 'fixture.txt'), 'utf8')) !== 'worktree-a\n') {
+      throw new Error('Head verifier worktree A lost its private git state.');
+    }
+    if ((await readFile(path.join(worktreeB, 'fixture.txt'), 'utf8')) !== 'worktree-b\n') {
+      throw new Error('Head verifier worktree B lost its private git state.');
+    }
+    removeRunWorktree(gitRepo, worktreeA);
+    removeRunWorktree(gitRepo, worktreeB);
 
     const failedChannels = [
       ['slack_primary', 'auth_token_missing'],
@@ -137,7 +197,7 @@ if (arm === 'base') {
     outcome = 'fixed';
     signature = 'escalation_delivery_failures_exit_nonzero';
     details =
-      'The exact head isolates overlapping run evidence, makes an incomplete current run visible, and its delivery audit exits non-zero while naming all five failed Slack, GitHub issue, draft PR, and PostHog contracts.';
+      'The exact head isolates overlapping artifact and git state, bounds completed evidence without pruning the current run, and its delivery audit exits non-zero while naming all five failed Slack, GitHub issue, draft PR, and PostHog contracts.';
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

@@ -70,18 +70,23 @@
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { workflow } from '@relayflows/core';
 
-import { prepareRunArtifacts } from '../scripts/verify-features/run-artifacts.mjs';
+import { markRunArtifactsComplete, prepareRunArtifacts } from '../scripts/verify-features/run-artifacts.mjs';
+import { prepareRunWorktree, removeRunWorktree } from '../scripts/verify-features/run-worktree.mjs';
 
-const ARTIFACTS_ROOT = '.workflow-artifacts/verify-features';
+const REPO_ROOT = process.cwd();
+const ARTIFACTS_ROOT = path.join(REPO_ROOT, '.workflow-artifacts/verify-features');
+const WORKTREE_ROOT = path.join(os.tmpdir(), 'relay-verify-features-worktrees', path.basename(REPO_ROOT));
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
 const RUN_NONCE = randomUUID().slice(0, 8);
 const RUN_ID = `verify-${TIMESTAMP}-${RUN_NONCE}`;
 const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
 const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
-const ESCALATION_STATUS_TOOL = 'scripts/verify-features/escalation-status.mjs';
+const ESCALATION_STATUS_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalation-status.mjs');
 
 /** Unique suffix so a run never collides with existing workspace state. */
 const SUFFIX = `vf-${RUN_NONCE}`;
@@ -2800,70 +2805,86 @@ exit 1
   });
 
   const dryRun = process.env.DRY_RUN === '1';
+  let runCwd = REPO_ROOT;
+  let runWorktree = '';
   if (!dryRun) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
-  const result = await wf.run({ dryRun, cwd: process.cwd() });
-
-  // A dry run plans the graph without executing it, so there is no verdict to
-  // read and nothing to enforce. Bail before the checks below, which would
-  // otherwise report a validated plan as harness breakage.
-  if (dryRun || !('status' in result)) {
-    return;
-  }
-
-  // ── Post-run: make the process exit code tell the truth ──────────────────
-  //
-  // The previous version awaited run() and discarded the result, so a run with
-  // four failing checks still exited 0 and every scheduler saw success. Read
-  // the verdict directly rather than trusting the runner's row status, and
-  // fail closed when the verdict is missing.
-
-  let verdict: {
-    runId?: string;
-    verdict?: string;
-    reasons?: string[];
-    totals?: Record<string, number>;
-  } | null = null;
-  if (existsSync(VERDICT_FILE)) {
-    try {
-      verdict = JSON.parse(readFileSync(VERDICT_FILE, 'utf8'));
-    } catch (err) {
-      console.error(`[verify-features] verdict.json is unreadable: ${(err as Error).message}`);
+  try {
+    if (!dryRun) {
+      runWorktree = prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID);
+      runCwd = runWorktree;
     }
-  }
+    const result = await wf.run({ dryRun, cwd: runCwd });
 
-  if (!verdict || verdict.runId !== RUN_ID) {
-    console.error(
-      `[verify-features] no verdict for run ${RUN_ID} at ${VERDICT_FILE} — treating this run as FAILED. ` +
-        `The verification pipeline did not complete; this is harness breakage, not a clean run.`
-    );
-    process.exitCode = 2;
-    return;
-  }
+    // A dry run plans the graph without executing it, so there is no verdict to
+    // read and nothing to enforce. Bail before the checks below, which would
+    // otherwise report a validated plan as harness breakage.
+    if (dryRun || !('status' in result)) {
+      return;
+    }
 
-  const totals = verdict.totals ?? {};
-  console.log(
-    `[verify-features] verdict=${verdict.verdict} ` +
-      `pass=${totals.pass ?? '?'} fail=${totals.fail ?? '?'} skip=${totals.skip ?? '?'} ` +
-      `(workflow row status: ${'status' in result ? String(result.status) : 'unknown'})`
-  );
+    // ── Post-run: make the process exit code tell the truth ──────────────────
+    //
+    // The previous version awaited run() and discarded the result, so a run with
+    // four failing checks still exited 0 and every scheduler saw success. Read
+    // the verdict directly rather than trusting the runner's row status, and
+    // fail closed when the verdict is missing.
 
-  if (verdict.verdict !== 'PASS') {
-    console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
-    const escalationAudit = spawnSync(
-      process.execPath,
-      [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'],
-      { cwd: process.cwd(), encoding: 'utf8' }
-    );
-    if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
-    if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
-    if (escalationAudit.status !== 0) {
+    let verdict: {
+      runId?: string;
+      verdict?: string;
+      reasons?: string[];
+      totals?: Record<string, number>;
+    } | null = null;
+    if (existsSync(VERDICT_FILE)) {
+      try {
+        verdict = JSON.parse(readFileSync(VERDICT_FILE, 'utf8'));
+      } catch (err) {
+        console.error(`[verify-features] verdict.json is unreadable: ${(err as Error).message}`);
+      }
+    }
+
+    if (!verdict || verdict.runId !== RUN_ID) {
       console.error(
-        `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
-          `(audit exit ${escalationAudit.status ?? 'unknown'})`
+        `[verify-features] no verdict for run ${RUN_ID} at ${VERDICT_FILE} — treating this run as FAILED. ` +
+          `The verification pipeline did not complete; this is harness breakage, not a clean run.`
       );
       process.exitCode = 2;
-    } else {
-      process.exitCode = 1;
+      return;
+    }
+
+    const totals = verdict.totals ?? {};
+    console.log(
+      `[verify-features] verdict=${verdict.verdict} ` +
+        `pass=${totals.pass ?? '?'} fail=${totals.fail ?? '?'} skip=${totals.skip ?? '?'} ` +
+        `(workflow row status: ${'status' in result ? String(result.status) : 'unknown'})`
+    );
+
+    if (verdict.verdict !== 'PASS') {
+      console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
+      const escalationAudit = spawnSync(
+        process.execPath,
+        [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'],
+        { cwd: process.cwd(), encoding: 'utf8' }
+      );
+      if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
+      if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
+      if (escalationAudit.status !== 0) {
+        console.error(
+          `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
+            `(audit exit ${escalationAudit.status ?? 'unknown'})`
+        );
+        process.exitCode = 2;
+      } else {
+        process.exitCode = 1;
+      }
+    }
+  } finally {
+    if (!dryRun) {
+      try {
+        if (runWorktree) removeRunWorktree(REPO_ROOT, runWorktree);
+      } finally {
+        markRunArtifactsComplete(ARTIFACTS, RUN_ID);
+      }
     }
   }
 }

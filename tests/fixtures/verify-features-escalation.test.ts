@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, readlink, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,12 @@ import {
   writeAlertEnvelope,
   writeEscalationStatus,
 } from '../../scripts/verify-features/escalation-status.mjs';
-import { prepareRunArtifacts } from '../../scripts/verify-features/run-artifacts.mjs';
+import {
+  markRunArtifactsComplete,
+  prepareRunArtifacts,
+  pruneRunArtifacts,
+} from '../../scripts/verify-features/run-artifacts.mjs';
+import { prepareRunWorktree, removeRunWorktree } from '../../scripts/verify-features/run-worktree.mjs';
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -73,6 +78,8 @@ describe('verify-features escalation status', () => {
     expect(setup).toContain('reset "${ARTIFACTS}"');
     expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
     expect(source).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
+    expect(source).toContain('prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
+    expect(source).toContain('removeRunWorktree(REPO_ROOT, runWorktree)');
     expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
     expect(source).not.toContain('INVOCATION_LOCK');
     expect(fileIssue).toContain('ISSUE_RC=$?');
@@ -324,6 +331,97 @@ describe('verify-features escalation status', () => {
       expect(await readFile(path.join(root, 'runs', runId, 'checks.jsonl'), 'utf8')).toBe(runId);
     }
     expect(runIds).toContain(await readFile(path.join(root, 'checks.jsonl'), 'utf8'));
+  });
+
+  it('prunes only completed excess and long-abandoned runs', async () => {
+    const root = await artifacts();
+    for (let index = 0; index < 4; index += 1) {
+      const runId = `verify-completed-${index}`;
+      const directory = prepareRunArtifacts(root, runId, `completed-${index}`);
+      markRunArtifactsComplete(directory, runId);
+    }
+    const active = prepareRunArtifacts(root, 'verify-active', 'active');
+    const abandoned = path.join(root, 'runs', 'verify-abandoned');
+    await mkdir(abandoned);
+
+    const removed = pruneRunArtifacts(root, {
+      currentRunId: 'verify-active',
+      keepCompleted: 2,
+      incompleteMaxAgeMs: 0,
+    });
+
+    expect(removed).toHaveLength(3);
+    expect(await readlink(path.join(root, 'current'))).toBe('runs/verify-active');
+    expect(
+      (await readdir(path.join(root, 'runs'))).filter((name) => name.startsWith('verify-completed-'))
+    ).toHaveLength(2);
+    await expect(readFile(path.join(active, '.complete'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(stat(abandoned)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('bounds completed history when independent pruners race', async () => {
+    const root = await artifacts();
+    for (let index = 0; index < 12; index += 1) {
+      const runId = `verify-history-${index}`;
+      const directory = prepareRunArtifacts(root, runId, `history-${index}`);
+      markRunArtifactsComplete(directory, runId);
+    }
+    const active = prepareRunArtifacts(root, 'verify-current', 'current');
+    const moduleUrl = new URL('../../scripts/verify-features/run-artifacts.mjs', import.meta.url).href;
+    const childScript = `
+      const { pruneRunArtifacts } = await import(${JSON.stringify(moduleUrl)});
+      pruneRunArtifacts(process.argv[1], { currentRunId: process.argv[2], keepCompleted: 3 });
+    `;
+
+    await Promise.all(
+      Array.from({ length: 4 }, () =>
+        execFileAsync(
+          process.execPath,
+          ['--input-type=module', '--eval', childScript, root, 'verify-current'],
+          { timeout: 10_000 }
+        )
+      )
+    );
+
+    const remaining = await readdir(path.join(root, 'runs'));
+    expect(remaining.filter((name) => name.startsWith('verify-history-'))).toHaveLength(3);
+    expect(remaining).toContain('verify-current');
+    expect(remaining.some((name) => name.includes('.pruning-'))).toBe(false);
+    await expect(stat(active)).resolves.toBeDefined();
+  });
+
+  it('runs autofix git operations in an isolated detachable worktree', async () => {
+    const repo = await artifacts();
+    await execFileAsync('git', ['-C', repo, 'init']);
+    await writeFile(path.join(repo, 'fixture.txt'), 'base\n');
+    await execFileAsync('git', ['-C', repo, 'add', 'fixture.txt']);
+    await execFileAsync('git', [
+      '-C',
+      repo,
+      '-c',
+      'user.name=Relay Test',
+      '-c',
+      'user.email=relay@example.invalid',
+      'commit',
+      '-m',
+      'fixture',
+    ]);
+    const workspace = await artifacts();
+    const worktreeA = prepareRunWorktree(repo, workspace, 'verify-worktree-a');
+    const worktreeB = prepareRunWorktree(repo, workspace, 'verify-worktree-b');
+    await writeFile(path.join(worktreeA, 'fixture.txt'), 'isolated-a\n');
+    await writeFile(path.join(worktreeB, 'fixture.txt'), 'isolated-b\n');
+
+    expect(await readFile(path.join(repo, 'fixture.txt'), 'utf8')).toBe('base\n');
+    expect(await readFile(path.join(worktreeA, 'fixture.txt'), 'utf8')).toBe('isolated-a\n');
+    expect(await readFile(path.join(worktreeB, 'fixture.txt'), 'utf8')).toBe('isolated-b\n');
+
+    removeRunWorktree(repo, worktreeA);
+    removeRunWorktree(repo, worktreeB);
   });
 
   it('rejects prototype names and incomplete delivery receipts', async () => {

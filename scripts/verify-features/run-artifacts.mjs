@@ -1,5 +1,17 @@
-import { mkdirSync, renameSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  mkdirSync,
+  readlinkSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
+
+const DEFAULT_COMPLETED_RETENTION = 20;
+const DEFAULT_INCOMPLETE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const CANONICAL_FILES = Object.freeze([
   'checks.jsonl',
@@ -58,5 +70,95 @@ export function prepareRunArtifacts(root, runId, nonce) {
     replaceWithSymlink(path.join(root, file), path.posix.join('current', file), nonce, 'file');
   }
   replaceWithSymlink(path.join(root, 'current'), path.posix.join('runs', runId), nonce, 'dir');
+  pruneRunArtifacts(root, { currentRunId: runId });
   return artifacts;
+}
+
+export function markRunArtifactsComplete(artifacts, runId) {
+  assertPathSegment(runId, 'runId');
+  writeFileSync(
+    path.join(artifacts, '.complete'),
+    `${JSON.stringify({ runId, completedAt: new Date().toISOString() })}\n`,
+    { flag: 'wx' }
+  );
+}
+
+/**
+ * Retain the newest completed runs and leave every recent incomplete run
+ * alone. A directory is eligible for count-based deletion only after its
+ * owner writes `.complete`; abandoned incomplete runs get a seven-day grace
+ * period. The current canonical target is never removed. Concurrent pruners
+ * may select the same immutable completed directory, so ENOENT is benign.
+ */
+export function pruneRunArtifacts(
+  root,
+  {
+    currentRunId,
+    keepCompleted = DEFAULT_COMPLETED_RETENTION,
+    incompleteMaxAgeMs = DEFAULT_INCOMPLETE_MAX_AGE_MS,
+    now = Date.now(),
+  } = {}
+) {
+  if (currentRunId) assertPathSegment(currentRunId, 'currentRunId');
+  if (!Number.isSafeInteger(keepCompleted) || keepCompleted < 1) {
+    throw new Error('keepCompleted must be a positive integer');
+  }
+  const runs = path.join(root, 'runs');
+  let canonicalRunId;
+  try {
+    const currentTarget = readlinkSync(path.join(root, 'current'));
+    const prefix = `runs${path.sep}`;
+    if (currentTarget.startsWith(prefix)) canonicalRunId = currentTarget.slice(prefix.length);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  let entries;
+  let claimedForDeletion;
+  try {
+    const directories = readdirSync(runs, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+    claimedForDeletion = directories
+      .filter((entry) => entry.name.includes('.pruning-'))
+      .map((entry) => path.join(runs, entry.name));
+    entries = directories.filter((entry) => !entry.name.includes('.pruning-'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+
+  const completed = [];
+  const abandoned = [];
+  for (const entry of entries) {
+    if (entry.name === currentRunId || entry.name === canonicalRunId) continue;
+    const directory = path.join(runs, entry.name);
+    try {
+      const completion = statSync(path.join(directory, '.complete'));
+      completed.push({ directory, completedAt: completion.mtimeMs });
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      try {
+        if (now - statSync(directory).mtimeMs >= incompleteMaxAgeMs) abandoned.push(directory);
+      } catch (directoryError) {
+        if (directoryError.code !== 'ENOENT') throw directoryError;
+      }
+    }
+  }
+
+  completed.sort((left, right) => right.completedAt - left.completedAt);
+  const targets = [...completed.slice(keepCompleted).map(({ directory }) => directory), ...abandoned];
+  const removed = [];
+  for (const target of targets) {
+    const claimed = `${target}.pruning-${process.pid}-${Math.random().toString(16).slice(2)}`;
+    try {
+      renameSync(target, claimed);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    removed.push(target);
+    rmSync(claimed, { recursive: true, force: true });
+  }
+  for (const claimed of claimedForDeletion) {
+    rmSync(claimed, { recursive: true, force: true });
+  }
+  return removed;
 }
