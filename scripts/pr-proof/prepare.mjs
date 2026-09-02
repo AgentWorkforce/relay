@@ -46,12 +46,20 @@ async function githubJson(url, token) {
  */
 export async function pullRequestFiles(apiUrl, repository, number, token) {
   const files = [];
-  for (let page = 1; page <= 30; page += 1) {
+  const maxPages = 30; // 100 per page = 3,000 files
+  // One page past the cap distinguishes "exactly 3,000 files" (page 31 is
+  // empty, scope is known) from "more than 3,000" (page 31 has entries).
+  // Stopping at page 30 rejected an exactly-3,000-file PR as ambiguous.
+  for (let page = 1; page <= maxPages + 1; page += 1) {
     const batch = await githubJson(
       `${apiUrl}/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
       token
     );
     if (!Array.isArray(batch)) throw new Error('GitHub pull request files response was not an array');
+    if (page > maxPages) {
+      if (batch.length === 0) return files;
+      break;
+    }
     for (const entry of batch) {
       // A rename reports only its destination in `filename`. Moving a runtime
       // file into docs/ or tests/ would otherwise read as a non-runtime change,
@@ -208,6 +216,16 @@ export async function main() {
       summaryPath
     );
     return;
+  }
+  // Past this point the changed-file list is load-bearing: it is what confirms
+  // the declared case is actually touched. The title-only fallback above can
+  // legitimately reach here with `null`, and `changedFiles.some(...)` below
+  // would throw an opaque TypeError instead of saying what went wrong.
+  if (changedFiles === null) {
+    throw new PrProofContractError('A required proof cannot be validated without the changed-file list', [
+      'the GitHub pull request files endpoint could not be read',
+      'classification fell back to the PR title, which cannot confirm the declared RelayFlow case',
+    ]);
   }
   if (headRepository !== repository) {
     throw new PrProofContractError('Fork pull requests cannot receive the credential-bearing Cloud proof', [

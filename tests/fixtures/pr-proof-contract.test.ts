@@ -38,6 +38,7 @@ import {
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   assertSamePullRequestSnapshot,
+  main as prepareMain,
   pullRequestFiles,
   pullRequestSnapshot,
 } from '../../scripts/pr-proof/prepare.mjs';
@@ -1883,6 +1884,27 @@ describe('RelayFlow proof changed-file collection', () => {
     );
   });
 
+  /**
+   * Page 30 returning a full 100 means "3,000 so far", not "more than 3,000".
+   * Probing one page past the cap tells those apart; stopping at 30 rejected an
+   * exactly-3,000-file PR as ambiguous scope.
+   */
+  it('accepts a PR with exactly 3,000 changed files', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({ filename: `packages/cli/src/f${i}.ts` }));
+    let calls = 0;
+    await withStubbedFetch(
+      (async () => {
+        calls += 1;
+        return jsonResponse(calls <= 30 ? full : []);
+      }) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toHaveLength(3000);
+        expect(calls).toBe(31);
+      }
+    );
+  });
+
   it('tags an over-large PR so it cannot fall back to the title', async () => {
     const page = Array.from({ length: 100 }, (_, i) => ({ filename: `packages/cli/src/f${i}.ts` }));
     await withStubbedFetch(
@@ -1893,5 +1915,55 @@ describe('RelayFlow proof changed-file collection', () => {
         });
       }
     );
+  });
+});
+
+describe('RelayFlow proof preparation with an unreadable diff', () => {
+  /**
+   * The title-only fallback can legitimately reach the required path with
+   * `changedFiles === null`. Downstream, `changedFiles.some(...)` then threw a
+   * bare TypeError — a crash instead of a diagnosis. A required proof cannot be
+   * validated without the file list, so it must fail closed and say why.
+   */
+  it('fails closed with a clear error instead of a TypeError', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'pr-proof-nulldiff-'));
+    const eventPath = path.join(dir, 'event.json');
+    const pull = {
+      number: 7,
+      title: 'fix(broker): reconnect dead links',
+      body: [
+        '- Change type: `bugfix` <!-- relay-pr-proof:type -->',
+        '- RelayFlow case: `1593-parked-agent-orphaned-receipt` <!-- relay-pr-proof:case -->',
+      ].join('\n'),
+      head: { sha: 'a'.repeat(40), repo: { full_name: 'AgentWorkforce/relay' } },
+      base: { sha: 'b'.repeat(40) },
+    };
+    await writeFile(eventPath, JSON.stringify({ pull_request: pull }), 'utf8');
+
+    const originalFetch = globalThis.fetch;
+    const originalArgv = process.argv;
+    const env = { ...process.env };
+    globalThis.fetch = (async (url: string) => {
+      // The files endpoint is down; every other read succeeds.
+      if (String(url).includes('/files?')) {
+        return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+      }
+      return { ok: true, status: 200, json: async () => pull } as unknown as Response;
+    }) as unknown as typeof globalThis.fetch;
+    process.argv = ['node', 'prepare.mjs', '--event', eventPath, '--output', path.join(dir, 'out.json')];
+    process.env.GITHUB_TOKEN = 'test-token';
+    process.env.GITHUB_REPOSITORY = 'AgentWorkforce/relay';
+    process.env.GITHUB_API_URL = 'https://api.github.test';
+    delete process.env.GITHUB_OUTPUT;
+    delete process.env.GITHUB_STEP_SUMMARY;
+
+    try {
+      await expect(prepareMain()).rejects.toThrow(/cannot be validated without the changed-file list/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.argv = originalArgv;
+      process.env = env;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
