@@ -7,7 +7,9 @@ export async function startFakeRelaycast({
   recipientName,
   offlineRecipientName,
   unknownRecipientName,
+  failedRecipientName,
   agentReadDelayMs = 0,
+  failedAgentReadDelayMs = 0,
 }) {
   const sockets = new Set();
   const state = {
@@ -40,10 +42,11 @@ export async function startFakeRelaycast({
     }
 
     if (request.method === 'GET' && pathname.startsWith('/v1/agents/')) {
-      if (agentReadDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, agentReadDelayMs));
-      }
       const name = decodeURIComponent(pathname.slice('/v1/agents/'.length));
+      const readDelayMs = name === failedRecipientName ? failedAgentReadDelayMs : agentReadDelayMs;
+      if (readDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, readDelayMs));
+      }
       if (name === unknownRecipientName) {
         sendJson(response, 503, {
           ok: false,
@@ -51,7 +54,7 @@ export async function startFakeRelaycast({
         });
         return;
       }
-      if (name !== recipientName && name !== offlineRecipientName) {
+      if (name !== recipientName && name !== offlineRecipientName && name !== failedRecipientName) {
         sendJson(response, 404, {
           ok: false,
           error: { code: 'agent_not_found', message: `Agent "${name}" not found` },
@@ -65,7 +68,7 @@ export async function startFakeRelaycast({
           workspace_id: 'ws_relayflow_1615',
           name,
           type: 'agent',
-          status: name === recipientName ? 'active' : 'offline',
+          status: name === offlineRecipientName ? 'offline' : 'active',
           persona: null,
           metadata: {},
           channels: [],
@@ -97,6 +100,13 @@ export async function startFakeRelaycast({
     }
 
     if (request.method === 'POST' && pathname === '/v1/dm') {
+      if (body?.to === failedRecipientName) {
+        sendJson(response, 503, {
+          ok: false,
+          error: { code: 'unavailable', message: 'deterministic publish failure' },
+        });
+        return;
+      }
       state.directMessages.push(body);
       const messageId = `msg_relayflow_${state.directMessages.length}`;
       sendJson(response, 200, {

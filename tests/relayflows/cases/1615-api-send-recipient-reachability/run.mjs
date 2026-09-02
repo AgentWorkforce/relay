@@ -12,6 +12,7 @@ const CASE_ID = '1615-api-send-recipient-reachability';
 const RECIPIENT = 'relayflow-live-recipient';
 const OFFLINE_RECIPIENT = 'relayflow-offline-recipient';
 const UNKNOWN_RECIPIENT = 'relayflow-unknown-recipient';
+const FAILED_RECIPIENT = 'relayflow-failed-recipient';
 const API_KEY = 'br_relayflow_1615';
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -66,10 +67,14 @@ try {
     recipientName: RECIPIENT,
     offlineRecipientName: OFFLINE_RECIPIENT,
     unknownRecipientName: UNKNOWN_RECIPIENT,
+    failedRecipientName: FAILED_RECIPIENT,
     // The publish itself completes immediately. Keeping the independent
     // reachability read slower than the configured publish deadline proves a
     // best-effort probe cannot turn durable acceptance into a send failure.
     agentReadDelayMs: 750,
+    // A failed publication must cancel this now-useless observation instead
+    // of parking the single broker runtime actor until the probe completes.
+    failedAgentReadDelayMs: 1_500,
   });
 
   broker = spawn(
@@ -185,6 +190,20 @@ try {
       })
     );
   }
+  const failedSendStartedAt = performance.now();
+  const failed = await api('/api/send', {
+    method: 'POST',
+    body: JSON.stringify({ to: FAILED_RECIPIENT, text: 'failed-publication-control' }),
+  });
+  const failedSendElapsedMs = performance.now() - failedSendStartedAt;
+  if (failed.status < 400 || failedSendElapsedMs >= 1_000) {
+    throw new Error(
+      `Failed publication waited for its irrelevant reachability probe: ${JSON.stringify({
+        failed,
+        failedSendElapsedMs,
+      })}`
+    );
+  }
   await new Promise((resolve) => setTimeout(resolve, 250));
   const finalSnapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`);
   const finalScreen = finalSnapshot.body?.screen ?? '';
@@ -296,6 +315,8 @@ try {
         negative,
         self,
         unknown,
+        failed,
+        failedSendElapsedMs,
         nonRecipientResponses,
         brokerStderr,
       })}`
@@ -319,6 +340,7 @@ try {
         relaycastPublications: relaycast.state.directMessages.length + relaycast.state.channelMessages.length,
         unknownProbeReported: unknown.body?.recipient_status ?? 'omitted',
         nonRecipientFieldsOmitted,
+        failedSendReturnedBeforeProbe: failed.status >= 400 && failedSendElapsedMs < 1_000,
         teardownProved,
       },
     })}\n`,

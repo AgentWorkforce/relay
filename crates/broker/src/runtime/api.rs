@@ -1279,8 +1279,24 @@ impl BrokerRuntime {
                         None => None,
                     }
                 };
-                let (publish_result, recipient_reachability) =
-                    tokio::join!(publish, recipient_probe);
+                tokio::pin!(publish);
+                tokio::pin!(recipient_probe);
+                // If publication fails first, drop the now-irrelevant
+                // best-effort probe immediately. Waiting for its full timeout
+                // would delay the error response and stall this runtime actor.
+                // A successful publication still waits for the observation
+                // required by the response contract.
+                let (publish_result, recipient_reachability) = tokio::select! {
+                    result = &mut publish => {
+                        let reachability = if matches!(&result, Ok(Ok(()))) {
+                            recipient_probe.await
+                        } else {
+                            None
+                        };
+                        (result, reachability)
+                    }
+                    reachability = &mut recipient_probe => (publish.await, reachability),
+                };
                 match publish_result {
                     Ok(Ok(())) => {
                         tracing::info!(
