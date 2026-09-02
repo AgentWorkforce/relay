@@ -618,6 +618,42 @@ impl SeenMsgIds {
     }
 }
 
+/// Why a parked receipt can never advance the cumulative ACK cursor.
+/// Carried through so the flush can log which of the two seams orphaned it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrphanedReceiptReason {
+    /// The `agent_id` the receipt was stamped with has been retired by a
+    /// later authoritative binding for the same name.
+    IdentityRetired,
+    /// The cursor for that identity has already moved at or past this
+    /// sequence (typically a resume handshake's `seed_cursor`).
+    CursorMovedPast,
+}
+
+impl OrphanedReceiptReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OrphanedReceiptReason::IdentityRetired => "identity_retired",
+            OrphanedReceiptReason::CursorMovedPast => "cursor_moved_past",
+        }
+    }
+}
+
+/// What a parked delivery's receipt can still do to the ACK cursor.
+/// See [`FleetDeliveryBook::receipt_ackability`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiptAckability {
+    /// This receipt is the next ACKable sequence: inject it, then ACK it.
+    Ready,
+    /// A lower sequence is still outstanding, or this one is ahead of the
+    /// received frontier. Holding the queue is correct — a later ACK clears it.
+    Blocked,
+    /// No ACK can ever be committed for this receipt. The message must still
+    /// be delivered, but it carries no ACK, so Relaycast keeps ownership of
+    /// the frame and its own redelivery policy is untouched.
+    Orphaned { reason: OrphanedReceiptReason },
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct AgentDeliveryCursor {
     agent_name: String,
@@ -1050,13 +1086,54 @@ impl FleetDeliveryBook {
                 .is_some_and(|cursor| cursor.confirmed_delivery_seqs.contains_key(&deliver.seq))
     }
 
-    pub(crate) fn can_ack_receipt(&self, receipt: &RelaycastDeliveryReceipt) -> bool {
+    /// Classify what a parked delivery's receipt can still do to this broker's
+    /// cumulative ACK cursor.
+    ///
+    /// A `manual_flush` queue stamps each held message with the `agent_id` that
+    /// was live when it was queued. That identity is not permanent: a
+    /// re-registration, a token identity resolve, or an inventory repair calls
+    /// `bind_authoritative_identity`, which retires the previous `agent_id` and
+    /// drops its cursor; and a node-control resume handshake calls
+    /// `seed_cursor`, which moves the cumulative position to Relaycast's own.
+    /// Either event leaves already-parked receipts pointing at a cursor that
+    /// can never accept them.
+    ///
+    /// Treating that as "not ACKable yet" jams the queue permanently — the
+    /// flush stops at the head message forever and the agent goes deaf while
+    /// sends keep reporting success (relay#1593, relay#1559). So the
+    /// un-ACKable-for-now case ([`ReceiptAckability::Blocked`], a genuine
+    /// ordering gap that a later ACK will clear) is kept distinct from the
+    /// never-ACKable case ([`ReceiptAckability::Orphaned`]), which the flush
+    /// delivers and drops without ever touching the cursor.
+    pub(crate) fn receipt_ackability(
+        &self,
+        receipt: &RelaycastDeliveryReceipt,
+    ) -> ReceiptAckability {
         let Some(cursor) = self.agents.get(receipt.agent_id.as_str()) else {
-            return false;
+            // The identity this receipt was stamped with is gone. It cannot
+            // come back either: `bind_identity` refuses to re-adopt a retired
+            // `agent_id`, so no later frame will recreate this cursor.
+            return ReceiptAckability::Orphaned {
+                reason: OrphanedReceiptReason::IdentityRetired,
+            };
         };
-        receipt.seq == 0
-            || (receipt.seq == cursor.acked_up_to_seq.saturating_add(1)
-                && receipt.seq <= cursor.received_up_to_seq)
+        if receipt.seq == 0 {
+            return ReceiptAckability::Ready;
+        }
+        if receipt.seq <= cursor.acked_up_to_seq {
+            // The cumulative cursor has already moved past this frame — a
+            // resume handshake seeded it forward, or it was ACKed elsewhere.
+            return ReceiptAckability::Orphaned {
+                reason: OrphanedReceiptReason::CursorMovedPast,
+            };
+        }
+        if receipt.seq == cursor.acked_up_to_seq.saturating_add(1)
+            && receipt.seq <= cursor.received_up_to_seq
+        {
+            ReceiptAckability::Ready
+        } else {
+            ReceiptAckability::Blocked
+        }
     }
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {

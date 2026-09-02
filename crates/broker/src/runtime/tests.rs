@@ -641,6 +641,158 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
     cleanup_worker_registry(workers).await;
 }
 
+/// relay#1593 / #1559: a parked (`manual_flush`) queue must not be jammed
+/// forever by a receipt whose Relaycast identity is no longer the live one.
+///
+/// The agent re-registers while messages sit parked — a spawn-time
+/// `agent.register`, a token identity resolve, or an inventory repair all call
+/// `bind_authoritative_identity`, which retires the previous `agent_id` and
+/// drops its ACK cursor. The parked messages still carry receipts stamped with
+/// the retired `agent_id`, so the ACK gate can never be satisfied for them
+/// again. Before the fix the flush stopped at the head message and
+/// returned `flushed: 0` for the rest of the worker's life: the agent went
+/// permanently deaf while `send_dm` kept returning `recipientMatched: true`.
+#[tokio::test]
+async fn manual_flush_delivers_messages_whose_identity_was_rebound() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&first));
+    state.accept_inbound(held_fleet_message(&second));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    // The agent re-registers under a fresh Relaycast identity while its queue
+    // is parked. This retires `agent-worker-a` and drops its cursor.
+    assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a-respawned");
+    assert_eq!(
+        delivery_book.received_up_to_seq("agent-worker-a"),
+        0,
+        "the retired identity's cursor must be gone — this is the precondition under test"
+    );
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(
+        result.flushed, 2,
+        "an orphaned receipt must not jam the parked queue — the agent has to hear the messages"
+    );
+    assert_eq!(result.failure, None);
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    // Nothing is ACKed: the receipts belong to a retired identity, so the
+    // engine keeps ownership and its own redelivery policy is unchanged.
+    assert!(
+        fleet_control_rx.try_recv().is_err(),
+        "a retired identity's receipt must never advance an ACK cursor"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// Same jam, reached without a re-registration: a node-control resume
+/// handshake re-seeds the cursor at Relaycast's authoritative position
+/// (`seed_cursor` sets `acked == received == up_to_seq`). Messages parked
+/// below that position can never satisfy `seq == acked + 1` again.
+#[tokio::test]
+async fn manual_flush_delivers_messages_left_behind_by_a_reseeded_cursor() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&first));
+    state.accept_inbound(held_fleet_message(&second));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    // Reconnect: Relaycast reports it has already accounted for seq 2.
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a");
+    delivery_book.seed_cursor("worker-a", "agent-worker-a", 2);
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(
+        result.flushed, 2,
+        "already-accounted receipts must be delivered, not held forever"
+    );
+    assert_eq!(result.failure, None);
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 2);
+    assert!(
+        fleet_control_rx.try_recv().is_err(),
+        "no ACK regression below the seeded cursor"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// The guard that must survive the fix: a genuine ordering gap (seq 2 parked
+/// while seq 1 is still outstanding) still stops the flush, so held frames are
+/// never ACKed out of order.
+#[tokio::test]
+async fn manual_flush_still_stops_on_a_genuine_sequence_gap() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let expected = vec![held_fleet_message(&second)];
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&second));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    // Both were received, but seq 1 is still unACKed on the auto-inject path,
+    // so seq 2 is not yet `acked + 1`.
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+
+    assert_eq!(result.flushed, 0);
+    assert!(
+        result.failure.is_some(),
+        "an out-of-order receipt must still hold the queue"
+    );
+    assert_eq!(delivery_states[&worker_name].pending_snapshot(), expected);
+    assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
+    assert!(fleet_control_rx.try_recv().is_err());
+
+    cleanup_worker_registry(workers).await;
+}
+
 #[tokio::test]
 async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
     let worker_name = WorkerName::from("worker-a");

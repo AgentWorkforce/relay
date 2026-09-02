@@ -862,12 +862,28 @@ export class HarnessDriverClient {
     return Array.isArray(result.pending) ? (result.pending as PendingRelayMessage[]) : [];
   }
 
-  async flushPending(name: string): Promise<{ flushed: number }> {
-    const result = await this.transport.request<{ flushed?: unknown }>(
-      `/api/spawned/${encodeURIComponent(name)}/flush`,
-      { method: 'POST' }
-    );
-    return { flushed: typeof result.flushed === 'number' ? result.flushed : 0 };
+  /**
+   * Flush a held agent's parked queue.
+   *
+   * `flushed` on its own is ambiguous: 0 reads the same for an empty queue and
+   * for a queue the broker could not drain. `held` and `blockedReason` carry
+   * that distinction (see relay#1593). Older brokers omit both fields.
+   */
+  async flushPending(
+    name: string
+  ): Promise<{ flushed: number; held?: number; blockedReason?: string }> {
+    const result = await this.transport.request<{
+      flushed?: unknown;
+      held?: unknown;
+      blocked_reason?: unknown;
+    }>(`/api/spawned/${encodeURIComponent(name)}/flush`, { method: 'POST' });
+    return {
+      flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      ...(typeof result.held === 'number' ? { held: result.held } : {}),
+      ...(typeof result.blocked_reason === 'string'
+        ? { blockedReason: result.blocked_reason }
+        : {}),
+    };
   }
 
   async snapshot(name: string, format: SnapshotFormat = 'plain'): Promise<PtySnapshot> {

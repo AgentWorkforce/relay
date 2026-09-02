@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Fixed
+
+- A held agent no longer goes permanently deaf when its Relaycast identity is rebound or its delivery cursor is re-seeded while messages are parked: the flush now delivers those messages instead of stopping on them forever, so `agent message flush` / `agent message auto` can wake a parked agent again. A genuine out-of-order sequence still holds the queue.
+
+### Added
+
+- `POST /api/spawned/{name}/flush` now returns `held` and `blocked_reason` alongside `flushed`, so `agent-relay node agent message flush` distinguishes an empty queue from one the broker could not drain.
 
 ## [11.10.0] - 2026-09-02
 

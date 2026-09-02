@@ -2491,7 +2491,15 @@ impl BrokerRuntime {
                             );
                         }
                     }
-                    let _ = reply.send(Ok(flushed));
+                    let held = delivery_states
+                        .get(&name)
+                        .map(|state| state.pending_len())
+                        .unwrap_or(0);
+                    let _ = reply.send(Ok(FlushPendingOk {
+                        flushed,
+                        held,
+                        blocked_reason: flush_result.failure,
+                    }));
                 }
             }
             ListenApiRequest::Shutdown { reply } => {

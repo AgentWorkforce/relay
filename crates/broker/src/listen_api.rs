@@ -225,7 +225,7 @@ pub enum ListenApiRequest {
     /// fire-and-forget inject path. Does *not* change the mode.
     FlushPending {
         name: WorkerName,
-        reply: tokio::sync::oneshot::Sender<Result<usize, DeliveryRouteError>>,
+        reply: tokio::sync::oneshot::Sender<Result<FlushPendingOk, DeliveryRouteError>>,
     },
     /// `POST /api/agent-result` — accepts structured result payloads from the
     /// per-agent MCP tool using a callback token minted at spawn time.
@@ -295,6 +295,22 @@ impl std::error::Error for AgentResultRouteError {}
 /// `matched` is `true` on an applied set. It is `false` when either compare-and-
 /// set guard misses, in which case `mode` and `revision` report the current
 /// unchanged state and `flushed` is `0`.
+/// Outcome of `POST /api/spawned/{name}/flush`.
+///
+/// `flushed` alone cannot distinguish "the queue was empty" from "the queue is
+/// jammed and I injected nothing", and that ambiguity is what made relay#1593
+/// expensive to diagnose — a bare `{"flushed": 0}` was read as a null result
+/// when it was a swallowed failure. `held` and `blocked_reason` say which.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FlushPendingOk {
+    /// Messages injected into the worker by this call.
+    pub flushed: usize,
+    /// Messages still parked in the queue when the flush stopped.
+    pub held: usize,
+    /// Why the flush stopped short, when it did.
+    pub blocked_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetInboundDeliveryModeOk {
     pub mode: InboundDeliveryMode,
@@ -2516,9 +2532,13 @@ async fn listen_api_flush_pending(
         return internal_error();
     }
     match reply_rx.await {
-        Ok(Ok(flushed)) => (
+        Ok(Ok(result)) => (
             axum::http::StatusCode::OK,
-            axum::Json(json!({ "flushed": flushed })),
+            axum::Json(json!({
+                "flushed": result.flushed,
+                "held": result.held,
+                "blocked_reason": result.blocked_reason,
+            })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
@@ -5922,7 +5942,11 @@ mod auth_tests {
             match rx.recv().await {
                 Some(ListenApiRequest::FlushPending { name, reply }) => {
                     assert_eq!(name, "worker-a");
-                    let _ = reply.send(Ok(5));
+                    let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
+                        flushed: 5,
+                        held: 0,
+                        blocked_reason: None,
+                    }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
             }
@@ -5942,7 +5966,10 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "flushed": 5 }));
+        assert_eq!(
+            body,
+            json!({ "flushed": 5, "held": 0, "blocked_reason": null })
+        );
         replier.await.expect("replier should complete");
     }
 
