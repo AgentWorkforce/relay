@@ -112,9 +112,9 @@ try {
     brokerStderr = `${brokerStderr}${chunk}`.slice(-16_000);
   });
 
-  const connection = await waitForConnection(path.join(stateDir, 'connection.json'), broker);
+  const brokerUrl = await waitForConnection(path.join(stateDir, 'connection.json'), broker);
   const api = async (pathname, { timeoutMs = 15_000, ...options } = {}) => {
-    const response = await fetch(`${connection.url}${pathname}`, {
+    const response = await fetch(`${brokerUrl}${pathname}`, {
       ...options,
       headers: {
         'content-type': 'application/json',
@@ -337,6 +337,8 @@ try {
   }
 
   await mkdir(path.dirname(resultPath), { recursive: true });
+  // The PR-proof runner owns resultPath. Persist only the bounded effect
+  // summary below—never raw broker, PTY, Relaycast, or response content.
   await writeFile(
     resultPath,
     `${JSON.stringify({
@@ -380,7 +382,21 @@ async function waitForConnection(connectionPath, child) {
         throw new Error(`Broker exited during startup (${child.exitCode}): ${brokerStderr}`);
       }
       try {
-        return JSON.parse(await readFile(connectionPath, 'utf8'));
+        const connection = JSON.parse(await readFile(connectionPath, 'utf8'));
+        const url = new URL(connection.url);
+        if (
+          url.protocol !== 'http:' ||
+          url.hostname !== '127.0.0.1' ||
+          url.username !== '' ||
+          url.password !== '' ||
+          url.pathname !== '/' ||
+          url.search !== '' ||
+          url.hash !== '' ||
+          !/^\d+$/.test(url.port)
+        ) {
+          throw new Error(`Broker connection URL is not a plain loopback origin: ${url.origin}`);
+        }
+        return `http://127.0.0.1:${Number(url.port)}`;
       } catch (error) {
         lastError = error;
         return false;
