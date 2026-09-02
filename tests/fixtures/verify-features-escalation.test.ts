@@ -348,6 +348,7 @@ describe('verify-features escalation status', () => {
       currentRunId: 'verify-active',
       keepCompleted: 2,
       incompleteMaxAgeMs: 0,
+      now: Date.now() + 1_000,
     });
 
     expect(removed).toHaveLength(3);
