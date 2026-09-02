@@ -1687,6 +1687,7 @@ pub(super) async fn flush_pending_relay_messages(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dead_letters: &mut DeadLetterStore,
+    obligation_store: &mut crate::obligation::ObligationStore,
     worker_name: &WorkerName,
     retry_interval: Duration,
 ) -> FlushPendingRelayResult {
@@ -1754,6 +1755,20 @@ pub(super) async fn flush_pending_relay_messages(
                 ),
             )
             .await;
+            // A boomerang obligation outlives the queue entry it was registered
+            // for. This message is never being delivered, so cancel it rather
+            // than let maintenance keep reminding the recipient about a message
+            // they never received.
+            if let Some(event_id) = queued.event_id.as_deref() {
+                if obligation_store.cancel(event_id) {
+                    tracing::info!(
+                        target = "relay_broker::fleet",
+                        worker = %worker_name,
+                        msg_id = %event_id,
+                        "cancelled the boomerang obligation for a dead-lettered parked message"
+                    );
+                }
+            }
             let removed = delivery_states
                 .get_mut(worker_name)
                 .and_then(|state| state.pending.pop_front());

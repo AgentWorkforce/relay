@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -16,13 +18,15 @@ use crate::{
     types::{BrokerCommandPayload, InboundKind, SenderKind},
 };
 use anyhow::{Context, Result};
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        check_echo_in_output, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
-        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        pending_verification_echo_seen, queue_or_take_confirmed_verification,
+        queue_or_take_detected_activity, DeliveryOutcome, PendingActivity, PendingVerification,
+        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
+        ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -53,6 +57,31 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
+const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
+// Keep this aligned with the runtime PTY input acknowledgement bound. A wrap
+// session is retired when it expires because a blocked write may have been
+// partially delivered and is unsafe to requeue blindly.
+const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Claude Code treats multiline input and a trailing Enter received in the
+/// same paste burst as editor content, leaving the task parked in its composer.
+/// Give its submit key a distinct, delayed PTY write. Other harnesses retain
+/// the established body-plus-Enter write shape.
+pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+    let basename = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli);
+    // PTY entry points accept arbitrary executable names, including company
+    // wrappers such as `company-claude` and `claude-code`. Match the same
+    // Claude identity signal used by readiness and activity detection so a
+    // wrapper cannot silently fall back to the broken body-plus-Enter burst.
+    basename
+        .to_ascii_lowercase()
+        .contains("claude")
+        .then_some(CLAUDE_INJECTION_SUBMIT_DELAY)
+}
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
 /// enqueued to the PTY write drainer. These prompts — MCP approval, trust
@@ -137,6 +166,93 @@ pub(crate) struct PendingWrapInjection {
     pub(crate) body: String,
     pub(crate) target: MessageTarget,
     pub(crate) queued_at: Instant,
+}
+
+/// Delivery state held until the PTY drainer confirms both the injection body
+/// and its harness-specific submit sequence were written and flushed.
+enum PendingWrapWrite {
+    Initial {
+        pending: PendingWrapInjection,
+        injection: String,
+        output_boundary: u64,
+        include_reminder: bool,
+    },
+    Retry {
+        verification: PendingVerification,
+        injection: String,
+        output_boundary: u64,
+        include_reminder: bool,
+    },
+}
+
+type WrapWriteAck =
+    std::result::Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>;
+type PendingWrapWriteAck = (
+    PendingWrapWrite,
+    std::result::Result<WrapWriteAck, tokio::time::error::Elapsed>,
+);
+type PendingWrapWriteAckFuture = Pin<Box<dyn Future<Output = PendingWrapWriteAck> + Send>>;
+
+async fn await_wrap_write_ack(
+    ack_rx: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
+    timeout: Duration,
+) -> std::result::Result<WrapWriteAck, tokio::time::error::Elapsed> {
+    tokio::time::timeout(timeout, ack_rx).await
+}
+
+fn wrap_write_ack_error(ack: WrapWriteAck) -> Option<String> {
+    match ack {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error.to_string()),
+        Err(_) => Some("pty write drainer exited before acknowledging queued write".to_string()),
+    }
+}
+
+/// Keep wrap injections single-flight until the PTY drainer confirms the
+/// previous write. Besides preserving delivery order, this ensures an MCP
+/// reminder is recorded before the next delivery decides whether to include it.
+fn wrap_injection_timer_allowed(has_pending_write_ack: bool) -> bool {
+    !has_pending_write_ack
+}
+
+/// Start echo verification after a PTY write ack without missing output that
+/// raced ahead of the ack select arm. Returns `true` when the echo was already
+/// present and the delivery was confirmed immediately.
+fn queue_or_confirm_wrap_verification(
+    verification: PendingVerification,
+    output: &VerificationOutput,
+    activity_detector: Option<&ActivityDetector>,
+    throttle: &mut ThrottleState,
+    pending_verifications: &mut VecDeque<PendingVerification>,
+    pending_activities: &mut VecDeque<PendingActivity>,
+) -> bool {
+    let Some(verification) =
+        queue_or_take_confirmed_verification(verification, output, pending_verifications)
+    else {
+        return false;
+    };
+
+    tracing::debug!(
+        event_id = %verification.event_id,
+        delivery_id = %verification.delivery_id,
+        attempts = verification.attempts,
+        "wrap: delivery echo verified before write ack was processed"
+    );
+    throttle.record(DeliveryOutcome::Success);
+    if let Some(detector) = activity_detector {
+        if let Some((activity, pattern)) =
+            queue_or_take_detected_activity(&verification, output, detector, pending_activities)
+        {
+            tracing::info!(
+                target = "agent_relay::worker::wrap",
+                delivery_id = %activity.delivery_id,
+                event_id = %activity.event_id,
+                pattern = %pattern,
+                "delivery became active before write ack was processed"
+            );
+        }
+    }
+    true
 }
 
 // Shared PTY auto-response state used by run_wrap and run_pty_worker.
@@ -1087,6 +1203,8 @@ pub(crate) async fn run_wrap(
     let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
     pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
+    let mut pending_wrap_writes: FuturesUnordered<PendingWrapWriteAckFuture> =
+        FuturesUnordered::new();
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
 
     // Echo verification state
@@ -1098,7 +1216,7 @@ pub(crate) async fn run_wrap(
         None
     };
     let mut throttle = ThrottleState::default();
-    let mut echo_buffer = String::new();
+    let mut echo_buffer = VerificationOutput::default();
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1197,6 +1315,11 @@ pub(crate) async fn run_wrap(
             chunk = pty_rx.recv() => {
                 match chunk {
                     Some(chunk) => {
+                        // Preserve the producer-assigned read sequence before
+                        // any async handling. Output already queued when an
+                        // injection is submitted must remain ineligible as its
+                        // echo even though this arm consumes it afterward.
+                        echo_buffer.push_output(chunk.sequence(), chunk.as_bytes());
                         // Passthrough to user's terminal
                         use tokio::io::AsyncWriteExt;
                         let _ = stdout.write_all(&chunk).await;
@@ -1265,17 +1388,10 @@ pub(crate) async fn run_wrap(
                             pty_auto.handle_claude_trust(&text, &pty).await;
                         }
 
-                        // Accumulate echo buffer for verification matching
-                        echo_buffer.push_str(&text);
-                        if echo_buffer.len() > 16_000 {
-                            let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
-                            echo_buffer = echo_buffer[start..].to_string();
-                        }
-
                         // Check pending verifications against new output
                         let mut verified_indices = Vec::new();
                         for (i, pv) in pending_verifications.iter().enumerate() {
-                            if check_echo_in_output(&echo_buffer, &pv.expected_echo) {
+                            if pending_verification_echo_seen(&echo_buffer, pv) {
                                 verified_indices.push(i);
                             }
                         }
@@ -1700,7 +1816,8 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            _ = pending_injection_interval.tick() => {
+            _ = pending_injection_interval.tick(),
+                if wrap_injection_timer_allowed(!pending_wrap_writes.is_empty()) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
                 // over a new automated injection — see the auto-responder gate
                 // above for why.
@@ -1745,62 +1862,168 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    // Submit the body and its trailing `\r` as a single write.
-                    // The Enter keystroke is mandatory for delivery — sending
-                    // it as a separate best-effort write meant a failed/lost
-                    // enqueue could still leave the delivery recorded as
-                    // injected (echo verification only checks the body).
-                    // Combining into one write also keeps the two adjacent on
-                    // the drainer FIFO, so no other writer can splice a byte
-                    // between the body and its Enter.
                     let mut bytes = injection.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r");
-                    if let Err(e) = pty.submit_write(bytes) {
-                        tracing::warn!(
-                            event_id = %pending.event_id,
-                            error = %e,
-                            "PTY injection write failed, re-queuing"
+                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
+                    {
+                        // Claude needs Enter in a later PTY write to close its
+                        // multiline paste boundary. The relay-pty compound
+                        // command keeps that delayed write atomic with the body
+                        // and acknowledges only after both writes succeed.
+                        pty.submit_write_paced_with_followup_and_output_boundary(
+                            bytes,
+                            Duration::ZERO,
+                            delay,
+                            b"\r".to_vec(),
+                        )
+                    } else {
+                        // Other harnesses retain the established single-write
+                        // body-plus-Enter shape.
+                        bytes.extend_from_slice(b"\r");
+                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
+                    };
+                    match write {
+                        Ok((ack_rx, output_boundary)) => {
+                            let pending_write = PendingWrapWrite::Initial {
+                                pending,
+                                injection,
+                                output_boundary,
+                                include_reminder,
+                            };
+                            pending_wrap_writes.push(Box::pin(async move {
+                                (
+                                    pending_write,
+                                    await_wrap_write_ack(ack_rx, WRAP_WRITE_ACK_TIMEOUT).await,
+                                )
+                            }));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                event_id = %pending.event_id,
+                                error = %error,
+                                "PTY injection write failed, re-queuing"
+                            );
+                            pending_wrap_injections.push_front(pending);
+                        }
+                    }
+                }
+            }
+
+            Some((pending_write, ack)) = pending_wrap_writes.next(), if !pending_wrap_writes.is_empty() => {
+                let ack = match ack {
+                    Ok(ack) => ack,
+                    Err(_) => {
+                        let event_id = match &pending_write {
+                            PendingWrapWrite::Initial { pending, .. } => &pending.event_id,
+                            PendingWrapWrite::Retry { verification, .. } => &verification.event_id,
+                        };
+                        tracing::error!(
+                            event_id = %event_id,
+                            timeout_ms = WRAP_WRITE_ACK_TIMEOUT.as_millis(),
+                            "PTY injection write acknowledgement timed out; retiring wrap session because delivery outcome is unknown"
                         );
-                        pending_wrap_injections.push_front(PendingWrapInjection {
-                            from: pending.from,
+                        break;
+                    }
+                };
+                let error = wrap_write_ack_error(ack);
+
+                match pending_write {
+                    PendingWrapWrite::Initial {
+                        pending,
+                        injection,
+                        output_boundary,
+                        include_reminder,
+                    } => {
+                        if let Some(error) = error {
+                            tracing::warn!(
+                                event_id = %pending.event_id,
+                                error = %error,
+                                "PTY injection write was not confirmed; re-queuing"
+                            );
+                            pending_wrap_injections.push_front(pending);
+                            continue;
+                        }
+
+                        if include_reminder {
+                            mcp_reminder_throttle.note_sent(Instant::now());
+                        }
+                        telemetry.track(TelemetryEvent::MessageSend {
+                            is_broadcast: pending.target.starts_with('#'),
+                            has_thread: false,
+                        });
+                        tracing::debug!(
+                            event_id = %pending.event_id,
+                            "wrap: delivery injection confirmed"
+                        );
+                        pty_auto.last_injection_time = Some(Instant::now());
+                        pty_auto.auto_enter_retry_count = 0;
+                        let verification = PendingVerification {
+                            delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
+                            expected_echo: injection,
+                            output_boundary,
+                            injected_at: Instant::now(),
+                            attempts: 1,
+                            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+                            request_id: None,
                             workspace_id: pending.workspace_id,
                             workspace_alias: pending.workspace_alias,
+                            from: pending.from,
                             body: pending.body,
                             target: pending.target,
-                            queued_at: pending.queued_at,
-                        });
-                        continue;
+                        };
+                        queue_or_confirm_wrap_verification(
+                            verification,
+                            &echo_buffer,
+                            activity_detector.as_ref(),
+                            &mut throttle,
+                            &mut pending_verifications,
+                            &mut pending_activities,
+                        );
                     }
-                    if include_reminder {
-                        mcp_reminder_throttle.note_sent(Instant::now());
-                    }
-                    telemetry.track(TelemetryEvent::MessageSend {
-                        is_broadcast: pending.target.starts_with('#'),
-                        has_thread: false,
-                    });
-                    tracing::debug!(
-                        event_id = %pending.event_id,
-                        "wrap: delivery injected"
-                    );
-                    pty_auto.last_injection_time = Some(Instant::now());
-                    pty_auto.auto_enter_retry_count = 0;
+                    PendingWrapWrite::Retry {
+                        mut verification,
+                        injection,
+                        output_boundary,
+                        include_reminder,
+                    } => {
+                        if let Some(error) = error {
+                            tracing::warn!(
+                                event_id = %verification.event_id,
+                                error = %error,
+                                "wrap: retry PTY injection was not confirmed; re-queuing delivery"
+                            );
+                            pending_wrap_injections.push_front(PendingWrapInjection {
+                                from: verification.from,
+                                event_id: verification.event_id,
+                                workspace_id: verification.workspace_id,
+                                workspace_alias: verification.workspace_alias,
+                                body: verification.body,
+                                target: verification.target,
+                                queued_at: Instant::now(),
+                            });
+                            continue;
+                        }
 
-                    // Push to pending verifications for echo verification
-                    pending_verifications.push_back(PendingVerification {
-                        delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
-                        event_id: pending.event_id,
-                        expected_echo: injection,
-                        injected_at: Instant::now(),
-                        attempts: 1,
-                        max_attempts: MAX_VERIFICATION_ATTEMPTS,
-                        request_id: None,
-                        workspace_id: pending.workspace_id,
-                        workspace_alias: pending.workspace_alias,
-                        from: pending.from,
-                        body: pending.body,
-                        target: pending.target,
-                    });
+                        if include_reminder {
+                            mcp_reminder_throttle.note_sent(Instant::now());
+                        }
+                        tracing::debug!(
+                            delivery_id = %verification.delivery_id,
+                            event_id = %verification.event_id,
+                            "wrap: delivery re-injection confirmed (retry)"
+                        );
+                        verification.expected_echo = injection;
+                        verification.output_boundary = output_boundary;
+                        verification.injected_at = Instant::now();
+                        queue_or_confirm_wrap_verification(
+                            verification,
+                            &echo_buffer,
+                            activity_detector.as_ref(),
+                            &mut throttle,
+                            &mut pending_verifications,
+                            &mut pending_activities,
+                        );
+                    }
                 }
             }
 
@@ -1845,7 +2068,7 @@ pub(crate) async fn run_wrap(
                 }
 
                 // Re-inject retries
-                for mut pv in retry_queue {
+                for pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
                     // Retries consult the throttle like first injections: the
                     // failed attempt usually already echoed the full block, so
@@ -1863,31 +2086,51 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    // Combined into a single write for the same reason as the
-                    // first-attempt path above: the Enter must not be a
-                    // best-effort afterthought, and a single write can't be
-                    // spliced by another writer.
                     let mut bytes = injection.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r");
-                    if let Err(error) = pty.submit_write(bytes) {
-                        tracing::warn!(
-                            event_id = %pv.event_id,
-                            error = %error,
-                            "wrap: retry PTY injection write failed"
-                        );
+                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
+                    {
+                        pty.submit_write_paced_with_followup_and_output_boundary(
+                            bytes,
+                            Duration::ZERO,
+                            delay,
+                            b"\r".to_vec(),
+                        )
                     } else {
-                        if include_reminder {
-                            mcp_reminder_throttle.note_sent(Instant::now());
+                        bytes.extend_from_slice(b"\r");
+                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
+                    };
+                    match write {
+                        Ok((ack_rx, output_boundary)) => {
+                            let pending_write = PendingWrapWrite::Retry {
+                                verification: pv,
+                                injection,
+                                output_boundary,
+                                include_reminder,
+                            };
+                            pending_wrap_writes.push(Box::pin(async move {
+                                (
+                                    pending_write,
+                                    await_wrap_write_ack(ack_rx, WRAP_WRITE_ACK_TIMEOUT).await,
+                                )
+                            }));
                         }
-                        tracing::debug!(
-                            delivery_id = %pv.delivery_id,
-                            event_id = %pv.event_id,
-                            "wrap: delivery re-injected (retry)"
-                        );
+                        Err(error) => {
+                            tracing::warn!(
+                                event_id = %pv.event_id,
+                                error = %error,
+                                "wrap: retry PTY injection write failed; re-queuing delivery"
+                            );
+                            pending_wrap_injections.push_front(PendingWrapInjection {
+                                from: pv.from,
+                                event_id: pv.event_id,
+                                workspace_id: pv.workspace_id,
+                                workspace_alias: pv.workspace_alias,
+                                body: pv.body,
+                                target: pv.target,
+                                queued_at: Instant::now(),
+                            });
+                        }
                     }
-                    pv.expected_echo = injection;
-                    pv.injected_at = Instant::now();
-                    pending_verifications.push_back(pv);
                 }
             }
 
@@ -1959,8 +2202,143 @@ pub(crate) async fn run_wrap(
 
 #[cfg(test)]
 mod tests {
-    use super::{buffer_and_drain_stdin, drain_stdin_buffer, STDIN_PENDING_MAX_CHUNKS};
+    use super::{
+        await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
+        injection_submit_followup_delay, queue_or_confirm_wrap_verification,
+        wrap_injection_timer_allowed, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
+    };
+    use crate::broker::delivery_verification::{
+        PendingVerification, ThrottleState, VerificationOutput, MAX_VERIFICATION_ATTEMPTS,
+    };
+    use crate::ids::{DeliveryId, EventId, MessageTarget};
+    use crate::worker::detection::ActivityDetector;
     use std::collections::VecDeque;
+    use std::io;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn only_claude_uses_a_delayed_submit_followup() {
+        let expected = Some(Duration::from_millis(250));
+        assert_eq!(injection_submit_followup_delay("claude"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/usr/local/bin/Claude.EXE"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.CMD"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.BAT"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay("/opt/company/bin/company-claude"),
+            expected
+        );
+        assert_eq!(injection_submit_followup_delay("claude-code"), expected);
+        assert_eq!(injection_submit_followup_delay("codex"), None);
+        assert_eq!(injection_submit_followup_delay("opencode"), None);
+    }
+
+    #[test]
+    fn compound_write_ack_requires_both_writes_to_succeed() {
+        assert_eq!(wrap_write_ack_error(Ok(Ok(()))), None);
+
+        let error = wrap_write_ack_error(Ok(Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "forced delayed submit failure",
+        ))))
+        .expect("a failed delayed Enter must reject the compound write");
+        assert!(error.contains("forced delayed submit failure"));
+    }
+
+    #[tokio::test]
+    async fn compound_write_ack_rejects_a_lost_drainer() {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<io::Result<()>>();
+        drop(ack_tx);
+
+        let error = wrap_write_ack_error(ack_rx.await)
+            .expect("a dropped drainer ack must reject the compound write");
+        assert!(error.contains("drainer exited"));
+    }
+
+    #[tokio::test]
+    async fn compound_write_ack_is_bounded_when_the_drainer_stalls() {
+        let (_ack_tx, ack_rx) = tokio::sync::oneshot::channel::<io::Result<()>>();
+        let outcome = await_wrap_write_ack(ack_rx, Duration::from_millis(10)).await;
+        assert!(outcome.is_err(), "an unresolved write ack must time out");
+    }
+
+    #[test]
+    fn wrap_injection_timer_waits_for_the_previous_write_ack() {
+        assert!(wrap_injection_timer_allowed(false));
+        assert!(!wrap_injection_timer_allowed(true));
+    }
+
+    #[test]
+    fn echo_arriving_before_write_ack_is_confirmed_immediately() {
+        let injection = "multiline task\nwith a delayed submit";
+        let mut output = VerificationOutput::default();
+        output.push_output(1, b"older output\n");
+        // Sequence 2 was assigned by the PTY reader before this wrap write
+        // was queued, even though wrap has not consumed the chunk yet.
+        let output_boundary = 2;
+        let verification = || PendingVerification {
+            delivery_id: DeliveryId::new("delivery-before-ack"),
+            event_id: EventId::new("event-before-ack"),
+            expected_echo: injection.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "reviewer".to_string(),
+            body: "review this".to_string(),
+            target: MessageTarget::new("claude-worker"),
+        };
+        let mut throttle = ThrottleState::default();
+        let mut pending_verifications = VecDeque::new();
+        let mut pending_activities = VecDeque::new();
+
+        output.push_output(2, format!("stale composer echo: {injection}").as_bytes());
+
+        let stale = queue_or_confirm_wrap_verification(
+            verification(),
+            &output,
+            None,
+            &mut throttle,
+            &mut pending_verifications,
+            &mut pending_activities,
+        );
+        assert!(!stale, "a retained pre-submission echo is stale");
+        pending_verifications.clear();
+
+        output.push_output(
+            3,
+            format!("\nnew composer echo: {injection}\nTool: Write(review.md)").as_bytes(),
+        );
+        let confirmed = queue_or_confirm_wrap_verification(
+            verification(),
+            &output,
+            Some(&ActivityDetector::for_cli("claude")),
+            &mut throttle,
+            &mut pending_verifications,
+            &mut pending_activities,
+        );
+
+        assert!(confirmed, "the buffered echo must not wait for new output");
+        assert!(
+            pending_verifications.is_empty(),
+            "an already-observed echo must not be queued to time out"
+        );
+        assert!(
+            pending_activities.is_empty(),
+            "already-buffered activity must be consumed immediately"
+        );
+    }
 
     #[test]
     fn stdin_drains_in_order_when_queue_accepts() {

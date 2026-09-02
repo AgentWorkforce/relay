@@ -21,6 +21,24 @@ use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(unix)]
+use std::{
+    collections::VecDeque,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+};
+#[cfg(windows)]
+use std::{
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    time::Instant,
+};
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{
+        DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE,
+    },
+    System::{Threading::GetCurrentProcess, IO::CancelSynchronousIo},
+};
+
 /// Upper bound on queued PTY writes (both terminal-query replies from
 /// alacritty AND user/injection writes from `PtySession::write_all`).
 /// Bounded so a misbehaving child that floods query sequences while the
@@ -29,6 +47,8 @@ use tokio::sync::{mpsc, oneshot};
 /// healthy interaction sees fewer than a handful of pending writes at
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
+#[cfg(windows)]
+const OUTPUT_ORDERING_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Why [`PtySession::submit_write`] refused to enqueue.
 ///
@@ -56,6 +76,18 @@ pub enum PtyWriteSubmitError {
     /// The drainer thread is gone (PTY teardown). Not retryable.
     #[error("pty write queue is closed (drainer exited)")]
     DrainerExited,
+
+    /// The output reader could not yield ordering promptly enough to admit a
+    /// verified write. The write was not queued, so callers may retry it.
+    #[cfg(windows)]
+    #[error("timed out acquiring pty output ordering for verified write")]
+    OrderingTimeout,
+
+    /// The Windows reader thread could not be interrupted. The write was not
+    /// queued, so callers may retry it after surfacing the platform failure.
+    #[cfg(windows)]
+    #[error("failed to interrupt pty reader for verified write: {0}")]
+    OrderingWake(io::Error),
 }
 
 /// Single FIFO command for the PTY write drainer. Both query-reply
@@ -91,8 +123,22 @@ enum WriteMsg {
         /// atoms. The sleeps run on the drainer thread, never on an async
         /// task.
         pace: Duration,
+        /// Optional second write that remains part of this FIFO entry. The
+        /// drainer waits `delay` after the primary bytes are flushed, then
+        /// writes and flushes `bytes` before acknowledging the command.
+        ///
+        /// This is intentionally not represented as a second `WriteMsg`: some
+        /// TUIs need a real pause between pasted text and its submit key, while
+        /// Relay still must prevent a terminal reply or human keystroke from
+        /// splicing into that boundary.
+        followup: Option<FollowupWrite>,
         ack: oneshot::Sender<io::Result<()>>,
     },
+}
+
+struct FollowupWrite {
+    delay: Duration,
+    bytes: Vec<u8>,
 }
 
 /// Length of the next indivisible write "atom" at the front of `bytes`.
@@ -298,6 +344,41 @@ impl GridSize {
 /// prefer a several-minute grace over a 30s false positive.
 pub const DEFAULT_NO_PID_EXIT_THRESHOLD: u32 = 60;
 
+/// One raw PTY read tagged at the producer, before it enters the async queue.
+///
+/// The sequence lets consumers distinguish output that was already read (but
+/// still queued) when they submit input from output read after that submission.
+/// Assigning it in the reader thread avoids a consumer-side `select!` race.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PtyOutput {
+    bytes: Vec<u8>,
+    sequence: u64,
+}
+
+impl PtyOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+impl std::ops::Deref for PtyOutput {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+impl AsRef<[u8]> for PtyOutput {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
     /// Single producer side of the FIFO write queue. All PTY writes —
@@ -350,6 +431,95 @@ pub struct PtySession {
     /// buffered stream chunks the snapshot already reflects and apply only
     /// the ones that came after.
     consumed_offset: Arc<AtomicU64>,
+    /// Sequence assigned as soon as the reader obtains a PTY output chunk,
+    /// before grid parsing or async queue admission. Consumers sample this
+    /// producer watermark when submitting input so output that was already
+    /// queued cannot be mistaken for the input's echo.
+    output_sequence: Arc<AtomicU64>,
+    /// Linearizes producer sequence assignment with verified input queue
+    /// admission. Without this lock, output could be assigned a new sequence
+    /// after a caller sampled the watermark but before its write was queued.
+    output_order: Arc<Mutex<()>>,
+    /// Unix readiness probe shared with verified-write admission. Admission
+    /// counts buffered bytes through this descriptor while holding
+    /// `output_order`, reserving their pre-boundary sequence without waiting
+    /// for the reader or downstream consumer.
+    #[cfg(unix)]
+    poll_fd: Arc<OwnedFd>,
+    /// Byte-accurate sequence reservations for output already buffered in the
+    /// Unix PTY at a verified-write boundary. The reader consumes these later,
+    /// so admission never depends on downstream output-channel capacity.
+    #[cfg(unix)]
+    unix_output_reservations: Arc<Mutex<UnixOutputReservations>>,
+    /// Set while a Windows verified write is waiting for `output_order`.
+    /// A cancelled ConPTY reader observes this before starting another
+    /// blocking ReadFile, yielding the lock to the submitter instead.
+    #[cfg(windows)]
+    write_admission_pending: Arc<AtomicBool>,
+    /// Duplicated native handle for the reader thread. Windows verified writes
+    /// use it to interrupt an idle synchronous ConPTY read before acquiring
+    /// `output_order`; the handle never exposes the PTY itself.
+    #[cfg(windows)]
+    reader_cancel: ReaderCancel,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct UnixOutputReservation {
+    remaining: usize,
+    sequence: u64,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct UnixOutputReservations {
+    entries: VecDeque<UnixOutputReservation>,
+    total_bytes: usize,
+}
+
+#[cfg(windows)]
+struct ReaderCancel {
+    thread_handle: OwnedHandle,
+}
+
+#[cfg(windows)]
+impl ReaderCancel {
+    fn duplicate(reader_thread: &thread::JoinHandle<()>) -> io::Result<Self> {
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicate: HANDLE = std::ptr::null_mut();
+        let ok = unsafe {
+            DuplicateHandle(
+                process,
+                reader_thread.as_raw_handle() as HANDLE,
+                process,
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            // SAFETY: `DuplicateHandle` returned a new owned thread handle.
+            thread_handle: unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) },
+        })
+    }
+
+    fn interrupt_read(&self) -> io::Result<()> {
+        let ok = unsafe { CancelSynchronousIo(self.thread_handle.as_raw_handle() as HANDLE) };
+        if ok != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
+            // The reader is between synchronous calls. It will release (or
+            // reacquire) the ordering lock promptly, so retrying is safe.
+            return Ok(());
+        }
+        Err(error)
+    }
 }
 
 fn needs_sane_term_override() -> bool {
@@ -481,16 +651,33 @@ fn drain_write_queue<W: Write>(
                     break;
                 }
             }
-            WriteMsg::UserInput { bytes, pace, ack } => {
-                if bytes.is_empty() {
+            WriteMsg::UserInput {
+                bytes,
+                pace,
+                followup,
+                ack,
+            } => {
+                if bytes.is_empty() && followup.as_ref().is_none_or(|part| part.bytes.is_empty()) {
                     let _ = ack.send(Ok(()));
                     continue;
                 }
-                let result = if pace.is_zero() {
+                let primary_result = if bytes.is_empty() {
+                    Ok(())
+                } else if pace.is_zero() {
                     writer.write_all(&bytes).and_then(|_| writer.flush())
                 } else {
                     write_paced(&mut writer, &bytes, pace)
                 };
+                let result = primary_result.and_then(|_| {
+                    let Some(part) = followup else {
+                        return Ok(());
+                    };
+                    if part.bytes.is_empty() {
+                        return Ok(());
+                    }
+                    thread::sleep(part.delay);
+                    writer.write_all(&part.bytes).and_then(|_| writer.flush())
+                });
                 match result {
                     Ok(()) => {
                         // Confirmed child-side activity: the bytes reached the
@@ -518,11 +705,13 @@ fn enqueue_user_write(
     _no_pid_alive_checks: &AtomicU32,
     bytes: Vec<u8>,
     pace: Duration,
+    followup: Option<FollowupWrite>,
 ) -> Result<oneshot::Receiver<io::Result<()>>> {
     let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
     match write_tx.try_send(WriteMsg::UserInput {
         bytes,
         pace,
+        followup,
         ack: ack_tx,
     }) {
         Ok(()) => Ok(ack_rx),
@@ -537,13 +726,258 @@ fn enqueue_user_write(
     }
 }
 
+/// Read one output chunk and assign its producer sequence while holding the
+/// same ordering lock used by verified write admission.
+///
+/// The callback is deliberately inside the critical section, immediately
+/// after the bytes have been copied from the PTY and before they are tagged.
+/// Production passes a no-op; deterministic tests pause there to prove a
+/// submitter cannot sample a boundary in the old read-complete/pre-tag gap.
+#[cfg(any(windows, test))]
+fn read_and_tag_output<R, F>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_order: &Mutex<()>,
+    output_sequence: &AtomicU64,
+    after_read: F,
+) -> io::Result<Option<(usize, u64)>>
+where
+    R: Read + ?Sized,
+    F: FnOnce(usize),
+{
+    let _order_guard = output_order.lock();
+    read_and_tag_output_locked(reader, buf, output_sequence, after_read)
+}
+
+/// Variant used when the caller already owns `output_order`.
+#[cfg(any(windows, test))]
+fn read_and_tag_output_locked<R, F>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_sequence: &AtomicU64,
+    after_read: F,
+) -> io::Result<Option<(usize, u64)>>
+where
+    R: Read + ?Sized,
+    F: FnOnce(usize),
+{
+    let n = reader.read(buf)?;
+    after_read(n);
+    if n == 0 {
+        return Ok(None);
+    }
+    let sequence = output_sequence
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
+    Ok(Some((n, sequence)))
+}
+
+#[cfg(unix)]
+fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
+    let mut descriptor = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
+        if ready > 0 {
+            return Ok(());
+        }
+        if ready == 0 {
+            continue;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn pty_readable_bytes(fd: &OwnedFd) -> io::Result<usize> {
+    let mut available: libc::c_int = 0;
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::FIONREAD, &mut available) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(available.max(0) as usize)
+}
+
+/// Reserve one producer sequence for every byte already buffered in the Unix
+/// PTY but not covered by an earlier boundary. The caller holds
+/// `output_order`, so the reader cannot consume bytes while the kernel count
+/// is compared with outstanding reservations.
+#[cfg(unix)]
+fn reserve_readable_output(
+    poll_fd: &OwnedFd,
+    reservations: &Mutex<UnixOutputReservations>,
+    output_sequence: &AtomicU64,
+) -> io::Result<()> {
+    let available = pty_readable_bytes(poll_fd)?;
+    let mut reservations = reservations.lock();
+    if available > reservations.total_bytes {
+        let sequence = output_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let remaining = available - reservations.total_bytes;
+        reservations.entries.push_back(UnixOutputReservation {
+            remaining,
+            sequence,
+        });
+        reservations.total_bytes += remaining;
+    }
+    Ok(())
+}
+
+/// Read one Unix output chunk and apply any byte reservations created by
+/// verified-write admission. A read can straddle the old/new boundary, so the
+/// returned ranges split the buffer precisely instead of assigning one
+/// sequence to the whole read.
+#[cfg(unix)]
+fn read_and_tag_unix_output<R: Read + ?Sized>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_order: &Mutex<()>,
+    reservations: &Mutex<UnixOutputReservations>,
+    output_sequence: &AtomicU64,
+) -> io::Result<Option<Vec<(usize, usize, u64)>>> {
+    let _order_guard = output_order.lock();
+    let n = reader.read(buf)?;
+    if n == 0 {
+        return Ok(None);
+    }
+
+    let mut tagged = Vec::new();
+    let mut offset = 0;
+    let mut reservations = reservations.lock();
+    while offset < n {
+        let Some(front) = reservations.entries.front_mut() else {
+            break;
+        };
+        let take = front.remaining.min(n - offset);
+        let sequence = front.sequence;
+        front.remaining -= take;
+        let finished = front.remaining == 0;
+        reservations.total_bytes -= take;
+        if finished {
+            reservations.entries.pop_front();
+        }
+        tagged.push((offset, offset + take, sequence));
+        offset += take;
+    }
+    drop(reservations);
+
+    if offset < n {
+        let sequence = output_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        tagged.push((offset, n, sequence));
+    }
+    Ok(Some(tagged))
+}
+
+#[cfg(unix)]
+fn duplicate_poll_fd_cloexec(fd: libc::c_int) -> io::Result<OwnedFd> {
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate >= 0 {
+        // SAFETY: `F_DUPFD_CLOEXEC` returned a new descriptor owned here.
+        return Ok(unsafe { OwnedFd::from_raw_fd(duplicate) });
+    }
+
+    let atomic_error = io::Error::last_os_error();
+    if atomic_error.raw_os_error() != Some(libc::EINVAL) {
+        return Err(atomic_error);
+    }
+
+    // Older kernels can reject F_DUPFD_CLOEXEC even when libc exposes it.
+    // Fall back to dup+fcntl, taking ownership immediately so every later
+    // error path closes the duplicate instead of leaking it.
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `dup` returned a new descriptor owned here. `OwnedFd` closes it
+    // if either fcntl below fails.
+    let duplicate = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe {
+        libc::fcntl(
+            duplicate.as_raw_fd(),
+            libc::F_SETFD,
+            flags | libc::FD_CLOEXEC,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(duplicate)
+}
+
+#[cfg(windows)]
+fn read_was_cancelled(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
+}
+
 impl PtySession {
+    fn enqueue_write_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup: Option<FollowupWrite>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        #[cfg(unix)]
+        let _order_guard = {
+            let guard = self.output_order.lock();
+            reserve_readable_output(
+                &self.poll_fd,
+                &self.unix_output_reservations,
+                &self.output_sequence,
+            )?;
+            guard
+        };
+
+        #[cfg(windows)]
+        let order_guard = {
+            self.write_admission_pending.store(true, Ordering::Release);
+            let deadline = Instant::now() + OUTPUT_ORDERING_TIMEOUT;
+            let result = loop {
+                if let Some(guard) = self.output_order.try_lock() {
+                    break Ok(guard);
+                }
+                if let Err(error) = self.reader_cancel.interrupt_read() {
+                    break Err(anyhow::Error::new(PtyWriteSubmitError::OrderingWake(error)));
+                }
+                if Instant::now() >= deadline {
+                    break Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
+                }
+                thread::yield_now();
+            };
+            self.write_admission_pending.store(false, Ordering::Release);
+            result
+        };
+        #[cfg(windows)]
+        let _order_guard = order_guard?;
+
+        let boundary = self.output_sequence.load(Ordering::Acquire);
+        let ack = enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            followup,
+        )?;
+        Ok((ack, boundary))
+    }
+
     pub fn spawn(
         command: &str,
         args: &[String],
         rows: u16,
         cols: u16,
-    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+    ) -> Result<(Self, mpsc::Receiver<PtyOutput>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -569,6 +1003,16 @@ impl PtySession {
             .spawn_command(cmd)
             .context("failed to spawn wrapped command")?;
         let child_pid = child.process_id();
+
+        #[cfg(unix)]
+        let poll_fd = Arc::new({
+            let master_fd = pair
+                .master
+                .as_raw_fd()
+                .context("pty master does not expose a pollable descriptor")?;
+            duplicate_poll_fd_cloexec(master_fd)
+                .context("failed to duplicate pty descriptor for readiness polling")?
+        });
 
         let mut reader = pair
             .master
@@ -609,40 +1053,105 @@ impl PtySession {
         let processor_clone = processor.clone();
         let consumed_offset = Arc::new(AtomicU64::new(0));
         let consumed_offset_reader = consumed_offset.clone();
-        thread::spawn(move || {
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let output_sequence_reader = output_sequence.clone();
+        let output_order = Arc::new(Mutex::new(()));
+        let output_order_reader = output_order.clone();
+        #[cfg(unix)]
+        let poll_fd_reader = poll_fd.clone();
+        #[cfg(unix)]
+        let unix_output_reservations = Arc::new(Mutex::new(UnixOutputReservations::default()));
+        #[cfg(unix)]
+        let unix_output_reservations_reader = unix_output_reservations.clone();
+        #[cfg(windows)]
+        let write_admission_pending = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        let write_admission_pending_reader = write_admission_pending.clone();
+        let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        {
-                            // Lock order: processor THEN term. `resize`
-                            // takes the same order; matching prevents
-                            // deadlock and ensures bytes are never
-                            // parsed against stale dimensions.
-                            //
-                            // The listener inside `term` may send bytes
-                            // onto the writeback channel while we hold
-                            // these locks — that send is non-blocking
-                            // (std::mpsc), so no deadlock with the
-                            // writer lock taken by the drainer thread.
-                            let mut processor_guard = processor_clone.lock();
-                            let mut term_guard = term_clone.lock();
-                            processor_guard.advance(&mut *term_guard, &buf[..n]);
-                            // Publish the grid's consumed byte offset while
-                            // still holding the term lock, so a concurrent
-                            // snapshot reader (which also locks `term`) reads
-                            // the offset that matches the grid it renders.
-                            consumed_offset_reader.fetch_add(n as u64, Ordering::Release);
-                        }
-                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
+                #[cfg(unix)]
+                if wait_for_pty_readable(&poll_fd_reader).is_err() {
+                    break;
+                }
+
+                #[cfg(unix)]
+                let tagged = match read_and_tag_unix_output(
+                    &mut *reader,
+                    &mut buf,
+                    &output_order_reader,
+                    &unix_output_reservations_reader,
+                    &output_sequence_reader,
+                ) {
+                    Ok(Some(tagged)) => tagged,
+                    Ok(None) | Err(_) => break,
+                };
+
+                #[cfg(windows)]
+                while write_admission_pending_reader.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+
+                #[cfg(windows)]
+                let tagged = read_and_tag_output(
+                    &mut *reader,
+                    &mut buf,
+                    &output_order_reader,
+                    &output_sequence_reader,
+                    |_| {},
+                );
+
+                #[cfg(windows)]
+                let tagged = match tagged {
+                    Err(error) if read_was_cancelled(&error) => continue,
+                    Ok(Some((n, sequence))) => vec![(0, n, sequence)],
+                    Ok(None) | Err(_) => break,
+                };
+
+                for (start, end, sequence) in tagged {
+                    let bytes = &buf[start..end];
+                    // Lock order: processor THEN term. `resize`
+                    // takes the same order; matching prevents
+                    // deadlock and ensures bytes are never
+                    // parsed against stale dimensions. Parsing and the
+                    // bounded output send stay outside `output_order`, so
+                    // backpressure cannot block verified write admission.
+                    //
+                    // The listener inside `term` may send bytes
+                    // onto the writeback channel while we hold
+                    // these locks — that send is non-blocking
+                    // (std::mpsc), so no deadlock with the
+                    // writer lock taken by the drainer thread.
+                    let mut processor_guard = processor_clone.lock();
+                    let mut term_guard = term_clone.lock();
+                    processor_guard.advance(&mut *term_guard, bytes);
+                    // Publish the grid's consumed byte offset while
+                    // still holding the term lock, so a concurrent
+                    // snapshot reader (which also locks `term`) reads
+                    // the offset that matches the grid it renders.
+                    consumed_offset_reader.fetch_add(bytes.len() as u64, Ordering::Release);
+                    drop(term_guard);
+                    drop(processor_guard);
+
+                    if tx
+                        .blocking_send(PtyOutput {
+                            bytes: bytes.to_vec(),
+                            sequence,
+                        })
+                        .is_err()
+                    {
+                        return;
                     }
-                    Err(_) => break,
                 }
             }
         });
+
+        #[cfg(windows)]
+        let reader_cancel = ReaderCancel::duplicate(&reader_thread)
+            .context("failed to duplicate pty reader thread handle")?;
+        // Detach the reader after retaining only the Windows cancellation
+        // handle. PTY/session ownership controls its lifetime as before.
+        drop(reader_thread);
 
         Ok((
             Self {
@@ -656,6 +1165,16 @@ impl PtySession {
                 term,
                 processor,
                 consumed_offset,
+                output_sequence,
+                output_order,
+                #[cfg(unix)]
+                poll_fd,
+                #[cfg(unix)]
+                unix_output_reservations,
+                #[cfg(windows)]
+                write_admission_pending,
+                #[cfg(windows)]
+                reader_cancel,
             },
             rx,
         ))
@@ -695,6 +1214,7 @@ impl PtySession {
             &self.no_pid_alive_checks,
             bytes,
             Duration::ZERO,
+            None,
         )
     }
 
@@ -721,7 +1241,67 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
     ) -> Result<oneshot::Receiver<io::Result<()>>> {
-        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace)
+        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace, None)
+    }
+
+    /// Queue a paced input atomically with the receive-time output watermark.
+    ///
+    /// The returned boundary is the latest producer sequence that precedes
+    /// this queue admission. Output carrying a sequence at or below it cannot
+    /// be evidence that this write reached the child, even if that output was
+    /// still waiting in the async receive queue when the write was submitted.
+    pub fn submit_write_paced_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(bytes, pace, None)
+    }
+
+    /// Submit a paced primary payload followed by a delayed second write as
+    /// one indivisible FIFO command.
+    ///
+    /// The follow-up is written and flushed only after the primary payload is
+    /// confirmed flushed and `followup_delay` has elapsed. No terminal reply,
+    /// later input, or other producer can splice bytes into that pause. This is
+    /// useful for TUIs that distinguish a pasted multiline body from a submit
+    /// key only when the key arrives in a later read.
+    pub fn submit_write_paced_with_followup(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup_delay: Duration,
+        followup_bytes: Vec<u8>,
+    ) -> Result<oneshot::Receiver<io::Result<()>>> {
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            Some(FollowupWrite {
+                delay: followup_delay,
+                bytes: followup_bytes,
+            }),
+        )
+    }
+
+    /// Queue a compound paced write atomically with its receive-time output
+    /// watermark. See [`submit_write_paced_with_output_boundary`].
+    pub fn submit_write_paced_with_followup_and_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup_delay: Duration,
+        followup_bytes: Vec<u8>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(
+            bytes,
+            pace,
+            Some(FollowupWrite {
+                delay: followup_delay,
+                bytes: followup_bytes,
+            }),
+        )
     }
 
     /// Submit bytes and await the drainer's write result. Convenience
@@ -889,6 +1469,7 @@ impl PtySession {
         // `DEFAULT_NO_PID_EXIT_THRESHOLD`) so a silently-thinking child is not
         // killed mid-task; genuine exits are caught promptly by the PTY reader
         // EOF path, independent of this counter.
+        #[cfg(unix)]
         let no_pid_threshold = self.no_pid_exit_threshold;
 
         // Fast path: already known to be reaped.
@@ -1076,16 +1657,36 @@ impl PtySession {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::{
-        resolve_command_path, resolve_command_path_with, GridSize, PtySession, PtyWriteSubmitError,
+        duplicate_poll_fd_cloexec, read_and_tag_unix_output, reserve_readable_output,
+        resolve_command_path, resolve_command_path_with, wait_for_pty_readable,
+        UnixOutputReservations,
+    };
+    use super::{
+        read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
         DEFAULT_NO_PID_EXIT_THRESHOLD,
     };
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
-    use std::env;
-    use tokio::time::{timeout, Duration};
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixStream;
+    use std::{
+        collections::VecDeque,
+        env,
+        io::{self, Cursor, Read},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    use tokio::{
+        sync::mpsc,
+        time::{timeout, Duration},
+    };
 
     /// Build a standalone Term + Processor pair the same way `spawn`
     /// does, so we can drive the parser with recorded byte streams
@@ -1229,6 +1830,367 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verified_write_boundary_includes_output_still_queued_for_consumer() {
+        eprintln!("relay-pty-live-proof stage=spawn-start");
+        #[cfg(unix)]
+        let script = "printf 'same-echo\\n'; IFS= read -r line; printf '%s\\n' \"$line\"";
+        #[cfg(unix)]
+        let (pty, mut rx) = PtySession::spawn("sh", &["-c".into(), script.into()], 24, 80).unwrap();
+        #[cfg(unix)]
+        let submitted = b"same-echo\n".to_vec();
+
+        #[cfg(windows)]
+        let (pty, mut rx) = PtySession::spawn(
+            "cmd.exe",
+            &[
+                "/D".into(),
+                "/Q".into(),
+                "/V:ON".into(),
+                "/C".into(),
+                "echo same-echo&set /P line=&echo !line!".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        // Enter is carriage return on a Windows ConPTY input stream.
+        #[cfg(windows)]
+        let submitted = b"same-echo\r".to_vec();
+        #[cfg(unix)]
+        let harness_timeout = Duration::from_secs(2);
+        // Windows hosted runners can be cold; cmd.exe is intentionally used
+        // instead of PowerShell, but retain a bounded startup allowance.
+        #[cfg(windows)]
+        let harness_timeout = Duration::from_secs(10);
+        eprintln!("relay-pty-live-proof stage=spawned");
+
+        let proof = timeout(Duration::from_secs(30), async {
+            // Do not drain rx. Wait until the intended initial marker has
+            // reached the parsed grid, rather than accepting an unrelated
+            // startup VT chunk merely because it incremented
+            // `output_sequence`.
+            timeout(harness_timeout, async {
+                while !pty.screen_text().contains("same-echo") {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "initial same-echo marker did not reach the parsed grid".to_string())?;
+            eprintln!("relay-pty-live-proof stage=parsed-marker");
+
+            // On Windows, the reader holds `output_order` across its blocking
+            // ConPTY ReadFile. Requiring the lock to be unavailable proves
+            // this submission exercises CancelSynchronousIo rather than
+            // slipping into the short gap before the reader starts its next
+            // read.
+            #[cfg(windows)]
+            timeout(harness_timeout, async {
+                while pty.output_order.try_lock().is_some() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "Windows reader never blocked in ReadFile".to_string())?;
+            #[cfg(windows)]
+            eprintln!("relay-pty-live-proof stage=blocked-read-proven");
+            #[cfg(unix)]
+            eprintln!("relay-pty-live-proof stage=reader-idle-proven");
+
+            // The child is idle in `read` here. Verified submission must wake
+            // an idle Windows ConPTY reader (and must not be serialized behind
+            // Unix readiness polling), while retaining the synchronous API.
+            let submitted_at = std::time::Instant::now();
+            let (ack, boundary) = pty
+                .submit_write_paced_with_output_boundary(submitted, Duration::ZERO)
+                .map_err(|error| format!("verified write admission failed: {error}"))?;
+            if submitted_at.elapsed() >= Duration::from_secs(1) {
+                return Err("verified write admission stalled behind an idle PTY read".to_string());
+            }
+            eprintln!(
+                "relay-pty-live-proof stage=submit-admitted boundary={boundary} elapsed_ms={}",
+                submitted_at.elapsed().as_millis()
+            );
+
+            match timeout(harness_timeout, ack).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => return Err(format!("PTY write failed: {error}")),
+                Ok(Err(error)) => return Err(format!("PTY write acknowledgement lost: {error}")),
+                Err(_) => return Err("PTY write acknowledgement timed out".to_string()),
+            }
+            eprintln!("relay-pty-live-proof stage=write-ack");
+
+            let mut saw_stale = false;
+            let mut saw_fresh = false;
+            // Deliberately no per-receive timeout: the outer watchdog is one
+            // absolute bound that cannot be renewed by endless control chunks.
+            while let Some(chunk) = rx.recv().await {
+                let text = String::from_utf8_lossy(chunk.as_bytes());
+                if text.contains("same-echo") {
+                    if chunk.sequence() <= boundary {
+                        saw_stale = true;
+                        eprintln!(
+                            "relay-pty-live-proof stage=stale-output sequence={} boundary={boundary}",
+                            chunk.sequence()
+                        );
+                    } else {
+                        saw_fresh = true;
+                        eprintln!(
+                            "relay-pty-live-proof stage=fresh-output sequence={} boundary={boundary}",
+                            chunk.sequence()
+                        );
+                    }
+                }
+                if saw_stale && saw_fresh {
+                    break;
+                }
+            }
+
+            if !saw_stale {
+                return Err(
+                    "forced pre-submission chunk was not at or below the boundary".to_string(),
+                );
+            }
+            if !saw_fresh {
+                return Err("child echo was not above the returned boundary".to_string());
+            }
+            Ok::<(), String>(())
+        })
+        .await;
+
+        eprintln!("relay-pty-live-proof stage=shutdown-start");
+        drop(rx);
+        // `shutdown` uses a bounded two-second post-kill wait. The CI step's
+        // own two-minute timeout remains the outermost fail-safe for platform
+        // calls (such as TerminateProcess) that the test cannot preempt.
+        let shutdown = pty.shutdown();
+        eprintln!("relay-pty-live-proof stage=shutdown-complete result={shutdown:?}");
+        shutdown.expect("live proof PTY should shut down cleanly");
+
+        match proof {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("live PTY boundary proof failed: {error}"),
+            Err(_) => panic!("live PTY boundary proof exceeded 30-second watchdog"),
+        }
+    }
+
+    #[test]
+    fn completed_read_is_tagged_before_verified_write_can_sample_boundary() {
+        let output_order = Arc::new(Mutex::new(()));
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let (copied_tx, copied_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+
+        let reader_order = output_order.clone();
+        let reader_sequence = output_sequence.clone();
+        let reader = std::thread::spawn(move || {
+            let mut source = Cursor::new(b"same-echo".to_vec());
+            let mut buf = [0u8; 32];
+            read_and_tag_output(
+                &mut source,
+                &mut buf,
+                &reader_order,
+                &reader_sequence,
+                |n| {
+                    assert_eq!(n, b"same-echo".len());
+                    copied_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
+            .unwrap()
+            .unwrap()
+        });
+        copied_rx.recv().unwrap();
+
+        let (write_tx, write_rx) = std_mpsc::sync_channel(WRITE_QUEUE_DEPTH);
+        let no_pid = Arc::new(AtomicU32::new(0));
+        let submit_order = output_order.clone();
+        let submit_sequence = output_sequence.clone();
+        let (submit_started_tx, submit_started_rx) = std_mpsc::channel();
+        let (submitted_tx, submitted_rx) = std_mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            submit_started_tx.send(()).unwrap();
+            let _guard = submit_order.lock();
+            let boundary = submit_sequence.load(Ordering::Acquire);
+            let ack = enqueue_user_write(
+                &write_tx,
+                &no_pid,
+                b"same-echo\n".to_vec(),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+            submitted_tx.send((boundary, ack)).unwrap();
+        });
+        submit_started_rx.recv().unwrap();
+        assert!(
+            submitted_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "verified submission overtook bytes already copied by the reader"
+        );
+
+        release_tx.send(()).unwrap();
+        let (stale_len, stale_sequence) = reader.join().unwrap();
+        assert_eq!(stale_len, b"same-echo".len());
+        let (boundary, _ack) = submitted_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("submitter proceeds after stale output is tagged");
+        submitter.join().unwrap();
+        assert!(stale_sequence <= boundary);
+
+        let mut fresh = Cursor::new(b"same-echo".to_vec());
+        let mut fresh_buf = [0u8; 32];
+        let (_, fresh_sequence) = read_and_tag_output(
+            &mut fresh,
+            &mut fresh_buf,
+            &output_order,
+            &output_sequence,
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert!(fresh_sequence > boundary);
+        assert!(matches!(
+            write_rx.recv().unwrap(),
+            WriteMsg::UserInput { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_output_is_reserved_before_unix_boundary_admission() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"stale").unwrap();
+
+        let poll_fd = duplicate_poll_fd_cloexec(reader.as_raw_fd()).unwrap();
+        let output_order = Mutex::new(());
+        let reservations = Mutex::new(UnixOutputReservations::default());
+        let output_sequence = AtomicU64::new(0);
+
+        // Reproduce the original poll-to-lock gap, but deliberately do not
+        // start the reader afterward: this models a reader blocked on a full
+        // downstream channel. Admission must reserve the kernel-buffered
+        // bytes immediately rather than waiting for consumer progress.
+        wait_for_pty_readable(&poll_fd).unwrap();
+        let admitted_at = std::time::Instant::now();
+        let guard = output_order.lock();
+        reserve_readable_output(&poll_fd, &reservations, &output_sequence).unwrap();
+        let boundary = output_sequence.load(Ordering::Acquire);
+        drop(guard);
+        assert!(
+            admitted_at.elapsed() < std::time::Duration::from_millis(100),
+            "kernel-buffered output reservation depended on downstream drain"
+        );
+
+        // Model a later kernel read that coalesces the reserved stale bytes
+        // with fresh post-write output. The helper must split the read at the
+        // exact reserved-byte boundary.
+        let mut combined = Cursor::new(b"stalefresh".to_vec());
+        let mut buf = [0u8; 16];
+        let tagged = read_and_tag_unix_output(
+            &mut combined,
+            &mut buf,
+            &output_order,
+            &reservations,
+            &output_sequence,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tagged,
+            vec![
+                (0, b"stale".len(), boundary),
+                (b"stale".len(), b"stalefresh".len(), boundary + 1),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polling_descriptor_is_created_close_on_exec() {
+        let source = std::fs::File::open("/dev/null").unwrap();
+        let duplicate = duplicate_poll_fd_cloexec(source.as_raw_fd()).unwrap();
+        assert_ne!(duplicate.as_raw_fd(), source.as_raw_fd());
+
+        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "F_GETFD failed: {}", io::Error::last_os_error());
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "polling descriptor must not leak into unrelated child processes"
+        );
+    }
+
+    #[test]
+    fn output_channel_backpressure_does_not_hold_verified_write_ordering() {
+        struct ChunkReader(VecDeque<Vec<u8>>);
+        impl Read for ChunkReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let Some(chunk) = self.0.pop_front() else {
+                    return Ok(0);
+                };
+                buf[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+
+        let output_order = Arc::new(Mutex::new(()));
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (second_tagged_tx, second_tagged_rx) = std_mpsc::channel();
+        let reader_order = output_order.clone();
+        let reader_sequence = output_sequence.clone();
+        let reader = std::thread::spawn(move || {
+            let mut source = ChunkReader(VecDeque::from([b"one".to_vec(), b"two".to_vec()]));
+            let mut buf = [0u8; 8];
+            for expected in [b"one".as_slice(), b"two".as_slice()] {
+                let (n, sequence) = read_and_tag_output(
+                    &mut source,
+                    &mut buf,
+                    &reader_order,
+                    &reader_sequence,
+                    |_| {},
+                )
+                .unwrap()
+                .unwrap();
+                if sequence == 2 {
+                    second_tagged_tx.send(()).unwrap();
+                }
+                output_tx
+                    .blocking_send(PtyOutput {
+                        bytes: buf[..n].to_vec(),
+                        sequence,
+                    })
+                    .unwrap();
+                assert_eq!(&buf[..n], expected);
+            }
+        });
+
+        second_tagged_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second chunk is tagged before bounded output send blocks");
+        let admitted_at = std::time::Instant::now();
+        let boundary = {
+            let _guard = output_order.lock();
+            output_sequence.load(Ordering::Acquire)
+        };
+        assert_eq!(boundary, 2);
+        assert!(
+            admitted_at.elapsed() < std::time::Duration::from_millis(100),
+            "output channel backpressure held the verified-write ordering lock"
+        );
+
+        let first = output_rx.blocking_recv().unwrap();
+        let second = output_rx.blocking_recv().unwrap();
+        reader.join().unwrap();
+        assert_eq!((first.sequence(), first.as_bytes()), (1, b"one".as_slice()));
+        assert_eq!(
+            (second.sequence(), second.as_bytes()),
+            (2, b"two".as_slice())
+        );
+    }
+
+    #[tokio::test]
     async fn live_pty_grid_size_reflects_spawn_dimensions() {
         let (pty, _rx) = PtySession::spawn("sleep", &["1".into()], 24, 80).unwrap();
         assert_eq!(pty.grid_size(), (24, 80));
@@ -1367,7 +2329,9 @@ mod tests {
     // bytes that match real grid state — replacing the old hand-rolled
     // `TerminalQueryParser` that hardcoded `1;1` for CPR.
 
-    use super::{enqueue_user_write, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use super::{
+        enqueue_user_write, FollowupWrite, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH,
+    };
     use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as std_mpsc;
     use std::sync::Arc;
@@ -1450,6 +2414,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"injection-body".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx_1,
         })
         .unwrap();
@@ -1458,6 +2423,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"\r".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx_2,
         })
         .unwrap();
@@ -1532,6 +2498,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"should-fail\n".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1570,6 +2537,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"flush-should-fail\n".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1799,8 +2767,14 @@ mod tests {
             )
         });
 
-        let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec(), Duration::ZERO)
-            .expect("submit path accepts the write");
+        let ack = enqueue_user_write(
+            &tx,
+            counter.as_ref(),
+            b"queued\n".to_vec(),
+            Duration::ZERO,
+            None,
+        )
+        .expect("submit path accepts the write");
         // Block until the drainer has dequeued the message and is wedged inside
         // `write` — the write is now genuinely picked up but not confirmed.
         entered_rx
@@ -1980,6 +2954,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"go\x1b[A\r".to_vec(),
             pace: StdDuration::from_millis(1),
+            followup: None,
             ack: ack_tx,
         })
         .expect("queue accepts paced user input");
@@ -1993,6 +2968,126 @@ mod tests {
             out.lock().unwrap().as_slice(),
             b"go\x1b[A\r",
             "paced write must deliver every byte in order"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// A delayed follow-up must be a distinct PTY write while remaining inside
+    /// the same FIFO command. Claude Code needs this shape for multiline task
+    /// submission: body first, then Enter after the paste boundary settles.
+    #[tokio::test]
+    async fn drainer_keeps_delayed_followup_atomic_and_acks_both_writes() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"multiline\nbody".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::from_millis(5),
+                bytes: b"\r".to_vec(),
+            }),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the compound write");
+        tx.send(WriteMsg::Reply(b"terminal-reply".to_vec()))
+            .expect("queue accepts a following terminal reply");
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer acks the compound write")
+            .expect("ack sender not dropped");
+        assert!(
+            ack.is_ok(),
+            "both writes in the compound command must succeed"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            chunks.lock().unwrap().as_slice(),
+            [
+                b"multiline\nbody".to_vec(),
+                b"\r".to_vec(),
+                b"terminal-reply".to_vec(),
+            ],
+            "the follow-up is a distinct write and no later FIFO item can splice before it"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_followup_failure_rejects_the_compound_write() {
+        struct FailSecondWriter {
+            writes: usize,
+        }
+        impl std::io::Write for FailSecondWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                if self.writes == 2 {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "forced follow-up failure",
+                    ))
+                } else {
+                    Ok(buf.len())
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(
+                FailSecondWriter { writes: 0 },
+                rx,
+                Arc::new(AtomicU32::new(0)),
+            )
+        });
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"body".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::ZERO,
+                bytes: b"\r".to_vec(),
+            }),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the compound write");
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer resolves the compound write")
+            .expect("ack sender not dropped");
+        assert!(
+            ack.is_err(),
+            "a failed submit key must reject the whole write"
         );
 
         drop(tx);

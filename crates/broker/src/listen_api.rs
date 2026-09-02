@@ -299,6 +299,10 @@ impl std::error::Error for AgentResultRouteError {}
 pub struct SetInboundDeliveryModeOk {
     pub mode: InboundDeliveryMode,
     pub flushed: usize,
+    /// Parked messages dead-lettered rather than injected during a
+    /// `manual_flush → auto_inject` drain. Reported alongside `flushed` so the
+    /// caller is not told `flushed: 0` about a queue that did in fact change.
+    pub dead_lettered: usize,
     pub matched: bool,
     pub revision: u64,
 }
@@ -2431,6 +2435,7 @@ async fn listen_api_set_inbound_delivery_mode(
             axum::Json(json!({
                 "mode": ok.mode.as_wire_str(),
                 "flushed": ok.flushed,
+                "dead_lettered": ok.dead_lettered,
                 "matched": ok.matched,
                 "revision": ok.revision.to_string(),
             })),
@@ -5615,6 +5620,7 @@ mod auth_tests {
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: InboundDeliveryMode::AutoInject,
                         flushed: 3,
+                        dead_lettered: 0,
                         matched: true,
                         revision: 1,
                     }));
@@ -5640,7 +5646,13 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(
             body,
-            json!({ "mode": "auto_inject", "flushed": 3, "matched": true, "revision": "1" })
+            json!({
+                "mode": "auto_inject",
+                "flushed": 3,
+                "dead_lettered": 0,
+                "matched": true,
+                "revision": "1"
+            })
         );
         replier.await.expect("replier should complete");
     }
@@ -5667,6 +5679,7 @@ mod auth_tests {
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: InboundDeliveryMode::AutoInject,
                         flushed: 0,
+                        dead_lettered: 0,
                         matched: false,
                         revision: 8,
                     }));
@@ -5699,7 +5712,13 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(
             body,
-            json!({ "mode": "auto_inject", "flushed": 0, "matched": false, "revision": "8" })
+            json!({
+                "mode": "auto_inject",
+                "flushed": 0,
+                "dead_lettered": 0,
+                "matched": false,
+                "revision": "8"
+            })
         );
         replier.await.expect("replier should complete");
     }

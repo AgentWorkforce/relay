@@ -237,9 +237,6 @@ pub(crate) fn requeue_dead_letter(
     Some(pending)
 }
 
-/// Push a terminally-failed pending delivery into the dead-letter store and
-/// emit the `dead_letter_added` broker event (plus the cap-eviction warning
-/// handled inside [`DeadLetterStore::push`]).
 /// Dead-letter a message removed from a worker's parked queue without ever
 /// being injected, emitting the same `DeadLetterAdded` event as the pending
 /// path so `node deadletters` and the SDK see it identically.
@@ -261,6 +258,9 @@ pub(crate) async fn dead_letter_parked_message(
     let _ = send_broker_event(sdk_out_tx, event).await;
 }
 
+/// Push a terminally-failed pending delivery into the dead-letter store and
+/// emit the `dead_letter_added` broker event (plus the cap-eviction warning
+/// handled inside [`DeadLetterStore::push`]).
 pub(crate) async fn dead_letter_pending_delivery(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dead_letters: &mut DeadLetterStore,

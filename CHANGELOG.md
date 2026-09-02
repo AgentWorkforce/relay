@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `node agent message flush` and `node agent message auto` now wake a held agent that had become permanently unreachable, instead of returning `flushed: 0` forever. An undeliverable message is dead-lettered with a reason rather than blocking the queue, and a genuine out-of-order sequence still holds it.
+- Claude workers now start multiline tasks delivered by `fleet spawn --task` instead of leaving the brief unsubmitted in the composer.
+- `node agent message flush` and `node agent message auto` now unblock a held queue that could previously never drain, instead of reporting `flushed: 0` forever and leaving the agent unable to receive anything later. A parked message whose Relaycast identity has been retired is dead-lettered with a reason and is visible in `node deadletters`; injection failures and out-of-order sequences are still held for retry.
 
 ### Added
 

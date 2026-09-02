@@ -136,21 +136,53 @@ try {
   //    identity and retires the previous cursor, and nothing rolls that back.
   //    The failure is expected here and is part of what makes this reachable.
   fake.stdin.write(`${JSON.stringify({ cmd: 'rotate_agent_id', name: AGENT })}\n`);
-  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' }).catch((error) => {
-    if (!/already exists/.test(String(error))) throw error;
-  });
+  //    A duplicate spawn that SUCCEEDS would invalidate the whole observation,
+  //    so require the rejection rather than merely tolerating it.
+  let duplicateSpawnRejected = false;
+  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' }).then(
+    () => {
+      throw new Error(
+        'The duplicate spawn was accepted. This case only proves anything if a REJECTED spawn ' +
+          'still rebinds the identity, so a success invalidates the observation.'
+      );
+    },
+    (error) => {
+      if (!/already exists/.test(String(error))) throw error;
+      duplicateSpawnRejected = true;
+    }
+  );
+  if (!duplicateSpawnRejected) throw new Error('Expected the duplicate spawn to be rejected.');
   const secondRegister = await waitForEvent(
     (e) => e.event === 'agent_register' && e.name === AGENT && e.agentId !== firstRegister.agentId,
     'the agent identity to be rebound'
   );
 
   // 4. Flush, then read the queue through an endpoint both arms have.
-  await api('POST', `/api/spawned/${AGENT}/flush`, undefined);
+  const flushBody = await api('POST', `/api/spawned/${AGENT}/flush`, undefined);
   await sleep(1_500);
   const remaining = await pendingCount(api);
 
+  // An empty queue alone does not prove the identity boundary held: an
+  // implementation that *injected* the stale message into the rebound identity
+  // would empty the queue too. Where the queue drained, require that it drained
+  // by dead-lettering, with nothing injected and nothing ACKed.
+  if (remaining === 0) {
+    if (flushBody.dead_lettered !== 1 || flushBody.flushed !== 0) {
+      throw new Error(
+        `The queue drained without dead-lettering the orphan: ${JSON.stringify(flushBody)}. ` +
+          'Draining is only correct here if the message was dead-lettered rather than injected ' +
+          'into the rebound identity.'
+      );
+    }
+    const acked = fakeEvents.filter((event) => event.event === 'delivery_ack');
+    if (acked.length > 0) {
+      throw new Error(`A retired identity's receipt must never be ACKed, saw ${JSON.stringify(acked)}.`);
+    }
+  }
+
   const detail =
-    `identity ${firstRegister.agentId} -> ${secondRegister.agentId}; ` + `pending after flush = ${remaining}`;
+    `identity ${firstRegister.agentId} -> ${secondRegister.agentId}; ` +
+    `pending after flush = ${remaining}; flush response ${JSON.stringify(flushBody)}`;
 
   let outcome;
   let signature;
@@ -167,8 +199,9 @@ try {
     signature = 'parked_message_dead_lettered_and_queue_drains';
     details =
       `The head broker cleared the parked queue after the flush (${detail}). ` +
-      'The un-ACKable message is dead-lettered with a distinguishing reason instead of ' +
-      'jamming the queue, so later messages reach the agent.';
+      'The un-ACKable message is dead-lettered with a distinguishing reason rather than injected ' +
+      'into the rebound identity, and no delivery.ack was emitted for it, so later messages ' +
+      'reach the agent without any cross-identity delivery.';
   } else {
     throw new Error(`Unexpected pending count ${remaining} (${detail}).`);
   }

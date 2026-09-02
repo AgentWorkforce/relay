@@ -279,6 +279,7 @@ impl BrokerRuntime {
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
+        let obligation_store = &mut self.obligation_store;
         let pending_requests = &mut self.pending_requests;
         let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
@@ -2256,6 +2257,7 @@ impl BrokerRuntime {
                                 let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                                     mode: current,
                                     flushed: 0,
+                                    dead_lettered: 0,
                                     matched: false,
                                     revision,
                                 }));
@@ -2277,6 +2279,7 @@ impl BrokerRuntime {
                                 let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                                     mode: current,
                                     flushed: 0,
+                                    dead_lettered: 0,
                                     matched: false,
                                     revision,
                                 }));
@@ -2303,6 +2306,7 @@ impl BrokerRuntime {
                             fleet_control_tx,
                             sdk_out_tx,
                             dead_letters,
+                            obligation_store,
                             &name,
                             delivery_retry_interval,
                         )
@@ -2408,6 +2412,7 @@ impl BrokerRuntime {
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: actual_mode,
                         flushed,
+                        dead_lettered: flush_result.dead_lettered,
                         matched: true,
                         revision,
                     }));
@@ -2435,6 +2440,7 @@ impl BrokerRuntime {
                         fleet_control_tx,
                         sdk_out_tx,
                         dead_letters,
+                        obligation_store,
                         &name,
                         delivery_retry_interval,
                     )
