@@ -460,15 +460,28 @@ async function mintFleetNodeEnrollment(
  */
 function reconcileEnrollmentPin(
   nodeId: string,
+  relayWorkspaceId: string,
   deps: Pick<CloudDependencies, 'warn' | 'linkEnrolledNodeToProjectPin'>
 ): EnrolledNodePinResult | undefined {
   try {
-    const result = deps.linkEnrolledNodeToProjectPin({ nodeId });
+    const result = deps.linkEnrolledNodeToProjectPin({ nodeId, relayWorkspaceId });
     if (result.status === 'conflict') {
       deps.warn(
         `This project's workspace pin (${result.pinPath}) is already linked to node ${result.pinnedNodeId}, ` +
           `so it was left unchanged. 'relay node up' here will keep serving ${result.pinnedNodeId}, not the node ` +
           `just enrolled (${result.nodeId}). Update or remove the pin to serve the new node.`
+      );
+    } else if (result.status === 'workspace-conflict') {
+      deps.warn(
+        `This project's workspace pin (${result.pinPath}) addresses workspace ${result.pinnedWorkspaceId}, ` +
+          `but the enrolled node belongs to ${result.relayWorkspaceId}, so the pin was left unchanged and ` +
+          "'relay node up' here will not serve the new node. Select the enrolled workspace before starting it."
+      );
+    } else if ((result.status === 'linked' || result.status === 'unchanged') && !result.workspaceVerified) {
+      deps.warn(
+        `Linked node ${result.nodeId} to this project's workspace pin (${result.pinPath}), but the pin has no ` +
+          'recorded workspace ID, so the enrolled workspace was not verified. Re-select the workspace to ' +
+          "record its ID before relying on an unqualified 'relay node up'."
       );
     }
     return result;
@@ -1006,7 +1019,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           // A repo pinned to a workspace ignores the enrollment store entirely
           // on `node up`, so link the two now while we know the node id. Never
           // let this fail the command: the one-time token is already redeemed.
-          const pin = reconcileEnrollmentPin(record.nodeId, deps);
+          const pin = reconcileEnrollmentPin(record.nodeId, record.relayWorkspaceId, deps);
 
           if (options.json) {
             // Never print the node token, even in JSON mode.
@@ -1024,9 +1037,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           if (pin?.status === 'linked') {
             deps.log(
               `Linked this project's workspace pin (${pin.pinPath}) to node ${pin.nodeId}, so ` +
-                `'relay node up' here serves this enrollment in workspace ${record.relayWorkspaceId}. ` +
-                'The pinned workspace key was not verified against that workspace — if they differ, ' +
-                'agent commands in this project keep using the pinned one.'
+                `'relay node up' here serves this enrollment in workspace ${record.relayWorkspaceId}.`
             );
           }
         } catch (err) {

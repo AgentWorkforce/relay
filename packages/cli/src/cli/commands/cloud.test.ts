@@ -1789,21 +1789,77 @@ describe('registerCloudCommands', () => {
       status: 'linked',
       nodeId: 'node_abc',
       pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+      workspaceVerified: true,
     })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
     const log = vi.fn();
     const { program } = createHarness({ log, linkEnrolledNodeToProjectPin });
 
     await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x']);
 
-    expect(linkEnrolledNodeToProjectPin).toHaveBeenCalledWith({ nodeId: 'node_abc' });
+    expect(linkEnrolledNodeToProjectPin).toHaveBeenCalledWith({
+      nodeId: 'node_abc',
+      relayWorkspaceId: 'rw_123',
+    });
     const output = log.mock.calls.flat().join('\n');
     expect(output).toContain('/repo/.agentworkforce/relay/workspace-key.json');
     expect(output).toContain('node_abc');
-    // The pinned key holds a workspace *key* and the enrollment holds a
-    // workspace *id*, so the link cannot be verified locally. Say which
-    // workspace will actually be served and do not claim more than that.
     expect(output).toContain('rw_123');
-    expect(output).toContain('was not verified');
+    expect(output).not.toContain('was not verified');
+  });
+
+  it('cloud enroll warns when a linked legacy pin has no verified workspace id', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_abc',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const linkEnrolledNodeToProjectPin = vi.fn(() => ({
+      status: 'linked',
+      nodeId: 'node_abc',
+      pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+      workspaceVerified: false,
+    })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
+    const warn = vi.fn();
+    const { program } = createHarness({ warn, linkEnrolledNodeToProjectPin });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x']);
+
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toContain('workspace was not verified');
+    expect(warned).toContain('node_abc');
+    expect(warned).toContain('/repo/.agentworkforce/relay/workspace-key.json');
+  });
+
+  it('cloud enroll warns and leaves a pin for a different workspace unchanged', async () => {
+    cloudMocks.enrollFleetNode.mockResolvedValueOnce({
+      nodeId: 'node_new',
+      nodeName: 'kjglaptop',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_enrolled',
+      relaycastUrl: 'https://relaycast.example.com',
+      websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+    });
+    cloudMocks.upsertFleetNodeEnrollment.mockReturnValueOnce({ version: 1, active: {}, nodes: {} });
+    const linkEnrolledNodeToProjectPin = vi.fn(() => ({
+      status: 'workspace-conflict',
+      nodeId: 'node_new',
+      relayWorkspaceId: 'rw_enrolled',
+      pinnedWorkspaceId: 'rw_pinned',
+      pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+    })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
+    const warn = vi.fn();
+    const { program } = createHarness({ warn, linkEnrolledNodeToProjectPin });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'enroll', '--token', 'ocl_node_enr_x']);
+
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toContain('rw_pinned');
+    expect(warned).toContain('rw_enrolled');
+    expect(warned).toContain('left unchanged');
   });
 
   it('cloud enroll warns instead of repointing a pin that names another node', async () => {
@@ -1870,6 +1926,7 @@ describe('registerCloudCommands', () => {
       status: 'linked',
       nodeId: 'node_abc',
       pinPath: '/repo/.agentworkforce/relay/workspace-key.json',
+      workspaceVerified: true,
     })) as unknown as CloudDependencies['linkEnrolledNodeToProjectPin'];
     const log = vi.fn();
     const { program } = createHarness({ log, linkEnrolledNodeToProjectPin });
