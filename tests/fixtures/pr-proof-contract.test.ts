@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -843,6 +843,106 @@ describe('exact broker artifact handoff', () => {
   });
 
   it.skipIf(process.platform !== 'linux')(
+    'allows PTY allocation under the case Landlock policy',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-openpty-'));
+      try {
+        const result = await runLandlockedProcess(
+          '/usr/bin/python3',
+          [
+            '-c',
+            [
+              'import os',
+              'import pty',
+              'master, slave = pty.openpty()',
+              'try:',
+              '    assert os.ttyname(slave).startswith("/dev/pts/")',
+              'finally:',
+              '    os.close(slave)',
+              '    os.close(master)',
+            ].join('\n'),
+          ],
+          {
+            writableRoots: [root],
+            cwd: root,
+            echo: false,
+            timeoutMs: 2_000,
+          }
+        );
+        expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'refuses PTY access when the devpts namespace is already occupied',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-occupied-devpts-'));
+      const holder = spawn(
+        '/usr/bin/python3',
+        [
+          '-c',
+          [
+            'import os',
+            'import pty',
+            'import sys',
+            'master, slave = pty.openpty()',
+            'print(os.ttyname(slave), flush=True)',
+            'sys.stdin.read(1)',
+            'os.close(slave)',
+            'os.close(master)',
+          ].join('\n'),
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      const holderExit = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+      try {
+        const slavePath = await new Promise<string>((resolve, reject) => {
+          let stdout = '';
+          const timer = setTimeout(() => reject(new Error('PTY holder did not start')), 2_000);
+          holder.stdout.on('data', (chunk) => {
+            stdout += chunk.toString();
+            const newline = stdout.indexOf('\n');
+            if (newline < 0) return;
+            clearTimeout(timer);
+            resolve(stdout.slice(0, newline));
+          });
+          holder.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            reject(new Error(`PTY holder exited before readiness (${signal ?? code ?? 'unknown'})`));
+          });
+          holder.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+        });
+        expect(slavePath).toMatch(/^\/dev\/pts\/\d+$/);
+
+        const result = await runLandlockedProcess('/bin/true', [], {
+          writableRoots: [root],
+          cwd: root,
+          echo: false,
+          timeoutMs: 2_000,
+        });
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr).toContain(
+          'secure broker execution requires an empty /dev/pts namespace before granting PTY access'
+        );
+      } finally {
+        holder.stdin.end();
+        await Promise.race([holderExit, new Promise((resolve) => setTimeout(resolve, 500))]);
+        if (holder.exitCode === null) {
+          holder.kill('SIGTERM');
+          await holderExit;
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform !== 'linux')(
     'keeps a stable self-spawning broker immutable under the case Landlock policy',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
@@ -1412,6 +1512,10 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('SYS_LANDLOCK_RESTRICT_SELF = 446');
     expect(source).toContain('secure broker execution requires Landlock ABI >= 3');
     expect(source).toContain('WRITE_FILE = 1 << 1');
+    expect(source).toContain('occupied_devpts = sorted');
+    expect(source).toContain('requires an empty /dev/pts namespace before granting PTY access');
+    expect(source).toContain('("/dev/null", "/dev/tty", "/dev/ptmx")');
+    expect(source).toContain('allow_path(devpts_root, WRITE_FILE)');
     expect(source).toContain('REFER = 1 << 13');
     expect(source).toContain('TRUNCATE = 1 << 14');
     expect(source).toContain('PR_SET_NO_NEW_PRIVS = 38');

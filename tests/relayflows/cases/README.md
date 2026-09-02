@@ -120,10 +120,15 @@ review evidence and is not a replacement for required code review.
 For broker cases, the wrapper's additional guarantee ends at artifact
 provenance and executable immutability. It copies the verified bytes to a
 stable private path, closes every broker file descriptor, and launches the case
-under a fail-closed Landlock policy that denies writes, truncation, removal,
-replacement, renames, and hard links outside the case's explicit writable
-directories. The stable path means broker self-spawns through
-`current_exe()` keep working. The wrapper verifies the broker's link count,
+under a fail-closed Landlock policy that denies filesystem mutation outside
+the case's explicit writable directories. The only device exceptions grant
+`WRITE_FILE` to `/dev/null`, `/dev/tty`, `/dev/ptmx`, and newly allocated slave
+device nodes beneath `/dev/pts`, allowing broker PTY use without granting node
+creation, truncation, removal, replacement, renames, or hard links. The stable
+path means broker self-spawns through `current_exe()` keep working. Before the
+`/dev/pts` rule is installed, the wrapper fails closed if that namespace already
+contains any numeric slave nodes, preventing a PR-authored runner from writing
+an existing agent or control PTY. The wrapper verifies the broker's link count,
 mode, size, and digest again after the runner exits. Landlock does not mediate
 `chmod`; a runner can change the mode and make its own proof fail, but cannot
 use that mode change to bypass the content and path-mutation policy.

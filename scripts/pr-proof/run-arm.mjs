@@ -137,6 +137,16 @@ for writable_device in ("/dev/null", "/dev/tty", "/dev/ptmx"):
     if os.path.exists(writable_device):
         allow_path(writable_device, WRITE_FILE)
 
+devpts_root = "/dev/pts"
+if os.path.isdir(devpts_root):
+    occupied_devpts = sorted(entry for entry in os.listdir(devpts_root) if entry.isdecimal())
+    if occupied_devpts:
+        raise RuntimeError(
+            "secure broker execution requires an empty /dev/pts namespace before granting PTY access; "
+            f"found numeric entries: {','.join(occupied_devpts)}"
+        )
+    allow_path(devpts_root, WRITE_FILE)
+
 if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
     error = ctypes.get_errno()
     raise OSError(error, os.strerror(error))
