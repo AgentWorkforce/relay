@@ -199,6 +199,50 @@ pub(crate) fn queue_or_take_confirmed_verification(
     }
 }
 
+/// Start activity detection with every post-submission byte already observed.
+///
+/// The PTY output arm can receive both the task echo and an activity marker
+/// while a compound write is still awaiting its acknowledgement. When that
+/// acknowledgement later confirms the delivery, seeding this buffer prevents
+/// the already-observed activity from being lost merely because no more output
+/// follows.
+pub(crate) fn pending_activity_from_confirmed_output(
+    verification: &PendingVerification,
+    output: &VerificationOutput,
+    detector: &ActivityDetector,
+) -> PendingActivity {
+    PendingActivity {
+        delivery_id: verification.delivery_id.clone(),
+        event_id: verification.event_id.clone(),
+        expected_echo: verification.expected_echo.clone(),
+        verified_at: Instant::now(),
+        output_buffer: output.since(verification.output_boundary).to_string(),
+        detector: detector.clone(),
+    }
+}
+
+/// Detect activity already buffered before confirmation or queue the seeded
+/// state for later output. The returned activity carries the matched pattern
+/// so each runtime can emit its own protocol event or log without duplicating
+/// this race-handling policy.
+pub(crate) fn queue_or_take_detected_activity(
+    verification: &PendingVerification,
+    output: &VerificationOutput,
+    detector: &ActivityDetector,
+    pending_activities: &mut std::collections::VecDeque<PendingActivity>,
+) -> Option<(PendingActivity, String)> {
+    let activity = pending_activity_from_confirmed_output(verification, output, detector);
+    if let Some(pattern) = activity
+        .detector
+        .detect_activity(&activity.output_buffer, &activity.expected_echo)
+    {
+        Some((activity, pattern))
+    } else {
+        pending_activities.push_back(activity);
+        None
+    }
+}
+
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     let clean = strip_ansi(output);
@@ -334,6 +378,82 @@ mod tests {
         output.push_str("fresh echo");
         assert_eq!(output.since(current_boundary), "fresh echo");
         assert!(output.boundary() > after_first_trim);
+    }
+
+    #[test]
+    fn immediate_confirmation_preserves_post_submission_activity() {
+        let expected = "Relay message from Lead [evt-activity]: review this";
+        let mut output = VerificationOutput::default();
+        output.push_str("Tool: stale activity before this delivery\n");
+        let output_boundary = output.boundary();
+        output.push_str(expected);
+        output.push_str("\nTool: Write(review.md)\n");
+        let verification = PendingVerification {
+            delivery_id: "delivery-activity".into(),
+            event_id: "evt-activity".into(),
+            expected_echo: expected.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            body: "review this".to_string(),
+            target: "Worker".into(),
+        };
+
+        let mut pending_activities = std::collections::VecDeque::new();
+        let (activity, pattern) = queue_or_take_detected_activity(
+            &verification,
+            &output,
+            &ActivityDetector::for_cli("claude"),
+            &mut pending_activities,
+        )
+        .expect("the already-buffered activity marker must be detected immediately");
+
+        assert_eq!(pattern, "Tool:");
+        assert!(!activity.output_buffer.contains("stale activity"));
+        assert!(pending_activities.is_empty());
+    }
+
+    #[test]
+    fn immediate_confirmation_queues_seeded_output_without_an_activity_marker() {
+        let expected = "Relay message from Lead [evt-pending]: review this";
+        let mut output = VerificationOutput::default();
+        output.push_str("stale output before this delivery\n");
+        let output_boundary = output.boundary();
+        output.push_str(expected);
+        let verification = PendingVerification {
+            delivery_id: "delivery-pending".into(),
+            event_id: "evt-pending".into(),
+            expected_echo: expected.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            body: "review this".to_string(),
+            target: "Worker".into(),
+        };
+        let mut pending_activities = std::collections::VecDeque::new();
+
+        assert!(queue_or_take_detected_activity(
+            &verification,
+            &output,
+            &ActivityDetector::for_cli("claude"),
+            &mut pending_activities,
+        )
+        .is_none());
+        let activity = pending_activities
+            .pop_front()
+            .expect("unmatched seeded output must remain pending");
+        assert_eq!(activity.output_buffer, expected);
+        assert!(!activity.output_buffer.contains("stale output"));
     }
 
     #[test]

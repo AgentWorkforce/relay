@@ -23,10 +23,10 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        pending_verification_echo_seen, queue_or_take_confirmed_verification, DeliveryOutcome,
-        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
-        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        pending_verification_echo_seen, queue_or_take_confirmed_verification,
+        queue_or_take_detected_activity, DeliveryOutcome, PendingActivity, PendingVerification,
+        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
+        ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -225,14 +225,17 @@ fn queue_or_confirm_wrap_verification(
     );
     throttle.record(DeliveryOutcome::Success);
     if let Some(detector) = activity_detector {
-        pending_activities.push_back(PendingActivity {
-            delivery_id: verification.delivery_id,
-            event_id: verification.event_id,
-            expected_echo: verification.expected_echo,
-            verified_at: Instant::now(),
-            output_buffer: String::new(),
-            detector: detector.clone(),
-        });
+        if let Some((activity, pattern)) =
+            queue_or_take_detected_activity(&verification, output, detector, pending_activities)
+        {
+            tracing::info!(
+                target = "agent_relay::worker::wrap",
+                delivery_id = %activity.delivery_id,
+                event_id = %activity.event_id,
+                pattern = %pattern,
+                "delivery became active before write ack was processed"
+            );
+        }
     }
     true
 }
@@ -2172,6 +2175,7 @@ mod tests {
         PendingVerification, ThrottleState, VerificationOutput, MAX_VERIFICATION_ATTEMPTS,
     };
     use crate::ids::{DeliveryId, EventId, MessageTarget};
+    use crate::worker::detection::ActivityDetector;
     use std::collections::VecDeque;
     use std::io;
     use std::time::{Duration, Instant};
@@ -2260,11 +2264,13 @@ mod tests {
         assert!(!stale, "a retained pre-submission echo is stale");
         pending_verifications.clear();
 
-        output.push_str(&format!("\nnew composer echo: {injection}"));
+        output.push_str(&format!(
+            "\nnew composer echo: {injection}\nTool: Write(review.md)"
+        ));
         let confirmed = queue_or_confirm_wrap_verification(
             verification(),
             &output,
-            None,
+            Some(&ActivityDetector::for_cli("claude")),
             &mut throttle,
             &mut pending_verifications,
             &mut pending_activities,
@@ -2275,7 +2281,10 @@ mod tests {
             pending_verifications.is_empty(),
             "an already-observed echo must not be queued to time out"
         );
-        assert!(pending_activities.is_empty());
+        assert!(
+            pending_activities.is_empty(),
+            "already-buffered activity must be consumed immediately"
+        );
     }
 
     #[test]

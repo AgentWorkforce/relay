@@ -25,10 +25,10 @@ use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
         current_timestamp_ms, delivery_injected_event_payload, delivery_queued_event_payload,
-        pending_verification_echo_seen, queue_or_take_confirmed_verification, DeliveryOutcome,
-        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
-        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
-        VERIFICATION_WINDOW,
+        pending_verification_echo_seen, queue_or_take_confirmed_verification,
+        queue_or_take_detected_activity, DeliveryOutcome, PendingActivity, PendingVerification,
+        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
+        ACTIVITY_WINDOW, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -1866,14 +1866,31 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 .await;
                                 throttle.record(DeliveryOutcome::Success);
                                 if let Some(detector) = activity_detector.as_ref() {
-                                    pending_activities.push_back(PendingActivity {
-                                        delivery_id: delivery_id.clone(),
-                                        event_id,
-                                        expected_echo: pv.expected_echo,
-                                        verified_at: Instant::now(),
-                                        output_buffer: String::new(),
-                                        detector: detector.clone(),
-                                    });
+                                    if let Some((activity, pattern)) = queue_or_take_detected_activity(
+                                        &pv,
+                                        &echo_buffer,
+                                        detector,
+                                        &mut pending_activities,
+                                    ) {
+                                        tracing::debug!(
+                                            target: "agent_relay::worker::pty",
+                                            delivery_id = %activity.delivery_id,
+                                            event_id = %activity.event_id,
+                                            pattern = %pattern,
+                                            "delivery activity detected before write ack was processed"
+                                        );
+                                        let _ = send_frame(
+                                            &out_tx,
+                                            "delivery_active",
+                                            None,
+                                            json!({
+                                                "delivery_id": activity.delivery_id,
+                                                "event_id": activity.event_id,
+                                                "pattern": pattern,
+                                            }),
+                                        )
+                                        .await;
+                                    }
                                 }
                                 pending_worker_delivery_ids.remove(&delivery_id);
                             }
@@ -2722,18 +2739,30 @@ mod tests {
         assert!(stale.is_none(), "a retained pre-submission echo is stale");
         pending_verifications.clear();
 
-        output.push_str(&format!("\nnew composer echo: {injection}"));
+        output.push_str(&format!(
+            "\nnew composer echo: {injection}\nTool: Write(review.md)"
+        ));
         let confirmed = queue_or_take_confirmed_verification(
             verification(),
             &output,
             &mut pending_verifications,
-        );
+        )
+        .expect("the buffered echo must be confirmed");
 
-        assert!(confirmed.is_some(), "the buffered echo must be confirmed");
         assert!(
             pending_verifications.is_empty(),
             "an already-observed echo must not be queued to time out"
         );
+        let mut pending_activities = VecDeque::new();
+        let (_, pattern) = queue_or_take_detected_activity(
+            &confirmed,
+            &output,
+            &ActivityDetector::for_cli("claude"),
+            &mut pending_activities,
+        )
+        .expect("activity buffered before the ack must be detected immediately");
+        assert_eq!(pattern, "Tool:");
+        assert!(pending_activities.is_empty());
     }
 
     #[test]
