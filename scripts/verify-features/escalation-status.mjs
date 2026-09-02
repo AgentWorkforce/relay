@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,8 +22,11 @@ const VALID_STATES = new Set(['delivered', 'failed', 'disabled', 'not_applicable
 
 export function redactAlertText(value) {
   return String(value)
-    .replace(/\b(?:rk|at)_live_[A-Za-z0-9_-]+/g, '[REDACTED_RELAY_CREDENTIAL]')
-    .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}/g, '[REDACTED_GITHUB_CREDENTIAL]')
+    .replace(
+      /\b(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*/g,
+      '[REDACTED_RELAY_CREDENTIAL]'
+    )
+    .replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}/g, '[REDACTED_GITHUB_CREDENTIAL]')
     .replace(/\bxox[baprs]-[A-Za-z0-9-]+/g, '[REDACTED_SLACK_CREDENTIAL]')
     .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
     .replace(
@@ -54,7 +57,7 @@ export function writeEscalationStatus(artifacts, channel, state, detail, url = '
     channel,
     state,
     detail: redactAlertText(detail || '').slice(0, 1000),
-    ...(url ? { url } : {}),
+    ...(url ? { url: redactAlertText(url).slice(0, 1000) } : {}),
   };
   mkdirSync(artifacts, { recursive: true });
   writeFileSync(statusPath(artifacts, channel), `${JSON.stringify(record, null, 2)}\n`);
@@ -65,7 +68,7 @@ export function writeAlertEnvelope(artifacts, { kind, runId, channel, text, sour
   if (!['primary', 'followup'].includes(kind)) {
     throw new Error(`invalid alert envelope kind: ${kind}`);
   }
-  if (!/^C[A-Z0-9]+$/.test(channel)) {
+  if (!/^[CG][A-Z0-9]+$/.test(channel)) {
     throw new Error('alert envelope requires an explicit Slack channel ID');
   }
   const sourceDelivery = readEscalationStatus(artifacts, sourceStatusChannel);
@@ -85,6 +88,22 @@ export function writeAlertEnvelope(artifacts, { kind, runId, channel, text, sour
   const outputPath = path.join(artifacts, `alert-${kind}-envelope.json`);
   writeFileSync(outputPath, `${JSON.stringify(envelope, null, 2)}\n`);
   return envelope;
+}
+
+export function resetEscalationArtifacts(artifacts) {
+  const runScopedFiles = [
+    ...Object.values(STATUS_FILES),
+    'alert-primary-envelope.json',
+    'alert-followup-envelope.json',
+    'issue-url.txt',
+    'pr-url.txt',
+    'failure-assessment.json',
+    'fix-integrity.env',
+    'fix-summary.md',
+  ];
+  for (const file of runScopedFiles) {
+    rmSync(path.join(artifacts, file), { force: true });
+  }
 }
 
 export function readEscalationStatus(artifacts, channel) {
@@ -239,6 +258,7 @@ function usage() {
     '  escalation-status.mjs audit <artifacts> <autofix:0|1>',
     '  escalation-status.mjs audit-channel <artifacts> <channel> <required:0|1>',
     '  escalation-status.mjs envelope <artifacts> <kind> <runId> <channel> <textFile> <sourceStatusChannel>',
+    '  escalation-status.mjs reset <artifacts>',
     '  escalation-status.mjs redact-file <path>',
   ].join('\n');
 }
@@ -290,6 +310,11 @@ function main(argv) {
       sourceStatusChannel,
     });
     console.log(`ALERT_ENVELOPE_READY: ${kind} postback`);
+    return;
+  }
+  if (command === 'reset') {
+    resetEscalationArtifacts(artifacts);
+    console.log('ESCALATION_ARTIFACTS_RESET');
     return;
   }
   if (command === 'redact-file') {

@@ -52,7 +52,7 @@
  *
  * ## Environment
  *
- *   VERIFY_SLACK_CHANNEL    Required Slack channel ID for failures.
+ *   VERIFY_SLACK_CHANNEL    Slack channel ID for failures. Default C0AEKNLDNKW.
  *   VERIFY_AUTOFIX          "0" disables the issue/fix/PR path. Default on.
  *   VERIFY_ALLOW_CLI_DRIFT  "1" downgrades a CLI-vs-repo version mismatch from
  *                           a failure to a warning.
@@ -67,18 +67,21 @@
  *                           token is read.
  */
 
+import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
 import { workflow } from '@relayflows/core';
 
 const ARTIFACTS = '.workflow-artifacts/verify-features';
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
-const RUN_ID = `verify-${TIMESTAMP}`;
+const RUN_NONCE = randomUUID().slice(0, 8);
+const RUN_ID = `verify-${TIMESTAMP}-${RUN_NONCE}`;
 const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
 const ESCALATION_STATUS_TOOL = 'scripts/verify-features/escalation-status.mjs';
 
 /** Unique suffix so a run never collides with existing workspace state. */
-const SUFFIX = `vf-${Date.now()}`;
+const SUFFIX = `vf-${RUN_NONCE}`;
 
 /** Canonical fix branch. RUN_ID already carries the "verify-" prefix. */
 const FIX_BRANCH = `fix/${RUN_ID}`;
@@ -106,6 +109,8 @@ const BT = '`';
  */
 const ENV_DEFAULTS = String.raw`
 VERIFY_ALLOW_CLI_DRIFT="$(printenv VERIFY_ALLOW_CLI_DRIFT || true)"
+VERIFY_SLACK_CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"
+if [ -z "$VERIFY_SLACK_CHANNEL" ]; then VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"; fi
 POSTHOG_API_KEY="$(printenv POSTHOG_API_KEY || true)"
 POSTHOG_HOST="$(printenv POSTHOG_HOST || true)"
 NIGHTCTO_EVIDENCE_URL="$(printenv NIGHTCTO_EVIDENCE_URL || true)"
@@ -128,7 +133,7 @@ fi
 # post script), so they must be exported, not just assigned. Plain assignment
 # left the child seeing only the original process env, which silently defeated
 # the fallback above.
-export CLOUD_API_URL CLOUD_API_TOKEN
+export CLOUD_API_URL CLOUD_API_TOKEN VERIFY_SLACK_CHANNEL
 VERIFY_ENVIRONMENT="$(printenv VERIFY_ENVIRONMENT || true)"
 if [ -z "$POSTHOG_HOST" ]; then POSTHOG_HOST="https://i.agentrelay.com"; fi
 if [ -z "$VERIFY_ENVIRONMENT" ]; then VERIFY_ENVIRONMENT="sandbox"; fi
@@ -457,6 +462,7 @@ set -uo pipefail
 mkdir -p "${ARTIFACTS}"
 LOG="${ARTIFACTS}/setup.log"
 : > "${ARTIFACTS}/checks.jsonl"
+node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"
 
 echo "=== Setup: ${RUN_ID} ===" | tee "$LOG"
 echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$LOG"
@@ -1934,9 +1940,9 @@ exit 0
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
-CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"
 STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
+CHANNEL="$VERIFY_SLACK_CHANNEL"
 ${SLACK_POST_FN}
 
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
@@ -2010,8 +2016,12 @@ else
     "failure alert could not be posted to $CHANNEL"
 fi
 if [ -n "$CHANNEL" ]; then
-  node "$STATUS_TOOL" envelope "$ARTIFACTS" primary "${RUN_ID}" "$CHANNEL" \
-    "$ARTIFACTS/slack-message.txt" slack_primary
+  if ! node "$STATUS_TOOL" envelope "$ARTIFACTS" primary "${RUN_ID}" "$CHANNEL" \
+    "$ARTIFACTS/slack-message.txt" slack_primary; then
+    node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+      "failure alert envelope could not be written for $CHANNEL"
+    echo "ALERT_ENVELOPE_FAILED: primary envelope write failed"
+  fi
 else
   echo "ALERT_ENVELOPE_FAILED: VERIFY_SLACK_CHANNEL is required"
 fi
@@ -2153,17 +2163,23 @@ process.stdout.write(out.join('\n'));
 ISSUEEOF
 
 TITLE="Feature verification failed: ${RUN_ID}"
-ISSUE_URL=$(gh issue create --title "$TITLE" --body-file "$ARTIFACTS/issue-body.md" 2>&1 | grep -oE 'https://[^ ]+' | head -1 || echo "")
+ISSUE_OUTPUT=$(gh issue create --title "$TITLE" --body-file "$ARTIFACTS/issue-body.md" 2>&1)
+ISSUE_RC=$?
+ISSUE_URL=""
+if [ "$ISSUE_RC" -eq 0 ]; then
+  ISSUE_URL=$(printf '%s\n' "$ISSUE_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/issues/[0-9]+' | head -1 || true)
+fi
 
-if [ -n "$ISSUE_URL" ]; then
+if [ "$ISSUE_RC" -eq 0 ] && [ -n "$ISSUE_URL" ]; then
   echo "$ISSUE_URL" > "$ARTIFACTS/issue-url.txt"
   node "$STATUS_TOOL" write "$ARTIFACTS" github_issue delivered \
     "issue created" "$ISSUE_URL"
   echo "ISSUE_CREATED: $ISSUE_URL"
 else
+  ISSUE_ERROR=$(printf '%s' "$ISSUE_OUTPUT" | tr '\n\r\t' '   ' | cut -c1-500)
   node "$STATUS_TOOL" write "$ARTIFACTS" github_issue failed \
-    "gh issue create produced no URL"
-  echo "ISSUE_FAILED: gh issue create produced no URL"
+    "gh issue create failed (exit $ISSUE_RC): $ISSUE_ERROR"
+  echo "ISSUE_FAILED: gh issue create exit=$ISSUE_RC produced no issue URL"
 fi
 
 exit 0
@@ -2523,10 +2539,15 @@ fi
   echo "  addresses the root cause rather than the symptom."
 } > "$ARTIFACTS/pr-body.md"
 
-PR_URL=$(gh pr create --draft --title "fix: feature verification failures (${RUN_ID})" \
-  --body-file "$ARTIFACTS/pr-body.md" --base main --head "$BRANCH" 2>&1 | grep -oE 'https://[^ ]+' | head -1 || echo "")
+PR_OUTPUT=$(gh pr create --draft --title "fix: feature verification failures (${RUN_ID})" \
+  --body-file "$ARTIFACTS/pr-body.md" --base main --head "$BRANCH" 2>&1)
+PR_RC=$?
+PR_URL=""
+if [ "$PR_RC" -eq 0 ]; then
+  PR_URL=$(printf '%s\n' "$PR_OUTPUT" | grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | head -1 || true)
+fi
 
-if [ -n "$PR_URL" ]; then
+if [ "$PR_RC" -eq 0 ] && [ -n "$PR_URL" ]; then
   echo "$PR_URL" > "$ARTIFACTS/pr-url.txt"
   node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr delivered \
     "draft PR created" "$PR_URL"
@@ -2536,9 +2557,10 @@ if [ -n "$PR_URL" ]; then
       --body "Draft fix PR opened: $PR_URL" >/dev/null 2>&1 || true
   fi
 else
+  PR_ERROR=$(printf '%s' "$PR_OUTPUT" | tr '\n\r\t' '   ' | cut -c1-500)
   node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
-    "gh pr create produced no URL"
-  echo "PR_FAILED: gh pr create produced no URL"
+    "gh pr create failed (exit $PR_RC): $PR_ERROR"
+  echo "PR_FAILED: gh pr create exit=$PR_RC produced no PR URL"
 fi
 
 exit 0
@@ -2556,9 +2578,9 @@ exit 0
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
-CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"
 STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
+CHANNEL="$VERIFY_SLACK_CHANNEL"
 ${SLACK_POST_FN}
 
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
@@ -2594,8 +2616,12 @@ else
     "final escalation status could not be posted to $CHANNEL"
 fi
 if [ -n "$CHANNEL" ]; then
-  node "$STATUS_TOOL" envelope "$ARTIFACTS" followup "${RUN_ID}" "$CHANNEL" \
-    "$FOLLOWUP" slack_followup
+  if ! node "$STATUS_TOOL" envelope "$ARTIFACTS" followup "${RUN_ID}" "$CHANNEL" \
+    "$FOLLOWUP" slack_followup; then
+    node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
+      "final escalation envelope could not be written for $CHANNEL"
+    echo "ALERT_ENVELOPE_FAILED: followup envelope write failed"
+  fi
 else
   echo "ALERT_ENVELOPE_FAILED: VERIFY_SLACK_CHANNEL is required"
 fi
@@ -2746,12 +2772,13 @@ exit 1
 `,
   });
 
-  const result = await wf.run({ dryRun: process.env.DRY_RUN === '1', cwd: process.cwd() });
+  const dryRun = process.env.DRY_RUN === '1';
+  const result = await wf.run({ dryRun, cwd: process.cwd() });
 
   // A dry run plans the graph without executing it, so there is no verdict to
   // read and nothing to enforce. Bail before the checks below, which would
   // otherwise report a validated plan as harness breakage.
-  if (process.env.DRY_RUN || !('status' in result)) {
+  if (dryRun || !('status' in result)) {
     return;
   }
 
@@ -2789,7 +2816,22 @@ exit 1
 
   if (verdict.verdict !== 'PASS') {
     console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
-    process.exitCode = 1;
+    const escalationAudit = spawnSync(
+      process.execPath,
+      [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'],
+      { cwd: process.cwd(), encoding: 'utf8' }
+    );
+    if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
+    if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
+    if (escalationAudit.status !== 0) {
+      console.error(
+        `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
+          `(audit exit ${escalationAudit.status ?? 'unknown'})`
+      );
+      process.exitCode = 2;
+    } else {
+      process.exitCode = 1;
+    }
   }
 }
 

@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-// @ts-expect-error Dependency-free workflow helper intentionally has no declaration file.
 import {
   escalationAuditFailures,
   escalationChannelAuditFailure,
   redactAlertText,
+  resetEscalationArtifacts,
   renderFinalEscalationStatus,
   renderInitialEscalationStatus,
   writeAlertEnvelope,
@@ -17,6 +17,13 @@ import {
 } from '../../scripts/verify-features/escalation-status.mjs';
 
 const temporaryDirectories: string[] = [];
+
+function workflowStep(source: string, name: string): string {
+  const start = source.indexOf(`wf.step('${name}', {`);
+  if (start === -1) throw new Error(`workflow step not found: ${name}`);
+  const next = source.indexOf("\n  wf.step('", start + 1);
+  return source.slice(start, next === -1 ? source.length : next);
+}
 
 async function artifacts() {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'verify-features-escalation-'));
@@ -36,17 +43,35 @@ describe('verify-features escalation status', () => {
       'utf8'
     );
 
-    expect(source).toContain("wf.step('enforce-escalations'");
-    expect(source).toContain("step: 'enforce-slack-primary-delivery'");
-    expect(source).toContain("step: 'enforce-github-issue-delivery'");
-    expect(source).toContain("step: 'enforce-draft-pr-delivery'");
-    expect(source).toContain("dependsOn: ['open-pr', 'slack-alert']");
-    expect(source).toContain('timeout: 10000');
+    const capabilities = workflowStep(source, 'capabilities');
+    const setup = workflowStep(source, 'setup');
+    const primaryAlert = workflowStep(source, 'slack-alert');
+    const fileIssue = workflowStep(source, 'file-issue');
+    const openPr = workflowStep(source, 'open-pr');
+    const followup = workflowStep(source, 'slack-followup');
+
+    expect(workflowStep(source, 'enforce-escalations')).toContain(
+      'node "$STATUS_TOOL" audit "$ARTIFACTS" "$AUTOFIX"'
+    );
+    expect(source).toMatch(/step:\s*['"]enforce-slack-primary-delivery['"]/);
+    expect(source).toMatch(/step:\s*['"]enforce-github-issue-delivery['"]/);
+    expect(source).toMatch(/step:\s*['"]enforce-draft-pr-delivery['"]/);
+    expect(followup).toMatch(/dependsOn:\s*\[\s*['"]open-pr['"]\s*,\s*['"]slack-alert['"]\s*\]/);
+    expect(capabilities).toMatch(/timeout:\s*10_000|timeout:\s*10000/);
     expect(source).toContain('abort_for_invalid_provenance');
     expect(source).toContain('failure-assessment.json');
     expect(source).toContain('relay-alert-envelope/1');
-    expect(source).toContain('CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"');
-    expect(source).not.toContain("?? 'C0AEKNLDNKW'");
+    expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
+    expect(setup).toContain('reset "${ARTIFACTS}"');
+    expect(fileIssue).toContain('ISSUE_RC=$?');
+    expect(fileIssue).toContain('[ "$ISSUE_RC" -eq 0 ] && [ -n "$ISSUE_URL" ]');
+    expect(openPr).toContain('PR_RC=$?');
+    expect(openPr).toContain('[ "$PR_RC" -eq 0 ] && [ -n "$PR_URL" ]');
+    expect(primaryAlert).toContain('ALERT_ENVELOPE_FAILED: primary envelope write failed');
+    expect(followup).toContain('ALERT_ENVELOPE_FAILED: followup envelope write failed');
+    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
+    expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
+    expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
     expect(source).not.toContain('ISSUE_SKIPPED: gh is not authenticated');
     expect(source).not.toContain('PR_SKIPPED: gh unavailable or unauthenticated');
     expect(source).not.toContain('FOLLOWUP_SKIPPED: no issue or PR to report');
@@ -175,13 +200,65 @@ describe('verify-features escalation status', () => {
     expect(envelope).not.toHaveProperty('credentials');
   });
 
+  it('accepts a private Slack conversation ID for trusted postback', async () => {
+    const directory = await artifacts();
+    writeEscalationStatus(directory, 'slack_primary', 'failed', 'auth_token_missing');
+
+    const envelope = writeAlertEnvelope(directory, {
+      kind: 'primary',
+      runId: 'verify-private-channel',
+      channel: 'G0123456789',
+      text: 'failure payload',
+      sourceStatusChannel: 'slack_primary',
+    });
+
+    expect(envelope.destination.channel).toBe('G0123456789');
+  });
+
+  it('clears stale delivery receipts before a new run', async () => {
+    const directory = await artifacts();
+    for (const channel of [
+      'slack_primary',
+      'slack_followup',
+      'github_issue',
+      'draft_pr',
+      'posthog',
+    ] as const) {
+      writeEscalationStatus(directory, channel, 'delivered', 'old run');
+    }
+    expect(escalationAuditFailures(directory)).toEqual([]);
+
+    resetEscalationArtifacts(directory);
+
+    expect(escalationAuditFailures(directory)).toHaveLength(5);
+  });
+
+  it('redacts credentials from stored escalation URLs', async () => {
+    const directory = await artifacts();
+    const token = 'github_pat_abcdefghijklmnopqrstuvwxyz123456';
+    const status = writeEscalationStatus(
+      directory,
+      'github_issue',
+      'delivered',
+      'created',
+      `https://github.com/example/repo/issues/1?token=${token}`
+    );
+
+    expect(status.url).not.toContain(token);
+    expect(status.url).toContain('[REDACTED_GITHUB_CREDENTIAL]');
+  });
+
   it('redacts common Relay, GitHub, Slack, and bearer credentials from alert payloads', () => {
     const text = redactAlertText(
-      'rk_live_secret123 at_live_secret456 ghp_abcdefghijklmnopqrstuvwxyz xoxb-123-secret Bearer abc.def'
+      'rk_live_secret123 at_live_secret456 nt_live_secret789 br_secret987 ' +
+        'ghp_abcdefghijklmnopqrstuvwxyz github_pat_abcdefghijklmnopqrstuvwxyz123456 ' +
+        'xoxb-123-secret Bearer abc.def'
     );
 
     expect(text).not.toContain('secret123');
     expect(text).not.toContain('secret456');
+    expect(text).not.toContain('secret789');
+    expect(text).not.toContain('secret987');
     expect(text).not.toContain('abcdefghijklmnopqrstuvwxyz');
     expect(text).not.toContain('xoxb-123-secret');
     expect(text).not.toContain('abc.def');
