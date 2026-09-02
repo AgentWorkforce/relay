@@ -1,0 +1,62 @@
+{
+  "id": "traj_ks4l2sj2y9lf",
+  "version": 1,
+  "task": {
+    "title": "Repair Linux timeout termination assertion on PR #1642",
+    "source": {
+      "system": "plain",
+      "id": "PR-1642-CI2"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T19:56:36.197Z",
+  "completedAt": "2026-09-02T19:57:13.148Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T19:56:36.958Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_uj2i9uibqris",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T19:56:36.958Z",
+      "endedAt": "2026-09-02T19:57:13.148Z",
+      "events": [
+        {
+          "ts": 1788378996962,
+          "type": "decision",
+          "content": "Treat an absent or zombie checkout filter as terminated: Treat an absent or zombie checkout filter as terminated",
+          "raw": {
+            "question": "Treat an absent or zombie checkout filter as terminated",
+            "chosen": "Treat an absent or zombie checkout filter as terminated",
+            "alternatives": [],
+            "reasoning": "POSIX process-group SIGKILL stops the descendant, but container PID 1 may leave the dead process as a zombie long enough for kill(pid, 0) to succeed. Process state distinguishes a stopped zombie from a running descendant."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made the process-tree timeout regression portable by treating only absent or zombie filter processes as terminated; a running or sleeping descendant still fails the test.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [
+    "719a35b42"
+  ],
+  "filesChanged": [
+    "tests/fixtures/verify-features-escalation.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8440e61d5738e75e8fd80737e2642eaecba84fad",
+    "endRef": "719a35b4288742df5f9b59a4baaa5eb26fbcd5c6",
+    "traceId": "0bf4a5c1-ef07-45d2-ab0b-c141b6e3d9c1"
+  }
+}
