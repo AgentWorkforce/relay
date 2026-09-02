@@ -15,7 +15,7 @@
     },
     "head": {
       "outcome": "fixed",
-      "signature": "relayflow_version_forwarded_for_run_and_schedule"
+      "signature": "relayflow_v2_run_forwarded_and_schedule_refused"
     }
   }
 }

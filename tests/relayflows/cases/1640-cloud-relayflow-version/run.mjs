@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1640-cloud-relayflow-version';
 const RELAYFLOW_VERSION = 'v2';
+const UNSUPPORTED_SCHEDULE_ERROR =
+  'Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.';
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -42,12 +44,25 @@ import { writeFile } from 'node:fs/promises';
 const mocks = vi.hoisted(() => ({
   ensureAuthenticated: vi.fn(),
   authorizedApiFetch: vi.fn(),
+  readFile: vi.fn(async () => {
+    const error = new Error('relayflow proof inline workflow is not a file');
+    Object.assign(error, { code: 'ENOENT' });
+    throw error;
+  }),
 }));
 
 vi.mock('./auth.js', () => ({
   ensureAuthenticated: mocks.ensureAuthenticated,
   authorizedApiFetch: mocks.authorizedApiFetch,
 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    default: { ...actual, readFile: mocks.readFile },
+  };
+});
 
 import { runWorkflow, scheduleWorkflow } from './workflows.js';
 
@@ -59,7 +74,7 @@ const workflow = [
   'workflows: []',
 ].join('\n');
 
-test('observes engine generation forwarding through public run and schedule clients', async () => {
+test('observes v2 immediate-run forwarding and fail-closed v2 scheduling', async () => {
   const observationPath = process.env.RELAY_PR1640_OBSERVATION_PATH;
   if (!observationPath) throw new Error('Missing RELAY_PR1640_OBSERVATION_PATH.');
 
@@ -70,34 +85,36 @@ test('observes engine generation forwarding through public run and schedule clie
     apiUrl: 'https://relayflow.invalid',
   };
   mocks.ensureAuthenticated.mockResolvedValue(auth);
+  const scheduleResponse = () => ({
+    response: Response.json({
+      schedule: {
+        id: 'schedule-relayflow-proof',
+        relaycronScheduleId: 'relaycron-relayflow-proof',
+        userId: 'user-relayflow-proof',
+        workspaceId: 'workspace-relayflow-proof',
+        organizationId: 'organization-relayflow-proof',
+        name: 'relayflow-proof',
+        description: null,
+        scheduleType: 'once',
+        cronExpression: null,
+        scheduledAt: '2099-01-01T00:00:00.000Z',
+        timezone: 'UTC',
+        status: 'active',
+        lastTriggeredRunId: null,
+        lastTriggeredAt: null,
+        createdAt: '2098-01-01T00:00:00.000Z',
+        updatedAt: '2098-01-01T00:00:00.000Z',
+      },
+    }),
+    auth,
+  });
   mocks.authorizedApiFetch
     .mockResolvedValueOnce({
       response: Response.json({ runId: 'run-relayflow-proof', status: 'queued' }),
       auth,
     })
-    .mockResolvedValueOnce({
-      response: Response.json({
-        schedule: {
-          id: 'schedule-relayflow-proof',
-          relaycronScheduleId: 'relaycron-relayflow-proof',
-          userId: 'user-relayflow-proof',
-          workspaceId: 'workspace-relayflow-proof',
-          organizationId: 'organization-relayflow-proof',
-          name: 'relayflow-proof',
-          description: null,
-          scheduleType: 'once',
-          cronExpression: null,
-          scheduledAt: '2099-01-01T00:00:00.000Z',
-          timezone: 'UTC',
-          status: 'active',
-          lastTriggeredRunId: null,
-          lastTriggeredAt: null,
-          createdAt: '2098-01-01T00:00:00.000Z',
-          updatedAt: '2098-01-01T00:00:00.000Z',
-        },
-      }),
-      auth,
-    });
+    .mockResolvedValueOnce(scheduleResponse())
+    .mockResolvedValueOnce(scheduleResponse());
 
   await runWorkflow(workflow, {
     apiUrl: auth.apiUrl,
@@ -109,19 +126,55 @@ test('observes engine generation forwarding through public run and schedule clie
     apiUrl: auth.apiUrl,
     fileType: 'yaml',
     at: '2099-01-01T00:00:00.000Z',
-    relayflowVersion: ${JSON.stringify(RELAYFLOW_VERSION)},
   });
 
   const runRequest = mocks.authorizedApiFetch.mock.calls[0]?.[2];
-  const scheduleRequest = mocks.authorizedApiFetch.mock.calls[1]?.[2];
+  const omittedScheduleRequest = mocks.authorizedApiFetch.mock.calls[1]?.[2];
   const runBody = JSON.parse(String(runRequest?.body ?? '{}'));
-  const scheduleBody = JSON.parse(String(scheduleRequest?.body ?? '{}'));
+  const omittedScheduleBody = JSON.parse(String(omittedScheduleRequest?.body ?? '{}'));
+  const beforeV2Schedule = {
+    auth: mocks.ensureAuthenticated.mock.calls.length,
+    filesystem: mocks.readFile.mock.calls.length,
+    network: mocks.authorizedApiFetch.mock.calls.length,
+  };
+
+  let v2ScheduleError = null;
+  let v2ScheduleAccepted = false;
+  try {
+    await scheduleWorkflow(workflow, {
+      apiUrl: auth.apiUrl,
+      fileType: 'yaml',
+      at: '2099-01-01T00:00:00.000Z',
+      relayflowVersion: ${JSON.stringify(RELAYFLOW_VERSION)},
+    });
+    v2ScheduleAccepted = true;
+  } catch (error) {
+    v2ScheduleError = error instanceof Error ? error.message : String(error);
+  }
+
+  const afterV2Schedule = {
+    auth: mocks.ensureAuthenticated.mock.calls.length,
+    filesystem: mocks.readFile.mock.calls.length,
+    network: mocks.authorizedApiFetch.mock.calls.length,
+  };
+  const acceptedV2ScheduleRequest = mocks.authorizedApiFetch.mock.calls[2]?.[2];
+  const acceptedV2ScheduleBody = JSON.parse(String(acceptedV2ScheduleRequest?.body ?? '{}'));
 
   await writeFile(
     observationPath,
     JSON.stringify({
       runRelayflowVersion: runBody.relayflowVersion ?? null,
-      scheduleRelayflowVersion: scheduleBody.workflowRequest?.relayflowVersion ?? null,
+      omittedScheduleRelayflowVersion:
+        omittedScheduleBody.workflowRequest?.relayflowVersion ?? null,
+      v2ScheduleAccepted,
+      v2ScheduleError,
+      acceptedV2ScheduleRelayflowVersion:
+        acceptedV2ScheduleBody.workflowRequest?.relayflowVersion ?? null,
+      v2ScheduleSideEffectDeltas: {
+        auth: afterV2Schedule.auth - beforeV2Schedule.auth,
+        filesystem: afterV2Schedule.filesystem - beforeV2Schedule.filesystem,
+        network: afterV2Schedule.network - beforeV2Schedule.network,
+      },
     }),
     'utf8'
   );
@@ -160,11 +213,25 @@ try {
   );
 
   const observation = JSON.parse(await readFile(probeObservationPath, 'utf8'));
+  console.log('Relayflow proof observation:', JSON.stringify(observation));
   const baseObserved =
-    observation.runRelayflowVersion === null && observation.scheduleRelayflowVersion === null;
+    observation.runRelayflowVersion === null &&
+    observation.omittedScheduleRelayflowVersion === null &&
+    observation.v2ScheduleAccepted === true &&
+    observation.v2ScheduleError === null &&
+    observation.acceptedV2ScheduleRelayflowVersion === null &&
+    observation.v2ScheduleSideEffectDeltas?.auth === 1 &&
+    observation.v2ScheduleSideEffectDeltas?.filesystem === 1 &&
+    observation.v2ScheduleSideEffectDeltas?.network === 1;
   const headObserved =
     observation.runRelayflowVersion === RELAYFLOW_VERSION &&
-    observation.scheduleRelayflowVersion === RELAYFLOW_VERSION;
+    observation.omittedScheduleRelayflowVersion === null &&
+    observation.v2ScheduleAccepted === false &&
+    observation.v2ScheduleError === UNSUPPORTED_SCHEDULE_ERROR &&
+    observation.acceptedV2ScheduleRelayflowVersion === null &&
+    observation.v2ScheduleSideEffectDeltas?.auth === 0 &&
+    observation.v2ScheduleSideEffectDeltas?.filesystem === 0 &&
+    observation.v2ScheduleSideEffectDeltas?.network === 0;
 
   let outcome;
   let signature;
@@ -173,12 +240,12 @@ try {
     outcome = 'absent';
     signature = 'relayflow_version_not_forwarded';
     details =
-      'The base Cloud SDK omitted relayflowVersion from both immediate and scheduled workflow submissions.';
+      'The base Cloud SDK omitted explicit v2 from the immediate-run request, accepted an omitted-selector schedule, and treated explicit v2 scheduling as an unvalidated option.';
   } else if (headObserved) {
     outcome = 'fixed';
-    signature = 'relayflow_version_forwarded_for_run_and_schedule';
+    signature = 'relayflow_v2_run_forwarded_and_schedule_refused';
     details =
-      'The head Cloud SDK forwarded explicit v2 selection in both immediate and scheduled workflow submissions.';
+      `The head Cloud SDK forwarded explicit v2 for the immediate run, preserved omitted-selector scheduling, and refused explicit v2 scheduling with the exact unsupported error before auth, filesystem, or network access.`;
   } else {
     throw new Error(`Unexpected Relayflow version observation: ${JSON.stringify(observation)}.`);
   }
