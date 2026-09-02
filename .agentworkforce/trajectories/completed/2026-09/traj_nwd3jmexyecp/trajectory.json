@@ -1,0 +1,73 @@
+{
+  "id": "traj_nwd3jmexyecp",
+  "version": 1,
+  "task": {
+    "title": "Align Landlock capability probe with detached production launcher"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T03:42:42.863Z",
+  "completedAt": "2026-09-02T03:48:40.665Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T03:43:34.484Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_hafgq57yqt6u",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T03:43:34.484Z",
+      "endedAt": "2026-09-02T03:48:40.665Z",
+      "events": [
+        {
+          "ts": 1788320614485,
+          "type": "decision",
+          "content": "Detach the synchronous Landlock capability probe on POSIX: Detach the synchronous Landlock capability probe on POSIX",
+          "raw": {
+            "question": "Detach the synchronous Landlock capability probe on POSIX",
+            "chosen": "Detach the synchronous Landlock capability probe on POSIX",
+            "alternatives": [],
+            "reasoning": "The production launcher already creates a new session through runBoundedProcess. Matching that spawn boundary prevents an interactive caller's controlling TTY from causing the trusted bootstrap /dev/tty guard to reject an otherwise eligible host; a pty.fork regression exercises the real condition."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788320920374,
+          "type": "reflection",
+          "content": "The production/probe session mismatch is fixed and exercised end-to-end. Local focused/typecheck/full gates are green, and exact Daytona raw output shows the six selected Linux security regressions passed with the real shell marker.",
+          "raw": {
+            "focalPoints": [
+              "controlling-tty",
+              "launcher-parity",
+              "linux-proof"
+            ],
+            "confidence": 0.98
+          },
+          "significance": "high",
+          "tags": [
+            "focal:controlling-tty",
+            "focal:launcher-parity",
+            "focal:linux-proof",
+            "confidence:0.98"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Detached the synchronous Landlock probe to match production and added a real controlling-TTY regression; local gates and exact six-test Daytona proof pass.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "0687362ced0b21d9dec0d35a45f74b1156803b4a",
+    "endRef": "0687362ced0b21d9dec0d35a45f74b1156803b4a"
+  }
+}
