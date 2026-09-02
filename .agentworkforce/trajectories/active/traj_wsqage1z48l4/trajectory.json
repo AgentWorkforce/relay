@@ -31,6 +31,39 @@
             "reasoning": "Claude Code 2.1.236 reproducibly leaves a multiline brief in the composer when body and Enter arrive in one injection burst; sending the body, then one Enter as a distinct write after 250 ms submits it. The follow-up must remain inside one PTY FIFO command so terminal replies or human input cannot splice between the brief and submit."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788311870000,
+          "type": "decision",
+          "content": "Raised the pending changelog heading to [Unreleased - Patch]: Raised the pending changelog heading to [Unreleased - Patch]",
+          "raw": {
+            "question": "Raised the pending changelog heading to [Unreleased - Patch]",
+            "chosen": "Raised the pending changelog heading to [Unreleased - Patch]",
+            "alternatives": [],
+            "reasoning": "PR #1634 is a user-visible bug fix and AGENTS.md requires the first pending change after release to declare its SemVer level."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788312511113,
+          "type": "reflection",
+          "content": "Exact local RelayFlow proof reproduces the 11.10.0 bug at a 0ms body/Enter boundary and validates the fixed broker at 260ms; review-driven ack handling now waits for both writes, requeues failures, and closes the echo-before-ack race.",
+          "raw": {
+            "focalPoints": [
+              "red-green proof",
+              "write acknowledgement",
+              "echo race"
+            ],
+            "adjustments": "Added exact base/head proof case and delayed verification until compound PTY acknowledgement",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:red-green proof",
+            "focal:write acknowledgement",
+            "focal:echo race",
+            "confidence:0.9"
+          ]
         }
       ]
     }
