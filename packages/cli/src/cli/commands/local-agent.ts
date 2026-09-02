@@ -585,6 +585,61 @@ function validateNativeOptions(
  * Register the `local agent …` subtree (and `runtime tail`) onto the driver
  * group. List/spawn/release/kill talk to a running local broker.
  */
+
+/**
+ * Run a delivery-mode command against an agent that may live on another node.
+ *
+ * `attach` has always accepted `--node` and reaches remote agents through the
+ * fleet-node proxy; `message flush|hold|auto` did not, so they only ever saw
+ * the *local* broker's worker registry. The result was that a name `node agent
+ * list` and `attach` both resolved returned `agent_not_found` from `flush` —
+ * two disjoint registries behind one CLI, and no way to wake a parked agent on
+ * another machine without hand-driving its PTY (relay#1593 row 10).
+ *
+ * With `--node` the command is issued through the same authenticated fleet
+ * proxy `attach --node` uses, so both surfaces resolve names the same way.
+ * Without it the behaviour is unchanged: the local broker, as before.
+ */
+async function withDeliveryModeClient<T>(
+  deps: LocalAgentDependencies,
+  name: string,
+  opts: Record<string, unknown>,
+  sessionMode: AttachMode,
+  run: (client: ReturnType<typeof createBrokerClient>) => Promise<T>
+): Promise<T | undefined> {
+  const node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
+  if (!node) {
+    let captured: T | undefined;
+    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
+      captured = await run(client);
+    });
+    return captured;
+  }
+
+  const workspaceKey =
+    typeof opts.workspaceKey === 'string' && opts.workspaceKey.trim() ? opts.workspaceKey.trim() : undefined;
+  // A flush only drains an already-held queue, so it runs from the
+  // least-privileged session that still establishes the tunnel. Changing
+  // delivery mode is different: the broker refuses `terminal.set_delivery_mode`
+  // from a view session ("view sessions cannot change delivery mode"), so
+  // hold/auto must claim drive. That is honest — they take control of the
+  // agent's inbound delivery — but it means they contend with an attached
+  // driver, which a flush does not.
+  const proxy = await startFleetNodeAttachProxy({
+    agent: name,
+    node,
+    mode: sessionMode,
+    env: deps.env,
+    fetch: deps.fetch,
+    ...(workspaceKey ? { workspaceKey } : {}),
+  });
+  try {
+    return await run(createBrokerClient({ url: proxy.brokerUrl, apiKey: proxy.apiKey }, deps.fetch));
+  } finally {
+    await proxy.close();
+  }
+}
+
 export function registerLocalAgentCommands(
   group: Command,
   overrides: Partial<LocalAgentDependencies> = {}
@@ -880,38 +935,43 @@ export function registerLocalAgentCommands(
   addBrokerOptions(
     message
       .command('flush')
-      .description('Flush queued relay messages into a held local agent')
+      .description('Flush queued relay messages into a held agent')
       .argument('<name>', 'Agent name')
+      .option('--node <node>', 'Target an agent on a fleet node instead of the local broker')
+      .option('--workspace-key <key>', 'Workspace key for the fleet node (requires --node)')
   ).action(async (name: string, opts: Record<string, unknown>) => {
-    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
-      deps.log(JSON.stringify({ name, ...(await client.flushPending(name)) }, null, 2));
-    });
+    const result = await withDeliveryModeClient(deps, name, opts, 'view', (client) =>
+      client.flushPending(name)
+    );
+    if (result !== undefined) deps.log(JSON.stringify({ name, ...result }, null, 2));
   });
 
   addBrokerOptions(
     message
       .command('hold')
-      .description('Hold new relay messages for a local agent until flushed')
+      .description('Hold new relay messages for an agent until flushed')
       .argument('<name>', 'Agent name')
+      .option('--node <node>', 'Target an agent on a fleet node instead of the local broker')
+      .option('--workspace-key <key>', 'Workspace key for the fleet node (requires --node)')
   ).action(async (name: string, opts: Record<string, unknown>) => {
-    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
-      deps.log(
-        JSON.stringify({ name, ...(await client.setInboundDeliveryMode(name, 'manual_flush')) }, null, 2)
-      );
-    });
+    const result = await withDeliveryModeClient(deps, name, opts, 'drive', (client) =>
+      client.setInboundDeliveryMode(name, 'manual_flush')
+    );
+    if (result !== undefined) deps.log(JSON.stringify({ name, ...result }, null, 2));
   });
 
   addBrokerOptions(
     message
       .command('auto')
-      .description('Resume automatic relay message injection for a local agent')
+      .description('Resume automatic relay message injection for an agent')
       .argument('<name>', 'Agent name')
+      .option('--node <node>', 'Target an agent on a fleet node instead of the local broker')
+      .option('--workspace-key <key>', 'Workspace key for the fleet node (requires --node)')
   ).action(async (name: string, opts: Record<string, unknown>) => {
-    await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
-      deps.log(
-        JSON.stringify({ name, ...(await client.setInboundDeliveryMode(name, 'auto_inject')) }, null, 2)
-      );
-    });
+    const result = await withDeliveryModeClient(deps, name, opts, 'drive', (client) =>
+      client.setInboundDeliveryMode(name, 'auto_inject')
+    );
+    if (result !== undefined) deps.log(JSON.stringify({ name, ...result }, null, 2));
   });
 
   group

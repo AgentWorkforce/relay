@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `node agent message flush` and `node agent message auto` now unblock a held queue that could previously never drain, instead of reporting `flushed: 0` forever and leaving the agent unable to receive anything later. A parked message whose Relaycast identity has been retired is dead-lettered with a reason and is visible in `node deadletters`; injection failures and out-of-order sequences are still held for retry.
+- `node agent message flush`, `hold`, and `auto` now accept `--node`, so an agent on another machine can be flushed or woken from anywhere. Previously they consulted only the local broker and returned `agent_not_found` for a name that `node agent list` and `node agent attach --node` both resolved.
 
 ### Added
 
