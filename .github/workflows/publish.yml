@@ -484,8 +484,10 @@ jobs:
           retention-days: 1
 
   # End-to-end smoke test of the optional-dep broker pattern on every target
-  # platform, using locally-packed tarballs — no registry round-trip, no
-  # mocking. Each matrix leg:
+  # platform, using locally-packed tarballs with no registry round-trip. The
+  # driver and broker artifacts are real; their required Relaycast registration
+  # is isolated behind a loopback stub so production write latency cannot gate
+  # the publish. Each matrix leg:
   #   1. Stages the platform's broker binary into its package tree and
   #      injects os/cpu so the package validates like the published one.
   #   2. `npm pack`s the harness driver and SDK (with packages/sdk/bin emptied
@@ -641,6 +643,9 @@ jobs:
             console.log('OK: resolver returned executable binary from optional-dep package');
           "
 
+      - name: Start isolated Relaycast handshake stub
+        uses: ./.github/actions/start-relaycast-stub
+
       - name: Spawn smoke — HarnessDriverClient.spawn()
         shell: bash
         run: |
@@ -657,6 +662,11 @@ jobs:
             await client.shutdown();
             console.log('OK: client.shutdown() completed');
           " || { echo 'SPAWN_FAILED'; exit 1; }
+
+      - name: Stop isolated Relaycast handshake stub
+        if: always()
+        shell: bash
+        run: kill "$RELAYCAST_STUB_PID" 2>/dev/null || true
 
       - name: Negative smoke — optional dep missing (linux-x64 only)
         if: matrix.platform == 'linux-x64'
@@ -1485,6 +1495,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Node.js for isolated handshake stub
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
       - name: Download macOS binary
         uses: actions/download-artifact@v4
         with:
@@ -1509,9 +1524,10 @@ jobs:
           scripts/verify-macos-binary.sh "bin/${{ matrix.binary_name }}" "${{ matrix.expected_arch }}" -- --version
           echo "✓ Uncompressed binary verified"
 
+      - name: Start isolated Relaycast handshake stub
+        uses: ./.github/actions/start-relaycast-stub
+
       - name: Smoke standalone lifecycle
-        env:
-          RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}
         run: |
           if [ "$(uname -m)" != "${{ matrix.expected_arch }}" ]; then
             echo "Skipping lifecycle smoke for ${{ matrix.expected_arch }} on $(uname -m) host"
@@ -1519,6 +1535,11 @@ jobs:
           fi
           chmod +x "broker/${{ matrix.broker_name }}"
           bash scripts/ci-standalone-smoke.sh "$PWD/bin/${{ matrix.binary_name }}" "$PWD/broker/${{ matrix.broker_name }}"
+
+      - name: Stop isolated Relaycast handshake stub
+        if: always()
+        shell: bash
+        run: kill "$RELAYCAST_STUB_PID" 2>/dev/null || true
 
       - name: Verify compressed binary
         run: |

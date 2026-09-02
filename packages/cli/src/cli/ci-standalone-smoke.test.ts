@@ -103,12 +103,15 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(cleanupSubshellIndex).toBeGreaterThan(trapDisarmIndex);
   });
 
-  it('injects the same dedicated secret at every workflow call site', () => {
-    for (const workflow of ['.github/workflows/package-validation.yml', '.github/workflows/publish.yml']) {
-      expect(readFileSync(resolve(workflow), 'utf8')).toContain(
-        'RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}'
-      );
-    }
+  it('keeps the package-validation production check while isolating publish lifecycle gates', () => {
+    const packageValidation = readFileSync(resolve('.github/workflows/package-validation.yml'), 'utf8');
+    const publish = readFileSync(resolve('.github/workflows/publish.yml'), 'utf8');
+    const publishedDriverVerify = readFileSync(resolve('.github/workflows/verify-publish-sdk.yml'), 'utf8');
+
+    expect(packageValidation).toContain('RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}');
+    expect(publish).not.toContain('secrets.RELAY_CI_WORKSPACE_KEY');
+    expect(publish.match(/uses: \.\/\.github\/actions\/start-relaycast-stub/g)).toHaveLength(2);
+    expect(publishedDriverVerify).toContain('uses: ./.github/actions/start-relaycast-stub');
   });
 
   it('keeps the outer startup deadline above the broker aggregate handshake budget', () => {

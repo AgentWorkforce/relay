@@ -1,0 +1,48 @@
+name: Start local Relaycast handshake stub
+description: Route broker lifecycle verification through an isolated local handshake endpoint.
+
+runs:
+  using: composite
+  steps:
+    - name: Start local handshake endpoint
+      shell: bash
+      run: |
+        set -euo pipefail
+        STUB_ID="${GITHUB_JOB}-${RANDOM}"
+        URL_FILE="$RUNNER_TEMP/relay-ci-handshake-${STUB_ID}.url"
+        LOG_FILE="$RUNNER_TEMP/relay-ci-handshake-${STUB_ID}.log"
+        node "$GITHUB_ACTION_PATH/../../../scripts/ci-relaycast-stub.mjs" \
+          --url-file "$URL_FILE" >"$LOG_FILE" 2>&1 &
+        STUB_PID=$!
+
+        for ((attempt = 0; attempt < 100; attempt += 1)); do
+          if [ -s "$URL_FILE" ]; then
+            break
+          fi
+          if ! kill -0 "$STUB_PID" 2>/dev/null; then
+            echo "Relaycast CI handshake stub exited before becoming ready" >&2
+            cat "$LOG_FILE" >&2
+            exit 1
+          fi
+          sleep 0.1
+        done
+
+        if [ ! -s "$URL_FILE" ]; then
+          echo "Relaycast CI handshake stub did not become ready within 10 seconds" >&2
+          cat "$LOG_FILE" >&2
+          kill "$STUB_PID" 2>/dev/null || true
+          exit 1
+        fi
+
+        RELAYCAST_STUB_URL=$(tr -d '\r\n' < "$URL_FILE")
+        curl --fail --silent --show-error "$RELAYCAST_STUB_URL/health" >/dev/null
+
+        {
+          echo "RELAYCAST_STUB_PID=$STUB_PID"
+          echo "RELAY_BASE_URL=$RELAYCAST_STUB_URL"
+          echo "RELAYCAST_BASE_URL=$RELAYCAST_STUB_URL"
+          echo "RELAY_WORKSPACE_KEY=rk_ci_publish_verify"
+          echo "AGENT_RELAY_WORKSPACE_KEY=rk_ci_publish_verify"
+        } >> "$GITHUB_ENV"
+
+        echo "Broker lifecycle verification is using the local Relaycast handshake stub."
