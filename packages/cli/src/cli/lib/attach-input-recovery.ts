@@ -24,6 +24,8 @@
  * readable exit a supervisor can act on is the contract (#1419).
  */
 
+import { Buffer } from 'node:buffer';
+
 import type { CliPtyInputStream } from './attach-drive.js';
 
 /** Default number of reopen attempts before a lost input stream ends the session. */
@@ -34,6 +36,12 @@ export const INPUT_REOPEN_BASE_DELAY_MS = 250;
 export const INPUT_REOPEN_MAX_DELAY_MS = 4_000;
 /** Ceiling on one attempt's open wait and identity check. */
 export const INPUT_REOPEN_ATTEMPT_TIMEOUT_MS = 15_000;
+/**
+ * Maximum input retained during one outage. A human can type comfortably for
+ * the complete retry window, while a runaway paste or mouse-report stream
+ * cannot grow memory without bound.
+ */
+export const INPUT_REPLAY_BUFFER_MAX_BYTES = 64 * 1024;
 
 /**
  * `PtyInputStream.send()` rejects with `input_backpressure` when queued bytes
@@ -131,6 +139,8 @@ export interface InputStreamRecoveryOptions {
   openStream: () => CliPtyInputStream;
   /** Drop optimistic echo for keystrokes that never reached the PTY. */
   onRollback: () => void;
+  /** Reset caller-owned decoder state when buffered input is discarded. */
+  onBufferedInputDiscarded?: () => void;
   /** Called when every attempt failed. Callers exit non-zero here. */
   onExhausted: () => void;
   /**
@@ -160,11 +170,23 @@ export interface InputStreamRecoveryOptions {
    * {@link INPUT_REOPEN_ATTEMPT_TIMEOUT_MS}.
    */
   attemptTimeoutMs?: number;
+  /** Deterministic test seam for the bounded outage-input buffer. */
+  bufferLimitBytes?: number;
 }
 
 function describeSendError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+class InputRecoveryDeadlineError extends Error {
+  constructor(
+    readonly operation: string,
+    timeoutMs: number
+  ) {
+    super(`${operation} timed out after ${timeoutMs}ms`);
+    this.name = 'InputRecoveryDeadlineError';
+  }
 }
 
 export interface InputStreamRecovery {
@@ -177,8 +199,8 @@ export interface InputStreamRecovery {
   isUsable(stream: CliPtyInputStream | null): stream is CliPtyInputStream;
   /** True while a reopen is in flight. */
   isRecovering(): boolean;
-  /** Begin recovery. No-ops if already recovering or settled. */
-  recover(reason: string): void;
+  /** Begin recovery, or append input when recovery is already active. No-ops if settled. */
+  recover(reason: string, input?: string): void;
   /**
    * Classify a rejected `send()`. Three codes never enter recovery:
    * `input_backpressure` is flow control on a healthy stream and only costs
@@ -190,6 +212,8 @@ export interface InputStreamRecovery {
    * every send rejection here rather than assuming loss.
    */
   handleSendFailure(error: unknown): void;
+  /** Buffer decoded input while the stream is down for identity-gated replay. */
+  bufferInput(input: string): void;
   /** Clears the backpressure latch so a later episode reports again. */
   noteSendSuccess(): void;
   /** Cancel a pending backoff timer (detach mid-recovery). */
@@ -212,8 +236,10 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
     onExhausted,
     verifyIdentity,
   } = options;
+  const onBufferedInputDiscarded = options.onBufferedInputDiscarded ?? (() => undefined);
 
   const attemptTimeoutMs = options.attemptTimeoutMs ?? INPUT_REOPEN_ATTEMPT_TIMEOUT_MS;
+  const bufferLimitBytes = Math.max(0, options.bufferLimitBytes ?? INPUT_REPLAY_BUFFER_MAX_BYTES);
 
   let inFlight: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -230,6 +256,61 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
   let writeTimeoutReported = false;
   /** True once a write-refused episode has been reported; reset on the next good send. */
   let writeRefusedReported = false;
+  let bufferedInput: string[] = [];
+  let bufferedBytes = 0;
+  let overflowDiscardedBytes = 0;
+  let bufferOverflowed = false;
+  let candidateStream: CliPtyInputStream | null = null;
+
+  const resetBufferedInput = (): void => {
+    bufferedInput = [];
+    bufferedBytes = 0;
+    overflowDiscardedBytes = 0;
+    bufferOverflowed = false;
+  };
+
+  /**
+   * Clear everything retained for this outage and return the byte count for an
+   * operator-facing diagnostic. Overflow deliberately poisons all not-yet-sent
+   * input: replaying only a prefix of a paste could execute a different,
+   * truncated command.
+   */
+  const discardBufferedInput = (): number => {
+    const discarded = bufferedBytes + overflowDiscardedBytes;
+    resetBufferedInput();
+    onBufferedInputDiscarded();
+    return discarded;
+  };
+
+  const discardedMessage = (discarded: number): string =>
+    discarded > 0 ? ` Discarded ${discarded} buffered bytes; none were forwarded.` : '';
+
+  const appendBufferedInput = (input: string): void => {
+    if (input.length === 0) return;
+    const bytes = Buffer.byteLength(input, 'utf8');
+    if (bufferOverflowed) {
+      overflowDiscardedBytes += bytes;
+      return;
+    }
+    if (bufferedBytes + bytes > bufferLimitBytes) {
+      overflowDiscardedBytes = bufferedBytes + bytes;
+      bufferedInput = [];
+      bufferedBytes = 0;
+      bufferOverflowed = true;
+      log(
+        `[${label}] outage input exceeded the ${bufferLimitBytes}-byte safety limit; ` +
+          `all input still buffered will be discarded rather than replaying a truncated command.`
+      );
+      return;
+    }
+    bufferedInput.push(input);
+    bufferedBytes += bytes;
+  };
+
+  const bufferInput = (input: string): void => {
+    if (inFlight === null || isSettled()) return;
+    appendBufferedInput(input);
+  };
 
   const cancel = (): void => {
     if (timer) {
@@ -240,6 +321,13 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
     // parking on a timer that will never fire.
     releaseBackoff?.();
     releaseBackoff = null;
+    resetBufferedInput();
+    try {
+      candidateStream?.close(1000, `${label} client exiting`);
+    } catch {
+      // best effort
+    }
+    candidateStream = null;
   };
 
   /**
@@ -254,7 +342,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
         work,
         new Promise<never>((_resolve, reject) => {
           handle = setTimeout(
-            () => reject(new Error(`${what} timed out after ${attemptTimeoutMs}ms`)),
+            () => reject(new InputRecoveryDeadlineError(what, attemptTimeoutMs)),
             attemptTimeoutMs
           );
           handle.unref?.();
@@ -274,6 +362,77 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
     } catch {
       // best effort
     }
+  };
+
+  /** Replay only after identity verification, preserving byte order and buffer safety. */
+  const replayBufferedInput = async (
+    replacement: CliPtyInputStream
+  ): Promise<{
+    outcome: 'ready' | 'retry' | 'settled';
+    replayedBytes: number;
+    uncertainBytes: number;
+    discardedBytes: number;
+  }> => {
+    let replayedBytes = 0;
+    let uncertainBytes = 0;
+    let discardedBytes = 0;
+    while (!bufferOverflowed && bufferedInput.length > 0) {
+      if (isSettled()) {
+        resetBufferedInput();
+        return { outcome: 'settled', replayedBytes, uncertainBytes, discardedBytes };
+      }
+      // Send one snapshot so input appended while this await is in flight
+      // remains queued behind it. This preserves the human's byte order.
+      const replayCount = bufferedInput.length;
+      const replayPayload = bufferedInput.slice(0, replayCount).join('');
+      const replayBytes = Buffer.byteLength(replayPayload, 'utf8');
+      // Move this complete snapshot out of the live queue before awaiting.
+      // New stdin can then append independently without corrupting counts.
+      bufferedInput.splice(0, replayCount);
+      bufferedBytes -= replayBytes;
+      try {
+        await withDeadline(replacement.send(replayPayload), 'buffered input replay');
+      } catch (replayError) {
+        if (isSettled()) {
+          resetBufferedInput();
+          return { outcome: 'settled', replayedBytes, uncertainBytes, discardedBytes };
+        }
+        if (isWriteTimeoutRejection(replayError)) {
+          // The broker may still deliver this write. Retrying it would risk a
+          // duplicate command, so treat the uncertain write as consumed just
+          // as the live-input path does.
+          uncertainBytes += replayBytes;
+          continue;
+        } else if (replayError instanceof InputRecoveryDeadlineError) {
+          // The local deadline cannot tell whether the stream accepted this
+          // payload. Never retry it, and discard everything behind it so a
+          // command suffix cannot execute without its prefix.
+          uncertainBytes += replayBytes;
+          discardedBytes += discardBufferedInput();
+          break;
+        } else if (isBackpressureRejection(replayError) || isWriteRefusedRejection(replayError)) {
+          // Both codes prove the socket is healthy but this payload was not
+          // accepted. Discard it and everything queued behind it as one
+          // unit: replaying only the suffix could execute a different,
+          // truncated command.
+          discardedBytes += replayBytes + discardBufferedInput();
+          break;
+        } else {
+          // A fatal send error can arrive after transmission began. Retry the
+          // connection, but never these bytes: the current payload may still
+          // land, and replaying it could execute the command twice. Discard
+          // everything behind it so no suffix executes without its prefix.
+          uncertainBytes += replayBytes;
+          discardedBytes += discardBufferedInput();
+          return { outcome: 'retry', replayedBytes, uncertainBytes, discardedBytes };
+        }
+      }
+      replayedBytes += replayBytes;
+    }
+
+    if (bufferOverflowed) discardedBytes += discardBufferedInput();
+    else resetBufferedInput();
+    return { outcome: 'ready', replayedBytes, uncertainBytes, discardedBytes };
   };
 
   const noteSendSuccess = (): void => {
@@ -330,11 +489,19 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       }
       return;
     }
+    // This rejected write is delivery-ambiguous: it may already have crossed
+    // the socket before the fatal error arrived. Do not put it in the replay
+    // buffer and risk executing it twice. Only input observed after recovery
+    // begins is known not to have been sent and is eligible for replay.
     recover(describeSendError(sendError));
   };
 
-  const recover = (reason: string): void => {
-    if (isSettled() || inFlight) return;
+  const recover = (reason: string, input?: string): void => {
+    if (isSettled()) return;
+    if (inFlight) {
+      if (input !== undefined) appendBufferedInput(input);
+      return;
+    }
 
     // Drop the dead handle first: `isUsable()` then short-circuits every chunk
     // that arrives mid-recovery, which is what actually silences the flood.
@@ -346,11 +513,13 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       // best effort — already closed in the common case
     }
     onRollback();
+    if (input !== undefined) appendBufferedInput(input);
 
     if (maxAttempts <= 0) {
       error(
         `[${label}] input stream lost (${reason}); reconnect is disabled. ` +
-          `Detaching — ${name} is still running; reattach to resume.`
+          `Detaching — ${name} is still running; reattach to resume.` +
+          discardedMessage(discardBufferedInput())
       );
       onExhausted();
       return;
@@ -358,6 +527,14 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
 
     // One line for the outage, not one per keystroke.
     log(`[${label}] input stream lost (${reason}); reconnecting…`);
+    let replayedAcrossAttempts = 0;
+    let uncertainAcrossAttempts = 0;
+    let discardedAcrossAttempts = 0;
+
+    const uncertainMessage = (): string =>
+      uncertainAcrossAttempts > 0
+        ? ` ${uncertainAcrossAttempts} buffered bytes were sent once but not confirmed; they may still land.`
+        : '';
 
     /**
      * One reopen attempt. `'settled'` means the session went away mid-attempt,
@@ -375,16 +552,20 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       let replacement: CliPtyInputStream | null = null;
       try {
         replacement = openStream();
+        candidateStream = replacement;
         await withDeadline(replacement.waitUntilOpen(), 'input stream open');
       } catch {
         // Stay quiet between attempts. The human saw one line when the outage
         // started and sees exactly one more when it resolves either way;
         // narrating each failed retry would rebuild the flood.
         if (replacement) closeQuietly(replacement, `${label} client abandoning attempt`);
+        candidateStream = null;
         return 'retry';
       }
       if (isSettled()) {
         closeQuietly(replacement, `${label} client exiting`);
+        candidateStream = null;
+        resetBufferedInput();
         return 'settled';
       }
 
@@ -397,10 +578,14 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       // point is that reattaching by name is unsafe without a check.
       if (typeof verifyIdentity !== 'function') {
         closeQuietly(replacement, `${label} client rejected replacement`);
+        candidateStream = null;
+        const discarded = discardedAcrossAttempts + discardBufferedInput();
         error(
           `[${label}] input stream reopened but no worker identity verifier was supplied, ` +
             `so it cannot be shown to be the same worker. Refusing to forward input. ` +
-            `Detaching; reattach to ${name} to continue.`
+            `Detaching; reattach to ${name} to continue.` +
+            discardedMessage(discarded) +
+            uncertainMessage()
         );
         return 'rejected';
       }
@@ -426,26 +611,57 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       }));
       if (isSettled()) {
         closeQuietly(replacement, `${label} client exiting`);
+        candidateStream = null;
+        resetBufferedInput();
         return 'settled';
       }
       if (!verdict.ok) {
         closeQuietly(replacement, `${label} client rejected replacement`);
+        candidateStream = null;
+        const discarded = discardedAcrossAttempts + discardBufferedInput();
         error(
           `[${label}] input stream reopened but it is not the same worker (${verdict.reason}). ` +
             `Refusing to forward input — your keystrokes would go somewhere you did not attach to. ` +
-            `Detaching; reattach to ${name} to continue.`
+            `Detaching; reattach to ${name} to continue.` +
+            discardedMessage(discarded) +
+            uncertainMessage()
         );
         return 'rejected';
       }
 
+      // A positive identity verdict is the hard safety gate. Nothing buffered
+      // during the outage may reach `replacement.send()` above this point.
+      const replay = await replayBufferedInput(replacement);
+      replayedAcrossAttempts += replay.replayedBytes;
+      uncertainAcrossAttempts += replay.uncertainBytes;
+      discardedAcrossAttempts += replay.discardedBytes;
+      if (replay.outcome === 'settled' || isSettled()) {
+        closeQuietly(replacement, `${label} client exiting`);
+        candidateStream = null;
+        resetBufferedInput();
+        return 'settled';
+      }
+      if (replay.outcome === 'retry') {
+        closeQuietly(replacement, `${label} client abandoning failed replay`);
+        candidateStream = null;
+        return 'retry';
+      }
       setStream(replacement);
+      candidateStream = null;
       // Say plainly that the session survived. A recovered flap and a fatal
       // disconnect previously read the same to a human — both were red lines
       // that named a failure and stopped — so operators read a working session
       // as a crash (relay#1597).
       log(
         `[${label}] input stream reconnected after ${attempt} attempt(s) — ${name} is still attached ` +
-          `and usable. Keystrokes typed during the outage were dropped, not queued; retype them.`
+          `and usable.` +
+          (replayedAcrossAttempts > 0
+            ? ` Replayed ${replayedAcrossAttempts} buffered bytes after verifying the worker identity.`
+            : '') +
+          uncertainMessage() +
+          (discardedAcrossAttempts > 0
+            ? ` Discarded ${discardedAcrossAttempts} buffered bytes that could not be replayed safely.`
+            : '')
       );
       return 'opened';
     };
@@ -473,7 +689,9 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
       if (isSettled()) return;
       error(
         `[${label}] input stream could not be reopened after ${maxAttempts} attempts (${reason}). ` +
-          `Detaching — ${name} is still running; reattach to resume.`
+          `Detaching — ${name} is still running; reattach to resume.` +
+          discardedMessage(discardedAcrossAttempts + discardBufferedInput()) +
+          uncertainMessage()
       );
       onExhausted();
     })().finally(() => {
@@ -486,6 +704,7 @@ export function createInputStreamRecovery(options: InputStreamRecoveryOptions): 
     isRecovering: () => inFlight !== null,
     recover,
     handleSendFailure,
+    bufferInput,
     noteSendSuccess,
     cancel,
   };
