@@ -73,9 +73,18 @@ if (arm === 'base') {
     'if (escalationAudit.status !== 0)',
     'ESCALATION DELIVERY FAILED independently of the workflow DAG',
     'process.exitCode = 2',
+    'const result = await wf.run({ dryRun, cwd: REPO_ROOT })',
   ]) {
     if (!workflowSource.includes(integrationMarker)) {
       throw new Error(`Head workflow does not wire fail-loud escalation audit: ${integrationMarker}`);
+    }
+  }
+  for (const mutatingStep of ['attempt-fix', 'fix-integrity', 'open-pr']) {
+    const start = workflowSource.indexOf(`wf.step('${mutatingStep}', {`);
+    const end = workflowSource.indexOf("\n  wf.step('", start + 1);
+    const stepSource = workflowSource.slice(start, end === -1 ? workflowSource.length : end);
+    if (start === -1 || !stepSource.includes('cwd: RUN_WORKTREE')) {
+      throw new Error(`Head workflow does not isolate mutating step ${mutatingStep}.`);
     }
   }
   for (const channel of ['slack_primary', 'slack_followup', 'github_issue', 'draft_pr', 'posthog']) {
@@ -127,9 +136,14 @@ if (arm === 'base') {
 
     const gitRepo = path.join(temporaryRoot, 'git-repo');
     await mkdir(gitRepo);
-    execFileSync('git', ['-C', gitRepo, 'init'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', gitRepo, 'init'], {
+      stdio: 'ignore',
+      timeout: COMMAND_TIMEOUT_MS,
+    });
     await writeFile(path.join(gitRepo, 'fixture.txt'), 'base\n');
-    execFileSync('git', ['-C', gitRepo, 'add', 'fixture.txt']);
+    execFileSync('git', ['-C', gitRepo, 'add', 'fixture.txt'], {
+      timeout: COMMAND_TIMEOUT_MS,
+    });
     execFileSync(
       'git',
       [
@@ -143,11 +157,11 @@ if (arm === 'base') {
         '-m',
         'fixture',
       ],
-      { stdio: 'ignore' }
+      { stdio: 'ignore', timeout: COMMAND_TIMEOUT_MS }
     );
     const worktreeRoot = path.join(temporaryRoot, 'git-worktrees');
-    const worktreeA = prepareRunWorktree(gitRepo, worktreeRoot, 'verify-worktree-a');
-    const worktreeB = prepareRunWorktree(gitRepo, worktreeRoot, 'verify-worktree-b');
+    const worktreeA = await prepareRunWorktree(gitRepo, worktreeRoot, 'verify-worktree-a');
+    const worktreeB = await prepareRunWorktree(gitRepo, worktreeRoot, 'verify-worktree-b');
     await writeFile(path.join(worktreeA, 'fixture.txt'), 'worktree-a\n');
     await writeFile(path.join(worktreeB, 'fixture.txt'), 'worktree-b\n');
     if ((await readFile(path.join(gitRepo, 'fixture.txt'), 'utf8')) !== 'base\n') {
@@ -159,8 +173,8 @@ if (arm === 'base') {
     if ((await readFile(path.join(worktreeB, 'fixture.txt'), 'utf8')) !== 'worktree-b\n') {
       throw new Error('Head verifier worktree B lost its private git state.');
     }
-    removeRunWorktree(gitRepo, worktreeA);
-    removeRunWorktree(gitRepo, worktreeB);
+    await removeRunWorktree(gitRepo, worktreeA);
+    await removeRunWorktree(gitRepo, worktreeB);
 
     const failedChannels = [
       ['slack_primary', 'auth_token_missing'],

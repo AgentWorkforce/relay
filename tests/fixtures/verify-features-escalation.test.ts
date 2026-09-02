@@ -78,8 +78,16 @@ describe('verify-features escalation status', () => {
     expect(setup).toContain('reset "${ARTIFACTS}"');
     expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
     expect(source).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
-    expect(source).toContain('prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
-    expect(source).toContain('removeRunWorktree(REPO_ROOT, runWorktree)');
+    expect(source).toContain('await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
+    expect(source).toContain('await removeRunWorktree(REPO_ROOT, RUN_WORKTREE)');
+    expect(source).toContain('const result = await wf.run({ dryRun, cwd: REPO_ROOT })');
+    for (const mutatingStep of [
+      workflowStep(source, 'attempt-fix'),
+      workflowStep(source, 'fix-integrity'),
+      workflowStep(source, 'open-pr'),
+    ]) {
+      expect(mutatingStep).toContain('cwd: RUN_WORKTREE');
+    }
     expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
     expect(source).not.toContain('INVOCATION_LOCK');
     expect(fileIssue).toContain('ISSUE_RC=$?');
@@ -359,9 +367,32 @@ describe('verify-features escalation status', () => {
     await expect(readFile(path.join(active, '.complete'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
+    await expect(stat(active)).resolves.toBeDefined();
     await expect(stat(abandoned)).rejects.toMatchObject({
       code: 'ENOENT',
     });
+  });
+
+  it('protects the canonical completed run without an explicit run id', async () => {
+    const root = await artifacts();
+    for (let index = 0; index < 4; index += 1) {
+      const runId = `verify-canonical-${index}`;
+      const directory = prepareRunArtifacts(root, runId, `canonical-${index}`);
+      markRunArtifactsComplete(directory, runId);
+    }
+
+    pruneRunArtifacts(root, { keepCompleted: 1 });
+
+    const remaining = await readdir(path.join(root, 'runs'));
+    expect(remaining.filter((name) => name.startsWith('verify-canonical-'))).toHaveLength(2);
+    await expect(stat(path.join(root, 'runs', 'verify-canonical-3'))).resolves.toBeDefined();
+  });
+
+  it('reserves the internal pruning marker from run ids', async () => {
+    const root = await artifacts();
+    expect(() => prepareRunArtifacts(root, 'verify.pruning-live', 'nonce')).toThrow(
+      'runId must be a single safe path segment'
+    );
   });
 
   it('bounds completed history when independent pruners race', async () => {
@@ -412,8 +443,8 @@ describe('verify-features escalation status', () => {
       'fixture',
     ]);
     const workspace = await artifacts();
-    const worktreeA = prepareRunWorktree(repo, workspace, 'verify-worktree-a');
-    const worktreeB = prepareRunWorktree(repo, workspace, 'verify-worktree-b');
+    const worktreeA = await prepareRunWorktree(repo, workspace, 'verify-worktree-a');
+    const worktreeB = await prepareRunWorktree(repo, workspace, 'verify-worktree-b');
     await writeFile(path.join(worktreeA, 'fixture.txt'), 'isolated-a\n');
     await writeFile(path.join(worktreeB, 'fixture.txt'), 'isolated-b\n');
 
@@ -421,9 +452,55 @@ describe('verify-features escalation status', () => {
     expect(await readFile(path.join(worktreeA, 'fixture.txt'), 'utf8')).toBe('isolated-a\n');
     expect(await readFile(path.join(worktreeB, 'fixture.txt'), 'utf8')).toBe('isolated-b\n');
 
-    removeRunWorktree(repo, worktreeA);
-    removeRunWorktree(repo, worktreeB);
+    await removeRunWorktree(repo, worktreeA);
+    await removeRunWorktree(repo, worktreeB);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'kills checkout-filter descendants when worktree creation times out',
+    async () => {
+      const repo = await artifacts();
+      await execFileAsync('git', ['-C', repo, 'init']);
+      await writeFile(path.join(repo, 'fixture.txt'), 'base\n');
+      await writeFile(path.join(repo, '.gitattributes'), 'fixture.txt filter=slow\n');
+      await execFileAsync('git', ['-C', repo, 'add', 'fixture.txt', '.gitattributes']);
+      await execFileAsync('git', [
+        '-C',
+        repo,
+        '-c',
+        'user.name=Relay Test',
+        '-c',
+        'user.email=relay@example.invalid',
+        'commit',
+        '-m',
+        'fixture',
+      ]);
+      const pidFile = path.join(repo, 'filter.pid');
+      await execFileAsync('git', [
+        '-C',
+        repo,
+        'config',
+        'filter.slow.smudge',
+        `sh -c 'echo $$ > "${pidFile}"; sleep 30'`,
+      ]);
+
+      await expect(
+        prepareRunWorktree(repo, await artifacts(), 'verify-timeout', { timeoutMs: 200 })
+      ).rejects.toThrow('timed out after 200ms');
+
+      const filterPid = Number((await readFile(pidFile, 'utf8')).trim());
+      expect(Number.isSafeInteger(filterPid)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      let descendantAlive = true;
+      try {
+        process.kill(filterPid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') descendantAlive = false;
+        else throw error;
+      }
+      expect(descendantAlive).toBe(false);
+    }
+  );
 
   it('rejects prototype names and incomplete delivery receipts', async () => {
     const directory = await artifacts();

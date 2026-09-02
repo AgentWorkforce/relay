@@ -85,6 +85,7 @@ const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
 const RUN_NONCE = randomUUID().slice(0, 8);
 const RUN_ID = `verify-${TIMESTAMP}-${RUN_NONCE}`;
 const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
+const RUN_WORKTREE = path.join(WORKTREE_ROOT, 'worktrees', RUN_ID);
 const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
 const ESCALATION_STATUS_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalation-status.mjs');
 
@@ -2219,6 +2220,7 @@ exit 0
   wf.step('attempt-fix', {
     agent: 'fixer',
     dependsOn: ['file-issue'],
+    cwd: RUN_WORKTREE,
     task: `Fix the underlying defect behind a feature verification failure.
 
 ## FIRST: check whether there is anything to do
@@ -2310,6 +2312,7 @@ that. Do NOT merge anything.`,
   wf.step('fix-integrity', {
     type: 'deterministic',
     dependsOn: ['attempt-fix'],
+    cwd: RUN_WORKTREE,
     captureOutput: true,
     failOnError: false,
     command: String.raw`
@@ -2473,6 +2476,7 @@ exit 0
   wf.step('open-pr', {
     type: 'deterministic',
     dependsOn: ['fix-integrity'],
+    cwd: RUN_WORKTREE,
     captureOutput: true,
     failOnError: false,
     command: String.raw`
@@ -2805,15 +2809,15 @@ exit 1
   });
 
   const dryRun = process.env.DRY_RUN === '1';
-  let runCwd = REPO_ROOT;
-  let runWorktree = '';
   if (!dryRun) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
   try {
     if (!dryRun) {
-      runWorktree = prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID);
-      runCwd = runWorktree;
+      const preparedWorktree = await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID);
+      if (preparedWorktree !== RUN_WORKTREE) {
+        throw new Error(`prepared unexpected worktree path: ${preparedWorktree}`);
+      }
     }
-    const result = await wf.run({ dryRun, cwd: runCwd });
+    const result = await wf.run({ dryRun, cwd: REPO_ROOT });
 
     // A dry run plans the graph without executing it, so there is no verdict to
     // read and nothing to enforce. Bail before the checks below, which would
@@ -2881,7 +2885,7 @@ exit 1
   } finally {
     if (!dryRun) {
       try {
-        if (runWorktree) removeRunWorktree(REPO_ROOT, runWorktree);
+        await removeRunWorktree(REPO_ROOT, RUN_WORKTREE);
       } finally {
         markRunArtifactsComplete(ARTIFACTS, RUN_ID);
       }

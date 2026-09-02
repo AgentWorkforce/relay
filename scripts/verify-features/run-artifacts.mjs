@@ -34,7 +34,7 @@ export const CANONICAL_FILES = Object.freeze([
 ]);
 
 function assertPathSegment(value, label) {
-  if (!/^[A-Za-z0-9._-]+$/.test(value) || value === '.' || value === '..') {
+  if (!/^[A-Za-z0-9._-]+$/.test(value) || value === '.' || value === '..' || value.includes('.pruning-')) {
     throw new Error(`${label} must be a single safe path segment`);
   }
 }
@@ -107,7 +107,7 @@ export function pruneRunArtifacts(
   let canonicalRunId;
   try {
     const currentTarget = readlinkSync(path.join(root, 'current'));
-    const prefix = `runs${path.sep}`;
+    const prefix = 'runs/';
     if (currentTarget.startsWith(prefix)) canonicalRunId = currentTarget.slice(prefix.length);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;

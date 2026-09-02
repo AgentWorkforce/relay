@@ -43,3 +43,4 @@ Isolated each verifier invocation in a detached git worktree, added concurrency-
 
 **Commits:** ce7325d65
 **Files changed:** 8
+**Trace:** `../traj_jtwpjqd8h655.trace.json`

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Broker `/api/send` responses now distinguish durable Relaycast publication from confirmed delivery and include the server-observed reachability of named recipients.
 - `relay-verify-features` reports failed Slack, GitHub, and PostHog escalation delivery as failed workflow evidence.
-- Concurrent `relay-verify-features` runs keep independent git state and bounded evidence, so one invocation cannot corrupt another run's fix or erase its verdict and escalation receipts.
+- Concurrent `relay-verify-features` runs can no longer corrupt another run's fix or erase its verdict and escalation receipts.
 - `relay-verify-features` no longer treats an unconfirmed Slack alert as delivered and hands it off for follow-up instead of silently swallowing the failure.
 - `relay-verify-features` aborts feature checks when the CLI is outside the checkout under test.
 - `relay-verify-features` reports an autofix run as unverified when the fixer provides no evidence for a failed check, instead of counting it as handled.
