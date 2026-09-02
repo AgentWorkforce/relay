@@ -124,11 +124,12 @@ fn agent_is_known_offline(agent: &relaycast::Agent) -> bool {
 /// worker. This is intentionally broader than [`agent_is_live`]: that helper
 /// is a fail-closed credential-rotation guard whose historical contract only
 /// recognizes `active` / `online`, while a send-time observation must report
-/// the engine's `idle`, `blocked`, and `waiting` states as reachable too.
+/// the engine's `idle`, `blocked`, and `waiting` states as reachable too, as
+/// well as legacy `away` records from pre-active-status engines.
 fn agent_is_reachable(agent: &relaycast::Agent) -> bool {
     matches!(
         agent.status.as_str(),
-        "active" | "online" | "idle" | "blocked" | "waiting"
+        "active" | "online" | "idle" | "blocked" | "waiting" | "away"
     )
 }
 
@@ -1565,6 +1566,7 @@ mod tests {
             ("idle-worker", "idle", true),
             ("blocked-worker", "blocked", true),
             ("waiting-worker", "waiting", true),
+            ("away-worker", "away", true),
             ("offline-worker", "offline", false),
             ("released-worker", "released", false),
             ("inactive-worker", "inactive", false),
