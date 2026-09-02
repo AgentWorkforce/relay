@@ -240,11 +240,11 @@ pub(crate) fn requeue_dead_letter(
 /// Dead-letter a message removed from a worker's parked queue without ever
 /// being injected, emitting the same `DeadLetterAdded` event as the pending
 /// path so `node deadletters` and the SDK see it identically.
-pub(crate) async fn dead_letter_parked_message(
+pub(crate) fn dead_letter_parked_message(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dead_letters: &mut DeadLetterStore,
     entry: DeadLetterEntry,
-) {
+) -> bool {
     let event = BrokerEvent::DeadLetterAdded {
         name: entry.worker_name.clone(),
         delivery_id: entry.delivery.delivery_id.clone(),
@@ -255,23 +255,27 @@ pub(crate) async fn dead_letter_parked_message(
         reason: entry.reason.clone(),
     };
     dead_letters.push(entry);
-    // Bounded, unlike the pending path's emit. This runs inside the flush loop
-    // on the runtime event loop and can fire once per parked message (up to
-    // `MAX_PENDING_PER_WORKER`), so a full or unattended SDK channel must not
-    // be able to stall the loop — that would hang every other API request,
-    // `status` included. The store write above already happened, so a dropped
-    // event costs observability on one entry, never the record itself.
+    // Nonblocking, unlike the pending path's emit. This runs inside the flush
+    // loop once per parked message (up to `MAX_PENDING_PER_WORKER`), so even a
+    // small per-entry timeout would add up and stall every other API request.
+    // The store write above already happened, so a dropped event costs
+    // observability on one entry, never the record itself.
     match serde_json::to_value(event) {
-        Ok(payload) => {
-            emit_http_api_event_with_timeout(sdk_out_tx, payload, http_api_event_emit_timeout())
-                .await;
-        }
+        Ok(payload) => sdk_out_tx
+            .try_send(ProtocolEnvelope {
+                v: PROTOCOL_VERSION,
+                msg_type: "event".to_string(),
+                request_id: None,
+                payload,
+            })
+            .is_ok(),
         Err(error) => {
             tracing::warn!(
                 target = "relay_broker::dead_letter",
                 error = %error,
                 "failed to serialize dead_letter_added event for a parked message"
             );
+            false
         }
     }
 }

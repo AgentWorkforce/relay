@@ -15,7 +15,7 @@
  * arms, rather than any field this PR adds.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -25,6 +25,8 @@ const CASE_ID = '1593-parked-agent-orphaned-receipt';
 const AGENT = 'proof-probe';
 const BROKER_API_KEY = 'rk_proof_broker_api_key';
 const READY_TIMEOUT_MS = 60_000;
+const API_REQUEST_TIMEOUT_MS = 15_000;
+const READY_PROBE_TIMEOUT_MS = 2_000;
 
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
@@ -83,14 +85,9 @@ try {
   const relaycastPort = listening.port;
 
   // ---------------------------------------------------------------- broker
-  // Bind the API to a port we choose. Discovering an OS-assigned port meant
-  // scraping a startup line out of the broker's output, which is a diagnostic
-  // and not a contract — it did not survive the Linux CI runner, and the case
-  // then failed as infrastructure rather than reporting an observation.
-  const apiPort = await freePort();
   broker = spawn(
     binaryPath,
-    ['init', '--api-port', String(apiPort), '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
     {
       cwd: workDir,
       env: {
@@ -109,13 +106,29 @@ try {
   broker.stderr.on('data', capture);
   broker.once('exit', (code, signal) => brokerLog.push(`\n[broker exited code=${code} signal=${signal}]\n`));
 
+  // Port 0 lets the kernel reserve the port atomically for the broker. Read the
+  // broker's machine-readable connection contract instead of scraping logs or
+  // releasing a probe socket before launch (both are racy).
+  const apiPort = await waitFor(async () => {
+    if (broker.exitCode !== null) {
+      throw new Error(`broker exited early with code ${broker.exitCode}`);
+    }
+    const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+    const connectionUrl = new URL(connection.url);
+    const port = Number(connectionUrl.port);
+    if (connectionUrl.hostname !== '127.0.0.1' || !Number.isInteger(port) || port < 1) {
+      throw new Error(`invalid broker connection URL ${JSON.stringify(connection.url)}`);
+    }
+    return port;
+  }, 'the broker connection file to publish its bound API port');
+
   const api = makeApi(apiPort);
   // Probe the API itself rather than a log line: it is the thing we need up.
   await waitFor(async () => {
     if (broker.exitCode !== null) {
       throw new Error(`broker exited early with code ${broker.exitCode}`);
     }
-    await api('GET', '/api/status', undefined);
+    await api('GET', '/api/status', undefined, READY_PROBE_TIMEOUT_MS);
     return true;
   }, 'the broker API to answer /api/status');
   await waitForEvent((e) => e.event === 'node_control_connected', 'node-control to connect');
@@ -287,23 +300,12 @@ function isWithin(root, candidate) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-async function freePort() {
-  const { createServer } = await import('node:net');
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.unref();
-    probe.on('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
-  });
-}
 function makeApi(port) {
-  return async (method, route, body) => {
+  return async (method, route, body, timeoutMs = API_REQUEST_TIMEOUT_MS) => {
     const response = await fetch(`http://127.0.0.1:${port}${route}`, {
       method,
       headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
+      signal: AbortSignal.timeout(timeoutMs),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();

@@ -747,6 +747,63 @@ async fn manual_flush_dead_letters_messages_whose_identity_was_rebound() {
     cleanup_worker_registry(workers).await;
 }
 
+/// A full SDK event channel must not turn a maximum-size orphan flush into
+/// `MAX_PENDING_PER_WORKER` consecutive timeout waits on the runtime loop.
+#[tokio::test]
+async fn manual_flush_dead_letter_events_do_not_serialize_backpressure_timeouts() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    let mut delivery_book = FleetDeliveryBook::default();
+    for seq in 1..=crate::types::MAX_PENDING_PER_WORKER as u64 {
+        let deliver = fleet_deliver(seq);
+        state.accept_inbound(held_fleet_message(&deliver));
+        delivery_book.commit_received(&deliver);
+    }
+    delivery_book.bind_authoritative_identity("worker-a", "agent-worker-a-respawned");
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+
+    let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(1);
+    sdk_out_tx
+        .try_send(ProtocolEnvelope {
+            v: crate::protocol::PROTOCOL_VERSION,
+            msg_type: "event".to_string(),
+            request_id: None,
+            payload: json!({ "kind": "channel_occupier" }),
+        })
+        .expect("the SDK channel should start full");
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        super::fleet::flush_pending_relay_messages(
+            &mut delivery_states,
+            &mut workers,
+            &mut delivery_book,
+            &fleet_control_tx,
+            &sdk_out_tx,
+            &mut dead_letters,
+            &mut obligation_store,
+            &worker_name,
+            Duration::from_secs(1),
+        ),
+    )
+    .await
+    .expect("a full event channel must not add one timeout per dead letter");
+
+    assert_eq!(
+        result.dead_lettered,
+        crate::types::MAX_PENDING_PER_WORKER,
+        "event backpressure must not prevent the queue from draining"
+    );
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    assert_eq!(dead_letters.len(), crate::types::MAX_PENDING_PER_WORKER);
+
+    cleanup_worker_registry(workers).await;
+}
+
 /// Same jam, reached without a re-registration: a node-control resume
 /// handshake re-seeds the cursor at Relaycast's authoritative position
 /// (`seed_cursor` sets `acked == received == up_to_seq`). Messages parked

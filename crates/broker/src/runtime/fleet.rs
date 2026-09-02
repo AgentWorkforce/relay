@@ -1692,6 +1692,7 @@ pub(super) async fn flush_pending_relay_messages(
     retry_interval: Duration,
 ) -> FlushPendingRelayResult {
     let mut result = FlushPendingRelayResult::default();
+    let mut dropped_dead_letter_events = 0usize;
 
     loop {
         let next = delivery_states
@@ -1744,7 +1745,7 @@ pub(super) async fn flush_pending_relay_messages(
                  worker's name; it is not injected because the name may now belong to a \
                  different agent generation"
             );
-            dead_letter_parked_message(
+            if !dead_letter_parked_message(
                 sdk_out_tx,
                 dead_letters,
                 DeadLetterEntry::from_parked_message(
@@ -1753,8 +1754,9 @@ pub(super) async fn flush_pending_relay_messages(
                     queued.queued_at_ms,
                     &format!("orphaned_delivery_receipt:{}", reason.as_str()),
                 ),
-            )
-            .await;
+            ) {
+                dropped_dead_letter_events += 1;
+            }
             // A boomerang obligation outlives the queue entry it was registered
             // for. This message is never being delivered, so cancel it rather
             // than let maintenance keep reminding the recipient about a message
@@ -1817,6 +1819,16 @@ pub(super) async fn flush_pending_relay_messages(
             .and_then(|state| state.pending.pop_front());
         debug_assert_eq!(removed.as_ref(), Some(&queued));
         result.flushed += 1;
+    }
+
+    if dropped_dead_letter_events > 0 {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            worker = %worker_name,
+            dropped_dead_letter_events,
+            "dead-letter records were retained, but some SDK events were dropped because the \
+             outbound channel was unavailable"
+        );
     }
 
     result
