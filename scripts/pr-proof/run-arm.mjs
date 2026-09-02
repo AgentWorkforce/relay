@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { access, chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { accessSync, constants as fsConstants, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +22,7 @@ import { runBoundedProcess } from './process-runner.mjs';
 import { loadBrokerArtifact } from './stage-broker-artifacts.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
+const LANDLOCK_PROBE_TIMEOUT_MS = 5_000;
 const INHERITED_CASE_ENVIRONMENT_KEYS = ['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR'];
 const CASE_ENVIRONMENT_KEYS = [
   ...INHERITED_CASE_ENVIRONMENT_KEYS,
@@ -344,39 +346,21 @@ async function checkout(repository, sha, destination) {
   return actual;
 }
 
-export async function runLandlockedProcess(command, args, { writableRoots, ...options }) {
-  try {
-    await Promise.all([
-      access('/usr/bin/python3', fsConstants.X_OK),
-      access('/usr/bin/sudo', fsConstants.X_OK),
-    ]);
-  } catch {
-    throw new Error(
-      'secure broker execution requires executable /usr/bin/python3 and /usr/bin/sudo in the Cloud proof sandbox'
-    );
-  }
+function inheritedCaseEnvironment() {
+  return Object.fromEntries(
+    INHERITED_CASE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]).filter(
+      (entry) => typeof entry[1] === 'string' && entry[1]
+    )
+  );
+}
+
+function validateLandlockInputs({ writableRoots, caseEnvironment }) {
   if (!Array.isArray(writableRoots) || writableRoots.some((root) => !path.isAbsolute(root))) {
     throw new Error('Landlock writable roots must be absolute paths');
   }
-  const originalUid = process.getuid?.();
-  const originalGid = process.getgid?.();
-  if (
-    !Number.isSafeInteger(originalUid) ||
-    !Number.isSafeInteger(originalGid) ||
-    originalUid <= 0 ||
-    originalGid <= 0
-  ) {
-    throw new Error('secure broker execution requires a non-root numeric caller uid and gid');
-  }
-  const caseEnvironment =
-    options.env ??
-    Object.fromEntries(
-      INHERITED_CASE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]).filter(
-        (entry) => typeof entry[1] === 'string' && entry[1]
-      )
-    );
   if (
     typeof caseEnvironment !== 'object' ||
+    caseEnvironment === null ||
     Array.isArray(caseEnvironment) ||
     Object.entries(caseEnvironment).some(
       ([key, value]) =>
@@ -389,9 +373,33 @@ export async function runLandlockedProcess(command, args, { writableRoots, ...op
   ) {
     throw new Error('secure broker execution requires a string-to-string case environment');
   }
-  return runProcess(
-    '/usr/bin/sudo',
-    [
+}
+
+function landlockCallerIdentity() {
+  const originalUid = process.getuid?.();
+  const originalGid = process.getgid?.();
+  if (
+    !Number.isSafeInteger(originalUid) ||
+    !Number.isSafeInteger(originalGid) ||
+    originalUid <= 0 ||
+    originalGid <= 0
+  ) {
+    throw new Error('secure broker execution requires a non-root numeric caller uid and gid');
+  }
+  return { originalUid, originalGid };
+}
+
+function landlockLauncherInvocation({
+  command,
+  args,
+  writableRoots,
+  caseEnvironment,
+  originalUid,
+  originalGid,
+}) {
+  return {
+    command: '/usr/bin/sudo',
+    args: [
       '-n',
       '--',
       '/usr/bin/python3',
@@ -406,8 +414,67 @@ export async function runLandlockedProcess(command, args, { writableRoots, ...op
       command,
       ...args,
     ],
-    { ...options, env: caseEnvironment }
-  );
+  };
+}
+
+export function probeLandlockedProcessSupport() {
+  if (process.platform !== 'linux') return false;
+
+  let temporaryRoot;
+  try {
+    accessSync('/usr/bin/python3', fsConstants.X_OK);
+    accessSync('/usr/bin/sudo', fsConstants.X_OK);
+    const { originalUid, originalGid } = landlockCallerIdentity();
+    temporaryRoot = mkdtempSync(path.join(os.tmpdir(), 'relay-pr-proof-probe-'));
+    const caseEnvironment = inheritedCaseEnvironment();
+    const writableRoots = [temporaryRoot];
+    validateLandlockInputs({ writableRoots, caseEnvironment });
+    const invocation = landlockLauncherInvocation({
+      command: '/bin/true',
+      args: [],
+      writableRoots,
+      caseEnvironment,
+      originalUid,
+      originalGid,
+    });
+    const result = spawnSync(invocation.command, invocation.args, {
+      cwd: temporaryRoot,
+      env: caseEnvironment,
+      stdio: 'ignore',
+      timeout: LANDLOCK_PROBE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
+    return result.error === undefined && result.status === 0 && result.signal === null;
+  } catch {
+    return false;
+  } finally {
+    if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+export async function runLandlockedProcess(command, args, { writableRoots, ...options }) {
+  try {
+    await Promise.all([
+      access('/usr/bin/python3', fsConstants.X_OK),
+      access('/usr/bin/sudo', fsConstants.X_OK),
+    ]);
+  } catch {
+    throw new Error(
+      'secure broker execution requires executable /usr/bin/python3 and /usr/bin/sudo in the Cloud proof sandbox'
+    );
+  }
+  const { originalUid, originalGid } = landlockCallerIdentity();
+  const caseEnvironment = options.env ?? inheritedCaseEnvironment();
+  validateLandlockInputs({ writableRoots, caseEnvironment });
+  const invocation = landlockLauncherInvocation({
+    command,
+    args,
+    writableRoots,
+    caseEnvironment,
+    originalUid,
+    originalGid,
+  });
+  return runProcess(invocation.command, invocation.args, { ...options, env: caseEnvironment });
 }
 
 export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, root = process.cwd() }) {

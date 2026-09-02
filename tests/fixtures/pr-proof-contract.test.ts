@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +45,7 @@ import {
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   openVerifiedBrokerExecutable,
+  probeLandlockedProcessSupport,
   runLandlockedProcess,
   runProcess,
   verifyProtectedBrokerExecutable,
@@ -62,32 +63,7 @@ const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
 const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
-
-function hasTrustedLandlockRuntime() {
-  if (
-    process.platform !== 'linux' ||
-    !existsSync('/usr/bin/python3') ||
-    !existsSync('/usr/bin/sudo') ||
-    typeof process.getuid !== 'function' ||
-    typeof process.getgid !== 'function'
-  ) {
-    return false;
-  }
-
-  const uid = process.getuid();
-  const gid = process.getgid();
-  if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) {
-    return false;
-  }
-
-  const sudoProbe = spawnSync('/usr/bin/sudo', ['-n', '--', '/bin/true'], {
-    stdio: 'ignore',
-    timeout: 2_000,
-  });
-  return sudoProbe.error === undefined && sudoProbe.status === 0;
-}
-
-const HAS_TRUSTED_LANDLOCK_RUNTIME = hasTrustedLandlockRuntime();
+const HAS_TRUSTED_LANDLOCK_RUNTIME = probeLandlockedProcessSupport();
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -979,8 +955,17 @@ describe('exact broker artifact handoff', () => {
             'import sys',
             'master, slave = pty.openpty()',
             'print(os.ttyname(slave), flush=True)',
-            'readable, _, _ = select.select([master], [], [], 3)',
-            'data = os.read(master, 4096) if readable else b""',
+            'data = b""',
+            'while True:',
+            '    readable, _, _ = select.select([master, sys.stdin.buffer], [], [])',
+            '    if master in readable:',
+            '        data += os.read(master, 4096)',
+            '    if sys.stdin.buffer in readable:',
+            '        if sys.stdin.buffer.read(1) != b"D":',
+            '            raise RuntimeError("PTY holder lost its completion signal")',
+            '        while select.select([master], [], [], 0)[0]:',
+            '            data += os.read(master, 4096)',
+            '        break',
             'attacked = b"OUTER_PTY_ATTACK" in data',
             'print("OUTER_PTY_ATTACKED" if attacked else "OUTER_PTY_UNTOUCHED", flush=True)',
             'os.close(slave)',
@@ -1045,6 +1030,7 @@ describe('exact broker artifact handoff', () => {
             timeoutMs: 5_000,
           }
         );
+        holder.stdin.end('D');
         expect(result).toMatchObject({ exitCode: 0, timedOut: false });
         const outerResult = await holderExit;
         expect(outerResult).toEqual({ code: 0, signal: null });
