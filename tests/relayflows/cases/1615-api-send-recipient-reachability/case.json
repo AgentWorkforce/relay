@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1615-api-send-recipient-reachability",
+  "kind": "bugfix",
+  "title": "Distinguish Relaycast publication from recipient delivery",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1615-api-send-recipient-reachability/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "api_send_hides_unroutable_recipient"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "api_send_reports_recipient_reachability"
+    }
+  }
+}
