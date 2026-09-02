@@ -1,4 +1,8 @@
 [workspace]
 members = ["crates/broker", "crates/relay-pty"]
 default-members = ["crates/broker", "crates/relay-pty"]
+exclude = ["vendor/portable-pty"]
 resolver = "2"
+
+[patch.crates-io]
+portable-pty = { path = "vendor/portable-pty" }

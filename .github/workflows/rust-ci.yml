@@ -51,6 +51,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
+      - name: Nonblocking ConPTY pipe primitive
+        run: cargo test --manifest-path vendor/portable-pty/Cargo.toml --lib win::conpty::tests::nonblocking_output_pipe_is_prompt_private_and_lossless -- --exact
       - name: Read/tag ordering regression
         run: cargo test -p relay-pty --lib pty::tests::completed_read_is_tagged_before_verified_write_can_sample_boundary -- --exact
       - name: Output backpressure regression
@@ -110,7 +112,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
-      - run: cargo clippy -- -D warnings
+      - run: cargo clippy --no-deps -- -D warnings
 
   rust-fmt:
     name: Format

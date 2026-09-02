@@ -23,18 +23,6 @@ use tokio::sync::{mpsc, oneshot};
 
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-#[cfg(windows)]
-use std::{
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    time::Instant,
-};
-#[cfg(windows)]
-use windows_sys::Win32::{
-    Foundation::{
-        DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE,
-    },
-    System::{Threading::GetCurrentProcess, IO::CancelSynchronousIo},
-};
 
 /// Upper bound on queued PTY writes (both terminal-query replies from
 /// alacritty AND user/injection writes from `PtySession::write_all`).
@@ -44,21 +32,23 @@ use windows_sys::Win32::{
 /// healthy interaction sees fewer than a handful of pending writes at
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
-#[cfg(windows)]
 const OUTPUT_ORDERING_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(windows)]
+const WINDOWS_IDLE_READ_DELAY: Duration = Duration::from_millis(1);
 
 /// Why [`PtySession::submit_write`] refused to enqueue.
 ///
-/// Typed — not a bare string — because the two cases mean opposite things to a
-/// caller serving an interactive attach session. [`QueueFull`] says the child
-/// is alive but momentarily not draining its stdin, so the write is the only
-/// thing that failed and the caller should keep its transport open and retry.
-/// [`DrainerExited`] says the PTY is gone. Callers recover the variant with
+/// Typed — not a bare string — because the cases need different recovery.
+/// [`QueueFull`] says the child is alive but momentarily not draining stdin;
+/// [`DrainerExited`] says the PTY is gone; [`OrderingTimeout`] says a verified
+/// write was refused before queue admission because its physical-read boundary
+/// could not be sampled safely. Callers recover the variant with
 /// `anyhow::Error::downcast_ref::<PtyWriteSubmitError>()`; `submit_write` keeps
 /// returning `anyhow::Result` so existing call sites are unaffected.
 ///
 /// [`QueueFull`]: PtyWriteSubmitError::QueueFull
 /// [`DrainerExited`]: PtyWriteSubmitError::DrainerExited
+/// [`OrderingTimeout`]: PtyWriteSubmitError::OrderingTimeout
 #[derive(Debug, thiserror::Error)]
 pub enum PtyWriteSubmitError {
     /// The bounded drainer queue is full. Retryable: the drainer is blocked in
@@ -74,17 +64,10 @@ pub enum PtyWriteSubmitError {
     #[error("pty write queue is closed (drainer exited)")]
     DrainerExited,
 
-    /// The Windows reader could not be interrupted promptly enough to admit
-    /// a verified write. The write was not queued, so callers may retry it.
-    #[cfg(windows)]
+    /// The reader did not release the physical-read ordering guard within the
+    /// defensive bound. The write was not queued, so it cannot arrive late.
     #[error("timed out acquiring pty output ordering for verified write")]
     OrderingTimeout,
-
-    /// The Windows reader thread could not be interrupted. The write was not
-    /// queued, so callers may retry it after surfacing the platform failure.
-    #[cfg(windows)]
-    #[error("failed to interrupt pty reader for verified write: {0}")]
-    OrderingWake(io::Error),
 }
 
 /// Single FIFO command for the PTY write drainer. Both query-reply
@@ -437,56 +420,12 @@ pub struct PtySession {
     /// admission. Without this lock, output could be assigned a new sequence
     /// after a caller sampled the watermark but before its write was queued.
     output_order: Arc<Mutex<()>>,
-    /// Duplicated native handle for the reader thread. Windows verified writes
-    /// use it to interrupt an idle synchronous ConPTY read before acquiring
-    /// `output_order`; the handle never exposes the PTY itself.
+    /// Test-visible proof that the Windows ConPTY output pipe returned
+    /// `WouldBlock` while idle. This does not participate in product control
+    /// flow; it lets the live Windows regression distinguish a genuinely
+    /// nonblocking reader from a lucky submission between reads.
     #[cfg(windows)]
-    reader_cancel: ReaderCancel,
-}
-
-#[cfg(windows)]
-struct ReaderCancel {
-    thread_handle: OwnedHandle,
-}
-
-#[cfg(windows)]
-impl ReaderCancel {
-    fn duplicate(reader_thread: &thread::JoinHandle<()>) -> io::Result<Self> {
-        let process = unsafe { GetCurrentProcess() };
-        let mut duplicate: HANDLE = std::ptr::null_mut();
-        let ok = unsafe {
-            DuplicateHandle(
-                process,
-                reader_thread.as_raw_handle() as HANDLE,
-                process,
-                &mut duplicate,
-                0,
-                0,
-                DUPLICATE_SAME_ACCESS,
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self {
-            // SAFETY: `DuplicateHandle` returned a new owned thread handle.
-            thread_handle: unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) },
-        })
-    }
-
-    fn interrupt_read(&self) -> io::Result<()> {
-        let ok = unsafe { CancelSynchronousIo(self.thread_handle.as_raw_handle() as HANDLE) };
-        if ok != 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
-            // The reader is between synchronous calls. It will release (or
-            // reacquire) the ordering lock promptly, so retrying is safe.
-            return Ok(());
-        }
-        Err(error)
-    }
+    reader_observed_would_block: Arc<AtomicBool>,
 }
 
 fn needs_sane_term_override() -> bool {
@@ -693,6 +632,37 @@ fn enqueue_user_write(
     }
 }
 
+struct OutputBoundaryContext<'a> {
+    output_order: &'a Mutex<()>,
+    output_sequence: &'a AtomicU64,
+    write_tx: &'a std_mpsc::SyncSender<WriteMsg>,
+    no_pid_alive_checks: &'a AtomicU32,
+}
+
+impl OutputBoundaryContext<'_> {
+    fn enqueue(
+        self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup: Option<FollowupWrite>,
+        ordering_timeout: Duration,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        let _order_guard = self
+            .output_order
+            .try_lock_for(ordering_timeout)
+            .ok_or_else(|| anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout))?;
+        let boundary = self.output_sequence.load(Ordering::Acquire);
+        let ack = enqueue_user_write(
+            self.write_tx,
+            self.no_pid_alive_checks,
+            bytes,
+            pace,
+            followup,
+        )?;
+        Ok((ack, boundary))
+    }
+}
+
 /// Read one output chunk and assign its producer sequence while holding the
 /// same ordering lock used by verified write admission.
 ///
@@ -785,11 +755,6 @@ fn duplicate_poll_fd_cloexec(fd: libc::c_int) -> io::Result<OwnedFd> {
     Ok(duplicate)
 }
 
-#[cfg(windows)]
-fn read_was_cancelled(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
-}
-
 impl PtySession {
     fn enqueue_write_with_output_boundary(
         &self,
@@ -797,35 +762,13 @@ impl PtySession {
         pace: Duration,
         followup: Option<FollowupWrite>,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
-        #[cfg(unix)]
-        let _order_guard = self.output_order.lock();
-
-        #[cfg(windows)]
-        let _order_guard = {
-            let deadline = Instant::now() + OUTPUT_ORDERING_TIMEOUT;
-            loop {
-                if let Some(guard) = self.output_order.try_lock() {
-                    break guard;
-                }
-                self.reader_cancel
-                    .interrupt_read()
-                    .map_err(PtyWriteSubmitError::OrderingWake)?;
-                if Instant::now() >= deadline {
-                    return Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
-                }
-                thread::yield_now();
-            }
-        };
-
-        let boundary = self.output_sequence.load(Ordering::Acquire);
-        let ack = enqueue_user_write(
-            &self.write_tx,
-            &self.no_pid_alive_checks,
-            bytes,
-            pace,
-            followup,
-        )?;
-        Ok((ack, boundary))
+        OutputBoundaryContext {
+            output_order: &self.output_order,
+            output_sequence: &self.output_sequence,
+            write_tx: &self.write_tx,
+            no_pid_alive_checks: &self.no_pid_alive_checks,
+        }
+        .enqueue(bytes, pace, followup, OUTPUT_ORDERING_TIMEOUT)
     }
 
     pub fn spawn(
@@ -913,6 +856,10 @@ impl PtySession {
         let output_sequence_reader = output_sequence.clone();
         let output_order = Arc::new(Mutex::new(()));
         let output_order_reader = output_order.clone();
+        #[cfg(windows)]
+        let reader_observed_would_block = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        let reader_observed_would_block_thread = reader_observed_would_block.clone();
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -931,7 +878,11 @@ impl PtySession {
 
                 #[cfg(windows)]
                 let tagged = match tagged {
-                    Err(error) if read_was_cancelled(&error) => continue,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        reader_observed_would_block_thread.store(true, Ordering::Release);
+                        thread::sleep(WINDOWS_IDLE_READ_DELAY);
+                        continue;
+                    }
                     other => other,
                 };
 
@@ -974,11 +925,7 @@ impl PtySession {
             }
         });
 
-        #[cfg(windows)]
-        let reader_cancel = ReaderCancel::duplicate(&reader_thread)
-            .context("failed to duplicate pty reader thread handle")?;
-        // Detach the reader after retaining only the Windows cancellation
-        // handle. PTY/session ownership controls its lifetime as before.
+        // Detach the reader. PTY/session ownership controls its lifetime.
         drop(reader_thread);
 
         Ok((
@@ -996,7 +943,7 @@ impl PtySession {
                 output_sequence,
                 output_order,
                 #[cfg(windows)]
-                reader_cancel,
+                reader_observed_would_block,
             },
             rx,
         ))
@@ -1066,12 +1013,14 @@ impl PtySession {
         enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace, None)
     }
 
-    /// Queue a paced input atomically with the receive-time output watermark.
+    /// Queue a paced input atomically with the physical-read output watermark.
     ///
-    /// The returned boundary is the latest producer sequence that precedes
-    /// this queue admission. Output carrying a sequence at or below it cannot
-    /// be evidence that this write reached the child, even if that output was
-    /// still waiting in the async receive queue when the write was submitted.
+    /// The returned boundary is the latest producer sequence whose PTY read
+    /// completed before this queue admission. Output carrying a sequence at or
+    /// below it cannot be evidence that this write reached the child, even if
+    /// that output was still waiting in the async receive queue. Bytes that
+    /// were only kernel-buffered, but not yet returned by the physical read,
+    /// are outside this receive-time contract and may receive a later sequence.
     pub fn submit_write_paced_with_output_boundary(
         &self,
         bytes: Vec<u8>,
@@ -1107,7 +1056,7 @@ impl PtySession {
         )
     }
 
-    /// Queue a compound paced write atomically with its receive-time output
+    /// Queue a compound paced write atomically with its physical-read output
     /// watermark. See [`submit_write_paced_with_output_boundary`].
     pub fn submit_write_paced_with_followup_and_output_boundary(
         &self,
@@ -1482,8 +1431,8 @@ mod tests {
     #[cfg(unix)]
     use super::{duplicate_poll_fd_cloexec, resolve_command_path, resolve_command_path_with};
     use super::{
-        read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
-        DEFAULT_NO_PID_EXIT_THRESHOLD,
+        read_and_tag_output, GridSize, Mutex, OutputBoundaryContext, PtyOutput, PtySession,
+        PtyWriteSubmitError, DEFAULT_NO_PID_EXIT_THRESHOLD,
     };
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
@@ -1692,27 +1641,28 @@ mod tests {
             .map_err(|_| "initial same-echo marker did not reach the parsed grid".to_string())?;
             eprintln!("relay-pty-live-proof stage=parsed-marker");
 
-            // On Windows, the reader holds `output_order` across its blocking
-            // ConPTY ReadFile. Requiring the lock to be unavailable proves
-            // this submission exercises CancelSynchronousIo rather than
-            // slipping into the short gap before the reader starts its next
-            // read.
+            // Prove the Windows ConPTY reader completes a fresh nonblocking
+            // idle read after the marker. This prevents a lucky between-reads
+            // submission from hiding a blocking ReadFile regression.
+            #[cfg(windows)]
+            pty.reader_observed_would_block
+                .store(false, Ordering::Release);
             #[cfg(windows)]
             timeout(harness_timeout, async {
-                while pty.output_order.try_lock().is_some() {
+                while !pty.reader_observed_would_block.load(Ordering::Acquire) {
                     tokio::task::yield_now().await;
                 }
             })
             .await
-            .map_err(|_| "Windows reader never blocked in ReadFile".to_string())?;
+            .map_err(|_| "Windows reader never reported a nonblocking idle read".to_string())?;
             #[cfg(windows)]
-            eprintln!("relay-pty-live-proof stage=blocked-read-proven");
+            eprintln!("relay-pty-live-proof stage=nonblocking-idle-proven");
             #[cfg(unix)]
             eprintln!("relay-pty-live-proof stage=reader-idle-proven");
 
-            // The child is idle in `read` here. Verified submission must wake
-            // an idle Windows ConPTY reader (and must not be serialized behind
-            // Unix readiness polling), while retaining the synchronous API.
+            // The child is idle in `read` here. Verified submission must not
+            // wait behind either Windows idle-read polling or Unix readiness
+            // polling, while retaining the synchronous API.
             let submitted_at = std::time::Instant::now();
             let (ack, boundary) = pty
                 .submit_write_paced_with_output_boundary(submitted, Duration::ZERO)
@@ -1867,6 +1817,41 @@ mod tests {
         assert!(matches!(
             write_rx.recv().unwrap(),
             WriteMsg::UserInput { .. }
+        ));
+    }
+
+    #[test]
+    fn verified_write_ordering_timeout_never_enqueues_late_input() {
+        let output_order = Mutex::new(());
+        let held = output_order.lock();
+        let output_sequence = AtomicU64::new(7);
+        let (write_tx, write_rx) = std_mpsc::sync_channel(WRITE_QUEUE_DEPTH);
+        let no_pid = AtomicU32::new(0);
+
+        let result = OutputBoundaryContext {
+            output_order: &output_order,
+            output_sequence: &output_sequence,
+            write_tx: &write_tx,
+            no_pid_alive_checks: &no_pid,
+        }
+        .enqueue(
+            b"must-not-arrive".to_vec(),
+            Duration::ZERO,
+            None,
+            Duration::from_millis(20),
+        );
+        let error = match result {
+            Ok(_) => panic!("verified write unexpectedly crossed a held ordering guard"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error.downcast_ref::<PtyWriteSubmitError>(),
+            Some(PtyWriteSubmitError::OrderingTimeout)
+        ));
+        drop(held);
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(std_mpsc::TryRecvError::Empty)
         ));
     }
 
