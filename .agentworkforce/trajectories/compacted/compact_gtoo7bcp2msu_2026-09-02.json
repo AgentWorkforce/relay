@@ -1,0 +1,118 @@
+{
+  "id": "compact_gtoo7bcp2msu",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-02T06:00:18.510Z",
+  "sourceTrajectories": [
+    "traj_qrzgbdt3sgcd"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T05:56:02.488Z",
+    "end": "2026-09-02T06:00:16.928Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 3,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Add a dedicated Windows relay-pty runtime lane",
+          "chosen": "Add a dedicated Windows relay-pty runtime lane",
+          "reasoning": "PR CI previously ran Rust tests only on Ubuntu and macOS. Publish-time Windows broker build/spawn smoke exists, but it cannot protect pull requests. The new synchronization uses CancelSynchronousIo and needs a focused windows-latest cargo test -p relay-pty lane; the live boundary test now drives an idle ConPTY reader using PowerShell and carriage-return input.",
+          "fromTrajectory": "traj_qrzgbdt3sgcd"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Create the Unix poll duplicate atomically close-on-exec",
+          "chosen": "Create the Unix poll duplicate atomically close-on-exec",
+          "reasoning": "F_DUPFD_CLOEXEC prevents the descriptor-inheritance race in multithreaded broker startup. An EINVAL-only compatibility fallback immediately wraps dup in OwnedFd and sets FD_CLOEXEC, so every fcntl error closes the duplicate.",
+          "fromTrajectory": "traj_qrzgbdt3sgcd"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/rust-ci.yml",
+    "crates/relay-pty/src/pty.rs"
+  ],
+  "commits": [
+    "4f62d28c7"
+  ],
+  "narrative": "A short (~4 minute) session hardening the Unix readiness-poll path in `crates/relay-pty/src/pty.rs` for PR #1634. The core change: the duplicated file descriptor used for readiness polling was being created with plain `dup`, leaving a window in which a concurrently-`exec`ing child in the multithreaded broker startup path could inherit it. The fix creates the duplicate atomically close-on-exec via `fcntl(F_DUPFD_CLOEXEC)`, with a compatibility fallback triggered only on `EINVAL` that falls back to `dup`, immediately wraps the raw fd in an `OwnedFd`, and then sets `FD_CLOEXEC` — so any `fcntl` failure on the fallback path still closes the duplicate rather than leaking it. A regression test asserting the descriptor flags accompanies the change. The second half of the session was CI-shaped rather than code-shaped. The existing idle verified-write boundary test (from the preceding `fix(pty): linearize reads with verified writes` work) was made platform-neutral so it exercises Windows ConPTY: the test now drives an idle ConPTY reader using PowerShell with carriage-return input instead of a Unix-only shell idiom. An audit of the workflow files then found that PR-time Rust CI (`.github/workflows/rust-ci.yml`) only ran on Ubuntu and macOS — the only Windows coverage in the repo was the broker build and `HarnessDriverClient.spawn` smoke test in `publish.yml` and `verify-publish-sdk.yml`, which run at publish time and therefore cannot gate a pull request. Since the new synchronization relies on `CancelSynchronousIo`, a Windows-specific API with no Unix analogue, a focused `windows-latest` lane running `cargo test -p relay-pty` was added to `rust-ci.yml`. Verification was full-suite and cross-platform: relay-pty 229/229 and broker 1037/1037 active tests passed, plus native and Windows cross-target clippy, `cargo fmt`, `actionlint`, and diff checks. Landed as commit `4f62d28c7` (`fix(pty): prevent poll descriptor inheritance`) on branch `fix/claude-injection-submit-0902`, continuing the PTY-correctness series that includes `a7bdbd672` (verified-write linearization) and the earlier queued-echo and wrap-acknowledgement fixes.",
+  "decisions": [
+    {
+      "question": "How should the readiness-poll descriptor duplicate be made non-inheritable?",
+      "chosen": "Use `fcntl(F_DUPFD_CLOEXEC)` to create the duplicate atomically close-on-exec, with an `EINVAL`-only fallback to `dup` + `OwnedFd` + explicit `FD_CLOEXEC`.",
+      "reasoning": "A `dup` followed by a separate `FD_CLOEXEC` set leaves a race window: in multithreaded broker startup another thread can `fork`/`exec` between the two calls and the child inherits the poll descriptor. `F_DUPFD_CLOEXEC` closes the window in one syscall. The fallback is scoped narrowly to `EINVAL` (old kernels/platforms lacking the flag) rather than swallowing all errors, and wrapping in `OwnedFd` before any further `fcntl` guarantees the duplicate is closed on every error path.",
+      "impact": "Eliminates descriptor leakage into spawned harness processes; a spawned child can no longer hold the poll fd open and skew readiness/EOF detection. Covered by a new descriptor-flag regression test in `crates/relay-pty/src/pty.rs`."
+    },
+    {
+      "question": "Does the idle verified-write boundary test need to stay Unix-shaped?",
+      "chosen": "Make it platform-neutral — drive an idle ConPTY reader with PowerShell and carriage-return input on Windows.",
+      "reasoning": "The verified-write linearization landed in `a7bdbd672` depends on Windows-only `CancelSynchronousIo` for its synchronization; a Unix-only test proves nothing about the path that actually needs the cancel semantics.",
+      "impact": "The highest-risk platform for the new synchronization is now the one the boundary test actually exercises."
+    },
+    {
+      "question": "Is publish-time Windows coverage enough to protect this change?",
+      "chosen": "No — add a focused `windows-latest` `cargo test -p relay-pty` lane to `.github/workflows/rust-ci.yml`.",
+      "reasoning": "Repository audit showed `rust-ci.yml` ran only Ubuntu and macOS; the Windows broker build and `HarnessDriverClient.spawn` smoke test live in `publish.yml` and `verify-publish-sdk.yml`, which fire after merge at publish time and cannot gate a PR. A regression in `CancelSynchronousIo` handling would only surface at release.",
+      "impact": "Windows PTY regressions now fail on the PR instead of during a release. Scoped to `-p relay-pty` rather than the full workspace to keep the lane fast and targeted."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Prefer the atomic close-on-exec syscall variant (`F_DUPFD_CLOEXEC`, `O_CLOEXEC`, `SOCK_CLOEXEC`) over create-then-set-flag; if a fallback is needed, gate it on the specific errno and take ownership (`OwnedFd`) before any subsequent fallible call.",
+      "rationale": "Two-step fd setup is racy under concurrent `exec`, and an un-owned raw fd leaks on the error path — matching the repo's `.claude/rules/rust.md` ban on unhandled failure modes in production code.",
+      "scope": "crates/relay-pty, crates/broker — any raw file-descriptor duplication in Rust."
+    },
+    {
+      "pattern": "When a fix's mechanism is platform-specific (e.g. `CancelSynchronousIo`), the PR must add PR-time CI on that platform, not rely on publish-time jobs.",
+      "rationale": "`publish.yml` / `verify-publish-sdk.yml` run after merge; a regression they catch has already landed on main.",
+      "scope": ".github/workflows/rust-ci.yml and any new platform-dependent code in the Rust crates."
+    },
+    {
+      "pattern": "Assert the invariant directly — the close-on-exec fix ships with a test reading back the descriptor flags, not just an end-to-end behavior test.",
+      "rationale": "Consistent with the standing order to prove tests bite; a behavioral test could pass for unrelated reasons while the flag is unset.",
+      "scope": "crates/relay-pty unit tests (`#[cfg(test)] mod tests` in-source, per rust.md)."
+    },
+    {
+      "pattern": "Verification bar for PTY changes: full relay-pty and broker suites, plus native AND cross-target clippy, `cargo fmt`, `actionlint`, and diff checks — reported with exact counts (229/229, 1037/1037).",
+      "rationale": "Cross-target clippy catches `cfg`-gated code the host platform never compiles; `actionlint` catches workflow errors that would otherwise fail only after push.",
+      "scope": "All PRs touching crates/relay-pty or crates/broker."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "CI platform coverage is not implied by the existence of a platform job somewhere in the repo — check *when* it runs.",
+      "context": "Windows broker build and `HarnessDriverClient.spawn` smoke coverage existed, but only in `publish.yml` and `verify-publish-sdk.yml`, so PRs merged with zero Windows signal.",
+      "recommendation": "Before claiming a platform is covered, grep the workflow `on:` triggers and confirm the job runs on `pull_request`. Repeat this audit whenever adding platform-conditional code."
+    },
+    {
+      "lesson": "A regression fix and its test can be platform-mismatched — the test running on the platform where the bug can't occur is a false green.",
+      "context": "The verified-write boundary test was Unix-shaped while the synchronization it guards is Windows `CancelSynchronousIo`.",
+      "recommendation": "When a fix touches `#[cfg(windows)]` / `#[cfg(unix)]` code, explicitly name which platform the test executes on and make it match."
+    },
+    {
+      "lesson": "Error-path fd ownership matters as much as the happy path in a CLOEXEC fallback.",
+      "context": "The `EINVAL` fallback does `dup` then `fcntl(F_SETFD)`; without immediate `OwnedFd` wrapping, a failing `fcntl` would leak the very descriptor the fix exists to contain.",
+      "recommendation": "Wrap raw fds in `OwnedFd` at the first opportunity, before any further fallible syscall."
+    }
+  ],
+  "openQuestions": [
+    "Should the new `windows-latest` lane be widened beyond `cargo test -p relay-pty` to the broker crate, or does the publish-time broker build remain sufficient?",
+    "Are there other `dup` call sites in `crates/broker` / `crates/relay-pty` with the same non-atomic CLOEXEC pattern that this fix did not sweep?",
+    "Whether an `EINVAL` fallback for `F_DUPFD_CLOEXEC` is still reachable on any platform relay supports, or is now dead compatibility code."
+  ]
+}
