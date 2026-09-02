@@ -178,38 +178,64 @@ try {
   // would empty the queue too. Where the queue drained, require that it drained
   // by dead-lettering, with nothing injected and nothing ACKed.
   if (remaining === 0) {
-    if (flushBody.dead_lettered !== 1 || flushBody.flushed !== 0) {
+    if (
+      flushBody.dead_lettered !== 1 ||
+      flushBody.flushed !== 0 ||
+      flushBody.held !== 0 ||
+      flushBody.blocked_reason !== null
+    ) {
       throw new Error(
         `The queue drained without dead-lettering the orphan: ${JSON.stringify(flushBody)}. ` +
-          'Draining is only correct here if the message was dead-lettered rather than injected ' +
-          'into the rebound identity.'
+          'The successful orphan drain must report exactly one dead letter, no injection, ' +
+          'nothing held, and no remaining blocked reason.'
       );
     }
     const acked = fakeEvents.filter((event) => event.event === 'delivery_ack');
     if (acked.length > 0) {
       throw new Error(`A retired identity's receipt must never be ACKed, saw ${JSON.stringify(acked)}.`);
     }
+    const staleScreen = await workerScreen(api);
+    if (staleScreen.includes('parked probe message')) {
+      throw new Error(
+        'The orphaned message was injected into the rebound identity instead of dead-lettered.'
+      );
+    }
 
     // An empty queue is not the claim — the claim is that the agent can receive
     // again. Send a fresh message under the live identity and require that this
     // one actually injects, so a silent removal that leaves the queue broken
     // cannot pass as a fix.
+    const followupBody = 'post-recovery probe';
     fake.stdin.write(
-      `${JSON.stringify({ cmd: 'deliver', agent: AGENT, seq: 1, msgId: 'msg_proof_2', body: 'post-recovery probe' })}\n`
+      `${JSON.stringify({ cmd: 'deliver', agent: AGENT, seq: 1, msgId: 'msg_proof_2', body: followupBody })}\n`
+    );
+    await waitForEvent(
+      (e) => e.event === 'delivered' && e.msgId === 'msg_proof_2' && e.agentId === secondRegister.agentId,
+      'the follow-up message to target the rebound identity'
     );
     await waitFor(async () => (await pendingCount(api)) === 1, 'the follow-up message to park');
     const recovery = await api('POST', `/api/spawned/${AGENT}/flush`, undefined);
-    if (recovery.flushed !== 1) {
+    if (
+      recovery.flushed !== 1 ||
+      recovery.dead_lettered !== 0 ||
+      recovery.held !== 0 ||
+      recovery.blocked_reason !== null
+    ) {
       throw new Error(
         `The queue did not recover: follow-up flush returned ${JSON.stringify(recovery)}. ` +
           'Clearing the orphan is only a fix if later messages are then deliverable.'
       );
     }
+    await waitFor(
+      async () => (await workerScreen(api)).includes(followupBody),
+      'the follow-up message to reach the rebound agent PTY'
+    );
+    await waitForEvent(
+      (e) => e.event === 'delivery_ack' && e.agent === AGENT && e.upToSeq === 1,
+      'the rebound identity follow-up to be ACKed'
+    );
+    await waitFor(async () => (await pendingCount(api)) === 0, 'the follow-up queue to remain drained');
   }
-
-  const detail =
-    `identity ${firstRegister.agentId} -> ${secondRegister.agentId}; ` +
-    `pending after flush = ${remaining}; flush response ${JSON.stringify(flushBody)}`;
 
   let outcome;
   let signature;
@@ -218,19 +244,19 @@ try {
     outcome = 'bug';
     signature = 'parked_message_never_leaves_the_queue';
     details =
-      `The base broker left the parked message in the queue after an explicit flush (${detail}). ` +
+      'The exact-base broker left the parked message in the queue after an explicit flush. ' +
       'Its receipt names a retired identity, so the flush stops on it and every later message ' +
       'parks behind it.';
   } else if (remaining === 0) {
     outcome = 'fixed';
     signature = 'parked_message_dead_lettered_and_queue_drains';
     details =
-      `The head broker cleared the parked queue after the flush (${detail}). ` +
+      'The exact-head broker cleared the parked queue after the flush. ' +
       'The un-ACKable message is dead-lettered with a distinguishing reason rather than injected ' +
       'into the rebound identity, and no delivery.ack was emitted for it, so later messages ' +
       'reach the agent without any cross-identity delivery.';
   } else {
-    throw new Error(`Unexpected pending count ${remaining} (${detail}).`);
+    throw new Error(`Unexpected pending count ${remaining}; flush response ${JSON.stringify(flushBody)}.`);
   }
 
   await mkdir(path.dirname(resultPath), { recursive: true });
@@ -296,6 +322,10 @@ function makeApi(port) {
 async function pendingCount(api) {
   const body = await api('GET', `/api/spawned/${AGENT}/pending`, undefined);
   return Array.isArray(body.pending) ? body.pending.length : 0;
+}
+async function workerScreen(api) {
+  const body = await api('GET', `/api/spawned/${AGENT}/snapshot?format=plain`, undefined);
+  return typeof body.screen === 'string' ? body.screen : '';
 }
 async function waitFor(predicate, label, timeoutMs = READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
