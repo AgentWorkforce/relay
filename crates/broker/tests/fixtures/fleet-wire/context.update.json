@@ -4,9 +4,7 @@
   "topic": "presence",
   "event": "agent.status.active",
   "channel_id": null,
-  "agent_ids": [
-    "agt_01J7FLEET000000000000101"
-  ],
+  "agent_ids": ["agt_01J7FLEET000000000000101"],
   "data": {
     "agent_id": "agt_01J7FLEET000000000000202",
     "agent_name": "planner",
