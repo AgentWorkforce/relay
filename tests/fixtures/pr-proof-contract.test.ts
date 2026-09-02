@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -45,6 +46,7 @@ import {
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   openVerifiedBrokerExecutable,
+  probeLandlockedProcessSupport,
   runLandlockedProcess,
   runProcess,
   verifyProtectedBrokerExecutable,
@@ -62,6 +64,7 @@ const HEAD_SHA = '2'.repeat(40);
 const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
 const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
+const HAS_TRUSTED_LANDLOCK_RUNTIME = probeLandlockedProcessSupport();
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -842,7 +845,261 @@ describe('exact broker artifact handoff', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it.skipIf(process.platform !== 'linux')(
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'keeps the exact launcher probe eligible under a caller controlling TTY',
+    () => {
+      const moduleUrl = pathToFileURL(path.resolve('scripts/pr-proof/run-arm.mjs')).href;
+      const probeScript = [
+        "import { closeSync, openSync } from 'node:fs';",
+        "const tty = openSync('/dev/tty', 'w');",
+        'closeSync(tty);',
+        `const { probeLandlockedProcessSupport } = await import(${JSON.stringify(moduleUrl)});`,
+        'process.exit(probeLandlockedProcessSupport() ? 0 : 1);',
+      ].join('\n');
+      const ptyScript = [
+        'import os',
+        'import pty',
+        'import sys',
+        'pid, master = pty.fork()',
+        'if pid == 0:',
+        '    os.execv(sys.argv[1], [sys.argv[1], "--input-type=module", "-e", sys.argv[2]])',
+        '_, status = os.waitpid(pid, 0)',
+        'os.close(master)',
+        'if not os.WIFEXITED(status):',
+        '    sys.exit(125)',
+        'sys.exit(os.WEXITSTATUS(status))',
+      ].join('\n');
+
+      expect(() =>
+        execFileSync('/usr/bin/python3', ['-c', ptyScript, process.execPath, probeScript], {
+          stdio: 'ignore',
+          timeout: 15_000,
+        })
+      ).not.toThrow();
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'isolates trusted bootstrap imports from the case working directory',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-bootstrap-import-'));
+      const importAttackMarker = path.join(root, 'root-import-attack');
+      try {
+        await writeFile(
+          path.join(root, 'ctypes.py'),
+          `open(${JSON.stringify(importAttackMarker)}, "w").write("root import escaped")\n`
+        );
+        const result = await runLandlockedProcess('/bin/true', [], {
+          writableRoots: [root],
+          cwd: root,
+          echo: false,
+          timeoutMs: 2_000,
+        });
+        expect(
+          result,
+          `isolated bootstrap failed:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+        ).toMatchObject({ exitCode: 0, timedOut: false });
+        expect(existsSync(importAttackMarker)).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'allows private PTY allocation only after dropping bootstrap privileges',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-openpty-'));
+      try {
+        const result = await runLandlockedProcess(
+          '/usr/bin/python3',
+          [
+            '-c',
+            [
+              'import ctypes',
+              'import errno',
+              'import os',
+              'import pty',
+              'status = {}',
+              'with open("/proc/self/status", encoding="utf-8") as status_file:',
+              '    for line in status_file:',
+              '        if ":" in line:',
+              '            key, value = line.split(":", 1)',
+              '            status[key] = value.strip()',
+              'for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):',
+              '    assert int(status[capability_set], 16) == 0',
+              'assert status["NoNewPrivs"] == "1"',
+              'for fd in range(3, 256):',
+              '    try:',
+              '        os.fstat(fd)',
+              '    except OSError as error:',
+              '        assert error.errno == errno.EBADF',
+              '    else:',
+              '        raise AssertionError(f"inherited file descriptor {fd}")',
+              'assert not [entry for entry in os.listdir("/dev/pts") if entry.isdecimal()]',
+              'libc = ctypes.CDLL(None, use_errno=True)',
+              'mount_result = libc.mount(None, b"/", None, 0, None)',
+              'assert mount_result == -1 and ctypes.get_errno() == errno.EPERM',
+              'ctypes.set_errno(0)',
+              'unshare_result = libc.syscall(272, 0x00020000)',
+              'assert unshare_result == -1 and ctypes.get_errno() == errno.EPERM',
+              'try:',
+              '    controlling_tty = os.open("/dev/tty", os.O_WRONLY | os.O_CLOEXEC)',
+              'except OSError as error:',
+              '    assert error.errno in (errno.ENXIO, errno.ENODEV, errno.ENOENT, errno.EACCES)',
+              'else:',
+              '    os.close(controlling_tty)',
+              '    raise AssertionError("case inherited a writable controlling TTY")',
+              'assert os.path.samefile("/dev/ptmx", "/dev/pts/ptmx")',
+              'master, slave = pty.openpty()',
+              'try:',
+              '    assert os.ttyname(slave).startswith("/dev/pts/")',
+              'finally:',
+              '    os.close(slave)',
+              '    os.close(master)',
+            ].join('\n'),
+          ],
+          {
+            writableRoots: [root],
+            cwd: root,
+            echo: false,
+            timeoutMs: 2_000,
+          }
+        );
+        expect(
+          result,
+          `private PTY launcher failed:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+        ).toMatchObject({ exitCode: 0, timedOut: false });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'isolates case PTYs from an occupied outer devpts namespace',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-occupied-devpts-'));
+      const holder = spawn(
+        '/usr/bin/python3',
+        [
+          '-c',
+          [
+            'import os',
+            'import pty',
+            'import select',
+            'import sys',
+            'master, slave = pty.openpty()',
+            'print(os.ttyname(slave), flush=True)',
+            'data = b""',
+            'while True:',
+            '    readable, _, _ = select.select([master, sys.stdin.buffer], [], [])',
+            '    if master in readable:',
+            '        data += os.read(master, 4096)',
+            '    if sys.stdin.buffer in readable:',
+            '        if sys.stdin.buffer.read(1) != b"D":',
+            '            raise RuntimeError("PTY holder lost its completion signal")',
+            '        while select.select([master], [], [], 0)[0]:',
+            '            data += os.read(master, 4096)',
+            '        break',
+            'attacked = b"OUTER_PTY_ATTACK" in data',
+            'print("OUTER_PTY_ATTACKED" if attacked else "OUTER_PTY_UNTOUCHED", flush=True)',
+            'os.close(slave)',
+            'os.close(master)',
+            'sys.exit(9 if attacked else 0)',
+          ].join('\n'),
+        ],
+        { stdio: ['pipe', 'pipe', 'pipe'] }
+      );
+      let holderStdout = '';
+      const holderExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+        holder.once('exit', (code, signal) => {
+          resolve({ code, signal });
+        })
+      );
+      try {
+        const slavePath = await new Promise<string>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('PTY holder did not start')), 2_000);
+          holder.stdout.on('data', (chunk) => {
+            holderStdout += chunk.toString();
+            const newline = holderStdout.indexOf('\n');
+            if (newline < 0) return;
+            clearTimeout(timer);
+            resolve(holderStdout.slice(0, newline));
+          });
+          holder.once('exit', (code, signal) => {
+            clearTimeout(timer);
+            reject(new Error(`PTY holder exited before readiness (${signal ?? code ?? 'unknown'})`));
+          });
+          holder.once('error', (error) => {
+            clearTimeout(timer);
+            reject(error);
+          });
+        });
+        expect(slavePath).toMatch(/^\/dev\/pts\/\d+$/);
+
+        const result = await runLandlockedProcess(
+          '/usr/bin/python3',
+          [
+            '-c',
+            [
+              'import os',
+              'import pty',
+              'import sys',
+              'assert not [entry for entry in os.listdir("/dev/pts") if entry.isdecimal()]',
+              'master, slave = pty.openpty()',
+              'try:',
+              '    outer_path = sys.argv[1]',
+              '    if os.path.exists(outer_path):',
+              '        with open(outer_path, "wb", buffering=0) as outer_candidate:',
+              '            outer_candidate.write(b"OUTER_PTY_ATTACK\\n")',
+              'finally:',
+              '    os.close(slave)',
+              '    os.close(master)',
+            ].join('\n'),
+            slavePath,
+          ],
+          {
+            writableRoots: [root],
+            cwd: root,
+            echo: false,
+            timeoutMs: 5_000,
+          }
+        );
+        holder.stdin.end('D');
+        expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+        const outerResult = await holderExit;
+        expect(outerResult).toEqual({ code: 0, signal: null });
+        expect(holderStdout).toContain('OUTER_PTY_UNTOUCHED');
+      } finally {
+        if (holder.exitCode === null && holder.signalCode === null) {
+          holder.kill('SIGTERM');
+          await holderExit;
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'prevents the case from reacquiring sudo after no_new_privs',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-no-sudo-'));
+      try {
+        const result = await runLandlockedProcess('/usr/bin/sudo', ['-n', '/bin/true'], {
+          writableRoots: [root],
+          cwd: root,
+          echo: false,
+          timeoutMs: 2_000,
+        });
+        expect(result.exitCode).not.toBe(0);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'keeps a stable self-spawning broker immutable under the case Landlock policy',
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-broker-exec-'));
@@ -1412,17 +1669,34 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('SYS_LANDLOCK_RESTRICT_SELF = 446');
     expect(source).toContain('secure broker execution requires Landlock ABI >= 3');
     expect(source).toContain('WRITE_FILE = 1 << 1');
+    expect(source).toContain('SYS_UNSHARE = 272');
+    expect(source).toContain('SYS_CAPSET = 126');
+    expect(source).toContain('newinstance,ptmxmode=0666,mode=0600,max=64');
+    expect(source).toContain('secure broker execution refuses an inherited controlling TTY');
+    expect(source).toContain('MS_NOSUID | MS_NOEXEC');
+    expect(source).toContain('mount("/dev/pts/ptmx", "/dev/ptmx", None, MS_BIND, None)');
+    expect(source.match(/os\.path\.samefile\("\/dev\/ptmx", "\/dev\/pts\/ptmx"\)/g)).toHaveLength(2);
+    expect(source).toContain('for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")');
+    expect(source).toContain('SYS_CLOSE_RANGE = 436');
+    expect(source).toContain('secure broker execution requires locked non-root securebits');
+    expect(source).toContain('secure broker execution requires NoNewPrivs=1');
+    expect(source).toContain('("/dev/null", "/dev/ptmx")');
+    expect(source).toContain('allow_path("/dev/pts", WRITE_FILE)');
+    expect(source).toContain("'/usr/bin/sudo'");
+    expect(source).toContain("'-I'");
+    expect(source).toContain("'-S'");
     expect(source).toContain('REFER = 1 << 13');
     expect(source).toContain('TRUNCATE = 1 << 14');
     expect(source).toContain('PR_SET_NO_NEW_PRIVS = 38');
-    expect(source).toContain('CAP_SYS_PTRACE = 19');
-    expect(source).toContain('CAP_SYS_ADMIN = 21');
-    expect(source).toContain('secure broker execution refuses {name}');
     expect(source).toContain('await handle.close();\n    await chmod(privateDirectory, 0o500);');
     expect(source).toContain('writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir]');
     expect(source).not.toContain('writableRoots: [temporaryRoot');
     expect(source).not.toContain('memfd_create');
     expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
+    expect(source).toContain("access('/usr/bin/sudo', fsConstants.X_OK)");
+    expect(source).toContain('CASE_ENVIRONMENT_KEYS.includes(key)');
+    expect(source).toContain('{ ...options, env: caseEnvironment }');
+    expect(source).not.toContain('options.env ?? process.env');
   });
 
   it('uses one non-refreshing API key and cancels remote work on termination', async () => {

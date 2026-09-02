@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { access, chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { accessSync, constants as fsConstants, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,8 +22,29 @@ import { runBoundedProcess } from './process-runner.mjs';
 import { loadBrokerArtifact } from './stage-broker-artifacts.mjs';
 
 const MAX_OBSERVATION_FILE_BYTES = 64 * 1024;
+const LANDLOCK_PROBE_TIMEOUT_MS = 5_000;
+const INHERITED_CASE_ENVIRONMENT_KEYS = ['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR'];
+const CASE_ENVIRONMENT_KEYS = [
+  ...INHERITED_CASE_ENVIRONMENT_KEYS,
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'CI',
+  'AGENT_RELAY_TELEMETRY_DISABLED',
+  'RELAY_PR_PROOF_ARM',
+  'RELAY_PR_PROOF_CASE_ID',
+  'RELAY_PR_PROOF_BASE_SHA',
+  'RELAY_PR_PROOF_HEAD_SHA',
+  'RELAY_PR_PROOF_TARGET_SHA',
+  'RELAY_PR_PROOF_TARGET_DIR',
+  'RELAY_PR_PROOF_HARNESS_DIR',
+  'RELAY_PR_PROOF_RESULT_PATH',
+  'RELAY_PR_PROOF_BROKER_BINARY',
+];
 const LANDLOCK_CASE_LAUNCHER = String.raw`
 import ctypes
+import errno
 import json
 import os
 import sys
@@ -30,9 +52,28 @@ import sys
 SYS_LANDLOCK_CREATE_RULESET = 444
 SYS_LANDLOCK_ADD_RULE = 445
 SYS_LANDLOCK_RESTRICT_SELF = 446
+SYS_UNSHARE = 272
+SYS_CAPSET = 126
+SYS_CLOSE_RANGE = 436
 LANDLOCK_CREATE_RULESET_VERSION = 1
 LANDLOCK_RULE_PATH_BENEATH = 1
 PR_SET_NO_NEW_PRIVS = 38
+PR_GET_SECUREBITS = 27
+PR_SET_SECUREBITS = 28
+PR_CAPBSET_DROP = 24
+PR_CAP_AMBIENT = 47
+PR_CAP_AMBIENT_CLEAR_ALL = 4
+CLONE_NEWNS = 0x00020000
+MS_NOSUID = 2
+MS_NOEXEC = 8
+MS_BIND = 4096
+MS_REC = 16384
+MS_PRIVATE = 1 << 18
+LINUX_CAPABILITY_VERSION_3 = 0x20080522
+SECBIT_NOROOT = 1 << 0
+SECBIT_NOROOT_LOCKED = 1 << 1
+SECBIT_KEEP_CAPS_LOCKED = 1 << 5
+LOCKED_SECUREBITS = SECBIT_NOROOT | SECBIT_NOROOT_LOCKED | SECBIT_KEEP_CAPS_LOCKED
 
 WRITE_FILE = 1 << 1
 REMOVE_DIR = 1 << 4
@@ -67,25 +108,26 @@ class RulesetAttr(ctypes.Structure):
 class PathBeneathAttr(ctypes.Structure):
     _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
 
+class CapHeader(ctypes.Structure):
+    _fields_ = [("version", ctypes.c_uint32), ("pid", ctypes.c_int32)]
+
+class CapData(ctypes.Structure):
+    _fields_ = [
+        ("effective", ctypes.c_uint32),
+        ("permitted", ctypes.c_uint32),
+        ("inheritable", ctypes.c_uint32),
+    ]
+
 libc = ctypes.CDLL(None, use_errno=True)
 libc.syscall.restype = ctypes.c_long
-
-with open("/proc/self/status", "r", encoding="utf-8") as status_file:
-    status_lines = status_file.readlines()
-effective_capabilities = next(
-    (int(line.split()[1], 16) for line in status_lines if line.startswith("CapEff:")),
-    None,
-)
-if effective_capabilities is None:
-    raise RuntimeError("secure broker execution could not determine effective Linux capabilities")
-CAP_SYS_PTRACE = 19
-CAP_SYS_ADMIN = 21
-for capability, name in (
-    (CAP_SYS_PTRACE, "CAP_SYS_PTRACE"),
-    (CAP_SYS_ADMIN, "CAP_SYS_ADMIN"),
-):
-    if effective_capabilities & (1 << capability):
-        raise RuntimeError(f"secure broker execution refuses {name}")
+libc.mount.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_ulong,
+    ctypes.c_char_p,
+]
+libc.mount.restype = ctypes.c_int
 
 def syscall(number, *args):
     result = libc.syscall(number, *args)
@@ -93,6 +135,89 @@ def syscall(number, *args):
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
     return result
+
+def mount(source, target, filesystem, flags, data):
+    result = libc.mount(
+        source.encode() if source is not None else None,
+        target.encode(),
+        filesystem.encode() if filesystem is not None else None,
+        flags,
+        data.encode() if data is not None else None,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), target)
+
+try:
+    original_uid = int(sys.argv[1])
+    original_gid = int(sys.argv[2])
+except (IndexError, ValueError) as error:
+    raise RuntimeError("secure broker execution requires numeric caller uid and gid") from error
+if original_uid <= 0 or original_gid <= 0:
+    raise RuntimeError("secure broker execution refuses a root caller uid or gid")
+if os.geteuid() != 0 or os.getegid() != 0:
+    raise RuntimeError("secure broker execution requires its fixed trusted sudo bootstrap")
+
+syscall(SYS_UNSHARE, ctypes.c_int(CLONE_NEWNS))
+mount(None, "/", None, MS_REC | MS_PRIVATE, None)
+mount(
+    "devpts",
+    "/dev/pts",
+    "devpts",
+    MS_NOSUID | MS_NOEXEC,
+    "newinstance,ptmxmode=0666,mode=0600,max=64",
+)
+if not os.path.samefile("/dev/ptmx", "/dev/pts/ptmx"):
+    mount("/dev/pts/ptmx", "/dev/ptmx", None, MS_BIND, None)
+if not os.path.samefile("/dev/ptmx", "/dev/pts/ptmx"):
+    raise RuntimeError("secure broker execution requires /dev/ptmx to resolve inside private devpts")
+if any(entry.isdecimal() for entry in os.listdir("/dev/pts")):
+    raise RuntimeError("secure broker execution requires a fresh empty private devpts instance")
+try:
+    controlling_tty = os.open("/dev/tty", os.O_WRONLY | os.O_CLOEXEC)
+except OSError as error:
+    if error.errno not in (errno.ENXIO, errno.ENODEV, errno.ENOENT):
+        raise
+else:
+    os.close(controlling_tty)
+    raise RuntimeError("secure broker execution refuses an inherited controlling TTY")
+
+if libc.prctl(PR_SET_SECUREBITS, LOCKED_SECUREBITS, 0, 0, 0) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+with open("/proc/sys/kernel/cap_last_cap", "r", encoding="ascii") as cap_file:
+    last_capability = int(cap_file.read().strip())
+for capability in range(last_capability + 1):
+    if libc.prctl(PR_CAPBSET_DROP, capability, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+if libc.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+
+os.setgroups([])
+os.setresgid(original_gid, original_gid, original_gid)
+os.setresuid(original_uid, original_uid, original_uid)
+cap_header = CapHeader(LINUX_CAPABILITY_VERSION_3, 0)
+cap_data = (CapData * 2)()
+syscall(SYS_CAPSET, ctypes.byref(cap_header), ctypes.byref(cap_data))
+
+if os.getresuid() != (original_uid, original_uid, original_uid):
+    raise RuntimeError("secure broker execution did not restore the caller uid")
+if os.getresgid() != (original_gid, original_gid, original_gid) or os.getgroups():
+    raise RuntimeError("secure broker execution did not restore the caller gid without groups")
+with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+    status_values = {
+        line.split(":", 1)[0]: line.split(":", 1)[1].strip()
+        for line in status_file
+        if ":" in line
+    }
+for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+    encoded = status_values.get(capability_set)
+    if encoded is None or int(encoded, 16) != 0:
+        raise RuntimeError(f"secure broker execution requires zero {capability_set}")
+if libc.prctl(PR_GET_SECUREBITS, 0, 0, 0, 0) != LOCKED_SECUREBITS:
+    raise RuntimeError("secure broker execution requires locked non-root securebits")
 
 abi = syscall(
     SYS_LANDLOCK_CREATE_RULESET,
@@ -125,7 +250,7 @@ def allow_path(path, rights):
     finally:
         os.close(path_fd)
 
-writable_roots = json.loads(sys.argv[1])
+writable_roots = json.loads(sys.argv[3])
 if not isinstance(writable_roots, list) or not writable_roots:
     raise RuntimeError("Landlock writable roots are required")
 for writable_root in writable_roots:
@@ -133,18 +258,39 @@ for writable_root in writable_roots:
         raise RuntimeError("Landlock writable roots must be absolute paths")
     allow_path(writable_root, MUTATION_RIGHTS)
 
-for writable_device in ("/dev/null", "/dev/tty", "/dev/ptmx"):
+for writable_device in ("/dev/null", "/dev/ptmx"):
     if os.path.exists(writable_device):
         allow_path(writable_device, WRITE_FILE)
+
+allow_path("/dev/pts", WRITE_FILE)
 
 if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
     error = ctypes.get_errno()
     raise OSError(error, os.strerror(error))
+with open("/proc/self/status", "r", encoding="utf-8") as status_file:
+    no_new_privs = next(
+        (line.split()[1] for line in status_file if line.startswith("NoNewPrivs:")),
+        None,
+    )
+if no_new_privs != "1":
+    raise RuntimeError("secure broker execution requires NoNewPrivs=1")
 syscall(SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd, ctypes.c_uint32(0))
 os.close(ruleset_fd)
 
-command = sys.argv[2]
-os.execvpe(command, [command, *sys.argv[3:]], os.environ)
+case_environment = json.loads(sys.argv[4])
+if not isinstance(case_environment, dict) or any(
+    not isinstance(key, str) or not isinstance(value, str)
+    for key, value in case_environment.items()
+):
+    raise RuntimeError("secure broker execution requires a string-to-string case environment")
+command = sys.argv[5]
+syscall(
+    SYS_CLOSE_RANGE,
+    ctypes.c_uint(3),
+    ctypes.c_uint(0xFFFFFFFF),
+    ctypes.c_uint(0),
+)
+os.execvpe(command, [command, *sys.argv[6:]], case_environment)
 `;
 
 async function readObservationFile(filePath) {
@@ -203,22 +349,136 @@ async function checkout(repository, sha, destination) {
   return actual;
 }
 
-export async function runLandlockedProcess(command, args, { writableRoots, ...options }) {
-  try {
-    await access('/usr/bin/python3', fsConstants.X_OK);
-  } catch {
-    throw new Error(
-      'secure broker execution requires executable /usr/bin/python3 in the Cloud proof sandbox'
-    );
-  }
+function inheritedCaseEnvironment() {
+  return Object.fromEntries(
+    INHERITED_CASE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]).filter(
+      (entry) => typeof entry[1] === 'string' && entry[1]
+    )
+  );
+}
+
+function validateLandlockInputs({ writableRoots, caseEnvironment }) {
   if (!Array.isArray(writableRoots) || writableRoots.some((root) => !path.isAbsolute(root))) {
     throw new Error('Landlock writable roots must be absolute paths');
   }
-  return runProcess(
-    '/usr/bin/python3',
-    ['-c', LANDLOCK_CASE_LAUNCHER, JSON.stringify(writableRoots), command, ...args],
-    options
-  );
+  if (
+    typeof caseEnvironment !== 'object' ||
+    caseEnvironment === null ||
+    Array.isArray(caseEnvironment) ||
+    Object.entries(caseEnvironment).some(
+      ([key, value]) =>
+        !CASE_ENVIRONMENT_KEYS.includes(key) ||
+        key.includes('=') ||
+        key.includes('\0') ||
+        typeof value !== 'string' ||
+        value.includes('\0')
+    )
+  ) {
+    throw new Error('secure broker execution requires a string-to-string case environment');
+  }
+}
+
+function landlockCallerIdentity() {
+  const originalUid = process.getuid?.();
+  const originalGid = process.getgid?.();
+  if (
+    !Number.isSafeInteger(originalUid) ||
+    !Number.isSafeInteger(originalGid) ||
+    originalUid <= 0 ||
+    originalGid <= 0
+  ) {
+    throw new Error('secure broker execution requires a non-root numeric caller uid and gid');
+  }
+  return { originalUid, originalGid };
+}
+
+function landlockLauncherInvocation({
+  command,
+  args,
+  writableRoots,
+  caseEnvironment,
+  originalUid,
+  originalGid,
+}) {
+  return {
+    command: '/usr/bin/sudo',
+    args: [
+      '-n',
+      '--',
+      '/usr/bin/python3',
+      '-I',
+      '-S',
+      '-c',
+      LANDLOCK_CASE_LAUNCHER,
+      String(originalUid),
+      String(originalGid),
+      JSON.stringify(writableRoots),
+      JSON.stringify(caseEnvironment),
+      command,
+      ...args,
+    ],
+  };
+}
+
+export function probeLandlockedProcessSupport() {
+  if (process.platform !== 'linux') return false;
+
+  let temporaryRoot;
+  try {
+    accessSync('/usr/bin/python3', fsConstants.X_OK);
+    accessSync('/usr/bin/sudo', fsConstants.X_OK);
+    const { originalUid, originalGid } = landlockCallerIdentity();
+    temporaryRoot = mkdtempSync(path.join(os.tmpdir(), 'relay-pr-proof-probe-'));
+    const caseEnvironment = inheritedCaseEnvironment();
+    const writableRoots = [temporaryRoot];
+    validateLandlockInputs({ writableRoots, caseEnvironment });
+    const invocation = landlockLauncherInvocation({
+      command: '/bin/true',
+      args: [],
+      writableRoots,
+      caseEnvironment,
+      originalUid,
+      originalGid,
+    });
+    const result = spawnSync(invocation.command, invocation.args, {
+      cwd: temporaryRoot,
+      env: caseEnvironment,
+      detached: process.platform !== 'win32',
+      stdio: 'ignore',
+      timeout: LANDLOCK_PROBE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
+    return result.error === undefined && result.status === 0 && result.signal === null;
+  } catch {
+    return false;
+  } finally {
+    if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+export async function runLandlockedProcess(command, args, { writableRoots, ...options }) {
+  try {
+    await Promise.all([
+      access('/usr/bin/python3', fsConstants.X_OK),
+      access('/usr/bin/sudo', fsConstants.X_OK),
+    ]);
+  } catch {
+    throw new Error(
+      'secure broker execution requires executable /usr/bin/python3 and /usr/bin/sudo in the Cloud proof sandbox'
+    );
+  }
+  const { originalUid, originalGid } = landlockCallerIdentity();
+  const caseEnvironment = options.env ?? inheritedCaseEnvironment();
+  validateLandlockInputs({ writableRoots, caseEnvironment });
+  const invocation = landlockLauncherInvocation({
+    command,
+    args,
+    writableRoots,
+    caseEnvironment,
+    originalUid,
+    originalGid,
+  });
+  return runProcess(invocation.command, invocation.args, { ...options, env: caseEnvironment });
 }
 
 export async function openVerifiedBrokerExecutable({ input, arm, privateRoot, root = process.cwd() }) {
@@ -302,9 +562,10 @@ function sanitizedCaseEnvironment({
   arm,
   brokerPath,
 }) {
-  const allowed = ['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR'];
   const env = Object.fromEntries(
-    allowed.map((key) => [key, process.env[key]]).filter((entry) => typeof entry[1] === 'string' && entry[1])
+    INHERITED_CASE_ENVIRONMENT_KEYS.map((key) => [key, process.env[key]]).filter(
+      (entry) => typeof entry[1] === 'string' && entry[1]
+    )
   );
   return {
     ...env,
