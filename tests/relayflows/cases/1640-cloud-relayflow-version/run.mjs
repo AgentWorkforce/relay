@@ -6,6 +6,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1640-cloud-relayflow-version';
+const RELAYFLOW_VERSION = 'v2';
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -102,13 +103,13 @@ test('observes engine generation forwarding through public run and schedule clie
     apiUrl: auth.apiUrl,
     fileType: 'yaml',
     syncCode: false,
-    relayflowVersion: 'v2',
+    relayflowVersion: ${JSON.stringify(RELAYFLOW_VERSION)},
   });
   await scheduleWorkflow(workflow, {
     apiUrl: auth.apiUrl,
     fileType: 'yaml',
     at: '2099-01-01T00:00:00.000Z',
-    relayflowVersion: 'v2',
+    relayflowVersion: ${JSON.stringify(RELAYFLOW_VERSION)},
   });
 
   const runRequest = mocks.authorizedApiFetch.mock.calls[0]?.[2];
@@ -162,7 +163,8 @@ try {
   const baseObserved =
     observation.runRelayflowVersion === null && observation.scheduleRelayflowVersion === null;
   const headObserved =
-    observation.runRelayflowVersion === 'v2' && observation.scheduleRelayflowVersion === 'v2';
+    observation.runRelayflowVersion === RELAYFLOW_VERSION &&
+    observation.scheduleRelayflowVersion === RELAYFLOW_VERSION;
 
   let outcome;
   let signature;
