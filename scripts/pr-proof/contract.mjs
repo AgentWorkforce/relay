@@ -105,6 +105,24 @@ const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^scripts\/evals\//,
   /^tests\//,
   /^[^/]*\.md$/,
+  // Top-level repo metadata that cannot reach a shipped artifact.
+  //
+  // Listed individually rather than as a dotfile glob, so a top-level dotfile
+  // that DOES affect a build — an .npmrc or .nvmrc — keeps demanding a proof.
+  //
+  // .gitattributes is deliberately NOT here. `export-ignore` removes files from
+  // `git archive`, and the broker proof workflow builds its isolated source
+  // tree with exactly that command, so a .gitattributes edit can change what a
+  // proof compiles against. `text`/`eol` normalisation can also change file
+  // contents. That is a different class from "which files git tracks".
+  //
+  // .gitignore stays: every published package pins an explicit `files` array,
+  // so npm never falls back to it, and the shipped consumer of a .gitignore
+  // (packages/cloud buildIgnoreMatcher) reads the USER's project root, not
+  // this repo's. Its only reach here is this repo's own cloud tarball, which
+  // is the same CI scope already exempted via workflows/ and .github/.
+  /^\.gitignore$/,
+  /^\.editorconfig$/,
 ]);
 
 /**

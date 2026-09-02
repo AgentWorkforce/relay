@@ -1741,6 +1741,30 @@ describe('classification reads the diff, not the title', () => {
     );
   });
 
+  it('treats top-level repo metadata as non-runtime', () => {
+    expect(runtimeSurfaceChanged(['.gitignore'])).toBe(false);
+    expect(runtimeSurfaceChanged(['.editorconfig'])).toBe(false);
+  });
+
+  /**
+   * .gitattributes is NOT exempt: `export-ignore` changes what `git archive`
+   * emits, and relayflow-pr-proof-broker.yml builds its isolated source tree
+   * with exactly that command, so an edit here can change what a proof
+   * compiles against.
+   */
+  it('still treats .gitattributes as runtime', () => {
+    expect(runtimeSurfaceChanged(['.gitattributes'])).toBe(true);
+  });
+
+  /**
+   * Listed individually, not as a dotfile glob: a top-level dotfile that does
+   * affect what gets built or installed must still demand a proof.
+   */
+  it('still treats a build-affecting top-level dotfile as runtime', () => {
+    expect(runtimeSurfaceChanged(['.npmrc'])).toBe(true);
+    expect(runtimeSurfaceChanged(['.nvmrc'])).toBe(true);
+  });
+
   it('treats any broker or package source change as runtime', () => {
     expect(runtimeSurfaceChanged(['crates/broker/src/runtime/fleet.rs'])).toBe(true);
     expect(runtimeSurfaceChanged(['packages/cli/src/cli/commands/local-agent.ts'])).toBe(true);
