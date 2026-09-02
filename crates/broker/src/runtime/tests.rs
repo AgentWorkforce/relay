@@ -1484,6 +1484,8 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
     }
 }
 
+/// Build a fleet-control event carrying one ephemeral `context.update`, as the
+/// node-control socket would hand it to the runtime.
 fn context_update_event(
     topic: ContextTopic,
     event: &str,
@@ -1548,10 +1550,12 @@ async fn relaycast_delivery_failure_reaches_the_sending_worker() {
     );
 }
 
-/// A deferred delivery is surfaced through the same channel, with the engine's
-/// event name kept in the reason so a consumer can tell the two apart.
+/// A deferred delivery is still queued for a later `available_at` retry, so it
+/// must NOT reach the sender as `message_delivery_failed` — that would invite a
+/// resend and duplicate the message the engine is still holding. The broker
+/// takes the log-only path instead and emits nothing.
 #[tokio::test]
-async fn relaycast_delivery_deferral_is_labelled_as_deferred() {
+async fn relaycast_delivery_deferral_emits_no_event() {
     let worker_name = "worker-a";
     let registry = make_worker_registry_with_worker(worker_name).await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
@@ -1560,33 +1564,40 @@ async fn relaycast_delivery_deferral_is_labelled_as_deferred() {
         .fleet_delivery_book
         .bind_authoritative_identity(worker_name, "agt_sender");
 
+    let update = ContextUpdate {
+        v: FLEET_WIRE_VERSION,
+        topic: ContextTopic::Agent,
+        event: "delivery.deferred".to_string(),
+        channel_id: None,
+        agent_ids: Some(vec!["agt_sender".to_string()]),
+        data: json!({
+            "delivery_id": "del_remote_2",
+            "message_id": "msg_remote_2",
+            "available_at": "2026-09-02T00:00:00.000Z",
+            "reason": "recipient_busy",
+        }),
+    };
+
+    // The deferral resolves to this broker's worker, so the log-only path runs
+    // rather than the `no matching worker` drop.
+    assert_eq!(
+        fixture.runtime.fleet_context_update_workers(&update),
+        vec![WorkerName::from(worker_name)]
+    );
+
     fixture
         .runtime
-        .handle_fleet_control_event(context_update_event(
-            ContextTopic::Agent,
-            "delivery.deferred",
-            &["agt_sender"],
-            json!({
-                "delivery_id": "del_remote_2",
-                "message_id": "msg_remote_2",
-                "available_at": "2026-09-02T00:00:00.000Z",
-                "reason": "recipient_busy",
-            }),
+        .handle_fleet_control_event(FleetControlEvent::Message(
+            RelaycastToBroker::ContextUpdate(update),
         ))
         .await;
 
-    let frame = tokio::time::timeout(Duration::from_secs(1), fixture._sdk_out_rx.recv())
-        .await
-        .expect("a deferral must be emitted")
-        .expect("sdk_out_tx should remain open");
-    assert_eq!(frame.payload["kind"], "message_delivery_failed");
-    assert_eq!(
-        frame.payload["lastError"],
-        "relaycast delivery.deferred: recipient_busy"
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), fixture._sdk_out_rx.recv())
+            .await
+            .is_err(),
+        "a deferred delivery is not terminal and must not emit message_delivery_failed"
     );
-    // No target agent on a deferral payload: the event still has to name a
-    // target rather than panicking or emitting an empty one.
-    assert_eq!(frame.payload["to"], "unknown");
 }
 
 /// Frames naming an agent this broker does not host, and events it has no use

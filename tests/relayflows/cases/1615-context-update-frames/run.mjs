@@ -256,8 +256,12 @@ try {
         RELAY_NODE_TOKEN: 'nt_relayflow_1615_probe',
         AGENT_RELAY_BROKER_LOG: 'stderr',
         // `invalid fleet node ws frame` is a warning; the accepted-frame path
-        // logs at debug because an ephemeral frame is never an error.
-        RUST_LOG: 'info,relay_broker::runtime::fleet=debug',
+        // logs at debug because an ephemeral frame is never an error. The
+        // event's tracing target is its module path (`relay_broker::runtime::
+        // fleet`) — the `target = "relay_broker::fleet"` in the macro is a
+        // structured field, not the metadata target — so enable both prefixes
+        // rather than betting the proof on which one the call site uses.
+        RUST_LOG: 'info,relay_broker::runtime::fleet=debug,relay_broker::fleet=debug',
         RELAY_TELEMETRY_DISABLED: '1',
       },
     }

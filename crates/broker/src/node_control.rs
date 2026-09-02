@@ -2242,6 +2242,9 @@ mod tests {
         }
     }
 
+    /// `active_agent_name` is the id -> name direction ephemeral
+    /// `context.update` routing depends on: it must resolve only authoritative
+    /// live bindings, and must stop resolving once the agent is removed.
     #[test]
     fn delivery_book_resolves_a_worker_name_from_an_authoritative_agent_id() {
         let mut book = FleetDeliveryBook::default();

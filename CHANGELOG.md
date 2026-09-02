@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker now accepts Relaycast `context.update` node frames instead of logging every one as an invalid frame, and surfaces `delivery.failed`/`delivery.deferred` to the sending agent as a `message_delivery_failed` event so a DM to an unreachable agent is no longer silently lost.
+- Broker now accepts Relaycast `context.update` node frames instead of logging every one as an invalid frame, and surfaces `delivery.failed` to the sending agent as a `message_delivery_failed` event so a DM to an unreachable agent is no longer silently lost.
 - Broker drops a worker's cached Relaycast registration when Relaycast reports `agent.identity_taken_over`, so the next operation re-registers instead of failing on a revoked token.
 
 ## [11.10.1] - 2026-09-02

@@ -802,15 +802,28 @@ impl BrokerRuntime {
     /// best-effort and never acked, so an event this broker has no use for is
     /// dropped at debug — it is a legitimate frame and must never be logged as
     /// invalid (relay#1615).
+    ///
+    /// Only terminal outcomes reach the sending agent as events:
+    /// `delivery.failed` is surfaced, while `delivery.deferred` (still queued
+    /// for a later `available_at` retry) is logged only, so a sender is never
+    /// prompted to resend a message the engine still intends to deliver.
     async fn handle_fleet_context_update(&mut self, update: ContextUpdate) {
         match (update.topic, update.event.as_str()) {
-            (ContextTopic::Agent, "delivery.failed" | "delivery.deferred") => {
+            (ContextTopic::Agent, "delivery.failed") => {
                 let workers = self.fleet_context_update_workers(&update);
                 if workers.is_empty() {
                     debug_ignored_context_update(&update, "no matching worker");
                     return;
                 }
                 self.surface_fleet_delivery_problem(&update, &workers).await;
+            }
+            (ContextTopic::Agent, "delivery.deferred") => {
+                let workers = self.fleet_context_update_workers(&update);
+                if workers.is_empty() {
+                    debug_ignored_context_update(&update, "no matching worker");
+                    return;
+                }
+                self.log_fleet_delivery_deferral(&update, &workers);
             }
             (ContextTopic::Agent, "agent.identity_taken_over") => {
                 let workers = self.fleet_context_update_workers(&update);
@@ -827,7 +840,7 @@ impl BrokerRuntime {
     /// Resolve `agent_ids` to workers this broker actually hosts. The engine
     /// addresses ephemeral events by immutable agent id only, so this walks the
     /// same authoritative binding `agent.register` established.
-    fn fleet_context_update_workers(&self, update: &ContextUpdate) -> Vec<WorkerName> {
+    pub(super) fn fleet_context_update_workers(&self, update: &ContextUpdate) -> Vec<WorkerName> {
         let mut workers: Vec<WorkerName> = Vec::new();
         for agent_id in update.agent_ids.iter().flatten() {
             let Some(name) = self.fleet_delivery_book.active_agent_name(agent_id) else {
@@ -841,12 +854,16 @@ impl BrokerRuntime {
         workers
     }
 
-    /// Tell the SENDING agent (and operators) that Relaycast could not land a
-    /// message it sent — the recipient was offline, its node was gone, or the
-    /// delivery was deferred. Without this a broker-hosted agent that DMs an
-    /// unreachable agent never learns (relay#1615). Reuses the same
-    /// `message_delivery_failed` event the broker's own dead-letter path emits,
-    /// so existing SDK/dashboard consumers surface it with no client change.
+    /// Tell the SENDING agent (and operators) that Relaycast gave up on a
+    /// message it sent — the recipient was offline or its node was gone.
+    /// Without this a broker-hosted agent that DMs an unreachable agent never
+    /// learns (relay#1615). Reuses the same `message_delivery_failed` event the
+    /// broker's own dead-letter path emits, so existing SDK/dashboard consumers
+    /// surface it with no client change.
+    ///
+    /// Terminal outcomes only (`delivery.failed`): a deferred delivery is still
+    /// queued and must not be reported as a failure — see
+    /// [`Self::log_fleet_delivery_deferral`].
     async fn surface_fleet_delivery_problem(&self, update: &ContextUpdate, workers: &[WorkerName]) {
         let reason = context_update_string(&update.data, &["reason", "error"])
             .unwrap_or_else(|| "unspecified".to_string());
@@ -883,6 +900,36 @@ impl BrokerRuntime {
                 },
             )
             .await;
+        }
+    }
+
+    /// Record that Relaycast has postponed — not abandoned — a message one of
+    /// this broker's agents sent. A deferred delivery stays queued for a later
+    /// `available_at` retry, so it deliberately emits no `BrokerEvent`: telling
+    /// the sender it "failed" would invite a resend and duplicate the message
+    /// the engine is still holding.
+    fn log_fleet_delivery_deferral(&self, update: &ContextUpdate, workers: &[WorkerName]) {
+        let reason = context_update_string(&update.data, &["reason", "error"])
+            .unwrap_or_else(|| "unspecified".to_string());
+        let target = context_update_string(&update.data, &["target_agent_name", "target_agent_id"])
+            .unwrap_or_else(|| "unknown".to_string());
+        let available_at =
+            context_update_string(&update.data, &["available_at"]).unwrap_or_default();
+        let delivery_id = context_update_string(&update.data, &["delivery_id"]).unwrap_or_default();
+        let message_id = context_update_string(&update.data, &["message_id"]).unwrap_or_default();
+
+        for name in workers {
+            tracing::info!(
+                target = "relay_broker::fleet",
+                worker = %name,
+                event = %update.event,
+                target_agent = %target,
+                available_at = %available_at,
+                reason = %reason,
+                delivery_id = %delivery_id,
+                message_id = %message_id,
+                "relaycast deferred a message this broker's agent sent; it stays queued for retry"
+            );
         }
     }
 

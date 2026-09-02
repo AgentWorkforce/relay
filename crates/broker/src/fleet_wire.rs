@@ -621,8 +621,12 @@ pub enum ContextTopic {
 /// must not make the whole frame unparseable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextUpdate {
+    /// Fleet wire version the engine framed this update with.
     pub v: FleetWireVersion,
+    /// Scope of the fan-out; decides how `event` and `data` are interpreted.
     pub topic: ContextTopic,
+    /// Engine event name within `topic`, e.g. `delivery.failed`. Free-form on
+    /// purpose — an unrecognized event must be ignored, never rejected.
     pub event: String,
     /// Nullable on the wire (the engine always sends the key, `null` when the
     /// event is not channel-scoped), so this is a plain `Option` that both
@@ -634,6 +638,8 @@ pub struct ContextUpdate {
     /// its fan-out per node/provider before sending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_ids: Option<Vec<String>>,
+    /// Open per-event payload. The engine adds keys over time, so readers pull
+    /// the ones they understand instead of deserializing a fixed shape.
     pub data: Value,
 }
 
@@ -1413,6 +1419,9 @@ mod tests {
         assert_eq!(update.event, "some.future.event");
     }
 
+    /// `topic` is a closed enum mirroring the engine's schema, so an unknown
+    /// scope is a genuine protocol mismatch and must fail loudly rather than
+    /// being silently coerced into one of the known topics.
     #[test]
     fn context_update_rejects_unknown_topics() {
         assert!(serde_json::from_value::<RelaycastToBroker>(json!({
