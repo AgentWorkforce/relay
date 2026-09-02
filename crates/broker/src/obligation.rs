@@ -145,6 +145,19 @@ impl ObligationStore {
         false
     }
 
+    /// Drop the obligation for `message_id` outright, whoever registered it.
+    ///
+    /// Unlike [`Self::try_discharge`] this is not an answer — it is used when
+    /// the message can never be delivered at all (a parked message dead-lettered
+    /// because its Relaycast identity was retired). Leaving the record in place
+    /// would have maintenance keep firing boomerang reminders at a recipient for
+    /// a message that never reached them.
+    ///
+    /// Returns `true` when a record was actually removed.
+    pub fn cancel(&mut self, message_id: &str) -> bool {
+        self.records.remove(message_id).is_some()
+    }
+
     /// Collect all obligations that are due for a boomerang return, advance
     /// their `next_fire_at` by `interval`, and return the
     /// `(message_id, recipient)` pairs to inject.

@@ -5,12 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
 
 ### Fixed
 
+- `node agent message flush` and `node agent message auto` now unblock a held queue that could previously never drain, instead of reporting `flushed: 0` forever and leaving the agent unable to receive anything later. A parked message whose Relaycast identity has been retired is dead-lettered with a reason and is visible in `node deadletters`; injection failures and out-of-order sequences are still held for retry.
 - Broker now accepts Relaycast `context.update` node frames instead of logging every one as an invalid frame, and surfaces `delivery.failed` to the sending agent as a `message_delivery_failed` event so a DM to an unreachable agent is no longer silently lost.
 - Broker drops a worker's cached Relaycast registration when Relaycast reports `agent.identity_taken_over`, so the next operation re-registers instead of failing on a revoked token.
+
+### Added
+
+- `POST /api/spawned/{name}/flush` now returns `dead_lettered`, `held`, and `blocked_reason` alongside `flushed`, so an empty queue is distinguishable from one the broker could not drain. Exposed on the harness-driver and Swift SDK clients.
 
 ## [11.10.1] - 2026-09-02
 

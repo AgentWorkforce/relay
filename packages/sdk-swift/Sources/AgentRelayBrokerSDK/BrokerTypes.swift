@@ -524,8 +524,38 @@ public struct ResizePtyResult: Codable, Sendable {
 }
 
 /// Result of `POST /api/spawned/{name}/flush`.
+///
+/// `flushed` alone cannot tell an empty queue from one the broker could not
+/// drain. The remaining fields carry that distinction and are absent on
+/// brokers older than the change that added them.
 public struct FlushResult: Codable, Sendable {
     public var flushed: Int
+    /// Messages dead-lettered instead of injected because their Relaycast
+    /// identity no longer holds the worker's name.
+    public var deadLettered: Int?
+    /// Messages still parked when the flush stopped.
+    public var held: Int?
+    /// Why the flush stopped short, when it did.
+    public var blockedReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case flushed
+        case deadLettered = "dead_lettered"
+        case held
+        case blockedReason = "blocked_reason"
+    }
+
+    public init(
+        flushed: Int,
+        deadLettered: Int? = nil,
+        held: Int? = nil,
+        blockedReason: String? = nil
+    ) {
+        self.flushed = flushed
+        self.deadLettered = deadLettered
+        self.held = held
+        self.blockedReason = blockedReason
+    }
 }
 
 /// A PTY screen snapshot (`GET /api/spawned/{name}/snapshot`).

@@ -22,6 +22,26 @@ pub(crate) struct DeadLetterEntry {
 }
 
 impl DeadLetterEntry {
+    /// Build an entry for a message discarded straight out of a worker's
+    /// parked (`manual_flush`) queue, which never became a `PendingDelivery`
+    /// because it was never handed to the worker. `attempts` is 0 for exactly
+    /// that reason: no injection was attempted.
+    pub(crate) fn from_parked_message(
+        worker_name: &WorkerName,
+        delivery: RelayDelivery,
+        queued_at_ms: u64,
+        reason: &str,
+    ) -> Self {
+        Self {
+            worker_name: worker_name.clone(),
+            delivery,
+            attempts: 0,
+            reason: reason.to_string(),
+            queued_at_ms,
+            failed_at_ms: unix_timestamp_millis(),
+        }
+    }
+
     pub(crate) fn from_pending(pending: &PendingDelivery, reason: &str) -> Self {
         Self {
             worker_name: pending.worker_name.clone(),
@@ -215,6 +235,49 @@ pub(crate) fn requeue_dead_letter(
     };
     pending_deliveries.insert(pending.delivery.delivery_id.clone(), pending.clone());
     Some(pending)
+}
+
+/// Dead-letter a message removed from a worker's parked queue without ever
+/// being injected, emitting the same `DeadLetterAdded` event as the pending
+/// path so `node deadletters` and the SDK see it identically.
+pub(crate) fn dead_letter_parked_message(
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
+    entry: DeadLetterEntry,
+) -> bool {
+    let event = BrokerEvent::DeadLetterAdded {
+        name: entry.worker_name.clone(),
+        delivery_id: entry.delivery.delivery_id.clone(),
+        event_id: entry.delivery.event_id.clone(),
+        from: entry.delivery.from.clone(),
+        to: entry.delivery.target.clone(),
+        attempts: entry.attempts,
+        reason: entry.reason.clone(),
+    };
+    dead_letters.push(entry);
+    // Nonblocking, unlike the pending path's emit. This runs inside the flush
+    // loop once per parked message (up to `MAX_PENDING_PER_WORKER`), so even a
+    // small per-entry timeout would add up and stall every other API request.
+    // The store write above already happened, so a dropped event costs
+    // observability on one entry, never the record itself.
+    match serde_json::to_value(event) {
+        Ok(payload) => sdk_out_tx
+            .try_send(ProtocolEnvelope {
+                v: PROTOCOL_VERSION,
+                msg_type: "event".to_string(),
+                request_id: None,
+                payload,
+            })
+            .is_ok(),
+        Err(error) => {
+            tracing::warn!(
+                target = "relay_broker::dead_letter",
+                error = %error,
+                "failed to serialize dead_letter_added event for a parked message"
+            );
+            false
+        }
+    }
 }
 
 /// Push a terminally-failed pending delivery into the dead-letter store and
