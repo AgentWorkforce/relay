@@ -1367,7 +1367,9 @@ ${PRELUDE}
 
 echo "=== RelayFlow proof-case regression corpus ===" | tee "$LOG"
 
-CASE_TMPDIR="$TMPDIR"
+# Read through printenv: under 'set -u' a bare $TMPDIR aborts the whole step
+# before a single case records anything, and TMPDIR is routinely unset on Linux.
+CASE_TMPDIR=$(printenv TMPDIR 2>/dev/null || true)
 [ -n "$CASE_TMPDIR" ] || CASE_TMPDIR=/tmp
 
 CASE_ROOT="tests/relayflows/cases"
@@ -1397,11 +1399,34 @@ for case_dir in "$CASE_ROOT"/*/; do
   [ -f "$manifest" ] || continue
 
   expected=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$manifest','utf8')).expected?.head?.signature ?? '')" 2>/dev/null || echo "")
-  runner=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));process.stdout.write((m.runner?.command??[])[1]??'')" 2>/dev/null || echo "")
+  case_timeout=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));const t=Number(m.timeoutSeconds);process.stdout.write(Number.isInteger(t)&&t>=30&&t<=1800?String(t):'')" 2>/dev/null || echo "")
   needs_broker=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));process.stdout.write((m.requirements??[]).some(r=>String(r).startsWith('broker-'))?'1':'')" 2>/dev/null || echo "")
 
-  if [ -z "$expected" ] || [ -z "$runner" ]; then
+  # Rebuild the manifest's whole runner.command. Taking element [1] and forcing
+  # 'node' ran a different command from the proof contract, which also accepts
+  # 'bash' and extra arguments.
+  runner_exe=""
+  set --
+  while IFS= read -r runner_arg; do
+    [ -n "$runner_arg" ] || continue
+    if [ -z "$runner_exe" ]; then runner_exe="$runner_arg"; else set -- "$@" "$runner_arg"; fi
+  done <<RUNNER_ARGS
+$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));for(const a of (m.runner?.command??[])) process.stdout.write(String(a)+'\n')" 2>/dev/null || true)
+RUNNER_ARGS
+
+  if [ -z "$expected" ] || [ -z "$runner_exe" ] || [ "$#" -eq 0 ]; then
     skip_check "corpus: $case_id" "manifest is missing runner.command or expected.head.signature"
+    continue
+  fi
+  case "$runner_exe" in
+    node|bash) ;;
+    *)
+      skip_check "corpus: $case_id" "manifest runner executable $runner_exe is not node or bash"
+      continue
+      ;;
+  esac
+  if [ -z "$case_timeout" ]; then
+    skip_check "corpus: $case_id" "manifest has no valid timeoutSeconds (30-1800)"
     continue
   fi
   if [ -n "$needs_broker" ] && [ -z "$BROKER_BIN" ]; then
@@ -1412,10 +1437,19 @@ for case_dir in "$CASE_ROOT"/*/; do
   result_file="${ARTIFACTS}/corpus-$case_id.json"
   case_log="${ARTIFACTS}/corpus-$case_id.log"
 
+  # A previous run's result must never be read as this run's evidence: a runner
+  # that exits zero without writing would otherwise be scored on a stale
+  # signature and recorded PASS.
+  rm -f "$result_file" "$case_log"
+
   # Each case gets a clean environment for the same reason the cases themselves
   # do: inheriting this runner's RELAY_* credentials points the process under
   # test at production instead of the instance it stands up.
-  if env -i \
+  # Bounded by the manifest's own timeoutSeconds. An unbounded runner that
+  # stalls in npm ci, a build, or a spawned broker would block cleanup, verdict
+  # and every alerting step from ever running.
+  case_rc=0
+  env -i \
       PATH="$PATH" HOME="$HOME" TMPDIR="$CASE_TMPDIR" \
       RELAY_PR_PROOF_ARM=head \
       RELAY_PR_PROOF_TARGET_DIR="$PWD" \
@@ -1423,7 +1457,9 @@ for case_dir in "$CASE_ROOT"/*/; do
       RELAY_PR_PROOF_HEAD_SHA="$HEAD_SHA" \
       RELAY_PR_PROOF_RESULT_PATH="$result_file" \
       RELAY_PR_PROOF_BROKER_BINARY="$BROKER_BIN" \
-      node "$runner" >"$case_log" 2>&1; then
+      timeout "$case_timeout" "$runner_exe" "$@" >"$case_log" 2>&1 || case_rc=$?
+
+  if [ "$case_rc" -eq 0 ]; then
     actual=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$result_file','utf8')).signature ?? '')" 2>/dev/null || echo "")
     [ -n "$actual" ] || actual="<no signature>"
     if [ "$actual" = "$expected" ]; then
@@ -1433,12 +1469,16 @@ for case_dir in "$CASE_ROOT"/*/; do
       echo "  FAIL  corpus: $case_id (expected $expected, got $actual)" | tee -a "$LOG"
       record "$TIER" "corpus: $case_id" fail "expected head signature $expected, observed $actual; a base signature here means this exact bug is back"
     fi
+  elif [ "$case_rc" -eq 124 ]; then
+    # timeout(1) reports 124. A timeout proves nothing either way.
+    echo "  FAIL  corpus: $case_id (runner exceeded $case_timeout s)" | tee -a "$LOG"
+    record "$TIER" "corpus: $case_id" fail "runner exceeded its manifest timeout of $case_timeout s: $(tail -c 300 "$case_log" 2>/dev/null)"
   else
     # A runner that exits non-zero proved nothing — it is an infrastructure
     # fault, not a verified case. Record it as a failure so it is visible, with
     # the tail that explains it.
-    echo "  FAIL  corpus: $case_id (runner exited non-zero)" | tee -a "$LOG"
-    record "$TIER" "corpus: $case_id" fail "runner exited non-zero: $(tail -c 300 "$case_log" 2>/dev/null)"
+    echo "  FAIL  corpus: $case_id (runner exited $case_rc)" | tee -a "$LOG"
+    record "$TIER" "corpus: $case_id" fail "runner exited $case_rc: $(tail -c 300 "$case_log" 2>/dev/null)"
   fi
 done
 
@@ -1519,6 +1559,10 @@ const EXPECTED_TIERS = [
   'tier5',
   'tier6',
   'critical-paths',
+  // Listed so an aborted corpus tier reads as "did not run" rather than
+  // vanishing: the step is failOnError:false, so a crash before its first
+  // record() would otherwise reach verdict as silence.
+  'relayflow-corpus',
 ];
 
 let checks = [];
