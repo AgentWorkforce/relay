@@ -69,9 +69,13 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
         .next()
         .filter(|part| !part.is_empty())
         .unwrap_or(cli);
-    ["claude", "claude.exe", "claude.cmd", "claude.bat"]
-        .iter()
-        .any(|candidate| basename.eq_ignore_ascii_case(candidate))
+    // PTY entry points accept arbitrary executable names, including company
+    // wrappers such as `company-claude` and `claude-code`. Match the same
+    // Claude identity signal used by readiness and activity detection so a
+    // wrapper cannot silently fall back to the broken body-plus-Enter burst.
+    basename
+        .to_ascii_lowercase()
+        .contains("claude")
         .then_some(CLAUDE_INJECTION_SUBMIT_DELAY)
 }
 
@@ -2196,6 +2200,11 @@ mod tests {
             injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.BAT"),
             expected
         );
+        assert_eq!(
+            injection_submit_followup_delay("/opt/company/bin/company-claude"),
+            expected
+        );
+        assert_eq!(injection_submit_followup_delay("claude-code"), expected);
         assert_eq!(injection_submit_followup_delay("codex"), None);
         assert_eq!(injection_submit_followup_delay("opencode"), None);
     }
