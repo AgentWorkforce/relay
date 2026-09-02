@@ -76,6 +76,12 @@ if (arm === 'base') {
       throw new Error(`Head workflow does not wire fail-loud escalation audit: ${integrationMarker}`);
     }
   }
+  for (const channel of ['slack_primary', 'slack_followup', 'github_issue', 'draft_pr', 'posthog']) {
+    const failedWrite = new RegExp(`write [^\\n]*["']?\\$ARTIFACTS["']? ${channel} failed(?:\\s|$)`);
+    if (!failedWrite.test(workflowSource)) {
+      throw new Error(`Head workflow does not record failed delivery for ${channel}.`);
+    }
+  }
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-'));
   try {

@@ -67,6 +67,9 @@ describe('verify-features escalation status', () => {
     expect(source).toContain('relay-alert-envelope/1');
     expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
     expect(setup).toContain('reset "${ARTIFACTS}"');
+    expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
+    expect(source).toContain('acquireInvocationLock()');
+    expect(source).toContain('releaseInvocationLock()');
     expect(fileIssue).toContain('ISSUE_RC=$?');
     expect(fileIssue).toContain('[ "$ISSUE_RC" -eq 0 ] && [ -n "$ISSUE_URL" ]');
     expect(openPr).toContain('PR_RC=$?');
@@ -136,6 +139,28 @@ describe('verify-features escalation status', () => {
     expect(message).toContain('*NO DRAFT FIX PR WAS OPENED. Human follow-up is required.*');
     expect(message).toContain('environmental=1, identity=1, provenance=1');
     expect(message).toContain('provenance/cli-belongs-to-checkout: provenance');
+  });
+
+  it('redacts credentials from fixer evidence in the final alert', async () => {
+    const directory = await artifacts();
+    const token = 'github_pat_abcdefghijklmnopqrstuvwxyz123456';
+    await writeFile(
+      path.join(directory, 'failure-assessment.json'),
+      JSON.stringify([
+        {
+          tier: 'tier2',
+          check: 'broker auth',
+          category: 'identity',
+          evidence: `broker rejected ${token}`,
+          reasoning: 'The supplied identity was rejected.',
+        },
+      ])
+    );
+
+    const message = renderFinalEscalationStatus(directory);
+
+    expect(message).not.toContain(token);
+    expect(message).toContain('[REDACTED_GITHUB_CREDENTIAL]');
   });
 
   it('fails the audit when GitHub and PostHog silently degrade', async () => {

@@ -167,7 +167,7 @@ function readAssessment(artifacts) {
       .map(([category, count]) => `${category}=${count}`)
       .join(', ');
     const details = assessments.slice(0, 20).map((assessment) => {
-      const evidence = String(assessment.evidence || 'no evidence')
+      const evidence = redactAlertText(String(assessment.evidence || 'no evidence'))
         .replace(/\s+/g, ' ')
         .slice(0, 180);
       return `    ↳ ${assessment.tier}/${assessment.check}: ${assessment.category} — ${evidence}`;
