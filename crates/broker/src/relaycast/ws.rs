@@ -170,6 +170,17 @@ impl RelaycastHttpClient {
         }
     }
 
+    /// Test hook: read the SDK token cache this client consults before it
+    /// registers. Lets tests prove `forget_agent_registration` really dropped a
+    /// worker's credential rather than asserting on a parallel flag.
+    #[cfg(test)]
+    pub(crate) fn cached_agent_token(&self, agent_name: &str) -> Option<String> {
+        self.registration
+            .as_ref()
+            .as_ref()
+            .and_then(|registration| registration.cached_agent_token(agent_name))
+    }
+
     pub fn registration_block_remaining(&self, agent_name: &str) -> Option<Duration> {
         self.registration
             .as_ref()

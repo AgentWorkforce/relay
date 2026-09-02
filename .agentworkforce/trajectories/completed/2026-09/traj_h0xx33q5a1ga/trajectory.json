@@ -1,0 +1,69 @@
+{
+  "id": "traj_h0xx33q5a1ga",
+  "version": 1,
+  "task": {
+    "title": "Accept Relaycast context.update node frames in the broker (relay#1615)",
+    "source": {
+      "system": "plain",
+      "id": "1615"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T04:39:35.333Z",
+  "completedAt": "2026-09-02T04:42:32.494Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T04:39:43.528Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lhxpvnoz5nzx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T04:39:43.528Z",
+      "endedAt": "2026-09-02T04:42:32.494Z",
+      "events": [
+        {
+          "ts": 1788323983530,
+          "type": "decision",
+          "content": "Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind: Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind",
+          "raw": {
+            "question": "Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind",
+            "chosen": "Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind",
+            "alternatives": [],
+            "reasoning": "SDK/dashboard consumers already render message_delivery_failed; a new kind would need client changes to be visible, defeating the point of surfacing the failure to the sending agent"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788323985386,
+          "type": "decision",
+          "content": "Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over: Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over",
+          "raw": {
+            "question": "Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over",
+            "chosen": "Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over",
+            "alternatives": [],
+            "reasoning": "That cache is the state the takeover/registration paths in relaycast/ws.rs already consult; a parallel stale flag would drift"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Broker parses Relaycast context.update node frames, surfaces delivery.failed/deferred to the sending worker as message_delivery_failed, and drops the cached registration on agent.identity_taken_over",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
+    "endRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc"
+  }
+}

@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Broker now accepts Relaycast `context.update` node frames instead of logging every one as an invalid frame, and surfaces `delivery.failed`/`delivery.deferred` to the sending agent as a `message_delivery_failed` event so a DM to an unreachable agent is no longer silently lost.
+- Broker drops a worker's cached Relaycast registration when Relaycast reports `agent.identity_taken_over`, so the next operation re-registers instead of failing on a revoked token.
 
 ## [11.10.0] - 2026-09-02
 

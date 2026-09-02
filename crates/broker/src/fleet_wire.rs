@@ -601,6 +601,42 @@ pub struct ActionInvoke {
     pub agent_name: Option<String>,
 }
 
+/// Scope of an ephemeral `context.update` fan-out. Mirrors the engine's
+/// `FleetContextUpdateMessageSchema` topic enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTopic {
+    Presence,
+    Channel,
+    Thread,
+    Agent,
+}
+
+/// Ephemeral, best-effort context fan-out (server -> broker). Unlike
+/// [`Deliver`] it is never acked and never redelivered, so a broker that
+/// cannot make sense of one simply ignores it.
+///
+/// Inbound (server -> broker): intentionally NOT `deny_unknown_fields` for the
+/// same forward-compatibility reason as `Deliver` above — a new top-level field
+/// must not make the whole frame unparseable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextUpdate {
+    pub v: FleetWireVersion,
+    pub topic: ContextTopic,
+    pub event: String,
+    /// Nullable on the wire (the engine always sends the key, `null` when the
+    /// event is not channel-scoped), so this is a plain `Option` that both
+    /// accepts and re-emits `null` rather than the presence-only optional used
+    /// by outbound frames.
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    /// Agents hosted on THIS node that the event concerns. The engine groups
+    /// its fan-out per node/provider before sending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_ids: Option<Vec<String>>,
+    pub data: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ping {
@@ -742,6 +778,8 @@ pub enum ServerToNode {
     Deliver(Deliver),
     #[serde(rename = "action.invoke")]
     ActionInvoke(ActionInvoke),
+    #[serde(rename = "context.update")]
+    ContextUpdate(ContextUpdate),
     #[serde(rename = "ping")]
     Ping(Ping),
     #[serde(rename = "reply")]
@@ -760,8 +798,8 @@ mod tests {
     use super::{
         validate_agent_register_reply_data, validate_finite_nonnegative_f64, ActionResult,
         ActionResultError, ActionResultPayload, AgentRegister, AgentRegistrationMetadata,
-        BrokerToRelaycast, Deliver, DeliveryMode, Error, FleetCapability, NodeHeartbeat,
-        RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
+        BrokerToRelaycast, ContextTopic, Deliver, DeliveryMode, Error, FleetCapability,
+        NodeHeartbeat, RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -1324,5 +1362,66 @@ mod tests {
         assert_eq!(value["payload"]["metadata"]["channel"], "general");
         let decoded: RelaycastToBroker = serde_json::from_value(value).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    /// The canonical engine fixture must parse as a `context.update`, not fall
+    /// through to the "invalid fleet node ws frame" path. Kept in lockstep with
+    /// `tests/fixtures/fleet-wire/context.update.json`.
+    #[test]
+    fn parses_the_canonical_context_update_fixture() {
+        let raw = include_str!("../tests/fixtures/fleet-wire/context.update.json");
+        let decoded: RelaycastToBroker = serde_json::from_str(raw).expect("fixture must parse");
+
+        let RelaycastToBroker::ContextUpdate(update) = decoded else {
+            panic!("context.update must decode to the ContextUpdate variant");
+        };
+        assert_eq!(update.topic, ContextTopic::Presence);
+        assert_eq!(update.event, "agent.status.active");
+        assert_eq!(update.channel_id, None);
+        assert_eq!(
+            update.agent_ids.as_deref(),
+            Some(["agt_01J7FLEET000000000000101".to_string()].as_slice())
+        );
+        assert_eq!(update.data["agent_name"], "planner");
+
+        let encoded: Value =
+            serde_json::to_value(RelaycastToBroker::ContextUpdate(update)).unwrap();
+        let fixture: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(encoded, fixture, "context.update must round-trip verbatim");
+    }
+
+    /// Forward compatibility: an unknown top-level field (and an unknown
+    /// `event` string) must not make the frame unparseable, or the broker is
+    /// back to logging a legitimate engine frame as invalid.
+    #[test]
+    fn context_update_tolerates_unknown_fields_and_events() {
+        let decoded: RelaycastToBroker = serde_json::from_value(json!({
+            "type": "context.update",
+            "v": 1,
+            "topic": "agent",
+            "event": "some.future.event",
+            "agent_ids": ["agt_1"],
+            "data": {"anything": true},
+            "future_field": "ignored"
+        }))
+        .expect("unknown fields must not fail the frame");
+
+        let RelaycastToBroker::ContextUpdate(update) = decoded else {
+            panic!("expected a context.update");
+        };
+        assert_eq!(update.topic, ContextTopic::Agent);
+        assert_eq!(update.event, "some.future.event");
+    }
+
+    #[test]
+    fn context_update_rejects_unknown_topics() {
+        assert!(serde_json::from_value::<RelaycastToBroker>(json!({
+            "type": "context.update",
+            "v": 1,
+            "topic": "galaxy",
+            "event": "agent.status.active",
+            "data": {}
+        }))
+        .is_err());
     }
 }
