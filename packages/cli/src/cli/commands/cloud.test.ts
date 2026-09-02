@@ -738,7 +738,7 @@ describe('registerCloudCommands', () => {
       '--name',
       'Hourly eval',
       '--relayflow-version',
-      'v2',
+      'v1',
       '--env',
       'AI_CLI_UPDATES_DRY_RUN=true',
       '--env',
@@ -750,7 +750,7 @@ describe('registerCloudCommands', () => {
       expect.objectContaining({
         cron: '0 * * * *',
         name: 'Hourly eval',
-        relayflowVersion: 'v2',
+        relayflowVersion: 'v1',
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
@@ -816,34 +816,24 @@ describe('registerCloudCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-at-1');
   });
 
-  it('schedule accepts an explicit v1 selector', async () => {
+  it('schedule rejects the unsupported v2 selector before submission', async () => {
     const { program } = createHarness();
-    cloudMocks.scheduleWorkflow.mockResolvedValueOnce({
-      id: 'sched-v1',
-      name: 'Hourly eval',
-      scheduleType: 'cron',
-      cronExpression: '0 * * * *',
-      timezone: 'UTC',
-      status: 'active',
-      lastTriggeredRunId: null,
-    });
 
-    await program.parseAsync([
-      'node',
-      'agent-relay',
-      'cloud',
-      'schedule',
-      'workflow.yaml',
-      '--cron',
-      '0 * * * *',
-      '--relayflow-version',
-      'v1',
-    ]);
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'schedule',
+        'workflow.yaml',
+        '--cron',
+        '0 * * * *',
+        '--relayflow-version',
+        'v2',
+      ])
+    ).rejects.toThrow('Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.');
 
-    expect(cloudMocks.scheduleWorkflow).toHaveBeenCalledWith(
-      'workflow.yaml',
-      expect.objectContaining({ relayflowVersion: 'v1' })
-    );
+    expect(cloudMocks.scheduleWorkflow).not.toHaveBeenCalled();
   });
 
   it('schedule rejects a mistyped relayflow generation before submission', async () => {

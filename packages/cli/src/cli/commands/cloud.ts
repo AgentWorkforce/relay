@@ -139,6 +139,16 @@ function parseRelayflowVersion(value: string): RelayflowVersion {
   throw new InvalidArgumentError('Expected Relayflow version to be one of: v1, v2');
 }
 
+function parseScheduleRelayflowVersion(value: string): 'v1' {
+  const relayflowVersion = parseRelayflowVersion(value);
+  if (relayflowVersion === 'v2') {
+    throw new InvalidArgumentError(
+      'Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.'
+    );
+  }
+  return relayflowVersion;
+}
+
 function parseEnvAssignment(value: string, previous: Record<string, string> = {}): Record<string, string> {
   const equalsIndex = value.indexOf('=');
   if (equalsIndex <= 0) {
@@ -1120,8 +1130,8 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
     .option(
       '--relayflow-version <version>',
-      'Relayflow engine generation for scheduled runs: v1 or v2',
-      parseRelayflowVersion
+      'Relayflow engine generation for scheduled runs: v1 (v2 is not supported)',
+      parseScheduleRelayflowVersion
     )
     .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
     .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
@@ -1141,7 +1151,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         options: {
           apiUrl?: string;
           fileType?: WorkflowFileType;
-          relayflowVersion?: RelayflowVersion;
+          relayflowVersion?: 'v1';
           cron?: string;
           at?: string;
           timezone?: string;

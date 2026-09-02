@@ -246,7 +246,7 @@ export type WorkflowSchedule = {
 export type ScheduleWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
-  relayflowVersion?: RelayflowVersion;
+  relayflowVersion?: 'v1';
   name?: string;
   description?: string;
   cron?: string;

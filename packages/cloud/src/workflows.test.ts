@@ -788,7 +788,7 @@ describe('workflow schedules', () => {
     const result = await scheduleWorkflow(workflowPath, {
       cron: '0 * * * *',
       name: 'Hourly eval',
-      relayflowVersion: 'v2',
+      relayflowVersion: 'v1',
       envSecrets: {
         AI_CLI_UPDATES_DRY_RUN: 'true',
         AI_CLI_UPDATES_ONLY: 'codex',
@@ -803,7 +803,7 @@ describe('workflow schedules', () => {
       timezone: 'UTC',
       workflowRequest: {
         fileType: 'yaml',
-        relayflowVersion: 'v2',
+        relayflowVersion: 'v1',
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
@@ -860,29 +860,16 @@ describe('workflow schedules', () => {
     expect(scheduleBodyBytes[0]).not.toContain('relayflowVersion');
   });
 
-  it('sends an explicit v1 schedule selector in the nested workflow request', async () => {
-    const workflowPath = await writeScheduleWorkflow();
-    const scheduleBodies: unknown[] = [];
-    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
-      expect(requestPath).toBe('/api/v1/workflows/schedules');
-      scheduleBodies.push(JSON.parse(String(init?.body)));
-      return {
-        auth: { accessToken: 'token' },
-        response: new Response(JSON.stringify({ schedule: scheduleRecord() }), {
-          status: 201,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      };
-    });
+  it('rejects unsupported v2 schedules before authentication, filesystem, or network access', async () => {
+    await expect(
+      scheduleWorkflow('missing-workflow.yaml', {
+        cron: '0 * * * *',
+        relayflowVersion: 'v2',
+      } as never)
+    ).rejects.toThrow('Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.');
 
-    await scheduleWorkflow(workflowPath, {
-      cron: '0 * * * *',
-      relayflowVersion: 'v1',
-    });
-
-    expect(scheduleBodies[0]).toMatchObject({
-      workflowRequest: { relayflowVersion: 'v1' },
-    });
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown schedule selector before authentication, filesystem, or network access', async () => {

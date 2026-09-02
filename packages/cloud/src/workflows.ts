@@ -78,6 +78,13 @@ function validateRelayflowVersion(value: unknown): asserts value is RelayflowVer
   }
 }
 
+function validateScheduleRelayflowVersion(value: unknown): asserts value is 'v1' | undefined {
+  validateRelayflowVersion(value);
+  if (value === 'v2') {
+    throw new Error('Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.');
+  }
+}
+
 function validateYamlWorkflow(content: string): void {
   const hasField = (field: string) => new RegExp(`^${field}\\s*:`, 'm').test(content);
 
@@ -445,7 +452,7 @@ export async function scheduleWorkflow(
   workflowArg: string,
   options: ScheduleWorkflowOptions = {}
 ): Promise<WorkflowSchedule> {
-  validateRelayflowVersion(options.relayflowVersion);
+  validateScheduleRelayflowVersion(options.relayflowVersion);
   const hasCron = typeof options.cron === 'string' && options.cron.trim().length > 0;
   const hasAt = typeof options.at === 'string' && options.at.trim().length > 0;
   if (hasCron === hasAt) {
