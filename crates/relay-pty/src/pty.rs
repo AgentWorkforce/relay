@@ -91,8 +91,22 @@ enum WriteMsg {
         /// atoms. The sleeps run on the drainer thread, never on an async
         /// task.
         pace: Duration,
+        /// Optional second write that remains part of this FIFO entry. The
+        /// drainer waits `delay` after the primary bytes are flushed, then
+        /// writes and flushes `bytes` before acknowledging the command.
+        ///
+        /// This is intentionally not represented as a second `WriteMsg`: some
+        /// TUIs need a real pause between pasted text and its submit key, while
+        /// Relay still must prevent a terminal reply or human keystroke from
+        /// splicing into that boundary.
+        followup: Option<FollowupWrite>,
         ack: oneshot::Sender<io::Result<()>>,
     },
+}
+
+struct FollowupWrite {
+    delay: Duration,
+    bytes: Vec<u8>,
 }
 
 /// Length of the next indivisible write "atom" at the front of `bytes`.
@@ -481,16 +495,33 @@ fn drain_write_queue<W: Write>(
                     break;
                 }
             }
-            WriteMsg::UserInput { bytes, pace, ack } => {
-                if bytes.is_empty() {
+            WriteMsg::UserInput {
+                bytes,
+                pace,
+                followup,
+                ack,
+            } => {
+                if bytes.is_empty() && followup.as_ref().is_none_or(|part| part.bytes.is_empty()) {
                     let _ = ack.send(Ok(()));
                     continue;
                 }
-                let result = if pace.is_zero() {
+                let primary_result = if bytes.is_empty() {
+                    Ok(())
+                } else if pace.is_zero() {
                     writer.write_all(&bytes).and_then(|_| writer.flush())
                 } else {
                     write_paced(&mut writer, &bytes, pace)
                 };
+                let result = primary_result.and_then(|_| {
+                    let Some(part) = followup else {
+                        return Ok(());
+                    };
+                    if part.bytes.is_empty() {
+                        return Ok(());
+                    }
+                    thread::sleep(part.delay);
+                    writer.write_all(&part.bytes).and_then(|_| writer.flush())
+                });
                 match result {
                     Ok(()) => {
                         // Confirmed child-side activity: the bytes reached the
@@ -518,11 +549,13 @@ fn enqueue_user_write(
     _no_pid_alive_checks: &AtomicU32,
     bytes: Vec<u8>,
     pace: Duration,
+    followup: Option<FollowupWrite>,
 ) -> Result<oneshot::Receiver<io::Result<()>>> {
     let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
     match write_tx.try_send(WriteMsg::UserInput {
         bytes,
         pace,
+        followup,
         ack: ack_tx,
     }) {
         Ok(()) => Ok(ack_rx),
@@ -695,6 +728,7 @@ impl PtySession {
             &self.no_pid_alive_checks,
             bytes,
             Duration::ZERO,
+            None,
         )
     }
 
@@ -721,7 +755,34 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
     ) -> Result<oneshot::Receiver<io::Result<()>>> {
-        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace)
+        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace, None)
+    }
+
+    /// Submit a paced primary payload followed by a delayed second write as
+    /// one indivisible FIFO command.
+    ///
+    /// The follow-up is written and flushed only after the primary payload is
+    /// confirmed flushed and `followup_delay` has elapsed. No terminal reply,
+    /// later input, or other producer can splice bytes into that pause. This is
+    /// useful for TUIs that distinguish a pasted multiline body from a submit
+    /// key only when the key arrives in a later read.
+    pub fn submit_write_paced_with_followup(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup_delay: Duration,
+        followup_bytes: Vec<u8>,
+    ) -> Result<oneshot::Receiver<io::Result<()>>> {
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            Some(FollowupWrite {
+                delay: followup_delay,
+                bytes: followup_bytes,
+            }),
+        )
     }
 
     /// Submit bytes and await the drainer's write result. Convenience
@@ -1367,7 +1428,9 @@ mod tests {
     // bytes that match real grid state — replacing the old hand-rolled
     // `TerminalQueryParser` that hardcoded `1;1` for CPR.
 
-    use super::{enqueue_user_write, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use super::{
+        enqueue_user_write, FollowupWrite, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH,
+    };
     use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as std_mpsc;
     use std::sync::Arc;
@@ -1450,6 +1513,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"injection-body".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx_1,
         })
         .unwrap();
@@ -1458,6 +1522,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"\r".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx_2,
         })
         .unwrap();
@@ -1532,6 +1597,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"should-fail\n".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1570,6 +1636,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"flush-should-fail\n".to_vec(),
             pace: Duration::ZERO,
+            followup: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1799,8 +1866,14 @@ mod tests {
             )
         });
 
-        let ack = enqueue_user_write(&tx, counter.as_ref(), b"queued\n".to_vec(), Duration::ZERO)
-            .expect("submit path accepts the write");
+        let ack = enqueue_user_write(
+            &tx,
+            counter.as_ref(),
+            b"queued\n".to_vec(),
+            Duration::ZERO,
+            None,
+        )
+        .expect("submit path accepts the write");
         // Block until the drainer has dequeued the message and is wedged inside
         // `write` — the write is now genuinely picked up but not confirmed.
         entered_rx
@@ -1980,6 +2053,7 @@ mod tests {
         tx.send(WriteMsg::UserInput {
             bytes: b"go\x1b[A\r".to_vec(),
             pace: StdDuration::from_millis(1),
+            followup: None,
             ack: ack_tx,
         })
         .expect("queue accepts paced user input");
@@ -1993,6 +2067,126 @@ mod tests {
             out.lock().unwrap().as_slice(),
             b"go\x1b[A\r",
             "paced write must deliver every byte in order"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// A delayed follow-up must be a distinct PTY write while remaining inside
+    /// the same FIFO command. Claude Code needs this shape for multiline task
+    /// submission: body first, then Enter after the paste boundary settles.
+    #[tokio::test]
+    async fn drainer_keeps_delayed_followup_atomic_and_acks_both_writes() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"multiline\nbody".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::from_millis(5),
+                bytes: b"\r".to_vec(),
+            }),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the compound write");
+        tx.send(WriteMsg::Reply(b"terminal-reply".to_vec()))
+            .expect("queue accepts a following terminal reply");
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer acks the compound write")
+            .expect("ack sender not dropped");
+        assert!(
+            ack.is_ok(),
+            "both writes in the compound command must succeed"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            chunks.lock().unwrap().as_slice(),
+            [
+                b"multiline\nbody".to_vec(),
+                b"\r".to_vec(),
+                b"terminal-reply".to_vec(),
+            ],
+            "the follow-up is a distinct write and no later FIFO item can splice before it"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_followup_failure_rejects_the_compound_write() {
+        struct FailSecondWriter {
+            writes: usize,
+        }
+        impl std::io::Write for FailSecondWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                if self.writes == 2 {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "forced follow-up failure",
+                    ))
+                } else {
+                    Ok(buf.len())
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(
+                FailSecondWriter { writes: 0 },
+                rx,
+                Arc::new(AtomicU32::new(0)),
+            )
+        });
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"body".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::ZERO,
+                bytes: b"\r".to_vec(),
+            }),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the compound write");
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer resolves the compound write")
+            .expect("ack sender not dropped");
+        assert!(
+            ack.is_err(),
+            "a failed submit key must reject the whole write"
         );
 
         drop(tx);

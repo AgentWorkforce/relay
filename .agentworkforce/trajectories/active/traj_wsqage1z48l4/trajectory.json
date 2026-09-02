@@ -1,0 +1,46 @@
+{
+  "id": "traj_wsqage1z48l4",
+  "version": 1,
+  "task": {
+    "title": "Fix fleet spawn task submission in Claude"
+  },
+  "status": "active",
+  "startedAt": "2026-09-02T01:08:36.291Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T01:08:36.922Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_doshtrd35ej2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T01:08:36.922Z",
+      "events": [
+        {
+          "ts": 1788311316923,
+          "type": "decision",
+          "content": "Use an atomic delayed follow-up Enter for Claude multiline injections: Use an atomic delayed follow-up Enter for Claude multiline injections",
+          "raw": {
+            "question": "Use an atomic delayed follow-up Enter for Claude multiline injections",
+            "chosen": "Use an atomic delayed follow-up Enter for Claude multiline injections",
+            "alternatives": [],
+            "reasoning": "Claude Code 2.1.236 reproducibly leaves a multiline brief in the composer when body and Enter arrive in one injection burst; sending the body, then one Enter as a distinct write after 250 ms submits it. The follow-up must remain inside one PTY FIFO command so terminal replies or human input cannot splice between the brief and submit."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
+    "endRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc"
+  }
+}

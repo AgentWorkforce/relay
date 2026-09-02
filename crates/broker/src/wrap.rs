@@ -53,6 +53,21 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
+const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
+
+/// Claude Code treats multiline input and a trailing Enter received in the
+/// same paste burst as editor content, leaving the task parked in its composer.
+/// Give its submit key a distinct, delayed PTY write. Other harnesses retain
+/// the established body-plus-Enter write shape.
+pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+    let basename = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli);
+    (basename.eq_ignore_ascii_case("claude") || basename.eq_ignore_ascii_case("claude.exe"))
+        .then_some(CLAUDE_INJECTION_SUBMIT_DELAY)
+}
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
 /// enqueued to the PTY write drainer. These prompts — MCP approval, trust
@@ -1745,17 +1760,26 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    // Submit the body and its trailing `\r` as a single write.
-                    // The Enter keystroke is mandatory for delivery — sending
-                    // it as a separate best-effort write meant a failed/lost
-                    // enqueue could still leave the delivery recorded as
-                    // injected (echo verification only checks the body).
-                    // Combining into one write also keeps the two adjacent on
-                    // the drainer FIFO, so no other writer can splice a byte
-                    // between the body and its Enter.
                     let mut bytes = injection.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r");
-                    if let Err(e) = pty.submit_write(bytes) {
+                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
+                    {
+                        // Claude needs Enter in a later PTY write to close its
+                        // multiline paste boundary. The relay-pty compound
+                        // command keeps that delayed write atomic with the body
+                        // and acknowledges only after both writes succeed.
+                        pty.submit_write_paced_with_followup(
+                            bytes,
+                            Duration::ZERO,
+                            delay,
+                            b"\r".to_vec(),
+                        )
+                    } else {
+                        // Other harnesses retain the established single-write
+                        // body-plus-Enter shape.
+                        bytes.extend_from_slice(b"\r");
+                        pty.submit_write(bytes)
+                    };
+                    if let Err(e) = write {
                         tracing::warn!(
                             event_id = %pending.event_id,
                             error = %e,
@@ -1863,13 +1887,20 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    // Combined into a single write for the same reason as the
-                    // first-attempt path above: the Enter must not be a
-                    // best-effort afterthought, and a single write can't be
-                    // spliced by another writer.
                     let mut bytes = injection.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r");
-                    if let Err(error) = pty.submit_write(bytes) {
+                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
+                    {
+                        pty.submit_write_paced_with_followup(
+                            bytes,
+                            Duration::ZERO,
+                            delay,
+                            b"\r".to_vec(),
+                        )
+                    } else {
+                        bytes.extend_from_slice(b"\r");
+                        pty.submit_write(bytes)
+                    };
+                    if let Err(error) = write {
                         tracing::warn!(
                             event_id = %pv.event_id,
                             error = %error,
@@ -1959,8 +1990,24 @@ pub(crate) async fn run_wrap(
 
 #[cfg(test)]
 mod tests {
-    use super::{buffer_and_drain_stdin, drain_stdin_buffer, STDIN_PENDING_MAX_CHUNKS};
+    use super::{
+        buffer_and_drain_stdin, drain_stdin_buffer, injection_submit_followup_delay,
+        STDIN_PENDING_MAX_CHUNKS,
+    };
     use std::collections::VecDeque;
+    use std::time::Duration;
+
+    #[test]
+    fn only_claude_uses_a_delayed_submit_followup() {
+        let expected = Some(Duration::from_millis(250));
+        assert_eq!(injection_submit_followup_delay("claude"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/usr/local/bin/Claude.EXE"),
+            expected
+        );
+        assert_eq!(injection_submit_followup_delay("codex"), None);
+        assert_eq!(injection_submit_followup_delay("opencode"), None);
+    }
 
     #[test]
     fn stdin_drains_in_order_when_queue_accepts() {

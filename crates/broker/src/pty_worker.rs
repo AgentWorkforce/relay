@@ -40,7 +40,10 @@ use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::terminal::detect_codex_trust_prompt;
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
-use crate::wrap::{warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT};
+use crate::wrap::{
+    injection_submit_followup_delay, warn_on_auto_response_write, PtyAutoState,
+    AUTO_SUGGESTION_BLOCK_TIMEOUT,
+};
 use base64::Engine;
 
 #[derive(Debug, Clone)]
@@ -97,18 +100,18 @@ enum InjectionStage {
     /// Pre-injection escape: steer `ESC ESC`, auto-suggestion dismiss `ESC`,
     /// or nothing when no escape is required.
     Escape,
-    /// Escape delay elapsed; submit the formatted injection body plus its
-    /// trailing `\r` as a single write next.
+    /// Escape delay elapsed; submit the formatted injection body and its
+    /// harness-specific submit sequence next.
     Body,
-    /// Body+`\r` submitted; awaiting the drainer ack before finalizing (emit
-    /// `delivery_injected`, queue echo verification). Finalization runs in
-    /// the injection-ack arm, not the deadline arm.
+    /// Body+submit command queued; awaiting the drainer ack before finalizing
+    /// (emit `delivery_injected`, queue echo verification). Finalization runs
+    /// in the injection-ack arm, not the deadline arm.
     Finalize,
 }
 
 /// A single injection being written across paced stages. Holds the delivery
 /// plus the formatted injection text (retained from the Body stage so it can
-/// be used as the expected echo when the trailing `\r` is submitted).
+/// be used as the expected echo when the submit command is confirmed).
 #[derive(Debug)]
 struct ActiveInjection {
     pending: PendingWorkerInjection,
@@ -1701,24 +1704,32 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
-                        // Submit the body and its trailing `\r` as a single
-                        // paced write and hold the ack. `submit_write_paced`
-                        // emits one escape-aware atom (CSI/SS3/OSC sequence,
-                        // UTF-8 codepoint, or plain byte) at a time with
-                        // `inject_rate` between them, so the child receives the
-                        // injection spread across reads instead of one blob it
-                        // may batch or drop leading characters from. The whole
-                        // payload — body atoms plus the trailing `\r` — is one
-                        // queue entry, so nothing (a passthrough keystroke, an
-                        // auto-responder, a terminal-query reply) can splice
-                        // between the body and its Enter. With `inject_rate` of
-                        // zero this is exactly the old single bulk write.
+                        // Submit the body and mandatory Enter as one FIFO
+                        // command and hold the ack. Claude Code needs Enter as
+                        // a distinct PTY write after its multiline paste
+                        // boundary settles; relay-pty keeps that delayed
+                        // follow-up atomic with the body. Other harnesses keep
+                        // the established body-plus-Enter write. In both cases,
+                        // nothing (passthrough input, an auto-responder, or a
+                        // terminal-query reply) can splice into submission.
                         // Finalization (emit `delivery_injected`, queue echo
                         // verification) still waits for this ack in the
                         // injection-ack arm.
                         let mut bytes = injection.clone().into_bytes();
-                        bytes.extend_from_slice(b"\r");
-                        match pty.submit_write_paced(bytes, inject_rate) {
+                        let write = if let Some(delay) =
+                            injection_submit_followup_delay(&resolved_cli)
+                        {
+                            pty.submit_write_paced_with_followup(
+                                bytes,
+                                inject_rate,
+                                delay,
+                                b"\r".to_vec(),
+                            )
+                        } else {
+                            bytes.extend_from_slice(b"\r");
+                            pty.submit_write_paced(bytes, inject_rate)
+                        };
+                        match write {
                             Ok(ack_rx) => {
                                 inj.injection_text = Some(injection);
                                 inj.stage = InjectionStage::Finalize;
