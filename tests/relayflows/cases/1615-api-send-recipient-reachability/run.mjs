@@ -72,6 +72,10 @@ try {
     // reachability read slower than the configured publish deadline proves a
     // best-effort probe cannot turn durable acceptance into a send failure.
     agentReadDelayMs: 750,
+    // Hold the first positive read long enough to distinguish a free runtime
+    // actor from the old serialized wait without relying on sub-second runner
+    // scheduling. The fake records the request before starting this delay.
+    firstRecipientAgentReadDelayMs: 4_000,
     // A failed publication must cancel this now-useless observation instead
     // of parking the single broker runtime actor until the probe completes.
     failedAgentReadDelayMs: 1_500,
@@ -160,29 +164,28 @@ try {
   }).finally(() => {
     positiveSettled = true;
   });
-  let runtimeResponsiveDuringProbe;
+  let runtimeActorDuringProbe;
   if (arm === 'head') {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    let concurrentSnapshot;
-    const snapshotStartedAt = performance.now();
+    await waitFor(
+      () => relaycast.state.agentReads.includes(RECIPIENT),
+      5_000,
+      'positive reachability probe to start'
+    );
     try {
-      concurrentSnapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
-        timeoutMs: 400,
-      });
-    } catch {
-      concurrentSnapshot = undefined;
-    }
-    const snapshotElapsedMs = performance.now() - snapshotStartedAt;
-    runtimeResponsiveDuringProbe =
-      !positiveSettled && concurrentSnapshot?.status === 200 && snapshotElapsedMs < 400;
-    if (!runtimeResponsiveDuringProbe) {
-      throw new Error(
-        `Slow reachability probe blocked the serialized runtime actor: ${JSON.stringify({
-          positiveSettled,
-          concurrentSnapshot,
-          snapshotElapsedMs,
-        })}`
+      const actorObservation = await waitFor(
+        async () => {
+          if (positiveSettled) return { outcome: 'inconclusive_fast_send' };
+          const snapshot = await api(`/api/spawned/${encodeURIComponent(RECIPIENT)}/snapshot`, {
+            timeoutMs: 500,
+          });
+          return snapshot.status === 200 ? { outcome: 'responsive' } : undefined;
+        },
+        2_500,
+        'runtime actor to serve a snapshot during the held reachability probe'
       );
+      runtimeActorDuringProbe = actorObservation.outcome;
+    } catch {
+      runtimeActorDuringProbe = positiveSettled ? 'inconclusive_fast_send' : 'blocked';
     }
   }
   const positive = await positivePromise;
@@ -340,7 +343,12 @@ try {
   let outcome;
   let signature;
   let details;
-  if (baseObserved) {
+  if (arm === 'head' && runtimeActorDuringProbe === 'blocked') {
+    outcome = 'bug';
+    signature = 'api_send_blocks_runtime_during_reachability_probe';
+    details =
+      'The published send held the serialized runtime actor while waiting for recipient reachability, so an unrelated worker snapshot could not complete.';
+  } else if (baseObserved) {
     outcome = 'bug';
     signature = 'api_send_hides_unroutable_recipient';
     details =
@@ -386,7 +394,7 @@ try {
         unknownProbeReported: unknown.body?.recipient_status ?? 'omitted',
         nonRecipientFieldsOmitted,
         failedSendReturnedBeforeProbe: failed.status >= 400 && failedSendElapsedMs < 1_000,
-        runtimeResponsiveDuringProbe,
+        runtimeActorDuringProbe,
         teardownProved,
       },
     })}\n`,

@@ -9,6 +9,7 @@ export async function startFakeRelaycast({
   unknownRecipientName,
   failedRecipientName,
   agentReadDelayMs = 0,
+  firstRecipientAgentReadDelayMs = agentReadDelayMs,
   failedAgentReadDelayMs = 0,
 }) {
   const sockets = new Set();
@@ -17,6 +18,7 @@ export async function startFakeRelaycast({
     brokerRegistrations: 0,
     directMessages: [],
     channelMessages: [],
+    agentReads: [],
     nodeFrames: [],
     nodeSocket: undefined,
   };
@@ -52,7 +54,14 @@ export async function startFakeRelaycast({
 
     if (request.method === 'GET' && pathname.startsWith('/v1/agents/')) {
       const name = decodeURIComponent(pathname.slice('/v1/agents/'.length));
-      const readDelayMs = name === failedRecipientName ? failedAgentReadDelayMs : agentReadDelayMs;
+      const isFirstRecipientRead = name === recipientName && !state.agentReads.includes(recipientName);
+      state.agentReads.push(name);
+      const readDelayMs =
+        name === failedRecipientName
+          ? failedAgentReadDelayMs
+          : isFirstRecipientRead
+            ? firstRecipientAgentReadDelayMs
+            : agentReadDelayMs;
       if (readDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, readDelayMs));
       }
