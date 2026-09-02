@@ -1329,11 +1329,214 @@ exit 0
 `,
   });
 
+  // ── Phase 10b: RelayFlow proof-case regression corpus ────────────────────
+  //
+  // Every merged feature/bug-fix PR leaves behind a case under
+  // tests/relayflows/cases/ that discriminates the bug: a `base` arm that
+  // reproduces it and a `head` arm that does not. Those cases are the sharpest
+  // regression assets this repo has — each one is a real end-to-end
+  // reproduction someone already paid to build and get right.
+  //
+  // They were also, until this tier, run exactly once each. The PR-proof
+  // dispatcher selects only the single case a PR declares, and
+  // `scripts/pr-proof/prepare.mjs` hard-fails a PR that changes any other case
+  // ("A PR must change exactly its one declared RelayFlow case"), so a later PR
+  // cannot re-run an earlier proof even in principle. Reintroduce a fixed bug
+  // and nothing notices.
+  //
+  // This tier re-runs the corpus head-only against the current checkout and
+  // requires each case to still report its `head` signature. A case that now
+  // reports its `base` signature is a regression of that exact bug, named.
+  //
+  // Head-only is deliberate. Outside a PR there is no meaningful base SHA, and
+  // asserting the fixed behaviour is the property we actually want to hold on
+  // main. A case whose runner cannot execute at all is recorded as a skip with
+  // its cause, never as a pass — an unrunnable proof must not read as a
+  // verified one.
+  wf.step('relayflow-corpus', {
+    type: 'deterministic',
+    dependsOn: ['critical-paths'],
+    captureOutput: true,
+    failOnError: false,
+    command: String.raw`
+set -uo pipefail
+
+TIER="relayflow-corpus"
+LOG="${ARTIFACTS}/relayflow-corpus.log"
+${PRELUDE}
+
+echo "=== RelayFlow proof-case regression corpus ===" | tee "$LOG"
+
+# Read through printenv: under 'set -u' a bare $TMPDIR aborts the whole step
+# before a single case records anything, and TMPDIR is routinely unset on Linux.
+CASE_TMPDIR=$(printenv TMPDIR 2>/dev/null || true)
+[ -n "$CASE_TMPDIR" ] || CASE_TMPDIR=/tmp
+
+CASE_ROOT="tests/relayflows/cases"
+if [ ! -d "$CASE_ROOT" ]; then
+  skip_check "relayflow corpus" "no $CASE_ROOT in this checkout"
+  finish_tier
+  exit 0
+fi
+
+HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+if [ -z "$HEAD_SHA" ]; then
+  skip_check "relayflow corpus" "checkout has no resolvable HEAD"
+  finish_tier
+  exit 0
+fi
+
+# The broker cases need a broker binary built from THIS checkout. A leftover
+# binary under target/ is worse than none: the case would run green against an
+# OLD broker and report a head signature that says nothing about this commit.
+#
+# Provenance is established by age. If any broker source, Cargo.toml or
+# Cargo.lock is newer than the binary, the binary predates the tree and is
+# refused. This is deliberately conservative: on a fresh checkout every file
+# carries checkout time, so a cached target/ is rejected and the cases skip
+# with that cause rather than producing a false result.
+BROKER_BIN=""
+BROKER_SKIP_REASON="no broker binary is built in this checkout"
+for candidate in "target/release/agent-relay-broker" "target/debug/agent-relay-broker"; do
+  [ -x "$candidate" ] || continue
+  newer_source=$(find crates Cargo.toml Cargo.lock -newer "$candidate" -type f -print 2>/dev/null | head -n 1 || true)
+  if [ -n "$newer_source" ]; then
+    BROKER_SKIP_REASON="broker binary $candidate is older than $newer_source, so it was not built from this checkout"
+    continue
+  fi
+  BROKER_BIN="$PWD/$candidate"
+  break
+done
+
+for case_dir in "$CASE_ROOT"/*/; do
+  case_id=$(basename "$case_dir")
+  manifest="$case_dir/case.json"
+  [ -f "$manifest" ] || continue
+
+  # Validate through the SAME validator the proof gate uses rather than a
+  # hand-rolled shell reading of the manifest. contract.mjs already enforces the
+  # id, version, kind, requirements, timeout bounds, the node|bash executable
+  # allowlist, and that the script stays under the case directory. Duplicating
+  # any of that here would drift from it; a copied or malformed case would then
+  # be scored by weaker rules than the gate applies.
+  #
+  # Emits, newline separated: timeoutSeconds, expected head signature,
+  # needs-broker flag, then each runner.command element.
+  # Written to a file rather than captured: command substitution strips NUL
+  # bytes, which are the delimiter that makes this transport safe.
+  meta_file="${ARTIFACTS}/corpus-$case_id.meta"
+  meta_err="${ARTIFACTS}/corpus-$case_id.meta.err"
+  rm -f "$meta_file" "$meta_err"
+  node --input-type=module -e "
+import { validateCaseManifest, BROKER_RUNTIME_REQUIREMENT } from './scripts/pr-proof/contract.mjs';
+import fs from 'node:fs';
+const id = process.argv[1];
+try {
+  const m = validateCaseManifest(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')), { caseId: id });
+  const sig = m.expected?.head?.signature;
+  if (!sig) throw new Error('manifest declares no expected.head.signature');
+  const needsBroker = (m.requirements ?? []).includes(BROKER_RUNTIME_REQUIREMENT) ? '1' : '';
+    // NUL TERMINATED, not merely separated: a newline is legal inside a runner
+  // argument and would otherwise split one argument into two before the case
+  // ever runs, and 'read -d' needs the final field terminated too or it drops
+  // the last command element.
+  const fields = [m.timeoutSeconds, sig, needsBroker, ...m.runner.command];
+  process.stdout.write(fields.map((f) => String(f) + '\0').join(''));
+} catch (error) {
+  // Report the contract's own reasons, not a node stack trace: the skip line is
+  // the only thing a reader sees for a case that never ran.
+  process.stderr.write((error?.details ?? [error?.message ?? String(error)]).join('; '));
+  process.exit(1);
+}
+" "$case_id" "$manifest" >"$meta_file" 2>"$meta_err" || {
+    skip_check "corpus: $case_id" "manifest rejected by the proof contract: $(tr '\n' ' ' < "$meta_err" 2>/dev/null | tail -c 200)"
+    continue
+  }
+
+  case_timeout=""
+  expected=""
+  needs_broker=""
+  runner_exe=""
+  meta_line=0
+  set --
+  while IFS= read -r -d '' meta_value; do
+    meta_line=$((meta_line + 1))
+    case "$meta_line" in
+      1) case_timeout="$meta_value" ;;
+      2) expected="$meta_value" ;;
+      3) needs_broker="$meta_value" ;;
+      4) runner_exe="$meta_value" ;;
+      *) set -- "$@" "$meta_value" ;;
+    esac
+  done < "$meta_file"
+
+  if [ -z "$expected" ] || [ -z "$runner_exe" ] || [ "$#" -eq 0 ] || [ -z "$case_timeout" ]; then
+    skip_check "corpus: $case_id" "manifest did not yield a runnable command and expected signature"
+    continue
+  fi
+  if [ -n "$needs_broker" ] && [ -z "$BROKER_BIN" ]; then
+    skip_check "corpus: $case_id" "case requires a broker binary: $BROKER_SKIP_REASON"
+    continue
+  fi
+
+  result_file="${ARTIFACTS}/corpus-$case_id.json"
+  case_log="${ARTIFACTS}/corpus-$case_id.log"
+
+  # A previous run's result must never be read as this run's evidence: a runner
+  # that exits zero without writing would otherwise be scored on a stale
+  # signature and recorded PASS.
+  rm -f "$result_file" "$case_log"
+
+  # Each case gets a clean environment for the same reason the cases themselves
+  # do: inheriting this runner's RELAY_* credentials points the process under
+  # test at production instead of the instance it stands up.
+  # Bounded by the manifest's own timeoutSeconds. An unbounded runner that
+  # stalls in npm ci, a build, or a spawned broker would block cleanup, verdict
+  # and every alerting step from ever running.
+  case_rc=0
+  env -i \
+      PATH="$PATH" HOME="$HOME" TMPDIR="$CASE_TMPDIR" \
+      RELAY_PR_PROOF_ARM=head \
+      RELAY_PR_PROOF_TARGET_DIR="$PWD" \
+      RELAY_PR_PROOF_HARNESS_DIR="$PWD" \
+      RELAY_PR_PROOF_HEAD_SHA="$HEAD_SHA" \
+      RELAY_PR_PROOF_RESULT_PATH="$result_file" \
+      RELAY_PR_PROOF_BROKER_BINARY="$BROKER_BIN" \
+      timeout -k 10 "$case_timeout" "$runner_exe" "$@" >"$case_log" 2>&1 || case_rc=$?
+
+  if [ "$case_rc" -eq 0 ]; then
+    actual=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$result_file','utf8')).signature ?? '')" 2>/dev/null || echo "")
+    [ -n "$actual" ] || actual="<no signature>"
+    if [ "$actual" = "$expected" ]; then
+      echo "  PASS  corpus: $case_id ($actual)" | tee -a "$LOG"
+      record "$TIER" "corpus: $case_id" pass ""
+    else
+      echo "  FAIL  corpus: $case_id (expected $expected, got $actual)" | tee -a "$LOG"
+      record "$TIER" "corpus: $case_id" fail "expected head signature $expected, observed $actual; a base signature here means this exact bug is back"
+    fi
+  elif [ "$case_rc" -eq 124 ] || [ "$case_rc" -eq 137 ]; then
+    # timeout(1) reports 124. A timeout proves nothing either way.
+    echo "  FAIL  corpus: $case_id (runner exceeded $case_timeout s)" | tee -a "$LOG"
+    record "$TIER" "corpus: $case_id" fail "runner exceeded its manifest timeout of $case_timeout s: $(tail -c 300 "$case_log" 2>/dev/null)"
+  else
+    # A runner that exits non-zero proved nothing — it is an infrastructure
+    # fault, not a verified case. Record it as a failure so it is visible, with
+    # the tail that explains it.
+    echo "  FAIL  corpus: $case_id (runner exited $case_rc)" | tee -a "$LOG"
+    record "$TIER" "corpus: $case_id" fail "runner exited $case_rc: $(tail -c 300 "$case_log" 2>/dev/null)"
+  fi
+done
+
+finish_tier
+exit 0
+`,
+  });
+
   // ── Phase 11: cleanup ────────────────────────────────────────────────────
 
   wf.step('cleanup', {
     type: 'deterministic',
-    dependsOn: ['critical-paths'],
+    dependsOn: ['relayflow-corpus'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
@@ -1401,6 +1604,10 @@ const EXPECTED_TIERS = [
   'tier5',
   'tier6',
   'critical-paths',
+  // Listed so an aborted corpus tier reads as "did not run" rather than
+  // vanishing: the step is failOnError:false, so a crash before its first
+  // record() would otherwise reach verdict as silence.
+  'relayflow-corpus',
 ];
 
 let checks = [];
