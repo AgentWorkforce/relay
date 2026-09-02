@@ -105,6 +105,13 @@ const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^scripts\/evals\//,
   /^tests\//,
   /^[^/]*\.md$/,
+  // Top-level repo metadata. These configure git and the editor; none of them
+  // is read by an installed CLI or broker. Listed individually rather than as a
+  // dotfile glob so a top-level dotfile that DOES affect a build — an .npmrc or
+  // a .nvmrc, say — keeps demanding a proof.
+  /^\.gitignore$/,
+  /^\.gitattributes$/,
+  /^\.editorconfig$/,
 ]);
 
 /**
