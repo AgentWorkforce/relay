@@ -915,6 +915,7 @@ describe('exact broker artifact handoff', () => {
               'else:',
               '    os.close(controlling_tty)',
               '    raise AssertionError("case inherited a writable controlling TTY")',
+              'assert os.path.samefile("/dev/ptmx", "/dev/pts/ptmx")',
               'master, slave = pty.openpty()',
               'try:',
               '    assert os.ttyname(slave).startswith("/dev/pts/")',
@@ -1638,6 +1639,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('newinstance,ptmxmode=0666,mode=0600,max=64');
     expect(source).toContain('secure broker execution refuses an inherited controlling TTY');
     expect(source).toContain('MS_NOSUID | MS_NOEXEC');
+    expect(source).toContain('mount("/dev/pts/ptmx", "/dev/ptmx", None, MS_BIND, None)');
+    expect(source.match(/os\.path\.samefile\("\/dev\/ptmx", "\/dev\/pts\/ptmx"\)/g)).toHaveLength(2);
     expect(source).toContain('for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")');
     expect(source).toContain('SYS_CLOSE_RANGE = 436');
     expect(source).toContain('secure broker execution requires locked non-root securebits');

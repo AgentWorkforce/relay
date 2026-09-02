@@ -124,8 +124,12 @@ under a fail-closed Landlock policy that denies filesystem mutation outside
 the case's explicit writable directories. A fixed, trusted, isolated Python
 bootstrap uses passwordless `sudo` only to create a private mount namespace,
 make mount propagation private, and mount a fresh `devpts` instance with
-`nosuid`, `noexec`, mode `0600`, and a bounded device count. It refuses an
-inherited controlling TTY, locks non-root securebits, drops the capability
+`nosuid`, `noexec`, mode `0600`, and a bounded device count. A host whose
+`/dev/ptmx` is a standalone device node gets a conditional bind of
+the private `/dev/pts/ptmx`; the bootstrap then requires both paths to name the
+same device. Hosts where `/dev/ptmx` already resolves into the private instance
+skip that bind. It refuses an inherited controlling TTY, locks non-root
+securebits, drops the capability
 bounding and ambient sets, then restores the original non-root UID and GID with
 no supplemental groups. It clears and verifies every inheritable, permitted,
 effective, bounding, and ambient capability before enabling `no_new_privs` and

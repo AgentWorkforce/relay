@@ -66,6 +66,7 @@ PR_CAP_AMBIENT_CLEAR_ALL = 4
 CLONE_NEWNS = 0x00020000
 MS_NOSUID = 2
 MS_NOEXEC = 8
+MS_BIND = 4096
 MS_REC = 16384
 MS_PRIVATE = 1 << 18
 LINUX_CAPABILITY_VERSION_3 = 0x20080522
@@ -166,7 +167,9 @@ mount(
     MS_NOSUID | MS_NOEXEC,
     "newinstance,ptmxmode=0666,mode=0600,max=64",
 )
-if os.path.realpath("/dev/ptmx") != "/dev/pts/ptmx":
+if not os.path.samefile("/dev/ptmx", "/dev/pts/ptmx"):
+    mount("/dev/pts/ptmx", "/dev/ptmx", None, MS_BIND, None)
+if not os.path.samefile("/dev/ptmx", "/dev/pts/ptmx"):
     raise RuntimeError("secure broker execution requires /dev/ptmx to resolve inside private devpts")
 if any(entry.isdecimal() for entry in os.listdir("/dev/pts")):
     raise RuntimeError("secure broker execution requires a fresh empty private devpts instance")
