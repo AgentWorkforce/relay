@@ -1080,15 +1080,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         let success = false;
         let errorClass: string | undefined;
         try {
-          const { relayflowVersion: selectedRelayflowVersion, ...runOptions } = options;
-          const result = await runWorkflow(workflow, {
-            ...runOptions,
-            ...(selectedRelayflowVersion
-              ? { relayflowVersion: selectedRelayflowVersion }
-              : options.resume
-                ? {}
-                : { relayflowVersion: 'v1' }),
-          });
+          const result = await runWorkflow(workflow, options);
           if (options.json) {
             deps.log(JSON.stringify(result, null, 2));
           } else {
@@ -1129,8 +1121,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option(
       '--relayflow-version <version>',
       'Relayflow engine generation for scheduled runs: v1 or v2',
-      parseRelayflowVersion,
-      'v1'
+      parseRelayflowVersion
     )
     .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
     .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')

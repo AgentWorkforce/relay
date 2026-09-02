@@ -1,0 +1,388 @@
+{
+  "version": "1.0.0",
+  "id": "f6678f9d-1032-42d6-b541-c4bbe1d4c7f1",
+  "timestamp": "2026-09-02T18:25:52.532Z",
+  "trajectory": "traj_2hvl80v50xad",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 20,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 569,
+              "end_line": 574,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 692,
+              "end_line": 698,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/terminal_control.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 136,
+              "end_line": 141,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 234,
+              "end_line": 239,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 628,
+              "end_line": 676,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 706,
+              "end_line": 713,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 719,
+              "end_line": 725,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 778,
+              "end_line": 784,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 873,
+              "end_line": 892,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 31,
+              "end_line": 37,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 132,
+              "end_line": 144,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 1052,
+              "end_line": 1058,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 1068,
+              "end_line": 1074,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 1080,
+              "end_line": 1094,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 1126,
+              "end_line": 1137,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 1150,
+              "end_line": 1156,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/local-agent.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 585,
+              "end_line": 590,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 880,
+              "end_line": 917,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-fleet-node.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1177,
+              "end_line": 1179,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-fleet-node.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 517,
+              "end_line": 522,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 554,
+              "end_line": 559,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 817,
+              "end_line": 822,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 951,
+              "end_line": 956,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 959,
+              "end_line": 965,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/index.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 241,
+              "end_line": 248,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 175,
+              "end_line": 181,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 190,
+              "end_line": 196,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 246,
+              "end_line": 252,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflows.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 397,
+              "end_line": 416,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 699,
+              "end_line": 705,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 714,
+              "end_line": 720,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflows.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 16,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 51,
+              "end_line": 56,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 248,
+              "end_line": 256,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            },
+            {
+              "start_line": 461,
+              "end_line": 467,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1593-flush-node-registry/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1593-flush-node-registry/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1640-cloud-relayflow-version/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 21,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1640-cloud-relayflow-version/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 255,
+              "revision": "b9cef4390434d5eeb03413af02e08c4cfe95487f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

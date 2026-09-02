@@ -648,17 +648,48 @@ describe('registerCloudCommands', () => {
     expect(cloudMocks.runWorkflow).not.toHaveBeenCalled();
   });
 
-  it('cloud run defaults new CLI submissions to the v1 engine', async () => {
+  it('cloud run omits the selector when the flag is absent', async () => {
     const { program } = createHarness();
     cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-v1', status: 'pending' });
 
     await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
 
-    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
-      'workflow.yaml',
-      expect.objectContaining({ relayflowVersion: 'v1' })
-    );
+    expect(cloudMocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
   });
+
+  it.each(['v1', 'v2'] as const)(
+    'cloud run passes explicit %s with existing resume selectors',
+    async (relayflowVersion) => {
+      const { program } = createHarness();
+      cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-selected', status: 'pending' });
+
+      await program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'run',
+        'workflow.yaml',
+        '--relayflow-version',
+        relayflowVersion,
+        '--resume',
+        'run-resume',
+        '--start-from',
+        'repair',
+        '--previous-run-id',
+        'run-cache',
+      ]);
+
+      expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+        'workflow.yaml',
+        expect.objectContaining({
+          relayflowVersion,
+          resume: 'run-resume',
+          startFrom: 'repair',
+          previousRunId: 'run-cache',
+        })
+      );
+    }
+  );
 
   it('cloud run leaves the stored engine version authoritative when resuming', async () => {
     const { program } = createHarness();
@@ -778,11 +809,60 @@ describe('registerCloudCommands', () => {
       expect.objectContaining({
         at: '2026-05-10T09:00:00Z',
         name: 'One-off eval',
-        relayflowVersion: 'v1',
       })
     );
     expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('cron');
+    expect(cloudMocks.scheduleWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
     expect(deps.log).toHaveBeenCalledWith('Schedule created: sched-at-1');
+  });
+
+  it('schedule accepts an explicit v1 selector', async () => {
+    const { program } = createHarness();
+    cloudMocks.scheduleWorkflow.mockResolvedValueOnce({
+      id: 'sched-v1',
+      name: 'Hourly eval',
+      scheduleType: 'cron',
+      cronExpression: '0 * * * *',
+      timezone: 'UTC',
+      status: 'active',
+      lastTriggeredRunId: null,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'schedule',
+      'workflow.yaml',
+      '--cron',
+      '0 * * * *',
+      '--relayflow-version',
+      'v1',
+    ]);
+
+    expect(cloudMocks.scheduleWorkflow).toHaveBeenCalledWith(
+      'workflow.yaml',
+      expect.objectContaining({ relayflowVersion: 'v1' })
+    );
+  });
+
+  it('schedule rejects a mistyped relayflow generation before submission', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'schedule',
+        'workflow.yaml',
+        '--cron',
+        '0 * * * *',
+        '--relayflow-version',
+        'v3',
+      ])
+    ).rejects.toThrow(/v1, v2/);
+    expect(cloudMocks.scheduleWorkflow).not.toHaveBeenCalled();
   });
 
   it('schedules lists repeatable workflow schedules', async () => {

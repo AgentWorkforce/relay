@@ -43,6 +43,95 @@ import {
   scheduleWorkflow,
 } from './workflows.js';
 
+const INLINE_WORKFLOW = [
+  'version: "1.0"',
+  'name: selector-contract',
+  'swarm:',
+  '  pattern: dag',
+  'agents: []',
+  'workflows: []',
+].join('\n');
+
+describe('relayflow version request contract', () => {
+  beforeEach(() => {
+    ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function captureRunBodies(): string[] {
+    const bodies: string[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      expect(requestPath).toBe('/api/v1/workflows/run');
+      bodies.push(String(init?.body));
+      return {
+        auth: { accessToken: 'token' },
+        response: new Response(JSON.stringify({ runId: 'run-1', status: 'pending' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      };
+    });
+    return bodies;
+  }
+
+  it('preserves the omitted run request byte-for-byte without a relayflowVersion field', async () => {
+    const bodies = captureRunBodies();
+
+    await runWorkflow(INLINE_WORKFLOW, { syncCode: false });
+
+    expect(bodies).toEqual([JSON.stringify({ workflow: INLINE_WORKFLOW, fileType: 'yaml' })]);
+    expect(bodies[0]).not.toContain('relayflowVersion');
+  });
+
+  it.each(['v1', 'v2'] as const)('sends an explicit %s run selector', async (relayflowVersion) => {
+    const bodies = captureRunBodies();
+
+    await runWorkflow(INLINE_WORKFLOW, { syncCode: false, relayflowVersion });
+
+    expect(JSON.parse(bodies[0])).toEqual({
+      workflow: INLINE_WORKFLOW,
+      fileType: 'yaml',
+      relayflowVersion,
+    });
+  });
+
+  it('keeps the explicit selector alongside all existing resume selectors', async () => {
+    const bodies = captureRunBodies();
+
+    await runWorkflow(INLINE_WORKFLOW, {
+      syncCode: false,
+      relayflowVersion: 'v2',
+      resume: 'run-resume',
+      startFrom: 'repair',
+      previousRunId: 'run-cache',
+    });
+
+    expect(JSON.parse(bodies[0])).toEqual({
+      workflow: INLINE_WORKFLOW,
+      fileType: 'yaml',
+      relayflowVersion: 'v2',
+      resume: 'run-resume',
+      startFrom: 'repair',
+      previousRunId: 'run-cache',
+    });
+  });
+
+  it('rejects an unknown run selector before authentication, filesystem, or network access', async () => {
+    await expect(
+      runWorkflow('missing-workflow.yaml', {
+        syncCode: false,
+        relayflowVersion: 'V2',
+      } as never)
+    ).rejects.toThrow('relayflowVersion must be v1 or v2');
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('relativizeWorkflowPath', () => {
   let tmpRoot: string;
   let originalCwd: string;
@@ -727,6 +816,85 @@ describe('workflow schedules', () => {
     expect(
       (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.s3CodeKey
     ).toBeUndefined();
+  });
+
+  it('preserves the omitted schedule request byte-for-byte without a relayflowVersion field', async () => {
+    const workflowPath = await writeScheduleWorkflow();
+    const scheduleBodyBytes: string[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      expect(requestPath).toBe('/api/v1/workflows/schedules');
+      scheduleBodyBytes.push(String(init?.body));
+      return {
+        auth: { accessToken: 'token' },
+        response: new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      };
+    });
+
+    await scheduleWorkflow(workflowPath, {
+      cron: '0 * * * *',
+      name: 'Hourly eval',
+    });
+
+    expect(scheduleBodyBytes).toEqual([
+      JSON.stringify({
+        name: 'Hourly eval',
+        schedule_type: 'cron',
+        timezone: 'UTC',
+        workflowRequest: {
+          workflow: [
+            'version: "1.0"',
+            'name: eval',
+            'swarm:',
+            '  pattern: dag',
+            'agents: []',
+            'workflows: []',
+          ].join('\n'),
+          fileType: 'yaml',
+        },
+        cron_expression: '0 * * * *',
+      }),
+    ]);
+    expect(scheduleBodyBytes[0]).not.toContain('relayflowVersion');
+  });
+
+  it('sends an explicit v1 schedule selector in the nested workflow request', async () => {
+    const workflowPath = await writeScheduleWorkflow();
+    const scheduleBodies: unknown[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      expect(requestPath).toBe('/api/v1/workflows/schedules');
+      scheduleBodies.push(JSON.parse(String(init?.body)));
+      return {
+        auth: { accessToken: 'token' },
+        response: new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      };
+    });
+
+    await scheduleWorkflow(workflowPath, {
+      cron: '0 * * * *',
+      relayflowVersion: 'v1',
+    });
+
+    expect(scheduleBodies[0]).toMatchObject({
+      workflowRequest: { relayflowVersion: 'v1' },
+    });
+  });
+
+  it('rejects an unknown schedule selector before authentication, filesystem, or network access', async () => {
+    await expect(
+      scheduleWorkflow('missing-workflow.yaml', {
+        cron: '0 * * * *',
+        relayflowVersion: 'v3',
+      } as never)
+    ).rejects.toThrow('relayflowVersion must be v1 or v2');
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
   });
 
   it('creates a one-time schedule without one-time code sync fields', async () => {
