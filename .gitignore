@@ -1,7 +1,4 @@
 # Dependencies
-# Without a trailing slash this also matches a node_modules SYMLINK. The
-# directory-only pattern let a machine-local symlink be committed once.
-node_modules
 node_modules/
 
 # Build output
