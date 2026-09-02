@@ -38,7 +38,13 @@ async function githubJson(url, token) {
   return response.json();
 }
 
-async function pullRequestFiles(apiUrl, repository, number, token) {
+/**
+ * Every path a PR touches, including the pre-rename path of a renamed file.
+ *
+ * Exported for tests: the rename handling and the ambiguousScope tag are both
+ * load-bearing for whether the proof gate can be bypassed.
+ */
+export async function pullRequestFiles(apiUrl, repository, number, token) {
   const files = [];
   for (let page = 1; page <= 30; page += 1) {
     const batch = await githubJson(
@@ -46,10 +52,23 @@ async function pullRequestFiles(apiUrl, repository, number, token) {
       token
     );
     if (!Array.isArray(batch)) throw new Error('GitHub pull request files response was not an array');
-    files.push(...batch.map((entry) => entry.filename).filter((entry) => typeof entry === 'string'));
+    for (const entry of batch) {
+      // A rename reports only its destination in `filename`. Moving a runtime
+      // file into docs/ or tests/ would otherwise read as a non-runtime change,
+      // so the pre-rename path counts too.
+      for (const path of [entry?.filename, entry?.previous_filename]) {
+        if (typeof path === 'string' && path.trim()) files.push(path);
+      }
+    }
     if (batch.length < 100) return files;
   }
-  throw new Error('PR changes more than 3,000 files; RelayFlow proof dispatch refuses ambiguous scope');
+  const ambiguous = new Error(
+    'PR changes more than 3,000 files; RelayFlow proof dispatch refuses ambiguous scope'
+  );
+  // Not a transport failure: scope this large must not be resolved by falling
+  // back to the title, so this one escapes the caller's catch.
+  ambiguous.ambiguousScope = true;
+  throw ambiguous;
 }
 
 export function pullRequestSnapshot(pullRequest) {
@@ -155,7 +174,20 @@ export async function main() {
 
   // Fetch the diff BEFORE classifying: whether a proof is required is decided
   // by what changed, not by how the title was worded.
-  const changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
+  //
+  // classifyPullRequest documents a title-only fallback for an unknown diff;
+  // without this catch the await threw first and the fallback was unreachable,
+  // blocking every PR whenever the files endpoint was down.
+  let changedFiles = null;
+  try {
+    changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
+  } catch (error) {
+    if (error?.ambiguousScope) throw error;
+    process.stderr.write(
+      `Could not read the changed-file list (${error?.message ?? error}); ` +
+        'falling back to title-only classification.\n'
+    );
+  }
   const classification = classifyPullRequest({
     title: pullRequest.title,
     body: pullRequest.body ?? '',

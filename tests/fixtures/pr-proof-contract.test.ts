@@ -36,7 +36,11 @@ import {
   resolvePullRequest,
 } from '../../scripts/pr-proof/report-status.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../scripts/pr-proof/prepare.mjs';
+import {
+  assertSamePullRequestSnapshot,
+  pullRequestFiles,
+  pullRequestSnapshot,
+} from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   boundedDuration,
@@ -1732,7 +1736,7 @@ describe('classification reads the diff, not the title', () => {
 
   it('treats a workflow-only change as non-runtime', () => {
     expect(
-      runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/verify-features/status.mjs'])
+      runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/pr-proof/contract.mjs'])
     ).toBe(false);
   });
 
@@ -1793,6 +1797,47 @@ describe('classification reads the diff, not the title', () => {
     expect(result.required).toBe(false);
   });
 
+  /**
+   * `scripts/` is not exempt wholesale: publish.yml runs
+   * scripts/inject-posthog-key.mjs to rewrite the compiled CLI before it
+   * ships, so editing it changes what users receive.
+   */
+  it('treats a publish-time script as runtime', () => {
+    expect(runtimeSurfaceChanged(['scripts/inject-posthog-key.mjs'])).toBe(true);
+  });
+
+  it('fails closed for a scripts/ subtree the allowlist has never seen', () => {
+    expect(runtimeSurfaceChanged(['scripts/some-new-tool/main.mjs'])).toBe(true);
+  });
+
+  it('still exempts the CI-only script subtrees', () => {
+    expect(runtimeSurfaceChanged(['scripts/pr-proof/prepare.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/evals/run-relay-evals.mjs'])).toBe(false);
+  });
+
+  /**
+   * A rename reports only its destination path. Moving a runtime file into
+   * docs/ must not read as a docs-only change.
+   */
+  it('treats a runtime file renamed into an exempt directory as runtime', () => {
+    expect(runtimeSurfaceChanged(['docs/old-fleet.rs', 'crates/broker/src/runtime/fleet.rs'])).toBe(
+      true
+    );
+  });
+
+  /**
+   * Without this, a `chore(`-titled runtime change declaring non-functional
+   * with a valid case id was silently coerced to `bugfix` and raised nothing.
+   */
+  it('rejects a non-functional declaration on a runtime change whatever the title says', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: nonFunctional('1593-parked-agent-orphaned-receipt'),
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
+    });
+    expect(result.errors.join(' ')).toContain('cannot be non-functional');
+  });
+
   it('falls back to title-only behaviour when the diff is unavailable', () => {
     // changedFiles omitted: preserve the previous contract rather than
     // silently exempting a change nobody inspected.
@@ -1801,5 +1846,54 @@ describe('classification reads the diff, not the title', () => {
       body: nonFunctional(),
     });
     expect(result.errors.join(' ')).toContain('cannot be non-functional');
+  });
+});
+
+describe('RelayFlow proof changed-file collection', () => {
+  const withStubbedFetch = async (impl: typeof globalThis.fetch, run: () => Promise<void>) => {
+    const original = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = original;
+    }
+  };
+
+  const jsonResponse = (payload: unknown) =>
+    ({ ok: true, status: 200, json: async () => payload }) as unknown as Response;
+
+  /**
+   * GitHub reports a rename's destination in `filename` and its origin in
+   * `previous_filename`. Dropping the latter let a runtime file move into an
+   * exempt directory and read as a non-runtime change.
+   */
+  it('includes the pre-rename path of a renamed file', async () => {
+    await withStubbedFetch(
+      (async () =>
+        jsonResponse([
+          {
+            filename: 'docs/retired-fleet-notes.md',
+            previous_filename: 'crates/broker/src/runtime/fleet.rs',
+          },
+        ])) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toContain('crates/broker/src/runtime/fleet.rs');
+        expect(runtimeSurfaceChanged(files)).toBe(true);
+      }
+    );
+  });
+
+  it('tags an over-large PR so it cannot fall back to the title', async () => {
+    const page = Array.from({ length: 100 }, (_, i) => ({ filename: `packages/cli/src/f${i}.ts` }));
+    await withStubbedFetch(
+      (async () => jsonResponse(page)) as unknown as typeof globalThis.fetch,
+      async () => {
+        await expect(pullRequestFiles('https://api.github.test', 'o/r', 1, 't')).rejects.toMatchObject(
+          { ambiguousScope: true }
+        );
+      }
+    );
   });
 });

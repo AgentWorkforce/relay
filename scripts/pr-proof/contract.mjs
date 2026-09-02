@@ -83,20 +83,26 @@ export function parsePrProofMetadata(body = '') {
  * Paths that cannot change what a user's `agent-relay` actually does.
  *
  * The proof gate exists to stop a runtime behaviour change landing without a
- * red/green demonstration. Scheduled workflow definitions, CI config, docs,
- * tooling scripts and test corpora are none of those: nothing here is executed
- * by an installed CLI or broker.
+ * red/green demonstration. Scheduled workflow definitions, CI config, docs and
+ * test corpora are none of those: nothing here is executed by an installed CLI
+ * or broker.
  *
  * Deliberately an allowlist, so it fails CLOSED. A path this list has never
  * heard of counts as runtime and still demands a proof — a new top-level
  * directory should not silently become proof-exempt.
+ *
+ * `scripts/` is NOT exempt wholesale. `scripts/inject-posthog-key.mjs` is run
+ * by publish.yml and rewrites the compiled CLI before it ships, so a change
+ * there reaches users even though nothing under `scripts/` is imported at
+ * runtime. Only the subtrees that exist to serve CI itself are listed.
  */
 const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^workflows\//,
   /^docs\//,
   /^\.github\//,
   /^\.agentworkforce\//,
-  /^scripts\//,
+  /^scripts\/pr-proof\//,
+  /^scripts\/evals\//,
   /^tests\//,
   /^[^/]*\.md$/,
 ]);
@@ -160,12 +166,14 @@ export function classifyPullRequest({ title = '', body = '', changedFiles = null
   // A `non-functional` declaration is checked against the DIFF, not the title.
   // Rejecting it purely because the title says `fix(` forced workflow-only and
   // docs-only PRs to fabricate a runtime proof they could not honestly build.
-  if (titleKind && metadata.changeType === 'non-functional' && touchesRuntime !== false) {
-    errors.push(
-      touchesRuntime === true
-        ? `PR title declares a ${titleKind} and this PR changes runtime files, so the change type cannot be non-functional`
-        : `PR title declares a ${titleKind}, so the change type cannot be non-functional`
-    );
+  // The diff overrules the title in BOTH directions. A runtime change cannot be
+  // non-functional no matter how the title is worded — checking `titleKind`
+  // here would let a `chore(`-titled broker change declare non-functional and
+  // have that contradiction silently coerced into `bugfix` further down.
+  if (metadata.changeType === 'non-functional' && touchesRuntime === true) {
+    errors.push('This PR changes runtime files, so the change type cannot be non-functional');
+  } else if (titleKind && metadata.changeType === 'non-functional' && touchesRuntime === null) {
+    errors.push(`PR title declares a ${titleKind}, so the change type cannot be non-functional`);
   }
   if (titleKind && metadataKind && titleKind !== metadataKind) {
     errors.push(`PR title declares ${titleKind}, but the PR body declares ${metadataKind}`);
