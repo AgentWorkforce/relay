@@ -1489,19 +1489,12 @@ impl BrokerRuntime {
 
     async fn publish_fleet_load(&self, heartbeat_now: bool) {
         let active_agents = u32::try_from(self.workers.workers.len()).unwrap_or(u32::MAX);
-        let active_agent_names = self
-            .workers
-            .workers
-            .keys()
-            .map(|name| name.as_str().to_string())
-            .collect();
         // The broker provider's capacity handlers (spawn/release) are live for as
         // long as its connection is up, so `handlers_live` is unconditionally true
         // here — a connected broker can always place work.
         publish_fleet_load_snapshot(
             &self.fleet_control_tx,
             active_agents,
-            active_agent_names,
             self.fleet_max_agents,
             true,
             heartbeat_now,
@@ -1830,7 +1823,6 @@ pub(super) async fn register_node_agent_token(
 pub(super) async fn publish_fleet_load_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     active_agents: u32,
-    active_agent_names: Vec<String>,
     max_agents: u32,
     handlers_live: bool,
     heartbeat_now: bool,
@@ -1840,7 +1832,6 @@ pub(super) async fn publish_fleet_load_snapshot(
             active_agents,
             max_agents,
             handlers_live,
-            active_agent_names,
         }))
     {
         tracing::warn!(error = %error, "fleet load update queue is unavailable; periodic heartbeat will retry");
@@ -3280,7 +3271,7 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_millis(50),
-            publish_fleet_load_snapshot(&tx, 1, vec!["worker-a".to_string()], 4, true, true),
+            publish_fleet_load_snapshot(&tx, 1, 4, true, true),
         )
         .await
         .expect("load publication must not stall the runtime API actor");
@@ -3468,18 +3459,67 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn reconciliation_restores_a_live_worker_missing_from_inventory_without_reregistering() {
+    async fn reconciliation_adds_an_adopted_live_worker_without_reregistering() {
+        let temp = tempfile::tempdir().expect("worker registry tempdir");
+        let (event_tx, _event_rx) = mpsc::channel::<WorkerEvent>(4);
+        let mut workers = WorkerRegistry::new(
+            event_tx,
+            Vec::new(),
+            temp.path().join("worker-logs"),
+            Instant::now(),
+        );
+        let mut child_command = tokio::process::Command::new("sh");
+        child_command
+            .args(["-c", "sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let child = child_command.spawn().expect("live adopted PTY fixture");
+        let adopted_name = WorkerName::from("adopted-worker");
+        let mut adopted_spec = test_agent_spec(Some("session-adopted"), None);
+        adopted_spec.name = adopted_name.clone();
+        let (worker_command_tx, _worker_command_rx) = mpsc::channel(4);
+        workers.workers.insert(
+            adopted_name.clone(),
+            WorkerHandle {
+                generation: Uuid::from_u128(101),
+                spec: adopted_spec,
+                // Reproduce the incident seam: an adopted/migrated live PTY no
+                // longer has the original fleet spawn parent marker.
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx: worker_command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: crate::worker::AgentWorkState::Idle,
+                exit_reason: None,
+            },
+        );
+        let live_workers = workers.live_fleet_inventory_candidates();
+        assert_eq!(live_workers.len(), 1);
+        assert_eq!(live_workers[0].name, adopted_name);
+        assert_eq!(
+            live_workers[0].session_ref.as_deref(),
+            Some("session-adopted")
+        );
+
         let server = MockServer::start();
         let lookup = server.mock(|when, then| {
             when.method(GET)
-                .path("/v1/agents/live-worker")
+                .path("/v1/agents/adopted-worker")
                 .header("authorization", "Bearer rk_live_test");
             then.status(200).json_body(serde_json::json!({
                 "ok": true,
                 "data": {
-                    "id": "agent-live-id",
-                    "name": "live-worker",
+                    "id": "agent-adopted-id",
+                    "name": "adopted-worker",
                     "type": "agent",
                     "status": "offline",
                     "persona": null,
@@ -3499,7 +3539,15 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, mut rx) = mpsc::channel(2);
-        let mut inventory = HashMap::new();
+        let mut inventory = HashMap::from([(
+            WorkerName::from("inventory-worker"),
+            InventoryAgent {
+                agent_id: "agent-inventory-id".to_string(),
+                name: "inventory-worker".to_string(),
+                invocation_id: Some("inv-inventory".to_string()),
+                session_ref: Some("session-inventory".to_string()),
+            },
+        )]);
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
 
@@ -3509,30 +3557,35 @@ mod tests {
             &mut delivery_book,
             &mut inventory,
             &mut retry_after,
-            vec![live_fleet_worker("live-worker", Some("session-live"), 101)],
+            live_workers,
             Instant::now(),
         )
         .await;
 
         assert_eq!(repaired, 1, "the live orphan must be restored");
         assert_eq!(
-            inventory.get(&WorkerName::from("live-worker")),
+            inventory.get(&WorkerName::from("adopted-worker")),
             Some(&InventoryAgent {
-                agent_id: "agent-live-id".to_string(),
-                name: "live-worker".to_string(),
+                agent_id: "agent-adopted-id".to_string(),
+                name: "adopted-worker".to_string(),
                 invocation_id: None,
-                session_ref: Some("session-live".to_string()),
+                session_ref: Some("session-adopted".to_string()),
             })
         );
         assert_eq!(
-            delivery_book.active_agent_id("live-worker"),
-            Some("agent-live-id")
+            delivery_book.active_agent_id("adopted-worker"),
+            Some("agent-adopted-id")
         );
         match rx.recv().await {
             Some(FleetControlCommand::UpdateInventory(agents)) => {
-                assert_eq!(agents.len(), 1);
-                assert_eq!(agents[0].name, "live-worker");
-                assert_eq!(agents[0].agent_id, "agent-live-id");
+                assert_eq!(agents.len(), 2);
+                assert!(agents.iter().any(|agent| {
+                    agent.name == "inventory-worker" && agent.agent_id == "agent-inventory-id"
+                }));
+                assert!(agents.iter().any(|agent| {
+                    agent.name == "adopted-worker" && agent.agent_id == "agent-adopted-id"
+                }));
+                crate::node_control::tests::assert_repaired_inventory_drives_heartbeat_and_survives_reconnect(agents).await;
             }
             other => panic!("expected repaired inventory snapshot, got {other:?}"),
         }
@@ -4021,12 +4074,11 @@ mod tests {
     async fn publish_fleet_load_snapshot_emits_immediate_heartbeat_after_release() {
         let (tx, mut rx) = mpsc::channel(4);
 
-        publish_fleet_load_snapshot(&tx, 1, vec!["worker-a".to_string()], 4, true, true).await;
+        publish_fleet_load_snapshot(&tx, 1, 4, true, true).await;
 
         match rx.recv().await {
             Some(FleetControlCommand::UpdateLoad(load)) => {
                 assert_eq!(load.active_agents, 1);
-                assert_eq!(load.active_agent_names, vec!["worker-a"]);
                 assert_eq!(load.max_agents, 4);
                 assert!(load.handlers_live);
             }

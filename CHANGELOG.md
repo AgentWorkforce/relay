@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay fleet spawn --sandbox` now waits through the mounted Daytona provisioning deadline instead of abandoning successful long-running requests without a sandbox ID for cleanup.
+- Fleet node heartbeats now derive their live-agent names from the same authoritative reconnect inventory as `inventory.sync`, preventing live PTYs from becoming unattachable after roster drift.
 
 ## [11.8.5] - 2026-08-27
 
