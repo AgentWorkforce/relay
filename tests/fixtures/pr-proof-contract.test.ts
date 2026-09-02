@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -843,6 +844,40 @@ describe('exact broker artifact handoff', () => {
     });
     await rm(root, { recursive: true, force: true });
   });
+
+  it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
+    'keeps the exact launcher probe eligible under a caller controlling TTY',
+    () => {
+      const moduleUrl = pathToFileURL(path.resolve('scripts/pr-proof/run-arm.mjs')).href;
+      const probeScript = [
+        "import { closeSync, openSync } from 'node:fs';",
+        "const tty = openSync('/dev/tty', 'w');",
+        'closeSync(tty);',
+        `const { probeLandlockedProcessSupport } = await import(${JSON.stringify(moduleUrl)});`,
+        'process.exit(probeLandlockedProcessSupport() ? 0 : 1);',
+      ].join('\n');
+      const ptyScript = [
+        'import os',
+        'import pty',
+        'import sys',
+        'pid, master = pty.fork()',
+        'if pid == 0:',
+        '    os.execv(sys.argv[1], [sys.argv[1], "--input-type=module", "-e", sys.argv[2]])',
+        '_, status = os.waitpid(pid, 0)',
+        'os.close(master)',
+        'if not os.WIFEXITED(status):',
+        '    sys.exit(125)',
+        'sys.exit(os.WEXITSTATUS(status))',
+      ].join('\n');
+
+      expect(() =>
+        execFileSync('/usr/bin/python3', ['-c', ptyScript, process.execPath, probeScript], {
+          stdio: 'ignore',
+          timeout: 15_000,
+        })
+      ).not.toThrow();
+    }
+  );
 
   it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'isolates trusted bootstrap imports from the case working directory',

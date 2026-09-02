@@ -443,6 +443,7 @@ export function probeLandlockedProcessSupport() {
     const result = spawnSync(invocation.command, invocation.args, {
       cwd: temporaryRoot,
       env: caseEnvironment,
+      detached: process.platform !== 'win32',
       stdio: 'ignore',
       timeout: LANDLOCK_PROBE_TIMEOUT_MS,
       killSignal: 'SIGKILL',
