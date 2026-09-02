@@ -25,9 +25,10 @@ use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
         current_timestamp_ms, delivery_injected_event_payload, delivery_queued_event_payload,
-        pending_verification_echo_seen, DeliveryOutcome, PendingActivity, PendingVerification,
-        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-        ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+        pending_verification_echo_seen, queue_or_take_confirmed_verification, DeliveryOutcome,
+        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -466,23 +467,6 @@ fn injection_ack_outcome(stage: InjectionStage, confirmed: bool) -> InjectionAck
     match stage {
         InjectionStage::Finalize => InjectionAckOutcome::Finalize,
         InjectionStage::Escape | InjectionStage::Body => InjectionAckOutcome::Requeue,
-    }
-}
-
-/// Queue post-write echo verification unless the expected echo arrived while
-/// the compound PTY write was still awaiting its acknowledgement. Returning
-/// the verification lets the caller emit the normal verified-delivery frames
-/// immediately without waiting for output that may never arrive.
-fn queue_or_take_confirmed_worker_verification(
-    verification: PendingVerification,
-    output: &VerificationOutput,
-    pending_verifications: &mut VecDeque<PendingVerification>,
-) -> Option<PendingVerification> {
-    if pending_verification_echo_seen(output, &verification) {
-        Some(verification)
-    } else {
-        pending_verifications.push_back(verification);
-        None
     }
 }
 
@@ -1847,7 +1831,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 body: inj.pending.delivery.body,
                                 target: inj.pending.delivery.target,
                             };
-                            if let Some(pv) = queue_or_take_confirmed_worker_verification(
+                            if let Some(pv) = queue_or_take_confirmed_verification(
                                 verification,
                                 &echo_buffer,
                                 &mut pending_verifications,
@@ -2730,7 +2714,7 @@ mod tests {
         };
         let mut pending_verifications = VecDeque::new();
 
-        let stale = queue_or_take_confirmed_worker_verification(
+        let stale = queue_or_take_confirmed_verification(
             verification(),
             &output,
             &mut pending_verifications,
@@ -2739,7 +2723,7 @@ mod tests {
         pending_verifications.clear();
 
         output.push_str(&format!("\nnew composer echo: {injection}"));
-        let confirmed = queue_or_take_confirmed_worker_verification(
+        let confirmed = queue_or_take_confirmed_verification(
             verification(),
             &output,
             &mut pending_verifications,

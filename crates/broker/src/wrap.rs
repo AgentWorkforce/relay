@@ -23,9 +23,10 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        pending_verification_echo_seen, DeliveryOutcome, PendingActivity, PendingVerification,
-        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-        ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        pending_verification_echo_seen, queue_or_take_confirmed_verification, DeliveryOutcome,
+        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -210,10 +211,11 @@ fn queue_or_confirm_wrap_verification(
     pending_verifications: &mut VecDeque<PendingVerification>,
     pending_activities: &mut VecDeque<PendingActivity>,
 ) -> bool {
-    if !pending_verification_echo_seen(output, &verification) {
-        pending_verifications.push_back(verification);
+    let Some(verification) =
+        queue_or_take_confirmed_verification(verification, output, pending_verifications)
+    else {
         return false;
-    }
+    };
 
     tracing::debug!(
         event_id = %verification.event_id,

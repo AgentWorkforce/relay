@@ -180,6 +180,25 @@ pub(crate) fn pending_verification_echo_seen(
     )
 }
 
+/// Return a verification whose echo arrived before the PTY write ack was
+/// processed, otherwise queue it for later output-driven verification.
+///
+/// Both wrap-mode and fleet PTY workers use this policy. Keeping the decision
+/// here ensures the two delivery paths cannot drift on the echo-before-ack
+/// race while still letting each caller perform its own confirmation effects.
+pub(crate) fn queue_or_take_confirmed_verification(
+    verification: PendingVerification,
+    output: &VerificationOutput,
+    pending_verifications: &mut std::collections::VecDeque<PendingVerification>,
+) -> Option<PendingVerification> {
+    if pending_verification_echo_seen(output, &verification) {
+        Some(verification)
+    } else {
+        pending_verifications.push_back(verification);
+        None
+    }
+}
+
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     let clean = strip_ansi(output);
