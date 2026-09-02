@@ -83,9 +83,14 @@ try {
   const relaycastPort = listening.port;
 
   // ---------------------------------------------------------------- broker
+  // Bind the API to a port we choose. Discovering an OS-assigned port meant
+  // scraping a startup line out of the broker's output, which is a diagnostic
+  // and not a contract — it did not survive the Linux CI runner, and the case
+  // then failed as infrastructure rather than reporting an observation.
+  const apiPort = await freePort();
   broker = spawn(
     binaryPath,
-    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    ['init', '--api-port', String(apiPort), '--api-bind', '127.0.0.1', '--state-dir', stateDir],
     {
       cwd: workDir,
       env: {
@@ -99,20 +104,21 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
-  let apiPort = null;
-  const capture = (d) => {
-    const text = d.toString();
-    brokerLog.push(text);
-    const m = text.match(/API listener bound on 127\.0\.0\.1:(\d+)/);
-    if (m) apiPort = Number(m[1]);
-  };
+  const capture = (d) => brokerLog.push(d.toString());
   broker.stdout.on('data', capture);
   broker.stderr.on('data', capture);
-
-  await waitFor(() => apiPort !== null, 'broker API listener to bind');
-  await waitForEvent((e) => e.event === 'node_control_connected', 'node-control to connect');
+  broker.once('exit', (code, signal) => brokerLog.push(`\n[broker exited code=${code} signal=${signal}]\n`));
 
   const api = makeApi(apiPort);
+  // Probe the API itself rather than a log line: it is the thing we need up.
+  await waitFor(async () => {
+    if (broker.exitCode !== null) {
+      throw new Error(`broker exited early with code ${broker.exitCode}`);
+    }
+    await api('GET', '/api/status', undefined);
+    return true;
+  }, 'the broker API to answer /api/status');
+  await waitForEvent((e) => e.event === 'node_control_connected', 'node-control to connect');
 
   // 1. A worker exists and is holding its inbound queue.
   await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' });
@@ -254,6 +260,18 @@ function isWithin(root, candidate) {
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function freePort() {
+  const { createServer } = await import('node:net');
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.unref();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
 }
 function makeApi(port) {
   return async (method, route, body) => {

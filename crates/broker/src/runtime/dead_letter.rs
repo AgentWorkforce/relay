@@ -255,7 +255,25 @@ pub(crate) async fn dead_letter_parked_message(
         reason: entry.reason.clone(),
     };
     dead_letters.push(entry);
-    let _ = send_broker_event(sdk_out_tx, event).await;
+    // Bounded, unlike the pending path's emit. This runs inside the flush loop
+    // on the runtime event loop and can fire once per parked message (up to
+    // `MAX_PENDING_PER_WORKER`), so a full or unattended SDK channel must not
+    // be able to stall the loop — that would hang every other API request,
+    // `status` included. The store write above already happened, so a dropped
+    // event costs observability on one entry, never the record itself.
+    match serde_json::to_value(event) {
+        Ok(payload) => {
+            emit_http_api_event_with_timeout(sdk_out_tx, payload, http_api_event_emit_timeout())
+                .await;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = "relay_broker::dead_letter",
+                error = %error,
+                "failed to serialize dead_letter_added event for a parked message"
+            );
+        }
+    }
 }
 
 /// Push a terminally-failed pending delivery into the dead-letter store and
