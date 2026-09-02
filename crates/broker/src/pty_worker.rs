@@ -465,6 +465,23 @@ fn injection_ack_outcome(stage: InjectionStage, confirmed: bool) -> InjectionAck
     }
 }
 
+/// Queue post-write echo verification unless the expected echo arrived while
+/// the compound PTY write was still awaiting its acknowledgement. Returning
+/// the verification lets the caller emit the normal verified-delivery frames
+/// immediately without waiting for output that may never arrive.
+fn queue_or_take_confirmed_worker_verification(
+    verification: PendingVerification,
+    echo_buffer: &str,
+    pending_verifications: &mut VecDeque<PendingVerification>,
+) -> Option<PendingVerification> {
+    if check_echo_in_output(echo_buffer, &verification.expected_echo) {
+        Some(verification)
+    } else {
+        pending_verifications.push_back(verification);
+        None
+    }
+}
+
 fn should_block_pending_injection(
     auto_suggestion_visible: bool,
     pending: &PendingWorkerInjection,
@@ -1806,9 +1823,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             pty_auto.last_injection_time = Some(Instant::now());
                             pty_auto.auto_enter_retry_count = 0;
 
-                            // Queue echo verification against the confirmed body.
+                            // Queue echo verification against the confirmed body,
+                            // or confirm immediately when the echo raced ahead of
+                            // this ack while Claude's delayed Enter was pending.
                             let injection = inj.injection_text.take().unwrap_or_default();
-                            pending_verifications.push_back(PendingVerification {
+                            let verification = PendingVerification {
                                 delivery_id: inj.pending.delivery.delivery_id.clone(),
                                 event_id: inj.pending.delivery.event_id.clone(),
                                 expected_echo: injection,
@@ -1821,7 +1840,53 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 from: inj.pending.delivery.from,
                                 body: inj.pending.delivery.body,
                                 target: inj.pending.delivery.target,
-                            });
+                            };
+                            if let Some(pv) = queue_or_take_confirmed_worker_verification(
+                                verification,
+                                &echo_buffer,
+                                &mut pending_verifications,
+                            ) {
+                                let delivery_id = pv.delivery_id.clone();
+                                let event_id = pv.event_id.clone();
+                                tracing::debug!(
+                                    delivery_id = %delivery_id,
+                                    attempts = pv.attempts,
+                                    "delivery echo verified before write ack was processed"
+                                );
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_ack",
+                                    pv.request_id.clone(),
+                                    json!({
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id
+                                    }),
+                                )
+                                .await;
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_verified",
+                                    None,
+                                    json!({
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "verification": "echo"
+                                    }),
+                                )
+                                .await;
+                                throttle.record(DeliveryOutcome::Success);
+                                if let Some(detector) = activity_detector.as_ref() {
+                                    pending_activities.push_back(PendingActivity {
+                                        delivery_id: delivery_id.clone(),
+                                        event_id,
+                                        expected_echo: pv.expected_echo,
+                                        verified_at: Instant::now(),
+                                        output_buffer: String::new(),
+                                        detector: detector.clone(),
+                                    });
+                                }
+                                pending_worker_delivery_ids.remove(&delivery_id);
+                            }
                             // active_injection remains None: injection complete.
                         }
                         InjectionAckOutcome::Requeue => {
@@ -2631,6 +2696,38 @@ mod tests {
         assert_eq!(
             injection_ack_outcome(InjectionStage::Body, true),
             InjectionAckOutcome::Requeue
+        );
+    }
+
+    #[test]
+    fn echo_arriving_before_worker_write_ack_is_confirmed_immediately() {
+        let injection = "From: Lead\nReview this change";
+        let verification = PendingVerification {
+            delivery_id: "del_echo_before_ack".into(),
+            event_id: "evt_echo_before_ack".into(),
+            expected_echo: injection.to_string(),
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            body: "Review this change".to_string(),
+            target: "Worker".into(),
+        };
+        let mut pending_verifications = VecDeque::new();
+
+        let confirmed = queue_or_take_confirmed_worker_verification(
+            verification,
+            &format!("composer echo: {injection}"),
+            &mut pending_verifications,
+        );
+
+        assert!(confirmed.is_some(), "the buffered echo must be confirmed");
+        assert!(
+            pending_verifications.is_empty(),
+            "an already-observed echo must not be queued to time out"
         );
     }
 
