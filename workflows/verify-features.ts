@@ -606,6 +606,7 @@ exit 0
     command: String.raw`
 set -uo pipefail
 
+ARTIFACTS="${ARTIFACTS}"
 LOG="${ARTIFACTS}/capabilities.log"
 CAPS="${ARTIFACTS}/caps.env"
 ${ENV_DEFAULTS}
@@ -1782,7 +1783,7 @@ if [ ! -f "$ARTIFACTS/verdict.json" ]; then
 fi
 
 # Build the property payloads with node so the JSON is always well-formed.
-node <<'PHEOF' > "$ARTIFACTS/posthog-payloads.txt"
+if ! node <<'PHEOF' > "$ARTIFACTS/posthog-payloads.txt"; then
 const fs = require('node:fs');
 const artifacts = process.env.VERIFY_ARTIFACTS || '.workflow-artifacts/verify-features';
 const verdict = JSON.parse(fs.readFileSync(artifacts + '/verdict.json', 'utf8'));
@@ -1819,9 +1820,20 @@ for (const failure of failures.slice(0, 50)) {
   );
 }
 PHEOF
+  node "$STATUS_TOOL" write "$ARTIFACTS" posthog failed \
+    "PostHog payload construction failed"
+  echo "POSTHOG_FAILED: payload construction failed"
+  exit 0
+fi
 
 TOTAL=$(wc -l < "$ARTIFACTS/posthog-payloads.txt" 2>/dev/null | tr -d ' ' || true)
 if [ -z "$TOTAL" ]; then TOTAL=0; fi
+if [ "$TOTAL" -eq 0 ]; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" posthog failed \
+    "no PostHog payloads were built from verdict.json"
+  echo "POSTHOG_FAILED: no payloads were built"
+  exit 0
+fi
 if [ -z "$POSTHOG_API_KEY" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" posthog failed \
     "$TOTAL event(s) dropped: POSTHOG_API_KEY is unset"
@@ -2005,10 +2017,12 @@ SLACKEOF
 } >> "$ARTIFACTS/slack-message.txt"
 
 node "$STATUS_TOOL" redact-file "$ARTIFACTS/slack-message.txt"
+SLACK_POSTED=0
 if [ -z "$CHANNEL" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
     "VERIFY_SLACK_CHANNEL is unset; no destination was assumed"
 elif slack_post "$CHANNEL" "$ARTIFACTS/slack-message.txt"; then
+  SLACK_POSTED=1
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary delivered \
     "failure alert posted to $CHANNEL"
 else
@@ -2018,8 +2032,10 @@ fi
 if [ -n "$CHANNEL" ]; then
   if ! node "$STATUS_TOOL" envelope "$ARTIFACTS" primary "${RUN_ID}" "$CHANNEL" \
     "$ARTIFACTS/slack-message.txt" slack_primary; then
-    node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
-      "failure alert envelope could not be written for $CHANNEL"
+    if [ "$SLACK_POSTED" -ne 1 ]; then
+      node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+        "failure alert and fallback envelope could not be delivered for $CHANNEL"
+    fi
     echo "ALERT_ENVELOPE_FAILED: primary envelope write failed"
   fi
 else
@@ -2605,10 +2621,12 @@ FOLLOWUP="$ARTIFACTS/slack-followup.txt"
 } > "$FOLLOWUP"
 
 node "$STATUS_TOOL" redact-file "$FOLLOWUP"
+SLACK_POSTED=0
 if [ -z "$CHANNEL" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
     "VERIFY_SLACK_CHANNEL is unset; no destination was assumed"
 elif slack_post "$CHANNEL" "$FOLLOWUP"; then
+  SLACK_POSTED=1
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup delivered \
     "final escalation status posted to $CHANNEL"
 else
@@ -2618,8 +2636,10 @@ fi
 if [ -n "$CHANNEL" ]; then
   if ! node "$STATUS_TOOL" envelope "$ARTIFACTS" followup "${RUN_ID}" "$CHANNEL" \
     "$FOLLOWUP" slack_followup; then
-    node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
-      "final escalation envelope could not be written for $CHANNEL"
+    if [ "$SLACK_POSTED" -ne 1 ]; then
+      node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
+        "final escalation and fallback envelope could not be delivered for $CHANNEL"
+    fi
     echo "ALERT_ENVELOPE_FAILED: followup envelope write failed"
   fi
 else
@@ -2789,7 +2809,12 @@ exit 1
   // the verdict directly rather than trusting the runner's row status, and
   // fail closed when the verdict is missing.
 
-  let verdict: { verdict?: string; reasons?: string[]; totals?: Record<string, number> } | null = null;
+  let verdict: {
+    runId?: string;
+    verdict?: string;
+    reasons?: string[];
+    totals?: Record<string, number>;
+  } | null = null;
   if (existsSync(VERDICT_FILE)) {
     try {
       verdict = JSON.parse(readFileSync(VERDICT_FILE, 'utf8'));
@@ -2798,9 +2823,9 @@ exit 1
     }
   }
 
-  if (!verdict) {
+  if (!verdict || verdict.runId !== RUN_ID) {
     console.error(
-      `[verify-features] no usable verdict at ${VERDICT_FILE} — treating this run as FAILED. ` +
+      `[verify-features] no verdict for run ${RUN_ID} at ${VERDICT_FILE} — treating this run as FAILED. ` +
         `The verification pipeline did not complete; this is harness breakage, not a clean run.`
     );
     process.exitCode = 2;

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Broker `/api/send` responses now distinguish durable Relaycast publication from confirmed delivery and include the server-observed reachability of named recipients.
 - `relay-verify-features` reports failed Slack, GitHub, and PostHog escalation delivery as failed workflow evidence.
-- `relay-verify-features` emits credential-free Slack postback envelopes when alert delivery needs trusted scheduler follow-up.
+- `relay-verify-features` emits credential-free Slack postback envelopes when alert delivery needs follow-up from a trusted scheduler.
 - `relay-verify-features` aborts feature checks when the CLI is outside the checkout under test.
 - `relay-verify-features` requires evidence for every autofix failure classification.
 - `node agent message flush` and `node agent message auto` now unblock a held queue that could previously never drain, instead of reporting `flushed: 0` forever and leaving the agent unable to receive anything later. A parked message whose Relaycast identity has been retired is dead-lettered with a reason and is visible in `node deadletters`; injection failures and out-of-order sequences are still held for retry.

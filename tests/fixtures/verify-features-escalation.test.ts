@@ -46,6 +46,7 @@ describe('verify-features escalation status', () => {
     const capabilities = workflowStep(source, 'capabilities');
     const setup = workflowStep(source, 'setup');
     const primaryAlert = workflowStep(source, 'slack-alert');
+    const emitPosthog = workflowStep(source, 'emit-posthog');
     const fileIssue = workflowStep(source, 'file-issue');
     const openPr = workflowStep(source, 'open-pr');
     const followup = workflowStep(source, 'slack-followup');
@@ -58,6 +59,7 @@ describe('verify-features escalation status', () => {
     expect(source).toMatch(/step:\s*['"]enforce-draft-pr-delivery['"]/);
     expect(followup).toMatch(/dependsOn:\s*\[\s*['"]open-pr['"]\s*,\s*['"]slack-alert['"]\s*\]/);
     expect(capabilities).toMatch(/timeout:\s*10_000|timeout:\s*10000/);
+    expect(capabilities).toContain('ARTIFACTS="${ARTIFACTS}"');
     expect(source).toContain('abort_for_invalid_provenance');
     expect(source).toContain('failure-assessment.json');
     expect(source).toContain('relay-alert-envelope/1');
@@ -69,8 +71,12 @@ describe('verify-features escalation status', () => {
     expect(openPr).toContain('[ "$PR_RC" -eq 0 ] && [ -n "$PR_URL" ]');
     expect(primaryAlert).toContain('ALERT_ENVELOPE_FAILED: primary envelope write failed');
     expect(followup).toContain('ALERT_ENVELOPE_FAILED: followup envelope write failed');
+    expect(emitPosthog).toContain('if [ "$TOTAL" -eq 0 ]');
+    expect(primaryAlert).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
+    expect(followup).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
     expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
     expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
+    expect(source).toContain('verdict.runId !== RUN_ID');
     expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
     expect(source).not.toContain('ISSUE_SKIPPED: gh is not authenticated');
     expect(source).not.toContain('PR_SKIPPED: gh unavailable or unauthenticated');
@@ -217,6 +223,9 @@ describe('verify-features escalation status', () => {
 
   it('clears stale delivery receipts before a new run', async () => {
     const directory = await artifacts();
+    for (const file of ['verdict.json', 'provenance.env', 'caps.env']) {
+      await writeFile(path.join(directory, file), 'stale run');
+    }
     for (const channel of [
       'slack_primary',
       'slack_followup',
@@ -231,6 +240,11 @@ describe('verify-features escalation status', () => {
     resetEscalationArtifacts(directory);
 
     expect(escalationAuditFailures(directory)).toHaveLength(5);
+    for (const file of ['verdict.json', 'provenance.env', 'caps.env']) {
+      await expect(readFile(path.join(directory, file), 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    }
   });
 
   it('redacts credentials from stored escalation URLs', async () => {

@@ -59,12 +59,22 @@ if (arm === 'base') {
     );
   }
   outcome = 'bug';
-  signature = 'escalation_delivery_failures_exit_zero';
+  signature = 'silent_escalation_markers_without_audit';
   details =
     'The exact base workflow labels unauthenticated issue/PR delivery and a missing follow-up as SKIPPED while providing no escalation receipt audit executable.';
 } else {
   if (!workflowSource.includes('C0AEKNLDNKW')) {
     throw new Error('Head workflow does not target the required Slack channel C0AEKNLDNKW.');
+  }
+  for (const integrationMarker of [
+    "[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS",
+    'if (escalationAudit.status !== 0)',
+    'ESCALATION DELIVERY FAILED independently of the workflow DAG',
+    'process.exitCode = 2',
+  ]) {
+    if (!workflowSource.includes(integrationMarker)) {
+      throw new Error(`Head workflow does not wire fail-loud escalation audit: ${integrationMarker}`);
+    }
   }
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-'));
@@ -85,9 +95,9 @@ if (arm === 'base') {
       timeout: COMMAND_TIMEOUT_MS,
     });
     if (audit.error) throw new Error(`Escalation audit could not start: ${audit.error.message}`);
-    if (audit.status !== 1) {
+    if (audit.status === 0 || audit.status === null) {
       throw new Error(
-        `Escalation audit must exit 1 for five failed delivery channels, received ${audit.status}.`
+        `Escalation audit must exit non-zero for five failed delivery channels, received ${audit.status}.`
       );
     }
     const evidence = `${audit.stdout ?? ''}\n${audit.stderr ?? ''}`;
@@ -104,7 +114,7 @@ if (arm === 'base') {
     outcome = 'fixed';
     signature = 'escalation_delivery_failures_exit_nonzero';
     details =
-      'The exact head delivery audit exited 1 and named all five failed Slack, GitHub issue, draft PR, and PostHog contracts; the workflow also carries the required Slack channel.';
+      'The exact head delivery audit exited non-zero and named all five failed Slack, GitHub issue, draft PR, and PostHog contracts; the workflow wires that audit to a non-zero process exit and carries the required Slack channel.';
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
