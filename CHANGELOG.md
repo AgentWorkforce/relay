@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `node agent message flush` and `node agent message auto` now unblock a held queue that could previously never drain, instead of reporting `flushed: 0` forever and leaving the agent unable to receive anything later. A parked message whose Relaycast identity has been retired is dead-lettered with a reason and is visible in `node deadletters`; injection failures and out-of-order sequences are still held for retry.
-- Broker now accepts Relaycast `context.update` node frames instead of logging every one as an invalid frame, and surfaces `delivery.failed` to the sending agent as a `message_delivery_failed` event so a DM to an unreachable agent is no longer silently lost.
+- A DM to an unreachable agent is no longer silently lost: the broker now surfaces Relaycast `delivery.failed` to the sending agent as a `message_delivery_failed` event (Relaycast `context.update` node frames are now parsed instead of being logged as invalid).
 - Broker drops a worker's cached Relaycast registration when Relaycast reports `agent.identity_taken_over`, so the next operation re-registers instead of failing on a revoked token.
 
 ### Added

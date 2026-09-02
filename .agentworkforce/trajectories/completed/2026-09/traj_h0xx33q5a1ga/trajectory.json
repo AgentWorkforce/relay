@@ -59,7 +59,8 @@
     "confidence": 0.85
   },
   "commits": [
-    "c919d2eeff0bf606a215141822571ca1fdbba5d3"
+    "c919d2eeff0bf606a215141822571ca1fdbba5d3",
+    "e22a7a712025bd2b325d607bff54f5a00c01cc06"
   ],
   "filesChanged": [
     "CHANGELOG.md",
@@ -77,6 +78,6 @@
   "tags": [],
   "_trace": {
     "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
-    "endRef": "c919d2eeff0bf606a215141822571ca1fdbba5d3"
+    "endRef": "e22a7a712025bd2b325d607bff54f5a00c01cc06"
   }
 }

@@ -810,31 +810,38 @@ impl BrokerRuntime {
     async fn handle_fleet_context_update(&mut self, update: ContextUpdate) {
         match (update.topic, update.event.as_str()) {
             (ContextTopic::Agent, "delivery.failed") => {
-                let workers = self.fleet_context_update_workers(&update);
-                if workers.is_empty() {
-                    debug_ignored_context_update(&update, "no matching worker");
+                let Some(workers) = self.resolve_context_update_workers(&update) else {
                     return;
-                }
+                };
                 self.surface_fleet_delivery_problem(&update, &workers).await;
             }
             (ContextTopic::Agent, "delivery.deferred") => {
-                let workers = self.fleet_context_update_workers(&update);
-                if workers.is_empty() {
-                    debug_ignored_context_update(&update, "no matching worker");
+                let Some(workers) = self.resolve_context_update_workers(&update) else {
                     return;
-                }
+                };
                 self.log_fleet_delivery_deferral(&update, &workers);
             }
             (ContextTopic::Agent, "agent.identity_taken_over") => {
-                let workers = self.fleet_context_update_workers(&update);
-                if workers.is_empty() {
-                    debug_ignored_context_update(&update, "no matching worker");
+                let Some(workers) = self.resolve_context_update_workers(&update) else {
                     return;
-                }
+                };
                 self.handle_fleet_identity_taken_over(&update, &workers);
             }
             _ => debug_ignored_context_update(&update, "event not actionable on this broker"),
         }
+    }
+
+    /// Resolve the workers an actionable `context.update` applies to, logging
+    /// the debug drop shared by every actionable arm when this broker hosts
+    /// none of the addressed agents. Returns `None` when there is nothing to
+    /// act on, so callers can simply bail.
+    fn resolve_context_update_workers(&self, update: &ContextUpdate) -> Option<Vec<WorkerName>> {
+        let workers = self.fleet_context_update_workers(update);
+        if workers.is_empty() {
+            debug_ignored_context_update(update, "no matching worker");
+            return None;
+        }
+        Some(workers)
     }
 
     /// Resolve `agent_ids` to workers this broker actually hosts. The engine

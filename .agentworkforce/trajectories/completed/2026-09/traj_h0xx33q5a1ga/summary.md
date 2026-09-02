@@ -41,8 +41,15 @@ Broker parses Relaycast context.update node frames via a new ServerToNode::Conte
 ## Commits
 
 - `c919d2eeff0bf606a215141822571ca1fdbba5d3`
+- `e22a7a712025bd2b325d607bff54f5a00c01cc06`
 
-Traced range: `6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc` .. `c919d2eeff0bf606a215141822571ca1fdbba5d3`
+Traced range: `6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc` .. `e22a7a712025bd2b325d607bff54f5a00c01cc06`
+
+> This record was hand-amended (JSON + this summary edited directly): `trail`
+> has no amend command for a completed trajectory, so extending the traced
+> range to the review follow-up commit `e22a7a7` could not be done through the
+> tool. `e22a7a7` touched no product file that `c919d2e` had not already
+> touched, so **Files Changed** below is unchanged.
 
 ## Files Changed
 
