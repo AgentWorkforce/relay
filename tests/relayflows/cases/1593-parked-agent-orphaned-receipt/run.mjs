@@ -1,32 +1,43 @@
 /**
- * relay#1593 — a parked (`manual_flush`) message is stamped with the Relaycast
+ * relay#1593 — a parked agent stays deaf after its Relaycast identity is
+ * replaced underneath it.
+ *
+ * A parked (`manual_flush`) message carries a delivery receipt stamped with the
  * `agent_id` that was live when it was queued, and the flush gate looks that
- * cursor up by id. A second spawn of a still-live agent name re-registers it
- * under a fresh immutable identity (`bind_authoritative_identity`), which
- * retires the previous `agent_id` and drops its cursor — while the parked queue
- * itself survives, because only release and permanent-death clear it.
+ * agent's ACK cursor up by id. If the Relaycast agent record is deleted and the
+ * same name re-registered — a release issued elsewhere, a dashboard release, or
+ * a roster reaper — the broker rebinds the name to a NEW immutable id and drops
+ * the old cursor, while the worker and its parked queue keep running. Every
+ * parked receipt is then permanently un-ACKable.
  *
  * Base: the flush stops on that receipt forever. The message never leaves the
- * queue, so every later DM parks behind it and the agent is permanently deaf.
- * Head: the receipt is recognised as un-ACKable, dead-lettered, and the queue
- * drains — so the agent hears everything that arrives afterwards.
+ * queue, so every later message parks behind it and the agent is deaf for good.
+ * Head: the receipt is recognised as un-ACKable, dead-lettered with a reason,
+ * and the queue drains — so later messages reach the agent again.
  *
- * The observation is `GET /api/spawned/{name}/pending`, which exists on both
- * arms, rather than any field this PR adds.
+ * This case drives a REAL Relaycast engine (`@relaycast/engine`, standalone on
+ * sqlite), not a stand-in. That matters: the identity rules are the thing under
+ * test. A fake would be free to hand back whatever id the case found
+ * convenient, and an earlier version of this case did exactly that — it
+ * asserted a trigger the real engine refuses (`agent_already_exists`, 409). The
+ * engine decides here, so the case cannot prove a path production does not have.
+ *
+ * Observed through `GET /api/spawned/{name}/pending`, which exists on both arms.
  */
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { ensureEngine, startEngine } from './relaycast-engine.mjs';
 
 const CASE_ID = '1593-parked-agent-orphaned-receipt';
-const AGENT = 'proof-probe';
+const AGENT = 'orphan-probe';
 const BROKER_API_KEY = 'rk_proof_broker_api_key';
-const READY_TIMEOUT_MS = 60_000;
-const API_REQUEST_TIMEOUT_MS = 15_000;
-const READY_PROBE_TIMEOUT_MS = 2_000;
+const READY_TIMEOUT_MS = 90_000;
 
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
@@ -36,64 +47,82 @@ const arm = requiredValue('RELAY_PR_PROOF_ARM');
 if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
 }
-
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
-const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
-  encoding: 'utf8',
-}).trim();
+const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
-
 const runnerPath = fileURLToPath(import.meta.url);
 if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
 const workDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1593-'));
+const engineDir = path.join(workDir, 'engine');
 const stateDir = path.join(workDir, 'state');
 await mkdir(stateDir, { recursive: true });
 
-let fake;
+const diag = [];
+const log = (line) => diag.push(String(line));
+let engine;
 let broker;
-const fakeEvents = [];
-const brokerLog = [];
 
 try {
-  // ---------------------------------------------------------------- fake
-  fake = spawn(process.execPath, [path.join(path.dirname(runnerPath), 'fake-relaycast.mjs')], {
-    cwd: workDir,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  fake.stderr.on('data', (d) => brokerLog.push(`[fake] ${d}`));
-  let fakeBuf = '';
-  fake.stdout.on('data', (chunk) => {
-    fakeBuf += chunk;
-    let idx;
-    while ((idx = fakeBuf.indexOf('\n')) >= 0) {
-      const line = fakeBuf.slice(0, idx).trim();
-      fakeBuf = fakeBuf.slice(idx + 1);
-      if (!line) continue;
-      try {
-        fakeEvents.push(JSON.parse(line));
-      } catch {}
-    }
-  });
-  const listening = await waitForEvent((e) => e.event === 'listening', 'fake relaycast to listen');
-  const relaycastPort = listening.port;
+  const serveBin = await ensureEngine(engineDir, log);
+  const enginePort = await freePort();
+  const engineUrl = `http://127.0.0.1:${enginePort}`;
+  engine = await startEngine(serveBin, engineDir, enginePort, log);
+  const eng = engineClient(engineUrl);
+  await waitFor(async () => {
+    if (engine.exitCode !== null) throw new Error(`engine exited with code ${engine.exitCode}`);
+    await fetch(engineUrl);
+    return true;
+  }, 'the Relaycast engine to accept connections');
 
-  // ---------------------------------------------------------------- broker
+  // Real workspace, real node registration.
+  const ws = await eng('POST', '/v1/workspaces', { name: 'relayflow-1593' });
+  const workspaceKey = ws.body?.data?.api_key;
+  if (!workspaceKey) throw new Error(`workspace create failed: ${JSON.stringify(ws.body).slice(0, 300)}`);
+  const wsAuth = { authorization: `Bearer ${workspaceKey}` };
+
+  const nodeId = `node_relayflow_1593_${Date.now()}`;
+  const nodeReg = await eng(
+    'POST',
+    '/v1/nodes',
+    {
+      node_id: nodeId,
+      name: 'relayflow-1593-node',
+      kind: 'ws',
+      role: 'broker',
+      capabilities: [],
+      max_agents: 8,
+      version: 'relayflow/1593',
+    },
+    wsAuth
+  );
+  const nodeToken = nodeReg.body?.data?.token;
+  if (!nodeToken) throw new Error(`node mint failed: ${JSON.stringify(nodeReg.body).slice(0, 300)}`);
+
+  // The broker must not inherit this process's own Relaycast credentials, or it
+  // authenticates against production instead of the engine under test.
+  const apiPort = await freePort();
   broker = spawn(
     binaryPath,
     ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
     {
       cwd: workDir,
       env: {
-        ...process.env,
-        RELAY_BASE_URL: `http://127.0.0.1:${relaycastPort}`,
-        RELAY_API_KEY: 'rk_live_proof',
+        PATH: process.env.PATH,
+        HOME: workDir,
+        TMPDIR: process.env.TMPDIR ?? '/tmp',
+        RELAY_BASE_URL: engineUrl,
+        RELAYCAST_BASE_URL: engineUrl,
+        RELAY_API_KEY: workspaceKey,
+        RELAY_WORKSPACE_KEY: workspaceKey,
+        RELAY_NODE_TOKEN: nodeToken,
+        RELAY_NODE_ID: nodeId,
         RELAY_BROKER_API_KEY: BROKER_API_KEY,
         RELAY_SKIP_TELEMETRY: '1',
         RUST_LOG: 'info',
@@ -101,154 +130,74 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
-  const capture = (d) => brokerLog.push(d.toString());
-  broker.stdout.on('data', capture);
-  broker.stderr.on('data', capture);
-  broker.once('exit', (code, signal) => brokerLog.push(`\n[broker exited code=${code} signal=${signal}]\n`));
+  broker.stdout.on('data', (d) => log(`[broker] ${d}`));
+  broker.stderr.on('data', (d) => log(`[broker] ${d}`));
+  void apiPort;
 
-  // Port 0 lets the kernel reserve the port atomically for the broker. Read the
-  // broker's machine-readable connection contract instead of scraping logs or
-  // releasing a probe socket before launch (both are racy).
-  const apiPort = await waitFor(async () => {
-    if (broker.exitCode !== null) {
-      throw new Error(`broker exited early with code ${broker.exitCode}`);
-    }
+  // The broker publishes its bound port in connection.json — a contract, unlike
+  // its log output.
+  const brokerUrl = await waitFor(async () => {
+    if (broker.exitCode !== null) throw new Error(`broker exited early with code ${broker.exitCode}`);
     const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
-    const connectionUrl = new URL(connection.url);
-    const port = Number(connectionUrl.port);
-    if (connectionUrl.hostname !== '127.0.0.1' || !Number.isInteger(port) || port < 1) {
-      throw new Error(`invalid broker connection URL ${JSON.stringify(connection.url)}`);
-    }
-    return port;
+    const url = new URL(connection.url);
+    if (url.hostname !== '127.0.0.1' || !Number(url.port))
+      throw new Error(`bad connection url ${connection.url}`);
+    return connection.url;
   }, 'the broker connection file to publish its bound API port');
+  const api = brokerClient(brokerUrl);
+  await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
 
-  const api = makeApi(apiPort);
-  // Probe the API itself rather than a log line: it is the thing we need up.
-  await waitFor(async () => {
-    if (broker.exitCode !== null) {
-      throw new Error(`broker exited early with code ${broker.exitCode}`);
-    }
-    await api('GET', '/api/status', undefined, READY_PROBE_TIMEOUT_MS);
-    return true;
-  }, 'the broker API to answer /api/status');
-  await waitForEvent((e) => e.event === 'node_control_connected', 'node-control to connect');
-
-  // 1. A worker exists and is holding its inbound queue.
+  // 1. A live worker holding its inbound queue.
   await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' });
-  const firstRegister = await waitForEvent(
-    (e) => e.event === 'agent_register' && e.name === AGENT,
-    'the agent to register with Relaycast'
-  );
+  const first = await waitFor(async () => {
+    const found = await agentRow(eng, wsAuth, AGENT);
+    return found?.id ? found : null;
+  }, 'the agent to register with the real engine');
   await api('PUT', `/api/spawned/${AGENT}/delivery-mode`, { mode: 'manual_flush' });
 
-  // 2. A message arrives and parks.
-  fake.stdin.write(
-    `${JSON.stringify({ cmd: 'deliver', agent: AGENT, seq: 1, msgId: 'msg_proof_1', body: 'parked probe message' })}\n`
+  // 2. A real DM through the engine parks in the worker's queue.
+  const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
+  const senderToken = sender.body?.data?.token;
+  if (!senderToken) throw new Error(`sender create failed: ${JSON.stringify(sender.body).slice(0, 300)}`);
+  await eng(
+    'POST',
+    '/v1/dm',
+    { to: AGENT, text: 'parked probe message' },
+    { authorization: `Bearer ${senderToken}` }
   );
-  await waitFor(async () => (await pendingCount(api)) === 1, 'the message to park');
+  await waitFor(async () => (await pendingCount(api)) === 1, 'the DM to park in the broker queue');
 
-  // 3. A second spawn arrives for the same still-live name — the shape of a
-  //    double-dispatched spawn (relay#1604 / #1554). `workers.spawn` rejects
-  //    it with `agent '<name>' already exists`, but that guard lives inside
-  //    `workers.spawn`, which runs *after* the broker has already re-registered
-  //    the name with Relaycast. So the rejected spawn still rebinds the
-  //    identity and retires the previous cursor, and nothing rolls that back.
-  //    The failure is expected here and is part of what makes this reachable.
-  fake.stdin.write(`${JSON.stringify({ cmd: 'rotate_agent_id', name: AGENT })}\n`);
-  //    Wait for the fake to acknowledge the rotation before spawning. Writing to
-  //    its stdin and spawning immediately races: if `agent.register` lands
-  //    before the fake reads the command it replies with the OLD identity, no
-  //    rebind happens, and the case silently stops exercising the orphan path.
-  await waitForEvent((e) => e.event === 'rotate_armed' && e.name === AGENT, 'the identity rotation to arm');
-  //    A duplicate spawn that SUCCEEDS would invalidate the whole observation,
-  //    so require the rejection rather than merely tolerating it.
-  let duplicateSpawnRejected = false;
-  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' }).then(
-    () => {
-      throw new Error(
-        'The duplicate spawn was accepted. This case only proves anything if a REJECTED spawn ' +
-          'still rebinds the identity, so a success invalidates the observation.'
-      );
-    },
-    (error) => {
-      if (!/already exists/.test(String(error))) throw error;
-      duplicateSpawnRejected = true;
-    }
-  );
-  if (!duplicateSpawnRejected) throw new Error('Expected the duplicate spawn to be rejected.');
-  const secondRegister = await waitForEvent(
-    (e) => e.event === 'agent_register' && e.name === AGENT && e.agentId !== firstRegister.agentId,
-    'the agent identity to be rebound'
-  );
+  // 3. The agent record is replaced underneath the still-live worker. The
+  //    engine refuses a colliding register (409 agent_already_exists), so the
+  //    only way a name gains a new immutable id is delete-then-register — which
+  //    is what a release issued elsewhere or a roster reaper performs.
+  const del = await eng('DELETE', `/v1/agents/${AGENT}`, undefined, wsAuth);
+  if (del.status >= 300)
+    throw new Error(`agent delete failed: ${del.status} ${JSON.stringify(del.body).slice(0, 200)}`);
+  log(`engine agent ${first.id} deleted while the worker and its queue stay live`);
 
-  // 4. Flush, then read the queue through an endpoint both arms have.
-  const flushBody = await api('POST', `/api/spawned/${AGENT}/flush`, undefined);
+  // The BROKER must mint the replacement, not this case. With the name freed,
+  // the broker's own re-registration succeeds and returns a fresh immutable id,
+  // and `bind_authoritative_identity` retires the cursor the parked receipt
+  // points at. Recreating the record here instead makes the broker's register
+  // collide (409) so it keeps the old id and nothing is orphaned — which is
+  // exactly what the first revision of this case got wrong, and why it
+  // reported `flushed: 1` instead of a dead letter.
+  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' }).catch((error) => {
+    if (!/already exists/.test(String(error))) throw error;
+  });
+  const second = await waitFor(async () => {
+    const row = await agentRow(eng, wsAuth, AGENT);
+    return row?.id && row.id !== first.id ? row : null;
+  }, 'the broker to re-register the freed name under a new immutable id');
+  const secondId = second.id;
+  log(`identity replaced by the broker: ${first.id} -> ${secondId}`);
+
+  // 4. Flush and read the queue through an endpoint both arms have.
+  const flushBody = await api('POST', `/api/spawned/${AGENT}/flush`);
   await sleep(1_500);
   const remaining = await pendingCount(api);
-
-  // An empty queue alone does not prove the identity boundary held: an
-  // implementation that *injected* the stale message into the rebound identity
-  // would empty the queue too. Where the queue drained, require that it drained
-  // by dead-lettering, with nothing injected and nothing ACKed.
-  if (remaining === 0) {
-    if (
-      flushBody.dead_lettered !== 1 ||
-      flushBody.flushed !== 0 ||
-      flushBody.held !== 0 ||
-      flushBody.blocked_reason !== null
-    ) {
-      throw new Error(
-        `The queue drained without dead-lettering the orphan: ${JSON.stringify(flushBody)}. ` +
-          'The successful orphan drain must report exactly one dead letter, no injection, ' +
-          'nothing held, and no remaining blocked reason.'
-      );
-    }
-    const acked = fakeEvents.filter((event) => event.event === 'delivery_ack');
-    if (acked.length > 0) {
-      throw new Error(`A retired identity's receipt must never be ACKed, saw ${JSON.stringify(acked)}.`);
-    }
-    const staleScreen = await workerScreen(api);
-    if (staleScreen.includes('parked probe message')) {
-      throw new Error(
-        'The orphaned message was injected into the rebound identity instead of dead-lettered.'
-      );
-    }
-
-    // An empty queue is not the claim — the claim is that the agent can receive
-    // again. Send a fresh message under the live identity and require that this
-    // one actually injects, so a silent removal that leaves the queue broken
-    // cannot pass as a fix.
-    const followupBody = 'post-recovery probe';
-    fake.stdin.write(
-      `${JSON.stringify({ cmd: 'deliver', agent: AGENT, seq: 1, msgId: 'msg_proof_2', body: followupBody })}\n`
-    );
-    await waitForEvent(
-      (e) => e.event === 'delivered' && e.msgId === 'msg_proof_2' && e.agentId === secondRegister.agentId,
-      'the follow-up message to target the rebound identity'
-    );
-    await waitFor(async () => (await pendingCount(api)) === 1, 'the follow-up message to park');
-    const recovery = await api('POST', `/api/spawned/${AGENT}/flush`, undefined);
-    if (
-      recovery.flushed !== 1 ||
-      recovery.dead_lettered !== 0 ||
-      recovery.held !== 0 ||
-      recovery.blocked_reason !== null
-    ) {
-      throw new Error(
-        `The queue did not recover: follow-up flush returned ${JSON.stringify(recovery)}. ` +
-          'Clearing the orphan is only a fix if later messages are then deliverable.'
-      );
-    }
-    await waitFor(
-      async () => (await workerScreen(api)).includes(followupBody),
-      'the follow-up message to reach the rebound agent PTY'
-    );
-    await waitForEvent(
-      (e) => e.event === 'delivery_ack' && e.agent === AGENT && e.upToSeq === 1,
-      'the rebound identity follow-up to be ACKed'
-    );
-    await waitFor(async () => (await pendingCount(api)) === 0, 'the follow-up queue to remain drained');
-  }
+  const detail = `identity ${first.id} -> ${secondId}; pending after flush = ${remaining}; flush ${JSON.stringify(flushBody)}`;
 
   let outcome;
   let signature;
@@ -256,20 +205,42 @@ try {
   if (remaining === 1) {
     outcome = 'bug';
     signature = 'parked_message_never_leaves_the_queue';
-    details =
-      'The exact-base broker left the parked message in the queue after an explicit flush. ' +
-      'Its receipt names a retired identity, so the flush stops on it and every later message ' +
-      'parks behind it.';
+    details = `The base broker left the parked message queued after an explicit flush (${detail}). Its receipt names an identity the engine has replaced, so the flush stops on it and every later message parks behind it.`;
   } else if (remaining === 0) {
+    // Draining is only correct if it drained by dead-lettering. An
+    // implementation that injected the stale message into the replacement
+    // identity would empty the queue too, and that is the leak this guards.
+    if (
+      flushBody.dead_lettered !== 1 ||
+      flushBody.flushed !== 0 ||
+      flushBody.held !== 0 ||
+      flushBody.blocked_reason !== null
+    ) {
+      throw new Error(`The queue drained without dead-lettering the orphan: ${JSON.stringify(flushBody)}.`);
+    }
+    const screen = await api('GET', `/api/spawned/${AGENT}/snapshot?format=plain`).catch(() => ({}));
+    if (typeof screen.screen === 'string' && screen.screen.includes('parked probe message')) {
+      throw new Error(
+        'The orphaned message was injected into the replacement identity instead of dead-lettered.'
+      );
+    }
+    // And the queue must be usable again, not merely empty.
+    await eng(
+      'POST',
+      '/v1/dm',
+      { to: AGENT, text: 'post recovery probe' },
+      { authorization: `Bearer ${senderToken}` }
+    );
+    await waitFor(async () => (await pendingCount(api)) === 1, 'a follow-up DM to park');
+    const recovery = await api('POST', `/api/spawned/${AGENT}/flush`);
+    if (recovery.flushed !== 1) {
+      throw new Error(`The queue did not recover: follow-up flush returned ${JSON.stringify(recovery)}.`);
+    }
     outcome = 'fixed';
     signature = 'parked_message_dead_lettered_and_queue_drains';
-    details =
-      'The exact-head broker cleared the parked queue after the flush. ' +
-      'The un-ACKable message is dead-lettered with a distinguishing reason rather than injected ' +
-      'into the rebound identity, and no delivery.ack was emitted for it, so later messages ' +
-      'reach the agent without any cross-identity delivery.';
+    details = `The head broker cleared the parked queue after the flush (${detail}). The un-ACKable message is dead-lettered with a distinguishing reason rather than injected into the replacement identity, and a follow-up DM sent afterwards injected normally, so the agent can receive again.`;
   } else {
-    throw new Error(`Unexpected pending count ${remaining}; flush response ${JSON.stringify(flushBody)}.`);
+    throw new Error(`Unexpected pending count ${remaining} (${detail}).`);
   }
 
   await mkdir(path.dirname(resultPath), { recursive: true });
@@ -280,14 +251,13 @@ try {
   );
   process.stdout.write(`${signature}\n`);
 } catch (error) {
-  process.stderr.write(`${brokerLog.join('').slice(-8_000)}\n`);
+  process.stderr.write(`${diag.join('').slice(-12_000)}\n`);
   throw error;
 } finally {
-  for (const child of [broker, fake]) await stop(child);
+  for (const child of [broker, engine]) await stop(child);
   await rm(workDir, { recursive: true, force: true });
 }
 
-// ---------------------------------------------------------------- helpers
 function requiredValue(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable ${name}.`);
@@ -300,34 +270,59 @@ function isWithin(root, candidate) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function makeApi(port) {
-  return async (method, route, body, timeoutMs = API_REQUEST_TIMEOUT_MS) => {
-    const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.unref();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+function engineClient(baseUrl) {
+  return async (method, route, body, headers = {}) => {
+    const res = await fetch(`${baseUrl}${route}`, {
       method,
-      headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
-      signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'content-type': 'application/json', ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    const text = await response.text();
-    let parsed;
+    const text = await res.text();
+    let parsed = {};
     try {
       parsed = text ? JSON.parse(text) : {};
     } catch {
       parsed = { raw: text };
     }
-    if (!response.ok) {
-      throw new Error(`${method} ${route} -> ${response.status} ${text.slice(0, 400)}`);
+    return { status: res.status, body: parsed };
+  };
+}
+function brokerClient(baseUrl) {
+  return async (method, route, body) => {
+    const res = await fetch(`${baseUrl}${route}`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const text = await res.text();
+    let parsed = {};
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = { raw: text };
     }
+    if (!res.ok) throw new Error(`${method} ${route} -> ${res.status} ${text.slice(0, 300)}`);
     return parsed;
   };
 }
-async function pendingCount(api) {
-  const body = await api('GET', `/api/spawned/${AGENT}/pending`, undefined);
-  return Array.isArray(body.pending) ? body.pending.length : 0;
+async function agentRow(eng, wsAuth, name) {
+  const listed = await eng('GET', '/v1/agents', undefined, wsAuth);
+  return (listed.body?.data ?? []).find((a) => a.name === name) ?? null;
 }
-async function workerScreen(api) {
-  const body = await api('GET', `/api/spawned/${AGENT}/snapshot?format=plain`, undefined);
-  return typeof body.screen === 'string' ? body.screen : '';
+async function pendingCount(api) {
+  const body = await api('GET', `/api/spawned/${AGENT}/pending`);
+  return Array.isArray(body.pending) ? body.pending.length : 0;
 }
 async function waitFor(predicate, label, timeoutMs = READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
@@ -339,16 +334,13 @@ async function waitFor(predicate, label, timeoutMs = READY_TIMEOUT_MS) {
     } catch (error) {
       last = error;
     }
-    await sleep(250);
+    await sleep(300);
   }
   throw new Error(`Timed out waiting for ${label}${last ? `: ${last.message}` : ''}.`);
-}
-async function waitForEvent(predicate, label, timeoutMs = READY_TIMEOUT_MS) {
-  return waitFor(() => fakeEvents.find(predicate), label, timeoutMs);
 }
 async function stop(child) {
   if (!child || child.exitCode !== null) return;
   child.kill('SIGTERM');
-  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(5_000)]);
+  await Promise.race([new Promise((r) => child.once('exit', r)), sleep(5_000)]);
   if (child.exitCode === null) child.kill('SIGKILL');
 }
