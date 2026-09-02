@@ -1413,35 +1413,57 @@ for case_dir in "$CASE_ROOT"/*/; do
   manifest="$case_dir/case.json"
   [ -f "$manifest" ] || continue
 
-  expected=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$manifest','utf8')).expected?.head?.signature ?? '')" 2>/dev/null || echo "")
-  case_timeout=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));const t=Number(m.timeoutSeconds);process.stdout.write(Number.isInteger(t)&&t>=30&&t<=1800?String(t):'')" 2>/dev/null || echo "")
-  needs_broker=$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));process.stdout.write((m.requirements??[]).some(r=>String(r).startsWith('broker-'))?'1':'')" 2>/dev/null || echo "")
-
-  # Rebuild the manifest's whole runner.command. Taking element [1] and forcing
-  # 'node' ran a different command from the proof contract, which also accepts
-  # 'bash' and extra arguments.
-  runner_exe=""
-  set --
-  while IFS= read -r runner_arg; do
-    [ -n "$runner_arg" ] || continue
-    if [ -z "$runner_exe" ]; then runner_exe="$runner_arg"; else set -- "$@" "$runner_arg"; fi
-  done <<RUNNER_ARGS
-$(node -e "const m=JSON.parse(require('fs').readFileSync('$manifest','utf8'));for(const a of (m.runner?.command??[])) process.stdout.write(String(a)+'\n')" 2>/dev/null || true)
-RUNNER_ARGS
-
-  if [ -z "$expected" ] || [ -z "$runner_exe" ] || [ "$#" -eq 0 ]; then
-    skip_check "corpus: $case_id" "manifest is missing runner.command or expected.head.signature"
+  # Validate through the SAME validator the proof gate uses rather than a
+  # hand-rolled shell reading of the manifest. contract.mjs already enforces the
+  # id, version, kind, requirements, timeout bounds, the node|bash executable
+  # allowlist, and that the script stays under the case directory. Duplicating
+  # any of that here would drift from it; a copied or malformed case would then
+  # be scored by weaker rules than the gate applies.
+  #
+  # Emits, newline separated: timeoutSeconds, expected head signature,
+  # needs-broker flag, then each runner.command element.
+  meta=$(node --input-type=module -e "
+import { validateCaseManifest, BROKER_RUNTIME_REQUIREMENT } from './scripts/pr-proof/contract.mjs';
+import fs from 'node:fs';
+const id = process.argv[1];
+try {
+  const m = validateCaseManifest(JSON.parse(fs.readFileSync(process.argv[2], 'utf8')), { caseId: id });
+  const sig = m.expected?.head?.signature;
+  if (!sig) throw new Error('manifest declares no expected.head.signature');
+  const needsBroker = (m.requirements ?? []).includes(BROKER_RUNTIME_REQUIREMENT) ? '1' : '';
+  process.stdout.write([m.timeoutSeconds, sig, needsBroker, ...m.runner.command].join('\n'));
+} catch (error) {
+  // Report the contract's own reasons, not a node stack trace: the skip line is
+  // the only thing a reader sees for a case that never ran.
+  process.stderr.write((error?.details ?? [error?.message ?? String(error)]).join('; '));
+  process.exit(1);
+}
+" "$case_id" "$manifest" 2>&1) || {
+    skip_check "corpus: $case_id" "manifest rejected by the proof contract: $(printf '%s' "$meta" | tr '\n' ' ' | tail -c 200)"
     continue
-  fi
-  case "$runner_exe" in
-    node|bash) ;;
-    *)
-      skip_check "corpus: $case_id" "manifest runner executable $runner_exe is not node or bash"
-      continue
-      ;;
-  esac
-  if [ -z "$case_timeout" ]; then
-    skip_check "corpus: $case_id" "manifest has no valid timeoutSeconds (30-1800)"
+  }
+
+  case_timeout=""
+  expected=""
+  needs_broker=""
+  runner_exe=""
+  meta_line=0
+  set --
+  while IFS= read -r meta_value; do
+    meta_line=$((meta_line + 1))
+    case "$meta_line" in
+      1) case_timeout="$meta_value" ;;
+      2) expected="$meta_value" ;;
+      3) needs_broker="$meta_value" ;;
+      4) runner_exe="$meta_value" ;;
+      *) set -- "$@" "$meta_value" ;;
+    esac
+  done <<CASE_META
+$meta
+CASE_META
+
+  if [ -z "$expected" ] || [ -z "$runner_exe" ] || [ "$#" -eq 0 ] || [ -z "$case_timeout" ]; then
+    skip_check "corpus: $case_id" "manifest did not yield a runnable command and expected signature"
     continue
   fi
   if [ -n "$needs_broker" ] && [ -z "$BROKER_BIN" ]; then
@@ -1472,7 +1494,7 @@ RUNNER_ARGS
       RELAY_PR_PROOF_HEAD_SHA="$HEAD_SHA" \
       RELAY_PR_PROOF_RESULT_PATH="$result_file" \
       RELAY_PR_PROOF_BROKER_BINARY="$BROKER_BIN" \
-      timeout "$case_timeout" "$runner_exe" "$@" >"$case_log" 2>&1 || case_rc=$?
+      timeout -k 10 "$case_timeout" "$runner_exe" "$@" >"$case_log" 2>&1 || case_rc=$?
 
   if [ "$case_rc" -eq 0 ]; then
     actual=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$result_file','utf8')).signature ?? '')" 2>/dev/null || echo "")
@@ -1484,7 +1506,7 @@ RUNNER_ARGS
       echo "  FAIL  corpus: $case_id (expected $expected, got $actual)" | tee -a "$LOG"
       record "$TIER" "corpus: $case_id" fail "expected head signature $expected, observed $actual; a base signature here means this exact bug is back"
     fi
-  elif [ "$case_rc" -eq 124 ]; then
+  elif [ "$case_rc" -eq 124 ] || [ "$case_rc" -eq 137 ]; then
     # timeout(1) reports 124. A timeout proves nothing either way.
     echo "  FAIL  corpus: $case_id (runner exceeded $case_timeout s)" | tee -a "$LOG"
     record "$TIER" "corpus: $case_id" fail "runner exceeded its manifest timeout of $case_timeout s: $(tail -c 300 "$case_log" 2>/dev/null)"
