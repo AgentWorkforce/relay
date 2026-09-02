@@ -1,0 +1,195 @@
+{
+  "id": "compact_9d6c9o82xg48",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-02T08:18:26.467Z",
+  "sourceTrajectories": [
+    "traj_v2n8wd5j36bi"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T07:37:30.020Z",
+    "end": "2026-09-02T08:18:26.079Z"
+  },
+  "summary": {
+    "totalDecisions": 4,
+    "totalEvents": 5,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Serialize Unix bounded readiness polling with verified-write admission",
+          "chosen": "Serialize Unix bounded readiness polling with verified-write admission",
+          "reasoning": "The prior infinite poll outside output_order left a poll-return to lock-acquisition gap where already-readable pre-write bytes could receive a post-boundary sequence. Polling for a short bounded slice while holding output_order makes readiness ownership, read, and sequence tagging atomic with admission without ever holding the mutex across an indefinite wait; parsing and bounded publication remain outside.",
+          "fromTrajectory": "traj_v2n8wd5j36bi"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Retain workspace Clippy --no-deps and lock the excluded vendor independently",
+          "chosen": "Retain workspace Clippy --no-deps and lock the excluded vendor independently",
+          "reasoning": "The path-patched portable-pty 0.8.1 carries legacy warnings unrelated to Relay, so workspace --no-deps is still necessary to lint broker and relay-pty without linting third-party source. The excluded vendor's Windows delta is checked separately; its standalone Cargo.lock plus --locked makes the exact primitive test resolve reproducibly without re-adding vendor dev dependencies to the root workspace lock.",
+          "fromTrajectory": "traj_v2n8wd5j36bi"
+        }
+      ]
+    },
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Correct only validated compacted-artifact lint and wording defects",
+          "chosen": "Correct only validated compacted-artifact lint and wording defects",
+          "reasoning": "Added the MD058-required blank line before the decision table in all eight PR-added compact Markdown artifacts and replaced the invalid 'cross-clippied' wording in the matching compact_a19 JSON/Markdown. The compact_3c JSON count was intentionally left byte-unchanged because its generated count follows Trail's design and that review thread was invalid.",
+          "fromTrajectory": "traj_v2n8wd5j36bi"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Share one PTY input acknowledgement timeout across runtime API and wrap",
+          "chosen": "Share one PTY input acknowledgement timeout across runtime API and wrap",
+          "reasoning": "Moved the measured five-second bound to runtime/mod.rs as pub(crate) PTY_INPUT_ACK_TIMEOUT. Both surfaces now consume the same value, preventing silent drift while preserving their intentionally different timeout disposition: HTTP fails one request, wrap retires the local PTY because injection bytes may be partial.",
+          "fromTrajectory": "traj_v2n8wd5j36bi"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".agentworkforce/trajectories/compacted/compact_38sxkjjuzlc2_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_3c7bhne088tg_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_8c6o0v7ia5xr_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_a19naqumpgq3_2026-09-02.json",
+    ".agentworkforce/trajectories/compacted/compact_a19naqumpgq3_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_c49rpdvseq80_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_gtoo7bcp2msu_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_gxoj59t7gu9w_2026-09-02.md",
+    ".agentworkforce/trajectories/compacted/compact_osj9nwnr5ucy_2026-09-02.md",
+    ".github/workflows/rust-ci.yml",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/mod.rs",
+    "crates/broker/src/wrap.rs",
+    "crates/relay-pty/src/pty.rs",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs",
+    "vendor/portable-pty/Cargo.lock",
+    "vendor/portable-pty/README.relay.md"
+  ],
+  "commits": [
+    "4d0cff070"
+  ],
+  "narrative": "A single 40-minute session (2026-09-02, branch fix/claude-injection-submit-0902, commit 4d0cff070) closed the final round of review feedback on Agent Relay PR #1634, whose subject is PTY delivery ordering and Claude multiline task-submit correctness. Four areas were repaired. First, the Unix readiness path in crates/relay-pty/src/pty.rs was rewritten so that a bounded ~5ms poll runs while holding the output_order lock, making readiness detection, the read, and sequence tagging atomic with admission; the prior design polled indefinitely outside output_order, leaving a poll-return→lock-acquire window in which already-readable pre-write bytes could be stamped with a post-boundary sequence. Parsing and bounded publication were deliberately left outside the lock so the mutex is never held across an indefinite wait, and a forced after-ready barrier regression test now covers it. Second, the five-second PTY input acknowledgement bound was hoisted into crates/broker/src/runtime/mod.rs as pub(crate) PTY_INPUT_ACK_TIMEOUT and consumed by both crates/broker/src/runtime/api.rs and crates/broker/src/wrap.rs, eliminating drift between the two surfaces while preserving their intentionally different failure dispositions — the HTTP surface fails one request, wrap erases the pending delivery and retires the local PTY because injected bytes may have landed partially. Third, output-handling hygiene: both 2000-byte output tails now floor to a UTF-8 character boundary rather than slicing mid-codepoint, and the fake Claude proof harness in tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs samples the clock once per stdin chunk instead of per byte, keeping proof timestamps monotonic and parseable. Fourth, CI and vendoring: .github/workflows/rust-ci.yml gained a pinned Windows job that exercises the locked vendored portable-pty primitive plus the full relay-pty suite, with exactly two documented legacy skips; vendor/portable-pty/ received its own Cargo.lock and README.relay.md so --locked resolution is reproducible without re-adding vendor dev-dependencies to the root workspace lock. The session also did a narrow cleanup pass over eight compacted Trail artifacts under .agentworkforce/trajectories/compacted/, adding the MD058-required blank line before each decision table and replacing invalid 'cross-clippied' wording in compact_a19naqumpgq3_2026-09-02.{json,md}. Notably, one review thread (a count discrepancy in compact_3c7bhne088tg) was judged invalid and the JSON left byte-unchanged, because the count is generated by Trail's own design. Verification claimed green across the board locally: relay-pty 231/231, broker 1040 active plus 16 integration tests, the proof parser, workspace Clippy (--no-deps) plus exact Windows all-targets Clippy, standalone vendor cross-check and Clippy, fmt, actionlint, and JSON/Markdown/diff gates. Self-reported confidence was high; the work was completed rather than abandoned.",
+  "decisions": [
+    {
+      "question": "How should Unix PTY readiness polling interact with the output_order admission lock?",
+      "chosen": "Poll for a short bounded slice (~5ms) while holding output_order, so readiness, read, and sequence tagging are atomic with admission; keep parsing and bounded publication outside the lock.",
+      "reasoning": "The previous infinite poll ran outside output_order, creating a poll-return→lock-acquisition gap in which bytes that were already readable before a write could be tagged with a post-boundary sequence number. Bounding the poll means the mutex is never held across an indefinite wait.",
+      "impact": "Fixes an ordering inversion in crates/relay-pty/src/pty.rs; covered by a forced after-ready barrier regression test. Any future change must preserve the invariant that readiness-detect/read/tag stay inside output_order and parse/publish stay outside."
+    },
+    {
+      "question": "Should the PTY input acknowledgement timeout be duplicated per surface or shared?",
+      "chosen": "Define it once as pub(crate) PTY_INPUT_ACK_TIMEOUT (5s) in crates/broker/src/runtime/mod.rs and consume it from both runtime/api.rs and wrap.rs.",
+      "reasoning": "The two surfaces need the same measured bound but different reactions; sharing the constant prevents silent drift while leaving disposition per-caller.",
+      "impact": "HTTP fails a single request on timeout; wrap erases the pending delivery and retires the PTY because injection bytes may be partial (fail-closed). Changing the bound is now a one-line change with no risk of half-updating."
+    },
+    {
+      "question": "Keep workspace Clippy at --no-deps despite the vendored portable-pty 0.8.1 path patch?",
+      "chosen": "Yes — keep --no-deps for the workspace and lint the excluded vendor independently with its own Cargo.lock + --locked.",
+      "reasoning": "The path-patched vendor carries legacy warnings unrelated to Relay; linting it via the workspace would either fail or force warning suppression. A standalone lock makes the exact Windows primitive test resolve reproducibly without polluting the root workspace lock with vendor dev-dependencies.",
+      "impact": "Local validation runs two lint scopes; vendor/portable-pty/Cargo.lock and README.relay.md document the arrangement."
+    },
+    {
+      "question": "Act on every reviewer comment against the compacted Trail artifacts?",
+      "chosen": "No — fix only the validated defects (MD058 blank line before decision tables in all eight PR-added compact .md files; 'cross-clippied' wording in compact_a19naqumpgq3), and leave compact_3c7bhne088tg JSON byte-unchanged.",
+      "reasoning": "The compact_3c count is produced by Trail's generator by design, so the review thread was invalid; editing it would desynchronize the artifact from its generator.",
+      "impact": "Establishes that generated Trail artifacts are only hand-edited for genuine lint/wording defects, never to satisfy a reviewer's expectation about generated values."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Hold output_order across readiness-detect → read → sequence-tag; never hold it across an unbounded wait. Parsing and publication happen after release.",
+      "rationale": "Ordering correctness requires that the sequence number a chunk receives is decided in the same critical section that observed the bytes as readable.",
+      "scope": "crates/relay-pty/src/pty.rs and any future PTY read path (including the ConPTY/Windows side)."
+    },
+    {
+      "pattern": "Shared timing constants live at the module that owns the runtime (pub(crate) PTY_INPUT_ACK_TIMEOUT in crates/broker/src/runtime/mod.rs); callers may differ in disposition but never in the bound.",
+      "rationale": "Duplicated literal timeouts drift silently across surfaces; disposition (fail-request vs retire-PTY) is a genuine per-surface policy and should stay local.",
+      "scope": "crates/broker/src/runtime/{mod,api}.rs, crates/broker/src/wrap.rs."
+    },
+    {
+      "pattern": "Fail closed on ambiguous injection: when an input acknowledgement times out in wrap, erase the pending delivery and retire the local PTY rather than retrying or assuming success.",
+      "rationale": "A timed-out injection may have written a partial byte sequence into the harness; retrying would duplicate or corrupt the input stream.",
+      "scope": "crates/broker/src/wrap.rs delivery path."
+    },
+    {
+      "pattern": "Truncate output tails (2000-byte cap) at a UTF-8 character boundary, not a raw byte index.",
+      "rationale": "Mid-codepoint slicing produces invalid UTF-8 in logs/telemetry and can break downstream parsers.",
+      "scope": "Both output-tail sites touched in this PR (broker pty_worker and relay-pty)."
+    },
+    {
+      "pattern": "In proof/test harnesses, sample the clock once per stdin chunk, not per input byte.",
+      "rationale": "Per-byte sampling produces non-monotonic or noisy timestamps that the proof parser must then tolerate; one timestamp per chunk makes proofs deterministic.",
+      "scope": "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs and future fake-harness proof scripts."
+    },
+    {
+      "pattern": "Windows CI runs a pinned job that exercises the locked vendored primitive plus the full relay-pty suite, with legacy skips enumerated and documented rather than silently excluded.",
+      "rationale": "Silent skips read as coverage; documented skips make the gap auditable.",
+      "scope": ".github/workflows/rust-ci.yml."
+    },
+    {
+      "pattern": "Vendored crates carry their own Cargo.lock plus a README.relay.md explaining the patch, and are verified with --locked outside the workspace lint.",
+      "rationale": "Keeps third-party warnings out of Relay's lint surface while keeping the vendored build reproducible.",
+      "scope": "vendor/portable-pty/."
+    },
+    {
+      "pattern": "Every compacted Trail markdown artifact needs a blank line before its decision table (markdownlint MD058).",
+      "rationale": "The repo runs a Markdown lint gate over .agentworkforce/trajectories/compacted/.",
+      "scope": ".agentworkforce/trajectories/compacted/*.md."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "A lock acquired after a readiness check does not make the sequence assignment ordered — the gap between 'readable' and 'locked' is where ordering inverts.",
+      "context": "The pre-fix Unix path polled to readiness outside output_order, then locked; bytes readable before a write could be tagged with a post-boundary sequence.",
+      "recommendation": "When reviewing any producer/consumer sequencing code, ask which observations happen inside the critical section. If the observation that determines the ordering label is outside it, the design is wrong regardless of how short the window looks."
+    },
+    {
+      "lesson": "Timeouts that appear in two call sites will drift; timeouts that appear once but are used by callers with different failure semantics are fine.",
+      "context": "runtime/api.rs and wrap.rs both bounded PTY input acknowledgement at 5s with independent literals.",
+      "recommendation": "Factor the value, not the policy. Keep the disposition (fail request vs retire resource) at the call site and document why they differ."
+    },
+    {
+      "lesson": "Workspace-wide Clippy is not the right gate once a path-patched vendor is in the tree; splitting the lint scope beats loosening the lint.",
+      "context": "vendored portable-pty 0.8.1 carries legacy warnings unrelated to Relay.",
+      "recommendation": "Keep --no-deps at the workspace level and run the vendor lint independently; add a separate --locked primitive-test job. Do not add allow attributes to third-party source or vendor dev-deps to the root lock."
+    },
+    {
+      "lesson": "Not every review comment is a defect — comments about generated artifacts can be invalid, and 'fixing' them desyncs the artifact from its generator.",
+      "context": "The compact_3c7bhne088tg count was flagged in review but is produced by Trail's design; it was left byte-unchanged.",
+      "recommendation": "Before editing a generated file to satisfy a review, locate the generator and confirm the value is hand-authored. If it is generated, reply with that fact instead of editing."
+    },
+    {
+      "lesson": "A regression test must be forced into the failing interleaving, not merely exercise the code path.",
+      "context": "The after-ready barrier regression was described as 'forced', i.e. it deliberately constructs the pre-write-readable case.",
+      "recommendation": "For concurrency fixes, write the test so it reliably reproduces the inversion against the old code before claiming the fix is proven."
+    }
+  ],
+  "openQuestions": [
+    "All gates were reported green locally — has the pinned Windows job in .github/workflows/rust-ci.yml actually run and passed in CI on the PR, or only been reasoned about locally?",
+    "What exactly are the two documented legacy skips in the Windows relay-pty suite, and is there a tracked plan (issue) to retire them rather than let them become permanent?",
+    "The 5s PTY_INPUT_ACK_TIMEOUT is described as 'measured' — measured against which harness/latency profile, and does it hold for slower harnesses or loaded CI runners?",
+    "The bounded Unix readiness poll is ~5ms held under output_order: has the throughput/CPU cost of spinning inside the lock been measured under high-output workloads?",
+    "Does the equivalent Windows/ConPTY read path (touched by the preceding commits 0fe170b49 / 4d0cff070) have the same atomic readiness→read→tag property, or only the Unix path?",
+    "Is PR #1634 merged, and does it need a CHANGELOG.md [Unreleased - Patch] entry per the repo's changelog rules — no changelog edit appears in the changed-file list."
+  ]
+}
