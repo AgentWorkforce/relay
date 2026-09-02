@@ -121,14 +121,24 @@ For broker cases, the wrapper's additional guarantee ends at artifact
 provenance and executable immutability. It copies the verified bytes to a
 stable private path, closes every broker file descriptor, and launches the case
 under a fail-closed Landlock policy that denies filesystem mutation outside
-the case's explicit writable directories. The only device exceptions grant
-`WRITE_FILE` to `/dev/null`, `/dev/tty`, `/dev/ptmx`, and newly allocated slave
-device nodes beneath `/dev/pts`, allowing broker PTY use without granting node
-creation, truncation, removal, replacement, renames, or hard links. The stable
-path means broker self-spawns through `current_exe()` keep working. Before the
-`/dev/pts` rule is installed, the wrapper fails closed if that namespace already
-contains any numeric slave nodes, preventing a PR-authored runner from writing
-an existing agent or control PTY. The wrapper verifies the broker's link count,
+the case's explicit writable directories. A fixed, trusted, isolated Python
+bootstrap uses passwordless `sudo` only to create a private mount namespace,
+make mount propagation private, and mount a fresh `devpts` instance with
+`nosuid`, `noexec`, mode `0600`, and a bounded device count. It refuses an
+inherited controlling TTY, locks non-root securebits, drops the capability
+bounding and ambient sets, then restores the original non-root UID and GID with
+no supplemental groups. It clears and verifies every inheritable, permitted,
+effective, bounding, and ambient capability before enabling `no_new_privs` and
+Landlock. Python isolated mode prevents the root bootstrap from importing
+PR-authored modules, and no shell interprets the command. File descriptors
+above stderr are closed before PR-authored code runs.
+
+The only device exceptions grant `WRITE_FILE` to `/dev/null`, `/dev/ptmx`, and
+slave nodes beneath that private `/dev/pts`; they grant no node creation,
+truncation, removal, replacement, rename, or hard-link rights. Agent and control
+PTYs in the outer namespace are therefore unreachable even if allocated after
+the case starts. The stable path means broker self-spawns through
+`current_exe()` keep working. The wrapper verifies the broker's link count,
 mode, size, and digest again after the runner exits. Landlock does not mediate
 `chmod`; a runner can change the mode and make its own proof fail, but cannot
 use that mode change to bypass the content and path-mutation policy.
