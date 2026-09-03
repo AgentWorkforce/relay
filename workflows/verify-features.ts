@@ -2601,7 +2601,7 @@ node "$STATUS_TOOL" audit-channel "$ARTIFACTS" "$CHANNEL" "$REQUIRED" "$ALLOW_NO
 
   wf.step('enforce-escalations', {
     type: 'deterministic',
-    dependsOn: ['slack-followup'],
+    dependsOn: ['emit-posthog', 'escalate-infra', 'file-issue', 'slack-alert', 'open-pr', 'slack-followup'],
     captureOutput: true,
     failOnError: true,
     command: String.raw`

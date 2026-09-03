@@ -863,6 +863,21 @@ exit "$FAKE_CURL_EXIT_STATUS"
     await expect(readFile(path.join(outside, 'sentinel'), 'utf8')).resolves.toBe('preserve\n');
   });
 
+  it('rejects a symlinked artifact root before writing outside it', async () => {
+    const parent = await artifacts();
+    const outside = await artifacts();
+    const root = path.join(parent, 'artifact-root');
+    await writeFile(path.join(outside, 'sentinel'), 'preserve\n');
+    await symlink(outside, root, 'dir');
+
+    expect(() => prepareRunArtifacts(root, 'verify-root-symlink', 'root-symlink')).toThrow(
+      'artifact root directory must be a real directory'
+    );
+    expect(() => pruneRunArtifacts(root)).toThrow('artifact root directory must be a real directory');
+    await expect(readdir(outside)).resolves.toEqual(['sentinel']);
+    await expect(readFile(path.join(outside, 'sentinel'), 'utf8')).resolves.toBe('preserve\n');
+  });
+
   it('reserves the internal pruning marker from run ids', async () => {
     const root = await artifacts();
     expect(() => prepareRunArtifacts(root, 'verify.pruning-live', 'nonce')).toThrow(

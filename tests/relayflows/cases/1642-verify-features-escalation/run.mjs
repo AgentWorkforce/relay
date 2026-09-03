@@ -8,6 +8,7 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -55,29 +56,112 @@ let signature;
 let details;
 
 if (arm === 'base') {
-  const silentMarkers = [
-    'ISSUE_SKIPPED: gh is not authenticated',
-    'PR_SKIPPED: gh unavailable or unauthenticated',
-    'FOLLOWUP_SKIPPED: no issue or PR to report',
-  ];
-  const missingMarkers = silentMarkers.filter((marker) => !workflowSource.includes(marker));
   let statusToolExists = true;
   try {
     await access(statusToolPath);
   } catch {
     statusToolExists = false;
   }
-  if (missingMarkers.length > 0 || statusToolExists) {
-    throw new Error(
-      `Base does not expose the expected silent-delivery behavior: missing=${JSON.stringify(
-        missingMarkers
-      )}, statusToolExists=${statusToolExists}.`
-    );
+  if (statusToolExists) {
+    throw new Error('Base unexpectedly provides the escalation receipt audit executable.');
   }
+
+  const baseGraph = await planBaseWorkflowGraph(workflowPath);
+  const baseRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-base-'));
+  try {
+    const artifacts = path.join(baseRoot, '.workflow-artifacts', 'verify-features');
+    const fakeBin = path.join(baseRoot, 'bin');
+    const slackPrimitiveRoot = path.join(baseRoot, 'node_modules', '@relayflows', 'slack-primitive');
+    await Promise.all([
+      mkdir(artifacts, { recursive: true }),
+      mkdir(fakeBin, { recursive: true }),
+      mkdir(slackPrimitiveRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(artifacts, 'verdict.json'),
+        `${JSON.stringify({
+          runId: 'verify-base-runtime',
+          verdict: 'FAIL',
+          provenance: {
+            VERIFY_CLI_VERSION: 'base-proof',
+            VERIFY_REPO_VERSION: 'base-proof',
+            VERIFY_GIT_SHA: targetSha,
+          },
+          totals: { pass: 0, fail: 1, skip: 0 },
+          tiers: {
+            tier1: {
+              pass: 0,
+              fail: 1,
+              skip: 0,
+              failures: [{ check: 'base proof', reason: 'exercise silent delivery' }],
+            },
+          },
+          tiersNotRun: [],
+          reasons: ['base proof failure'],
+        })}\n`
+      ),
+      writeFile(path.join(artifacts, 'fix-integrity.env'), 'INTEGRITY=ok\n'),
+      writeFile(path.join(fakeBin, 'gh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 }),
+      writeFile(
+        path.join(slackPrimitiveRoot, 'package.json'),
+        '{"name":"@relayflows/slack-primitive","type":"module","exports":"./index.js"}\n'
+      ),
+      writeFile(
+        path.join(slackPrimitiveRoot, 'index.js'),
+        "export class SlackClient { async postMessage() { const error = new Error('missing Cloud token'); error.code = 'auth_token_missing'; throw error; } }\n"
+      ),
+    ]);
+
+    const baseEnvironment = {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      CLOUD_API_URL: '',
+      CLOUD_API_TOKEN: '',
+      RELAY_CLOUD_API_TOKEN: '',
+      CLOUD_API_ACCESS_TOKEN: '',
+    };
+    const observed = [
+      ['slack-alert', 'SLACK_UNDELIVERED to C0AEKNLDNKW'],
+      ['file-issue', 'ISSUE_SKIPPED: gh is not authenticated'],
+      ['open-pr', 'PR_SKIPPED: gh unavailable or unauthenticated'],
+      ['slack-followup', 'FOLLOWUP_SKIPPED: no issue or PR to report'],
+    ];
+    for (const [stepName, expectedMarker] of observed) {
+      const step = baseGraph.steps.find((candidate) => candidate.name === stepName);
+      if (!step || typeof step.command !== 'string') {
+        throw new Error(`Base executable workflow graph omitted ${stepName}.`);
+      }
+      const completed = spawnSync('bash', ['-c', step.command], {
+        cwd: baseRoot,
+        encoding: 'utf8',
+        env: baseEnvironment,
+        timeout: COMMAND_TIMEOUT_MS,
+      });
+      assertCompleted(completed, `base ${stepName} executable`, 0);
+      const evidence = `${completed.stdout ?? ''}\n${completed.stderr ?? ''}`;
+      if (!evidence.includes(expectedMarker)) {
+        throw new Error(
+          `Base ${stepName} did not exhibit ${JSON.stringify(expectedMarker)}; output=${JSON.stringify(
+            evidence
+          )}.`
+        );
+      }
+      if (step.failOnError !== false) {
+        throw new Error(`Base ${stepName} is not configured to tolerate its delivery failure.`);
+      }
+    }
+    if ((await readdir(artifacts)).some((file) => file.startsWith('escalation-'))) {
+      throw new Error('Base unexpectedly recorded an escalation delivery receipt.');
+    }
+  } finally {
+    await rm(baseRoot, { recursive: true, force: true });
+  }
+
   outcome = 'bug';
-  signature = 'silent_escalation_markers_without_audit';
+  signature = 'silent_escalation_runtime_without_receipts';
   details =
-    'The exact base workflow labels unauthenticated issue/PR delivery and a missing follow-up as SKIPPED while providing no escalation receipt audit executable.';
+    'The exact base production commands return zero after an undelivered Slack post, unauthenticated issue/PR delivery, and a missing follow-up, while writing no auditable escalation receipts.';
 } else {
   // Source inspection is supporting evidence for isolation. The workflow graph
   // itself is planned below, and delivery-to-receipt behavior is executed
@@ -156,9 +240,9 @@ if (arm === 'base') {
     onError() { return builder; },
     timeout() { return builder; },
     agent() { return builder; },
-    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [], command: options.command }); return builder; },
-    async run({ dryRun }) {
-      if (!dryRun) throw new Error('proof graph recorder only supports dry-run planning');
+    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [], command: options.command, failOnError: options.failOnError ?? false }); return builder; },
+    async run({ dryRun } = {}) {
+      if (!dryRun && process.env.DRY_RUN !== '1') throw new Error('proof graph recorder only supports dry-run planning');
       process.stdout.write(JSON.stringify({ name, steps }) + '\\n');
       return {};
     },
@@ -174,7 +258,12 @@ if (arm === 'base') {
       {
         cwd: graphRoot,
         encoding: 'utf8',
-        env: { ...process.env, DRY_RUN: '1' },
+        env: {
+          ...process.env,
+          DRY_RUN: '1',
+          VERIFY_AUTOFIX: '1',
+          VERIFY_SLACK_CHANNEL: 'C0AEKNLDNKW',
+        },
         timeout: COMMAND_TIMEOUT_MS,
       }
     );
@@ -199,8 +288,23 @@ if (arm === 'base') {
     'enforce-escalations',
     'enforce-verdict',
   ]) {
-    if (!graphPlan.stdout.includes(step)) {
+    if (!plannedGraph.steps.some((candidate) => candidate.name === step)) {
       throw new Error(`Executable workflow graph omitted ${step}.`);
+    }
+  }
+  for (const stepName of [
+    'enforce-infra-delivery',
+    'enforce-posthog-delivery',
+    'enforce-github-issue-delivery',
+    'enforce-draft-pr-delivery',
+    'enforce-slack-primary-delivery',
+    'enforce-slack-followup-delivery',
+    'enforce-escalations',
+    'enforce-verdict',
+  ]) {
+    const step = plannedGraph.steps.find((candidate) => candidate.name === stepName);
+    if (step?.failOnError !== true) {
+      throw new Error(`Executable workflow graph allows ${stepName} to fail silently.`);
     }
   }
   const followupCommand = plannedGraph.steps.find((step) => step.name === 'slack-followup')?.command;
@@ -221,6 +325,21 @@ if (arm === 'base') {
   const aggregateEscalationCommand = plannedGraph.steps.find(
     (step) => step.name === 'enforce-escalations'
   )?.command;
+  const aggregateEscalationPlan = plannedGraph.steps.find((step) => step.name === 'enforce-escalations');
+  const aggregateDependencies = [
+    'emit-posthog',
+    'escalate-infra',
+    'file-issue',
+    'slack-alert',
+    'open-pr',
+    'slack-followup',
+  ];
+  if (
+    !aggregateEscalationPlan ||
+    aggregateDependencies.some((dependency) => !aggregateEscalationPlan.dependsOn.includes(dependency))
+  ) {
+    throw new Error('Aggregate escalation gate can run before a delivery receipt exists.');
+  }
   if (typeof passPosthogGateCommand !== 'string' || typeof aggregateEscalationCommand !== 'string') {
     throw new Error('Executable workflow graph omitted a PostHog escalation audit command.');
   }
@@ -236,6 +355,22 @@ if (arm === 'base') {
       await access(executable);
     }
     const artifactsRoot = path.join(temporaryRoot, 'artifacts');
+    const outsideArtifactRoot = path.join(temporaryRoot, 'outside-artifacts');
+    const symlinkedArtifactRoot = path.join(temporaryRoot, 'symlinked-artifacts');
+    await mkdir(outsideArtifactRoot);
+    await writeFile(path.join(outsideArtifactRoot, 'sentinel'), 'preserve\n');
+    await symlink(outsideArtifactRoot, symlinkedArtifactRoot, 'dir');
+    try {
+      prepareRunArtifacts(symlinkedArtifactRoot, 'verify-symlink-root', 'symlink-root');
+      throw new Error('Head workflow accepted a symlinked artifact root.');
+    } catch (error) {
+      if (!String(error?.message ?? error).includes('artifact root directory must be a real directory')) {
+        throw error;
+      }
+    }
+    if ((await readdir(outsideArtifactRoot)).join(',') !== 'sentinel') {
+      throw new Error('Head workflow wrote through a symlinked artifact root.');
+    }
     const runA = prepareRunArtifacts(artifactsRoot, 'verify-proof-a', 'proof-a');
     await writeFile(path.join(runA, 'verdict.json'), '{"runId":"proof-a"}\n');
     const runB = prepareRunArtifacts(artifactsRoot, 'verify-proof-b', 'proof-b');
@@ -686,6 +821,67 @@ function assertCompleted(completed, label, expectedStatus) {
 
 function assertWorkflowPattern(source, pattern, label) {
   if (!pattern.test(source)) throw new Error(`Head workflow does not wire ${label}.`);
+}
+
+async function planBaseWorkflowGraph(sourceWorkflowPath) {
+  const graphRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-base-graph-'));
+  try {
+    const graphWorkflowRoot = path.join(graphRoot, 'workflows');
+    const graphCoreRoot = path.join(graphRoot, 'node_modules', '@relayflows', 'core');
+    await Promise.all([
+      mkdir(graphWorkflowRoot, { recursive: true }),
+      mkdir(graphCoreRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      copyFile(sourceWorkflowPath, path.join(graphWorkflowRoot, 'verify-features.ts')),
+      writeFile(
+        path.join(graphCoreRoot, 'package.json'),
+        '{"name":"@relayflows/core","type":"module","exports":"./index.js"}\n'
+      ),
+      writeFile(
+        path.join(graphCoreRoot, 'index.js'),
+        `export function workflow(name) {
+  const steps = [];
+  const builder = {
+    description() { return builder; },
+    pattern() { return builder; },
+    channel() { return builder; },
+    maxConcurrency() { return builder; },
+    onError() { return builder; },
+    timeout() { return builder; },
+    agent() { return builder; },
+    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [], command: options.command, failOnError: options.failOnError ?? false }); return builder; },
+    async run({ dryRun } = {}) {
+      if (!dryRun && process.env.DRY_RUN !== '1') throw new Error('proof graph recorder only supports dry-run planning');
+      process.stdout.write(JSON.stringify({ name, steps }) + '\\n');
+      return {};
+    },
+  };
+  return builder;
+}
+`
+      ),
+    ]);
+    const completed = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', path.join(graphWorkflowRoot, 'verify-features.ts')],
+      {
+        cwd: graphRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          DRY_RUN: '1',
+          VERIFY_AUTOFIX: '1',
+          VERIFY_SLACK_CHANNEL: 'C0AEKNLDNKW',
+        },
+        timeout: COMMAND_TIMEOUT_MS,
+      }
+    );
+    assertCompleted(completed, 'base verify-features executable graph plan', 0);
+    return JSON.parse(completed.stdout.trim());
+  } finally {
+    await rm(graphRoot, { recursive: true, force: true });
+  }
 }
 
 function workflowStep(source, name) {

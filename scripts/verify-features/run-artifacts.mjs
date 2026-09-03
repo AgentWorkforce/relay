@@ -41,7 +41,7 @@ function assertPathSegment(value, label) {
   }
 }
 
-function ensureRealDirectory(directory, label) {
+function ensureRealDirectory(directory, label, { recursive = false } = {}) {
   try {
     const metadata = lstatSync(directory);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -50,7 +50,7 @@ function ensureRealDirectory(directory, label) {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     try {
-      mkdirSync(directory, { recursive: false });
+      mkdirSync(directory, { recursive });
     } catch (mkdirError) {
       if (mkdirError.code !== 'EEXIST') throw mkdirError;
       const metadata = lstatSync(directory);
@@ -103,7 +103,7 @@ export function prepareRunArtifacts(root, runId, nonce, { platform = process.pla
 
   const runs = path.join(root, 'runs');
   const artifacts = path.join(runs, runId);
-  mkdirSync(root, { recursive: true });
+  ensureRealDirectory(root, 'artifact root directory', { recursive: true });
   ensureRealDirectory(runs, 'artifact runs directory');
   mkdirSync(artifacts, { recursive: false });
 
@@ -146,6 +146,15 @@ export function pruneRunArtifacts(
   }
   if (!Number.isSafeInteger(incompleteMaxAgeMs) || incompleteMaxAgeMs < 0) {
     throw new Error('incompleteMaxAgeMs must be a non-negative integer');
+  }
+  try {
+    const metadata = lstatSync(root);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error('artifact root directory must be a real directory, not a symlink or non-directory');
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
   }
   const runs = path.join(root, 'runs');
   try {

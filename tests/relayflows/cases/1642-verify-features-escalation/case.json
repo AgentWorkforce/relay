@@ -11,7 +11,7 @@
   "expected": {
     "base": {
       "outcome": "bug",
-      "signature": "silent_escalation_markers_without_audit"
+      "signature": "silent_escalation_runtime_without_receipts"
     },
     "head": {
       "outcome": "fixed",
