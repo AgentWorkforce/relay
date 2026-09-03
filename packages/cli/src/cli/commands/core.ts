@@ -92,6 +92,10 @@ export interface CloudNodeIdentity {
 }
 
 const CLOUD_NODE_LOOKUP_BACKOFFS_MS = [200, 400, 800] as const;
+// `node status` already waits on the local broker and is covered by a 10s
+// end-to-end command deadline. Keep this optional Cloud diagnostic well inside
+// that budget so an unreachable control plane cannot make local status hang.
+const CLOUD_NODE_LOOKUP_TIMEOUT_MS = 2_000;
 
 function cloudNodeLookupHeaders(workspaceKey: string, version: string): Record<string, string> {
   return {
@@ -130,7 +134,7 @@ async function findCloudNodeByName(
   const response = await fetchCloudNodeWithRetry(
     url,
     cloudNodeLookupHeaders(input.workspaceKey, version),
-    AbortSignal.timeout(10_000)
+    AbortSignal.timeout(CLOUD_NODE_LOOKUP_TIMEOUT_MS)
   );
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Cloud node lookup returned HTTP ${response.status}.`);

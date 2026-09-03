@@ -1438,6 +1438,7 @@ describe('registerCoreCommands', () => {
   });
 
   it('retries a transient Cloud node lookup failure and returns the addressable identity', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -1466,6 +1467,7 @@ describe('registerCoreCommands', () => {
       expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
         Authorization: 'Bearer rk_live_teststatus123',
       });
+      expect(timeoutSpy).toHaveBeenCalledWith(2_000);
     } finally {
       vi.unstubAllGlobals();
     }
