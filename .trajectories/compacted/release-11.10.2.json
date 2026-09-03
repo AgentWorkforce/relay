@@ -3,7 +3,9 @@
   "version": 1,
   "type": "compacted",
   "compactedAt": "2026-09-03T06:52:02.784Z",
-  "sourceTrajectories": ["traj_7yref3wye283"],
+  "sourceTrajectories": [
+    "traj_7yref3wye283"
+  ],
   "dateRange": {
     "start": "2026-09-02T10:25:41.382Z",
     "end": "2026-09-02T12:08:45.907Z"
@@ -11,7 +13,9 @@
   "summary": {
     "totalDecisions": 7,
     "totalEvents": 11,
-    "uniqueAgents": ["default"]
+    "uniqueAgents": [
+      "default"
+    ]
   },
   "decisionGroups": [
     {
@@ -99,5 +103,12 @@
     "tests/relayflows/cases/1638-attach-input-replay/case.json",
     "tests/relayflows/cases/1638-attach-input-replay/run.mjs"
   ],
-  "commits": ["e85f4ca23", "bf66a2e86", "13971aa8f", "1191af9bd", "cefc1ab4d", "2559e668a"]
+  "commits": [
+    "e85f4ca23",
+    "bf66a2e86",
+    "13971aa8f",
+    "1191af9bd",
+    "cefc1ab4d",
+    "2559e668a"
+  ]
 }
