@@ -30,6 +30,14 @@ const workflowSourcePromise = readFile(
   fileURLToPath(new URL('../../workflows/verify-features.ts', import.meta.url)),
   'utf8'
 );
+const slackAlertPath = fileURLToPath(
+  new URL('../../scripts/verify-features/slack-alert.sh', import.meta.url)
+);
+const slackAlertSourcePromise = readFile(slackAlertPath, 'utf8');
+const infraEscalationSourcePromise = readFile(
+  fileURLToPath(new URL('../../scripts/verify-features/escalate-infra.sh', import.meta.url)),
+  'utf8'
+);
 
 function workflowStep(source: string, name: string): string {
   const start = source.indexOf(`wf.step('${name}', {`);
@@ -71,6 +79,7 @@ describe('verify-features escalation status', () => {
       'node "$STATUS_TOOL" audit "$ARTIFACTS" "$AUTOFIX"'
     );
     expect(source).toMatch(/step:\s*['"]enforce-slack-primary-delivery['"]/);
+    expect(source).toMatch(/step:\s*['"]enforce-infra-delivery['"]/);
     expect(source).toMatch(/step:\s*['"]enforce-github-issue-delivery['"]/);
     expect(source).toMatch(/step:\s*['"]enforce-draft-pr-delivery['"]/);
     expect(followup).toMatch(/dependsOn:\s*\[\s*['"]open-pr['"]\s*,\s*['"]slack-alert['"]\s*\]/);
@@ -82,6 +91,8 @@ describe('verify-features escalation status', () => {
   it('records explicit failed receipts for every delivery primitive', async () => {
     const source = await workflowSourcePromise;
     const primaryAlert = workflowStep(source, 'slack-alert');
+    const primaryAlertExecutable = await slackAlertSourcePromise;
+    const infraEscalationExecutable = await infraEscalationSourcePromise;
     const emitPosthog = workflowStep(source, 'emit-posthog');
     const fileIssue = workflowStep(source, 'file-issue');
     const openPr = workflowStep(source, 'open-pr');
@@ -91,14 +102,65 @@ describe('verify-features escalation status', () => {
     expect(fileIssue).toContain('[ "$ISSUE_RC" -eq 0 ] && [ -n "$ISSUE_URL" ]');
     expect(openPr).toContain('PR_RC=$?');
     expect(openPr).toContain('[ "$PR_RC" -eq 0 ] && [ -n "$PR_URL" ]');
-    expect(primaryAlert).toContain('ALERT_ENVELOPE_FAILED: primary envelope write failed');
+    expect(primaryAlert).toContain('bash "${SLACK_ALERT_TOOL}"');
+    expect(primaryAlertExecutable).toContain('ALERT_ENVELOPE_FAILED: primary envelope write failed');
     expect(followup).toContain('ALERT_ENVELOPE_FAILED: followup envelope write failed');
     expect(emitPosthog).toContain('if [ "$TOTAL" -eq 0 ]');
-    expect(primaryAlert).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
+    expect(primaryAlertExecutable).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
+    expect(infraEscalationExecutable).toContain('infra failed');
+    expect(infraEscalationExecutable).not.toContain('escalation skipped');
     expect(followup).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
     expect(source).not.toContain('ISSUE_SKIPPED: gh is not authenticated');
     expect(source).not.toContain('PR_SKIPPED: gh unavailable or unauthenticated');
     expect(source).not.toContain('FOLLOWUP_SKIPPED: no issue or PR to report');
+  });
+
+  it('executes the production Slack step and records a failed receipt when delivery throws', async () => {
+    const directory = await artifacts();
+    await writeFile(
+      path.join(directory, 'verdict.json'),
+      JSON.stringify({
+        runId: 'verify-slack-executable-test',
+        verdict: 'FAIL',
+        provenance: {
+          VERIFY_CLI_VERSION: 'test',
+          VERIFY_REPO_VERSION: 'test',
+          VERIFY_GIT_SHA: 'test',
+        },
+        totals: { pass: 0, fail: 1, skip: 0 },
+        tiers: {
+          tier1: {
+            pass: 0,
+            fail: 1,
+            skip: 0,
+            failures: [{ check: 'delivery', reason: 'forced missing auth' }],
+          },
+        },
+        tiersNotRun: [],
+      })
+    );
+    writeEscalationStatus(directory, 'infra', 'not_applicable', 'no harness failure');
+    writeEscalationStatus(directory, 'github_issue', 'failed', 'gh is not authenticated');
+    writeEscalationStatus(directory, 'posthog', 'failed', 'API key missing');
+
+    const { stdout, stderr } = await execFileAsync('bash', [slackAlertPath], {
+      env: {
+        ...process.env,
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-slack-executable-test',
+        VERIFY_SLACK_CHANNEL: 'C0AEKNLDNKW',
+        CLOUD_API_URL: 'https://cloud.invalid',
+        CLOUD_API_TOKEN: '',
+        RELAY_CLOUD_API_TOKEN: '',
+        CLOUD_API_ACCESS_TOKEN: '',
+      },
+      timeout: 10_000,
+    });
+    const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-slack-primary.json'), 'utf8'));
+
+    expect(receipt).toMatchObject({ channel: 'slack_primary', state: 'failed' });
+    expect(`${stdout}\n${stderr}`).toContain('SLACK_UNDELIVERED to C0AEKNLDNKW');
+    expect(escalationChannelAuditFailure(directory, 'slack_primary')).toContain('Slack primary alert failed');
   });
 
   it('isolates artifacts and all mutating fix steps per invocation', async () => {
@@ -215,6 +277,7 @@ describe('verify-features escalation status', () => {
 
   it('fails the audit when GitHub and PostHog silently degrade', async () => {
     const directory = await artifacts();
+    writeEscalationStatus(directory, 'infra', 'not_applicable', 'no harness failure');
     writeEscalationStatus(directory, 'slack_primary', 'delivered', 'posted');
     writeEscalationStatus(directory, 'slack_followup', 'delivered', 'posted');
     writeEscalationStatus(directory, 'github_issue', 'failed', 'gh is not authenticated');
@@ -232,9 +295,24 @@ describe('verify-features escalation status', () => {
     expect(escalationChannelAuditFailure(directory, 'slack_primary')).toBeNull();
   });
 
+  it('fails closed when infra delivery has no receipt and accepts an explicit non-applicable receipt', async () => {
+    const directory = await artifacts();
+
+    expect(escalationChannelAuditFailure(directory, 'infra', { allowNotApplicable: true })).toBe(
+      'NightCTO infra alert failed: no valid escalation-infra.json was produced'
+    );
+    expect(escalationAuditFailures(directory)).toContain(
+      'NightCTO infra alert failed: no valid escalation-infra.json was produced'
+    );
+
+    writeEscalationStatus(directory, 'infra', 'not_applicable', 'no harness failure');
+    expect(escalationChannelAuditFailure(directory, 'infra', { allowNotApplicable: true })).toBeNull();
+  });
+
   it('accepts a fully delivered FAIL escalation contract', async () => {
     const directory = await artifacts();
     for (const channel of [
+      'infra',
       'slack_primary',
       'slack_followup',
       'github_issue',
@@ -249,6 +327,7 @@ describe('verify-features escalation status', () => {
 
   it('fails when the final status follow-up is missing even if the first Slack alert arrived', async () => {
     const directory = await artifacts();
+    writeEscalationStatus(directory, 'infra', 'not_applicable', 'no harness failure');
     writeEscalationStatus(directory, 'slack_primary', 'delivered', 'posted');
     writeEscalationStatus(directory, 'github_issue', 'delivered', 'created');
     writeEscalationStatus(directory, 'draft_pr', 'delivered', 'created');
@@ -304,6 +383,7 @@ describe('verify-features escalation status', () => {
       await writeFile(path.join(directory, file), 'stale run');
     }
     for (const channel of [
+      'infra',
       'slack_primary',
       'slack_followup',
       'github_issue',
@@ -316,7 +396,7 @@ describe('verify-features escalation status', () => {
 
     resetEscalationArtifacts(directory);
 
-    expect(escalationAuditFailures(directory)).toHaveLength(5);
+    expect(escalationAuditFailures(directory)).toHaveLength(6);
     for (const file of ['verdict.json', 'provenance.env', 'caps.env', 'autofix.env']) {
       await expect(readFile(path.join(directory, file), 'utf8')).rejects.toMatchObject({
         code: 'ENOENT',

@@ -88,6 +88,8 @@ const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
 const RUN_WORKTREE = path.join(WORKTREE_ROOT, 'worktrees', RUN_ID);
 const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
 const ESCALATION_STATUS_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalation-status.mjs');
+const INFRA_ESCALATION_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalate-infra.sh');
+const SLACK_ALERT_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/slack-alert.sh');
 
 /** Unique suffix so a run never collides with existing workspace state. */
 const SUFFIX = `vf-${RUN_NONCE}`;
@@ -319,43 +321,6 @@ SLACKPOSTEOF
   cat "$_sp_textfile"
   echo "---- end payload ----"
   return 1
-}
-`;
-
-/**
- * Bounded evidence POST to NightCTO, matching the CloudEvidenceSummary v1
- * contract in ../cloud/docs/dogfood-telemetry-brief.md. Byte compatibility
- * matters — NightCTO's cloud-runtime adapter consumes exactly this shape.
- *
- * This is for failures of the verification *machinery* (the relayflow, the
- * sandbox, the executor), not for product features being broken. A broken
- * feature is a PR; a broken harness is an operator alert, because nobody is
- * watching a check that never ran.
- */
-const NIGHTCTO_FN = String.raw`
-escalate_infra() {
-  _path="$1"
-  _code="$2"
-  _summary="$3"
-  if [ -z "$NIGHTCTO_EVIDENCE_URL" ]; then
-    echo "  [nightcto] NIGHTCTO_EVIDENCE_URL unset — infra escalation skipped: $_summary"
-    return 0
-  fi
-  _summary_clean=$(printf '%s' "$_summary" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300)
-  _body=$(printf '{"schemaVersion":"cloud-runtime-evidence/1","service":"relay-verify-features","environment":"%s","version":"%s","path":"%s","kind":"request_error","outcome":"error","severity":6,"occurredAt":"%s","requestId":"%s","correlationIds":{"ingress":"relayflow"},"summary":"%s","errorCode":"%s","inspect":{"logQuery":"%s"}}' \
-    "$VERIFY_ENVIRONMENT" "$VERIFY_CLI_VERSION" "$_path" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_ID" "$_summary_clean" "$_code" "$ARTIFACTS")
-  # Fire-and-forget: an unreachable NightCTO must never mask the product result.
-  if curl -sS -m 15 -X POST "$NIGHTCTO_EVIDENCE_URL" \
-      -H 'content-type: application/json' \
-      -H "authorization: Bearer $NIGHTCTO_EVIDENCE_TOKEN" \
-      -H "x-nightcto-evidence-token: $NIGHTCTO_EVIDENCE_TOKEN" \
-      -d "$_body" >/dev/null 2>&1; then
-    echo "  [nightcto] escalated: $_code"
-  else
-    echo "  [nightcto] escalation POST failed (non-fatal): $_code"
-  fi
-  return 0
 }
 `;
 
@@ -1912,51 +1877,7 @@ set -uo pipefail
 ARTIFACTS="${ARTIFACTS}"
 RUN_ID="${RUN_ID}"
 ${ENV_DEFAULTS}
-VERIFY_CLI_VERSION=$(grep '^VERIFY_CLI_VERSION=' "$ARTIFACTS/provenance.env" 2>/dev/null | cut -d= -f2 || true)
-if [ -z "$VERIFY_CLI_VERSION" ]; then VERIFY_CLI_VERSION="unknown"; fi
-${NIGHTCTO_FN}
-
-ESCALATED=0
-
-# 1. The verdict gate itself did not produce a verdict.
-if [ ! -f "$ARTIFACTS/verdict.json" ]; then
-  escalate_infra "relayflow.verify.verdict" "verdict_missing" \
-    "verify-features produced no verdict.json — the verification pipeline did not complete"
-  ESCALATED=1
-fi
-
-# 2. Tiers that never recorded a single check: harness breakage, not a
-#    product signal.
-if [ -f "$ARTIFACTS/verdict.json" ]; then
-  NOT_RUN=$(node -e 'const v=require("node:fs").readFileSync(process.argv[1],"utf8");process.stdout.write((JSON.parse(v).tiersNotRun||[]).join(","))' "$ARTIFACTS/verdict.json" 2>/dev/null || echo "")
-  if [ -n "$NOT_RUN" ]; then
-    escalate_infra "relayflow.verify.tier_not_run" "tier_not_run" \
-      "verify-features tiers produced no records: $NOT_RUN"
-    ESCALATED=1
-  fi
-fi
-
-# 3. The broker never came up, so nothing below tier 1 could be meaningful.
-if grep -q "SETUP_FAIL" "$ARTIFACTS/setup.log" 2>/dev/null; then
-  escalate_infra "relayflow.verify.setup" "broker_start_failed" \
-    "verify-features could not start the local broker within 30s"
-  ESCALATED=1
-fi
-
-# 4. No provider CLI at all. Bootstrap logs an expired provider credential as
-#    "non-fatal" and continues, which silently converts tier 6 and CP3 into
-#    permanent SKIPs — verification quietly stops covering managed agents.
-if grep -q "^provider_any=0$" "$ARTIFACTS/caps.env" 2>/dev/null; then
-  escalate_infra "relayflow.verify.providers" "no_provider_cli" \
-    "verify-features found no provider CLI on PATH — tier 6 and CP3 cannot be verified in this environment"
-  ESCALATED=1
-fi
-
-if [ "$ESCALATED" -eq 0 ]; then
-  echo "  No harness-level failures to escalate."
-fi
-
-exit 0
+bash "${INFRA_ESCALATION_TOOL}"
 `,
   });
 
@@ -1971,103 +1892,15 @@ exit 0
 
   wf.step('slack-alert', {
     type: 'deterministic',
-    dependsOn: ['verdict', 'emit-posthog', 'file-issue'],
+    dependsOn: ['verdict', 'emit-posthog', 'file-issue', 'escalate-infra'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
-STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 ${ENV_DEFAULTS}
-CHANNEL="$VERIFY_SLACK_CHANNEL"
-${SLACK_POST_FN}
-
-if [ ! -f "$ARTIFACTS/verdict.json" ]; then
-  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
-    "no verdict.json to report"
-  echo "SLACK_FAILED: no verdict.json to report"
-  exit 0
-fi
-
-VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
-
-if [ "$VERDICT" = "PASS" ]; then
-  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary not_applicable \
-    "verdict is PASS"
-  echo "SLACK_NOT_APPLICABLE: verdict is PASS — not alerting"
-  exit 0
-fi
-
-node <<'SLACKEOF' > "$ARTIFACTS/slack-message.txt"
-const fs = require('node:fs');
-const artifacts = process.env.VERIFY_ARTIFACTS || '.workflow-artifacts/verify-features';
-const v = JSON.parse(fs.readFileSync(artifacts + '/verdict.json', 'utf8'));
-
-const lines = [];
-lines.push(':rotating_light: *Feature verification FAILED* — ${BT}' + v.runId + '${BT}');
-lines.push(
-  'CLI ' +
-    (v.provenance.VERIFY_CLI_VERSION || '?') +
-    ' / repo ' +
-    (v.provenance.VERIFY_REPO_VERSION || '?') +
-    ' @ ' +
-    (v.provenance.VERIFY_GIT_SHA || '?')
-);
-lines.push(
-  v.totals.pass + ' passed, *' + v.totals.fail + ' failed*, ' + v.totals.skip + ' skipped'
-);
-lines.push('');
-for (const [tier, bucket] of Object.entries(v.tiers)) {
-  const total = bucket.pass + bucket.fail + bucket.skip;
-  const state = total === 0 ? 'NOT_RUN' : bucket.fail > 0 ? 'FAIL' : 'PASS';
-  lines.push(
-    '• ${BT}' + tier + '${BT} ' + state + ' — ' + bucket.pass + 'p/' + bucket.fail + 'f/' + bucket.skip + 's'
-  );
-  for (const f of bucket.failures.slice(0, 5)) {
-    lines.push('    ↳ ' + f.check + ': ' + String(f.reason).slice(0, 180));
-  }
-}
-if (v.tiersNotRun.length > 0) {
-  lines.push('');
-  lines.push('*Tiers that produced no records:* ' + v.tiersNotRun.join(', '));
-}
-lines.push('');
-lines.push('Artifacts: ${BT}' + artifacts + '${BT}');
-process.stdout.write(lines.join('\n'));
-SLACKEOF
-
-{
-  echo ""
-  node "$STATUS_TOOL" render-initial "$ARTIFACTS"
-} >> "$ARTIFACTS/slack-message.txt"
-
-node "$STATUS_TOOL" redact-file "$ARTIFACTS/slack-message.txt"
-SLACK_POSTED=0
-if [ -z "$CHANNEL" ]; then
-  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
-    "VERIFY_SLACK_CHANNEL is unset; no destination was assumed"
-elif slack_post "$CHANNEL" "$ARTIFACTS/slack-message.txt"; then
-  SLACK_POSTED=1
-  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary delivered \
-    "failure alert posted to $CHANNEL"
-else
-  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
-    "failure alert could not be posted to $CHANNEL"
-fi
-if [ -n "$CHANNEL" ]; then
-  if ! node "$STATUS_TOOL" envelope "$ARTIFACTS" primary "${RUN_ID}" "$CHANNEL" \
-    "$ARTIFACTS/slack-message.txt" slack_primary; then
-    if [ "$SLACK_POSTED" -ne 1 ]; then
-      node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
-        "failure alert and fallback envelope could not be delivered for $CHANNEL"
-    fi
-    echo "ALERT_ENVELOPE_FAILED: primary envelope write failed"
-  fi
-else
-  echo "ALERT_ENVELOPE_FAILED: VERIFY_SLACK_CHANNEL is required"
-fi
-exit 0
+bash "${SLACK_ALERT_TOOL}"
 `,
   });
 
@@ -2683,34 +2516,46 @@ exit 0
   // summary red per channel while siblings continue to the final Slack status.
   const escalationChannelGates = [
     {
+      step: 'enforce-infra-delivery',
+      dependency: 'escalate-infra',
+      channel: 'infra',
+      requiresAutofix: false,
+      allowNotApplicable: true,
+    },
+    {
       step: 'enforce-posthog-delivery',
       dependency: 'emit-posthog',
       channel: 'posthog',
       requiresAutofix: false,
+      allowNotApplicable: false,
     },
     {
       step: 'enforce-github-issue-delivery',
       dependency: 'file-issue',
       channel: 'github_issue',
       requiresAutofix: true,
+      allowNotApplicable: false,
     },
     {
       step: 'enforce-draft-pr-delivery',
       dependency: 'open-pr',
       channel: 'draft_pr',
       requiresAutofix: true,
+      allowNotApplicable: false,
     },
     {
       step: 'enforce-slack-primary-delivery',
       dependency: 'slack-alert',
       channel: 'slack_primary',
       requiresAutofix: false,
+      allowNotApplicable: false,
     },
     {
       step: 'enforce-slack-followup-delivery',
       dependency: 'slack-followup',
       channel: 'slack_followup',
       requiresAutofix: false,
+      allowNotApplicable: false,
     },
   ] as const;
 
@@ -2728,6 +2573,7 @@ AUTOFIX="${AUTOFIX ? '1' : '0'}"
 STATUS_TOOL="${ESCALATION_STATUS_TOOL}"
 CHANNEL="${gate.channel}"
 REQUIRES_AUTOFIX="${gate.requiresAutofix ? '1' : '0'}"
+ALLOW_NOT_APPLICABLE="${gate.allowNotApplicable ? '1' : '0'}"
 
 if [ ! -f "$ARTIFACTS/verdict.json" ]; then
   echo "ESCALATION_CHANNEL_AUDIT_FAIL: no verdict.json"
@@ -2742,7 +2588,7 @@ fi
 
 REQUIRED=1
 if [ "$REQUIRES_AUTOFIX" = "1" ] && [ "$AUTOFIX" != "1" ]; then REQUIRED=0; fi
-node "$STATUS_TOOL" audit-channel "$ARTIFACTS" "$CHANNEL" "$REQUIRED"
+node "$STATUS_TOOL" audit-channel "$ARTIFACTS" "$CHANNEL" "$REQUIRED" "$ALLOW_NOT_APPLICABLE"
 `,
     });
   }

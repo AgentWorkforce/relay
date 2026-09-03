@@ -1,5 +1,15 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,6 +43,9 @@ if (!isWithin(harnessDir, runnerPath)) {
 
 const workflowPath = path.join(targetDir, 'workflows/verify-features.ts');
 const statusToolPath = path.join(targetDir, 'scripts/verify-features/escalation-status.mjs');
+const infraEscalationToolPath = path.join(targetDir, 'scripts/verify-features/escalate-infra.sh');
+const slackAlertToolPath = path.join(targetDir, 'scripts/verify-features/slack-alert.sh');
+const slackPostToolPath = path.join(targetDir, 'scripts/verify-features/slack-post.mjs');
 const runArtifactsToolPath = path.join(targetDir, 'scripts/verify-features/run-artifacts.mjs');
 const runWorktreeToolPath = path.join(targetDir, 'scripts/verify-features/run-worktree.mjs');
 const workflowSource = await readFile(workflowPath, 'utf8');
@@ -66,10 +79,8 @@ if (arm === 'base') {
   details =
     'The exact base workflow labels unauthenticated issue/PR delivery and a missing follow-up as SKIPPED while providing no escalation receipt audit executable.';
 } else {
-  // The executable checks below prove the helpers' behavior. Source inspection
-  // is still required to prove that the workflow actually invokes those
-  // helpers; running the full credential-bearing scheduler from this isolated,
-  // credential-free proof sandbox would test a different security boundary.
+  // Source inspection is limited to wiring and isolation. Delivery-to-receipt
+  // behavior is executed below through the same scripts the workflow invokes.
   assertWorkflowPattern(
     workflowSource,
     /VERIFY_SLACK_CHANNEL\s*=\s*['"]C0AEKNLDNKW['"]/,
@@ -101,7 +112,7 @@ if (arm === 'base') {
       throw new Error(`Head workflow does not isolate mutating step ${mutatingStep}.`);
     }
   }
-  for (const channel of ['slack_primary', 'slack_followup', 'github_issue', 'draft_pr', 'posthog']) {
+  for (const channel of ['slack_followup', 'github_issue', 'draft_pr', 'posthog']) {
     const failedWrite = new RegExp(`write [^\\n]*["']?\\$ARTIFACTS["']? ${channel} failed(?:\\s|$)`);
     if (!failedWrite.test(workflowSource)) {
       throw new Error(`Head workflow does not record failed delivery for ${channel}.`);
@@ -114,6 +125,10 @@ if (arm === 'base') {
       pathToFileURL(runArtifactsToolPath).href
     );
     const { prepareRunWorktree, removeRunWorktree } = await import(pathToFileURL(runWorktreeToolPath).href);
+
+    for (const executable of [infraEscalationToolPath, slackAlertToolPath, slackPostToolPath]) {
+      await access(executable);
+    }
     const artifactsRoot = path.join(temporaryRoot, 'artifacts');
     const runA = prepareRunArtifacts(artifactsRoot, 'verify-proof-a', 'proof-a');
     await writeFile(path.join(runA, 'verdict.json'), '{"runId":"proof-a"}\n');
@@ -190,6 +205,132 @@ if (arm === 'base') {
     await removeRunWorktree(gitRepo, worktreeA);
     await removeRunWorktree(gitRepo, worktreeB);
 
+    // Execute byte-for-byte copies of the production step scripts in a
+    // disposable module tree. The target checkout remains read-only evidence;
+    // only the transport boundary is stubbed to deterministically throw.
+    const executableRoot = path.join(temporaryRoot, 'step-executables');
+    const executableScriptRoot = path.join(executableRoot, 'scripts', 'verify-features');
+    await mkdir(executableScriptRoot, { recursive: true });
+    const executableStatusToolPath = path.join(executableScriptRoot, 'escalation-status.mjs');
+    const executableInfraToolPath = path.join(executableScriptRoot, 'escalate-infra.sh');
+    const executableSlackAlertPath = path.join(executableScriptRoot, 'slack-alert.sh');
+    const executableSlackPostPath = path.join(executableScriptRoot, 'slack-post.mjs');
+    await Promise.all([
+      copyFile(statusToolPath, executableStatusToolPath),
+      copyFile(infraEscalationToolPath, executableInfraToolPath),
+      copyFile(slackAlertToolPath, executableSlackAlertPath),
+      copyFile(slackPostToolPath, executableSlackPostPath),
+    ]);
+    const resolvedExecutableStatusToolPath = await realpath(executableStatusToolPath);
+    const resolvedExecutableInfraToolPath = await realpath(executableInfraToolPath);
+    const resolvedExecutableSlackAlertPath = await realpath(executableSlackAlertPath);
+
+    const slackPrimitiveRoot = path.join(executableRoot, 'node_modules', '@relayflows', 'slack-primitive');
+    await mkdir(slackPrimitiveRoot, { recursive: true });
+    await writeFile(
+      path.join(slackPrimitiveRoot, 'package.json'),
+      '{"name":"@relayflows/slack-primitive","type":"module","exports":"./index.js"}\n'
+    );
+    await writeFile(
+      path.join(slackPrimitiveRoot, 'index.js'),
+      "export class SlackClient { async postMessage() { const error = new Error('missing Cloud token'); error.code = 'auth_token_missing'; throw error; } }\n"
+    );
+
+    const executableArtifacts = path.join(temporaryRoot, 'executable-escalations');
+    await mkdir(executableArtifacts, { recursive: true });
+    await writeFile(
+      path.join(executableArtifacts, 'verdict.json'),
+      `${JSON.stringify({
+        runId: 'verify-executable-proof',
+        verdict: 'FAIL',
+        provenance: {
+          VERIFY_CLI_VERSION: 'proof',
+          VERIFY_REPO_VERSION: 'proof',
+          VERIFY_GIT_SHA: targetSha,
+        },
+        totals: { pass: 0, fail: 1, skip: 0 },
+        tiers: {
+          tier1: {
+            pass: 0,
+            fail: 1,
+            skip: 0,
+            failures: [{ check: 'proof failure', reason: 'exercise the real Slack step' }],
+          },
+        },
+        tiersNotRun: [],
+      })}\n`
+    );
+    await writeFile(path.join(executableArtifacts, 'provenance.env'), 'VERIFY_CLI_VERSION=proof\n');
+    await writeFile(path.join(executableArtifacts, 'caps.env'), 'provider_any=0\n');
+
+    const executableEnvironment = {
+      ...process.env,
+      VERIFY_ARTIFACTS: executableArtifacts,
+      VERIFY_RUN_ID: 'verify-executable-proof',
+      VERIFY_SLACK_CHANNEL: 'C0AEKNLDNKW',
+      CLOUD_API_URL: 'https://cloud.invalid',
+      CLOUD_API_TOKEN: '',
+      RELAY_CLOUD_API_TOKEN: '',
+      CLOUD_API_ACCESS_TOKEN: '',
+      NIGHTCTO_EVIDENCE_URL: '',
+      NIGHTCTO_EVIDENCE_TOKEN: '',
+    };
+
+    const slackAlert = spawnSync('bash', [resolvedExecutableSlackAlertPath], {
+      encoding: 'utf8',
+      env: executableEnvironment,
+      timeout: COMMAND_TIMEOUT_MS,
+    });
+    assertCompleted(slackAlert, 'primary Slack alert executable', 0);
+    let slackReceipt;
+    try {
+      slackReceipt = JSON.parse(
+        await readFile(path.join(executableArtifacts, 'escalation-slack-primary.json'), 'utf8')
+      );
+    } catch (error) {
+      throw new Error(
+        `Real Slack step produced no valid receipt: ${error?.message ?? error}; stdout=${JSON.stringify(
+          slackAlert.stdout
+        )}; stderr=${JSON.stringify(slackAlert.stderr)}`
+      );
+    }
+    if (slackReceipt.state !== 'failed') {
+      throw new Error(
+        `Real failed Slack delivery was recorded as ${JSON.stringify(slackReceipt.state)}, not failed.`
+      );
+    }
+    const slackEvidence = `${slackAlert.stdout ?? ''}\n${slackAlert.stderr ?? ''}`;
+    if (!slackEvidence.includes('SLACK_UNDELIVERED to C0AEKNLDNKW')) {
+      throw new Error('Real failed Slack delivery did not emit its undelivered marker.');
+    }
+    runStatusTool(
+      resolvedExecutableStatusToolPath,
+      ['audit-channel', executableArtifacts, 'slack_primary', '1', '0'],
+      1
+    );
+
+    const infraEscalation = spawnSync('bash', [resolvedExecutableInfraToolPath], {
+      encoding: 'utf8',
+      env: executableEnvironment,
+      timeout: COMMAND_TIMEOUT_MS,
+    });
+    assertCompleted(infraEscalation, 'NightCTO infra escalation executable', 0);
+    const infraReceipt = JSON.parse(
+      await readFile(path.join(executableArtifacts, 'escalation-infra.json'), 'utf8')
+    );
+    if (infraReceipt.state !== 'failed' || !infraReceipt.detail.includes('no_provider_cli')) {
+      throw new Error(
+        `Missing NightCTO configuration did not produce the expected failed infra receipt: ${JSON.stringify(
+          infraReceipt
+        )}`
+      );
+    }
+    runStatusTool(
+      resolvedExecutableStatusToolPath,
+      ['audit-channel', executableArtifacts, 'infra', '1', '1'],
+      1
+    );
+
     const failedChannels = [
       ['slack_primary', 'auth_token_missing'],
       ['slack_followup', 'auth_token_missing'],
@@ -200,6 +341,11 @@ if (arm === 'base') {
     for (const [channel, reason] of failedChannels) {
       runStatusTool(statusToolPath, ['write', temporaryRoot, channel, 'failed', reason], 0);
     }
+    runStatusTool(
+      statusToolPath,
+      ['write', temporaryRoot, 'infra', 'not_applicable', 'no harness failure'],
+      0
+    );
 
     const audit = spawnSync(process.execPath, [statusToolPath, 'audit', temporaryRoot, '1'], {
       encoding: 'utf8',
@@ -225,7 +371,7 @@ if (arm === 'base') {
     outcome = 'fixed';
     signature = 'escalation_delivery_failures_exit_nonzero';
     details =
-      'The exact head isolates overlapping artifact and git state, bounds completed evidence without pruning the current run, and its delivery audit exits non-zero while naming all five failed Slack, GitHub issue, draft PR, and PostHog contracts.';
+      'The exact head executes failed Slack and NightCTO delivery through the production step executables, observes failed receipts and red leaf audits, isolates overlapping artifact and git state, and audits the remaining delivery contracts.';
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -247,6 +393,17 @@ function runStatusTool(statusTool, args, expectedStatus) {
   if (completed.status !== expectedStatus) {
     throw new Error(
       `Status tool ${args[0]} exited ${completed.status}; stdout=${JSON.stringify(
+        completed.stdout
+      )}; stderr=${JSON.stringify(completed.stderr)}.`
+    );
+  }
+}
+
+function assertCompleted(completed, label, expectedStatus) {
+  if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
+  if (completed.status !== expectedStatus) {
+    throw new Error(
+      `${label} exited ${completed.status}; stdout=${JSON.stringify(
         completed.stdout
       )}; stderr=${JSON.stringify(completed.stderr)}.`
     );

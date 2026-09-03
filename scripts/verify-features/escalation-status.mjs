@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const STATUS_FILES = Object.freeze({
+  infra: 'escalation-infra.json',
   posthog: 'escalation-posthog.json',
   github_issue: 'escalation-github-issue.json',
   draft_pr: 'escalation-draft-pr.json',
@@ -11,6 +12,7 @@ export const STATUS_FILES = Object.freeze({
 });
 
 const LABELS = Object.freeze({
+  infra: 'NightCTO infra alert',
   posthog: 'PostHog',
   github_issue: 'GitHub issue',
   draft_pr: 'Draft fix PR',
@@ -191,10 +193,12 @@ function readAssessment(artifacts) {
 }
 
 export function renderInitialEscalationStatus(artifacts) {
+  const infra = readEscalationStatus(artifacts, 'infra');
   const issue = readEscalationStatus(artifacts, 'github_issue');
   const posthog = readEscalationStatus(artifacts, 'posthog');
   const lines = [
     '*Escalation delivery at first alert:*',
+    statusLine(infra),
     statusLine(issue),
     '• *Draft fix PR:* PENDING — the automated fix and integrity gate have not finished yet',
     statusLine(posthog),
@@ -206,7 +210,7 @@ export function renderInitialEscalationStatus(artifacts) {
 }
 
 export function renderFinalEscalationStatus(artifacts) {
-  const records = ['slack_primary', 'github_issue', 'draft_pr', 'posthog'].map((channel) =>
+  const records = ['infra', 'slack_primary', 'github_issue', 'draft_pr', 'posthog'].map((channel) =>
     readEscalationStatus(artifacts, channel)
   );
   const issue = records.find((record) => record.channel === 'github_issue');
@@ -228,10 +232,15 @@ export function renderFinalEscalationStatus(artifacts) {
 }
 
 export function escalationAuditFailures(artifacts, { autofixEnabled = true } = {}) {
+  const infra = readEscalationStatus(artifacts, 'infra');
   const primarySlack = readEscalationStatus(artifacts, 'slack_primary');
   const followupSlack = readEscalationStatus(artifacts, 'slack_followup');
   const posthog = readEscalationStatus(artifacts, 'posthog');
   const failures = [];
+
+  if (infra.state !== 'delivered' && infra.state !== 'not_applicable') {
+    failures.push(`NightCTO infra alert ${infra.state}: ${infra.detail}`);
+  }
 
   if (primarySlack.state !== 'delivered') {
     failures.push(`Slack primary alert ${primarySlack.state}: ${primarySlack.detail}`);
@@ -255,11 +264,16 @@ export function escalationAuditFailures(artifacts, { autofixEnabled = true } = {
   return failures;
 }
 
-export function escalationChannelAuditFailure(artifacts, channel, { required = true } = {}) {
+export function escalationChannelAuditFailure(
+  artifacts,
+  channel,
+  { required = true, allowNotApplicable = false } = {}
+) {
   assertChannel(channel);
   if (!required) return null;
   const record = readEscalationStatus(artifacts, channel);
   if (record.state === 'delivered') return null;
+  if (allowNotApplicable && record.state === 'not_applicable') return null;
   return `${LABELS[channel]} ${record.state}: ${record.detail}`;
 }
 
@@ -270,7 +284,7 @@ function usage() {
     '  escalation-status.mjs render-initial <artifacts>',
     '  escalation-status.mjs render-final <artifacts>',
     '  escalation-status.mjs audit <artifacts> <autofix:0|1>',
-    '  escalation-status.mjs audit-channel <artifacts> <channel> <required:0|1>',
+    '  escalation-status.mjs audit-channel <artifacts> <channel> <required:0|1> [allow-not-applicable:0|1]',
     '  escalation-status.mjs envelope <artifacts> <kind> <runId> <channel> <textFile> <sourceStatusChannel>',
     '  escalation-status.mjs reset <artifacts>',
     '  escalation-status.mjs redact-file <path>',
@@ -304,8 +318,11 @@ function main(argv) {
     return;
   }
   if (command === 'audit-channel') {
-    const [channel, required] = args;
-    const failure = escalationChannelAuditFailure(artifacts, channel, { required: required !== '0' });
+    const [channel, required, allowNotApplicable] = args;
+    const failure = escalationChannelAuditFailure(artifacts, channel, {
+      required: required !== '0',
+      allowNotApplicable: allowNotApplicable === '1',
+    });
     if (!failure) {
       console.log(`ESCALATION_CHANNEL_AUDIT_OK: ${channel}`);
       return;
