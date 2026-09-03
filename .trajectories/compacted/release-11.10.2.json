@@ -1,0 +1,114 @@
+{
+  "id": "compact_xnnwctb60vj5",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-03T06:52:02.784Z",
+  "sourceTrajectories": [
+    "traj_7yref3wye283"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T10:25:41.382Z",
+    "end": "2026-09-02T12:08:45.907Z"
+  },
+  "summary": {
+    "totalDecisions": 7,
+    "totalEvents": 11,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Treat Relaycast publication and recipient reachability as separate observations",
+          "chosen": "Treat Relaycast publication and recipient reachability as separate observations",
+          "reasoning": "An accepted durable message is not confirmed PTY delivery; the API must preserve publication success while reporting live, offline, or unknown without a delivered boolean.",
+          "fromTrajectory": "traj_7yref3wye283"
+        },
+        {
+          "question": "Keep the reachability probe outside the publication timeout",
+          "chosen": "Keep the reachability probe outside the publication timeout",
+          "reasoning": "A slow best-effort read must not turn an already-accepted DM into an HTTP send failure; the probe has its own five-second bound and the RelayFlow makes it slower than the configured publish deadline.",
+          "fromTrajectory": "traj_7yref3wye283"
+        },
+        {
+          "question": "Keep the synchronous reachability snapshot bounded at five seconds",
+          "chosen": "Keep the synchronous reachability snapshot bounded at five seconds",
+          "reasoning": "Issue 1615 explicitly requires the send response to carry the server-observed recipient state. Waiting for the independently bounded GET is the cost of that contract; it cannot alter publication success and remains below the outer 30-second API reply bound.",
+          "fromTrajectory": "traj_7yref3wye283"
+        },
+        {
+          "question": "Applied independent review findings without weakening the effect oracle",
+          "chosen": "Applied independent review findings without weakening the effect oracle",
+          "reasoning": "Preserved required TypeScript targets via runtime normalization, exposed the response in Swift, classified all live Relaycast activity states, made the timeout control exceed the real 500ms clamp, and added unavailable/non-recipient controls.",
+          "fromTrajectory": "traj_7yref3wye283"
+        },
+        {
+          "question": "Cancel reachability observation when publication fails",
+          "chosen": "Cancel reachability observation when publication fails",
+          "reasoning": "The observation is only part of a successful publication response. Awaiting it after an immediate publish failure delays the error and blocks the broker runtime actor for no usable evidence; the RelayFlow now measures this negative path.",
+          "fromTrajectory": "traj_7yref3wye283"
+        }
+      ]
+    },
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Resolve Relaycast @self before reachability probing",
+          "chosen": "Resolve Relaycast @self before reachability probing",
+          "reasoning": "@self names the authenticated sender, not an agent record. Probing publish_from preserves the successful self-DM semantics and reports the actual recipient; the RelayFlow now proves one self-injection.",
+          "fromTrajectory": "traj_7yref3wye283"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Treat legacy away as reachable",
+          "chosen": "Treat legacy away as reachable",
+          "reasoning": "Relaycast SDK compatibility still exposes pre-active-status away records; a best-effort reachability snapshot must not downgrade those live-compatible records to unknown.",
+          "fromTrajectory": "traj_7yref3wye283"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".agentworkforce/trajectories/compacted/compact_q6xtouz4s10m_2026-09-02.json",
+    ".agentworkforce/trajectories/compacted/compact_q6xtouz4s10m_2026-09-02.md",
+    "CHANGELOG.md",
+    "crates/broker/src/relaycast/ws.rs",
+    "crates/broker/src/runtime/api.rs",
+    "packages/cli/src/cli/lib/attach-drive.test.ts",
+    "packages/cli/src/cli/lib/attach-drive.ts",
+    "packages/cli/src/cli/lib/attach-input-recovery.test.ts",
+    "packages/cli/src/cli/lib/attach-input-recovery.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.ts",
+    "packages/evals/src/harness.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/send-message.test.ts",
+    "packages/harness-driver/src/types.ts",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerTypes.swift",
+    "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/AgentRelayBrokerSDKTests.swift",
+    "tests/integration/broker/channel-management.test.ts",
+    "tests/integration/broker/messaging.test.ts",
+    "tests/integration/broker/utils/broker-harness.ts",
+    "tests/relayflows/cases/1615-api-send-recipient-reachability/fake-relaycast.mjs",
+    "tests/relayflows/cases/1615-api-send-recipient-reachability/run.mjs",
+    "tests/relayflows/cases/1638-attach-input-replay/case.json",
+    "tests/relayflows/cases/1638-attach-input-replay/run.mjs"
+  ],
+  "commits": [
+    "e85f4ca23",
+    "bf66a2e86",
+    "13971aa8f",
+    "1191af9bd",
+    "cefc1ab4d",
+    "2559e668a"
+  ]
+}
