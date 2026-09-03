@@ -125,7 +125,9 @@ relaycast.on('upgrade', (request, socket) => {
     socket.destroy();
     return;
   }
-  const accept = createHash('sha1').update(key + WS_GUID).digest('base64');
+  const accept = createHash('sha1')
+    .update(key + WS_GUID)
+    .digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +
       'Upgrade: websocket\r\n' +
@@ -202,8 +204,7 @@ try {
     );
   }
 
-  const allNonDelete =
-    releaseBodies.length > 0 && releaseBodies.every((body) => body?.delete_agent !== true);
+  const allNonDelete = releaseBodies.length > 0 && releaseBodies.every((body) => body?.delete_agent !== true);
   const allDestructive =
     releaseBodies.length > 0 && releaseBodies.every((body) => body?.delete_agent === true);
   const baseObserved =
