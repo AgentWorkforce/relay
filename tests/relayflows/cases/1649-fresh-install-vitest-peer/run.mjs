@@ -60,6 +60,28 @@ try {
     );
   }
 
+  // Preflight: pin down what the resolver under test actually is and what the
+  // registry it talks to serves. The bug only reproduces when the wildcard
+  // peer can land on vitest 5, so a registry (or caching proxy) that still
+  // serves vitest 4 as latest cannot produce the base arm's red outcome; say
+  // so explicitly instead of letting that read as "fixed".
+  const npmVersion = npmUnderTest(['--version'], probeDir).trim();
+  if (npmVersion !== NPM_UNDER_TEST.split('@')[1]) {
+    throw new Error(`Expected ${NPM_UNDER_TEST} to run, but npx executed npm ${npmVersion}.`);
+  }
+  const registry = npmUnderTest(['config', 'get', 'registry'], probeDir).trim();
+  const latest = {};
+  for (const name of ['vitest', 'vite', '@vitejs/devtools', '@vitejs/devtools-vitest']) {
+    latest[name] = npmUnderTest(['view', `${name}@latest`, 'version'], probeDir).trim();
+  }
+  console.log(`Resolver: npm ${npmVersion}; registry ${registry}; latest ${JSON.stringify(latest)}`);
+  const vitestLatestMajor = Number.parseInt(latest.vitest, 10);
+  if (!Number.isInteger(vitestLatestMajor) || vitestLatestMajor < 5) {
+    throw new Error(
+      `Precondition not met: the registry serves vitest ${latest.vitest} as latest, so the wildcard peer cannot resolve to vitest 5 and neither arm can be observed here.`
+    );
+  }
+
   const install = spawnSync(
     'npx',
     [
@@ -108,6 +130,12 @@ try {
   } else if (install.status === 0) {
     const lock = JSON.parse(await readFile(path.join(probeDir, 'package-lock.json'), 'utf8'));
     const resolved = lock.packages?.['node_modules/vitest']?.version;
+    const chain = Object.fromEntries(
+      ['node_modules/vite', 'node_modules/@vitejs/devtools', 'node_modules/@vitejs/devtools-vitest'].map(
+        (key) => [key, lock.packages?.[key]?.version ?? null]
+      )
+    );
+    console.log(`Resolved vitest ${resolved}; chain ${JSON.stringify(chain)}`);
     if (typeof resolved !== 'string' || !resolved.startsWith('4.')) {
       throw new Error(
         `Install succeeded but resolved vitest ${JSON.stringify(resolved)}; expected a 4.x matching ${rootRange}.`
@@ -156,6 +184,24 @@ async function copyWorkspaceManifests(sourceRoot, destinationRoot) {
     count += 1;
   }
   return count;
+}
+
+function npmUnderTest(args, cwd) {
+  const completed = spawnSync('npx', ['--yes', '--package', NPM_UNDER_TEST, '--', 'npm', ...args], {
+    cwd,
+    env: { ...process.env, npm_config_update_notifier: 'false' },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 3 * 60 * 1000,
+  });
+  if (completed.error)
+    throw new Error(`${NPM_UNDER_TEST} ${args[0]} could not run: ${completed.error.message}`);
+  if (completed.status !== 0) {
+    throw new Error(
+      `${NPM_UNDER_TEST} ${args.join(' ')} exited with ${completed.status}: ${(completed.stderr || '').trim().split('\n').slice(-3).join(' | ')}`
+    );
+  }
+  return completed.stdout;
 }
 
 function requiredValue(name) {
