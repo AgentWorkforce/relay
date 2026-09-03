@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `POST /api/spawned/{name}/flush` now returns `dead_lettered`, `held`, and `blocked_reason` alongside `flushed`, so an empty queue is distinguishable from one the broker could not drain. Exposed on the harness-driver and Swift SDK clients.
+- `agent-relay cloud run` accepts `--relayflow-version <v1|v2>`; `cloud schedule` accepts explicit `v1` and rejects unsupported `v2` schedules locally. Omitting the selector preserves the Cloud default.
 
 ## [11.10.1] - 2026-09-02
 

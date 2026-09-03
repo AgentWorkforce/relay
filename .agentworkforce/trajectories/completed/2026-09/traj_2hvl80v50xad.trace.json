@@ -1,0 +1,128 @@
+{
+  "version": "1.0.0",
+  "id": "f6678f9d-1032-42d6-b541-c4bbe1d4c7f1",
+  "timestamp": "2026-09-03T06:45:00.000Z",
+  "trajectory": "traj_2hvl80v50xad",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 8, "end_line": 17, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.test.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 631, "end_line": 704, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 740, "end_line": 741, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 753, "end_line": 753, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 815, "end_line": 815, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 819, "end_line": 867, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 956, "end_line": 969, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 34, "end_line": 34, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 135, "end_line": 141, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 1055, "end_line": 1055, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 1071, "end_line": 1071, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 1121, "end_line": 1125, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 1144, "end_line": 1144, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/index.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 244, "end_line": 245, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/types.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 178, "end_line": 178, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 193, "end_line": 193, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 249, "end_line": 249, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflows.test.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 46, "end_line": 134, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 489, "end_line": 502, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 791, "end_line": 791, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 806, "end_line": 806, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 821, "end_line": 899, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflows.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 13, "end_line": 14, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 75, "end_line": 80, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 242, "end_line": 242, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 259, "end_line": 261, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 448, "end_line": 448, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" },
+            { "start_line": 473, "end_line": 473, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1640-cloud-relayflow-version/case.json",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 1, "end_line": 21, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1640-cloud-relayflow-version/run.mjs",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            { "start_line": 1, "end_line": 255, "revision": "bf4b918191fc345004973c9285cdae43072b67ff" }
+          ]
+        }
+      ]
+    }
+  ]
+}

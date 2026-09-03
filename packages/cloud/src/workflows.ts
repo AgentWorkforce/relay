@@ -10,6 +10,8 @@ import { ensureAuthenticated, authorizedApiFetch } from './auth.js';
 import { WorkflowApiKeyClient } from './api-client.js';
 import {
   defaultApiUrl,
+  type RelayflowVersion,
+  type RunWorkflowOptions,
   type WorkflowFileType,
   type RunWorkflowResponse,
   type ScheduleWorkflowOptions,
@@ -50,15 +52,6 @@ type PrepareWorkflowResponse = {
   };
 };
 
-type RunWorkflowOptions = {
-  apiUrl?: string;
-  fileType?: WorkflowFileType;
-  syncCode?: boolean;
-  resume?: string;
-  startFrom?: string;
-  previousRunId?: string;
-};
-
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 
 const CODE_SYNC_EXCLUDES = [
@@ -78,6 +71,19 @@ const CODE_SYNC_EXCLUDES = [
   '.ssh',
 ];
 const PATH_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+function validateRelayflowVersion(value: unknown): asserts value is RelayflowVersion | undefined {
+  if (value !== undefined && value !== 'v1' && value !== 'v2') {
+    throw new Error('relayflowVersion must be v1 or v2');
+  }
+}
+
+function validateScheduleRelayflowVersion(value: unknown): asserts value is 'v1' | undefined {
+  validateRelayflowVersion(value);
+  if (value === 'v2') {
+    throw new Error('Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.');
+  }
+}
 
 function validateYamlWorkflow(content: string): void {
   const hasField = (field: string) => new RegExp(`^${field}\\s*:`, 'm').test(content);
@@ -240,6 +246,7 @@ export async function runWorkflow(
   workflowArg: string,
   options: RunWorkflowOptions = {}
 ): Promise<RunWorkflowResponse> {
+  validateRelayflowVersion(options.relayflowVersion);
   const apiUrl = options.apiUrl ?? defaultApiUrl();
   const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
@@ -256,6 +263,9 @@ export async function runWorkflow(
     workflow: input.workflow,
     fileType: input.fileType,
   };
+  if (options.relayflowVersion !== undefined) {
+    requestBody.relayflowVersion = options.relayflowVersion;
+  }
   if (options.resume) {
     requestBody.resume = options.resume;
   }
@@ -442,6 +452,7 @@ export async function scheduleWorkflow(
   workflowArg: string,
   options: ScheduleWorkflowOptions = {}
 ): Promise<WorkflowSchedule> {
+  validateScheduleRelayflowVersion(options.relayflowVersion);
   const hasCron = typeof options.cron === 'string' && options.cron.trim().length > 0;
   const hasAt = typeof options.at === 'string' && options.at.trim().length > 0;
   if (hasCron === hasAt) {
@@ -466,6 +477,7 @@ export async function scheduleWorkflow(
     workflowRequest: {
       workflow: input.workflow,
       fileType: input.fileType,
+      ...(options.relayflowVersion === undefined ? {} : { relayflowVersion: options.relayflowVersion }),
       ...(input.sourceFileType ? { sourceFileType: input.sourceFileType } : {}),
       ...(options.envSecrets && Object.keys(options.envSecrets).length > 0
         ? { envSecrets: options.envSecrets }

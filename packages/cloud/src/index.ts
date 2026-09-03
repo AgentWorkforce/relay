@@ -241,6 +241,8 @@ export {
   type ProactiveAgentRecord,
   type WorkspaceSecretRecord,
   type WorkflowFileType,
+  type RelayflowVersion,
+  type RunWorkflowOptions,
   type RunWorkflowResponse,
   type WorkflowSchedule,
   type ScheduleWorkflowOptions,
