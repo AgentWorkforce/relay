@@ -19,6 +19,7 @@ export const CANONICAL_FILES = Object.freeze([
   'verdict.json',
   'alert-primary-envelope.json',
   'alert-followup-envelope.json',
+  'escalation-infra.json',
   'escalation-posthog.json',
   'escalation-github-issue.json',
   'escalation-draft-pr.json',

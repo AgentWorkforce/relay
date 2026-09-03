@@ -28,6 +28,7 @@ import {
   writeEscalationStatus,
 } from '../../scripts/verify-features/escalation-status.mjs';
 import {
+  CANONICAL_FILES,
   markRunArtifactsComplete,
   prepareRunArtifacts,
   pruneRunArtifacts,
@@ -718,9 +719,11 @@ exit "$FAKE_CURL_EXIT_STATUS"
 
   it('isolates overlapping runs while atomically advancing canonical artifact paths', async () => {
     const root = await artifacts();
+    expect(CANONICAL_FILES).toContain('escalation-infra.json');
     const runA = prepareRunArtifacts(root, 'verify-run-a', 'nonce-a');
     await writeFile(path.join(runA, 'checks.jsonl'), '{"run":"a"}\n');
     await writeFile(path.join(runA, 'verdict.json'), '{"runId":"a"}\n');
+    await writeFile(path.join(runA, 'escalation-infra.json'), '{"run":"a","state":"failed"}\n');
 
     const runB = prepareRunArtifacts(root, 'verify-run-b', 'nonce-b');
     await writeFile(path.join(runB, 'checks.jsonl'), '{"run":"b"}\n');
@@ -732,7 +735,9 @@ exit "$FAKE_CURL_EXIT_STATUS"
     });
 
     await writeFile(path.join(runB, 'verdict.json'), '{"runId":"b"}\n');
+    await writeFile(path.join(runB, 'escalation-infra.json'), '{"run":"b","state":"delivered"}\n');
     expect(await readFile(path.join(root, 'verdict.json'), 'utf8')).toContain('"b"');
+    expect(await readFile(path.join(root, 'escalation-infra.json'), 'utf8')).toContain('"b"');
   });
 
   it('replaces existing canonical symlinks through the Windows-safe path', async () => {
