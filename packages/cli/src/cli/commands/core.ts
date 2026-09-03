@@ -106,6 +106,25 @@ function cloudNodeLookupHeaders(workspaceKey: string, version: string): Record<s
   };
 }
 
+function cloudLookupAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Cloud node lookup aborted.');
+}
+
+function waitForCloudNodeRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(cloudLookupAbortError(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(cloudLookupAbortError(signal));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 async function fetchCloudNodeWithRetry(
   url: URL,
   headers: Record<string, string>,
@@ -114,7 +133,7 @@ async function fetchCloudNodeWithRetry(
   let response = await fetch(url, { headers, signal });
   for (const backoff of CLOUD_NODE_LOOKUP_BACKOFFS_MS) {
     if (response.status < 500 || response.status > 599) return response;
-    await new Promise((resolve) => setTimeout(resolve, backoff));
+    await waitForCloudNodeRetry(backoff, signal);
     response = await fetch(url, { headers, signal });
   }
   return response;
