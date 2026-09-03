@@ -20,12 +20,35 @@ escalate_infra() {
     echo "  [nightcto] DELIVERY_FAILED: NIGHTCTO_EVIDENCE_URL unset — $code"
     return 1
   fi
-  local summary_clean body
-  summary_clean=$(printf '%s' "$summary" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g' | cut -c1-300)
-  body=$(printf '{"schemaVersion":"cloud-runtime-evidence/1","service":"relay-verify-features","environment":"%s","version":"%s","path":"%s","kind":"request_error","outcome":"error","severity":6,"occurredAt":"%s","requestId":"%s","correlationIds":{"ingress":"relayflow"},"summary":"%s","errorCode":"%s","inspect":{"logQuery":"%s"}}' \
-    "$VERIFY_ENVIRONMENT" "$VERIFY_CLI_VERSION" "$evidence_path" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_ID" "$summary_clean" "$code" "$ARTIFACTS")
-  if curl -sS -m 15 -X POST "$NIGHTCTO_EVIDENCE_URL" \
+  local body
+  if ! body=$(node - "$VERIFY_ENVIRONMENT" "$VERIFY_CLI_VERSION" "$evidence_path" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_ID" "$summary" "$code" "$ARTIFACTS" <<'JSONEOF'
+const [environment, version, evidencePath, occurredAt, requestId, summary, errorCode, logQuery] =
+  process.argv.slice(2);
+process.stdout.write(
+  JSON.stringify({
+    schemaVersion: 'cloud-runtime-evidence/1',
+    service: 'relay-verify-features',
+    environment,
+    version,
+    path: evidencePath,
+    kind: 'request_error',
+    outcome: 'error',
+    severity: 6,
+    occurredAt,
+    requestId,
+    correlationIds: { ingress: 'relayflow' },
+    summary: String(summary).replace(/[\n\r\t]/g, ' ').slice(0, 300),
+    errorCode,
+    inspect: { logQuery },
+  })
+);
+JSONEOF
+  ); then
+    echo "  [nightcto] DELIVERY_FAILED: JSON payload construction failed — $code"
+    return 1
+  fi
+  if curl -fsS -m 15 -X POST "$NIGHTCTO_EVIDENCE_URL" \
       -H 'content-type: application/json' \
       -H "authorization: Bearer $NIGHTCTO_EVIDENCE_TOKEN" \
       -H "x-nightcto-evidence-token: $NIGHTCTO_EVIDENCE_TOKEN" \

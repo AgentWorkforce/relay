@@ -9,7 +9,7 @@ export type EscalationChannel =
 export type EscalationState = 'delivered' | 'failed' | 'disabled' | 'not_applicable' | 'pending';
 
 export interface EscalationStatus {
-  schemaVersion: number;
+  schemaVersion: 1;
   channel: EscalationChannel;
   state: EscalationState;
   detail: string;

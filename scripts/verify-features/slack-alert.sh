@@ -11,7 +11,7 @@ STATUS_TOOL="$SCRIPT_DIR/escalation-status.mjs"
 SLACK_POST_TOOL="$SCRIPT_DIR/slack-post.mjs"
 ARTIFACTS="${VERIFY_ARTIFACTS:?VERIFY_ARTIFACTS is required}"
 RUN_ID="${VERIFY_RUN_ID:?VERIFY_RUN_ID is required}"
-CHANNEL="${VERIFY_SLACK_CHANNEL:-C0AEKNLDNKW}"
+CHANNEL="${VERIFY_SLACK_CHANNEL-C0AEKNLDNKW}"
 
 CLOUD_API_URL="${CLOUD_API_URL:-}"
 CLOUD_API_TOKEN="${CLOUD_API_TOKEN:-${RELAY_CLOUD_API_TOKEN:-${CLOUD_API_ACCESS_TOKEN:-}}}"
@@ -24,7 +24,47 @@ if [ ! -f "$ARTIFACTS/verdict.json" ]; then
   exit 0
 fi
 
-VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
+if ! VERDICT=$(node - "$ARTIFACTS/verdict.json" <<'VERDICTEOF'
+const fs = require('node:fs');
+const verdict = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const count = (value) => Number.isSafeInteger(value) && value >= 0;
+if (
+  !verdict ||
+  typeof verdict !== 'object' ||
+  typeof verdict.runId !== 'string' ||
+  verdict.runId.length === 0 ||
+  !['PASS', 'FAIL'].includes(verdict.verdict) ||
+  !verdict.provenance ||
+  typeof verdict.provenance !== 'object' ||
+  !verdict.totals ||
+  !count(verdict.totals.pass) ||
+  !count(verdict.totals.fail) ||
+  !count(verdict.totals.skip) ||
+  !verdict.tiers ||
+  typeof verdict.tiers !== 'object' ||
+  Array.isArray(verdict.tiers) ||
+  !Array.isArray(verdict.tiersNotRun) ||
+  !verdict.tiersNotRun.every((tier) => typeof tier === 'string') ||
+  Object.values(verdict.tiers).some(
+    (tier) =>
+      !tier ||
+      typeof tier !== 'object' ||
+      !count(tier.pass) ||
+      !count(tier.fail) ||
+      !count(tier.skip) ||
+      !Array.isArray(tier.failures)
+  )
+) {
+  throw new Error('verdict.json does not satisfy the alert contract');
+}
+process.stdout.write(verdict.verdict);
+VERDICTEOF
+); then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+    "verdict.json is malformed or missing required alert fields"
+  echo "SLACK_FAILED: verdict.json is malformed or incomplete"
+  exit 0
+fi
 if [ "$VERDICT" = "PASS" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary not_applicable \
     "verdict is PASS"

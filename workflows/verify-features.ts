@@ -120,8 +120,11 @@ const BT = '`';
  */
 const ENV_DEFAULTS = String.raw`
 VERIFY_ALLOW_CLI_DRIFT="$(printenv VERIFY_ALLOW_CLI_DRIFT || true)"
-VERIFY_SLACK_CHANNEL="$(printenv VERIFY_SLACK_CHANNEL || true)"
-if [ -z "$VERIFY_SLACK_CHANNEL" ]; then VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"; fi
+if printenv VERIFY_SLACK_CHANNEL >/dev/null 2>&1; then
+  VERIFY_SLACK_CHANNEL="$(printenv VERIFY_SLACK_CHANNEL)"
+else
+  VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"
+fi
 POSTHOG_API_KEY="$(printenv POSTHOG_API_KEY || true)"
 POSTHOG_HOST="$(printenv POSTHOG_HOST || true)"
 NIGHTCTO_EVIDENCE_URL="$(printenv NIGHTCTO_EVIDENCE_URL || true)"
@@ -342,7 +345,16 @@ posthog_capture() {
   fi
   _body=$(printf '{"api_key":"%s","event":"%s","distinct_id":"relay-verify-features","properties":%s}' \
     "$POSTHOG_API_KEY" "$_event" "$_props")
-  if curl -fsS -m 15 -X POST "$POSTHOG_HOST/capture/" \
+  _timeout=15
+  if [ -n "$POSTHOG_DEADLINE_EPOCH" ]; then
+    _remaining=$((POSTHOG_DEADLINE_EPOCH - $(date +%s)))
+    if [ "$_remaining" -le 0 ]; then
+      echo "  [posthog] aggregate delivery deadline reached — not emitting $_event"
+      return 1
+    fi
+    if [ "$_remaining" -lt "$_timeout" ]; then _timeout="$_remaining"; fi
+  fi
+  if curl -fsS -m "$_timeout" -X POST "$POSTHOG_HOST/capture/" \
       -H 'content-type: application/json' -d "$_body" >/dev/null 2>&1; then
     echo "  [posthog] emitted $_event"
     return 0
@@ -1834,6 +1846,10 @@ fi
 
 DELIVERED=0
 FAILED=0
+# Slack is the human paging path, so telemetry must never starve it. Each curl
+# receives only the time remaining in this aggregate 30-second budget.
+POSTHOG_DEADLINE_EPOCH=$(( $(date +%s) + 30 ))
+export POSTHOG_DEADLINE_EPOCH
 while IFS="$(printf '\t')" read -r event props; do
   [ -n "$event" ] || continue
   if posthog_capture "$event" "$props"; then

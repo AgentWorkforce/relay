@@ -121,12 +121,15 @@ export function pruneRunArtifacts(
   if (!Number.isSafeInteger(keepCompleted) || keepCompleted < 1) {
     throw new Error('keepCompleted must be a positive integer');
   }
+  if (!Number.isSafeInteger(incompleteMaxAgeMs) || incompleteMaxAgeMs < 0) {
+    throw new Error('incompleteMaxAgeMs must be a non-negative integer');
+  }
   const runs = path.join(root, 'runs');
   let canonicalRunId;
   try {
     const currentTarget = readlinkSync(path.join(root, 'current'));
-    const prefix = 'runs/';
-    if (currentTarget.startsWith(prefix)) canonicalRunId = currentTarget.slice(prefix.length);
+    const resolvedTarget = path.resolve(root, currentTarget);
+    if (path.dirname(resolvedTarget) === path.resolve(runs)) canonicalRunId = path.basename(resolvedTarget);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }

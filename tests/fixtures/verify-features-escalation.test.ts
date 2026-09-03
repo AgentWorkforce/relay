@@ -1,5 +1,15 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, readlink, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  readlink,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,24 +36,33 @@ import { prepareRunWorktree, removeRunWorktree } from '../../scripts/verify-feat
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
-const workflowSourcePromise = readFile(
-  fileURLToPath(new URL('../../workflows/verify-features.ts', import.meta.url)),
-  'utf8'
-);
+const workflowPath = fileURLToPath(new URL('../../workflows/verify-features.ts', import.meta.url));
+const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
+const workflowSourcePromise = readFile(workflowPath, 'utf8');
 const slackAlertPath = fileURLToPath(
   new URL('../../scripts/verify-features/slack-alert.sh', import.meta.url)
 );
 const slackAlertSourcePromise = readFile(slackAlertPath, 'utf8');
-const infraEscalationSourcePromise = readFile(
-  fileURLToPath(new URL('../../scripts/verify-features/escalate-infra.sh', import.meta.url)),
-  'utf8'
+const infraEscalationPath = fileURLToPath(
+  new URL('../../scripts/verify-features/escalate-infra.sh', import.meta.url)
 );
+const infraEscalationSourcePromise = readFile(infraEscalationPath, 'utf8');
 
 function workflowStep(source: string, name: string): string {
   const start = source.indexOf(`wf.step('${name}', {`);
   if (start === -1) throw new Error(`workflow step not found: ${name}`);
   const next = source.indexOf("\n  wf.step('", start + 1);
   return source.slice(start, next === -1 ? source.length : next);
+}
+
+function plannedWave(plan: string, step: string): number {
+  let currentWave = 0;
+  for (const line of plan.split('\n')) {
+    const wave = /^\s*Wave\s+(\d+):/.exec(line);
+    if (wave) currentWave = Number(wave[1]);
+    if (line.includes(`${step} (`)) return currentWave;
+  }
+  throw new Error(`planned workflow step not found: ${step}`);
 }
 
 async function artifacts() {
@@ -88,6 +107,45 @@ describe('verify-features escalation status', () => {
     expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
   });
 
+  it('registers every delivery step and terminal leaf gate in the executable workflow graph', async () => {
+    const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', workflowPath], {
+      cwd: repositoryRoot,
+      env: { ...process.env, DRY_RUN: '1' },
+      timeout: 15_000,
+    });
+
+    for (const step of [
+      'emit-posthog',
+      'escalate-infra',
+      'file-issue',
+      'slack-alert',
+      'open-pr',
+      'slack-followup',
+      'enforce-infra-delivery',
+      'enforce-posthog-delivery',
+      'enforce-github-issue-delivery',
+      'enforce-draft-pr-delivery',
+      'enforce-slack-primary-delivery',
+      'enforce-slack-followup-delivery',
+      'enforce-escalations',
+      'enforce-verdict',
+    ]) {
+      expect(stdout).toContain(step);
+    }
+    for (const [delivery, gate] of [
+      ['escalate-infra', 'enforce-infra-delivery'],
+      ['emit-posthog', 'enforce-posthog-delivery'],
+      ['file-issue', 'enforce-github-issue-delivery'],
+      ['slack-alert', 'enforce-slack-primary-delivery'],
+      ['open-pr', 'enforce-draft-pr-delivery'],
+      ['slack-followup', 'enforce-slack-followup-delivery'],
+      ['slack-followup', 'enforce-escalations'],
+    ]) {
+      expect(plannedWave(stdout, gate)).toBeGreaterThan(plannedWave(stdout, delivery));
+    }
+    expect(stdout).toContain('Validation: PASS');
+  });
+
   it('records explicit failed receipts for every delivery primitive', async () => {
     const source = await workflowSourcePromise;
     const primaryAlert = workflowStep(source, 'slack-alert');
@@ -106,6 +164,8 @@ describe('verify-features escalation status', () => {
     expect(primaryAlertExecutable).toContain('ALERT_ENVELOPE_FAILED: primary envelope write failed');
     expect(followup).toContain('ALERT_ENVELOPE_FAILED: followup envelope write failed');
     expect(emitPosthog).toContain('if [ "$TOTAL" -eq 0 ]');
+    expect(emitPosthog).toContain('POSTHOG_DEADLINE_EPOCH=$(( $(date +%s) + 30 ))');
+    expect(source).toContain('_remaining=$((POSTHOG_DEADLINE_EPOCH - $(date +%s)))');
     expect(primaryAlertExecutable).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
     expect(infraEscalationExecutable).toContain('infra failed');
     expect(infraEscalationExecutable).not.toContain('escalation skipped');
@@ -163,6 +223,103 @@ describe('verify-features escalation status', () => {
     expect(escalationChannelAuditFailure(directory, 'slack_primary')).toContain('Slack primary alert failed');
   });
 
+  it('fails closed before Slack delivery when verdict.json is structurally malformed', async () => {
+    const directory = await artifacts();
+    await writeFile(path.join(directory, 'verdict.json'), '{"verdict":"FAIL"}\n');
+
+    const { stdout, stderr } = await execFileAsync('bash', [slackAlertPath], {
+      env: {
+        ...process.env,
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-malformed-verdict',
+        VERIFY_SLACK_CHANNEL: 'C0AEKNLDNKW',
+      },
+      timeout: 10_000,
+    });
+    const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-slack-primary.json'), 'utf8'));
+
+    expect(receipt).toMatchObject({ channel: 'slack_primary', state: 'failed' });
+    expect(`${stdout}\n${stderr}`).toContain('SLACK_FAILED: verdict.json is malformed or incomplete');
+    expect(`${stdout}\n${stderr}`).not.toContain('SLACK_POSTED');
+  });
+
+  it('preserves an explicitly empty Slack channel as a failed delivery', async () => {
+    const directory = await artifacts();
+    await writeFile(
+      path.join(directory, 'verdict.json'),
+      JSON.stringify({
+        runId: 'verify-empty-channel',
+        verdict: 'FAIL',
+        provenance: {},
+        totals: { pass: 0, fail: 1, skip: 0 },
+        tiers: { tier1: { pass: 0, fail: 1, skip: 0, failures: [] } },
+        tiersNotRun: [],
+      })
+    );
+
+    const { stdout } = await execFileAsync('bash', [slackAlertPath], {
+      env: {
+        ...process.env,
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-empty-channel',
+        VERIFY_SLACK_CHANNEL: '',
+      },
+      timeout: 10_000,
+    });
+    const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-slack-primary.json'), 'utf8'));
+
+    expect(receipt).toMatchObject({ channel: 'slack_primary', state: 'failed' });
+    expect(stdout).toContain('ALERT_ENVELOPE_FAILED: VERIFY_SLACK_CHANNEL is required');
+    expect(stdout).not.toContain('C0AEKNLDNKW');
+  });
+
+  it('records HTTP errors from the production infra step and emits valid JSON', async () => {
+    const directory = await artifacts();
+    const bin = path.join(directory, 'bin');
+    const capturedBody = path.join(directory, 'captured-body.json');
+    await mkdir(bin);
+    await writeFile(
+      path.join(bin, 'curl'),
+      `#!/bin/sh
+status=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in -*f*) status=22 ;; esac
+  if [ "$1" = "-d" ]; then shift; printf '%s' "$1" > "$INFRA_CAPTURE"; fi
+  shift
+done
+exit "$status"
+`,
+      { mode: 0o755 }
+    );
+    await writeFile(path.join(directory, 'provenance.env'), 'VERIFY_CLI_VERSION=proof\n');
+    await writeFile(path.join(directory, 'caps.env'), 'provider_any=0\n');
+    await writeFile(path.join(directory, 'verdict.json'), '{"tiersNotRun":[]}\n');
+
+    const { stdout } = await execFileAsync('bash', [infraEscalationPath], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        INFRA_CAPTURE: capturedBody,
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-infra-http-failure',
+        VERIFY_ENVIRONMENT: 'sandbox "quoted"',
+        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+        NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
+      },
+      timeout: 10_000,
+    });
+    const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-infra.json'), 'utf8'));
+    const payload = JSON.parse(await readFile(capturedBody, 'utf8'));
+
+    expect(receipt).toMatchObject({ channel: 'infra', state: 'failed' });
+    expect(stdout).toContain('INFRA_ESCALATION_FAILED: no_provider_cli');
+    expect(payload).toMatchObject({
+      environment: 'sandbox "quoted"',
+      requestId: 'verify-infra-http-failure',
+      errorCode: 'no_provider_cli',
+    });
+  });
+
   it('isolates artifacts and all mutating fix steps per invocation', async () => {
     const source = await workflowSourcePromise;
     const setup = workflowStep(source, 'setup');
@@ -199,6 +356,21 @@ describe('verify-features escalation status', () => {
     expect(message).toContain('*GitHub issue:* FAILED — gh is not authenticated');
     expect(message).toContain('*No GitHub issue was filed for this FAIL run. Human action is required.*');
     expect(message).toContain('*PostHog:* FAILED — 13 events dropped');
+  });
+
+  it('renders intentionally disabled autofix channels without false human-action warnings', async () => {
+    const directory = await artifacts();
+    writeEscalationStatus(directory, 'github_issue', 'disabled', 'VERIFY_AUTOFIX=0');
+    writeEscalationStatus(directory, 'draft_pr', 'disabled', 'VERIFY_AUTOFIX=0');
+
+    const initial = renderInitialEscalationStatus(directory);
+    const final = renderFinalEscalationStatus(directory);
+
+    expect(initial).toContain('*GitHub issue:* DISABLED');
+    expect(initial).toContain('*Draft fix PR:* DISABLED — autofix is disabled for this run');
+    expect(initial).not.toContain('Human action is required');
+    expect(final).not.toContain('NO GITHUB ISSUE');
+    expect(final).not.toContain('NO DRAFT FIX PR');
   });
 
   it('renders final delivery state and evidence-based fixer categories', async () => {
@@ -508,6 +680,31 @@ describe('verify-features escalation status', () => {
     await expect(stat(path.join(root, 'runs', 'verify-canonical-3'))).resolves.toBeDefined();
   });
 
+  it('protects an absolute canonical symlink target during pruning', async () => {
+    const root = await artifacts();
+    for (let index = 0; index < 3; index += 1) {
+      const runId = `verify-absolute-${index}`;
+      const directory = prepareRunArtifacts(root, runId, `absolute-${index}`);
+      markRunArtifactsComplete(directory, runId);
+    }
+    const canonical = path.join(root, 'runs', 'verify-absolute-0');
+    await unlink(path.join(root, 'current'));
+    await symlink(canonical, path.join(root, 'current'), 'dir');
+
+    pruneRunArtifacts(root, { keepCompleted: 1 });
+
+    await expect(stat(canonical)).resolves.toBeDefined();
+  });
+
+  it('rejects invalid incomplete-run retention windows', async () => {
+    const root = await artifacts();
+    for (const incompleteMaxAgeMs of [-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      expect(() => pruneRunArtifacts(root, { incompleteMaxAgeMs })).toThrow(
+        'incompleteMaxAgeMs must be a non-negative integer'
+      );
+    }
+  });
+
   it('reserves the internal pruning marker from run ids', async () => {
     const root = await artifacts();
     expect(() => prepareRunArtifacts(root, 'verify.pruning-live', 'nonce')).toThrow(
@@ -604,9 +801,15 @@ describe('verify-features escalation status', () => {
         `sh -c 'echo $$ > "${pidFile}"; sleep 30'`,
       ]);
 
-      await expect(
-        prepareRunWorktree(repo, await artifacts(), 'verify-timeout', { timeoutMs: 200 })
-      ).rejects.toThrow('timed out after 200ms');
+      const workspace = await artifacts();
+      await expect(prepareRunWorktree(repo, workspace, 'verify-timeout', { timeoutMs: 200 })).rejects.toThrow(
+        'timed out after 200ms'
+      );
+      await expect(stat(path.join(workspace, 'worktrees', 'verify-timeout'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      const { stdout: worktreeList } = await execFileAsync('git', ['-C', repo, 'worktree', 'list']);
+      expect(worktreeList).not.toContain('verify-timeout');
 
       let pidText;
       try {

@@ -79,8 +79,9 @@ if (arm === 'base') {
   details =
     'The exact base workflow labels unauthenticated issue/PR delivery and a missing follow-up as SKIPPED while providing no escalation receipt audit executable.';
 } else {
-  // Source inspection is limited to wiring and isolation. Delivery-to-receipt
-  // behavior is executed below through the same scripts the workflow invokes.
+  // Source inspection is supporting evidence for isolation. The workflow graph
+  // itself is planned below, and delivery-to-receipt behavior is executed
+  // through the same production scripts the registered steps invoke.
   assertWorkflowPattern(
     workflowSource,
     /VERIFY_SLACK_CHANNEL\s*=\s*['"]C0AEKNLDNKW['"]/,
@@ -116,6 +117,34 @@ if (arm === 'base') {
     const failedWrite = new RegExp(`write [^\\n]*["']?\\$ARTIFACTS["']? ${channel} failed(?:\\s|$)`);
     if (!failedWrite.test(workflowSource)) {
       throw new Error(`Head workflow does not record failed delivery for ${channel}.`);
+    }
+  }
+
+  const graphPlan = spawnSync(process.execPath, ['--experimental-strip-types', workflowPath], {
+    cwd: targetDir,
+    encoding: 'utf8',
+    env: { ...process.env, DRY_RUN: '1' },
+    timeout: COMMAND_TIMEOUT_MS,
+  });
+  assertCompleted(graphPlan, 'verify-features executable graph plan', 0);
+  for (const step of [
+    'emit-posthog',
+    'escalate-infra',
+    'file-issue',
+    'slack-alert',
+    'open-pr',
+    'slack-followup',
+    'enforce-infra-delivery',
+    'enforce-posthog-delivery',
+    'enforce-github-issue-delivery',
+    'enforce-draft-pr-delivery',
+    'enforce-slack-primary-delivery',
+    'enforce-slack-followup-delivery',
+    'enforce-escalations',
+    'enforce-verdict',
+  ]) {
+    if (!graphPlan.stdout.includes(step)) {
+      throw new Error(`Executable workflow graph omitted ${step}.`);
     }
   }
 
@@ -263,6 +292,23 @@ if (arm === 'base') {
     await writeFile(path.join(executableArtifacts, 'provenance.env'), 'VERIFY_CLI_VERSION=proof\n');
     await writeFile(path.join(executableArtifacts, 'caps.env'), 'provider_any=0\n');
 
+    const fakeBin = path.join(executableRoot, 'bin');
+    const capturedInfraBody = path.join(executableArtifacts, 'infra-body.json');
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(
+      path.join(fakeBin, 'curl'),
+      `#!/bin/sh
+status=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in -*f*) status=22 ;; esac
+  if [ "$1" = "-d" ]; then shift; printf '%s' "$1" > "$INFRA_CAPTURE"; fi
+  shift
+done
+exit "$status"
+`,
+      { mode: 0o755 }
+    );
+
     const executableEnvironment = {
       ...process.env,
       VERIFY_ARTIFACTS: executableArtifacts,
@@ -272,8 +318,10 @@ if (arm === 'base') {
       CLOUD_API_TOKEN: '',
       RELAY_CLOUD_API_TOKEN: '',
       CLOUD_API_ACCESS_TOKEN: '',
-      NIGHTCTO_EVIDENCE_URL: '',
+      NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
       NIGHTCTO_EVIDENCE_TOKEN: '',
+      PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      INFRA_CAPTURE: capturedInfraBody,
     };
 
     const slackAlert = spawnSync('bash', [resolvedExecutableSlackAlertPath], {
@@ -325,6 +373,12 @@ if (arm === 'base') {
         )}`
       );
     }
+    const infraBody = JSON.parse(await readFile(capturedInfraBody, 'utf8'));
+    if (infraBody.errorCode !== 'no_provider_cli' || infraBody.requestId !== 'verify-executable-proof') {
+      throw new Error(
+        `Production NightCTO script emitted an invalid JSON payload: ${JSON.stringify(infraBody)}`
+      );
+    }
     runStatusTool(
       resolvedExecutableStatusToolPath,
       ['audit-channel', executableArtifacts, 'infra', '1', '1'],
@@ -371,7 +425,7 @@ if (arm === 'base') {
     outcome = 'fixed';
     signature = 'escalation_delivery_failures_exit_nonzero';
     details =
-      'The exact head executes failed Slack and NightCTO delivery through the production step executables, observes failed receipts and red leaf audits, isolates overlapping artifact and git state, and audits the remaining delivery contracts.';
+      'The exact head plans the real workflow graph, executes failed Slack and HTTP-error NightCTO delivery through the production step executables, observes failed receipts and red leaf audits, isolates overlapping artifact and git state, and audits the remaining delivery contracts.';
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

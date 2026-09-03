@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -122,7 +122,24 @@ export async function prepareRunWorktree(
   const worktrees = path.join(workspaceRoot, 'worktrees');
   const worktree = path.join(worktrees, runId);
   mkdirSync(worktrees, { recursive: true });
-  await git(repoRoot, ['worktree', 'add', '--detach', worktree, 'HEAD'], timeoutMs);
+  try {
+    await git(repoRoot, ['worktree', 'add', '--detach', worktree, 'HEAD'], timeoutMs);
+  } catch (error) {
+    // `git worktree add` may create both a directory and administrative entry
+    // before checkout/filter failure. Clean both so a retry with this run ID
+    // does not collide with state from the failed attempt.
+    try {
+      await git(repoRoot, ['worktree', 'remove', '--force', '--force', worktree], timeoutMs);
+    } catch {
+      rmSync(worktree, { recursive: true, force: true });
+    }
+    try {
+      await git(repoRoot, ['worktree', 'prune'], timeoutMs);
+    } catch {
+      // Preserve the original add failure; the exact worktree directory is gone.
+    }
+    throw error;
+  }
   return worktree;
 }
 

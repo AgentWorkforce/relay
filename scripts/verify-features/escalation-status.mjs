@@ -196,11 +196,15 @@ export function renderInitialEscalationStatus(artifacts) {
   const infra = readEscalationStatus(artifacts, 'infra');
   const issue = readEscalationStatus(artifacts, 'github_issue');
   const posthog = readEscalationStatus(artifacts, 'posthog');
+  const draftPrLine =
+    issue.state === 'disabled'
+      ? '• *Draft fix PR:* DISABLED — autofix is disabled for this run'
+      : '• *Draft fix PR:* PENDING — the automated fix and integrity gate have not finished yet';
   const lines = [
     '*Escalation delivery at first alert:*',
     statusLine(infra),
     statusLine(issue),
-    '• *Draft fix PR:* PENDING — the automated fix and integrity gate have not finished yet',
+    draftPrLine,
     statusLine(posthog),
   ];
   if (issue.state === 'failed') {
@@ -222,10 +226,10 @@ export function renderFinalEscalationStatus(artifacts) {
     `• *Autofix classification:* ${assessment.summary}`,
     ...assessment.details,
   ];
-  if (issue?.state !== 'delivered') {
+  if (!['delivered', 'disabled', 'not_applicable'].includes(issue?.state)) {
     lines.push('*NO GITHUB ISSUE WAS FILED FOR THIS FAIL RUN.*');
   }
-  if (pr?.state !== 'delivered') {
+  if (!['delivered', 'disabled', 'not_applicable'].includes(pr?.state)) {
     lines.push('*NO DRAFT FIX PR WAS OPENED. Human follow-up is required.*');
   }
   return lines.join('\n');
