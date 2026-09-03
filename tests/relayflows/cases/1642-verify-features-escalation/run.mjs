@@ -298,13 +298,12 @@ if (arm === 'base') {
     await writeFile(
       path.join(fakeBin, 'curl'),
       `#!/bin/sh
-status=0
 while [ "$#" -gt 0 ]; do
-  case "$1" in -*f*) status=22 ;; esac
   if [ "$1" = "-d" ]; then shift; printf '%s' "$1" > "$INFRA_CAPTURE"; fi
   shift
 done
-exit "$status"
+printf '%s' "$FAKE_CURL_HTTP_STATUS"
+exit 0
 `,
       { mode: 0o755 }
     );
@@ -322,6 +321,7 @@ exit "$status"
       NIGHTCTO_EVIDENCE_TOKEN: '',
       PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
       INFRA_CAPTURE: capturedInfraBody,
+      FAKE_CURL_HTTP_STATUS: '302',
     };
 
     const slackAlert = spawnSync('bash', [resolvedExecutableSlackAlertPath], {

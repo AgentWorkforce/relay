@@ -273,7 +273,7 @@ describe('verify-features escalation status', () => {
     expect(stdout).not.toContain('C0AEKNLDNKW');
   });
 
-  it('records HTTP errors from the production infra step and emits valid JSON', async () => {
+  it('records non-2xx HTTP responses from the production infra step and emits valid JSON', async () => {
     const directory = await artifacts();
     const bin = path.join(directory, 'bin');
     const capturedBody = path.join(directory, 'captured-body.json');
@@ -281,13 +281,12 @@ describe('verify-features escalation status', () => {
     await writeFile(
       path.join(bin, 'curl'),
       `#!/bin/sh
-status=0
 while [ "$#" -gt 0 ]; do
-  case "$1" in -*f*) status=22 ;; esac
   if [ "$1" = "-d" ]; then shift; printf '%s' "$1" > "$INFRA_CAPTURE"; fi
   shift
 done
-exit "$status"
+printf '%s' "$FAKE_CURL_HTTP_STATUS"
+exit 0
 `,
       { mode: 0o755 }
     );
@@ -300,6 +299,7 @@ exit "$status"
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         INFRA_CAPTURE: capturedBody,
+        FAKE_CURL_HTTP_STATUS: '302',
         VERIFY_ARTIFACTS: directory,
         VERIFY_RUN_ID: 'verify-infra-http-failure',
         VERIFY_ENVIRONMENT: 'sandbox "quoted"',
@@ -312,6 +312,7 @@ exit "$status"
     const payload = JSON.parse(await readFile(capturedBody, 'utf8'));
 
     expect(receipt).toMatchObject({ channel: 'infra', state: 'failed' });
+    expect(stdout).toContain('DELIVERY_FAILED: POST returned HTTP 302');
     expect(stdout).toContain('INFRA_ESCALATION_FAILED: no_provider_cli');
     expect(payload).toMatchObject({
       environment: 'sandbox "quoted"',

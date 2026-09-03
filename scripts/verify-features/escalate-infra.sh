@@ -48,15 +48,20 @@ JSONEOF
     echo "  [nightcto] DELIVERY_FAILED: JSON payload construction failed — $code"
     return 1
   fi
-  if curl -fsS -m 15 -X POST "$NIGHTCTO_EVIDENCE_URL" \
+  local response_code=""
+  if response_code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' -X POST "$NIGHTCTO_EVIDENCE_URL" \
       -H 'content-type: application/json' \
       -H "authorization: Bearer $NIGHTCTO_EVIDENCE_TOKEN" \
       -H "x-nightcto-evidence-token: $NIGHTCTO_EVIDENCE_TOKEN" \
-      -d "$body" >/dev/null 2>&1; then
+      -d "$body" 2>/dev/null) && [[ "$response_code" =~ ^2[0-9][0-9]$ ]]; then
     echo "  [nightcto] delivered: $code"
     return 0
   fi
-  echo "  [nightcto] DELIVERY_FAILED: POST failed — $code"
+  if [ -n "$response_code" ]; then
+    echo "  [nightcto] DELIVERY_FAILED: POST returned HTTP $response_code — $code"
+  else
+    echo "  [nightcto] DELIVERY_FAILED: POST failed without an HTTP response — $code"
+  fi
   return 1
 }
 
