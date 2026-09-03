@@ -262,7 +262,7 @@ if (arm === 'base') {
     );
     await writeFile(
       path.join(slackPrimitiveRoot, 'index.js'),
-      "export class SlackClient { async postMessage() { const error = new Error('missing Cloud token'); error.code = 'auth_token_missing'; throw error; } }\n"
+      "export class SlackClient { async postMessage({ channel }) { if (process.env.SLACK_STUB_MODE === 'incomplete') return { channel }; const error = new Error('missing Cloud token'); error.code = 'auth_token_missing'; throw error; } }\n"
     );
 
     const executableArtifacts = path.join(temporaryRoot, 'executable-escalations');
@@ -357,6 +357,35 @@ exit 0
       1
     );
 
+    const incompleteSlackReceipt = spawnSync('bash', [resolvedExecutableSlackAlertPath], {
+      encoding: 'utf8',
+      env: { ...executableEnvironment, SLACK_STUB_MODE: 'incomplete' },
+      timeout: COMMAND_TIMEOUT_MS,
+    });
+    assertCompleted(incompleteSlackReceipt, 'incomplete Slack receipt executable', 0);
+    const incompleteReceipt = JSON.parse(
+      await readFile(path.join(executableArtifacts, 'escalation-slack-primary.json'), 'utf8')
+    );
+    if (incompleteReceipt.state !== 'failed') {
+      throw new Error(
+        `Incomplete Slack provider result was recorded as ${JSON.stringify(
+          incompleteReceipt.state
+        )}, not failed.`
+      );
+    }
+    if (
+      !`${incompleteSlackReceipt.stdout ?? ''}\n${incompleteSlackReceipt.stderr ?? ''}`.includes(
+        'SLACK_ERROR invalid_slack_receipt'
+      )
+    ) {
+      throw new Error('Incomplete Slack provider result did not emit invalid_slack_receipt.');
+    }
+    runStatusTool(
+      resolvedExecutableStatusToolPath,
+      ['audit-channel', executableArtifacts, 'slack_primary', '1', '0'],
+      1
+    );
+
     const infraEscalation = spawnSync('bash', [resolvedExecutableInfraToolPath], {
       encoding: 'utf8',
       env: executableEnvironment,
@@ -425,7 +454,7 @@ exit 0
     outcome = 'fixed';
     signature = 'escalation_delivery_failures_exit_nonzero';
     details =
-      'The exact head plans the real workflow graph, executes failed Slack and HTTP-error NightCTO delivery through the production step executables, observes failed receipts and red leaf audits, isolates overlapping artifact and git state, and audits the remaining delivery contracts.';
+      'The exact head plans the real workflow graph, executes thrown and incomplete-receipt Slack delivery plus HTTP-error NightCTO delivery through the production step executables, observes failed receipts and red leaf audits, isolates overlapping artifact and git state, and audits the remaining delivery contracts.';
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
