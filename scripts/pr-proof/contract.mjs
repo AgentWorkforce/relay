@@ -123,14 +123,6 @@ const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   // is the same CI scope already exempted via workflows/ and .github/.
   /^\.gitignore$/,
   /^\.editorconfig$/,
-  // Session/trajectory compaction logs (chief-brain journaling for coding
-  // agent sessions). Never imported by the CLI or broker at runtime — pure
-  // record-keeping. Nested, so the top-level `*.md` pattern above doesn't
-  // already cover `.trajectories/compacted/*.md`.
-  /^\.trajectories\//,
-  // Formatter config only — cannot change what ships. Same class as
-  // .editorconfig above.
-  /^\.prettierignore$/,
 ]);
 
 /**
