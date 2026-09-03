@@ -84,7 +84,15 @@ try {
       timeout: COMMAND_TIMEOUT_MS,
     }
   );
-  if (install.error) throw new Error(`${NPM_UNDER_TEST} could not start: ${install.error.message}`);
+  if (install.error) {
+    // spawnSync reports its own timeout as an error with code ETIMEDOUT; a
+    // slow registry is an infrastructure failure, not a launch failure.
+    const cause =
+      install.error.code === 'ETIMEDOUT'
+        ? `timed out after ${COMMAND_TIMEOUT_MS}ms`
+        : `could not start: ${install.error.message}`;
+    throw new Error(`${NPM_UNDER_TEST} ${cause}`);
+  }
   const stderr = install.stderr ?? '';
   const stdout = install.stdout ?? '';
   console.log(`${NPM_UNDER_TEST} install exited with ${install.status ?? `signal ${install.signal}`}`);
