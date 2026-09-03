@@ -120,6 +120,19 @@ fn agent_is_known_offline(agent: &relaycast::Agent) -> bool {
     matches!(agent.status.as_str(), "offline" | "released" | "inactive")
 }
 
+/// Relaycast activity states that still identify a connected, addressable
+/// worker. This is intentionally broader than [`agent_is_live`]: that helper
+/// is a fail-closed credential-rotation guard whose historical contract only
+/// recognizes `active` / `online`, while a send-time observation must report
+/// the engine's `idle`, `blocked`, and `waiting` states as reachable too, as
+/// well as legacy `away` records from pre-active-status engines.
+fn agent_is_reachable(agent: &relaycast::Agent) -> bool {
+    matches!(
+        agent.status.as_str(),
+        "active" | "online" | "idle" | "blocked" | "waiting" | "away"
+    )
+}
+
 /// Bound on the `ImpersonateExisting` presence probe (`relay.get_agent`).
 /// Matches the existing `RELAYCAST_HTTP_TIMEOUT` convention for this same
 /// call in `auth.rs`'s legacy-identity reclaim path — not chosen for snappy
@@ -133,6 +146,33 @@ fn agent_is_known_offline(agent: &relaycast::Agent) -> bool {
 /// (`runtime/delivery.rs`) wraps the whole call in `tokio::spawn` + a 2s
 /// `timeout`; this bound is what protects every other call site.
 const PRESENCE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A short, best-effort reachability read that accompanies an already-durable
+/// direct-message publication. This probe is deliberately independent from
+/// the send result: Relaycast accepting a message and Relaycast observing a
+/// live recipient are different facts, and an unavailable read must produce
+/// `unknown` rather than turn a successful publication into a failure.
+const SEND_RECIPIENT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Relaycast's server-observed recipient state at send time.
+///
+/// `live` is `None` whenever the engine cannot make the observation or returns
+/// a status the broker does not understand. `status` remains explicit so API
+/// callers can distinguish an unavailable probe from a missing recipient.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipientReachability {
+    pub live: Option<bool>,
+    pub status: String,
+}
+
+impl RecipientReachability {
+    fn unknown() -> Self {
+        Self {
+            live: None,
+            status: "unknown".to_string(),
+        }
+    }
+}
 
 impl RelaycastHttpClient {
     pub fn new(
@@ -186,6 +226,57 @@ impl RelaycastHttpClient {
             .as_ref()
             .as_ref()
             .and_then(|registration| registration.registration_block_remaining(agent_name))
+    }
+
+    /// Read a named DM recipient's effective Relaycast presence without
+    /// changing whether a message is published.
+    ///
+    /// This is reporting evidence, not a routing guard: offline agents can
+    /// legitimately receive durable messages later, while a transient probe
+    /// failure must not suppress the publication. relay#1615.
+    pub async fn recipient_reachability(&self, agent_name: &str) -> RecipientReachability {
+        let Some(relay) = self.relay.as_ref().as_ref() else {
+            return RecipientReachability::unknown();
+        };
+
+        match tokio::time::timeout(SEND_RECIPIENT_PROBE_TIMEOUT, relay.get_agent(agent_name)).await
+        {
+            Ok(Ok(agent)) => {
+                let live = if agent_is_reachable(&agent) {
+                    Some(true)
+                } else if agent_is_known_offline(&agent) {
+                    Some(false)
+                } else {
+                    None
+                };
+                RecipientReachability {
+                    live,
+                    status: agent.status,
+                }
+            }
+            Ok(Err(error)) if error.is_not_found() => RecipientReachability {
+                live: Some(false),
+                status: "not_found".to_string(),
+            },
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    target = "relay_broker::relaycast",
+                    agent = %agent_name,
+                    error = %error,
+                    "recipient reachability probe failed; reporting unknown"
+                );
+                RecipientReachability::unknown()
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target = "relay_broker::relaycast",
+                    agent = %agent_name,
+                    timeout_ms = %SEND_RECIPIENT_PROBE_TIMEOUT.as_millis(),
+                    "recipient reachability probe timed out; reporting unknown"
+                );
+                RecipientReachability::unknown()
+            }
+        }
     }
 
     fn invalidate_cached_registration(&self, agent_name: &str) {
@@ -1442,7 +1533,7 @@ mod tests {
     use super::{
         format_worker_preregistration_error, registration_is_retryable,
         registration_retry_after_secs, ImpersonationAwareRegistrationError, MessageInjectionMode,
-        RegisterIntent, RelaycastHttpClient,
+        RecipientReachability, RegisterIntent, RelaycastHttpClient,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -1476,6 +1567,97 @@ mod tests {
         let message = format_worker_preregistration_error("worker-a", &error);
         assert!(message.contains("worker-a"));
         assert!(message.contains("pre-register"));
+    }
+
+    #[tokio::test]
+    async fn recipient_reachability_reports_effective_live_and_offline_states() {
+        for (name, status, expected_live) in [
+            ("active-worker", "active", true),
+            ("online-worker", "online", true),
+            ("idle-worker", "idle", true),
+            ("blocked-worker", "blocked", true),
+            ("waiting-worker", "waiting", true),
+            ("away-worker", "away", true),
+            ("offline-worker", "offline", false),
+            ("released-worker", "released", false),
+            ("inactive-worker", "inactive", false),
+        ] {
+            let server = MockServer::start();
+            let probe = server.mock(|when, then| {
+                when.method(GET).path(format!("/v1/agents/{name}"));
+                then.status(200).json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "id": format!("agent_{name}"),
+                        "workspace_id": "ws_test",
+                        "name": name,
+                        "type": "agent",
+                        "status": status,
+                        "persona": null,
+                        "metadata": {},
+                        "channels": []
+                    }
+                }));
+            });
+            let client = seeded_http_client(&server.base_url());
+
+            let reachability = client.recipient_reachability(name).await;
+
+            assert_eq!(
+                reachability,
+                RecipientReachability {
+                    live: Some(expected_live),
+                    status: status.to_string(),
+                }
+            );
+            probe.assert_hits(1);
+        }
+    }
+
+    #[tokio::test]
+    async fn recipient_reachability_distinguishes_missing_from_unavailable() {
+        let missing_server = MockServer::start();
+        let missing_probe = missing_server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/missing-worker");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": { "code": "agent_not_found", "message": "Agent not found" }
+            }));
+        });
+        let missing_client = seeded_http_client(&missing_server.base_url());
+        assert_eq!(
+            missing_client
+                .recipient_reachability("missing-worker")
+                .await,
+            RecipientReachability {
+                live: Some(false),
+                status: "not_found".to_string(),
+            }
+        );
+        missing_probe.assert_hits(1);
+
+        let unavailable_server = MockServer::start();
+        let unavailable_probe = unavailable_server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/unknown-worker");
+            then.status(503).json_body(json!({
+                "ok": false,
+                "error": { "code": "unavailable", "message": "try later" }
+            }));
+        });
+        let unavailable_client = seeded_http_client(&unavailable_server.base_url());
+        assert_eq!(
+            unavailable_client
+                .recipient_reachability("unknown-worker")
+                .await,
+            RecipientReachability {
+                live: None,
+                status: "unknown".to_string(),
+            }
+        );
+        assert!(
+            unavailable_probe.hits() >= 1,
+            "the unknown result must come from a real Relaycast probe"
+        );
     }
 
     /// A single PATCH carrying ONLY the declared keys. The engine merges them

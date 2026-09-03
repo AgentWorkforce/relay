@@ -517,6 +517,18 @@ export async function startFleetNodeAttachProxy(
   let loopbackDeliveryMode: 'manual_flush' | 'auto_inject' =
     options.mode === 'drive' ? 'manual_flush' : 'auto_inject';
   type DeliveryModeResult = { mode: string; flushed: number; matched: boolean; revision: string };
+  type FlushResult = {
+    flushed: number;
+    dead_lettered: number;
+    held: number;
+    blocked_reason: string | null;
+  };
+  let pendingFlush: {
+    requestId: string;
+    resolve: (result: FlushResult) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   /** At most one in-flight delivery-mode PUT at a time. */
   let pendingDeliveryMode: {
     requestId: string;
@@ -554,6 +566,67 @@ export async function startFleetNodeAttachProxy(
       return;
     }
     const name = encodeURIComponent(options.agent);
+    if (path === `/api/spawned/${name}/flush` && request.method === 'POST') {
+      // Forward the flush to the remote broker over the terminal websocket.
+      // Without this the `--node` form of `node agent message flush` reached
+      // only the LOCAL broker's worker registry and returned agent_not_found
+      // for a name that `node agent list` and `attach` both resolve.
+      try {
+        await waitForTerminalReady('terminal connection timed out');
+      } catch (error) {
+        const terminalError = error instanceof FleetNodeAttachError ? error : undefined;
+        json(response, terminalErrorStatus(terminalError?.code), {
+          error: {
+            code: terminalError?.code ?? 'node_unreachable',
+            message:
+              terminalError?.message ?? (error instanceof Error ? error.message : 'terminal unavailable'),
+          },
+        });
+        return;
+      }
+      if (!remote || remote.readyState !== WebSocket.OPEN) {
+        json(response, 503, {
+          error: { code: 'node_unreachable', message: 'terminal transport is not connected' },
+        });
+        return;
+      }
+      if (pendingFlush) {
+        json(response, 503, {
+          error: { code: 'flush_conflict', message: 'a flush request is already in flight' },
+        });
+        return;
+      }
+      const requestId = randomBytes(8).toString('hex');
+      const result = await new Promise<FlushResult | Error>((resolve) => {
+        const timer = setTimeout(() => {
+          pendingFlush = null;
+          resolve(new FleetNodeAttachError('flush request timed out', 'flush_timeout'));
+        }, DELIVERY_MODE_TIMEOUT_MS);
+        pendingFlush = {
+          requestId,
+          resolve: (r) => resolve(r),
+          reject: (e) => resolve(e),
+          timer,
+        };
+        remote!.send(
+          JSON.stringify({
+            type: 'terminal.flush_pending',
+            session_id: sessionId,
+            request_id: requestId,
+          })
+        );
+      });
+      if (result instanceof Error) {
+        const errCode =
+          result instanceof FleetNodeAttachError ? (result.code ?? 'flush_failed') : 'flush_failed';
+        json(response, terminalErrorStatus(errCode), {
+          error: { code: errCode, message: result.message },
+        });
+        return;
+      }
+      json(response, 200, result);
+      return;
+    }
     if (path === `/api/spawned/${name}/delivery-mode`) {
       if (request.method === 'GET') {
         json(response, 200, { mode: loopbackDeliveryMode });
@@ -817,6 +890,23 @@ export async function startFleetNodeAttachProxy(
   resumeUrl.searchParams.set('resume', resumeToken);
   /** Reject and clear any in-flight delivery-mode PUT, if one is pending. */
   const rejectPendingDeliveryMode = (error: FleetNodeAttachError) => {
+    if (pendingFlush) {
+      const flush = pendingFlush;
+      pendingFlush = null;
+      clearTimeout(flush.timer);
+      // A flush never changes delivery mode, so it must not inherit the
+      // delivery-mode disconnect wording. An operator debugging a failed flush
+      // would otherwise be told the "delivery-mode change" was interrupted —
+      // pointing at an operation their command never performed.
+      const flushError =
+        error.code === 'delivery_mode_disconnected'
+          ? new FleetNodeAttachError(
+              'terminal transport disconnected while the flush was in flight',
+              'flush_disconnected'
+            )
+          : error;
+      flush.reject(flushError);
+    }
     if (!pendingDeliveryMode) return;
     const pending = pendingDeliveryMode;
     pendingDeliveryMode = null;
@@ -951,6 +1041,23 @@ export async function startFleetNodeAttachProxy(
             revision: typeof frame.revision === 'string' ? frame.revision : '1',
           });
         }
+      } else if (frame.type === 'terminal.flush_pending') {
+        const frameRid = typeof frame.request_id === 'string' ? frame.request_id : undefined;
+        // Exact match only. The proxy always sends a request_id, and unlike
+        // delivery-mode there is no older-broker reply shape to stay
+        // compatible with, so a reply without one is not ours — accepting it
+        // would resolve the caller's flush with an unrelated result.
+        if (pendingFlush && frameRid === pendingFlush.requestId) {
+          const pending = pendingFlush;
+          pendingFlush = null;
+          clearTimeout(pending.timer);
+          pending.resolve({
+            flushed: typeof frame.flushed === 'number' ? frame.flushed : 0,
+            dead_lettered: typeof frame.dead_lettered === 'number' ? frame.dead_lettered : 0,
+            held: typeof frame.held === 'number' ? frame.held : 0,
+            blocked_reason: typeof frame.blocked_reason === 'string' ? frame.blocked_reason : null,
+          });
+        }
       } else if (frame.type === 'terminal.error') {
         const message = typeof frame.message === 'string' ? frame.message : 'remote terminal failed';
         const code = typeof frame.code === 'string' ? frame.code : 'terminal_error';
@@ -959,7 +1066,15 @@ export async function startFleetNodeAttachProxy(
         // request_id matches (or the broker sent no request_id at all — older
         // broker compat). An unrelated session-level error must not cancel a
         // live delivery-mode PUT and vice-versa.
-        if (pendingDeliveryMode && (frameRid === undefined || frameRid === pendingDeliveryMode.requestId)) {
+        if (pendingFlush && frameRid !== undefined && frameRid === pendingFlush.requestId) {
+          const pending = pendingFlush;
+          pendingFlush = null;
+          clearTimeout(pending.timer);
+          pending.reject(new FleetNodeAttachError(message, code));
+        } else if (
+          pendingDeliveryMode &&
+          (frameRid === undefined || frameRid === pendingDeliveryMode.requestId)
+        ) {
           const pending = pendingDeliveryMode;
           pendingDeliveryMode = null;
           clearTimeout(pending.timer);

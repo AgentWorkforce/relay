@@ -15,6 +15,7 @@ import {
   PrProofContractError,
   changedRelayFlowCaseIds,
   classifyPullRequest,
+  runtimeSurfaceChanged,
   validateCaseManifest,
   validateEvidence,
   validateObservation,
@@ -35,7 +36,12 @@ import {
   resolvePullRequest,
 } from '../../scripts/pr-proof/report-status.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { assertSamePullRequestSnapshot, pullRequestSnapshot } from '../../scripts/pr-proof/prepare.mjs';
+import {
+  assertSamePullRequestSnapshot,
+  main as prepareMain,
+  pullRequestFiles,
+  pullRequestSnapshot,
+} from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   boundedDuration,
@@ -1719,5 +1725,293 @@ describe('trusted dispatcher source contract', () => {
     expect(marker).toBeGreaterThan(0);
     expect(marker).toBeLessThan(upload);
     expect(marker).toBeLessThan(launch);
+  });
+});
+
+describe('classification reads the diff, not the title', () => {
+  const nonFunctional = (caseId = 'n/a') =>
+    [
+      `- Change type: \`non-functional\` <!-- relay-pr-proof:type -->`,
+      `- RelayFlow case: \`${caseId}\` <!-- relay-pr-proof:case -->`,
+    ].join('\n');
+
+  it('treats a workflow-only change as non-runtime', () => {
+    expect(runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
+      false
+    );
+  });
+
+  it('treats top-level repo metadata as non-runtime', () => {
+    expect(runtimeSurfaceChanged(['.gitignore'])).toBe(false);
+    expect(runtimeSurfaceChanged(['.editorconfig'])).toBe(false);
+  });
+
+  /**
+   * .gitattributes is NOT exempt: `export-ignore` changes what `git archive`
+   * emits, and relayflow-pr-proof-broker.yml builds its isolated source tree
+   * with exactly that command, so an edit here can change what a proof
+   * compiles against.
+   */
+  it('still treats .gitattributes as runtime', () => {
+    expect(runtimeSurfaceChanged(['.gitattributes'])).toBe(true);
+  });
+
+  /**
+   * Listed individually, not as a dotfile glob: a top-level dotfile that does
+   * affect what gets built or installed must still demand a proof.
+   */
+  it('still treats a build-affecting top-level dotfile as runtime', () => {
+    expect(runtimeSurfaceChanged(['.npmrc'])).toBe(true);
+    expect(runtimeSurfaceChanged(['.nvmrc'])).toBe(true);
+  });
+
+  it('treats any broker or package source change as runtime', () => {
+    expect(runtimeSurfaceChanged(['crates/broker/src/runtime/fleet.rs'])).toBe(true);
+    expect(runtimeSurfaceChanged(['packages/cli/src/cli/commands/local-agent.ts'])).toBe(true);
+  });
+
+  it('fails closed for a path the allowlist has never seen', () => {
+    // A new top-level directory must not become proof-exempt by default.
+    expect(runtimeSurfaceChanged(['some-brand-new-top-level/thing.ts'])).toBe(true);
+  });
+
+  /**
+   * The defect this closes, direction 1: a `fix(` PR that only edits a
+   * scheduled workflow was told its change type "cannot be non-functional",
+   * so it had to fabricate a runtime proof it could not honestly build.
+   */
+  it('accepts non-functional on a fix( PR that changes no runtime file', () => {
+    const result = classifyPullRequest({
+      title: 'fix(workflow): fail loudly on alert delivery',
+      body: nonFunctional(),
+      changedFiles: ['workflows/verify-features.ts', 'CHANGELOG.md'],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.required).toBe(false);
+  });
+
+  it('still rejects non-functional when the same PR touches runtime code', () => {
+    const result = classifyPullRequest({
+      title: 'fix(workflow): fail loudly on alert delivery',
+      body: nonFunctional(),
+      changedFiles: ['workflows/verify-features.ts', 'crates/broker/src/runtime/fleet.rs'],
+    });
+    expect(result.errors.join(' ')).toContain('changes runtime files');
+  });
+
+  /**
+   * Direction 2, and the more serious hole: the gate was bypassable by wording.
+   * A runtime change titled `chore(` required no proof at all.
+   */
+  it('requires a proof for a runtime change even when the title is chore(', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: '',
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
+    });
+    expect(result.required).toBe(true);
+  });
+
+  it('does not require a proof for a chore( PR that only touches docs', () => {
+    const result = classifyPullRequest({
+      title: 'chore(docs): clarify attach modes',
+      body: nonFunctional(),
+      changedFiles: ['docs/attach.md', 'README.md'],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.required).toBe(false);
+  });
+
+  /**
+   * `scripts/` is not exempt wholesale: publish.yml runs
+   * scripts/inject-posthog-key.mjs to rewrite the compiled CLI before it
+   * ships, so editing it changes what users receive.
+   */
+  it('treats a publish-time script as runtime', () => {
+    expect(runtimeSurfaceChanged(['scripts/inject-posthog-key.mjs'])).toBe(true);
+  });
+
+  it('fails closed for a scripts/ subtree the allowlist has never seen', () => {
+    expect(runtimeSurfaceChanged(['scripts/some-new-tool/main.mjs'])).toBe(true);
+  });
+
+  it('still exempts the CI-only script subtrees', () => {
+    expect(runtimeSurfaceChanged(['scripts/pr-proof/prepare.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/evals/run-relay-evals.mjs'])).toBe(false);
+  });
+
+  /**
+   * A rename reports only its destination path. Moving a runtime file into
+   * docs/ must not read as a docs-only change.
+   */
+  it('treats a runtime file renamed into an exempt directory as runtime', () => {
+    expect(runtimeSurfaceChanged(['docs/old-fleet.rs', 'crates/broker/src/runtime/fleet.rs'])).toBe(true);
+  });
+
+  /**
+   * Without this, a `chore(`-titled runtime change declaring non-functional
+   * with a valid case id was silently coerced to `bugfix` and raised nothing.
+   */
+  it('rejects a non-functional declaration on a runtime change whatever the title says', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: nonFunctional('1593-parked-agent-orphaned-receipt'),
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
+    });
+    expect(result.errors.join(' ')).toContain('cannot be non-functional');
+  });
+
+  it('falls back to title-only behaviour when the diff is unavailable', () => {
+    // changedFiles omitted: preserve the previous contract rather than
+    // silently exempting a change nobody inspected.
+    const result = classifyPullRequest({
+      title: 'fix(broker): reconnect dead links',
+      body: nonFunctional(),
+    });
+    expect(result.errors.join(' ')).toContain('cannot be non-functional');
+  });
+});
+
+describe('RelayFlow proof changed-file collection', () => {
+  const withStubbedFetch = async (impl: typeof globalThis.fetch, run: () => Promise<void>) => {
+    const original = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      await run();
+    } finally {
+      globalThis.fetch = original;
+    }
+  };
+
+  const jsonResponse = (payload: unknown) =>
+    ({ ok: true, status: 200, json: async () => payload }) as unknown as Response;
+
+  /**
+   * GitHub reports a rename's destination in `filename` and its origin in
+   * `previous_filename`. Dropping the latter let a runtime file move into an
+   * exempt directory and read as a non-runtime change.
+   */
+  it('includes the pre-rename path of a renamed file', async () => {
+    await withStubbedFetch(
+      (async () =>
+        jsonResponse([
+          {
+            filename: 'docs/retired-fleet-notes.md',
+            previous_filename: 'crates/broker/src/runtime/fleet.rs',
+          },
+        ])) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toContain('crates/broker/src/runtime/fleet.rs');
+        expect(runtimeSurfaceChanged(files)).toBe(true);
+      }
+    );
+  });
+
+  /**
+   * A short diff returns on the first page, so pagination itself needs its own
+   * cover: if accumulation regressed to keeping only the last page, runtime
+   * files from earlier pages would silently drop out of the list and the PR
+   * could read as non-runtime.
+   */
+  it('accumulates files across every page of a multi-page diff', async () => {
+    const lastPage = 3;
+    await withStubbedFetch(
+      (async (url: string) => {
+        const page = Number(new URL(String(url)).searchParams.get('page'));
+        // Pages 1 and 2 are full; page 3 is short and ends pagination.
+        const size = page < lastPage ? 100 : 40;
+        return jsonResponse(Array.from({ length: size }, (_, i) => ({ filename: `docs/p${page}-f${i}.md` })));
+      }) as unknown as typeof globalThis.fetch,
+      async () => {
+        const files = await pullRequestFiles('https://api.github.test', 'o/r', 1, 't');
+        expect(files).toHaveLength(240);
+        // One from every page, not just the last.
+        expect(files).toContain('docs/p1-f0.md');
+        expect(files).toContain('docs/p2-f0.md');
+        expect(files).toContain('docs/p3-f39.md');
+      }
+    );
+  });
+
+  /**
+   * GitHub caps this endpoint at 3,000 files, so a full 30th page cannot be
+   * told apart from a truncated diff. Refusing is the only safe answer:
+   * classifying on a truncated list would let runtime files past the cap go
+   * unseen and the PR read as non-runtime.
+   *
+   * The stub is page-aware and returns distinct filenames per page, so the
+   * test fails if pagination stalls on page 1 instead of advancing.
+   */
+  it('refuses a diff that reaches the 3,000-file API cap', async () => {
+    const pagesRequested: number[] = [];
+    await withStubbedFetch(
+      (async (url: string) => {
+        const page = Number(new URL(String(url)).searchParams.get('page'));
+        pagesRequested.push(page);
+        return jsonResponse(
+          Array.from({ length: 100 }, (_, i) => ({
+            filename: `packages/cli/src/p${page}-f${i}.ts`,
+          }))
+        );
+      }) as unknown as typeof globalThis.fetch,
+      async () => {
+        await expect(pullRequestFiles('https://api.github.test', 'o/r', 1, 't')).rejects.toMatchObject({
+          ambiguousScope: true,
+        });
+        // Exactly the 30 capped pages, each requested once and in order.
+        expect(pagesRequested).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+      }
+    );
+  });
+});
+
+describe('RelayFlow proof preparation with an unreadable diff', () => {
+  /**
+   * The title-only fallback can legitimately reach the required path with
+   * `changedFiles === null`. Downstream, `changedFiles.some(...)` then threw a
+   * bare TypeError — a crash instead of a diagnosis. A required proof cannot be
+   * validated without the file list, so it must fail closed and say why.
+   */
+  it('fails closed with a clear error instead of a TypeError', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'pr-proof-nulldiff-'));
+    const eventPath = path.join(dir, 'event.json');
+    const pull = {
+      number: 7,
+      title: 'fix(broker): reconnect dead links',
+      body: [
+        '- Change type: `bugfix` <!-- relay-pr-proof:type -->',
+        '- RelayFlow case: `1593-parked-agent-orphaned-receipt` <!-- relay-pr-proof:case -->',
+      ].join('\n'),
+      head: { sha: 'a'.repeat(40), repo: { full_name: 'AgentWorkforce/relay' } },
+      base: { sha: 'b'.repeat(40) },
+    };
+    await writeFile(eventPath, JSON.stringify({ pull_request: pull }), 'utf8');
+
+    const originalFetch = globalThis.fetch;
+    const originalArgv = process.argv;
+    const env = { ...process.env };
+    globalThis.fetch = (async (url: string) => {
+      // The files endpoint is down; every other read succeeds.
+      if (String(url).includes('/files?')) {
+        return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+      }
+      return { ok: true, status: 200, json: async () => pull } as unknown as Response;
+    }) as unknown as typeof globalThis.fetch;
+    process.argv = ['node', 'prepare.mjs', '--event', eventPath, '--output', path.join(dir, 'out.json')];
+    process.env.GITHUB_TOKEN = 'test-token';
+    process.env.GITHUB_REPOSITORY = 'AgentWorkforce/relay';
+    process.env.GITHUB_API_URL = 'https://api.github.test';
+    delete process.env.GITHUB_OUTPUT;
+    delete process.env.GITHUB_STEP_SUMMARY;
+
+    try {
+      await expect(prepareMain()).rejects.toThrow(/cannot be validated without the changed-file list/);
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.argv = originalArgv;
+      process.env = env;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

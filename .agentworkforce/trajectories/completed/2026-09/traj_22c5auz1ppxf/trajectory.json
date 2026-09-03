@@ -1,0 +1,63 @@
+{
+  "id": "traj_22c5auz1ppxf",
+  "version": 1,
+  "task": {
+    "title": "Publish canonical NightCTO receipt for PR 1642",
+    "source": {
+      "system": "plain",
+      "id": "relay#1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T02:44:54.562Z",
+  "completedAt": "2026-09-03T02:45:06.878Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T02:44:55.279Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_804mkj67mphr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T02:44:55.279Z",
+      "endedAt": "2026-09-03T02:45:06.878Z",
+      "events": [
+        {
+          "ts": 1788403495283,
+          "type": "decision",
+          "content": "Publish escalation-infra.json through the existing current-run symlink contract: Publish escalation-infra.json through the existing current-run symlink contract",
+          "raw": {
+            "question": "Publish escalation-infra.json through the existing current-run symlink contract",
+            "chosen": "Publish escalation-infra.json through the existing current-run symlink contract",
+            "alternatives": [],
+            "reasoning": "NightCTO is now a mandatory audited delivery channel, so its receipt must advance atomically with the other canonical per-run artifacts for existing consumers."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added escalation-infra.json to canonical current-run artifact publication and regression-tested that top-level NightCTO receipts advance with concurrent isolated runs. Focused suite 40/40 and local proof fixed.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [
+    "4fd87b191"
+  ],
+  "filesChanged": [
+    "scripts/verify-features/run-artifacts.mjs",
+    "tests/fixtures/verify-features-escalation.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "601881b56657c67c739ed78deb4fa56f21a277eb",
+    "endRef": "4fd87b1916e6d65ea1072ee2150b73c33607dd9a",
+    "traceId": "376c5026-2471-43c4-af6c-1e9ef0ce7e1a"
+  }
+}

@@ -1,0 +1,189 @@
+{
+  "version": "1.0.0",
+  "id": "55885b9a-16fc-488d-b365-c3268e37ed85",
+  "timestamp": "2026-09-02T18:02:14.974Z",
+  "trajectory": "traj_3vy7xxildx91",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/summary.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 30,
+              "end_line": 48,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_9xj09bh8w6m0/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 37,
+              "end_line": 54,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 58,
+              "end_line": 79,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 16,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/run-artifacts.d.mts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 2,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/run-artifacts.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 62,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 9,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 17,
+              "end_line": 26,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 72,
+              "end_line": 80,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 279,
+              "end_line": 331,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 2,
+              "end_line": 8,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 32,
+              "end_line": 38,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 86,
+              "end_line": 107,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 137,
+              "end_line": 143,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/verify-features.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 69,
+              "end_line": 87,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 91,
+              "end_line": 96,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            },
+            {
+              "start_line": 2593,
+              "end_line": 2663,
+              "revision": "4e83a04650563753d59ab49574b05f444d33e291"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

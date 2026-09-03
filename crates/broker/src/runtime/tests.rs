@@ -38,6 +38,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use super::api::recipient_name_for_reachability;
 use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
@@ -3853,6 +3854,22 @@ fn normalize_sender_preserves_worker_names() {
     assert_eq!(
         normalize_sender(Some("WorkerOne".to_string())),
         "WorkerOne".to_string()
+    );
+}
+
+#[test]
+fn recipient_reachability_uses_the_same_trimmed_target_as_publication() {
+    assert_eq!(
+        recipient_name_for_reachability(&MessageTarget::new("  worker-a  "), "sender"),
+        Some("worker-a".to_string())
+    );
+    assert_eq!(
+        recipient_name_for_reachability(&MessageTarget::new("  @self  "), "sender"),
+        Some("sender".to_string())
+    );
+    assert_eq!(
+        recipient_name_for_reachability(&MessageTarget::new("  #general  "), "sender"),
+        None
     );
 }
 

@@ -594,6 +594,60 @@ impl BrokerRuntime {
                     message: None,
                 });
             }
+            TerminalControlEvent::Message(TerminalFromCloud::FlushPending {
+                session_id,
+                request_id,
+            }) => {
+                let Some(session) = self.terminal_sessions.get(&session_id).cloned() else {
+                    self.send_terminal(TerminalToCloud::Error {
+                        session_id,
+                        code: "session_not_found".into(),
+                        message: "terminal session is not active".into(),
+                        request_id,
+                    });
+                    return;
+                };
+                // Deliberately no `TerminalMode::View` guard here — see the
+                // frame's doc comment. A flush drains an already-held queue and
+                // does not touch delivery mode, so it cannot corrupt a
+                // concurrent driver, and gating it on `drive` would force an
+                // operator to seize the single drive slot just to wake an agent.
+                let (tx, rx) =
+                    tokio::sync::oneshot::channel::<Result<FlushPendingOk, DeliveryRouteError>>();
+                self.handle_api_request(ListenApiRequest::FlushPending {
+                    name: session.agent.clone(),
+                    reply: tx,
+                })
+                .await;
+                match rx.await {
+                    Ok(Ok(ok)) => {
+                        self.send_terminal(TerminalToCloud::FlushPending {
+                            session_id,
+                            request_id,
+                            flushed: ok.flushed,
+                            dead_lettered: ok.dead_lettered,
+                            held: ok.held,
+                            blocked_reason: ok.blocked_reason,
+                        });
+                    }
+                    Ok(Err(DeliveryRouteError::WorkerNotFound(name))) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "agent_not_found".into(),
+                            message: format!("agent '{name}' is not running on this node"),
+                            request_id,
+                        });
+                    }
+                    Err(_) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "flush_failed".into(),
+                            message: "broker dropped the flush reply".into(),
+                            request_id,
+                        });
+                    }
+                }
+            }
             TerminalControlEvent::Message(TerminalFromCloud::SetDeliveryMode {
                 session_id,
                 mode,
@@ -717,7 +771,8 @@ impl BrokerRuntime {
             | TerminalToCloud::InputAck { session_id, .. }
             | TerminalToCloud::Error { session_id, .. }
             | TerminalToCloud::Closed { session_id, .. }
-            | TerminalToCloud::DeliveryMode { session_id, .. } => session_id.clone(),
+            | TerminalToCloud::DeliveryMode { session_id, .. }
+            | TerminalToCloud::FlushPending { session_id, .. } => session_id.clone(),
         };
         let is_close = matches!(&message, TerminalToCloud::Closed { .. });
         if !try_send_terminal(&self.terminal_control_tx, message) {

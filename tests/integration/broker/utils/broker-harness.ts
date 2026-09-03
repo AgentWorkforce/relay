@@ -14,6 +14,7 @@ import {
   type RuntimeSpawnOptions,
   type ListAgent,
   type SendMessageInput,
+  type SendMessageResult,
   type BrokerEvent,
 } from '@agent-relay/harness-driver';
 import { RelayCast } from '@relaycast/sdk';
@@ -195,7 +196,7 @@ export class BrokerHarness {
   /**
    * Send a message between agents via the low-level client.
    */
-  async sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }> {
+  async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
     return this.client.sendMessage(input);
   }
 

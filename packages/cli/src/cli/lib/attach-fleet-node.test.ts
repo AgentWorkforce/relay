@@ -1177,3 +1177,229 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
     expect(ticket.authorization()).toBe('Bearer rk_live_ambient');
   });
 });
+
+describe('startFleetNodeAttachProxy flush route', () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      const fn = cleanup.pop()!;
+      await fn().catch(() => undefined);
+    }
+  });
+
+  const postFlush = async (proxy: { brokerUrl: string; apiKey: string }, agent: string) => {
+    const response = await fetch(`${proxy.brokerUrl}/api/spawned/${encodeURIComponent(agent)}/flush`, {
+      method: 'POST',
+      headers: { 'x-api-key': proxy.apiKey },
+    });
+    return { status: response.status, body: await response.json().catch(() => ({})) };
+  };
+
+  /**
+   * The point of the whole change: `node agent message flush --node` has to
+   * reach the agent's OWN node. Before this route existed the command only ever
+   * queried the local broker's worker registry and answered `agent_not_found`
+   * for a name that `node agent list` and `attach` both resolve.
+   */
+  it('forwards the flush to the remote node and returns its real result', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-remote',
+      node: 'node-remote',
+      // `view` on purpose: a flush drains an already-held queue without
+      // changing delivery mode, so it must not have to seize the single drive
+      // slot from whoever is attached.
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'manual_flush');
+    const forwarded: Array<Record<string, unknown>> = [];
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+      if (frame.type === 'terminal.flush_pending') {
+        forwarded.push(frame);
+        socket.send(
+          JSON.stringify({
+            type: 'terminal.flush_pending',
+            session_id: SESSION_ID,
+            request_id: frame.request_id,
+            flushed: 2,
+            dead_lettered: 1,
+            held: 0,
+            blocked_reason: null,
+          })
+        );
+      }
+    });
+
+    const result = await postFlush(proxy, 'agent-remote');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      flushed: 2,
+      dead_lettered: 1,
+      held: 0,
+      blocked_reason: null,
+    });
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.session_id).toBe(SESSION_ID);
+  });
+
+  /**
+   * A remote `agent_not_found` must surface as a 404, not a generic failure —
+   * that status is what tells an operator the agent is on a different machine
+   * rather than that the flush itself broke.
+   */
+  it('maps a remote agent_not_found to 404 rather than a generic failure', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-missing',
+      node: 'node-remote',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'manual_flush');
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+      if (frame.type === 'terminal.flush_pending') {
+        socket.send(
+          JSON.stringify({
+            type: 'terminal.error',
+            session_id: SESSION_ID,
+            request_id: frame.request_id,
+            code: 'agent_not_found',
+            message: "agent 'agent-missing' is not running on this node",
+          })
+        );
+      }
+    });
+
+    const result = await postFlush(proxy, 'agent-missing');
+    expect(result.status).toBe(404);
+    expect(result.body).toMatchObject({ error: { code: 'agent_not_found' } });
+  });
+
+  /**
+   * Requested in review on #1643: the terminal protocol permits a reply with no
+   * request_id, and the proxy always sends one. A no-id `terminal.flush_pending`
+   * frame is therefore never ours, and accepting it would resolve the caller's
+   * flush with an unrelated node's result — a fabricated success.
+   */
+  it('ignores a flush reply that carries no request_id and waits for the real one', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-noid',
+      node: 'node-remote',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'manual_flush');
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+      if (frame.type === 'terminal.flush_pending') {
+        // Decoy: correct type, no request_id, wrong numbers.
+        socket.send(
+          JSON.stringify({
+            type: 'terminal.flush_pending',
+            session_id: SESSION_ID,
+            flushed: 99,
+            dead_lettered: 99,
+            held: 99,
+            blocked_reason: 'decoy',
+          })
+        );
+        setTimeout(() => {
+          socket.send(
+            JSON.stringify({
+              type: 'terminal.flush_pending',
+              session_id: SESSION_ID,
+              request_id: frame.request_id,
+              flushed: 3,
+              dead_lettered: 0,
+              held: 0,
+              blocked_reason: null,
+            })
+          );
+        }, 20);
+      }
+    });
+
+    const result = await postFlush(proxy, 'agent-noid');
+    expect(result.status).toBe(200);
+    // The decoy must not have won.
+    expect(result.body).toMatchObject({ flushed: 3, dead_lettered: 0, blocked_reason: null });
+  });
+
+  /**
+   * A session-level error carrying no request_id must NOT resolve a pending
+   * flush. Flush is a new frame with no older-broker compatibility to preserve,
+   * so an unrelated failure resolving it would be a false result — the exact
+   * shape of bug this change exists to remove.
+   */
+  it('does not let an unrelated session error resolve a pending flush', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-cross',
+      node: 'node-remote',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+    });
+    cleanup.push(proxy.close);
+
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'manual_flush');
+    socket.on('message', (data) => {
+      const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+      if (frame.type === 'terminal.flush_pending') {
+        // No request_id: a session-scoped error, not a reply to this flush.
+        socket.send(
+          JSON.stringify({
+            type: 'terminal.error',
+            session_id: SESSION_ID,
+            code: 'pty_write_failed',
+            message: 'unrelated session failure',
+          })
+        );
+        // The real reply arrives after it and must be the one that wins.
+        setTimeout(() => {
+          socket.send(
+            JSON.stringify({
+              type: 'terminal.flush_pending',
+              session_id: SESSION_ID,
+              request_id: frame.request_id,
+              flushed: 1,
+              dead_lettered: 0,
+              held: 0,
+              blocked_reason: null,
+            })
+          );
+        }, 20);
+      }
+    });
+
+    const result = await postFlush(proxy, 'agent-cross');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ flushed: 1 });
+  });
+});

@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "id": "0cb776d3-ecbd-41fb-9eb8-420c3a989ef7",
+  "timestamp": "2026-09-02T19:43:29.881Z",
+  "trajectory": "traj_1gnz83gpty4l",
+  "files": [
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 348,
+              "end_line": 354,
+              "revision": "ba8825d2f3cf5a3a18b6c81e0b787889f64fb7f0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

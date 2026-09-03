@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "id": "376c5026-2471-43c4-af6c-1e9ef0ce7e1a",
+  "timestamp": "2026-09-03T02:45:07.199Z",
+  "trajectory": "traj_22c5auz1ppxf",
+  "files": [
+    {
+      "path": "scripts/verify-features/run-artifacts.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 19,
+              "end_line": 25,
+              "revision": "4fd87b1916e6d65ea1072ee2150b73c33607dd9a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 28,
+              "end_line": 34,
+              "revision": "4fd87b1916e6d65ea1072ee2150b73c33607dd9a"
+            },
+            {
+              "start_line": 719,
+              "end_line": 729,
+              "revision": "4fd87b1916e6d65ea1072ee2150b73c33607dd9a"
+            },
+            {
+              "start_line": 735,
+              "end_line": 743,
+              "revision": "4fd87b1916e6d65ea1072ee2150b73c33607dd9a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

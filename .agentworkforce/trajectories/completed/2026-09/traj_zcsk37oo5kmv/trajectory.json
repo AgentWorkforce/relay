@@ -1,0 +1,64 @@
+{
+  "id": "traj_zcsk37oo5kmv",
+  "version": 1,
+  "task": {
+    "title": "Require explicit NightCTO 2xx delivery receipts",
+    "source": {
+      "system": "plain",
+      "id": "relay#1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T00:52:30.058Z",
+  "completedAt": "2026-09-03T00:53:07.867Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T00:52:30.430Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ilyjujmcjpjl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T00:52:30.430Z",
+      "endedAt": "2026-09-03T00:53:07.867Z",
+      "events": [
+        {
+          "ts": 1788396750432,
+          "type": "decision",
+          "content": "Require the final HTTP status to be 2xx instead of relying on curl transport success: Require the final HTTP status to be 2xx instead of relying on curl transport success",
+          "raw": {
+            "question": "Require the final HTTP status to be 2xx instead of relying on curl transport success",
+            "chosen": "Require the final HTTP status to be 2xx instead of relying on curl transport success",
+            "alternatives": [],
+            "reasoning": "curl can return zero for a 3xx response, but a redirect is not evidence that NightCTO accepted the POST."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Required an explicit final 2xx NightCTO response and proved a 302 response fails both executable test layers",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [
+    "d5860fa4c"
+  ],
+  "filesChanged": [
+    "scripts/verify-features/escalate-infra.sh",
+    "tests/fixtures/verify-features-escalation.test.ts",
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4ffc0753bb792104b9aafd8e8325ec16d09c7e23",
+    "endRef": "d5860fa4cef094f97194125ad286324b774b73d5",
+    "traceId": "b15a1aba-0655-43c5-80b3-b5f8353b50f8"
+  }
+}

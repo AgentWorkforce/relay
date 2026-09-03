@@ -26,8 +26,8 @@ use crate::{
     dedup::DedupCache,
     fleet_wire::InventoryAgent,
     ids::{
-        AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
-        WorkspaceAlias, WorkspaceId,
+        AgentId, ChannelName, DeliveryId, EventId, MessageTarget, MessageTargetKind, RequestId,
+        ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
     },
     node_control::{FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot},
     protocol::{

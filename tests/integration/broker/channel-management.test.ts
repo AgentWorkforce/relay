@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
-import type { BrokerEvent } from '@agent-relay/harness-driver';
+import type { BrokerEvent, SendMessageResult } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { assertAgentExists, eventsForAgent } from './utils/assert-helpers.js';
 
@@ -42,7 +42,7 @@ async function sendMessageOrSkip(
   t: TestContext,
   harness: BrokerHarness,
   input: { to: string; text: string; from?: string }
-): Promise<{ event_id: string; targets: string[] }> {
+): Promise<SendMessageResult> {
   try {
     const result = await harness.sendMessage(input);
     if (result.event_id === 'unsupported_operation') {

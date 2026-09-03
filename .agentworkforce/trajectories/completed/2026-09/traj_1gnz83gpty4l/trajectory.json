@@ -1,0 +1,62 @@
+{
+  "id": "traj_1gnz83gpty4l",
+  "version": 1,
+  "task": {
+    "title": "Stabilize macOS retention clock proof on PR #1642",
+    "source": {
+      "system": "plain",
+      "id": "PR-1642-CI"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T19:43:09.155Z",
+  "completedAt": "2026-09-02T19:43:29.569Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T19:43:09.894Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_mrk57qupbp9i",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T19:43:09.894Z",
+      "endedAt": "2026-09-02T19:43:29.569Z",
+      "events": [
+        {
+          "ts": 1788378189898,
+          "type": "decision",
+          "content": "Inject a future test clock for zero-age abandonment: Inject a future test clock for zero-age abandonment",
+          "raw": {
+            "question": "Inject a future test clock for zero-age abandonment",
+            "chosen": "Inject a future test clock for zero-age abandonment",
+            "alternatives": [],
+            "reasoning": "The production grace period is seven days, but the zero-age fixture compared a newly created filesystem mtime with a clock captured slightly earlier. Passing now explicitly makes the boundary deterministic without weakening retention."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made the zero-age retention fixture deterministic across filesystem clocks by injecting a future comparison time; production retention behavior is unchanged.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [
+    "ba8825d2f"
+  ],
+  "filesChanged": [
+    "tests/fixtures/verify-features-escalation.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e58c6a00b1993a539ecdcb71cc3f748552b614f3",
+    "endRef": "ba8825d2f3cf5a3a18b6c81e0b787889f64fb7f0",
+    "traceId": "0cb776d3-ecbd-41fb-9eb8-420c3a989ef7"
+  }
+}

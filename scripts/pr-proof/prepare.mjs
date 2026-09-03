@@ -38,18 +38,44 @@ async function githubJson(url, token) {
   return response.json();
 }
 
-async function pullRequestFiles(apiUrl, repository, number, token) {
+/**
+ * Every path a PR touches, including the pre-rename path of a renamed file.
+ *
+ * Exported for tests: the rename handling and the ambiguousScope tag are both
+ * load-bearing for whether the proof gate can be bypassed.
+ */
+export async function pullRequestFiles(apiUrl, repository, number, token) {
   const files = [];
-  for (let page = 1; page <= 30; page += 1) {
+  // GitHub caps this endpoint: "Responses include a maximum of 3000 files."
+  // Page 31 is therefore empty for a 3,000-file PR AND for a 30,000-file one,
+  // so an empty probe page proves nothing — it cannot tell a complete diff from
+  // a truncated one. A full 30th page stays ambiguous and refuses, because
+  // classifying on a truncated list would let runtime files past the cap go
+  // unseen and the PR read as non-runtime.
+  const maxPages = 30; // 100 per page = the 3,000-file API cap
+  for (let page = 1; page <= maxPages; page += 1) {
     const batch = await githubJson(
       `${apiUrl}/repos/${repository}/pulls/${number}/files?per_page=100&page=${page}`,
       token
     );
     if (!Array.isArray(batch)) throw new Error('GitHub pull request files response was not an array');
-    files.push(...batch.map((entry) => entry.filename).filter((entry) => typeof entry === 'string'));
+    for (const entry of batch) {
+      // A rename reports only its destination in `filename`. Moving a runtime
+      // file into docs/ or tests/ would otherwise read as a non-runtime change,
+      // so the pre-rename path counts too.
+      for (const path of [entry?.filename, entry?.previous_filename]) {
+        if (typeof path === 'string' && path.trim()) files.push(path);
+      }
+    }
     if (batch.length < 100) return files;
   }
-  throw new Error('PR changes more than 3,000 files; RelayFlow proof dispatch refuses ambiguous scope');
+  const ambiguous = new Error(
+    'PR reaches the 3,000-file GitHub API cap; RelayFlow proof dispatch refuses a possibly truncated diff'
+  );
+  // Not a transport failure: scope this large must not be resolved by falling
+  // back to the title, so this one escapes the caller's catch.
+  ambiguous.ambiguousScope = true;
+  throw ambiguous;
 }
 
 export function pullRequestSnapshot(pullRequest) {
@@ -153,7 +179,27 @@ export async function main() {
   }
   const snapshot = pullRequestSnapshot(pullRequest);
 
-  const classification = classifyPullRequest({ title: pullRequest.title, body: pullRequest.body ?? '' });
+  // Fetch the diff BEFORE classifying: whether a proof is required is decided
+  // by what changed, not by how the title was worded.
+  //
+  // classifyPullRequest documents a title-only fallback for an unknown diff;
+  // without this catch the await threw first and the fallback was unreachable,
+  // blocking every PR whenever the files endpoint was down.
+  let changedFiles = null;
+  try {
+    changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
+  } catch (error) {
+    if (error?.ambiguousScope) throw error;
+    process.stderr.write(
+      `Could not read the changed-file list (${error?.message ?? error}); ` +
+        'falling back to title-only classification.\n'
+    );
+  }
+  const classification = classifyPullRequest({
+    title: pullRequest.title,
+    body: pullRequest.body ?? '',
+    changedFiles,
+  });
   if (classification.errors.length > 0) {
     throw new PrProofContractError(
       'Pull request does not satisfy the RelayFlow proof contract',
@@ -170,6 +216,16 @@ export async function main() {
     );
     return;
   }
+  // Past this point the changed-file list is load-bearing: it is what confirms
+  // the declared case is actually touched. The title-only fallback above can
+  // legitimately reach here with `null`, and `changedFiles.some(...)` below
+  // would throw an opaque TypeError instead of saying what went wrong.
+  if (changedFiles === null) {
+    throw new PrProofContractError('A required proof cannot be validated without the changed-file list', [
+      'the GitHub pull request files endpoint could not be read',
+      'classification fell back to the PR title, which cannot confirm the declared RelayFlow case',
+    ]);
+  }
   if (headRepository !== repository) {
     throw new PrProofContractError('Fork pull requests cannot receive the credential-bearing Cloud proof', [
       `head repository ${headRepository} is not the trusted repository ${repository}`,
@@ -179,7 +235,6 @@ export async function main() {
 
   const caseId = classification.caseId;
   const manifestPath = caseManifestPath(caseId);
-  const changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
   const caseRoot = path.posix.dirname(manifestPath) + '/';
   const changedCaseIds = changedRelayFlowCaseIds(changedFiles);
   if (!changedFiles.some((file) => file === manifestPath || file.startsWith(caseRoot))) {
