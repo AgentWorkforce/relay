@@ -623,7 +623,14 @@ mod tests {
             .get(mcp_config_index + 1)
             .expect("claude mcp config value");
 
-        assert!(config_json.contains("at_live_register_test_token"));
+        assert!(
+            !config_json.contains("at_live_register_test_token"),
+            "a freshly minted token must not be published into argv (relay#1570)"
+        );
+        assert_eq!(
+            secrets_from_claude_config(config_json)["RELAY_AGENT_TOKEN"].as_str(),
+            Some("at_live_register_test_token")
+        );
         register_mock.assert();
     }
 
@@ -826,25 +833,59 @@ mod tests {
             .get(mcp_config_index + 1)
             .expect("claude mcp config value");
 
-        // The config is built from the values the compute function resolved,
-        // so if env fallback works the sentinel values show up in the env
-        // block or the RELAY_API_KEY that claude's injection path writes.
+        // The config is built from the values the compute function resolved, so
+        // if env fallback works the sentinels show up — the non-secret ones
+        // inline, the credentials in the referenced secrets file.
         assert!(
             config_json.contains("https://relay.example.com"),
             "base url from env missing in claude config: {config_json}"
         );
         assert!(
-            config_json.contains("at_live_from_env"),
-            "agent token from env missing in claude config: {config_json}"
-        );
-        assert!(
             config_json.contains("env-default-workspace"),
             "default workspace from env missing in claude config: {config_json}"
         );
-        assert!(
-            config_json.contains("env-ws"),
-            "workspaces json from env missing in claude config: {config_json}"
+        for secret in ["at_live_from_env", "rk_live_from_env", "env-ws"] {
+            assert!(
+                !config_json.contains(secret),
+                "credential leaked into argv (relay#1570): {secret} in {config_json}"
+            );
+        }
+        let secrets = secrets_from_claude_config(config_json);
+        assert_eq!(
+            secrets["RELAY_AGENT_TOKEN"].as_str(),
+            Some("at_live_from_env"),
+            "agent token from env missing in secrets file"
         );
+        assert_eq!(
+            secrets["RELAY_API_KEY"].as_str(),
+            Some("rk_live_from_env"),
+            "api key from env missing in secrets file"
+        );
+        assert!(
+            secrets["RELAY_WORKSPACES_JSON"]
+                .as_str()
+                .is_some_and(|value| value.contains("env-ws")),
+            "workspaces json from env missing in secrets file"
+        );
+    }
+
+    /// Credentials no longer travel in argv (relay#1570): the claude
+    /// `--mcp-config` blob carries a `RELAY_SECRETS_FILE` path instead. Read
+    /// that file back so tests can assert on what the agent actually receives.
+    fn secrets_from_claude_config(config_json: &str) -> serde_json::Map<String, serde_json::Value> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(config_json).expect("parse mcp-config JSON");
+        let path = parsed
+            .pointer("/mcpServers/agent-relay/env/RELAY_SECRETS_FILE")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("no RELAY_SECRETS_FILE in mcp-config: {config_json}"));
+        let body = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("read secrets file {path}: {error}"));
+        serde_json::from_str::<serde_json::Value>(&body)
+            .expect("parse secrets file")
+            .as_object()
+            .cloned()
+            .expect("secrets file must be a JSON object")
     }
 
     #[tokio::test]

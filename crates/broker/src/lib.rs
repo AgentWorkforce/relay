@@ -9,6 +9,7 @@
 pub mod fleet_wire;
 pub mod ids;
 pub mod protocol;
+pub mod secrets_file;
 pub mod snippets;
 
 pub(crate) mod broker;

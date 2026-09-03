@@ -102,6 +102,38 @@ jobs:
         with:
           category: '/language:javascript-typescript'
 
+  # Guard against relay#1570: live credentials in a spawned process's argv.
+  # The broker configures agent CLIs through their own command lines, so a
+  # credential inlined there is readable via `ps` by every other process on the
+  # host. This drives the real spawn path with sentinel credentials and fails if
+  # any of them survive into argv.
+  #
+  # Gated on Rust changes because argv construction lives entirely in the broker
+  # crate; the weekly schedule catches drift from anywhere else.
+  argv-secret-guard:
+    name: Argv Secret Guard
+    needs: changes
+    if: needs.changes.outputs.rust_changed == 'true' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build broker
+        run: cargo build -p agent-relay-broker --bin agent-relay-broker
+
+      - name: Check that no credential reaches argv
+        run: node scripts/check-argv-secrets.mjs
+
   # Secret scanning (check for accidentally committed secrets)
   secrets-scan:
     name: Secret Scanning

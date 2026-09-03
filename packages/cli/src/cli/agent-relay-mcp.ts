@@ -279,6 +279,46 @@ function isUnresolvedEnvTemplate(value: string): boolean {
 }
 
 /**
+ * Load the credentials the broker deliberately kept off the command line.
+ *
+ * Agent CLIs are configured through their own argv (`codex --config …`,
+ * `claude --mcp-config …`), so any credential inlined there is readable via
+ * `ps` by every other process on the host (relay#1570). The broker now writes
+ * those values to a 0600 file and passes only its path in `RELAY_SECRETS_FILE`;
+ * this hydrates them back into `process.env` before the options below read it.
+ *
+ * File values win over inherited env on purpose. These pairs previously arrived
+ * in the CLI's MCP `env:` block, which overrides whatever the CLI inherited —
+ * so deferring to ambient env here would be a behavior change, and would let a
+ * stale credential from an outer agent's shell shadow this spawn's own.
+ */
+export function hydrateSecretsFromFile(env: NodeJS.ProcessEnv = process.env): void {
+  const secretsPath = env.RELAY_SECRETS_FILE?.trim();
+  if (!secretsPath || isUnresolvedEnvTemplate(secretsPath)) return;
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(secretsPath, 'utf8');
+  } catch {
+    // A missing or unreadable secrets file must not brick MCP startup: the
+    // server can still bootstrap from ambient env or a persisted workspace.
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return;
+
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.length > 0) env[key] = value;
+  }
+}
+
+/**
  * Normalize a base URL by stripping trailing slashes. Returns `undefined` when
  * no base URL is provided — this helper never injects a default. The hosted
  * base-URL default is owned by the underlying Relaycast engine clients (the
@@ -1537,6 +1577,7 @@ export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOption
 }
 
 export function optionsFromEnv(): AgentRelayMcpServerOptions {
+  hydrateSecretsFromFile();
   let workspaceKey =
     resolveEnv('RELAY_WORKSPACE_KEY') ??
     resolveEnv('AGENT_RELAY_WORKSPACE_KEY') ??

@@ -14,6 +14,7 @@ use tokio::{
     process::Command,
 };
 
+use crate::secrets_file::{externalize_secret_env, is_secret_env_key, RELAY_SECRETS_FILE_ENV};
 use crate::types::AgentResultMcpConfig;
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
@@ -766,6 +767,52 @@ fn inject_api_key_into_mcp_json(mcp_json: &str, api_key: Option<&str>) -> String
     serde_json::to_string(&parsed).unwrap_or_else(|_| mcp_json.to_string())
 }
 
+/// Move credential values out of an inline `--mcp-config` JSON blob.
+///
+/// Claude receives this JSON as a single argv element, so every value inside it
+/// is visible in `ps` (relay#1570). The secret-bearing entries are written to a
+/// 0600 file and replaced by a `RELAY_SECRETS_FILE` path; `agent-relay mcp`
+/// reads them back at startup. Non-secret entries (agent name, base URL, flags)
+/// stay inline so the spawn stays debuggable from the command line.
+fn externalize_secrets_in_mcp_json(mcp_json: &str, agent_name: &str) -> Result<String> {
+    let mut parsed: Value = match serde_json::from_str(mcp_json) {
+        Ok(value) => value,
+        // A blob we cannot parse is one we cannot safely rewrite. Returning it
+        // unchanged would silently reintroduce the leak, so fail loudly.
+        Err(error) => anyhow::bail!("cannot parse Agent Relay MCP config JSON: {error}"),
+    };
+
+    let Some(env_obj) = parsed
+        .pointer_mut("/mcpServers/agent-relay/env")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(mcp_json.to_string());
+    };
+
+    let pairs: Vec<(String, String)> = env_obj
+        .iter()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+        .collect();
+
+    if !pairs.iter().any(|(key, _)| is_secret_env_key(key)) {
+        return Ok(mcp_json.to_string());
+    }
+
+    let externalized = externalize_secret_env(agent_name, pairs)?;
+    env_obj.retain(|key, _| !is_secret_env_key(key));
+    if let Some((_, path)) = externalized
+        .iter()
+        .find(|(key, _)| key == RELAY_SECRETS_FILE_ENV)
+    {
+        env_obj.insert(
+            RELAY_SECRETS_FILE_ENV.to_string(),
+            Value::String(path.clone()),
+        );
+    }
+
+    serde_json::to_string(&parsed).context("cannot reserialize Agent Relay MCP config JSON")
+}
+
 const OPENCODE_CONFIG: &str = "opencode.json";
 const OPENCODE_AGENT_NAME: &str = AGENT_RELAY_MCP_SERVER;
 // Key name taken from https://opencode.ai/config.json §permission.
@@ -1204,6 +1251,9 @@ pub async fn configure_agent_relay_mcp_with_result(
         // Claude Code does not reliably pass parent process env vars to MCP server
         // subprocesses, so RELAY_API_KEY must be injected directly into the config.
         let mcp_json = inject_api_key_into_mcp_json(&mcp_json, api_key);
+        // `--mcp-config` is argv, so the credentials it carries are readable by
+        // every process on the host until they are moved out of line.
+        let mcp_json = externalize_secrets_in_mcp_json(&mcp_json, agent_name)?;
         args.push("--mcp-config".to_string());
         args.push(mcp_json);
     }
@@ -1228,88 +1278,55 @@ pub async fn configure_agent_relay_mcp_with_result(
             .any(|a| a.contains("mcp_servers.agent-relay") || a.contains("mcp_servers.relaycast"))
     {
         let mcp_command = agent_relay_mcp_command();
+        push_codex_mcp_command_config_args(&mut args, &mcp_command);
+
+        // Build the full env set first, then hand it to `externalize_secret_env`,
+        // which strips the credential-bearing pairs into a 0600 file and hands
+        // back a `RELAY_SECRETS_FILE` reference in their place. Every codex
+        // `--config` below lands in argv, where `ps` exposes it to every other
+        // process on the host (relay#1570) — so only non-secret values may be
+        // emitted here.
+        let mut env_pairs: Vec<(String, String)> = Vec::new();
+        if let Some(key) = api_key {
+            env_pairs.push(("RELAY_API_KEY".to_string(), key.to_string()));
+        }
+        if let Some(url) = base_url {
+            env_pairs.push(("RELAY_BASE_URL".to_string(), url.to_string()));
+        }
+        env_pairs.push(("RELAY_AGENT_NAME".to_string(), agent_name.to_string()));
+        env_pairs.push(("RELAY_AGENT_TYPE".to_string(), "agent".to_string()));
+        env_pairs.push(("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()));
+        if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+            env_pairs.push(("RELAY_AGENT_TOKEN".to_string(), token.to_string()));
+            // Skip bootstrap when the broker has already pre-registered the agent.
+            // This stays in argv: it is a flag, not a credential.
+            env_pairs.push(("RELAY_SKIP_BOOTSTRAP".to_string(), "1".to_string()));
+        }
+        // Forward multi-workspace context to codex child agents.
+        if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
+            env_pairs.push(("RELAY_WORKSPACES_JSON".to_string(), wj.to_string()));
+        }
+        if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
+            env_pairs.push(("RELAY_DEFAULT_WORKSPACE".to_string(), dw.to_string()));
+        }
+        if let Some(config) = agent_result {
+            for (key, value) in config.env_pairs() {
+                env_pairs.push((key.to_string(), value));
+            }
+        }
+
         // NOTE: All values passed via codex `--config` are parsed as TOML.
         // String values MUST be quoted (e.g. `"agent-relay"` not `agent-relay`) to avoid parse
         // errors or type mismatches.  Bare `1` is an integer; bare `at_live_xxx`
         // is a TOML parse error; only quoted values are reliably treated as strings.
-        push_codex_mcp_command_config_args(&mut args, &mcp_command);
-        if let Some(key) = api_key {
+        for (key, value) in externalize_secret_env(agent_name, env_pairs)? {
             args.extend([
                 "--config".to_string(),
                 format!(
-                    "mcp_servers.agent-relay.env.RELAY_API_KEY=\"{}\"",
-                    escape_toml_basic_string(key)
+                    "mcp_servers.agent-relay.env.{key}=\"{}\"",
+                    escape_toml_basic_string(&value)
                 ),
             ]);
-        }
-        if let Some(url) = base_url {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_BASE_URL=\"{}\"",
-                    escape_toml_basic_string(url)
-                ),
-            ]);
-        }
-        args.extend([
-            "--config".to_string(),
-            format!(
-                "mcp_servers.agent-relay.env.RELAY_AGENT_NAME=\"{}\"",
-                escape_toml_basic_string(agent_name)
-            ),
-        ]);
-        args.extend([
-            "--config".to_string(),
-            "mcp_servers.agent-relay.env.RELAY_AGENT_TYPE=\"agent\"".to_string(),
-        ]);
-        args.extend([
-            "--config".to_string(),
-            "mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string(),
-        ]);
-        if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"{}\"",
-                    escape_toml_basic_string(token)
-                ),
-            ]);
-            // Skip bootstrap when the broker has already pre-registered the agent.
-            args.extend([
-                "--config".to_string(),
-                "mcp_servers.agent-relay.env.RELAY_SKIP_BOOTSTRAP=\"1\"".to_string(),
-            ]);
-        }
-        // Forward multi-workspace context to codex child agents.
-        // JSON values must have inner quotes escaped for TOML basic-string parsing.
-        if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_WORKSPACES_JSON=\"{}\"",
-                    escape_toml_basic_string(wj)
-                ),
-            ]);
-        }
-        if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
-                format!(
-                    "mcp_servers.agent-relay.env.RELAY_DEFAULT_WORKSPACE=\"{}\"",
-                    escape_toml_basic_string(dw)
-                ),
-            ]);
-        }
-        if let Some(config) = agent_result {
-            for (key, value) in config.env_pairs() {
-                args.extend([
-                    "--config".to_string(),
-                    format!(
-                        "mcp_servers.agent-relay.env.{key}=\"{}\"",
-                        escape_toml_basic_string(&value)
-                    ),
-                ]);
-            }
         }
     } else if is_gemini || is_droid {
         // Result callback tokens are per-spawn secrets. Gemini/Droid, OpenCode,
@@ -1868,6 +1885,89 @@ mod tests {
         );
     }
 
+    /// Credentials no longer travel in argv (relay#1570); they are written to a
+    /// 0600 file whose path is all that appears on the command line. These
+    /// helpers read that file back so tests can assert on the values that a
+    /// spawned agent will actually receive.
+    fn read_secrets_file(path: &str) -> Map<String, Value> {
+        let body = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("read secrets file {path}: {error}"));
+        serde_json::from_str::<Value>(&body)
+            .unwrap_or_else(|error| panic!("parse secrets file {path}: {error}"))
+            .as_object()
+            .cloned()
+            .expect("secrets file must be a JSON object")
+    }
+
+    /// Secrets referenced by a codex `--config` arg list.
+    fn codex_secrets(args: &[String]) -> Map<String, Value> {
+        let prefix = "mcp_servers.agent-relay.env.RELAY_SECRETS_FILE=\"";
+        let arg = args
+            .iter()
+            .find(|arg| arg.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no RELAY_SECRETS_FILE in codex args: {args:?}"));
+        read_secrets_file(arg[prefix.len()..].trim_end_matches('"'))
+    }
+
+    /// Secrets referenced by a claude `--mcp-config` JSON blob.
+    fn claude_secrets(args: &[String]) -> Map<String, Value> {
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let path = json
+            .pointer("/mcpServers/agent-relay/env/RELAY_SECRETS_FILE")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("no RELAY_SECRETS_FILE in mcp-config: {}", args[1]));
+        read_secrets_file(path)
+    }
+
+    /// Assert a credential value does not appear anywhere in argv.
+    fn assert_absent_from_args(args: &[String], secret: &str) {
+        assert!(
+            !args.iter().any(|arg| arg.contains(secret)),
+            "credential leaked into argv (relay#1570): {secret} in {args:?}"
+        );
+    }
+
+    /// relay#1570 regression: no live-credential shape may appear in the argv
+    /// the broker hands to an agent CLI, for any CLI whose config is argv.
+    #[tokio::test]
+    async fn no_credential_shape_reaches_argv_for_any_cli() {
+        for cli in ["codex", "claude"] {
+            let temp = tempdir().expect("tempdir");
+            let config = test_agent_result_config();
+            let args = super::configure_agent_relay_mcp_with_result(
+                cli,
+                "leak-check",
+                Some("rk_live_leakcheckapikey"),
+                Some("https://cast.agentrelay.com"),
+                &[],
+                temp.path(),
+                Some("at_live_leakcheckagenttoken"),
+                Some(r#"[{"api_key":"rk_live_leakcheckworkspacekey","workspace_id":"rw_1"}]"#),
+                Some("rw_1"),
+                Some(&config),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("configure {cli} mcp: {error}"));
+
+            let joined = args.join(" ");
+            assert!(
+                !joined.is_empty(),
+                "{cli}: no args produced — nothing checked"
+            );
+            for shape in ["rk_live_", "at_live_", "arr_test"] {
+                assert!(
+                    !joined.contains(shape),
+                    "{cli}: credential shape {shape} reached argv (relay#1570): {joined}"
+                );
+            }
+            assert!(
+                joined.contains("RELAY_SECRETS_FILE"),
+                "{cli}: credentials absent from argv but no secrets file referenced — \
+                 this assertion would pass vacuously if the config stopped being emitted"
+            );
+        }
+    }
+
     fn test_agent_result_config() -> crate::types::AgentResultMcpConfig {
         crate::types::AgentResultMcpConfig {
             callback_url: "http://127.0.0.1:3889/api/agent-result".to_string(),
@@ -2296,7 +2396,7 @@ exit 0
     }
 
     #[tokio::test]
-    async fn claude_includes_api_key_in_mcp_config() {
+    async fn claude_delivers_api_key_out_of_argv() {
         let temp = tempdir().expect("tempdir");
         let args = super::configure_agent_relay_mcp(
             "claude",
@@ -2309,12 +2409,13 @@ exit 0
         .await
         .expect("configure claude mcp");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        // Claude Code does not reliably inherit parent env into MCP server
+        // subprocesses, so the key must still be delivered through the config —
+        // but by reference, since `--mcp-config` is argv.
+        assert_absent_from_args(&args, "rk_live_secret");
         assert_eq!(
-            json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
-            Some("rk_live_secret"),
-            "RELAY_API_KEY must appear in Claude --mcp-config (Claude Code does not reliably \
-             inherit parent env vars to MCP server subprocesses)"
+            claude_secrets(&args)["RELAY_API_KEY"].as_str(),
+            Some("rk_live_secret")
         );
     }
 
@@ -2350,9 +2451,9 @@ exit 0
         .await
         .expect("configure claude mcp with token");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        assert_absent_from_args(&args, "tok_abc123");
         assert_eq!(
-            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            claude_secrets(&args)["RELAY_AGENT_TOKEN"].as_str(),
             Some("tok_abc123")
         );
     }
@@ -2626,8 +2727,12 @@ exit 0
         assert!(args
             .iter()
             .any(|a| a.contains("mcp_servers.agent-relay.args=")));
-        assert!(
-            args.contains(&"mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_xyz\"".to_string())
+        // The API key must reach the agent, but never through argv.
+        assert_absent_from_args(&args, "rk_live_xyz");
+        assert_eq!(
+            codex_secrets(&args)["RELAY_API_KEY"].as_str(),
+            Some("rk_live_xyz"),
+            "RELAY_API_KEY must be delivered through the secrets file"
         );
         assert!(args.contains(
             &"mcp_servers.agent-relay.env.RELAY_BASE_URL=\"https://cast.agentrelay.com\""
@@ -2648,7 +2753,7 @@ exit 0
     }
 
     #[tokio::test]
-    async fn codex_includes_api_key_unlike_claude() {
+    async fn codex_delivers_api_key_out_of_argv() {
         let temp = tempdir().expect("tempdir");
         let args = super::configure_agent_relay_mcp(
             "codex",
@@ -2661,10 +2766,11 @@ exit 0
         .await
         .expect("configure codex mcp");
 
-        assert!(
-            args.iter()
-                .any(|a| a == "mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_secret\""),
-            "Codex must include RELAY_API_KEY in --config args"
+        assert_absent_from_args(&args, "rk_live_secret");
+        assert_eq!(
+            codex_secrets(&args)["RELAY_API_KEY"].as_str(),
+            Some("rk_live_secret"),
+            "Codex must still receive RELAY_API_KEY, via the secrets file"
         );
     }
 
@@ -2685,15 +2791,20 @@ exit 0
         .await
         .expect("configure codex mcp with token");
 
-        assert!(
-            args.iter()
-                .any(|a| a == "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"tok_codex_123\""),
-            "Codex must include RELAY_AGENT_TOKEN when provided"
+        assert_absent_from_args(&args, "tok_codex_123");
+        assert_eq!(
+            codex_secrets(&args)["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_codex_123"),
+            "Codex must receive RELAY_AGENT_TOKEN via the secrets file"
         );
+        // The flag that depends on the token staying set must remain in argv.
+        assert!(args
+            .iter()
+            .any(|a| a == "mcp_servers.agent-relay.env.RELAY_SKIP_BOOTSTRAP=\"1\""));
     }
 
     #[tokio::test]
-    async fn codex_includes_agent_result_env_in_inline_config() {
+    async fn codex_carries_agent_result_env_with_the_token_out_of_argv() {
         let temp = tempdir().expect("tempdir");
         let config = test_agent_result_config();
         let args = super::configure_agent_relay_mcp_with_result(
@@ -2711,10 +2822,15 @@ exit 0
         .await
         .expect("configure codex mcp with result");
 
-        assert!(
-            args.iter()
-                .any(|a| a == "mcp_servers.agent-relay.env.AGENT_RELAY_RESULT_TOKEN=\"arr_test\""),
-            "Codex inline config can carry per-agent result callback env"
+        // The callback URL is not a credential and stays inline; the bearer
+        // token that authorizes it must not.
+        assert!(args.iter().any(|a| a
+            == "mcp_servers.agent-relay.env.AGENT_RELAY_RESULT_URL=\"http://127.0.0.1:3889/api/agent-result\""));
+        assert_absent_from_args(&args, "arr_test");
+        assert_eq!(
+            codex_secrets(&args)["AGENT_RELAY_RESULT_TOKEN"].as_str(),
+            Some("arr_test"),
+            "result callback token must travel through the secrets file"
         );
     }
 
@@ -3216,10 +3332,10 @@ exit 0
         .await
         .expect("configure claude with whitespace token");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
-            Some("tok_123")
+            claude_secrets(&args)["RELAY_AGENT_TOKEN"].as_str(),
+            Some("tok_123"),
+            "the token must still be trimmed on its way into the secrets file"
         );
     }
 
@@ -3751,21 +3867,19 @@ exit 0
             "Agent Relay must be present"
         );
 
-        // Agent Relay has broker-injected credentials
+        // Non-secret identity stays inline so the spawn is debuggable.
         assert_eq!(
             servers["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
             Some("TestWorker")
         );
-        assert_eq!(
-            servers["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
-            Some("tok_abc")
-        );
-        // RELAY_API_KEY is injected for Claude --mcp-config
-        assert_eq!(
-            servers["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
-            Some("rk_live_test"),
-            "RELAY_API_KEY must be present in Claude --mcp-config"
-        );
+
+        // Credentials are delivered by reference, not in the command line.
+        for secret in ["tok_abc", "rk_live_test"] {
+            assert_absent_from_args(&args, secret);
+        }
+        let secrets = claude_secrets(&args);
+        assert_eq!(secrets["RELAY_AGENT_TOKEN"].as_str(), Some("tok_abc"));
+        assert_eq!(secrets["RELAY_API_KEY"].as_str(), Some("rk_live_test"));
     }
 
     /// Test B: Precedence test — project-level .mcp.json overrides global settings.
@@ -4199,10 +4313,12 @@ exit 0
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         let env = &json["mcpServers"]["agent-relay"]["env"];
+        // The workspaces blob embeds an api_key per entry, so it is a secret and
+        // moves to the file; the default-workspace id is not and stays inline.
         assert_eq!(
-            env["RELAY_WORKSPACES_JSON"].as_str(),
+            claude_secrets(&args)["RELAY_WORKSPACES_JSON"].as_str(),
             Some("wj"),
-            "RELAY_WORKSPACES_JSON must appear in --mcp-config env"
+            "RELAY_WORKSPACES_JSON must reach the agent through the secrets file"
         );
         assert_eq!(
             env["RELAY_DEFAULT_WORKSPACE"].as_str(),
@@ -4269,10 +4385,18 @@ exit 0
 
         let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         let env = &json["mcpServers"]["agent-relay"]["env"];
-        assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
-        assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
-        assert_eq!(env["RELAY_WORKSPACES_JSON"].as_str(), Some("[\"ws-a\"]"));
         assert_eq!(env["RELAY_DEFAULT_WORKSPACE"].as_str(), Some("ws-a"));
+
+        for secret in ["rk_live_hl", "tok_hl_123"] {
+            assert_absent_from_args(&args, secret);
+        }
+        let secrets = claude_secrets(&args);
+        assert_eq!(secrets["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
+        assert_eq!(secrets["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
+        assert_eq!(
+            secrets["RELAY_WORKSPACES_JSON"].as_str(),
+            Some("[\"ws-a\"]")
+        );
     }
 
     #[tokio::test]
@@ -4286,9 +4410,8 @@ exit 0
                 .expect("configure claude mcp from env");
         std::env::remove_var("RELAY_WORKSPACES_JSON");
 
-        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
         assert_eq!(
-            json["mcpServers"]["agent-relay"]["env"]["RELAY_WORKSPACES_JSON"].as_str(),
+            claude_secrets(&args)["RELAY_WORKSPACES_JSON"].as_str(),
             Some("wj-from-env"),
             "public configure_agent_relay_mcp must read RELAY_WORKSPACES_JSON from process env"
         );
