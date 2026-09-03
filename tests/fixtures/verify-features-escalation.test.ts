@@ -253,6 +253,35 @@ describe('verify-features escalation status', () => {
     expect(`${stdout}\n${stderr}`).not.toContain('SLACK_POSTED');
   });
 
+  it('rejects an array provenance value before Slack delivery', async () => {
+    const directory = await artifacts();
+    await writeFile(
+      path.join(directory, 'verdict.json'),
+      JSON.stringify({
+        runId: 'verify-array-provenance',
+        verdict: 'FAIL',
+        provenance: [],
+        totals: { pass: 0, fail: 1, skip: 0 },
+        tiers: { tier1: { pass: 0, fail: 1, skip: 0, failures: [] } },
+        tiersNotRun: [],
+      })
+    );
+
+    const { stdout } = await execFileAsync('bash', [slackAlertPath], {
+      env: {
+        ...process.env,
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-array-provenance',
+        VERIFY_SLACK_CHANNEL: 'C0AEKNLDNKW',
+      },
+      timeout: 10_000,
+    });
+    const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-slack-primary.json'), 'utf8'));
+
+    expect(receipt).toMatchObject({ channel: 'slack_primary', state: 'failed' });
+    expect(stdout).toContain('SLACK_FAILED: verdict.json is malformed or incomplete');
+  });
+
   it('preserves an explicitly empty Slack channel as a failed delivery', async () => {
     const directory = await artifacts();
     await writeFile(
@@ -296,7 +325,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 printf '%s' "$FAKE_CURL_HTTP_STATUS"
-exit 0
+exit "$FAKE_CURL_EXIT_STATUS"
 `,
       { mode: 0o755 }
     );
@@ -310,6 +339,7 @@ exit 0
         PATH: `${bin}:${process.env.PATH ?? ''}`,
         INFRA_CAPTURE: capturedBody,
         FAKE_CURL_HTTP_STATUS: '302',
+        FAKE_CURL_EXIT_STATUS: '0',
         VERIFY_ARTIFACTS: directory,
         VERIFY_RUN_ID: 'verify-infra-http-failure',
         VERIFY_ENVIRONMENT: 'sandbox "quoted"',
@@ -329,6 +359,22 @@ exit 0
       requestId: 'verify-infra-http-failure',
       errorCode: 'no_provider_cli',
     });
+
+    const { stdout: transportStdout } = await execFileAsync('bash', [infraEscalationPath], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        INFRA_CAPTURE: capturedBody,
+        FAKE_CURL_HTTP_STATUS: '000',
+        FAKE_CURL_EXIT_STATUS: '7',
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-infra-transport-failure',
+        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+        NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
+      },
+      timeout: 10_000,
+    });
+    expect(transportStdout).toContain('DELIVERY_FAILED: POST transport failed (curl exit 7)');
   });
 
   it('isolates artifacts and all mutating fix steps per invocation', async () => {
@@ -782,6 +828,34 @@ exit 0
 
     await removeRunWorktree(repo, worktreeA);
     await removeRunWorktree(repo, worktreeB);
+  });
+
+  it('does not remove a pre-existing worktree when a duplicate add fails', async () => {
+    const repo = await artifacts();
+    await execFileAsync('git', ['-C', repo, 'init']);
+    await writeFile(path.join(repo, 'fixture.txt'), 'base\n');
+    await execFileAsync('git', ['-C', repo, 'add', 'fixture.txt']);
+    await execFileAsync('git', [
+      '-C',
+      repo,
+      '-c',
+      'user.name=Relay Test',
+      '-c',
+      'user.email=relay@example.invalid',
+      'commit',
+      '-m',
+      'fixture',
+    ]);
+    const workspace = await artifacts();
+    const existing = await prepareRunWorktree(repo, workspace, 'verify-existing');
+    await writeFile(path.join(existing, 'uncommitted.txt'), 'must survive\n');
+
+    await expect(prepareRunWorktree(repo, workspace, 'verify-existing')).rejects.toThrow('git worktree add');
+
+    expect(await readFile(path.join(existing, 'uncommitted.txt'), 'utf8')).toBe('must survive\n');
+    const { stdout: worktreeList } = await execFileAsync('git', ['-C', repo, 'worktree', 'list']);
+    expect(worktreeList).toContain(existing);
+    await removeRunWorktree(repo, existing);
   });
 
   it.skipIf(process.platform === 'win32')(

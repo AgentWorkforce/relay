@@ -36,6 +36,7 @@ if (
   !['PASS', 'FAIL'].includes(verdict.verdict) ||
   !verdict.provenance ||
   typeof verdict.provenance !== 'object' ||
+  Array.isArray(verdict.provenance) ||
   !verdict.totals ||
   !count(verdict.totals.pass) ||
   !count(verdict.totals.fail) ||
