@@ -52,7 +52,14 @@ if (
       !count(tier.pass) ||
       !count(tier.fail) ||
       !count(tier.skip) ||
-      !Array.isArray(tier.failures)
+      !Array.isArray(tier.failures) ||
+      tier.failures.some(
+        (failure) =>
+          !failure ||
+          typeof failure !== 'object' ||
+          typeof failure.check !== 'string' ||
+          typeof failure.reason !== 'string'
+      )
   )
 ) {
   throw new Error('verdict.json does not satisfy the alert contract');

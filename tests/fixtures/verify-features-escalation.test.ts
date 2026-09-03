@@ -225,7 +225,17 @@ describe('verify-features escalation status', () => {
 
   it('fails closed before Slack delivery when verdict.json is structurally malformed', async () => {
     const directory = await artifacts();
-    await writeFile(path.join(directory, 'verdict.json'), '{"verdict":"FAIL"}\n');
+    await writeFile(
+      path.join(directory, 'verdict.json'),
+      JSON.stringify({
+        runId: 'verify-malformed-verdict',
+        verdict: 'FAIL',
+        provenance: {},
+        totals: { pass: 0, fail: 1, skip: 0 },
+        tiers: { tier1: { pass: 0, fail: 1, skip: 0, failures: [null] } },
+        tiersNotRun: [],
+      })
+    );
 
     const { stdout, stderr } = await execFileAsync('bash', [slackAlertPath], {
       env: {
