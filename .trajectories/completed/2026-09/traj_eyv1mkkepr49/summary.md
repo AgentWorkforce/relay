@@ -18,6 +18,7 @@ Made node status verify its advertised name and ID against the Cloud addressabil
 ## Key Decisions
 
 ### Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration
+
 - **Chose:** Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration
 - **Reasoning:** Live inspection showed the second broker eventually appears in Cloud, so multiple brokers are supported; the failure window is local readiness advertising a name before the Cloud REST lookup used by --node can resolve it. Status now reports registered, confirmed LOCAL-ONLY, or unknown and gives SSH/state-dir guidance.
 
@@ -26,7 +27,8 @@ Made node status verify its advertised name and ID against the Cloud addressabil
 ## Chapters
 
 ### 1. Work
-*Agent: default*
+
+_Agent: default_
 
 - Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration: Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration
 - Implementation and unit/full suites are green; live status now confirms chief-sfm-final by exact name and node ID after bounded retries through transient Cloud 503s.
