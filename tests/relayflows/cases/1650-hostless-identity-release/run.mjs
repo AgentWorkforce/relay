@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -31,6 +31,7 @@ const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
+const brokerPort = await reservePort();
 
 if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
@@ -85,6 +86,13 @@ const relaycast = http.createServer(async (request, response) => {
 
   if (request.method === 'POST' && pathname === '/v1/agents/release') {
     releaseBodies.push(body);
+    if (body?.name !== AGENT_NAME) {
+      sendJson(response, 400, {
+        ok: false,
+        error: { code: 'invalid_agent', message: 'Unexpected release target.' },
+      });
+      return;
+    }
     if (body?.delete_agent !== true) {
       sendJson(response, 503, {
         ok: false,
@@ -154,7 +162,7 @@ try {
       '--state-dir',
       stateDir,
       '--api-port',
-      '0',
+      String(brokerPort),
       '--channels',
       '',
     ],
@@ -176,7 +184,7 @@ try {
     brokerStderr = `${brokerStderr}${chunk}`.slice(-16_000);
   });
 
-  const brokerUrl = await waitForConnection(path.join(stateDir, 'connection.json'), broker);
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
   await waitFor(
     async () => {
       const response = await fetch(`${brokerUrl}/api/session`, {
@@ -275,24 +283,6 @@ async function readJson(request) {
   return raw ? JSON.parse(raw) : undefined;
 }
 
-async function waitForConnection(connectionPath, child) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Broker exited before readiness (${child.exitCode}): ${brokerStderr}`);
-    }
-    try {
-      const parsed = JSON.parse(await readFile(connectionPath, 'utf8'));
-      if (typeof parsed?.port === 'number') return `http://127.0.0.1:${parsed.port}`;
-      if (typeof parsed?.url === 'string') return parsed.url;
-    } catch {
-      // The broker writes connection.json atomically; absence while starting is expected.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Broker did not publish connection.json: ${brokerStderr}`);
-}
-
 async function waitFor(probe, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -307,6 +297,20 @@ async function waitFor(probe, timeoutMs, label) {
   throw new Error(
     `Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}: ${brokerStderr}`
   );
+}
+
+async function reservePort() {
+  const server = http.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Expected broker TCP address.');
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return address.port;
 }
 
 function requiredValue(name) {

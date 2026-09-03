@@ -1019,6 +1019,12 @@ impl BrokerRuntime {
                     Err(e) => {
                         let message = e.to_string();
                         if is_unknown_worker_error_message(&message) {
+                            // This is an authenticated broker-administration
+                            // endpoint, not an agent-scoped API. Its API key
+                            // already authorizes spawn/name-reclaim operations
+                            // in the attached workspace. Preserve the unknown
+                            // worker fallback so a retry after local process
+                            // exit can finish the remote identity teardown.
                             let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                                 fleet_control_tx,
                                 fleet_delivery_book,
