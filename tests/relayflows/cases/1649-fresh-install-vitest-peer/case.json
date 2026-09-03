@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1649-fresh-install-vitest-peer",
+  "kind": "bugfix",
+  "title": "A lockfile-less npm install on npm 10.9 survives the vitest 5 wildcard peer",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1649-fresh-install-vitest-peer/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "fresh_install_crashes_on_wildcard_vitest_peer"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "fresh_install_resolves_vitest_4"
+    }
+  }
+}
