@@ -51,6 +51,15 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
+      - name: Upgrade npm before global install
+        # `npm install -g` always does a fresh, lockfile-less resolution, so
+        # it's exposed to the same arborist crash (npm/cli#8261) as the
+        # publish workflow's clean reinstall once `agent-relay` pulls in
+        # @agent-relay/harnesses' pi-coding-agent chain. Not failing today
+        # only because the currently-published version predates that
+        # dependency bump — this would break on the next release otherwise.
+        run: npm install -g npm@11.19.1
+
       - name: Get package spec
         id: pkg
         run: |
