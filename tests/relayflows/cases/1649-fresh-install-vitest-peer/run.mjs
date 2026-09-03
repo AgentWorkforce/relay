@@ -22,6 +22,7 @@ const CASE_ID = '1649-fresh-install-vitest-peer';
 const NPM_UNDER_TEST = 'npm@10.9.2';
 const CRASH_MARKER = "Cannot read properties of null (reading 'edgesOut')";
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+const PREFLIGHT_TIMEOUT_MS = 3 * 60 * 1000;
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -70,9 +71,16 @@ try {
     throw new Error(`Expected ${NPM_UNDER_TEST} to run, but npx executed npm ${npmVersion}.`);
   }
   const registry = npmUnderTest(['config', 'get', 'registry'], probeDir).trim();
-  const latest = {};
-  for (const name of ['vitest', 'vite', '@vitejs/devtools', '@vitejs/devtools-vitest']) {
-    latest[name] = npmUnderTest(['view', `${name}@latest`, 'version'], probeDir).trim();
+  // Only the vitest lookup gates the case; the other three are best-effort
+  // context for the log and must not turn a registry hiccup into an infra
+  // failure when the real precondition holds.
+  const latest = { vitest: npmUnderTest(['view', 'vitest@latest', 'version'], probeDir).trim() };
+  for (const name of ['vite', '@vitejs/devtools', '@vitejs/devtools-vitest']) {
+    try {
+      latest[name] = npmUnderTest(['view', `${name}@latest`, 'version'], probeDir).trim();
+    } catch (error) {
+      latest[name] = `unavailable (${error instanceof Error ? error.message : String(error)})`;
+    }
   }
   console.log(`Resolver: npm ${npmVersion}; registry ${registry}; latest ${JSON.stringify(latest)}`);
   const vitestLatestMajor = Number.parseInt(latest.vitest, 10);
@@ -192,10 +200,15 @@ function npmUnderTest(args, cwd) {
     env: { ...process.env, npm_config_update_notifier: 'false' },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 3 * 60 * 1000,
+    timeout: PREFLIGHT_TIMEOUT_MS,
   });
-  if (completed.error)
-    throw new Error(`${NPM_UNDER_TEST} ${args[0]} could not run: ${completed.error.message}`);
+  if (completed.error) {
+    const cause =
+      completed.error.code === 'ETIMEDOUT'
+        ? `timed out after ${PREFLIGHT_TIMEOUT_MS}ms`
+        : `could not run: ${completed.error.message}`;
+    throw new Error(`${NPM_UNDER_TEST} ${args[0]} ${cause}`);
+  }
   if (completed.status !== 0) {
     throw new Error(
       `${NPM_UNDER_TEST} ${args.join(' ')} exited with ${completed.status}: ${(completed.stderr || '').trim().split('\n').slice(-3).join(' | ')}`
