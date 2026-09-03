@@ -170,6 +170,9 @@ describe('verify-features escalation status', () => {
     expect(infraEscalationExecutable).toContain('infra failed');
     expect(infraEscalationExecutable).not.toContain('escalation skipped');
     expect(followup).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
+    expect(source).toContain('out.channel !== channel');
+    expect(source).toContain("typeof out.ts !== 'string'");
+    expect(source).toContain("error.code = 'invalid_slack_receipt'");
     expect(source).not.toContain('ISSUE_SKIPPED: gh is not authenticated');
     expect(source).not.toContain('PR_SKIPPED: gh unavailable or unauthenticated');
     expect(source).not.toContain('FOLLOWUP_SKIPPED: no issue or PR to report');

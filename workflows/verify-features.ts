@@ -305,6 +305,17 @@ const client = new SlackClient({
 
 try {
   const out = await client.postMessage({ channel, text, unfurl: false });
+  if (
+    !out ||
+    typeof out !== 'object' ||
+    out.channel !== channel ||
+    typeof out.ts !== 'string' ||
+    out.ts.trim().length === 0
+  ) {
+    const error = new Error('Slack transport returned no matching provider receipt');
+    error.code = 'invalid_slack_receipt';
+    throw error;
+  }
   console.log('SLACK_POSTED channel=' + out.channel + ' ts=' + out.ts);
 } catch (err) {
   const code = err && err.code ? err.code : 'unknown';

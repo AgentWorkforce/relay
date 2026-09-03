@@ -156,7 +156,7 @@ if (arm === 'base') {
     onError() { return builder; },
     timeout() { return builder; },
     agent() { return builder; },
-    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [] }); return builder; },
+    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [], command: options.command }); return builder; },
     async run({ dryRun }) {
       if (!dryRun) throw new Error('proof graph recorder only supports dry-run planning');
       process.stdout.write(JSON.stringify({ name, steps }) + '\\n');
@@ -182,6 +182,7 @@ if (arm === 'base') {
     await rm(graphRoot, { recursive: true, force: true });
   }
   assertCompleted(graphPlan, 'verify-features executable graph plan', 0);
+  const plannedGraph = JSON.parse(graphPlan.stdout.trim());
   for (const step of [
     'emit-posthog',
     'escalate-infra',
@@ -201,6 +202,10 @@ if (arm === 'base') {
     if (!graphPlan.stdout.includes(step)) {
       throw new Error(`Executable workflow graph omitted ${step}.`);
     }
+  }
+  const followupCommand = plannedGraph.steps.find((step) => step.name === 'slack-followup')?.command;
+  if (typeof followupCommand !== 'string' || followupCommand.length === 0) {
+    throw new Error('Executable workflow graph did not expose the Slack follow-up command.');
   }
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-'));
@@ -320,7 +325,7 @@ if (arm === 'base') {
       "export class SlackClient { async postMessage({ channel }) { if (process.env.SLACK_STUB_MODE === 'incomplete') return { channel }; const error = new Error('missing Cloud token'); error.code = 'auth_token_missing'; throw error; } }\n"
     );
 
-    const executableArtifacts = path.join(temporaryRoot, 'executable-escalations');
+    const executableArtifacts = path.join(executableRoot, 'executable-escalations');
     await mkdir(executableArtifacts, { recursive: true });
     await writeFile(
       path.join(executableArtifacts, 'verdict.json'),
@@ -438,6 +443,39 @@ exit 0
     runStatusTool(
       resolvedExecutableStatusToolPath,
       ['audit-channel', executableArtifacts, 'slack_primary', '1', '0'],
+      1
+    );
+
+    const executableFollowupCommand = followupCommand
+      .replace(/^ARTIFACTS=.*$/m, `ARTIFACTS="${executableArtifacts}"`)
+      .replace(/^STATUS_TOOL=.*$/m, `STATUS_TOOL="${resolvedExecutableStatusToolPath}"`);
+    const incompleteFollowupReceipt = spawnSync('bash', ['-c', executableFollowupCommand], {
+      cwd: executableRoot,
+      encoding: 'utf8',
+      env: { ...executableEnvironment, SLACK_STUB_MODE: 'incomplete' },
+      timeout: COMMAND_TIMEOUT_MS,
+    });
+    assertCompleted(incompleteFollowupReceipt, 'incomplete Slack follow-up receipt executable', 0);
+    const followupReceipt = JSON.parse(
+      await readFile(path.join(executableArtifacts, 'escalation-slack-followup.json'), 'utf8')
+    );
+    if (followupReceipt.state !== 'failed') {
+      throw new Error(
+        `Incomplete Slack follow-up result was recorded as ${JSON.stringify(
+          followupReceipt.state
+        )}, not failed.`
+      );
+    }
+    if (
+      !`${incompleteFollowupReceipt.stdout ?? ''}\n${incompleteFollowupReceipt.stderr ?? ''}`.includes(
+        'SLACK_ERROR invalid_slack_receipt'
+      )
+    ) {
+      throw new Error('Incomplete Slack follow-up result did not emit invalid_slack_receipt.');
+    }
+    runStatusTool(
+      resolvedExecutableStatusToolPath,
+      ['audit-channel', executableArtifacts, 'slack_followup', '1', '0'],
       1
     );
 
