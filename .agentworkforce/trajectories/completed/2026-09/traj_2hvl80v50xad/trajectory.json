@@ -106,7 +106,7 @@
     "tests/relayflows/cases/1640-cloud-relayflow-version/case.json",
     "tests/relayflows/cases/1640-cloud-relayflow-version/run.mjs"
   ],
-  "projectId": "/Users/khaliqgant/AgentWorkforce/relay-v2-selector-wt",
+  "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "2559e668a2b38395b2cfc024904bc5c50ca89c1e",

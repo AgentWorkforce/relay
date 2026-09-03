@@ -68,7 +68,7 @@
     ".agentworkforce/trajectories/completed/2026-09/traj_445zokk7whn7/summary.md",
     ".agentworkforce/trajectories/completed/2026-09/traj_445zokk7whn7/trajectory.json"
   ],
-  "projectId": "/Users/khaliqgant/AgentWorkforce/relay-v2-selector-wt",
+  "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "e8a8eae494a5e222f550fbf4abfca7a543381cf1",
