@@ -943,7 +943,14 @@ impl RelaycastHttpClient {
             let request = ReleaseAgentRequest {
                 name: agent_name.to_string(),
                 reason: Some(attributed_reason),
-                delete_agent: None,
+                // The broker has already stopped the local process and removed
+                // its fleet binding before this call. A non-destructive release
+                // must be dispatched to a live host, so Relaycast correctly
+                // rejects that now-hostless request with agent_host_unavailable.
+                // Explicit broker removal is the destructive lifecycle path
+                // described above: tombstone the old identity, invalidate its
+                // credential, and free the seat without requiring a live host.
+                delete_agent: Some(true),
             };
             // Invalidate the cached token before the call so an ambiguous
             // response (e.g. a timeout after Relaycast committed the release)
@@ -1780,7 +1787,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_agent_release_records_a_reason_and_actor() {
+    async fn explicit_agent_release_deletes_identity_and_records_attribution() {
         let server = MockServer::start();
         let release = server.mock(|when, then| {
             when.method(POST)
@@ -1788,7 +1795,8 @@ mod tests {
                 .header("authorization", "Bearer rk_live_test")
                 .json_body(json!({
                     "name": "worker-a",
-                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)",
+                    "delete_agent": true
                 }));
             then.status(200).json_body(json!({
                 "ok": true,
@@ -1800,7 +1808,8 @@ mod tests {
                     "dispatched_node_id": "node_1",
                     "input": {
                         "name": "worker-a",
-                        "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                        "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)",
+                        "delete_agent": true
                     },
                     "status": "dispatched",
                     "created_at": "2026-08-15T00:00:00.000Z"
