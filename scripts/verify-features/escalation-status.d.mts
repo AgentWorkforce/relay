@@ -1,4 +1,10 @@
-export type EscalationChannel = 'posthog' | 'github_issue' | 'draft_pr' | 'slack_primary' | 'slack_followup';
+export type EscalationChannel =
+  | 'infra'
+  | 'posthog'
+  | 'github_issue'
+  | 'draft_pr'
+  | 'slack_primary'
+  | 'slack_followup';
 
 export type EscalationState = 'delivered' | 'failed' | 'disabled' | 'not_applicable' | 'pending';
 
@@ -52,5 +58,5 @@ export function escalationAuditFailures(artifacts: string, options?: { autofixEn
 export function escalationChannelAuditFailure(
   artifacts: string,
   channel: EscalationChannel,
-  options?: { required?: boolean }
+  options?: { required?: boolean; allowNotApplicable?: boolean }
 ): string | null;
