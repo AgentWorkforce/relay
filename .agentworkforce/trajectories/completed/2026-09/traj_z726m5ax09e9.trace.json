@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "id": "a6390aa2-4558-44eb-9fd9-173d6cd97df8",
+  "timestamp": "2026-09-03T01:20:24.442Z",
+  "trajectory": "traj_z726m5ax09e9",
+  "files": [
+    {
+      "path": "scripts/verify-features/slack-post.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 18,
+              "end_line": 34,
+              "revision": "2443c39e162ec5085c467afcd0aed39619995cf0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 262,
+              "end_line": 268,
+              "revision": "2443c39e162ec5085c467afcd0aed39619995cf0"
+            },
+            {
+              "start_line": 357,
+              "end_line": 391,
+              "revision": "2443c39e162ec5085c467afcd0aed39619995cf0"
+            },
+            {
+              "start_line": 454,
+              "end_line": 460,
+              "revision": "2443c39e162ec5085c467afcd0aed39619995cf0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
