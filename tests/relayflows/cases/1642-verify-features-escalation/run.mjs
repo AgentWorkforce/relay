@@ -120,12 +120,67 @@ if (arm === 'base') {
     }
   }
 
-  const graphPlan = spawnSync(process.execPath, ['--experimental-strip-types', workflowPath], {
-    cwd: targetDir,
-    encoding: 'utf8',
-    env: { ...process.env, DRY_RUN: '1' },
-    timeout: COMMAND_TIMEOUT_MS,
-  });
+  // The exact-SHA target is intentionally a bare checkout, so it has no
+  // node_modules. Execute an unchanged copy of the production workflow in a
+  // disposable tree with only the workflow-builder boundary stubbed. The stub
+  // records the graph registered by the real module; it does not manufacture a
+  // source-only answer or require a network install in the proof sandbox.
+  const graphRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-graph-'));
+  let graphPlan;
+  try {
+    const graphWorkflowRoot = path.join(graphRoot, 'workflows');
+    const graphScriptRoot = path.join(graphRoot, 'scripts', 'verify-features');
+    const graphCoreRoot = path.join(graphRoot, 'node_modules', '@relayflows', 'core');
+    await Promise.all([
+      mkdir(graphWorkflowRoot, { recursive: true }),
+      mkdir(graphScriptRoot, { recursive: true }),
+      mkdir(graphCoreRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      copyFile(workflowPath, path.join(graphWorkflowRoot, 'verify-features.ts')),
+      copyFile(runArtifactsToolPath, path.join(graphScriptRoot, 'run-artifacts.mjs')),
+      copyFile(runWorktreeToolPath, path.join(graphScriptRoot, 'run-worktree.mjs')),
+      writeFile(
+        path.join(graphCoreRoot, 'package.json'),
+        '{"name":"@relayflows/core","type":"module","exports":"./index.js"}\n'
+      ),
+      writeFile(
+        path.join(graphCoreRoot, 'index.js'),
+        `export function workflow(name) {
+  const steps = [];
+  const builder = {
+    description() { return builder; },
+    pattern() { return builder; },
+    channel() { return builder; },
+    maxConcurrency() { return builder; },
+    onError() { return builder; },
+    timeout() { return builder; },
+    agent() { return builder; },
+    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [] }); return builder; },
+    async run({ dryRun }) {
+      if (!dryRun) throw new Error('proof graph recorder only supports dry-run planning');
+      process.stdout.write(JSON.stringify({ name, steps }) + '\\n');
+      return {};
+    },
+  };
+  return builder;
+}
+`
+      ),
+    ]);
+    graphPlan = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', path.join(graphWorkflowRoot, 'verify-features.ts')],
+      {
+        cwd: graphRoot,
+        encoding: 'utf8',
+        env: { ...process.env, DRY_RUN: '1' },
+        timeout: COMMAND_TIMEOUT_MS,
+      }
+    );
+  } finally {
+    await rm(graphRoot, { recursive: true, force: true });
+  }
   assertCompleted(graphPlan, 'verify-features executable graph plan', 0);
   for (const step of [
     'emit-posthog',
