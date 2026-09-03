@@ -1,0 +1,53 @@
+{
+  "id": "traj_etwqd0j7ur8a",
+  "version": 1,
+  "task": {
+    "title": "Add RelayFlow proof for broker Cloud registration mismatch"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T11:59:41.370Z",
+  "completedAt": "2026-09-03T12:00:21.057Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T12:00:21.012Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_624qhukesjqv",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T12:00:21.012Z",
+      "endedAt": "2026-09-03T12:00:21.057Z",
+      "events": [
+        {
+          "ts": 1788436821012,
+          "type": "decision",
+          "content": "Use an exact-checkout public CLI proof with a fake local broker and Cloud 404: Use an exact-checkout public CLI proof with a fake local broker and Cloud 404",
+          "raw": {
+            "question": "Use an exact-checkout public CLI proof with a fake local broker and Cloud 404",
+            "chosen": "Use an exact-checkout public CLI proof with a fake local broker and Cloud 404",
+            "alternatives": [],
+            "reasoning": "This captures the operator-visible mismatch on base and the LOCAL-ONLY/SSH guidance on head without pretending the Cloud-only attach route is self-hostable."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added and locally validated an exact-base/exact-head RelayFlow proof for node status Cloud addressability.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/AgentWorkforce/relay-broker-registration-fix-0903-wt",
+  "tags": [],
+  "_trace": {
+    "startRef": "a02e684da94a8f6c376e884b9fea1588c7480487",
+    "endRef": "a02e684da94a8f6c376e884b9fea1588c7480487"
+  }
+}

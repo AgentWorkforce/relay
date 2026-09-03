@@ -85,6 +85,76 @@ type UpdateInfo = {
   error?: string;
 };
 
+export interface CloudNodeIdentity {
+  id?: string;
+  nodeId?: string;
+  name: string;
+}
+
+const CLOUD_NODE_LOOKUP_BACKOFFS_MS = [200, 400, 800] as const;
+
+function cloudNodeLookupHeaders(workspaceKey: string, version: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${workspaceKey}`,
+    'X-SDK-Version': version,
+    'X-Relaycast-Origin-Client': 'agent-relay-cli',
+    'X-Relaycast-Origin-Version': version,
+  };
+}
+
+async function fetchCloudNodeWithRetry(
+  url: URL,
+  headers: Record<string, string>,
+  signal: AbortSignal
+): Promise<Response> {
+  let response = await fetch(url, { headers, signal });
+  for (const backoff of CLOUD_NODE_LOOKUP_BACKOFFS_MS) {
+    if (response.status < 500 || response.status > 599) return response;
+    await new Promise((resolve) => setTimeout(resolve, backoff));
+    response = await fetch(url, { headers, signal });
+  }
+  return response;
+}
+
+async function findCloudNodeByName(
+  input: { workspaceKey: string; baseUrl?: string; nodeName: string },
+  version: string
+): Promise<CloudNodeIdentity | null> {
+  const url = new URL(
+    `/v1/nodes/${encodeURIComponent(input.nodeName)}`,
+    input.baseUrl ?? 'https://cast.agentrelay.com'
+  );
+  // `node status` is primarily a local diagnostic. The SDK retries 5xx
+  // responses, but its general HTTP client has no request deadline; this
+  // status-specific lookup keeps those retries inside a total abort budget.
+  const response = await fetchCloudNodeWithRetry(
+    url,
+    cloudNodeLookupHeaders(input.workspaceKey, version),
+    AbortSignal.timeout(10_000)
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Cloud node lookup returned HTTP ${response.status}.`);
+  const envelope = (await response.json()) as {
+    ok?: boolean;
+    data?: { id?: unknown; node_id?: unknown; nodeId?: unknown; name?: unknown };
+  };
+  if (envelope.ok !== true || typeof envelope.data?.name !== 'string') {
+    throw new Error('Cloud node lookup returned an invalid response.');
+  }
+  const id =
+    typeof envelope.data.id === 'string'
+      ? envelope.data.id
+      : typeof envelope.data.node_id === 'string'
+        ? envelope.data.node_id
+        : undefined;
+  const nodeId = typeof envelope.data.nodeId === 'string' ? envelope.data.nodeId : undefined;
+  return {
+    name: envelope.data.name,
+    ...(id ? { id } : {}),
+    ...(nodeId ? { nodeId } : {}),
+  };
+}
+
 export interface CoreDependencies {
   getProjectPaths: () => CoreProjectPaths;
   loadTeamsConfig: (projectRoot: string) => CoreTeamsConfig | null;
@@ -100,6 +170,12 @@ export interface CoreDependencies {
   fs: CoreFileSystem;
   generateAgentName: () => string;
   checkForUpdates: (version: string) => Promise<UpdateInfo>;
+  /** Resolve the Cloud fleet row addressed by a running broker's local node name. */
+  findCloudNodeByName: (input: {
+    workspaceKey: string;
+    baseUrl?: string;
+    nodeName: string;
+  }) => Promise<CloudNodeIdentity | null>;
   getVersion: () => string;
   env: NodeJS.ProcessEnv;
   argv: string[];
@@ -237,6 +313,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
     fs: fileSystem,
     generateAgentName,
     checkForUpdates: (version: string) => checkForUpdates(version) as Promise<UpdateInfo>,
+    findCloudNodeByName: (input) => findCloudNodeByName(input, defaultVersion),
     getVersion: () => defaultVersion,
     env: process.env,
     argv: process.argv,

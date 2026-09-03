@@ -1,0 +1,53 @@
+{
+  "id": "traj_51m096koolsj",
+  "version": 1,
+  "task": {
+    "title": "Complete local-only attach fallback guidance"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T12:04:32.654Z",
+  "completedAt": "2026-09-03T12:04:32.766Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T12:04:32.722Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7zqc9o9t6c95",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T12:04:32.722Z",
+      "endedAt": "2026-09-03T12:04:32.766Z",
+      "events": [
+        {
+          "ts": 1788437072722,
+          "type": "decision",
+          "content": "Add the SSH fallback directly to node_not_found attach errors: Add the SSH fallback directly to node_not_found attach errors",
+          "raw": {
+            "question": "Add the SSH fallback directly to node_not_found attach errors",
+            "chosen": "Add the SSH fallback directly to node_not_found attach errors",
+            "alternatives": [],
+            "reasoning": "Option B requires both status visibility and an actionable --node failure; a conditional hint is accurate without claiming the caller's missing Cloud name definitely exists locally."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added node_not_found SSH fallback guidance, regression assertions, and RelayFlow attach coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/AgentWorkforce/relay-broker-registration-fix-0903-wt",
+  "tags": [],
+  "_trace": {
+    "startRef": "b99517a2dc79b77e0156787772cc9782e516d9ba",
+    "endRef": "b99517a2dc79b77e0156787772cc9782e516d9ba"
+  }
+}

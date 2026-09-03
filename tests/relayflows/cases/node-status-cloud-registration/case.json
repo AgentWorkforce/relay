@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "node-status-cloud-registration",
+  "kind": "bugfix",
+  "title": "Distinguish a connected local broker name that Cloud cannot address",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/node-status-cloud-registration/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "node_status_advertises_unreachable_cloud_name"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "node_status_labels_unreachable_name_local_only"
+    }
+  }
+}

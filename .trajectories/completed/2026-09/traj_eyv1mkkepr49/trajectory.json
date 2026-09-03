@@ -1,0 +1,63 @@
+{
+  "id": "traj_eyv1mkkepr49",
+  "version": 1,
+  "task": {
+    "title": "Fix broker Cloud registration/name mismatch for multiple local brokers"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T11:44:21.080Z",
+  "completedAt": "2026-09-03T11:48:44.877Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T11:44:27.545Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7qxi4kf4k07l",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T11:44:27.545Z",
+      "endedAt": "2026-09-03T11:48:44.877Z",
+      "events": [
+        {
+          "ts": 1788435867545,
+          "type": "decision",
+          "content": "Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration: Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration",
+          "raw": {
+            "question": "Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration",
+            "chosen": "Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration",
+            "alternatives": [],
+            "reasoning": "Live inspection showed the second broker eventually appears in Cloud, so multiple brokers are supported; the failure window is local readiness advertising a name before the Cloud REST lookup used by --node can resolve it. Status now reports registered, confirmed LOCAL-ONLY, or unknown and gives SSH/state-dir guidance."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788435867596,
+          "type": "reflection",
+          "content": "Implementation and unit/full suites are green; live status now confirms chief-sfm-final by exact name and node ID after bounded retries through transient Cloud 503s.",
+          "raw": {
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": ["confidence:0.9"]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made node status verify its advertised name and ID against the Cloud addressability endpoint, distinguish confirmed local-only and unknown states, print enrollment/SSH recovery guidance, retry transient 5xx responses within a hard timeout, and add regression coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/khaliqgant/AgentWorkforce/relay-broker-registration-fix-0903-wt",
+  "tags": [],
+  "_trace": {
+    "startRef": "fd3f04df5e6cc590c76b5f8b4270e1c6530689e1",
+    "endRef": "fd3f04df5e6cc590c76b5f8b4270e1c6530689e1"
+  }
+}

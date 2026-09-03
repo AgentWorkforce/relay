@@ -396,6 +396,10 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
     expect((rejected as Error).message).toContain(
       'attempts 1 (not retried because the failure was terminal)'
     );
+    expect((rejected as Error).message).toContain("'agent-relay node status' labels that broker LOCAL-ONLY");
+    expect((rejected as Error).message).toContain(
+      'agent-relay node agent attach <agent> --ssh-host <host> --state-dir <path>'
+    );
   });
 
   it('does not retry an unconfirmed POST after a control-plane network failure', async () => {
