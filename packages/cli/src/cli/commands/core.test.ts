@@ -69,6 +69,7 @@ afterAll(() => {
 import {
   registerCoreCommands,
   registerCoreMaintenance,
+  withDefaults,
   type CoreDependencies,
   type CoreFileSystem,
   type CoreRelay,
@@ -161,6 +162,7 @@ function createHarness(options?: {
   cliScript?: string;
   argv?: string[];
   checkForUpdatesResult?: Awaited<ReturnType<CoreDependencies['checkForUpdates']>>;
+  findCloudNodeByName?: CoreDependencies['findCloudNodeByName'];
 }) {
   const projectRoot = '/tmp/project';
   const dataDir = '/tmp/project/.agentworkforce/relay';
@@ -198,6 +200,14 @@ function createHarness(options?: {
     checkForUpdates: vi.fn(
       async () => options?.checkForUpdatesResult ?? { updateAvailable: false, latestVersion: '1.2.3' }
     ) as unknown as CoreDependencies['checkForUpdates'],
+    findCloudNodeByName:
+      options?.findCloudNodeByName ??
+      vi.fn(async ({ nodeName }) => ({
+        id: 'node_enrolled',
+        name: nodeName,
+        status: 'online' as const,
+        capabilities: [],
+      })),
     getVersion: vi.fn(() => '1.2.3'),
     env,
     argv: options?.argv ?? ['node', '/tmp/agent-relay.js', 'up'],
@@ -1345,6 +1355,160 @@ describe('registerCoreCommands', () => {
     const logCalls = (deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(logCalls.some((call) => String(call[0]).startsWith('Observer:'))).toBe(false);
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
+  });
+
+  it('marks a local node name as LOCAL-ONLY when Cloud has a different node (#broker-cloud-registration-mismatch)', async () => {
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const fs = createFsMock({
+      [connectionPath]: connectionFile(4242, 'http://127.0.0.1:3889', 'br_secret', 'project'),
+    });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({
+      node_connected: true,
+      node_delivery: { token_present: true, connected: true },
+    });
+    sdkStatusClient.getSession.mockResolvedValueOnce({
+      workspace_key: 'rk_live_teststatus123',
+      relay_base_url: 'https://cast.agentrelay.com',
+      node_id: 'node_local',
+      node_name: 'chief-sfm-final',
+    });
+    const cloudRoster = [{ id: 'node_cloud', name: 'sf-mini' }];
+    const findCloudNodeByName = vi.fn(async ({ nodeName }: { nodeName: string }) => {
+      const node = cloudRoster.find((candidate) => candidate.name === nodeName);
+      return node ? { ...node, status: 'online' as const, capabilities: [] } : null;
+    });
+    const { program, deps } = createHarness({ fs, findCloudNodeByName });
+
+    const exitCode = await runCommand(program, ['status']);
+
+    expect(exitCode).toBeUndefined();
+    expect(findCloudNodeByName).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_teststatus123',
+      baseUrl: 'https://cast.agentrelay.com',
+      nodeName: 'chief-sfm-final',
+    });
+    expect(deps.log).toHaveBeenCalledWith('Node delivery: CONNECTED');
+    expect(deps.log).toHaveBeenCalledWith(
+      'Node: chief-sfm-final (node_local; LOCAL-ONLY, not Cloud-registered)'
+    );
+    expect(deps.warn).toHaveBeenCalledWith(expect.stringContaining('--ssh-host <host> --state-dir <path>'));
+  });
+
+  it('keeps the normal node status when Cloud resolves the same name and id', async () => {
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    sdkStatusClient.getSession.mockResolvedValueOnce({
+      workspace_key: 'rk_live_teststatus123',
+      node_id: 'node_local',
+      node_name: 'chief-sfm-final',
+    });
+    const findCloudNodeByName = vi.fn(async () => ({
+      id: 'node_local',
+      name: 'chief-sfm-final',
+      status: 'online' as const,
+      capabilities: [],
+    }));
+    const { program, deps } = createHarness({ fs, findCloudNodeByName });
+
+    const exitCode = await runCommand(program, ['status']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Node: chief-sfm-final (node_local)');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('LOCAL-ONLY'));
+  });
+
+  it('reports Cloud registration as unknown instead of LOCAL-ONLY when lookup fails', async () => {
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(4242) });
+    sdkStatusClient.getSession.mockResolvedValueOnce({
+      workspace_key: 'rk_live_teststatus123',
+      node_id: 'node_local',
+      node_name: 'chief-sfm-final',
+    });
+    const findCloudNodeByName = vi.fn(async () => {
+      throw new Error('network unavailable');
+    });
+    const { program, deps } = createHarness({ fs, findCloudNodeByName });
+
+    const exitCode = await runCommand(program, ['status']);
+
+    expect(exitCode).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('Node: chief-sfm-final (node_local; Cloud registration unknown)');
+    expect(deps.log).not.toHaveBeenCalledWith(expect.stringContaining('LOCAL-ONLY'));
+  });
+
+  it('retries a transient Cloud node lookup failure and returns the addressable identity', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, error: { code: 'unavailable' } }), { status: 503 })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: { id: 'node_local', name: 'chief-sfm-final' },
+          }),
+          { status: 200 }
+        )
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const node = await withDefaults().findCloudNodeByName({
+        workspaceKey: 'rk_live_teststatus123',
+        baseUrl: 'https://cast.agentrelay.com',
+        nodeName: 'chief-sfm-final',
+      });
+
+      expect(node).toEqual({ id: 'node_local', name: 'chief-sfm-final' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+        Authorization: 'Bearer rk_live_teststatus123',
+      });
+      expect(timeoutSpy).toHaveBeenCalledWith(2_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('aborts a retry backoff at the total Cloud lookup deadline', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const timeoutController = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+      setTimeout(() => timeoutController.abort(new Error('lookup deadline')), ms);
+      return timeoutController.signal;
+    });
+    const unavailable = () =>
+      new Response(JSON.stringify({ ok: false, error: { code: 'unavailable' } }), { status: 503 });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(unavailable())
+      .mockResolvedValueOnce(unavailable())
+      .mockImplementationOnce(
+        () => new Promise<Response>((resolve) => setTimeout(() => resolve(unavailable()), 1_300))
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const lookup = withDefaults().findCloudNodeByName({
+        workspaceKey: 'rk_live_teststatus123',
+        baseUrl: 'https://cast.agentrelay.com',
+        nodeName: 'chief-sfm-final',
+      });
+      const rejection = expect(lookup).rejects.toThrow('lookup deadline');
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await rejection;
+      expect(Date.now()).toBe(2_000);
+      expect(timeoutSpy).toHaveBeenCalledWith(2_000);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 
   it.each([
