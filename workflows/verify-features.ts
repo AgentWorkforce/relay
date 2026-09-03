@@ -2279,8 +2279,8 @@ fi
 CURRENT=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 echo "Current branch: $CURRENT"
 
-if [ "$CURRENT" = "main" ]; then
-  echo "INTEGRITY_FAIL: the fixer left the repo on main — refusing to proceed"
+if [ "$CURRENT" = "main" ] || [ "$CURRENT" = "HEAD" ]; then
+  echo "INTEGRITY_FAIL: the fixer left the repo on an invalid branch '$CURRENT' — refusing to proceed"
   echo "INTEGRITY=fail" > "$ARTIFACTS/fix-integrity.env"
   exit 0
 fi
@@ -2383,10 +2383,10 @@ if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
 fi
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ "$BRANCH" = "main" ]; then
+if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "HEAD" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" draft_pr failed \
-    "fixer remained on main; refusing to open a PR"
-  echo "PR_FAILED: refusing to open a PR from main"
+    "fixer remained on invalid branch '$BRANCH'; refusing to open a PR"
+  echo "PR_FAILED: refusing to open a PR from invalid branch '$BRANCH'"
   exit 0
 fi
 
@@ -2498,7 +2498,12 @@ FOLLOWUP="$ARTIFACTS/slack-followup.txt"
   node "$STATUS_TOOL" render-final "$ARTIFACTS"
 } > "$FOLLOWUP"
 
-node "$STATUS_TOOL" redact-file "$FOLLOWUP"
+if ! node "$STATUS_TOOL" redact-file "$FOLLOWUP"; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
+    "final escalation status could not be redacted safely"
+  echo "FOLLOWUP_FAILED: redaction failed; refusing to post unredacted evidence"
+  exit 0
+fi
 SLACK_POSTED=0
 if [ -z "$CHANNEL" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_followup failed \
@@ -2761,8 +2766,21 @@ exit 1
     if (!dryRun) {
       try {
         await removeRunWorktree(REPO_ROOT, RUN_WORKTREE);
-      } finally {
+      } catch (cleanupError) {
+        console.error(
+          `[verify-features] worktree cleanup failed: ${
+            cleanupError instanceof Error ? cleanupError.stack : String(cleanupError)
+          }`
+        );
+      }
+      try {
         markRunArtifactsComplete(ARTIFACTS, RUN_ID);
+      } catch (completionError) {
+        console.error(
+          `[verify-features] artifact completion marker failed: ${
+            completionError instanceof Error ? completionError.stack : String(completionError)
+          }`
+        );
       }
     }
   }

@@ -375,11 +375,32 @@ exit "$FAKE_CURL_EXIT_STATUS"
       timeout: 10_000,
     });
     expect(transportStdout).toContain('DELIVERY_FAILED: POST transport failed (curl exit 7)');
+
+    const blockedCapture = path.join(directory, 'non-https-body.json');
+    const { stdout: nonHttpsStdout } = await execFileAsync('bash', [infraEscalationPath], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        INFRA_CAPTURE: blockedCapture,
+        FAKE_CURL_HTTP_STATUS: '204',
+        FAKE_CURL_EXIT_STATUS: '0',
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-infra-non-https',
+        NIGHTCTO_EVIDENCE_URL: 'http://nightcto.invalid/evidence',
+        NIGHTCTO_EVIDENCE_TOKEN: 'must-not-be-sent',
+      },
+      timeout: 10_000,
+    });
+    expect(nonHttpsStdout).toContain('NIGHTCTO_EVIDENCE_URL must use HTTPS');
+    await expect(stat(blockedCapture)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('isolates artifacts and all mutating fix steps per invocation', async () => {
     const source = await workflowSourcePromise;
     const setup = workflowStep(source, 'setup');
+    const fixIntegrity = workflowStep(source, 'fix-integrity');
+    const openPr = workflowStep(source, 'open-pr');
+    const followup = workflowStep(source, 'slack-followup');
 
     expect(setup).toContain('reset "${ARTIFACTS}"');
     expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
@@ -390,9 +411,15 @@ exit "$FAKE_CURL_EXIT_STATUS"
     for (const mutatingStep of ['attempt-fix', 'fix-integrity', 'open-pr']) {
       expect(workflowStep(source, mutatingStep)).toContain('cwd: RUN_WORKTREE');
     }
-    expect(workflowStep(source, 'fix-integrity')).toContain('VERIFY_ARTIFACTS="$ARTIFACTS" node');
+    expect(fixIntegrity).toContain('VERIFY_ARTIFACTS="$ARTIFACTS" node');
+    expect(fixIntegrity).toContain('[ "$CURRENT" = "main" ] || [ "$CURRENT" = "HEAD" ]');
+    expect(openPr).toContain('[ "$BRANCH" = "main" ] || [ "$BRANCH" = "HEAD" ]');
+    expect(followup).toContain('if ! node "$STATUS_TOOL" redact-file "$FOLLOWUP"; then');
+    expect(followup).toContain('refusing to post unredacted evidence');
     expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
     expect(source).not.toContain('INVOCATION_LOCK');
+    expect(source).toContain('[verify-features] worktree cleanup failed:');
+    expect(source).toContain('[verify-features] artifact completion marker failed:');
   });
 
   it('preserves the required Slack target and dry-run/run identity controls', async () => {

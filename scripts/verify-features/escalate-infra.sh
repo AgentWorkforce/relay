@@ -20,6 +20,10 @@ escalate_infra() {
     echo "  [nightcto] DELIVERY_FAILED: NIGHTCTO_EVIDENCE_URL unset — $code"
     return 1
   fi
+  if [[ "$NIGHTCTO_EVIDENCE_URL" != https://* ]]; then
+    echo "  [nightcto] DELIVERY_FAILED: NIGHTCTO_EVIDENCE_URL must use HTTPS — $code"
+    return 1
+  fi
   local body
   if ! body=$(node - "$VERIFY_ENVIRONMENT" "$VERIFY_CLI_VERSION" "$evidence_path" \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_ID" "$summary" "$code" "$ARTIFACTS" <<'JSONEOF'
