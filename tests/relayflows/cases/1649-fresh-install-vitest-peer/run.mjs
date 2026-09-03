@@ -22,7 +22,11 @@ const CASE_ID = '1649-fresh-install-vitest-peer';
 const NPM_UNDER_TEST = 'npm@10.9.2';
 const CRASH_MARKER = "Cannot read properties of null (reading 'edgesOut')";
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
-const PREFLIGHT_TIMEOUT_MS = 3 * 60 * 1000;
+// Preflight budget: three required lookups at most 60s each plus three optional
+// ones at 20s each is 4 minutes worst case, which with the 10-minute install
+// stays inside the 900s case timeout in case.json.
+const PREFLIGHT_TIMEOUT_MS = 60 * 1000;
+const OPTIONAL_LOOKUP_TIMEOUT_MS = 20 * 1000;
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -77,7 +81,11 @@ try {
   const latest = { vitest: npmUnderTest(['view', 'vitest@latest', 'version'], probeDir).trim() };
   for (const name of ['vite', '@vitejs/devtools', '@vitejs/devtools-vitest']) {
     try {
-      latest[name] = npmUnderTest(['view', `${name}@latest`, 'version'], probeDir).trim();
+      latest[name] = npmUnderTest(
+        ['view', `${name}@latest`, 'version'],
+        probeDir,
+        OPTIONAL_LOOKUP_TIMEOUT_MS
+      ).trim();
     } catch (error) {
       latest[name] = `unavailable (${error instanceof Error ? error.message : String(error)})`;
     }
@@ -194,18 +202,18 @@ async function copyWorkspaceManifests(sourceRoot, destinationRoot) {
   return count;
 }
 
-function npmUnderTest(args, cwd) {
+function npmUnderTest(args, cwd, timeoutMs = PREFLIGHT_TIMEOUT_MS) {
   const completed = spawnSync('npx', ['--yes', '--package', NPM_UNDER_TEST, '--', 'npm', ...args], {
     cwd,
     env: { ...process.env, npm_config_update_notifier: 'false' },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: PREFLIGHT_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (completed.error) {
     const cause =
       completed.error.code === 'ETIMEDOUT'
-        ? `timed out after ${PREFLIGHT_TIMEOUT_MS}ms`
+        ? `timed out after ${timeoutMs}ms`
         : `could not run: ${completed.error.message}`;
     throw new Error(`${NPM_UNDER_TEST} ${args[0]} ${cause}`);
   }
