@@ -35,3 +35,10 @@ Fail-closed unsupported Relayflow v2 schedule selection locally while preserving
 - Narrowed schedule relayflowVersion to v1 and fail-close v2: Narrowed schedule relayflowVersion to v1 and fail-close v2
 - Validate schedule v2 before auth, file access, network, or durable effects: Validate schedule v2 before auth, file access, network, or durable effects
 - Red-first focused run failed 2/2 (Cloud reached missing workflow; CLI invoked mocked request). Green focused pair passed 113/113, the full typecheck chain passed, Prettier and diff checks passed. Full Vitest reached 2295 passing with 7 unrelated environment/load failures; selector suites were green. GitHub proof run 33667836953 remains in progress in step 13 and live logs withhold its Cloud run ID, so it was left untouched.
+
+---
+
+## Artifacts
+
+**Commits:** bca6cdb3
+**Files changed:** 6

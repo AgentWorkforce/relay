@@ -66,12 +66,19 @@
     "approach": "Standard approach",
     "confidence": 0.9
   },
-  "commits": [],
-  "filesChanged": [],
+  "commits": ["bca6cdb3"],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/cloud.test.ts",
+    "packages/cli/src/cli/commands/cloud.ts",
+    "packages/cloud/src/types.ts",
+    "packages/cloud/src/workflows.test.ts",
+    "packages/cloud/src/workflows.ts"
+  ],
   "projectId": "/Users/khaliqgant/AgentWorkforce/relay-v2-selector-wt",
   "tags": [],
   "_trace": {
     "startRef": "bf4b918191fc345004973c9285cdae43072b67ff",
-    "endRef": "bf4b918191fc345004973c9285cdae43072b67ff"
+    "endRef": "bca6cdb3af6a0b3d72c70aeb85179a1d8bf8725c"
   }
 }

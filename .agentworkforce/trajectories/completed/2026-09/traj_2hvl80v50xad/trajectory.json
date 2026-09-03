@@ -88,36 +88,29 @@
     "confidence": 0.9
   },
   "commits": [
-    "b9cef439",
-    "7e30bb6e",
-    "7a735b23",
-    "0bcef67f",
+    "81ecd9aa",
     "ee11aa45",
-    "81ecd9aa"
+    "0bcef67f",
+    "7a735b23",
+    "7e30bb6e",
+    "bf4b9181"
   ],
   "filesChanged": [
     "CHANGELOG.md",
-    "crates/broker/src/runtime/fleet.rs",
-    "crates/broker/src/terminal_control.rs",
     "packages/cli/src/cli/commands/cloud.test.ts",
     "packages/cli/src/cli/commands/cloud.ts",
-    "packages/cli/src/cli/commands/local-agent.ts",
-    "packages/cli/src/cli/lib/attach-fleet-node.test.ts",
-    "packages/cli/src/cli/lib/attach-fleet-node.ts",
     "packages/cloud/src/index.ts",
     "packages/cloud/src/types.ts",
     "packages/cloud/src/workflows.test.ts",
     "packages/cloud/src/workflows.ts",
-    "tests/relayflows/cases/1593-flush-node-registry/case.json",
-    "tests/relayflows/cases/1593-flush-node-registry/run.mjs",
     "tests/relayflows/cases/1640-cloud-relayflow-version/case.json",
     "tests/relayflows/cases/1640-cloud-relayflow-version/run.mjs"
   ],
   "projectId": "/Users/khaliqgant/AgentWorkforce/relay-v2-selector-wt",
   "tags": [],
   "_trace": {
-    "startRef": "d3b3f68a4b4c1583a4c4ba5b0ee9de985fc3b1ec",
-    "endRef": "b9cef4390434d5eeb03413af02e08c4cfe95487f",
+    "startRef": "2559e668a2b38395b2cfc024904bc5c50ca89c1e",
+    "endRef": "bf4b918191fc345004973c9285cdae43072b67ff",
     "traceId": "f6678f9d-1032-42d6-b541-c4bbe1d4c7f1"
   }
 }
