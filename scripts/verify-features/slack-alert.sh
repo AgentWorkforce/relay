@@ -123,7 +123,12 @@ SLACKEOF
   node "$STATUS_TOOL" render-initial "$ARTIFACTS"
 } >> "$ARTIFACTS/slack-message.txt"
 
-node "$STATUS_TOOL" redact-file "$ARTIFACTS/slack-message.txt"
+if ! node "$STATUS_TOOL" redact-file "$ARTIFACTS/slack-message.txt"; then
+  node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \
+    "primary Slack alert could not be redacted safely"
+  echo "SLACK_FAILED: redaction failed; refusing to post unredacted evidence"
+  exit 0
+fi
 SLACK_POSTED=0
 if [ -z "$CHANNEL" ]; then
   node "$STATUS_TOOL" write "$ARTIFACTS" slack_primary failed \

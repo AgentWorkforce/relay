@@ -207,6 +207,23 @@ if (arm === 'base') {
   if (typeof followupCommand !== 'string' || followupCommand.length === 0) {
     throw new Error('Executable workflow graph did not expose the Slack follow-up command.');
   }
+  const primaryAlertPlan = plannedGraph.steps.find((step) => step.name === 'slack-alert');
+  if (
+    !primaryAlertPlan ||
+    primaryAlertPlan.dependsOn.length !== 1 ||
+    primaryAlertPlan.dependsOn[0] !== 'verdict'
+  ) {
+    throw new Error('Primary Slack alert can still be pruned by a sibling delivery step.');
+  }
+  const passPosthogGateCommand = plannedGraph.steps.find(
+    (step) => step.name === 'enforce-posthog-delivery'
+  )?.command;
+  const aggregateEscalationCommand = plannedGraph.steps.find(
+    (step) => step.name === 'enforce-escalations'
+  )?.command;
+  if (typeof passPosthogGateCommand !== 'string' || typeof aggregateEscalationCommand !== 'string') {
+    throw new Error('Executable workflow graph omitted a PostHog escalation audit command.');
+  }
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-'));
   try {
@@ -378,11 +395,91 @@ exit 0
       RELAY_CLOUD_API_TOKEN: '',
       CLOUD_API_ACCESS_TOKEN: '',
       NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
-      NIGHTCTO_EVIDENCE_TOKEN: '',
+      NIGHTCTO_EVIDENCE_TOKEN: 'proof-token',
       PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
       INFRA_CAPTURE: capturedInfraBody,
       FAKE_CURL_HTTP_STATUS: '302',
     };
+
+    const failureVerdict = await readFile(path.join(executableArtifacts, 'verdict.json'), 'utf8');
+    const passVerdict = JSON.parse(failureVerdict);
+    passVerdict.verdict = 'PASS';
+    passVerdict.totals = { pass: 1, fail: 0, skip: 0 };
+    passVerdict.tiers.tier1 = { pass: 1, fail: 0, skip: 0, failures: [] };
+    await writeFile(path.join(executableArtifacts, 'verdict.json'), `${JSON.stringify(passVerdict)}\n`);
+    runStatusTool(
+      resolvedExecutableStatusToolPath,
+      ['write', executableArtifacts, 'posthog', 'failed', 'forced PASS-run telemetry failure'],
+      0
+    );
+    for (const [label, command] of [
+      ['PASS-run PostHog leaf gate', passPosthogGateCommand],
+      ['PASS-run aggregate escalation audit', aggregateEscalationCommand],
+    ]) {
+      const executableCommand = command
+        .replace(/^ARTIFACTS=.*$/m, `ARTIFACTS="${executableArtifacts}"`)
+        .replace(/^STATUS_TOOL=.*$/m, `STATUS_TOOL="${resolvedExecutableStatusToolPath}"`);
+      const completed = spawnSync('bash', ['-c', executableCommand], {
+        cwd: executableRoot,
+        encoding: 'utf8',
+        env: executableEnvironment,
+        timeout: COMMAND_TIMEOUT_MS,
+      });
+      assertCompleted(completed, label, 1);
+    }
+    await writeFile(path.join(executableArtifacts, 'verdict.json'), failureVerdict);
+
+    const executableStatusToolBackup = path.join(executableScriptRoot, 'escalation-status-real.mjs');
+    await copyFile(executableStatusToolPath, executableStatusToolBackup);
+    await writeFile(
+      executableStatusToolPath,
+      `import { writeFileSync } from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2);
+if (args[0] === 'redact-file') process.exit(1);
+if (args[0] === 'render-initial') {
+  console.log('redaction proof payload');
+} else if (args[0] === 'write') {
+  const [, artifacts, channel, state, detail] = args;
+  const suffix = channel.replaceAll('_', '-');
+  writeFileSync(path.join(artifacts, 'escalation-' + suffix + '.json'), JSON.stringify({ channel, state, detail }));
+} else {
+  process.exit(2);
+}
+`
+    );
+    try {
+      const redactionFailure = spawnSync('bash', [resolvedExecutableSlackAlertPath], {
+        encoding: 'utf8',
+        env: executableEnvironment,
+        timeout: COMMAND_TIMEOUT_MS,
+      });
+      assertCompleted(redactionFailure, 'primary Slack redaction failure executable', 0);
+      let redactionReceipt;
+      try {
+        redactionReceipt = JSON.parse(
+          await readFile(path.join(executableArtifacts, 'escalation-slack-primary.json'), 'utf8')
+        );
+      } catch (error) {
+        throw new Error(
+          `Primary Slack redaction failure wrote no receipt: ${error?.message ?? error}; stdout=${JSON.stringify(
+            redactionFailure.stdout
+          )}; stderr=${JSON.stringify(redactionFailure.stderr)}`
+        );
+      }
+      if (redactionReceipt.state !== 'failed') {
+        throw new Error('Primary Slack redaction failure did not write a failed receipt.');
+      }
+      const redactionEvidence = `${redactionFailure.stdout ?? ''}\n${redactionFailure.stderr ?? ''}`;
+      if (!redactionEvidence.includes('SLACK_FAILED: redaction failed')) {
+        throw new Error('Primary Slack redaction failure did not emit its refusal marker.');
+      }
+      if (redactionEvidence.includes('SLACK_UNDELIVERED')) {
+        throw new Error('Primary Slack redaction failure reached the provider boundary.');
+      }
+    } finally {
+      await copyFile(executableStatusToolBackup, executableStatusToolPath);
+    }
 
     const slackAlert = spawnSync('bash', [resolvedExecutableSlackAlertPath], {
       encoding: 'utf8',
@@ -448,7 +545,8 @@ exit 0
 
     const executableFollowupCommand = followupCommand
       .replace(/^ARTIFACTS=.*$/m, `ARTIFACTS="${executableArtifacts}"`)
-      .replace(/^STATUS_TOOL=.*$/m, `STATUS_TOOL="${resolvedExecutableStatusToolPath}"`);
+      .replace(/^STATUS_TOOL=.*$/m, `STATUS_TOOL="${resolvedExecutableStatusToolPath}"`)
+      .replace(/^SLACK_POST_EXECUTABLE=.*$/m, `SLACK_POST_EXECUTABLE="${executableSlackPostPath}"`);
     const incompleteFollowupReceipt = spawnSync('bash', ['-c', executableFollowupCommand], {
       cwd: executableRoot,
       encoding: 'utf8',

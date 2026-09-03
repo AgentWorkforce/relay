@@ -20,6 +20,10 @@ escalate_infra() {
     echo "  [nightcto] DELIVERY_FAILED: NIGHTCTO_EVIDENCE_URL unset — $code"
     return 1
   fi
+  if [ -z "$NIGHTCTO_EVIDENCE_TOKEN" ]; then
+    echo "  [nightcto] DELIVERY_FAILED: NIGHTCTO_EVIDENCE_TOKEN unset — $code"
+    return 1
+  fi
   if [[ "$NIGHTCTO_EVIDENCE_URL" != https://* ]]; then
     echo "  [nightcto] DELIVERY_FAILED: NIGHTCTO_EVIDENCE_URL must use HTTPS — $code"
     return 1
@@ -90,7 +94,7 @@ if [ ! -f "$ARTIFACTS/verdict.json" ]; then
 fi
 
 if [ -f "$ARTIFACTS/verdict.json" ]; then
-  if NOT_RUN=$(node -e 'const v=require("node:fs").readFileSync(process.argv[1],"utf8");process.stdout.write((JSON.parse(v).tiersNotRun||[]).join(","))' "$ARTIFACTS/verdict.json" 2>/dev/null); then
+  if NOT_RUN=$(node -e 'const v=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));if(!Array.isArray(v.tiersNotRun)||!v.tiersNotRun.every((item)=>typeof item==="string")){process.exit(1)}process.stdout.write(v.tiersNotRun.join(","))' "$ARTIFACTS/verdict.json" 2>/dev/null); then
     if [ -n "$NOT_RUN" ]; then
       attempt_infra_escalation "relayflow.verify.tier_not_run" "tier_not_run" \
         "verify-features tiers produced no records: $NOT_RUN"

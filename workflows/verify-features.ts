@@ -90,6 +90,7 @@ const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
 const ESCALATION_STATUS_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalation-status.mjs');
 const INFRA_ESCALATION_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalate-infra.sh');
 const SLACK_ALERT_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/slack-alert.sh');
+const SLACK_POST_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/slack-post.mjs');
 
 /** Unique suffix so a run never collides with existing workspace state. */
 const SUFFIX = `vf-${RUN_NONCE}`;
@@ -286,45 +287,12 @@ finish_tier() {
  * already imports, so it resolves wherever the workflow itself does.
  */
 const SLACK_POST_FN = String.raw`
+SLACK_POST_EXECUTABLE="${SLACK_POST_TOOL}"
 slack_post() {
   _sp_channel="$1"
   _sp_textfile="$2"
 
-  cat > "$ARTIFACTS/slack-post.mjs" <<'SLACKPOSTEOF'
-import { readFileSync } from 'node:fs';
-import { SlackClient } from '@relayflows/slack-primitive';
-
-const [channel, textFile] = process.argv.slice(2);
-const text = readFileSync(textFile, 'utf8');
-
-const client = new SlackClient({
-  runtime: 'cloud-relay',
-  cloudApiUrl: process.env.CLOUD_API_URL,
-  cloudApiToken: process.env.CLOUD_API_TOKEN,
-});
-
-try {
-  const out = await client.postMessage({ channel, text, unfurl: false });
-  if (
-    !out ||
-    typeof out !== 'object' ||
-    out.channel !== channel ||
-    typeof out.ts !== 'string' ||
-    out.ts.trim().length === 0
-  ) {
-    const error = new Error('Slack transport returned no matching provider receipt');
-    error.code = 'invalid_slack_receipt';
-    throw error;
-  }
-  console.log('SLACK_POSTED channel=' + out.channel + ' ts=' + out.ts);
-} catch (err) {
-  const code = err && err.code ? err.code : 'unknown';
-  console.log('SLACK_ERROR ' + code + ': ' + (err && err.message ? err.message : String(err)));
-  process.exitCode = 1;
-}
-SLACKPOSTEOF
-
-  if node "$ARTIFACTS/slack-post.mjs" "$_sp_channel" "$_sp_textfile"; then
+  if node "$SLACK_POST_EXECUTABLE" "$_sp_channel" "$_sp_textfile"; then
     return 0
   fi
 
@@ -1919,7 +1887,7 @@ bash "${INFRA_ESCALATION_TOOL}"
 
   wf.step('slack-alert', {
     type: 'deterministic',
-    dependsOn: ['verdict', 'emit-posthog', 'file-issue', 'escalate-infra'],
+    dependsOn: ['verdict'],
     captureOutput: true,
     failOnError: false,
     command: String.raw`
@@ -2613,7 +2581,7 @@ if [ ! -f "$ARTIFACTS/verdict.json" ]; then
 fi
 
 VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
-if [ "$VERDICT" = "PASS" ]; then
+if [ "$VERDICT" = "PASS" ] && [ "$CHANNEL" != "posthog" ]; then
   echo "ESCALATION_CHANNEL_AUDIT_NOT_APPLICABLE: verdict is PASS"
   exit 0
 fi
@@ -2650,8 +2618,8 @@ fi
 
 VERDICT=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).verdict)' "$ARTIFACTS/verdict.json")
 if [ "$VERDICT" = "PASS" ]; then
-  echo "ESCALATION_AUDIT_NOT_APPLICABLE: verdict is PASS"
-  exit 0
+  node "$STATUS_TOOL" audit-channel "$ARTIFACTS" posthog 1 0
+  exit $?
 fi
 
 node "$STATUS_TOOL" audit "$ARTIFACTS" "$AUTOFIX"
@@ -2700,6 +2668,7 @@ exit 1
   });
 
   const dryRun = process.env.DRY_RUN === '1';
+  let workflowLifecycleCompleted = false;
   if (!dryRun) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
   try {
     if (!dryRun) {
@@ -2709,6 +2678,7 @@ exit 1
       }
     }
     const result = await wf.run({ dryRun, cwd: REPO_ROOT });
+    workflowLifecycleCompleted = true;
 
     // A dry run plans the graph without executing it, so there is no verdict to
     // read and nothing to enforce. Bail before the checks below, which would
@@ -2756,22 +2726,25 @@ exit 1
 
     if (verdict.verdict !== 'PASS') {
       console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
-      const escalationAudit = spawnSync(
-        process.execPath,
-        [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'],
-        { cwd: process.cwd(), encoding: 'utf8' }
+    }
+    const escalationAuditArgs =
+      verdict.verdict === 'PASS'
+        ? [ESCALATION_STATUS_TOOL, 'audit-channel', ARTIFACTS, 'posthog', '1', '0']
+        : [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'];
+    const escalationAudit = spawnSync(process.execPath, escalationAuditArgs, {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    });
+    if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
+    if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
+    if (escalationAudit.status !== 0) {
+      console.error(
+        `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
+          `(audit exit ${escalationAudit.status ?? 'unknown'})`
       );
-      if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
-      if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
-      if (escalationAudit.status !== 0) {
-        console.error(
-          `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
-            `(audit exit ${escalationAudit.status ?? 'unknown'})`
-        );
-        process.exitCode = 2;
-      } else {
-        process.exitCode = 1;
-      }
+      process.exitCode = 2;
+    } else if (verdict.verdict !== 'PASS') {
+      process.exitCode = 1;
     }
   } finally {
     if (!dryRun) {
@@ -2784,14 +2757,16 @@ exit 1
           }`
         );
       }
-      try {
-        markRunArtifactsComplete(ARTIFACTS, RUN_ID);
-      } catch (completionError) {
-        console.error(
-          `[verify-features] artifact completion marker failed: ${
-            completionError instanceof Error ? completionError.stack : String(completionError)
-          }`
-        );
+      if (workflowLifecycleCompleted) {
+        try {
+          markRunArtifactsComplete(ARTIFACTS, RUN_ID);
+        } catch (completionError) {
+          console.error(
+            `[verify-features] artifact completion marker failed: ${
+              completionError instanceof Error ? completionError.stack : String(completionError)
+            }`
+          );
+        }
       }
     }
   }

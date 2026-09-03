@@ -1,4 +1,5 @@
 import {
+  lstatSync,
   mkdirSync,
   readlinkSync,
   readdirSync,
@@ -36,6 +37,26 @@ export const CANONICAL_FILES = Object.freeze([
 function assertPathSegment(value, label) {
   if (!/^[A-Za-z0-9._-]+$/.test(value) || value === '.' || value === '..' || value.includes('.pruning-')) {
     throw new Error(`${label} must be a single safe path segment`);
+  }
+}
+
+function ensureRealDirectory(directory, label) {
+  try {
+    const metadata = lstatSync(directory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(`${label} must be a real directory, not a symlink or non-directory`);
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    try {
+      mkdirSync(directory, { recursive: false });
+    } catch (mkdirError) {
+      if (mkdirError.code !== 'EEXIST') throw mkdirError;
+      const metadata = lstatSync(directory);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error(`${label} must be a real directory, not a symlink or non-directory`);
+      }
+    }
   }
 }
 
@@ -81,7 +102,8 @@ export function prepareRunArtifacts(root, runId, nonce, { platform = process.pla
 
   const runs = path.join(root, 'runs');
   const artifacts = path.join(runs, runId);
-  mkdirSync(runs, { recursive: true });
+  mkdirSync(root, { recursive: true });
+  ensureRealDirectory(runs, 'artifact runs directory');
   mkdirSync(artifacts, { recursive: false });
 
   for (const file of CANONICAL_FILES) {
@@ -125,6 +147,15 @@ export function pruneRunArtifacts(
     throw new Error('incompleteMaxAgeMs must be a non-negative integer');
   }
   const runs = path.join(root, 'runs');
+  try {
+    const metadata = lstatSync(runs);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error('artifact runs directory must be a real directory, not a symlink or non-directory');
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
   let canonicalRunId;
   try {
     const currentTarget = readlinkSync(path.join(root, 'current'));

@@ -43,6 +43,8 @@ const slackAlertPath = fileURLToPath(
   new URL('../../scripts/verify-features/slack-alert.sh', import.meta.url)
 );
 const slackAlertSourcePromise = readFile(slackAlertPath, 'utf8');
+const slackPostPath = fileURLToPath(new URL('../../scripts/verify-features/slack-post.mjs', import.meta.url));
+const slackPostSourcePromise = readFile(slackPostPath, 'utf8');
 const infraEscalationPath = fileURLToPath(
   new URL('../../scripts/verify-features/escalate-infra.sh', import.meta.url)
 );
@@ -93,6 +95,7 @@ describe('verify-features escalation status', () => {
   it('audits every mandatory escalation independently of the workflow DAG', async () => {
     const source = await workflowSourcePromise;
     const followup = workflowStep(source, 'slack-followup');
+    const posthogGate = source.slice(source.indexOf("step: 'enforce-posthog-delivery'"));
 
     expect(workflowStep(source, 'enforce-escalations')).toContain(
       'node "$STATUS_TOOL" audit "$ARTIFACTS" "$AUTOFIX"'
@@ -105,6 +108,11 @@ describe('verify-features escalation status', () => {
     expect(source).toContain('failure-assessment.json');
     expect(source).toContain('relay-alert-envelope/1');
     expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
+    expect(posthogGate).toContain('[ "$VERDICT" = "PASS" ] && [ "$CHANNEL" != "posthog" ]');
+    expect(workflowStep(source, 'enforce-escalations')).toContain(
+      'node "$STATUS_TOOL" audit-channel "$ARTIFACTS" posthog 1 0'
+    );
+    expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit-channel', ARTIFACTS, 'posthog', '1', '0']");
   });
 
   it('registers every delivery step and terminal leaf gate in the executable workflow graph', async () => {
@@ -150,6 +158,7 @@ describe('verify-features escalation status', () => {
     const source = await workflowSourcePromise;
     const primaryAlert = workflowStep(source, 'slack-alert');
     const primaryAlertExecutable = await slackAlertSourcePromise;
+    const slackPostExecutable = await slackPostSourcePromise;
     const infraEscalationExecutable = await infraEscalationSourcePromise;
     const emitPosthog = workflowStep(source, 'emit-posthog');
     const fileIssue = workflowStep(source, 'file-issue');
@@ -161,7 +170,9 @@ describe('verify-features escalation status', () => {
     expect(openPr).toContain('PR_RC=$?');
     expect(openPr).toContain('[ "$PR_RC" -eq 0 ] && [ -n "$PR_URL" ]');
     expect(primaryAlert).toContain('bash "${SLACK_ALERT_TOOL}"');
+    expect(primaryAlert).toMatch(/dependsOn:\s*\[\s*['"]verdict['"]\s*\]/);
     expect(primaryAlertExecutable).toContain('ALERT_ENVELOPE_FAILED: primary envelope write failed');
+    expect(primaryAlertExecutable).toContain('SLACK_FAILED: redaction failed');
     expect(followup).toContain('ALERT_ENVELOPE_FAILED: followup envelope write failed');
     expect(emitPosthog).toContain('if [ "$TOTAL" -eq 0 ]');
     expect(emitPosthog).toContain('POSTHOG_DEADLINE_EPOCH=$(( $(date +%s) + 30 ))');
@@ -170,9 +181,10 @@ describe('verify-features escalation status', () => {
     expect(infraEscalationExecutable).toContain('infra failed');
     expect(infraEscalationExecutable).not.toContain('escalation skipped');
     expect(followup).toContain('if [ "$SLACK_POSTED" -ne 1 ]');
-    expect(source).toContain('out.channel !== channel');
-    expect(source).toContain("typeof out.ts !== 'string'");
-    expect(source).toContain("error.code = 'invalid_slack_receipt'");
+    expect(source).toContain('node "$SLACK_POST_EXECUTABLE"');
+    expect(slackPostExecutable).toContain('out.channel !== channel');
+    expect(slackPostExecutable).toContain("typeof out.ts !== 'string'");
+    expect(slackPostExecutable).toContain("error.code = 'invalid_slack_receipt'");
     expect(source).not.toContain('ISSUE_SKIPPED: gh is not authenticated');
     expect(source).not.toContain('PR_SKIPPED: gh unavailable or unauthenticated');
     expect(source).not.toContain('FOLLOWUP_SKIPPED: no issue or PR to report');
@@ -396,6 +408,46 @@ exit "$FAKE_CURL_EXIT_STATUS"
     });
     expect(nonHttpsStdout).toContain('NIGHTCTO_EVIDENCE_URL must use HTTPS');
     await expect(stat(blockedCapture)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const missingTokenCapture = path.join(directory, 'missing-token-body.json');
+    const { stdout: missingTokenStdout } = await execFileAsync('bash', [infraEscalationPath], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        INFRA_CAPTURE: missingTokenCapture,
+        FAKE_CURL_HTTP_STATUS: '204',
+        FAKE_CURL_EXIT_STATUS: '0',
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-infra-missing-token',
+        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+        NIGHTCTO_EVIDENCE_TOKEN: '',
+      },
+      timeout: 10_000,
+    });
+    expect(missingTokenStdout).toContain('NIGHTCTO_EVIDENCE_TOKEN unset');
+    await expect(stat(missingTokenCapture)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await writeFile(path.join(directory, 'verdict.json'), '{"tiersNotRun":null}\n');
+    const { stdout: malformedVerdictStdout } = await execFileAsync('bash', [infraEscalationPath], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        INFRA_CAPTURE: path.join(directory, 'malformed-verdict-body.json'),
+        FAKE_CURL_HTTP_STATUS: '503',
+        FAKE_CURL_EXIT_STATUS: '0',
+        VERIFY_ARTIFACTS: directory,
+        VERIFY_RUN_ID: 'verify-infra-malformed-verdict',
+        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+        NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
+      },
+      timeout: 10_000,
+    });
+    const malformedVerdictReceipt = JSON.parse(
+      await readFile(path.join(directory, 'escalation-infra.json'), 'utf8')
+    );
+    expect(malformedVerdictStdout).toContain('verdict_missing');
+    expect(malformedVerdictReceipt).toMatchObject({ channel: 'infra', state: 'failed' });
+    expect(malformedVerdictReceipt.detail).toContain('verdict_missing');
   });
 
   it('isolates artifacts and all mutating fix steps per invocation', async () => {
@@ -423,6 +475,7 @@ exit "$FAKE_CURL_EXIT_STATUS"
     expect(source).not.toContain('INVOCATION_LOCK');
     expect(source).toContain('[verify-features] worktree cleanup failed:');
     expect(source).toContain('[verify-features] artifact completion marker failed:');
+    expect(source).toContain('if (workflowLifecycleCompleted)');
   });
 
   it('preserves the required Slack target and dry-run/run identity controls', async () => {
@@ -790,6 +843,19 @@ exit "$FAKE_CURL_EXIT_STATUS"
         'incompleteMaxAgeMs must be a non-negative integer'
       );
     }
+  });
+
+  it('rejects a symlinked artifact runs directory before writing or pruning', async () => {
+    const root = await artifacts();
+    const outside = await artifacts();
+    await writeFile(path.join(outside, 'sentinel'), 'preserve\n');
+    await symlink(outside, path.join(root, 'runs'), 'dir');
+
+    expect(() => prepareRunArtifacts(root, 'verify-symlink', 'symlink')).toThrow(
+      'artifact runs directory must be a real directory'
+    );
+    expect(() => pruneRunArtifacts(root)).toThrow('artifact runs directory must be a real directory');
+    await expect(readFile(path.join(outside, 'sentinel'), 'utf8')).resolves.toBe('preserve\n');
   });
 
   it('reserves the internal pruning marker from run ids', async () => {
