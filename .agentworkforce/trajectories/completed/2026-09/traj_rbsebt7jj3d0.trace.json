@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "id": "57262a2c-1278-4b90-8124-7a00bf21c384",
+  "timestamp": "2026-09-03T00:13:01.145Z",
+  "trajectory": "traj_rbsebt7jj3d0",
+  "files": [
+    {
+      "path": "scripts/verify-features/escalation-status.d.mts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 10,
+              "revision": "653e7fc494a3fe46da130dbce92366eb6e3a3c31"
+            },
+            {
+              "start_line": 58,
+              "end_line": 62,
+              "revision": "653e7fc494a3fe46da130dbce92366eb6e3a3c31"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

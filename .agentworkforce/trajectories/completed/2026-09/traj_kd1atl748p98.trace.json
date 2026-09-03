@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "id": "d76bbf6b-8062-4cd1-b92f-b24d1afac57f",
+  "timestamp": "2026-09-03T01:04:06.171Z",
+  "trajectory": "traj_kd1atl748p98",
+  "files": [
+    {
+      "path": "scripts/verify-features/slack-alert.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 52,
+              "end_line": 65,
+              "revision": "a170a564016a86b86e10eb39fc00ca7a2976575a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 225,
+              "end_line": 241,
+              "revision": "a170a564016a86b86e10eb39fc00ca7a2976575a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

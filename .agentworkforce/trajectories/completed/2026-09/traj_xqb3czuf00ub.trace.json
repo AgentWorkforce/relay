@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "id": "1ae6b793-b528-48a2-b1a8-94fcb6af7ab5",
+  "timestamp": "2026-09-03T01:39:41.891Z",
+  "trajectory": "traj_xqb3czuf00ub",
+  "files": [
+    {
+      "path": "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 120,
+              "end_line": 186,
+              "revision": "da8fefc3fc8e628552c174f90a971b8d17840047"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

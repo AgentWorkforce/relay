@@ -1,0 +1,34 @@
+{
+  "id": "traj_rbsebt7jj3d0",
+  "version": 1,
+  "task": {
+    "title": "Sync escalation status declaration contract",
+    "source": {
+      "system": "plain",
+      "id": "relay#1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T00:12:53.929Z",
+  "completedAt": "2026-09-03T00:13:00.820Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Updated the escalation-status declaration contract for the infra channel and allowNotApplicable leaf-audit option; direct TypeScript compilation and 30 focused tests pass.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [
+    "653e7fc49"
+  ],
+  "filesChanged": [
+    "scripts/verify-features/escalation-status.d.mts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5e0b2c316f5286898496f5acb979ceb61a22f0c6",
+    "endRef": "653e7fc494a3fe46da130dbce92366eb6e3a3c31",
+    "traceId": "57262a2c-1278-4b90-8124-7a00bf21c384"
+  }
+}
