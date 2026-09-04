@@ -35,7 +35,12 @@ if (arm !== 'base' && arm !== 'head') {
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
-const targetSha = run('git', ['-C', targetDir, 'rev-parse', 'HEAD'], targetDir, 'git rev-parse').stdout.trim();
+const targetSha = run(
+  'git',
+  ['-C', targetDir, 'rev-parse', 'HEAD'],
+  targetDir,
+  'git rev-parse'
+).stdout.trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
@@ -73,9 +78,17 @@ try {
     `install baseline npm@${BROKEN_NPM_VERSION}`,
     npmEnv
   );
-  const baselineVersion = run('npm', ['--version'], targetDir, 'npm --version (baseline)', npmEnv).stdout.trim();
+  const baselineVersion = run(
+    'npm',
+    ['--version'],
+    targetDir,
+    'npm --version (baseline)',
+    npmEnv
+  ).stdout.trim();
   if (baselineVersion !== BROKEN_NPM_VERSION) {
-    throw new Error(`Baseline npm install did not take effect: expected ${BROKEN_NPM_VERSION}, got ${baselineVersion}.`);
+    throw new Error(
+      `Baseline npm install did not take effect: expected ${BROKEN_NPM_VERSION}, got ${baselineVersion}.`
+    );
   }
 
   // Apply whatever fix the target checkout actually defines, if any —
@@ -86,7 +99,13 @@ try {
   let pinnedVersion = null;
   if (pinMatch) {
     pinnedVersion = pinMatch[1];
-    run('npm', ['install', '-g', `npm@${pinnedVersion}`], targetDir, `apply target's npm@${pinnedVersion} pin`, npmEnv);
+    run(
+      'npm',
+      ['install', '-g', `npm@${pinnedVersion}`],
+      targetDir,
+      `apply target's npm@${pinnedVersion} pin`,
+      npmEnv
+    );
   }
 
   // The exact "fresh install" recipe from node-compat.yml's fresh-install

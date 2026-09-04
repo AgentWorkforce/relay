@@ -4,10 +4,7 @@
   "kind": "bugfix",
   "title": "Fresh npm install crashes on the harnesses dependency chain under npm <=10.9.x",
   "runner": {
-    "command": [
-      "node",
-      "tests/relayflows/cases/1652-publish-npm-arborist-crash/run.mjs"
-    ]
+    "command": ["node", "tests/relayflows/cases/1652-publish-npm-arborist-crash/run.mjs"]
   },
   "requirements": [],
   "timeoutSeconds": 900,
