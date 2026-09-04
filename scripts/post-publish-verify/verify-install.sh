@@ -44,7 +44,16 @@ fi
 
 log_header "Post-Publish Verification"
 log_info "Node.js version: $(node --version)"
-log_info "npm version: $(npm --version)"
+log_info "npm version (before upgrade): $(npm --version)"
+
+# npm <=10.9.x's arborist crashes ("Cannot read properties of null (reading
+# 'edgesOut')", npm/cli#8261) on the lockfile-less global/local installs
+# below whenever the published dependency graph needs a peer-set
+# re-resolution (see relay#1652). Unconditional on both Node matrix legs so
+# this stays correct regardless of which npm the base image happens to
+# bundle.
+npm install -g npm@11.19.1
+log_info "npm version (after upgrade): $(npm --version)"
 log_info "Package to test: $PACKAGE_SPEC"
 log_info "User: $(whoami)"
 log_info "Working directory: $(pwd)"
