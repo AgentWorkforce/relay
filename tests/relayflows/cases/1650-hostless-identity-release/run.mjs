@@ -41,11 +41,16 @@ const RELEASE_REASON = 'relayflow hostless identity release proof';
 // than assumed from the CLI flag. Pinning the flag instead would turn any
 // divergence into an "Unexpected hostless release observation" throw — an
 // infrastructure failure wearing the costume of a proof result.
+// The double always answers POST /v1/agents before any release, so by the time a
+// release arrives the minted name is the only legitimate actor. Accepting the
+// `broker` fallback as well would let the head arm pass on precisely the
+// regression this assertion exists to catch — the broker losing its
+// credential-derived identity and falling back. The fallback is therefore only
+// accepted if no credential was ever minted.
 const BROKER_ACTOR_FALLBACK = 'broker';
 let registeredBrokerName = null;
 function expectedReleaseReasons() {
-  const actors = new Set([BROKER_ACTOR_FALLBACK]);
-  if (registeredBrokerName) actors.add(registeredBrokerName);
+  const actors = new Set(registeredBrokerName ? [registeredBrokerName] : [BROKER_ACTOR_FALLBACK]);
   return [...actors].map((actor) => `${RELEASE_REASON} (actor: Agent Relay broker ${actor})`);
 }
 function hasAttributedReleaseReason(body) {
