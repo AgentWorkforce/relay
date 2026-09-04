@@ -53,7 +53,22 @@ log_info "npm version (before upgrade): $(npm --version)"
 # this stays correct regardless of which npm the base image happens to
 # bundle.
 npm install -g npm@11.19.1
-log_info "npm version (after upgrade): $(npm --version)"
+
+# Bash caches the resolved path of a command the first time it's looked up
+# (the "npm version (before upgrade)" call above already did). The install
+# above lands the new npm binary at a different path
+# ($NPM_CONFIG_PREFIX/bin/npm, earlier in PATH) — without `hash -r`, every
+# later bare `npm` call in this script keeps silently resolving to the OLD
+# binary, making the upgrade above a no-op. Confirmed empirically: without
+# this, `npm --version` right after the install still printed the pre-
+# upgrade version.
+hash -r
+NPM_VERSION_AFTER="$(npm --version)"
+log_info "npm version (after upgrade): $NPM_VERSION_AFTER"
+if [ "$NPM_VERSION_AFTER" != "11.19.1" ]; then
+    log_error "npm upgrade did not take effect — expected 11.19.1, got $NPM_VERSION_AFTER"
+    exit 1
+fi
 log_info "Package to test: $PACKAGE_SPEC"
 log_info "User: $(whoami)"
 log_info "Working directory: $(pwd)"
