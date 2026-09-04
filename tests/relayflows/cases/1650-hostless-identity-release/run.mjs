@@ -24,14 +24,24 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1650-hostless-identity-release';
 const AGENT_NAME = 'already-gone-release-probe';
+const BROKER_INSTANCE_NAME = 'relayflow-1650-broker';
+const RELEASE_REASON = 'relayflow hostless identity release proof';
+// Relaycast's release wire shape carries one durable audit string rather than
+// separate reason and actor fields, so release_agent_identity() folds both into
+// it as `{reason} (actor: Agent Relay broker {instance})`
+// (crates/broker/src/relaycast/ws.rs). Pinning the exact value is what stops the
+// destructive branch accepting a release that dropped the caller's reason or its
+// actor attribution: without it the head arm could pass while the audit contract
+// this fix ships is silently broken.
+const EXPECTED_RELEASE_REASON = `${RELEASE_REASON} (actor: Agent Relay broker ${BROKER_INSTANCE_NAME})`;
 const API_KEY = 'br_relayflow_1650';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const BROKER_PORT_RE = /^\[agent-relay\] API listening on http:\/\/127\.0\.0\.1:(\d{1,5})$/m;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
-const brokerPort = await reservePort();
 
 if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
@@ -103,6 +113,16 @@ const relaycast = http.createServer(async (request, response) => {
       });
       return;
     }
+    if (body?.reason !== EXPECTED_RELEASE_REASON) {
+      sendJson(response, 400, {
+        ok: false,
+        error: {
+          code: 'invalid_release_reason',
+          message: 'A destructive release must carry the actor-attributed reason.',
+        },
+      });
+      return;
+    }
     sendJson(response, 201, {
       ok: true,
       data: {
@@ -151,18 +171,24 @@ try {
   if (!address || typeof address === 'string') throw new Error('Expected Relaycast TCP address.');
   const relaycastUrl = `http://127.0.0.1:${address.port}`;
 
+  // Bind with --api-port 0 and take the port the broker actually bound from its
+  // own machine-readable stdout line. Reserving a port here and closing the
+  // listener before the spawn leaves that port free for the whole broker startup
+  // window; losing the race makes TcpListener::bind fail and surfaces only as a
+  // confusing readiness timeout. The port comes from the child's stdout, not
+  // from connection.json, so no outbound request derives from file data.
   broker = spawn(
     binaryPath,
     [
       'init',
       '--instance-name',
-      'relayflow-1650-broker',
+      BROKER_INSTANCE_NAME,
       '--workspace-key',
       'rk_relayflow_1650',
       '--state-dir',
       stateDir,
       '--api-port',
-      String(brokerPort),
+      '0',
       '--channels',
       '',
     ],
@@ -177,13 +203,32 @@ try {
         AGENT_RELAY_NO_DEBUG_FILES: '1',
         RELAY_SKIP_TELEMETRY: '1',
       },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
   broker.stderr.on('data', (chunk) => {
     brokerStderr = `${brokerStderr}${chunk}`.slice(-16_000);
   });
+  let brokerStdout = '';
+  broker.stdout.on('data', (chunk) => {
+    brokerStdout = `${brokerStdout}${chunk}`.slice(-16_000);
+  });
 
+  let brokerPort;
+  await waitFor(
+    () => {
+      const match = BROKER_PORT_RE.exec(brokerStdout);
+      if (!match) return false;
+      const port = Number(match[1]);
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+        throw new Error(`Broker announced an out-of-range API port: ${match[1]}`);
+      }
+      brokerPort = port;
+      return true;
+    },
+    30_000,
+    'broker API port announcement'
+  );
   const brokerUrl = `http://127.0.0.1:${brokerPort}`;
   await waitFor(
     async () => {
@@ -199,7 +244,7 @@ try {
   const response = await fetch(`${brokerUrl}/api/spawned/${encodeURIComponent(AGENT_NAME)}`, {
     method: 'DELETE',
     headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
-    body: JSON.stringify({ reason: 'relayflow hostless identity release proof' }),
+    body: JSON.stringify({ reason: RELEASE_REASON }),
     signal: AbortSignal.timeout(30_000),
   });
   const responseText = await response.text();
@@ -214,7 +259,8 @@ try {
 
   const allNonDelete = releaseBodies.length > 0 && releaseBodies.every((body) => body?.delete_agent !== true);
   const allDestructive =
-    releaseBodies.length > 0 && releaseBodies.every((body) => body?.delete_agent === true);
+    releaseBodies.length > 0 &&
+    releaseBodies.every((body) => body?.delete_agent === true && body?.reason === EXPECTED_RELEASE_REASON);
   const baseObserved =
     response.status === 500 &&
     responseBody?.success === false &&
@@ -236,7 +282,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'hostless_identity_release_succeeds';
-    details = `The exact head broker sent delete_agent=true for the already-gone worker; Relaycast completed the identity release locally and DELETE /api/spawned returned 200 success.`;
+    details = `The exact head broker sent delete_agent=true with the actor-attributed reason ${JSON.stringify(EXPECTED_RELEASE_REASON)} for the already-gone worker; Relaycast completed the identity release locally and DELETE /api/spawned returned 200 success.`;
   } else {
     throw new Error(
       `Unexpected hostless release observation: ${JSON.stringify({
@@ -297,20 +343,6 @@ async function waitFor(probe, timeoutMs, label) {
   throw new Error(
     `Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}: ${brokerStderr}`
   );
-}
-
-async function reservePort() {
-  const server = http.createServer();
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Expected broker TCP address.');
-  await new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  return address.port;
 }
 
 function requiredValue(name) {
