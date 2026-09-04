@@ -28,12 +28,29 @@ const BROKER_INSTANCE_NAME = 'relayflow-1650-broker';
 const RELEASE_REASON = 'relayflow hostless identity release proof';
 // Relaycast's release wire shape carries one durable audit string rather than
 // separate reason and actor fields, so release_agent_identity() folds both into
-// it as `{reason} (actor: Agent Relay broker {instance})`
-// (crates/broker/src/relaycast/ws.rs). Pinning the exact value is what stops the
-// destructive branch accepting a release that dropped the caller's reason or its
-// actor attribution: without it the head arm could pass while the audit contract
-// this fix ships is silently broken.
-const EXPECTED_RELEASE_REASON = `${RELEASE_REASON} (actor: Agent Relay broker ${BROKER_INSTANCE_NAME})`;
+// it as `{reason} (actor: Agent Relay broker {actor})`
+// (crates/broker/src/relaycast/ws.rs:941-942). Asserting that string is what
+// stops the destructive branch accepting a release that dropped the caller's
+// reason or its actor attribution — the audit contract this fix ships.
+//
+// The actor is the broker's own Relaycast identity, not its `--instance-name`:
+// RelaycastWorkspaces reads `session.credentials.agent_name` and falls back to
+// the literal `broker` (crates/broker/src/relaycast/workspace.rs:65-69). That
+// credential is minted by this double's own `POST /v1/agents` response, so the
+// expectation is derived from the identity we actually handed the broker rather
+// than assumed from the CLI flag. Pinning the flag instead would turn any
+// divergence into an "Unexpected hostless release observation" throw — an
+// infrastructure failure wearing the costume of a proof result.
+const BROKER_ACTOR_FALLBACK = 'broker';
+let registeredBrokerName = null;
+function expectedReleaseReasons() {
+  const actors = new Set([BROKER_ACTOR_FALLBACK]);
+  if (registeredBrokerName) actors.add(registeredBrokerName);
+  return [...actors].map((actor) => `${RELEASE_REASON} (actor: Agent Relay broker ${actor})`);
+}
+function hasAttributedReleaseReason(body) {
+  return expectedReleaseReasons().includes(body?.reason);
+}
 const API_KEY = 'br_relayflow_1650';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const BROKER_PORT_RE = /^\[agent-relay\] API listening on http:\/\/127\.0\.0\.1:(\d{1,5})$/m;
@@ -80,12 +97,15 @@ const relaycast = http.createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && pathname === '/v1/agents') {
+    // This response is the broker's Relaycast credential, and its `name` is the
+    // actor release_agent_identity() will attribute the release to.
+    registeredBrokerName = body?.name ?? BROKER_INSTANCE_NAME;
     sendJson(response, 200, {
       ok: true,
       data: {
         id: 'agent_relayflow_1650_broker',
         workspace_id: 'ws_relayflow_1650',
-        name: body?.name ?? 'relayflow-1650-broker',
+        name: registeredBrokerName,
         token: 'at_relayflow_1650_broker',
         status: 'active',
         created_at: '2026-09-04T00:00:00.000Z',
@@ -113,7 +133,7 @@ const relaycast = http.createServer(async (request, response) => {
       });
       return;
     }
-    if (body?.reason !== EXPECTED_RELEASE_REASON) {
+    if (!hasAttributedReleaseReason(body)) {
       sendJson(response, 400, {
         ok: false,
         error: {
@@ -260,7 +280,7 @@ try {
   const allNonDelete = releaseBodies.length > 0 && releaseBodies.every((body) => body?.delete_agent !== true);
   const allDestructive =
     releaseBodies.length > 0 &&
-    releaseBodies.every((body) => body?.delete_agent === true && body?.reason === EXPECTED_RELEASE_REASON);
+    releaseBodies.every((body) => body?.delete_agent === true && hasAttributedReleaseReason(body));
   const baseObserved =
     response.status === 500 &&
     responseBody?.success === false &&
@@ -282,7 +302,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'hostless_identity_release_succeeds';
-    details = `The exact head broker sent delete_agent=true with the actor-attributed reason ${JSON.stringify(EXPECTED_RELEASE_REASON)} for the already-gone worker; Relaycast completed the identity release locally and DELETE /api/spawned returned 200 success.`;
+    details = `The exact head broker sent delete_agent=true with the actor-attributed reason ${JSON.stringify(releaseBodies.at(-1)?.reason)} for the already-gone worker; Relaycast completed the identity release locally and DELETE /api/spawned returned 200 success.`;
   } else {
     throw new Error(
       `Unexpected hostless release observation: ${JSON.stringify({
