@@ -214,6 +214,13 @@ jobs:
         with:
           node-version: '22.14.0'
 
+      - name: Upgrade npm before fresh resolution
+        # See node-compat.yml's identical step: npm <=10.9.x's arborist
+        # crashes re-resolving the harnesses package's peer set with no
+        # lockfile present (npm/cli#8261). See relay#1652. Applied here too
+        # so this job passes independent of merge order with that PR.
+        run: npm install -g npm@11.19.1
+
       # The publish workflow bumps versions, removes package-lock.json, then
       # runs npm install. This catches range-resolved dependency breaks before merge.
       - name: Install dependencies with publish resolution
