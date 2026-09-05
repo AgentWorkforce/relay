@@ -20,6 +20,9 @@ const MAX_LIVE_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const MAX_TERMINAL_DIAGNOSTIC_BYTES = 32 * 1024;
+const LIVE_CREDENTIAL =
+  /(rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
 
 function run(command, args, options = {}) {
   return runBoundedProcess(command, args, {
@@ -59,6 +62,56 @@ function statusFrom(payload) {
     if (typeof candidate === 'string') return candidate.toLowerCase();
   }
   throw new Error('Cloud status response did not contain a status');
+}
+
+function diagnosticString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Keep terminal Cloud failures useful even when the orchestrator never wrote
+ * runner.log. The status route already removes its callback credential; this
+ * additionally whitelists only lifecycle diagnostics, bounds them, and masks
+ * both the dispatcher's exact credential and known Relay credential shapes.
+ */
+export function terminalStatusDiagnostic(payload, secrets = []) {
+  const failure =
+    payload.failure && typeof payload.failure === 'object' && !Array.isArray(payload.failure)
+      ? payload.failure
+      : null;
+  const causeChain = Array.isArray(failure?.causeChain)
+    ? failure.causeChain.map(diagnosticString).filter(Boolean).slice(0, 20)
+    : undefined;
+  const evidence = {
+    runId: diagnosticString(payload.runId),
+    status: diagnosticString(payload.status),
+    sandboxId: diagnosticString(payload.sandboxId),
+    error: diagnosticString(payload.error),
+    ...(failure
+      ? {
+          failure: {
+            phase: diagnosticString(failure.phase),
+            code: diagnosticString(failure.code),
+            message: diagnosticString(failure.message),
+            causeChain,
+            dispatchType: diagnosticString(failure.dispatchType),
+            sandboxId: diagnosticString(failure.sandboxId),
+            occurredAt: diagnosticString(failure.occurredAt),
+          },
+        }
+      : {}),
+  };
+
+  let diagnostic = JSON.stringify(evidence, null, 2);
+  for (const secret of secrets) {
+    if (typeof secret === 'string' && secret.length >= 8) {
+      diagnostic = diagnostic.split(secret).join('[REDACTED_DECLARED_SECRET]');
+    }
+  }
+  diagnostic = diagnostic.replace(LIVE_CREDENTIAL, (_match, prefix, body) =>
+    body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
+  );
+  return diagnostic.slice(0, MAX_TERMINAL_DIAGNOSTIC_BYTES);
 }
 
 function requiredCredential(env, name) {
@@ -244,6 +297,7 @@ export async function main() {
 
     const deadline = Date.now() + timeoutMs;
     let terminalStatus = null;
+    let terminalPayload = null;
     while (Date.now() < deadline) {
       await delay(pollMs);
       const statusResult = await runTracked(cli, ['cloud', 'status', runId, '--json'], {
@@ -258,10 +312,12 @@ export async function main() {
         console.warn(`Cloud status poll failed (${statusResult.exitCode}); retrying`);
         continue;
       }
-      const status = statusFrom(parseJsonOutput(statusResult.stdout, 'Cloud status'));
+      const statusPayload = parseJsonOutput(statusResult.stdout, 'Cloud status');
+      const status = statusFrom(statusPayload);
       console.log(`Cloud RelayFlow status: ${status}`);
       if (TERMINAL_SUCCESS.has(status) || TERMINAL_FAILURE.has(status)) {
         terminalStatus = status;
+        terminalPayload = statusPayload;
         terminal = true;
         break;
       }
@@ -278,9 +334,13 @@ export async function main() {
       quiet: true,
       timeoutMs: commandTimeoutMs,
     });
-    await writeFile(logsPath, logs.stdout + logs.stderr);
+    const terminalDiagnostic = terminalPayload
+      ? `\nCloud terminal status:\n${terminalStatusDiagnostic(terminalPayload, [process.env.CLOUD_API_KEY])}\n`
+      : '';
+    await writeFile(logsPath, logs.stdout + logs.stderr + terminalDiagnostic);
     if (logs.stdout) process.stdout.write(logs.stdout);
     if (logs.stderr) process.stderr.write(logs.stderr);
+    if (terminalDiagnostic) process.stderr.write(terminalDiagnostic);
     if (logs.timedOut) throw new Error(`Cloud log retrieval timed out for run ${runId}`);
     if (logs.exitCode !== 0) throw new Error(`Cloud log retrieval failed with exit ${logs.exitCode}`);
 
