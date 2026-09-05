@@ -621,6 +621,41 @@
             "reasoning": "Fresh PR review found exploitable symlink/path/ref boundary gaps and unrestricted model preflight networking. The qualification must reject ambiguous provenance instead of weakening its clean-room gate."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788643900639,
+          "type": "decision",
+          "content": "Reviewed required repo and workflow skills; using a dedicated worktree and feature branch: Reviewed required repo and workflow skills; using a dedicated worktree and feature branch",
+          "raw": {
+            "question": "Reviewed required repo and workflow skills; using a dedicated worktree and feature branch",
+            "chosen": "Reviewed required repo and workflow skills; using a dedicated worktree and feature branch",
+            "alternatives": [],
+            "reasoning": "Resident root contains unrelated dirty trajectory/tool files and must remain untouched; PR review requires isolated edits and tracked trajectory evidence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788644599221,
+          "type": "reflection",
+          "content": "Fresh PR #1665 review findings are repaired in an isolated feature worktree: descriptor-pinned candidate output, complete symlink provenance, structural policy and wiring regressions, per-lane Cloud agents, reviewer-owned sandbox provenance, and prerelease-only release trigger. Focused and full Vitest/typecheck/format checks are green; hosted E2E and Cloud proof failures were external runtime availability failures.",
+          "raw": {
+            "focalPoints": [
+              "review-findings",
+              "provenance",
+              "validation",
+              "external-ci"
+            ],
+            "adjustments": "Keep hosted failures as blockers/evidence and request fresh Codex review after push",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:review-findings",
+            "focal:provenance",
+            "focal:validation",
+            "focal:external-ci",
+            "confidence:0.9"
+          ]
         }
       ]
     }

@@ -18,6 +18,8 @@ import { mkdir, open } from 'node:fs/promises';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
 const EXPECTED_CLI_INVENTORY = 'tests/relayflows/cleanroom/fleet-cli-inventory.json';
@@ -152,26 +154,6 @@ function reviewerPermissions(role: string) {
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
     },
     network: false,
-    exec: [],
-  };
-}
-
-function preflightPermissions(agentName: string) {
-  const provider = agentName.slice('preflight-'.length);
-  const modelTransportHosts: Record<string, string[]> = {
-    opencode: ['api.opencode.ai:443', 'opencode.ai:443', 'api.openrouter.ai:443', 'openrouter.ai:443'],
-    codex: ['api.openai.com:443', 'chatgpt.com:443', 'auth.openai.com:443'],
-    claude: ['api.anthropic.com:443'],
-  };
-  const allow = modelTransportHosts[provider];
-  if (!allow) throw new Error(`unknown Fleet preflight provider ${provider}`);
-  return {
-    description: 'Allow only the selected harness model transport for the allocation preflight.',
-    why: 'The preflight proves the exact model is reachable before any Daytona resource is allocated.',
-    access: 'restricted' as const,
-    inherit: false,
-    files: { read: [], write: [], deny: ['**'] },
-    network: { allow, deny: ['*'] },
     exec: [],
   };
 }

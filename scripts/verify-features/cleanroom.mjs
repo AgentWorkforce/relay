@@ -2518,10 +2518,14 @@ async function main() {
     if (profile !== 'smoke' && (evidenceMode !== 'cloud' || !sandboxId)) {
       throw new Error("full/soak review requires the Cloud executor's SANDBOX_ID");
     }
+    const expectedReviewSandboxId = sandboxId ? `cloud-${sandboxId}` : `local-${process.pid}`;
+    if (profile !== 'smoke' && review.sandboxId !== expectedReviewSandboxId) {
+      throw new Error('review sandboxId must be captured by the reviewer Cloud executor');
+    }
     review.nonce = nonce;
     review.product = catalog.matrix.product;
     review.profile = profile;
-    review.sandboxId = sandboxId ? `cloud-${sandboxId}` : `local-${process.pid}`;
+    review.sandboxId = review.sandboxId ?? expectedReviewSandboxId;
     review.completedAt = new Date().toISOString();
     await putRecord({ nonce, kind: `reviews/${role}`, value: review, source, artifactRoot });
     console.log(`CLEANROOM_REVIEW_UPLOADED role=${role} verdict=${review.verdict}`);
