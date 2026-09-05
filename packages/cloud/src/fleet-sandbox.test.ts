@@ -51,6 +51,7 @@ describe('Cloud fleet sandbox client', () => {
             relayWorkspaceId: 'rw_abc',
             relayfileMounted: true,
             relayfileMountPath: '/workspace',
+            providerId: 'agent37',
           },
           { status: 201 }
         ),
@@ -64,6 +65,7 @@ describe('Cloud fleet sandbox client', () => {
       maxAgents: 1,
       mountRelayfile: true,
       forceProvision: true,
+      workloadProfile: 'long-running-agent',
       waitTimeoutMs: 90_000,
     });
 
@@ -84,6 +86,7 @@ describe('Cloud fleet sandbox client', () => {
       maxAgents: 1,
       mountRelayfile: true,
       forceProvision: true,
+      workloadProfile: 'long-running-agent',
       waitTimeoutMs: 90_000,
     });
     expect(result).toEqual({
@@ -95,6 +98,7 @@ describe('Cloud fleet sandbox client', () => {
       relayWorkspaceId: 'rw_abc',
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
+      providerId: 'agent37',
     });
   });
 
@@ -533,6 +537,7 @@ describe('Cloud fleet sandbox client', () => {
             relayWorkspaceId: 'rw_abc',
             nodeName: 'daytona-codex',
             waitedMs: 90_000,
+            providerId: 'agent37',
           },
           { status: 202 }
         ),
@@ -575,6 +580,7 @@ describe('Cloud fleet sandbox client', () => {
               sandboxId: 'sandbox-1',
               relayWorkspaceId: 'rw_abc',
               relayfileMounted: true,
+              providerId: 'daytona',
             },
             { status: 201 }
           ),
@@ -613,6 +619,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-1',
             relayWorkspaceId: 'rw_abc',
             relayfileMounted: true,
+            providerId: 'daytona',
           },
           { status: 201 }
         ),
