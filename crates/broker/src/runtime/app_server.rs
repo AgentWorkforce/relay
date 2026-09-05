@@ -192,6 +192,20 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     }
                 }
             }
+            "set_model" => {
+                let _ = send_frame(
+                    &out_tx,
+                    "set_model_response",
+                    frame.request_id,
+                    json!({
+                        "status": "unsupported",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": "app-server providers do not expose model mutation",
+                    }),
+                )
+                .await;
+            }
             "ping" => {
                 let ts = frame
                     .payload

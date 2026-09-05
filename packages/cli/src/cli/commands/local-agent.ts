@@ -829,13 +829,25 @@ export function registerLocalAgentCommands(
 
   agent
     .command('set-model')
-    .description("Switch a running agent's model (sends `/model` to its TUI; best-effort)")
+    .description("Request a running agent's model change and report provider confirmation")
     .argument('<name>', 'Agent name')
     .argument('<model>', 'Model identifier to switch to')
     .action(async (name: string, model: string) => {
       await run(deps, async (client) => {
-        await client.setModel(name, model);
-        deps.log(`Sent \`/model ${model}\` to ${name} (best-effort — the agent's TUI applies it).`);
+        const receipt = await client.setModel(name, model);
+        if (receipt.status === 'applied' && receipt.applied) {
+          deps.log(
+            `Applied model ${receipt.effective_model ?? model} to ${name} (request ${receipt.request_id ?? 'unknown'}).`
+          );
+        } else if (receipt.status === 'accepted_pending') {
+          deps.log(
+            `Model request for ${name} was accepted_pending (request ${receipt.request_id ?? 'unknown'}); provider confirmation is not available yet.`
+          );
+        } else {
+          deps.log(
+            `Model request for ${name} was ${receipt.status}; applied=false (request ${receipt.request_id ?? 'unknown'}).`
+          );
+        }
       });
     });
 

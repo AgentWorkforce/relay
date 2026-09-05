@@ -23,7 +23,20 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
     spawnPty: vi.fn(async () => undefined),
     spawnHeadless: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
-    setModel: vi.fn(async () => ({ name: 'lead', model: 'opus', success: true })),
+    setModel: vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'accepted_pending',
+      request_id: 'model_1',
+      generation: 'generation-1',
+      revision: 1,
+      success: true,
+      accepted: true,
+      pending: true,
+    })),
     flushPending: vi.fn(async () => ({ flushed: 2 })),
     setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
   };
@@ -815,6 +828,27 @@ describe('local agent subtree', () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
     expect(client.setModel).toHaveBeenCalledWith('lead', 'opus');
+  });
+
+  it('set-model reports unsupported without claiming application', async () => {
+    const { program, client, log } = harness();
+    client.setModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'unsupported',
+      request_id: 'model_2',
+      generation: 'generation-1',
+      revision: 2,
+      success: false,
+      accepted: false,
+      pending: false,
+    }));
+    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('unsupported'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('applied=false'));
   });
 
   it('message flush drains a local broker agent queue', async () => {

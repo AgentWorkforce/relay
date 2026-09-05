@@ -924,6 +924,23 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     );
                                 }
                             }
+                            "set_model" => {
+                                // PTY output cannot prove that a provider
+                                // consumed `/model`; never turn raw terminal
+                                // injection into an applied receipt.
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "set_model_response",
+                                    frame.request_id,
+                                    json!({
+                                        "status": "unsupported",
+                                        "applied": false,
+                                        "effective_model": null,
+                                        "error": "PTY workers have no provider-confirmed model mutation",
+                                    }),
+                                )
+                                .await;
+                            }
                             "shutdown_worker" => {
                                 running = false;
                             }

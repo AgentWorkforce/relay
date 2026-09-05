@@ -1,0 +1,69 @@
+{
+  "id": "traj_vk6j2we7i49f",
+  "version": 1,
+  "task": {
+    "title": "Implement issue #1658 set-model applied receipt",
+    "source": {
+      "system": "plain",
+      "id": "1658"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-05T17:39:05.805Z",
+  "completedAt": "2026-09-05T17:54:58.646Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-05T17:54:22.984Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cukiykeqj6t1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-05T17:54:22.984Z",
+      "endedAt": "2026-09-05T17:54:58.646Z",
+      "events": [
+        {
+          "ts": 1788630862984,
+          "type": "decision",
+          "content": "Use an opt-in typed set_model worker protocol and fail closed for all current runtimes: Use an opt-in typed set_model worker protocol and fail closed for all current runtimes",
+          "raw": {
+            "question": "Use an opt-in typed set_model worker protocol and fail closed for all current runtimes",
+            "chosen": "Use an opt-in typed set_model worker protocol and fail closed for all current runtimes",
+            "alternatives": [],
+            "reasoning": "PTY output cannot prove provider consumption; headless/native adapters expose no setter. Correlated request IDs, worker generations, and exact effective-model matching prevent false applied receipts while preserving queue admission as accepted_pending."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788630863658,
+          "type": "reflection",
+          "content": "Implemented broker-owned model receipts, polling, typed worker responses, client surfaces, CLI messaging, and deterministic positive/negative tests; full broker library suite passes.",
+          "raw": {
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.88"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented correlated set-model receipts with explicit accepted_pending/applied/rejected/unsupported states, worker generation and revision fencing, GET polling, typed worker protocol responses, CLI/SDK surfaces, and deterministic tests.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bef0c2be900a51c4393ccca9063a136413a6fc92",
+    "endRef": "bef0c2be900a51c4393ccca9063a136413a6fc92"
+  }
+}

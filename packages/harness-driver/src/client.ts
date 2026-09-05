@@ -158,6 +158,26 @@ export interface SetInboundDeliveryModeOptions {
   expectedRevision?: string;
 }
 
+export type ModelUpdateStatus = 'unknown' | 'accepted_pending' | 'applied' | 'rejected' | 'unsupported';
+
+/** Queue admission or provider-confirmed terminal receipt for model mutation. */
+export interface ModelUpdateResult {
+  name: string;
+  /** Legacy alias for requested_model. */
+  model: string | null;
+  requested_model: string | null;
+  effective_model?: string | null;
+  applied: boolean;
+  status: ModelUpdateStatus;
+  request_id?: string | null;
+  generation?: string | null;
+  revision?: number;
+  success: boolean;
+  accepted: boolean;
+  pending: boolean;
+  error?: string;
+}
+
 export interface WorkerStreamSubscriptionOptions {
   /** Filter by stream name, for example `stdout` or `stderr`. Defaults to all streams. */
   stream?: string;
@@ -1166,15 +1186,15 @@ export class HarnessDriverClient {
 
   // ── Model control ──────────────────────────────────────────────────
 
-  async setModel(
-    name: string,
-    model: string,
-    opts?: { timeoutMs?: number }
-  ): Promise<{ name: string; model: string; success: boolean }> {
+  async setModel(name: string, model: string, opts?: { timeoutMs?: number }): Promise<ModelUpdateResult> {
     return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model`, {
       method: 'POST',
       body: JSON.stringify({ model, timeout_ms: opts?.timeoutMs }),
     });
+  }
+
+  async getModel(name: string): Promise<ModelUpdateResult> {
+    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model`);
   }
 
   // ── Channels ───────────────────────────────────────────────────────

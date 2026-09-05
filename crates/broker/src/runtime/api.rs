@@ -37,6 +37,21 @@ fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
         .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
 }
 
+/// Model mutation is opt-in. A raw `/model` PTY injection cannot prove that a
+/// provider consumed the command, and headless/native runtimes currently have
+/// no setter. A worker may opt in only when its provider adapter implements the
+/// typed `set_model` request/receipt contract.
+fn supports_model_mutation(handle: &WorkerHandle) -> bool {
+    handle
+        .spec
+        .harness_config
+        .as_ref()
+        .and_then(ResolvedHarnessConfig::metadata)
+        .and_then(|metadata| metadata.get("model_mutation"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Resolve the named recipient whose presence accompanies an HTTP send.
 /// Normalize at this boundary so direct runtime requests cannot publish to a
 /// trimmed target while observing a whitespace-padded agent name.
@@ -299,6 +314,9 @@ impl BrokerRuntime {
         let dead_letters = &mut self.dead_letters;
         let obligation_store = &mut self.obligation_store;
         let pending_requests = &mut self.pending_requests;
+        let pending_model_requests = &mut self.pending_model_requests;
+        let model_receipts = &mut self.model_receipts;
+        let model_revision = &mut self.model_revision;
         let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
@@ -847,21 +865,45 @@ impl BrokerRuntime {
                 timeout_ms,
                 reply,
             } => {
-                if !workers.workers.contains_key(&name) {
+                let Some(handle) = workers.workers.get(&name) else {
                     let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                    return;
+                };
+                *model_revision = (*model_revision).saturating_add(1);
+                let revision = *model_revision;
+                let request_id = RequestId::new(format!("model_{}", Uuid::new_v4().simple()));
+                let generation = handle.generation;
+
+                if !supports_model_mutation(handle) {
+                    let receipt = ModelReceipt {
+                        name: name.clone(),
+                        requested_model: model,
+                        effective_model: None,
+                        applied: false,
+                        status: "unsupported".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        accepted: false,
+                        pending: false,
+                        success: false,
+                        error: Some("worker provider does not expose typed model mutation".into()),
+                    };
+                    let value = receipt.json();
+                    model_receipts.insert(name, receipt);
+                    let _ = reply.send(Ok(value));
                     return;
                 }
 
-                let model_command = format!("/model {}\n", model);
                 let set_model_timeout = set_model_write_timeout(timeout_ms);
-                // `send_raw_to_worker` completes only after the command enters
-                // the worker-owned writer queue. Tokio channel sends are
-                // cancellation-safe, so a timeout means the command was not
-                // admitted; once admitted, report it as pending rather than
-                // claiming it failed while the writer can still emit it.
                 let result = match timeout(
                     set_model_timeout,
-                    workers.send_raw_to_worker(&name, model_command.into_bytes()),
+                    workers.send_to_worker(
+                        &name,
+                        "set_model",
+                        Some(request_id.clone()),
+                        json!({ "model": model }),
+                    ),
                 )
                 .await
                 {
@@ -872,20 +914,82 @@ impl BrokerRuntime {
                     )),
                 };
 
-                match result {
-                    Ok(()) => {
-                        let _ = reply.send(Ok(json!({
-                            "name": name,
-                            "model": model,
-                            "success": true,
-                            "accepted": true,
-                            "pending": true,
-                        })));
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error.to_string()));
-                    }
+                if let Err(error) = result {
+                    let receipt = ModelReceipt {
+                        name: name.clone(),
+                        requested_model: model,
+                        effective_model: None,
+                        applied: false,
+                        status: "rejected".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        accepted: false,
+                        pending: false,
+                        success: false,
+                        error: Some(error.to_string()),
+                    };
+                    let value = receipt.json();
+                    model_receipts.insert(name, receipt);
+                    let _ = reply.send(Ok(value));
+                } else {
+                    let pending = ModelReceipt {
+                        name: name.clone(),
+                        requested_model: model.clone(),
+                        effective_model: None,
+                        applied: false,
+                        status: "accepted_pending".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        accepted: true,
+                        pending: true,
+                        success: true,
+                        error: None,
+                    };
+                    model_receipts.insert(name.clone(), pending);
+                    pending_model_requests.insert(
+                        request_id.to_string(),
+                        PendingModelRequest {
+                            worker_name: name.clone(),
+                            generation,
+                            requested_model: model,
+                            revision,
+                            deadline: Instant::now() + set_model_timeout,
+                        },
+                    );
+                    let _ = reply.send(Ok(model_receipts
+                        .get(&name)
+                        .expect("pending model receipt was inserted")
+                        .json()));
                 }
+            }
+            ListenApiRequest::GetModel { name, reply } => {
+                let Some(handle) = workers.workers.get(&name) else {
+                    let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                    return;
+                };
+                let value = model_receipts
+                    .get(&name)
+                    .filter(|receipt| receipt.generation == handle.generation)
+                    .map(ModelReceipt::json)
+                    .unwrap_or_else(|| {
+                        json!({
+                            "name": name,
+                            "model": handle.spec.model,
+                            "requested_model": Value::Null,
+                            "effective_model": Value::Null,
+                            "applied": false,
+                            "status": "unknown",
+                            "request_id": Value::Null,
+                            "generation": handle.generation.to_string(),
+                            "revision": 0,
+                            "success": false,
+                            "accepted": false,
+                            "pending": false,
+                        })
+                    });
+                let _ = reply.send(Ok(value));
             }
             ListenApiRequest::Release {
                 name,

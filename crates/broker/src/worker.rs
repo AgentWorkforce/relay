@@ -1402,29 +1402,6 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    /// Queue an already-framed raw PTY command through the same sole stdin
-    /// writer used for protocol frames. This completes once the command has
-    /// been admitted to the writer queue, rather than after the pipe write.
-    /// That keeps administrative PTY actions such as `/model` serialized with
-    /// protocol traffic without ever reporting an admitted command as failed
-    /// while the writer can still emit it.
-    pub(crate) async fn send_raw_to_worker(&self, name: &str, frame: Vec<u8>) -> Result<()> {
-        let command_tx = self
-            .workers
-            .get(name)
-            .with_context(|| format!("unknown worker '{name}'"))?
-            .command_tx
-            .clone();
-        command_tx
-            .send(WorkerWriteCommand {
-                frame,
-                completion: None,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))?;
-        Ok(())
-    }
-
     /// Enqueue a complete worker frame without awaiting its pipe write. This
     /// is used by terminal attach traffic, which must remain responsive when a
     /// PTY stops draining stdin. The dedicated writer owns the actual write;
@@ -3041,58 +3018,6 @@ sleep 30
                 Some(expected_type)
             );
         }
-
-        let handle = reg
-            .workers
-            .get_mut(name)
-            .expect("test worker remains registered");
-        terminate_child(&mut handle.child, Duration::from_millis(200))
-            .await
-            .unwrap();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn raw_command_returns_after_queue_admission_without_a_writer() {
-        // `/model` is best-effort. Its API response must mean the command was
-        // accepted by the worker-owned queue, not that the eventual pipe write
-        // completed: the latter can stall while the admitted command remains
-        // eligible to be emitted.
-        let mut reg = make_registry(vec![]);
-        let name = "raw-command-admission";
-        let child = Command::new("sleep").arg("30").spawn().unwrap();
-        let generation = Uuid::new_v4();
-        let (command_tx, mut command_rx) = mpsc::channel(1);
-        reg.workers.insert(
-            WorkerName::from(name),
-            WorkerHandle {
-                generation,
-                spec: spec_for_test(name),
-                parent: None,
-                workspace_id: None,
-                child,
-                command_tx,
-                harness_pid: None,
-                spawned_at: Instant::now(),
-                ready_at: None,
-                last_activity_at: Instant::now(),
-                context_budget_pct: None,
-                state: AgentWorkState::Working,
-                exit_reason: None,
-            },
-        );
-
-        timeout(
-            Duration::from_millis(50),
-            reg.send_raw_to_worker(name, b"/model sonnet\n".to_vec()),
-        )
-        .await
-        .expect("queue admission must not wait for a pipe writer")
-        .expect("open worker queue accepts the raw command");
-
-        let queued = command_rx.recv().await.expect("raw command was queued");
-        assert_eq!(queued.frame, b"/model sonnet\n");
-        assert!(queued.completion.is_none());
 
         let handle = reg
             .workers

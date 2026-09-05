@@ -25,6 +25,8 @@ impl BrokerRuntime {
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
+        let pending_model_requests = &mut self.pending_model_requests;
+        let model_receipts = &mut self.model_receipts;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_states = &mut self.delivery_states;
         let resize_owners = &mut self.resize_owners;
@@ -147,6 +149,28 @@ impl BrokerRuntime {
                 kind = %kind,
                 "worker request timed out before worker responded"
             );
+        }
+        let expired_model_requests: Vec<String> = pending_model_requests
+            .iter()
+            .filter_map(|(request_id, pending)| {
+                (pending.deadline <= now).then_some(request_id.clone())
+            })
+            .collect();
+        for request_id in expired_model_requests {
+            if let Some(pending) = pending_model_requests.remove(&request_id) {
+                if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
+                    if receipt.request_id == request_id && receipt.generation == pending.generation
+                    {
+                        receipt.status = "rejected".into();
+                        receipt.applied = false;
+                        receipt.pending = false;
+                        receipt.success = false;
+                        receipt.error = Some(
+                            "worker did not return a model receipt before the deadline".into(),
+                        );
+                    }
+                }
+            }
         }
 
         let due_ids: Vec<DeliveryId> = pending_deliveries

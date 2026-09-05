@@ -72,6 +72,10 @@ pub enum ListenApiRequest {
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    GetModel {
+        name: WorkerName,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     Release {
         name: WorkerName,
         reason: Option<String>,
@@ -483,7 +487,7 @@ fn listen_api_router_with_auth(
         )
         .route(
             "/api/spawned/{name}/model",
-            routing::post(listen_api_set_model),
+            routing::get(listen_api_get_model).post(listen_api_set_model),
         )
         .route("/api/threads", routing::get(listen_api_threads))
         .route("/api/events/replay", routing::get(listen_api_replay))
@@ -1269,6 +1273,38 @@ async fn listen_api_set_model(
         Ok(Err(err)) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({ "success": false, "name": name, "error": err })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
+    }
+}
+
+async fn listen_api_get_model(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetModel {
+            name: WorkerName::new(name.clone()),
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(json!({ "success": false, "name": name, "error": error })),
         ),
         Err(_) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -4354,6 +4390,50 @@ mod auth_tests {
         set_model_replier
             .await
             .expect("set model replier should complete");
+    }
+
+    #[tokio::test]
+    async fn get_model_route_returns_correlated_receipt() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::GetModel { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(json!({
+                        "name": "worker-a",
+                        "requested_model": "sonnet",
+                        "effective_model": "sonnet",
+                        "status": "applied",
+                        "applied": true,
+                        "request_id": "model_1",
+                        "generation": "generation-1",
+                        "revision": 1,
+                        "success": true,
+                        "accepted": true,
+                        "pending": false,
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/model")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "applied");
+        assert_eq!(body["effective_model"], "sonnet");
+        replier.await.expect("model replier should complete");
     }
 
     #[tokio::test]

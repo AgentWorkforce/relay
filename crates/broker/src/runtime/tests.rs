@@ -15,7 +15,7 @@ use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
     HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, ProtocolEnvelope,
-    RelayDelivery, ResolvedHarnessConfig,
+    PtyHarnessConfig, RelayDelivery, ResolvedHarnessConfig,
 };
 use crate::telemetry::TelemetryClient;
 use crate::worker::{
@@ -296,6 +296,9 @@ fn worker_event_runtime_fixture(
         dead_letters: DeadLetterStore::default(),
         terminal_failed_deliveries: HashSet::new(),
         pending_requests: HashMap::new(),
+        pending_model_requests: HashMap::new(),
+        model_receipts: HashMap::new(),
+        model_revision: 0,
         pending_verified_spawns: HashMap::new(),
         resize_owners: HashMap::new(),
         delivery_states: HashMap::new(),
@@ -337,6 +340,142 @@ fn delivery_lifecycle_worker_event(
             },
         }),
     }
+}
+
+#[tokio::test]
+async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
+    let mut registry = make_worker_registry_with_worker("model-worker").await;
+    registry
+        .workers
+        .get_mut("model-worker")
+        .unwrap()
+        .spec
+        .harness_config = Some(ResolvedHarnessConfig::Pty(PtyHarnessConfig {
+        command: "fake-provider".into(),
+        args: vec![],
+        cwd: None,
+        env: None,
+        session_id: None,
+        delivery: None,
+        metadata: Some(HashMap::from([("model_mutation".into(), json!(true))])),
+    }));
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    assert_eq!(accepted["status"], "accepted_pending");
+    assert_eq!(accepted["accepted"], true);
+    assert_eq!(accepted["applied"], false);
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": request_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            reply: reply_tx,
+        })
+        .await;
+    let applied = reply_rx.await.unwrap().unwrap();
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["requested_model"], "sonnet");
+    assert_eq!(applied["effective_model"], "sonnet");
+    assert_eq!(applied["generation"], generation.to_string());
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "opus".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let pending = reply_rx.await.unwrap().unwrap();
+    let mismatch_request_id = pending["request_id"].as_str().unwrap().to_string();
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": mismatch_request_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            reply: reply_tx,
+        })
+        .await;
+    let rejected = reply_rx.await.unwrap().unwrap();
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(rejected["applied"], false);
+    assert_eq!(rejected["effective_model"], Value::Null);
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn set_model_unsupported_is_not_queue_admission_or_applied_success() {
+    let registry = make_worker_registry_with_worker("pty-worker").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("pty-worker"),
+            model: "opus".into(),
+            timeout_ms: None,
+            reply: reply_tx,
+        })
+        .await;
+    let receipt = reply_rx.await.unwrap().unwrap();
+    assert_eq!(receipt["status"], "unsupported");
+    assert_eq!(receipt["accepted"], false);
+    assert_eq!(receipt["pending"], false);
+    assert_eq!(receipt["applied"], false);
+    assert_eq!(receipt["success"], false);
+    assert!(fixture.runtime.pending_model_requests.is_empty());
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {

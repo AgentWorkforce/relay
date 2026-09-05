@@ -617,6 +617,8 @@ impl BrokerRuntime {
         let dead_letters = &mut self.dead_letters;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
+        let pending_model_requests = &mut self.pending_model_requests;
+        let model_receipts = &mut self.model_receipts;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
@@ -1062,6 +1064,78 @@ impl BrokerRuntime {
                         }
                         let _ = send_event(sdk_out_tx, agent_event).await;
                     } else if msg_type.ends_with("_response") {
+                        if msg_type == "set_model_response" {
+                            let Some(request_id) = value.get("request_id").and_then(Value::as_str)
+                            else {
+                                tracing::warn!(worker = %name, "dropping model receipt without request_id");
+                                return;
+                            };
+                            let Some(request) = pending_model_requests.remove(request_id) else {
+                                tracing::debug!(worker = %name, request_id, "dropping model receipt with no pending request");
+                                return;
+                            };
+                            if request.worker_name != name || request.generation != generation {
+                                tracing::warn!(
+                                    worker = %name,
+                                    request_id,
+                                    "dropping model receipt with mismatched worker generation"
+                                );
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            let reported_status = payload
+                                .get("status")
+                                .and_then(Value::as_str)
+                                .unwrap_or("rejected");
+                            let effective_model = payload
+                                .get("effective_model")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            // Applied is deliberately earned, not copied from a
+                            // worker boolean: the provider must report the exact
+                            // requested model as its effective model.
+                            let applied = reported_status == "applied"
+                                && payload.get("applied").and_then(Value::as_bool) == Some(true)
+                                && effective_model.as_deref()
+                                    == Some(request.requested_model.as_str());
+                            let status = if applied {
+                                "applied"
+                            } else if reported_status == "unsupported" {
+                                "unsupported"
+                            } else {
+                                "rejected"
+                            };
+                            let error = if applied {
+                                None
+                            } else {
+                                payload
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                                    .or_else(|| Some("provider did not confirm the requested effective model".into()))
+                            };
+                            if let Some(receipt) = model_receipts.get_mut(&name) {
+                                if receipt.request_id == request_id
+                                    && receipt.generation == generation
+                                    && receipt.revision == request.revision
+                                {
+                                    receipt.effective_model =
+                                        applied.then_some(request.requested_model.clone());
+                                    receipt.applied = applied;
+                                    receipt.status = status.to_string();
+                                    receipt.success = applied;
+                                    receipt.accepted = true;
+                                    receipt.pending = false;
+                                    receipt.error = error;
+                                }
+                            }
+                            if applied {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.spec.model = Some(request.requested_model.clone());
+                                }
+                            }
+                            return;
+                        }
                         let terminal_input_session_id = value
                             .get("request_id")
                             .and_then(Value::as_str)

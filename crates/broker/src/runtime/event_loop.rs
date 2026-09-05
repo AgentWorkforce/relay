@@ -250,6 +250,9 @@ pub(crate) struct BrokerRuntime {
     pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
+    pub(super) pending_model_requests: HashMap<String, PendingModelRequest>,
+    pub(super) model_receipts: HashMap<WorkerName, ModelReceipt>,
+    pub(super) model_revision: u64,
     /// Persona/capability spawns whose action result is held until the harness
     /// proves readiness with worker_ready. Keyed by the node-local worker name.
     pub(super) pending_verified_spawns: HashMap<WorkerName, super::fleet::PendingVerifiedSpawn>,
@@ -317,6 +320,59 @@ pub(super) struct TerminalSnapshotRequest {
 pub(super) struct TerminalInputRequest {
     pub(super) session_id: String,
     pub(super) deadline: Instant,
+}
+
+/// A model change accepted by the worker writer, awaiting a typed provider
+/// receipt. The generation is part of the correlation key: a late response
+/// from a restarted same-name worker must never mutate current state.
+pub(super) struct PendingModelRequest {
+    pub(super) worker_name: WorkerName,
+    pub(super) generation: Uuid,
+    pub(super) requested_model: String,
+    pub(super) revision: u64,
+    pub(super) deadline: Instant,
+}
+
+/// Last model-change receipt for a worker generation. Queue admission is
+/// intentionally represented by `accepted_pending`; only a provider response
+/// can produce `applied: true`.
+pub(super) struct ModelReceipt {
+    pub(super) name: WorkerName,
+    pub(super) requested_model: String,
+    pub(super) effective_model: Option<String>,
+    pub(super) applied: bool,
+    pub(super) status: String,
+    pub(super) request_id: String,
+    pub(super) generation: Uuid,
+    pub(super) revision: u64,
+    pub(super) accepted: bool,
+    pub(super) pending: bool,
+    pub(super) success: bool,
+    pub(super) error: Option<String>,
+}
+
+impl ModelReceipt {
+    pub(super) fn json(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "name": self.name,
+            // `model` remains for clients written against the old endpoint.
+            "model": self.requested_model,
+            "requested_model": self.requested_model,
+            "effective_model": self.effective_model,
+            "applied": self.applied,
+            "status": self.status,
+            "request_id": self.request_id,
+            "generation": self.generation.to_string(),
+            "revision": self.revision,
+            "success": self.success,
+            "accepted": self.accepted,
+            "pending": self.pending,
+        });
+        if let Some(error) = &self.error {
+            value["error"] = serde_json::Value::String(error.clone());
+        }
+        value
+    }
 }
 
 impl BrokerRuntime {
