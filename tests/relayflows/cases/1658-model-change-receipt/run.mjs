@@ -81,36 +81,40 @@ try {
       }
       response.setHeader('content-type', 'application/json');
       if (request.method === 'POST') {
-        response.end(JSON.stringify({
+        response.end(
+          JSON.stringify({
+            name: 'proof-worker',
+            requested_model: 'openai/gpt-5.4',
+            effective_model: null,
+            applied: false,
+            status: 'accepted_pending',
+            request_id: requestId,
+            receipt_id: requestId,
+            generation: 'generation-proof',
+            revision: 1,
+            success: false,
+            accepted: true,
+            pending: true,
+          })
+        );
+        return;
+      }
+      response.end(
+        JSON.stringify({
           name: 'proof-worker',
           requested_model: 'openai/gpt-5.4',
-          effective_model: null,
-          applied: false,
-          status: 'accepted_pending',
+          effective_model: 'openai/gpt-5.4',
+          applied: true,
+          status: 'applied',
           request_id: requestId,
           receipt_id: requestId,
           generation: 'generation-proof',
           revision: 1,
-          success: false,
+          success: true,
           accepted: true,
-          pending: true,
-        }));
-        return;
-      }
-      response.end(JSON.stringify({
-        name: 'proof-worker',
-        requested_model: 'openai/gpt-5.4',
-        effective_model: 'openai/gpt-5.4',
-        applied: true,
-        status: 'applied',
-        request_id: requestId,
-        receipt_id: requestId,
-        generation: 'generation-proof',
-        revision: 1,
-        success: true,
-        accepted: true,
-        pending: false,
-      }));
+          pending: false,
+        })
+      );
     });
     await new Promise((resolve, reject) => {
       server.once('error', reject);
