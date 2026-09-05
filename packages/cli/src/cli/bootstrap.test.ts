@@ -282,10 +282,7 @@ describe('bootstrap CLI', () => {
     expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
 
     const fleetMatrix = JSON.parse(
-      fs.readFileSync(
-        path.resolve('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
-        'utf8'
-      )
+      fs.readFileSync(path.resolve('tests/relayflows/cleanroom/fleet-daytona.matrix.json'), 'utf8')
     ) as { commandSurface: Record<string, string[]> };
     const orchestrationLeaves = leafCommandPaths.filter(
       (command) => command.startsWith('fleet ') || command.startsWith('node ')

@@ -321,11 +321,7 @@ async function main() {
   }
   wf.step('run-daytona-board-attempt-a', {
     type: 'deterministic',
-    dependsOn: [
-      'preflight-opencode-model',
-      'preflight-codex-model',
-      'preflight-claude-model',
-    ],
+    dependsOn: ['preflight-opencode-model', 'preflight-codex-model', 'preflight-claude-model'],
     command: candidateCommand(
       'run',
       ' --workspace-credential-env VERIFY_FLEET_WORKSPACE_KEY_FILE_A',
