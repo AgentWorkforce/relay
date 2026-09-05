@@ -17,6 +17,7 @@ const WORKSPACE_ID = '00000000-0000-4000-8000-000000000801';
 const RELAY_WORKSPACE_ID = 'rw_1234abcd';
 const EXPIRES_AT = '2026-09-06T00:00:00.000Z';
 const RELAYFILE_CLOUD_DEPLOYMENT_ID = 'rfcloud-candidate-71';
+const IDEMPOTENCY_KEY = 'qualification:relay-pr-1665:workspace-801';
 
 function readPrivateJsonFile(file: string): unknown {
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
@@ -42,6 +43,9 @@ const revealOnceResponse = {
   relayWorkspaceId: RELAY_WORKSPACE_ID,
   expiresAt: EXPIRES_AT,
   state: 'active',
+  requestedRelayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
+  observedRelayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
+  relayfileCloudAttestationSha256: 'a'.repeat(64),
   credential: {
     version: 1,
     workspaceId: WORKSPACE_ID,
@@ -79,6 +83,7 @@ const cascadeResponse = {
       workspaceId: WORKSPACE_ID,
       relayWorkspaceId: RELAY_WORKSPACE_ID,
       appWorkspaceRowsRemaining: 0,
+      workflowLaunchesInProgress: 0,
     },
     daytona: { workspaceId: WORKSPACE_ID, relayWorkspaceId: RELAY_WORKSPACE_ID, remaining: 0 },
     relaycast: {
@@ -90,6 +95,22 @@ const cascadeResponse = {
     relayfile: { workspaceId: WORKSPACE_ID, relayWorkspaceId: RELAY_WORKSPACE_ID, deleted: true },
     registry: { workspaceId: WORKSPACE_ID, relayWorkspaceId: RELAY_WORKSPACE_ID, deleted: true },
   },
+};
+
+const reconciliationResponse = {
+  workspaceId: WORKSPACE_ID,
+  relayWorkspaceId: RELAY_WORKSPACE_ID,
+  expiresAt: EXPIRES_AT,
+  state: 'active',
+  requestedRelayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
+  observedRelayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
+  relayfileCloudSourceGitSha: 'b'.repeat(40),
+  relayfileCloudAttestationSha256: 'a'.repeat(64),
+  relayfileCloudEndpointIdentitySha256: 'c'.repeat(64),
+  sandboxSnapshotId: 'snapshot-801',
+  sandboxSnapshotManifestSha256: 'd'.repeat(64),
+  credentialRevealed: true,
+  replay: true,
 };
 
 const tempDirs: string[] = [];
@@ -110,8 +131,10 @@ function harness() {
     error: vi.fn(),
     exit,
     ensureCloudSession: vi.fn(async () => ({ auth, client: {} as never })) as Deps['ensureCloudSession'],
-    authorizedApiFetch: vi.fn(async () => ({
-      response: response(revealOnceResponse, 201),
+    authorizedApiFetch: vi.fn(async (_auth, apiPath) => ({
+      response: apiPath.includes('?ephemeral=true')
+        ? response({ error: 'not found' }, 404)
+        : response(revealOnceResponse, 201),
       auth,
     })) as Deps['authorizedApiFetch'],
   };
@@ -162,6 +185,10 @@ describe('cloud workspace lifecycle commands', () => {
       '24h',
       '--credential-file',
       credentialFile,
+      '--relayfile-cloud-deployment',
+      RELAYFILE_CLOUD_DEPLOYMENT_ID,
+      '--idempotency-key',
+      IDEMPOTENCY_KEY,
       '--json',
     ]);
 
@@ -170,10 +197,13 @@ describe('cloud workspace lifecycle commands', () => {
       '/api/v1/workspaces',
       {
         method: 'POST',
+        headers: { 'idempotency-key': IDEMPOTENCY_KEY },
         body: JSON.stringify({
           ephemeral: true,
           name: 'Fleet qualification',
           ttlSeconds: 86_400,
+          idempotencyKey: IDEMPOTENCY_KEY,
+          relayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
         }),
       },
       { interactive: false }
@@ -214,6 +244,8 @@ describe('cloud workspace lifecycle commands', () => {
         '1h',
         '--credential-file',
         credentialFile,
+        '--relayfile-cloud-deployment',
+        RELAYFILE_CLOUD_DEPLOYMENT_ID,
       ])
     ).rejects.toThrow('exit:1');
     expect(fs.readFileSync(credentialFile, 'utf8')).toBe('keep-me');
@@ -221,9 +253,65 @@ describe('cloud workspace lifecycle commands', () => {
     expect(deps.authorizedApiFetch).not.toHaveBeenCalled();
   });
 
-  it('fails before authentication, file reservation, or POST when candidate binding is unsupported', async () => {
+  it('sends the exact candidate deployment and idempotency contract', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({ response: response({ error: 'not found' }, 404), auth })
+      .mockResolvedValueOnce({
+        response: response(
+          {
+            ...revealOnceResponse,
+            requestedRelayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
+            observedRelayfileCloudDeploymentId: RELAYFILE_CLOUD_DEPLOYMENT_ID,
+            relayfileCloudAttestationSha256: 'a'.repeat(64),
+          },
+          201
+        ),
+        auth,
+      });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'workspace',
+      'create',
+      '--ephemeral',
+      '--name',
+      'Candidate-bound run',
+      '--ttl',
+      '1h',
+      '--credential-file',
+      credentialFile,
+      '--relayfile-cloud-deployment',
+      RELAYFILE_CLOUD_DEPLOYMENT_ID,
+      '--idempotency-key',
+      IDEMPOTENCY_KEY,
+    ]);
+
+    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      auth,
+      '/api/v1/workspaces',
+      expect.objectContaining({
+        headers: { 'idempotency-key': IDEMPOTENCY_KEY },
+        body: expect.stringContaining(`\"relayfileCloudDeploymentId\":\"${RELAYFILE_CLOUD_DEPLOYMENT_ID}\"`),
+      }),
+      { interactive: false }
+    );
+    expect(fs.existsSync(credentialFile)).toBe(true);
+    expect(vi.mocked(deps.error)).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before POST when Cloud lacks the candidate reconciliation contract', async () => {
+    const { program, deps } = harness();
+    const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({ workspaces: [] }),
+      auth,
+    });
+
     await expect(
       program.parseAsync([
         'node',
@@ -233,27 +321,38 @@ describe('cloud workspace lifecycle commands', () => {
         'create',
         '--ephemeral',
         '--name',
-        'Candidate-bound run',
+        'Unsupported Cloud',
         '--ttl',
         '1h',
         '--credential-file',
         credentialFile,
         '--relayfile-cloud-deployment',
         RELAYFILE_CLOUD_DEPLOYMENT_ID,
+        '--idempotency-key',
+        IDEMPOTENCY_KEY,
       ])
     ).rejects.toThrow('exit:1');
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(IDEMPOTENCY_KEY)}`,
+      { method: 'GET' },
+      { interactive: false }
+    );
     expect(fs.existsSync(credentialFile)).toBe(false);
-    expect(deps.ensureCloudSession).not.toHaveBeenCalled();
-    expect(deps.authorizedApiFetch).not.toHaveBeenCalled();
-    expect(vi.mocked(deps.log)).not.toHaveBeenCalled();
     expect(vi.mocked(deps.error)).toHaveBeenCalledWith(
-      'Relayfile Cloud candidate binding is not supported by the deployed Cloud API.'
+      'Cloud returned an invalid workspace reconciliation response.'
     );
   });
 
   it('removes the reserved file and never prints secrets from an invalid server response', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({ error: 'not found' }, 404),
+      auth,
+    });
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
       response: response({ credential: { workspaceKey: 'server-leak-secret' } }, 201),
       auth,
@@ -273,15 +372,80 @@ describe('cloud workspace lifecycle commands', () => {
         '1h',
         '--credential-file',
         credentialFile,
+        '--relayfile-cloud-deployment',
+        RELAYFILE_CLOUD_DEPLOYMENT_ID,
       ])
     ).rejects.toThrow('exit:1');
     expect(fs.existsSync(credentialFile)).toBe(false);
     expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toContain('server-leak-secret');
   });
 
+  it('reconciles and cascade-deletes a workspace after an ambiguous create transport failure', async () => {
+    const { program, deps } = harness();
+    const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({ response: response({ error: 'not found' }, 404), auth })
+      .mockRejectedValueOnce(new Error('create transport closed'))
+      .mockResolvedValueOnce({ response: response(reconciliationResponse), auth })
+      .mockResolvedValueOnce({ response: response(cascadeResponse), auth })
+      .mockResolvedValueOnce({ response: response({ error: 'not found' }, 404), auth });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'workspace',
+        'create',
+        '--ephemeral',
+        '--name',
+        'Ambiguous create',
+        '--ttl',
+        '1h',
+        '--credential-file',
+        credentialFile,
+        '--relayfile-cloud-deployment',
+        RELAYFILE_CLOUD_DEPLOYMENT_ID,
+        '--idempotency-key',
+        IDEMPOTENCY_KEY,
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
+      3,
+      auth,
+      `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(IDEMPOTENCY_KEY)}`,
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
+      4,
+      auth,
+      `/api/v1/workspaces/${WORKSPACE_ID}`,
+      {
+        method: 'DELETE',
+        body: JSON.stringify({ confirm: WORKSPACE_ID, verifyCascade: true }),
+      },
+      { interactive: false }
+    );
+    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
+      5,
+      auth,
+      `/api/v1/workspaces/${WORKSPACE_ID}`,
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(fs.existsSync(credentialFile)).toBe(false);
+    expect(vi.mocked(deps.error)).toHaveBeenCalledWith('create transport closed');
+  });
+
   it('rejects an insecure Relay credential endpoint', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({ error: 'not found' }, 404),
+      auth,
+    });
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
       response: response(
         {
@@ -310,10 +474,12 @@ describe('cloud workspace lifecycle commands', () => {
         '1h',
         '--credential-file',
         credentialFile,
+        '--relayfile-cloud-deployment',
+        RELAYFILE_CLOUD_DEPLOYMENT_ID,
       ])
     ).rejects.toThrow('exit:1');
     expect(fs.existsSync(credentialFile)).toBe(false);
-    expect(vi.mocked(deps.error)).toHaveBeenCalledWith(
+    expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).toContain(
       'Cloud returned an invalid ephemeral workspace response.'
     );
   });
