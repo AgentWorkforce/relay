@@ -1,5 +1,5 @@
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 
 function identity(stat) {
   return {
@@ -17,32 +17,16 @@ function sameIdentity(left, right) {
 
 async function openNoFollow(target, flags, label) {
   const noFollow = fsConstants.O_NOFOLLOW;
-  if (typeof noFollow === 'number' && noFollow !== 0) {
-    try {
-      return await open(target, flags | noFollow);
-    } catch (error) {
-      if (error?.code === 'ELOOP') {
-        throw new Error(`${label} must not be a symbolic link`, { cause: error });
-      }
-      throw error;
-    }
+  if (typeof noFollow !== 'number' || noFollow === 0) {
+    throw new Error(`${label} cannot be opened safely: this platform does not support O_NOFOLLOW`);
   }
 
-  // Windows does not expose O_NOFOLLOW. Open the path, then bind it to the
-  // exact inode observed through lstat before using the descriptor. Reads and
-  // writes below use only that descriptor, so a later path swap cannot retarget
-  // the operation.
-  const pathInfo = await lstat(target, { bigint: true });
-  if (pathInfo.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link`);
-  const handle = await open(target, flags);
   try {
-    const handleInfo = await handle.stat({ bigint: true });
-    if (pathInfo.dev !== handleInfo.dev || pathInfo.ino !== handleInfo.ino) {
-      throw new Error(`${label} changed while it was opened`);
-    }
-    return handle;
+    return await open(target, flags | noFollow);
   } catch (error) {
-    await handle.close();
+    if (error?.code === 'ELOOP') {
+      throw new Error(`${label} must not be a symbolic link`, { cause: error });
+    }
     throw error;
   }
 }
