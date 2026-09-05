@@ -74,10 +74,14 @@ function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRo
     'Read every exported lane record; each path and digest is listed in the review input:',
     ...laneInputs,
     '',
+    'Read the Cloud executor sandbox identity from the SANDBOX_ID environment variable before drafting.',
+    'Set sandboxId in the review to exactly cloud-${SANDBOX_ID}; never copy it from a lane record or prior review.',
+    '',
     'Prior validated reviews, when present, are embedded in the review input.',
     '',
     `Write ${artifact} as strict JSON with exactly this review contract:`,
     `{ "version": 1, "role": "${role}", "kind": "${kind}",`,
+    '  "sandboxId": "cloud-${SANDBOX_ID}",',
     '  "aggregateDigest": "64 lowercase hex copied from seal",',
     '  "matrixSha256": "64 lowercase hex copied from seal",',
     '  "runnerSha256": "64 lowercase hex copied from seal",',
@@ -267,15 +271,28 @@ async function main() {
 
   const laneGates: string[] = [];
   for (const lane of lanes) {
+    const laneAgent = `lane-${lane}`;
     const executeStep = `execute-${lane}`;
     const gateStep = `gate-${lane}`;
     laneGates.push(gateStep);
+    wf.agent(laneAgent, {
+      cli: 'codex',
+      model: CodexModels.GPT_5_1_CODEX_MINI,
+      preset: 'worker',
+      role: `Execute the ${lane} clean-room lane in this agent's isolated Cloud sandbox.`,
+      interactive: false,
+      retries: 1,
+    });
     wf.step(executeStep, {
-      type: 'deterministic',
+      agent: laneAgent,
       dependsOn: ['gate-scope'],
-      command: command('lane', ` --lane ${lane}`),
-      captureOutput: true,
-      failOnError: false,
+      task: [
+        'Run the clean-room lane command exactly once in this isolated Cloud sandbox:',
+        command('lane', ` --lane ${lane}`),
+        'Do not edit product source, tests, the matrix, the runner, or collected evidence.',
+        `Report the command output, including CLEANROOM_LANE_COMPLETE lane=${lane}.`,
+      ].join('\n'),
+      verification: { type: 'output_contains', value: `CLEANROOM_LANE_COMPLETE lane=${lane}` },
       timeoutMs: STEP_TIMEOUT,
     });
     wf.step(gateStep, {

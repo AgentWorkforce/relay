@@ -426,14 +426,17 @@ describe('clean-room verification catalog', () => {
     );
   });
 
-  it('keeps product execution deterministic and model reviewers offline behind exported evidence', async () => {
+  it('runs lanes in isolated agents and keeps model reviewers offline behind exported evidence', async () => {
     const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
-    expect(source).not.toContain('wf.agent(`lane-${lane}`');
-    expect(source).toMatch(/type\s*:\s*["']deterministic["'],\s*dependsOn\s*:\s*\[["']gate-scope["']\]/);
-    expect(source).toMatch(/command\s*:\s*command\(\s*["']lane["']\s*,\s*` --lane \$\{lane\}`\s*\)/);
+    const runner = await readFile('scripts/verify-features/cleanroom.mjs', 'utf8');
+    expect(source).toMatch(/const laneAgent\s*=\s*`lane-\$\{lane\}`/);
+    expect(source).toMatch(/wf\.agent\(laneAgent/);
+    expect(source).toMatch(/agent:\s*laneAgent/);
     expect(source).toMatch(/command\(\s*["']review-export["']/);
     expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
     expect(source).toMatch(/command\(\s*["']review-upload["']/);
+    expect(source).toContain('sandboxId": "cloud-${SANDBOX_ID}"');
+    expect(runner).toContain('review.sandboxId !== expectedReviewSandboxId');
     expect(source).toMatch(/network\s*:\s*false/);
     expect(source).toMatch(/exec\s*:\s*\[\s*\]/);
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
@@ -441,6 +444,10 @@ describe('clean-room verification catalog', () => {
 
   it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
-    expect(workflow).toContain('(relayWorkflowRef !== undefined && relayWorkflowRef !== expectedRelayRef)');
+    expect(workflow).toMatch(/release:\s*\n\s*types:\s*\[prereleased\]/);
+    expect(workflow).not.toMatch(/release:\s*\n\s*types:.*published/);
+    expect(workflow).toMatch(
+      /relayWorkflowRef\s*!==\s*undefined\s*&&\s*relayWorkflowRef\s*!==\s*expectedRelayRef/
+    );
   });
 });

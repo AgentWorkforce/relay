@@ -236,6 +236,16 @@ async function sourceManifest(repo) {
   );
   const files = [...new Set(stdout.split('\0').filter(Boolean))].sort();
   const enumeratedSourcePaths = new Set(files);
+  async function targetDirectoryIsEnumerated(directory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const child = path.join(directory, entry.name);
+      const relation = path.relative(canonicalRepo, child).split(path.sep).join('/');
+      if (!enumeratedSourcePaths.has(relation)) return false;
+      if (entry.isDirectory() && !(await targetDirectoryIsEnumerated(child))) return false;
+    }
+    return true;
+  }
   const manifest = [];
   for (const file of files) {
     if (file.startsWith('.workflow-artifacts/') || isRuntimeTelemetryPath(file)) continue;
@@ -261,9 +271,10 @@ async function sourceManifest(repo) {
           throw new Error(`diagnostic source symlink escapes its repository: ${file}`);
         }
         const manifestTarget = relation.split(path.sep).join('/');
-        const targetIsEnumerated =
-          enumeratedSourcePaths.has(manifestTarget) ||
-          files.some((sourcePath) => sourcePath.startsWith(`${manifestTarget}/`));
+        const targetInfo = targetExists ? await stat(target) : null;
+        const targetIsEnumerated = targetInfo?.isDirectory()
+          ? await targetDirectoryIsEnumerated(resolved)
+          : enumeratedSourcePaths.has(manifestTarget);
         if (targetExists && !targetIsEnumerated) {
           throw new Error(`diagnostic source symlink target is absent from the enumerated manifest: ${file}`);
         }
