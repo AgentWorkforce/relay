@@ -958,7 +958,14 @@ impl BrokerRuntime {
                     &name,
                     "set_model",
                     Some(request_id.clone()),
-                    json!({ "model": model }),
+                    json!({
+                        "model": model,
+                        "queue_deadline_ms": std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            .saturating_add(set_model_receipt_timeout(timeout_ms).as_millis())
+                    }),
                 );
 
                 if let Err(error) = result {
@@ -1047,7 +1054,7 @@ impl BrokerRuntime {
                 let receipt = match request_id.as_deref() {
                     Some(request_id) => model_receipts_by_request
                         .get(request_id)
-                        .filter(|receipt| receipt.generation == handle.generation),
+                        .filter(|receipt| receipt.name == name),
                     None => model_receipts
                         .get(&name)
                         .filter(|receipt| receipt.generation == handle.generation),
@@ -1094,11 +1101,30 @@ impl BrokerRuntime {
                 // auto-restart of intentionally released agents.
                 workers.supervisor.unregister(&name);
                 workers.metrics.on_release(&name);
+                let release_generation = workers.workers.get(&name).map(|handle| handle.generation);
                 match workers.release(&name).await {
                     Ok(()) => {
-                        pending_model_requests.retain(|_, pending| pending.worker_name != name);
-                        model_receipts.remove(&name);
-                        model_receipts_by_request.retain(|_, receipt| receipt.name != name);
+                        let pending_request_ids: HashSet<String> = pending_model_requests
+                            .iter()
+                            .filter_map(|(request_id, pending)| {
+                                (pending.worker_name == name
+                                    && Some(pending.generation) == release_generation)
+                                    .then_some(request_id.clone())
+                            })
+                            .collect();
+                        if let Some(generation) = release_generation {
+                            terminalize_model_requests_for_worker(
+                                &name,
+                                generation,
+                                pending_model_requests,
+                                model_receipts,
+                                model_receipts_by_request,
+                                Instant::now(),
+                            );
+                        }
+                        model_receipts_by_request.retain(|request_id, receipt| {
+                            receipt.name != name || pending_request_ids.contains(request_id)
+                        });
                         let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,

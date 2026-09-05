@@ -53,11 +53,10 @@ use super::{
     requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retain_model_receipt,
     retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
     sender_is_dashboard_label, should_clear_pending_delivery_for_event,
-    synthetic_delivery_read_ack_reason, take_pending_for_worker,
-    terminalize_model_requests_for_worker, try_inject_pending_relay_message, AgentRuntime,
-    BrokerRuntime, DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext,
-    InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery,
-    PendingDeliveryStore, ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths,
+    synthetic_delivery_read_ack_reason, take_pending_for_worker, try_inject_pending_relay_message,
+    AgentRuntime, BrokerRuntime, DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome,
+    InboundContext, InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome,
+    PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths,
     TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
@@ -563,15 +562,37 @@ async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
     let accepted = reply_rx.await.unwrap().unwrap();
     let request_id = accepted["request_id"].as_str().unwrap().to_string();
 
-    terminalize_model_requests_for_worker(
-        &WorkerName::new("model-worker"),
-        generation,
-        &mut fixture.runtime.pending_model_requests,
-        &mut fixture.runtime.model_receipts,
-        &mut fixture.runtime.model_receipts_by_request,
-        Instant::now(),
-    );
-    fixture.runtime.workers.workers.remove("model-worker");
+    fixture
+        .runtime
+        .workers
+        .workers
+        .get_mut("model-worker")
+        .expect("test worker should still be registered")
+        .child
+        .start_kill()
+        .expect("test worker should accept termination");
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(!fixture.runtime.workers.workers.contains_key("model-worker"));
+
+    // A same-name restart must not make the retained terminal receipt
+    // unreadable: request IDs identify the worker generation that admitted the
+    // request, while the worker name still prevents cross-worker lookups.
+    let mut replacement_registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "replacement-session",
+    )
+    .await;
+    let replacement = replacement_registry
+        .workers
+        .remove("model-worker")
+        .expect("replacement worker handle");
+    fixture
+        .runtime
+        .workers
+        .workers
+        .insert(WorkerName::new("model-worker"), replacement);
 
     let (get_tx, get_rx) = tokio::sync::oneshot::channel();
     fixture
@@ -591,6 +612,9 @@ async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
         .as_str()
         .unwrap()
         .contains("worker exited"));
+    assert_eq!(terminal["generation"], generation.to_string());
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 #[test]

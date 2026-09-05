@@ -198,6 +198,32 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     .get("model")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                let queue_expired = frame
+                    .payload
+                    .get("queue_deadline_ms")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|deadline| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            >= u128::from(deadline)
+                    });
+                if queue_expired {
+                    let _ = send_frame(
+                        &out_tx,
+                        "set_model_response",
+                        frame.request_id,
+                        json!({
+                            "status": "rejected",
+                            "applied": false,
+                            "effective_model": null,
+                            "error": "model request expired before provider execution",
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
                 // Tell the broker when this frame leaves the worker queue so
                 // the provider deadline does not consume time spent behind a
                 // long-running delivery.

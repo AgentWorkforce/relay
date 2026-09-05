@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1658-model-change-receipt';
 const MODEL_OPERATION_TIMEOUT_MS = 30_000;
+const PROBE_TIMEOUT_MS = 30_000;
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -25,7 +26,10 @@ if (arm !== 'base' && arm !== 'head') {
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
-const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
+  encoding: 'utf8',
+  timeout: PROBE_TIMEOUT_MS,
+}).trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
@@ -61,6 +65,10 @@ function runAsync(command, args, label) {
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
+      const killTimer = setTimeout(() => {
+        child.kill('SIGKILL');
+      }, 1_000);
+      child.once('close', () => clearTimeout(killTimer));
       reject(new Error(`${label} timed out after ${MODEL_OPERATION_TIMEOUT_MS}ms`));
     }, MODEL_OPERATION_TIMEOUT_MS);
     child.stdout.on('data', (chunk) => {
