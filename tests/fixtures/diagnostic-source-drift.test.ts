@@ -132,6 +132,31 @@ describe('diagnosis source provenance', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
+    'rejects a tracked directory symlink when an ignored target entry is omitted',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'diagnosis-source-directory-link-ignored-'));
+      temporaryDirectories.push(root);
+      const repository = path.join(root, 'repo');
+      await mkdir(path.join(repository, 'source'), { recursive: true });
+      await writeFile(path.join(repository, '.gitignore'), 'ignored.txt\n');
+      await writeFile(path.join(repository, 'source', 'tracked.ts'), 'export const tracked = 1;\n');
+      await writeFile(path.join(repository, 'source', 'ignored.txt'), 'must not be omitted\n');
+      await symlink('source', path.join(repository, 'source-link'));
+      await execFileAsync('git', ['init', '-q'], { cwd: repository });
+      await execFileAsync('git', ['config', 'user.name', 'diagnosis-test'], { cwd: repository });
+      await execFileAsync('git', ['config', 'user.email', 'diagnosis@example.invalid'], {
+        cwd: repository,
+      });
+      await execFileAsync('git', ['add', '.'], { cwd: repository });
+      await execFileAsync('git', ['commit', '-qm', 'fixture'], { cwd: repository });
+
+      await expect(snapshotRepo('fixture', repository)).rejects.toThrow(
+        'symlink target is absent from the enumerated manifest'
+      );
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
     'rejects a dangling tracked symlink that lexically escapes the repository',
     async () => {
       const repository = await mkdtemp(path.join(os.tmpdir(), 'diagnosis-source-dangling-link-'));
