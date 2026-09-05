@@ -877,7 +877,7 @@ describe('local agent subtree', () => {
         2
       )
     );
-    expect(client.getModel).toHaveBeenCalledWith('lead');
+    expect(client.getModel).toHaveBeenCalledWith('lead', 'model_1');
   });
 
   it('set-model reports unsupported without claiming application', async () => {

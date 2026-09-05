@@ -844,7 +844,7 @@ export function registerLocalAgentCommands(
           while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, MODEL_RECEIPT_POLL_INTERVAL_MS));
             try {
-              const latest = await client.getModel(name);
+              const latest = await client.getModel(name, receipt.request_id);
               // A newer request may have replaced the worker's current receipt;
               // never report that unrelated receipt as this command's result.
               if (latest.request_id !== receipt.request_id) continue;

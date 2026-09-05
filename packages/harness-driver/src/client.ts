@@ -1214,8 +1214,9 @@ export class HarnessDriverClient {
     };
   }
 
-  async getModel(name: string): Promise<ModelUpdateResult> {
-    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model`);
+  async getModel(name: string, requestId?: string): Promise<ModelUpdateResult> {
+    const query = requestId ? `?request_id=${encodeURIComponent(requestId)}` : '';
+    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model${query}`);
   }
 
   // ── Channels ───────────────────────────────────────────────────────

@@ -715,6 +715,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         pending_requests,
         pending_model_requests: HashMap::new(),
         model_receipts: HashMap::new(),
+        model_receipts_by_request: HashMap::new(),
         model_revision: 0,
         pending_verified_spawns,
         resize_owners: HashMap::new(),

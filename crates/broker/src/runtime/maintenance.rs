@@ -27,6 +27,7 @@ impl BrokerRuntime {
         let pending_requests = &mut self.pending_requests;
         let pending_model_requests = &mut self.pending_model_requests;
         let model_receipts = &mut self.model_receipts;
+        let model_receipts_by_request = &mut self.model_receipts_by_request;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_states = &mut self.delivery_states;
         let resize_owners = &mut self.resize_owners;
@@ -170,6 +171,14 @@ impl BrokerRuntime {
                         );
                     }
                 }
+                if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
+                    receipt.status = "rejected".into();
+                    receipt.applied = false;
+                    receipt.pending = false;
+                    receipt.success = false;
+                    receipt.error =
+                        Some("worker did not return a model receipt before the deadline".into());
+                }
             }
         }
 
@@ -302,6 +311,7 @@ impl BrokerRuntime {
                 !(pending.worker_name == *name && pending.generation == *generation)
             });
             model_receipts.remove(name);
+            model_receipts_by_request.retain(|_, receipt| receipt.name != *name);
             let mut retain_fleet_identity = false;
             let pending = pending_verified_spawns
                 .get(name)

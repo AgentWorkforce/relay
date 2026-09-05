@@ -252,6 +252,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     pub(super) pending_model_requests: HashMap<String, PendingModelRequest>,
     pub(super) model_receipts: HashMap<WorkerName, ModelReceipt>,
+    pub(super) model_receipts_by_request: HashMap<String, ModelReceipt>,
     pub(super) model_revision: u64,
     /// Persona/capability spawns whose action result is held until the harness
     /// proves readiness with worker_ready. Keyed by the node-local worker name.
@@ -336,6 +337,7 @@ pub(super) struct PendingModelRequest {
 /// Last model-change receipt for a worker generation. Queue admission is
 /// intentionally represented by `accepted_pending`; only a provider response
 /// can produce `applied: true`.
+#[derive(Clone)]
 pub(super) struct ModelReceipt {
     pub(super) name: WorkerName,
     pub(super) requested_model: String,

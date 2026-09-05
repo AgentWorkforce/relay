@@ -619,6 +619,7 @@ impl BrokerRuntime {
         let pending_requests = &mut self.pending_requests;
         let pending_model_requests = &mut self.pending_model_requests;
         let model_receipts = &mut self.model_receipts;
+        let model_receipts_by_request = &mut self.model_receipts_by_request;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
@@ -1142,7 +1143,19 @@ impl BrokerRuntime {
                                     receipt.success = applied;
                                     receipt.accepted = true;
                                     receipt.pending = false;
-                                    receipt.error = error;
+                                    receipt.error = error.clone();
+                                }
+                            }
+                            if let Some(receipt) = model_receipts_by_request.get_mut(request_id) {
+                                receipt.applied = applied;
+                                receipt.status = status.to_string();
+                                receipt.success = applied;
+                                receipt.accepted = true;
+                                receipt.pending = false;
+                                receipt.error = error.clone();
+                                if applied {
+                                    receipt.effective_model = Some(request.requested_model.clone());
+                                    receipt.effective_revision = request.revision;
                                 }
                             }
                             // The worker cache follows the newest confirmed

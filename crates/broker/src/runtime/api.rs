@@ -323,6 +323,7 @@ impl BrokerRuntime {
         let pending_requests = &mut self.pending_requests;
         let pending_model_requests = &mut self.pending_model_requests;
         let model_receipts = &mut self.model_receipts;
+        let model_receipts_by_request = &mut self.model_receipts_by_request;
         let model_revision = &mut self.model_revision;
         let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
@@ -910,6 +911,7 @@ impl BrokerRuntime {
                         error: Some("worker provider does not expose typed model mutation".into()),
                     };
                     let value = receipt.json();
+                    model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
                     model_receipts.insert(name, receipt);
                     let _ = reply.send(Ok(value));
                     return;
@@ -939,7 +941,9 @@ impl BrokerRuntime {
                         success: false,
                         error: Some("a model change is already pending for this worker".into()),
                     };
-                    let _ = reply.send(Ok(receipt.json()));
+                    let value = receipt.json();
+                    model_receipts_by_request.insert(receipt.request_id.clone(), receipt);
+                    let _ = reply.send(Ok(value));
                     return;
                 }
 
@@ -972,6 +976,7 @@ impl BrokerRuntime {
                         error: Some(error.to_string()),
                     };
                     let value = receipt.json();
+                    model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
                     // A full queue can reject a newer request while an older
                     // request is still in flight. Keep the older receipt in
                     // the per-worker cache so its valid provider response can
@@ -999,6 +1004,7 @@ impl BrokerRuntime {
                         success: false,
                         error: None,
                     };
+                    model_receipts_by_request.insert(pending.request_id.clone(), pending.clone());
                     model_receipts.insert(name.clone(), pending);
                     pending_model_requests.insert(
                         request_id.to_string(),
@@ -1016,13 +1022,19 @@ impl BrokerRuntime {
                         .json()));
                 }
             }
-            ListenApiRequest::GetModel { name, reply } => {
+            ListenApiRequest::GetModel {
+                name,
+                request_id,
+                reply,
+            } => {
                 let Some(handle) = workers.workers.get(&name) else {
                     let _ = reply.send(Err(format!("unknown worker '{}'", name)));
                     return;
                 };
-                let value = model_receipts
-                    .get(&name)
+                let value = request_id
+                    .as_deref()
+                    .and_then(|request_id| model_receipts_by_request.get(request_id))
+                    .or_else(|| model_receipts.get(&name))
                     .filter(|receipt| receipt.generation == handle.generation)
                     .map(ModelReceipt::json)
                     .unwrap_or_else(|| {
@@ -1059,6 +1071,7 @@ impl BrokerRuntime {
                     Ok(()) => {
                         pending_model_requests.retain(|_, pending| pending.worker_name != name);
                         model_receipts.remove(&name);
+                        model_receipts_by_request.retain(|_, receipt| receipt.name != name);
                         let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,
@@ -1217,6 +1230,7 @@ impl BrokerRuntime {
                             // attach state left behind after the process exited.
                             pending_model_requests.retain(|_, pending| pending.worker_name != name);
                             model_receipts.remove(&name);
+                            model_receipts_by_request.retain(|_, receipt| receipt.name != name);
                             resize_owners.remove(&name);
                             pty_observability.remove(&name);
                             super::fleet::close_terminal_sessions_for_worker(

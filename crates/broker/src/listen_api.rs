@@ -74,6 +74,7 @@ pub enum ListenApiRequest {
     },
     GetModel {
         name: WorkerName,
+        request_id: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Release {
@@ -1284,12 +1285,14 @@ async fn listen_api_set_model(
 async fn listen_api_get_model(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListenApiGetModelQuery>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::GetModel {
             name: WorkerName::new(name.clone()),
+            request_id: query.request_id,
             reply: reply_tx,
         })
         .await
@@ -1311,6 +1314,11 @@ async fn listen_api_get_model(
             axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
         ),
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ListenApiGetModelQuery {
+    request_id: Option<String>,
 }
 
 async fn listen_api_threads(
@@ -4397,7 +4405,11 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::GetModel { name, reply }) => {
+                Some(ListenApiRequest::GetModel {
+                    name,
+                    request_id: _,
+                    reply,
+                }) => {
                     assert_eq!(name, "worker-a");
                     let _ = reply.send(Ok(json!({
                         "name": "worker-a",

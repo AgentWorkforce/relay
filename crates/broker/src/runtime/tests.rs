@@ -298,6 +298,7 @@ fn worker_event_runtime_fixture(
         pending_requests: HashMap::new(),
         pending_model_requests: HashMap::new(),
         model_receipts: HashMap::new(),
+        model_receipts_by_request: HashMap::new(),
         model_revision: 0,
         pending_verified_spawns: HashMap::new(),
         resize_owners: HashMap::new(),
@@ -437,6 +438,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .runtime
         .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
             name: WorkerName::new("model-worker"),
+            request_id: None,
             reply: reply_tx,
         })
         .await;
@@ -481,6 +483,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .runtime
         .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
             name: WorkerName::new("model-worker"),
+            request_id: None,
             reply: reply_tx,
         })
         .await;
@@ -573,6 +576,7 @@ async fn set_model_rejects_overlapping_request_without_overwriting_pending_recei
         })
         .await;
     let second = second_rx.await.unwrap().unwrap();
+    let second_id = second["request_id"].as_str().unwrap().to_string();
     assert_eq!(second["status"], "rejected");
     assert_eq!(second["accepted"], false);
     assert_eq!(second["pending"], false);
@@ -580,6 +584,19 @@ async fn set_model_rejects_overlapping_request_without_overwriting_pending_recei
         .as_str()
         .unwrap()
         .contains("already pending"));
+
+    let (rejected_tx, rejected_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some(second_id),
+            reply: rejected_tx,
+        })
+        .await;
+    let rejected = rejected_rx.await.unwrap().unwrap();
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(rejected["accepted"], false);
 
     fixture
         .runtime
@@ -610,6 +627,7 @@ async fn set_model_rejects_overlapping_request_without_overwriting_pending_recei
         .runtime
         .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
             name: WorkerName::new("model-worker"),
+            request_id: None,
             reply: get_tx,
         })
         .await;
@@ -697,6 +715,7 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
         .runtime
         .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
             name: WorkerName::new("model-worker"),
+            request_id: None,
             reply: pending_tx,
         })
         .await;
@@ -733,6 +752,7 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
         .runtime
         .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
             name: WorkerName::new("model-worker"),
+            request_id: None,
             reply: get_tx,
         })
         .await;
