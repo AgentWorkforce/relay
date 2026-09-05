@@ -241,7 +241,8 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
 }
 
 type AttachCredentialSelection =
-  { ok: true; workspaceKey?: string; joinTicket?: string } | { ok: false; error: string };
+  | { ok: true; workspaceKey?: string; joinTicket?: string }
+  | { ok: false; error: string };
 
 function resolveAttachCredentialSelection(
   rawWorkspaceKey: string | undefined,
