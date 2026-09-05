@@ -1,0 +1,63 @@
+{
+  "id": "traj_iv95g9euppbw",
+  "version": 1,
+  "task": {
+    "title": "Stabilize PR 1610 proof shutdown",
+    "source": {
+      "system": "plain",
+      "id": "PR-1610"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-26T00:38:05.964Z",
+  "completedAt": "2026-08-26T00:39:14.893Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-26T00:38:21.120Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_f2ig35c45rtp",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-26T00:38:21.120Z",
+      "endedAt": "2026-08-26T00:39:14.893Z",
+      "events": [
+        {
+          "ts": 1787704701149,
+          "type": "decision",
+          "content": "Keep the reconnected loopback WebSocket alive until the harness captures the reconnect: Keep the reconnected loopback WebSocket alive until the harness captures the reconnect",
+          "raw": {
+            "question": "Keep the reconnected loopback WebSocket alive until the harness captures the reconnect",
+            "chosen": "Keep the reconnected loopback WebSocket alive until the harness captures the reconnect",
+            "alternatives": [],
+            "reasoning": "The harness only needs to deterministically observe a second public node-control connection; aborting the client afterward avoids an irrelevant shutdown race."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed the reconnect observation race from the application-ack RelayFlow harness.",
+    "approach": "Kept the first socket responsive until closure, accepted the second connection deterministically, then aborted the client only for harness cleanup.",
+    "confidence": 0.95
+  },
+  "commits": [
+    "8e46228de"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_iv95g9euppbw/trajectory.json",
+    "tests/relayflows/cases/1591-application-ack-reconnect/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4a3e03106837e71d9d1f223ae727300449e68431",
+    "endRef": "8e46228dea1e0ab93b37e2fb5c9dc2754f2eb323",
+    "traceId": "f1c6df14-5543-4d93-ba01-81d22ed56675"
+  }
+}
