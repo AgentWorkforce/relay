@@ -193,18 +193,40 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                 }
             }
             "set_model" => {
-                let _ = send_frame(
-                    &out_tx,
-                    "set_model_response",
-                    frame.request_id,
-                    json!({
-                        "status": "unsupported",
+                let requested_model = frame
+                    .payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let result = match protocol.as_str() {
+                    "opencode" => {
+                        set_opencode_model(
+                            &http,
+                            &endpoint,
+                            &session_id,
+                            requested_model,
+                            auth.as_ref(),
+                        )
+                        .await
+                    }
+                    other => Err(anyhow::anyhow!(
+                        "app-server protocol '{other}' does not expose typed model mutation"
+                    )),
+                };
+                let response = match result {
+                    Ok(effective_model) => json!({
+                        "status": "applied",
+                        "applied": true,
+                        "effective_model": effective_model,
+                    }),
+                    Err(error) => json!({
+                        "status": "rejected",
                         "applied": false,
                         "effective_model": null,
-                        "error": "app-server providers do not expose model mutation",
+                        "error": error.to_string(),
                     }),
-                )
-                .await;
+                };
+                let _ = send_frame(&out_tx, "set_model_response", frame.request_id, response).await;
             }
             "ping" => {
                 let ts = frame
@@ -315,6 +337,66 @@ async fn send_opencode_prompt(
     send_app_server_request(apply_app_server_auth(request, auth)).await
 }
 
+/// OpenCode's V2 server API is the one built-in provider contract that can
+/// actually switch a live session's model. The 204 mutation is followed by a
+/// session read; returning `applied` is only valid when that read reports the
+/// exact requested provider/model reference.
+async fn set_opencode_model(
+    http: &reqwest::Client,
+    endpoint: &str,
+    session_id: &str,
+    requested_model: &str,
+    auth: Option<&AppServerAuthConfig>,
+) -> Result<String> {
+    let (provider_id, model_id) = requested_model
+        .split_once('/')
+        .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("OpenCode models must use provider/model syntax"))?;
+    let model_url = opencode_v2_session_url(endpoint, session_id, "model");
+    let request = http.post(model_url).json(&json!({
+        "model": {
+            "providerID": provider_id,
+            "id": model_id,
+        }
+    }));
+    send_app_server_request(apply_app_server_auth(request, auth)).await?;
+
+    let session_url = opencode_v2_session_url(endpoint, session_id, "");
+    let session = apply_app_server_auth(http.get(session_url), auth)
+        .send()
+        .await
+        .context("OpenCode model confirmation request failed")?;
+    if !session.status().is_success() {
+        let status = session.status();
+        let body = session.text().await.unwrap_or_default();
+        anyhow::bail!("OpenCode model confirmation failed with status {status}: {body}");
+    }
+    let body: Value = session
+        .json()
+        .await
+        .context("OpenCode model confirmation was not valid JSON")?;
+    let data = body.get("data").unwrap_or(&body);
+    let confirmed_provider = data
+        .get("model")
+        .and_then(|model| model.get("providerID"))
+        .and_then(Value::as_str);
+    let confirmed_id = data
+        .get("model")
+        .and_then(|model| model.get("id").or_else(|| model.get("modelID")))
+        .and_then(Value::as_str);
+    let effective_model = format!(
+        "{}/{}",
+        confirmed_provider.unwrap_or_default(),
+        confirmed_id.unwrap_or_default()
+    );
+    if effective_model != requested_model {
+        anyhow::bail!(
+            "OpenCode confirmed effective model '{effective_model}', not requested '{requested_model}'"
+        );
+    }
+    Ok(effective_model)
+}
+
 async fn release_app_server(
     http: &reqwest::Client,
     protocol: &str,
@@ -387,9 +469,20 @@ fn opencode_session_url(endpoint: &str, session_id: &str, action: &str) -> Strin
     }
 }
 
+fn opencode_v2_session_url(endpoint: &str, session_id: &str, action: &str) -> String {
+    let base = endpoint.trim_end_matches('/');
+    let session = urlencoding::encode(session_id);
+    if action.is_empty() {
+        format!("{base}/api/session/{session}")
+    } else {
+        format!("{base}/api/session/{session}/{action}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::{Method::GET, Method::POST, MockServer};
 
     #[test]
     fn opencode_session_url_escapes_session_id() {
@@ -397,6 +490,41 @@ mod tests {
             opencode_session_url("http://127.0.0.1:4096/", "ses/one", "prompt_async"),
             "http://127.0.0.1:4096/session/ses%2Fone/prompt_async"
         );
+    }
+
+    #[test]
+    fn opencode_v2_session_url_uses_model_api() {
+        assert_eq!(
+            opencode_v2_session_url("http://127.0.0.1:4096/", "ses/one", "model"),
+            "http://127.0.0.1:4096/api/session/ses%2Fone/model"
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_model_mutation_requires_exact_session_confirmation() {
+        let server = MockServer::start();
+        let switch = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/session/ses-1/model")
+                .json_body(json!({
+                    "model": { "providerID": "openai", "id": "gpt-5.4" }
+                }));
+            then.status(204);
+        });
+        let confirm = server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(200).json_body(json!({
+                "data": { "model": { "providerID": "openai", "id": "gpt-5.4" } }
+            }));
+        });
+        let http = reqwest::Client::new();
+        let effective =
+            set_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert_eq!(effective, "openai/gpt-5.4");
+        switch.assert();
+        confirm.assert();
     }
 
     #[test]

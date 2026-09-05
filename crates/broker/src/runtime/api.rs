@@ -38,18 +38,24 @@ fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
 }
 
 /// Model mutation is opt-in. A raw `/model` PTY injection cannot prove that a
-/// provider consumed the command, and headless/native runtimes currently have
-/// no setter. A worker may opt in only when its provider adapter implements the
-/// typed `set_model` request/receipt contract.
+/// provider consumed the command. Built-in providers may opt in when their
+/// protocol has an exact typed setter/confirmation path; custom workers must
+/// explicitly advertise the same `set_model` request/receipt contract.
 fn supports_model_mutation(handle: &WorkerHandle) -> bool {
-    handle
+    let metadata_support = handle
         .spec
         .harness_config
         .as_ref()
         .and_then(ResolvedHarnessConfig::metadata)
         .and_then(|metadata| metadata.get("model_mutation"))
         .and_then(Value::as_bool)
-        .unwrap_or(false)
+        .unwrap_or(false);
+    metadata_support
+        || matches!(
+            handle.spec.harness_config.as_ref(),
+            Some(ResolvedHarnessConfig::Headless(config))
+                if config.protocol.eq_ignore_ascii_case("opencode")
+        )
 }
 
 /// Resolve the named recipient whose presence accompanies an HTTP send.

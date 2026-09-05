@@ -456,6 +456,42 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
 }
 
 #[tokio::test]
+async fn set_model_recognizes_builtin_opencode_app_server_capability() {
+    let mut registry = make_worker_registry_with_worker("opencode-worker").await;
+    registry
+        .workers
+        .get_mut("opencode-worker")
+        .unwrap()
+        .spec
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".into(),
+        endpoint: "http://127.0.0.1:4096".into(),
+        session_id: "ses_test".into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
+    }));
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("opencode-worker"),
+            model: "opencode/deepseek-v4-flash".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let receipt = reply_rx.await.unwrap().unwrap();
+    assert_eq!(receipt["status"], "accepted_pending");
+    assert_eq!(receipt["accepted"], true);
+    assert_eq!(receipt["applied"], false);
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn set_model_out_of_order_receipts_cannot_roll_back_confirmed_model_cache() {
     let mut registry = make_worker_registry_with_worker("model-worker").await;
     registry
