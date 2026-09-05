@@ -262,10 +262,9 @@ function cleanupProviderId(
   requestedProviderId?: CloudFleetSandboxProviderId
 ): CloudFleetSandboxProviderId | undefined {
   const payloadProviderId = readString(payload, 'providerId');
-  return payloadProviderId && CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(
-    payloadProviderId as CloudFleetSandboxProviderId
-  )
-    ? payloadProviderId as CloudFleetSandboxProviderId
+  return payloadProviderId &&
+    CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(payloadProviderId as CloudFleetSandboxProviderId)
+    ? (payloadProviderId as CloudFleetSandboxProviderId)
     : requestedProviderId;
 }
 
@@ -370,9 +369,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
-          ...(input.workloadProfile !== undefined
-            ? { workloadProfile: input.workloadProfile }
-            : {}),
+          ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),
