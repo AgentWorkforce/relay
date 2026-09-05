@@ -124,6 +124,9 @@ function validEvidence() {
           comm: 'agent-relay',
           nodeResourceId: nodes[attempt - 1].resourceId,
           source: 'target-host',
+          probeCommand: `ps -p ${1000 + attempt} -o pid=,comm=`,
+          probeExitCode: 0,
+          argvSha256: commandArgvSha256(argv),
           observedAt: times.attemptObserved,
         },
         executionEvidence: {

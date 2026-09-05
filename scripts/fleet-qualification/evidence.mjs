@@ -128,7 +128,11 @@ function sha256Text(value) {
 }
 
 export function commandArgvSha256(argv) {
-  if (!Array.isArray(argv) || argv.length === 0 || argv.some((token) => typeof token !== 'string')) {
+  if (
+    !Array.isArray(argv) ||
+    argv.length === 0 ||
+    argv.some((token) => typeof token !== 'string' || !token || CONTROL.test(token))
+  ) {
     notPass('command argv must be a non-empty array of strings');
   }
   return createHash('sha256').update(argv.join('\0'), 'utf8').digest('hex');
@@ -262,6 +266,12 @@ function validateAttempt(attempt, operation, attemptNumber, nodesById, manifest,
   }
   const argvDigest = commandArgvSha256(argv);
   if (
+    normalizeSha256(attempt?.processEvidence?.argvSha256, `${prefix}.processEvidence.argvSha256`) !==
+    argvDigest
+  ) {
+    notPass(`${prefix} process probe does not bind the PID to the executed argv`);
+  }
+  if (
     attempt?.executionEvidence?.source !== 'target-host' ||
     normalizeSha256(attempt?.executionEvidence?.argvSha256, `${prefix}.executionEvidence.argvSha256`) !==
       argvDigest ||
@@ -280,7 +290,10 @@ function validateAttempt(attempt, operation, attemptNumber, nodesById, manifest,
     ) !== nodeResourceId ||
     typeof attempt?.processEvidence?.comm !== 'string' ||
     !attempt.processEvidence.comm.trim() ||
-    attempt?.processEvidence?.source !== 'target-host'
+    attempt?.processEvidence?.source !== 'target-host' ||
+    typeof attempt?.processEvidence?.probeCommand !== 'string' ||
+    !attempt.processEvidence.probeCommand.trim() ||
+    attempt?.processEvidence?.probeExitCode !== 0
   ) {
     notPass(`${prefix} process evidence does not bind PID and comm to the target node`);
   }
