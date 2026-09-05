@@ -10,7 +10,7 @@
   },
   "status": "completed",
   "startedAt": "2026-09-05T17:39:05.805Z",
-  "completedAt": "2026-09-05T17:54:58.646Z",
+  "completedAt": "2026-09-05T21:35:45.000Z",
   "agents": [
     {
       "name": "default",
@@ -24,7 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-05T17:54:22.984Z",
-      "endedAt": "2026-09-05T17:54:58.646Z",
+      "endedAt": "2026-09-05T21:35:45.000Z",
       "events": [
         {
           "ts": 1788630862984,
@@ -41,7 +41,7 @@
         {
           "ts": 1788630863658,
           "type": "reflection",
-          "content": "Implemented broker-owned model receipts, polling, typed worker responses, client surfaces, CLI messaging, and deterministic positive/negative tests; full broker library suite passes.",
+          "content": "Implemented broker-owned model receipts, polling, typed worker responses, client surfaces, CLI messaging, deterministic positive/negative tests, and review fixes for overlap, provider deadlines, and fail-closed CLI output; focused broker and CLI suites pass.",
           "raw": {
             "confidence": 0.88
           },
@@ -68,7 +68,8 @@
     "56cceb1d9efba7e41d321367bfc34ba976eaeb8c",
     "0a99096eedb3ad1c2f442aaec0e70e5e63c01691",
     "0dc0039db083ac84734d23e64a386112b20b2909",
-    "681f6887de005db1831799c0f92d02f234334096"
+    "681f6887de005db1831799c0f92d02f234334096",
+    "a8cd49cd0beba4ecc5ac74f9f1f9da2fea76e56f"
   ],
   "filesChanged": [
     "CHANGELOG.md",
@@ -102,6 +103,6 @@
   "tags": [],
   "_trace": {
     "startRef": "ca5cda002e47b431e77b86364a967573aa2034de",
-    "endRef": "681f6887de005db1831799c0f92d02f234334096"
+    "endRef": "a8cd49cd0beba4ecc5ac74f9f1f9da2fea76e56f"
   }
 }
