@@ -1189,10 +1189,29 @@ export class HarnessDriverClient {
   // ── Model control ──────────────────────────────────────────────────
 
   async setModel(name: string, model: string, opts?: { timeoutMs?: number }): Promise<ModelUpdateResult> {
-    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model`, {
-      method: 'POST',
-      body: JSON.stringify({ model, timeout_ms: opts?.timeoutMs }),
-    });
+    const result = await this.transport.request<Partial<ModelUpdateResult>>(
+      `/api/spawned/${encodeURIComponent(name)}/model`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ model, timeout_ms: opts?.timeoutMs }),
+      }
+    );
+    return {
+      name: result.name ?? name,
+      model: result.model ?? model,
+      requested_model: result.requested_model ?? result.model ?? model,
+      effective_model: result.effective_model ?? null,
+      applied: result.applied === true,
+      status: result.status ?? 'unknown',
+      request_id: result.request_id ?? null,
+      receipt_id: result.receipt_id ?? result.request_id ?? null,
+      generation: result.generation ?? null,
+      revision: result.revision,
+      success: result.success === true,
+      accepted: result.accepted ?? result.success === true,
+      pending: result.pending === true,
+      ...(result.error ? { error: result.error } : {}),
+    };
   }
 
   async getModel(name: string): Promise<ModelUpdateResult> {

@@ -31,6 +31,10 @@ const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// `/model` writes use the same worker-owned stdin writer as protocol frames.
 /// Never let the runtime actor wait on its completion without a deadline.
 const DEFAULT_SET_MODEL_TIMEOUT: Duration = Duration::from_secs(5);
+/// OpenCode's typed mutation uses an HTTP client with a 30-second timeout.
+/// Keep the broker receipt alive for at least that long so a provider cannot
+/// apply a model after the broker has already recorded a timeout rejection.
+const MIN_MODEL_RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
     timeout_ms
@@ -38,26 +42,20 @@ fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
         .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
 }
 
-/// Model mutation is opt-in. A raw `/model` PTY injection cannot prove that a
-/// provider consumed the command. Built-in providers may opt in when their
-/// protocol has an exact typed setter/confirmation path; custom workers must
-/// explicitly advertise the same `set_model` request/receipt contract.
+fn set_model_receipt_timeout(timeout_ms: Option<u64>) -> Duration {
+    set_model_write_timeout(timeout_ms).max(MIN_MODEL_RECEIPT_TIMEOUT)
+}
+
+/// Model mutation is supported only for the built-in OpenCode app-server path.
+/// A raw `/model` PTY injection or untyped sidecar response cannot prove that
+/// a provider consumed the command, so every other runtime fails closed.
 fn supports_model_mutation(handle: &WorkerHandle) -> bool {
-    let metadata_support = handle
-        .spec
-        .harness_config
-        .as_ref()
-        .and_then(ResolvedHarnessConfig::metadata)
-        .and_then(|metadata| metadata.get("model_mutation"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    metadata_support
-        || matches!(
-            handle.spec.harness_config.as_ref(),
-            Some(ResolvedHarnessConfig::Headless(config))
-                if config.driver == HeadlessHarnessDriver::AppServer
-                    && config.protocol.eq_ignore_ascii_case("opencode")
-        )
+    matches!(
+        handle.spec.harness_config.as_ref(),
+        Some(ResolvedHarnessConfig::Headless(config))
+            if config.driver == HeadlessHarnessDriver::AppServer
+                && config.protocol.eq_ignore_ascii_case("opencode")
+    )
 }
 
 /// Resolve the named recipient whose presence accompanies an HTTP send.
@@ -910,7 +908,6 @@ impl BrokerRuntime {
                     return;
                 }
 
-                let set_model_timeout = set_model_write_timeout(timeout_ms);
                 // Model application is confirmed by the provider response,
                 // not by the stdin writer. Once this frame is admitted to the
                 // worker-owned queue, an outer write timeout must not report a
@@ -939,7 +936,16 @@ impl BrokerRuntime {
                         error: Some(error.to_string()),
                     };
                     let value = receipt.json();
-                    model_receipts.insert(name, receipt);
+                    // A full queue can reject a newer request while an older
+                    // request is still in flight. Keep the older receipt in
+                    // the per-worker cache so its valid provider response can
+                    // still settle and be observed through GET.
+                    let has_pending_for_worker = pending_model_requests.values().any(|pending| {
+                        pending.worker_name == name && pending.generation == generation
+                    });
+                    if !has_pending_for_worker {
+                        model_receipts.insert(name, receipt);
+                    }
                     let _ = reply.send(Ok(value));
                 } else {
                     let pending = ModelReceipt {
@@ -953,7 +959,7 @@ impl BrokerRuntime {
                         revision,
                         accepted: true,
                         pending: true,
-                        success: true,
+                        success: false,
                         error: None,
                     };
                     model_receipts.insert(name.clone(), pending);
@@ -964,7 +970,7 @@ impl BrokerRuntime {
                             generation,
                             requested_model: model,
                             revision,
-                            deadline: Instant::now() + set_model_timeout,
+                            deadline: Instant::now() + set_model_receipt_timeout(timeout_ms),
                         },
                     );
                     let _ = reply.send(Ok(model_receipts
@@ -1014,6 +1020,8 @@ impl BrokerRuntime {
                 workers.metrics.on_release(&name);
                 match workers.release(&name).await {
                     Ok(()) => {
+                        pending_model_requests.retain(|_, pending| pending.worker_name != name);
+                        model_receipts.remove(&name);
                         let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,
@@ -1170,6 +1178,8 @@ impl BrokerRuntime {
                             };
                             // Idempotent release is still terminal for any stale
                             // attach state left behind after the process exited.
+                            pending_model_requests.retain(|_, pending| pending.worker_name != name);
+                            model_receipts.remove(&name);
                             resize_owners.remove(&name);
                             pty_observability.remove(&name);
                             super::fleet::close_terminal_sessions_for_worker(
@@ -2942,7 +2952,10 @@ mod skill_injection_tests {
 
 #[cfg(test)]
 mod set_model_timeout_tests {
-    use super::{set_model_write_timeout, DEFAULT_SET_MODEL_TIMEOUT};
+    use super::{
+        set_model_receipt_timeout, set_model_write_timeout, DEFAULT_SET_MODEL_TIMEOUT,
+        MIN_MODEL_RECEIPT_TIMEOUT,
+    };
     use std::time::Duration;
 
     #[test]
@@ -2955,6 +2968,15 @@ mod set_model_timeout_tests {
         assert_eq!(
             set_model_write_timeout(Some(10_000)),
             Duration::from_millis(10_000)
+        );
+    }
+
+    #[test]
+    fn receipt_timeout_covers_the_provider_http_deadline() {
+        assert_eq!(set_model_receipt_timeout(None), MIN_MODEL_RECEIPT_TIMEOUT);
+        assert_eq!(
+            set_model_receipt_timeout(Some(45_000)),
+            Duration::from_millis(45_000)
         );
     }
 }

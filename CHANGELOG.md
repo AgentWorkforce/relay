@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `node agent set-model` now returns correlated applied, pending, rejected, or unsupported receipts and exposes the last confirmed effective model; queue admission is no longer reported as application.
+- `node agent set-model` now returns correlated applied, pending, rejected, or unsupported receipts and exposes the last confirmed effective model.
+- `node agent set-model` no longer reports queue admission as a successful model application.
 
 ## [11.10.3] - 2026-09-05
 

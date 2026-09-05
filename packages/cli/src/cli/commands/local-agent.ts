@@ -36,6 +36,9 @@ const CLAUDE_MODEL_IDS: Record<'haiku' | 'sonnet' | 'opus', string> = {
   opus: 'claude-opus-4-8',
 };
 
+const MODEL_RECEIPT_POLL_TIMEOUT_MS = 30_000;
+const MODEL_RECEIPT_POLL_INTERVAL_MS = 100;
+
 /**
  * If `model === 'auto'`, run the task classifier → team composer → Director
  * meta-prompt builder and return resolved spawn options.
@@ -835,7 +838,19 @@ export function registerLocalAgentCommands(
     .option('--json', 'Emit the correlated model mutation receipt as JSON')
     .action(async (name: string, model: string, options: { json?: boolean }) => {
       await run(deps, async (client) => {
-        const receipt = await client.setModel(name, model);
+        let receipt = await client.setModel(name, model);
+        if (receipt.status === 'accepted_pending' && receipt.request_id) {
+          const deadline = Date.now() + MODEL_RECEIPT_POLL_TIMEOUT_MS;
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, MODEL_RECEIPT_POLL_INTERVAL_MS));
+            const latest = await client.getModel(name);
+            // A newer request may have replaced the worker's current receipt;
+            // never report that unrelated receipt as this command's result.
+            if (latest.request_id !== receipt.request_id) continue;
+            receipt = latest;
+            if (receipt.status !== 'accepted_pending') break;
+          }
+        }
         if (options.json) {
           // The broker wire contract is snake_case; the CLI's JSON contract
           // uses the same camelCase style as the other machine-readable CLI
@@ -873,7 +888,7 @@ export function registerLocalAgentCommands(
           );
         } else {
           deps.log(
-            `Model request for ${name} was ${receipt.status}; applied=false (request ${receipt.request_id ?? 'unknown'}).`
+            `Model request for ${name} was ${receipt.status}; applied=false (request ${receipt.request_id ?? 'unknown'})${receipt.error ? `: ${receipt.error}` : ''}.`
           );
         }
       });

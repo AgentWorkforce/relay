@@ -244,6 +244,8 @@ impl BrokerRuntime {
                 pending_deliveries,
                 dead_letters,
                 pending_requests,
+                pending_model_requests,
+                model_receipts,
                 delivery_states,
                 agent_result_tokens,
                 resize_owners,
@@ -296,6 +298,10 @@ impl BrokerRuntime {
         };
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
+            pending_model_requests.retain(|_, pending| {
+                !(pending.worker_name == *name && pending.generation == *generation)
+            });
+            model_receipts.remove(name);
             let mut retain_fleet_identity = false;
             let pending = pending_verified_spawns
                 .get(name)

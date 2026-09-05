@@ -647,7 +647,7 @@ export type BrokerToWorker =
   | {
       /** Typed model mutation; providers must return a set_model_response. */
       type: 'set_model';
-      request_id?: string;
+      request_id: string;
       payload: { model: string };
     }
   | {
@@ -724,13 +724,20 @@ export type WorkerToBroker =
     }
   | {
       type: 'set_model_response';
-      request_id?: string;
-      payload: {
-        status: 'applied' | 'rejected' | 'unsupported';
-        applied: boolean;
-        effective_model?: string | null;
-        error?: string;
-      };
+      request_id: string;
+      payload:
+        | {
+            status: 'applied';
+            applied: true;
+            effective_model: string;
+            error?: never;
+          }
+        | {
+            status: 'rejected' | 'unsupported';
+            applied: false;
+            effective_model?: string | null;
+            error?: string;
+          };
     }
   | {
       type: 'agent_event';

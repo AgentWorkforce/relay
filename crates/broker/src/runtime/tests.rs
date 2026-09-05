@@ -15,7 +15,7 @@ use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
     HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, ProtocolEnvelope,
-    PtyHarnessConfig, RelayDelivery, ResolvedHarnessConfig,
+    RelayDelivery, ResolvedHarnessConfig,
 };
 use crate::telemetry::TelemetryClient;
 use crate::worker::{
@@ -350,14 +350,15 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .get_mut("model-worker")
         .unwrap()
         .spec
-        .harness_config = Some(ResolvedHarnessConfig::Pty(PtyHarnessConfig {
-        command: "fake-provider".into(),
-        args: vec![],
-        cwd: None,
-        env: None,
-        session_id: None,
-        delivery: None,
-        metadata: Some(HashMap::from([("model_mutation".into(), json!(true))])),
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".into(),
+        endpoint: "http://127.0.0.1:1".into(),
+        session_id: "test-session".into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
     }));
     let generation = registry.workers["model-worker"].generation;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
@@ -376,6 +377,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
     assert_eq!(accepted["status"], "accepted_pending");
     assert_eq!(accepted["accepted"], true);
     assert_eq!(accepted["applied"], false);
+    assert_eq!(accepted["success"], false);
     let request_id = accepted["request_id"].as_str().unwrap().to_string();
 
     // Unknown request ids and receipts from a prior worker generation are
@@ -523,6 +525,7 @@ async fn set_model_recognizes_builtin_opencode_app_server_capability() {
     assert_eq!(receipt["status"], "accepted_pending");
     assert_eq!(receipt["accepted"], true);
     assert_eq!(receipt["applied"], false);
+    assert_eq!(receipt["success"], false);
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
@@ -534,14 +537,15 @@ async fn set_model_out_of_order_receipts_cannot_roll_back_confirmed_model_cache(
         .get_mut("model-worker")
         .unwrap()
         .spec
-        .harness_config = Some(ResolvedHarnessConfig::Pty(PtyHarnessConfig {
-        command: "fake-provider".into(),
-        args: vec![],
-        cwd: None,
-        env: None,
-        session_id: None,
-        delivery: None,
-        metadata: Some(HashMap::from([("model_mutation".into(), json!(true))])),
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".into(),
+        endpoint: "http://127.0.0.1:1".into(),
+        session_id: "test-session".into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
     }));
     let generation = registry.workers["model-worker"].generation;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
@@ -622,14 +626,15 @@ async fn set_model_queue_admission_is_pending_even_when_write_deadline_is_zero()
         .get_mut("model-worker")
         .unwrap()
         .spec
-        .harness_config = Some(ResolvedHarnessConfig::Pty(PtyHarnessConfig {
-        command: "fake-provider".into(),
-        args: vec![],
-        cwd: None,
-        env: None,
-        session_id: None,
-        delivery: None,
-        metadata: Some(HashMap::from([("model_mutation".into(), json!(true))])),
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".into(),
+        endpoint: "http://127.0.0.1:1".into(),
+        session_id: "test-session".into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
     }));
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();

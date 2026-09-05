@@ -1070,7 +1070,7 @@ impl BrokerRuntime {
                                 tracing::warn!(worker = %name, "dropping model receipt without request_id");
                                 return;
                             };
-                            let Some(request) = pending_model_requests.remove(request_id) else {
+                            let Some(request) = pending_model_requests.get(request_id) else {
                                 tracing::debug!(worker = %name, request_id, "dropping model receipt with no pending request");
                                 return;
                             };
@@ -1082,6 +1082,9 @@ impl BrokerRuntime {
                                 );
                                 return;
                             }
+                            let request = pending_model_requests
+                                .remove(request_id)
+                                .expect("validated model request remains pending");
                             let payload = value.get("payload").cloned().unwrap_or(Value::Null);
                             let reported_status = payload
                                 .get("status")

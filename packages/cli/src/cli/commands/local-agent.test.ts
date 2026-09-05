@@ -33,9 +33,24 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
       request_id: 'model_1',
       generation: 'generation-1',
       revision: 1,
-      success: true,
+      success: false,
       accepted: true,
       pending: true,
+    })),
+    getModel: vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: 'opus',
+      applied: true,
+      status: 'applied',
+      request_id: 'model_1',
+      receipt_id: 'model_1',
+      generation: 'generation-1',
+      revision: 1,
+      success: true,
+      accepted: true,
+      pending: false,
     })),
     flushPending: vi.fn(async () => ({ flushed: 2 })),
     setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
@@ -831,28 +846,29 @@ describe('local agent subtree', () => {
   });
 
   it('set-model --json emits a normalized correlated receipt', async () => {
-    const { program, log } = harness();
+    const { program, log, client } = harness();
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], { from: 'user' });
     expect(log).toHaveBeenCalledWith(
       JSON.stringify(
         {
           name: 'lead',
           requestedModel: 'opus',
-          effectiveModel: null,
-          applied: false,
-          status: 'accepted_pending',
+          effectiveModel: 'opus',
+          applied: true,
+          status: 'applied',
           requestId: 'model_1',
           receiptId: 'model_1',
           generation: 'generation-1',
           revision: 1,
           success: true,
           accepted: true,
-          pending: true,
+          pending: false,
         },
         null,
         2
       )
     );
+    expect(client.getModel).toHaveBeenCalledWith('lead');
   });
 
   it('set-model reports unsupported without claiming application', async () => {

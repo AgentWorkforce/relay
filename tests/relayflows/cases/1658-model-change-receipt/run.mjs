@@ -41,6 +41,9 @@ function run(command, args, label) {
     env: { ...process.env, RELAY_SKIP_TELEMETRY: '1' },
   });
   if (result.error) throw new Error(`${label} failed to run: ${result.error.message}`);
+  if (result.status !== 0) {
+    throw new Error(`${label} exited with status ${result.status}: ${result.stderr ?? ''}`);
+  }
   return `${result.stdout ?? ''}${result.stderr ?? ''}`;
 }
 
