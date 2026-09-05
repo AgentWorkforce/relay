@@ -1086,6 +1086,22 @@ impl BrokerRuntime {
                         // worker has actually dequeued the frame, not when
                         // the broker admitted it behind another request.
                         request.provider_deadline = Some(Instant::now() + request.provider_timeout);
+                        if let Err(error) = workers
+                            .send_to_worker(
+                                &name,
+                                "set_model_started_ack",
+                                Some(RequestId::new(request_id)),
+                                json!({}),
+                            )
+                            .await
+                        {
+                            tracing::debug!(
+                                worker = %name,
+                                request_id,
+                                error = %error,
+                                "failed to acknowledge model-start event"
+                            );
+                        }
                     } else if msg_type.ends_with("_response") {
                         if msg_type == "set_model_response" {
                             let Some(request_id) = value.get("request_id").and_then(Value::as_str)

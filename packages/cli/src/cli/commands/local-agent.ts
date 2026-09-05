@@ -36,7 +36,10 @@ const CLAUDE_MODEL_IDS: Record<'haiku' | 'sonnet' | 'opus', string> = {
   opus: 'claude-opus-4-8',
 };
 
-const MODEL_RECEIPT_POLL_TIMEOUT_MS = 65_000;
+// Model receipts have bounded queue-admission and provider-confirmation
+// phases; allow the CLI to observe either terminal state before falling back
+// to the initial admission snapshot.
+const MODEL_RECEIPT_POLL_TIMEOUT_MS = 135_000;
 const MODEL_RECEIPT_POLL_INTERVAL_MS = 100;
 
 /**

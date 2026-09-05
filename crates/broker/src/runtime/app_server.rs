@@ -234,6 +234,40 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     json!({}),
                 )
                 .await;
+                let start_acknowledged = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let Some(line) = lines.next_line().await? else {
+                            return Ok::<bool, std::io::Error>(false);
+                        };
+                        let Ok(ack) = serde_json::from_str::<ProtocolEnvelope<Value>>(&line) else {
+                            continue;
+                        };
+                        if ack.msg_type == "set_model_started_ack"
+                            && ack.request_id == frame.request_id
+                        {
+                            return Ok(true);
+                        }
+                    }
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(false);
+                if !start_acknowledged {
+                    let _ = send_frame(
+                        &out_tx,
+                        "set_model_response",
+                        frame.request_id,
+                        json!({
+                            "status": "rejected",
+                            "applied": false,
+                            "effective_model": null,
+                            "error": "broker did not acknowledge model start",
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
                 let result = match protocol.as_str() {
                     "opencode" => {
                         set_opencode_model(

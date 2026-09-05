@@ -1281,9 +1281,22 @@ impl BrokerRuntime {
                             };
                             // Idempotent release is still terminal for any stale
                             // attach state left behind after the process exited.
-                            pending_model_requests.retain(|_, pending| pending.worker_name != name);
+                            let generations: HashSet<Uuid> = pending_model_requests
+                                .values()
+                                .filter(|pending| pending.worker_name == name)
+                                .map(|pending| pending.generation)
+                                .collect();
+                            for generation in generations {
+                                terminalize_model_requests_for_worker(
+                                    &name,
+                                    generation,
+                                    pending_model_requests,
+                                    model_receipts,
+                                    model_receipts_by_request,
+                                    Instant::now(),
+                                );
+                            }
                             model_receipts.remove(&name);
-                            model_receipts_by_request.retain(|_, receipt| receipt.name != name);
                             resize_owners.remove(&name);
                             pty_observability.remove(&name);
                             super::fleet::close_terminal_sessions_for_worker(

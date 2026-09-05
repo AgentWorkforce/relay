@@ -243,7 +243,8 @@ try {
       if (
         unsupported.status !== 'rejected' ||
         unsupported.applied !== false ||
-        unsupported.success !== false
+        unsupported.success !== false ||
+        unsupported.accepted !== true
       ) {
         throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
       }
@@ -310,7 +311,7 @@ try {
             generation: 'generation-proof',
             revision: 1,
             success: !unsupported,
-            accepted: true,
+            accepted: !unsupported,
             pending: false,
             ...(unsupported ? { error: 'provider capability unavailable' } : {}),
           })
@@ -390,7 +391,8 @@ try {
       if (
         unsupported.status !== 'unsupported' ||
         unsupported.applied !== false ||
-        unsupported.success !== false
+        unsupported.success !== false ||
+        unsupported.accepted !== false
       ) {
         throw new Error(`unsupported set-model claimed application: ${JSON.stringify(unsupported)}`);
       }
