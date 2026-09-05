@@ -444,19 +444,42 @@ function encodeRecord(value, { pretty = false } = {}) {
   return encoded;
 }
 
-function assertBoundedResponseText(value, label) {
-  if (Buffer.byteLength(value, 'utf8') > MAX_RECORD_BYTES) {
-    throw new Error(`${label} exceeds ${MAX_RECORD_BYTES} bytes`);
+export async function readBoundedResponseText(response, label, maxBytes = MAX_RECORD_BYTES) {
+  const declaredLength = response.headers?.get?.('content-length');
+  if (declaredLength && /^\d+$/.test(declaredLength) && Number(declaredLength) > maxBytes) {
+    await response.body?.cancel?.().catch(() => undefined);
+    throw new Error(`${label} exceeds ${maxBytes} bytes`);
   }
-  return value;
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    throw new Error(`${label} did not expose a readable response body`);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`${label} exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, totalBytes).toString('utf8');
 }
 
 async function writePrivateGeneratedArtifact(destination, value, label) {
   if (Buffer.byteLength(value, 'utf8') > MAX_RECORD_BYTES) {
     throw new Error(`${label} exceeds ${MAX_RECORD_BYTES} bytes`);
   }
-  // codeql[js/http-to-file-access] The path is nonce-bound, uses exclusive
-  // creation, and the validated payload is capped before this intentional export.
+  // The path is nonce-bound, uses exclusive creation, and the validated payload is capped.
+  // codeql[js/http-to-file-access]
   await writeFile(destination, value, { flag: 'wx', mode: 0o600 });
 }
 
@@ -505,8 +528,8 @@ export async function putRecord({
     await mkdir(path.dirname(destination), { recursive: true });
     const encoded = `${encodeRecord(value, { pretty: true })}\n`;
     try {
-      // codeql[js/http-to-file-access] The destination is derived only from a
-      // fixed artifact root, validated nonce/kind segments, and uses O_EXCL.
+      // The destination uses a fixed artifact root, validated nonce/kind segments, and O_EXCL.
+      // codeql[js/http-to-file-access]
       await writeFile(destination, encoded, { flag: 'wx', mode: 0o600 });
     } catch (error) {
       if (error?.code === 'EEXIST') {
@@ -527,8 +550,8 @@ export async function putRecord({
   }
   const { url, token } = cloudStorageUrl(nonce, kind);
   const encoded = encodeRecord(value);
-  // codeql[js/file-access-to-http] Uploading bounded verification evidence to
-  // the explicitly configured, HTTPS-validated Cloud storage origin is intentional.
+  // This intentionally uploads bounded evidence only to the HTTPS-validated Cloud origin.
+  // codeql[js/file-access-to-http]
   const response = await fetch(url, {
     method: 'PUT',
     signal: requestSignal(),
@@ -544,21 +567,21 @@ export async function putRecord({
     throw new Error(`Cloud evidence storage already contains ${kind} (412)`);
   }
   if (!response.ok)
-    throw new Error(`Cloud evidence upload failed (${response.status}): ${await response.text()}`);
+    throw new Error(
+      `Cloud evidence upload failed (${response.status}): ${await readBoundedResponseText(response, 'Cloud evidence upload error')}`
+    );
   const confirmation = await fetch(url, {
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
   if (!confirmation.ok) {
     throw new Error(
-      `Cloud evidence read-after-write failed (${confirmation.status}): ${await confirmation.text()}`
+      `Cloud evidence read-after-write failed (${confirmation.status}): ${await readBoundedResponseText(confirmation, 'Cloud evidence confirmation error')}`
     );
   }
   let stored;
   try {
-    stored = JSON.parse(
-      assertBoundedResponseText(await confirmation.text(), 'Cloud evidence read-after-write response')
-    );
+    stored = JSON.parse(await readBoundedResponseText(confirmation, 'Cloud evidence confirmation'));
   } catch (error) {
     throw new Error(
       `Cloud evidence read-after-write returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`
@@ -609,15 +632,17 @@ async function getRecord({ nonce, kind, source = 'auto', artifactRoot = DEFAULT_
     return JSON.parse(bytes.toString('utf8'));
   }
   const { url, token } = cloudStorageUrl(nonce, kind);
-  // codeql[js/file-access-to-http] The URL is confined to the validated Cloud
-  // API origin; the record key consists only of validated run/nonce/kind data.
+  // The URL is confined to Cloud; its key consists only of validated run/nonce/kind data.
+  // codeql[js/file-access-to-http]
   const response = await fetch(url, {
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
   if (!response.ok)
-    throw new Error(`Cloud evidence download failed (${response.status}): ${await response.text()}`);
-  return JSON.parse(assertBoundedResponseText(await response.text(), 'Cloud evidence response'));
+    throw new Error(
+      `Cloud evidence download failed (${response.status}): ${await readBoundedResponseText(response, 'Cloud evidence download error')}`
+    );
+  return JSON.parse(await readBoundedResponseText(response, 'Cloud evidence response'));
 }
 
 function outputCapture(maxBytes = MAX_OUTPUT_BYTES) {
@@ -826,8 +851,8 @@ async function fetchGithubPages(
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       response = null;
       try {
-        // codeql[js/file-access-to-http] Every initial and Link-derived URL is
-        // revalidated against the fixed GitHub API HTTPS origin before use.
+        // Every initial and Link-derived URL is revalidated against the fixed GitHub HTTPS origin.
+        // codeql[js/file-access-to-http]
         response = await fetch(next, {
           signal: requestSignal(),
           headers: {
@@ -837,7 +862,10 @@ async function fetchGithubPages(
           },
         });
         if (response.ok) break;
-        const body = safeGithubText(await response.text(), 1_000);
+        const body = safeGithubText(
+          await readBoundedResponseText(response, 'GitHub inventory error response'),
+          1_000
+        );
         lastError = new Error(`GitHub inventory request failed (${response.status}): ${body}`);
         if (![408, 429, 500, 502, 503, 504].includes(response.status)) throw lastError;
       } catch (error) {
@@ -854,7 +882,7 @@ async function fetchGithubPages(
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     if (!response?.ok) throw lastError ?? new Error('GitHub inventory request failed');
-    const pageRecords = await response.json();
+    const pageRecords = JSON.parse(await readBoundedResponseText(response, 'GitHub inventory response'));
     if (!Array.isArray(pageRecords)) throw new Error('GitHub inventory response was not an array');
     records.push(...pageRecords);
     if (stopAfterPage?.(pageRecords)) return records;
@@ -2119,6 +2147,23 @@ function validateReview(review, expectedRole, expectedKind = null) {
   return review;
 }
 
+export function validateReviewProvenance(provenance, { nonce, product, profile, role }) {
+  assertPlainObject(provenance, 'review provenance');
+  if (
+    provenance.version !== CONTRACT_VERSION ||
+    provenance.kind !== 'review-provenance' ||
+    provenance.nonce !== nonce ||
+    provenance.product !== product ||
+    provenance.profile !== profile ||
+    provenance.role !== role ||
+    typeof provenance.sandboxId !== 'string' ||
+    !/^(?:cloud-[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|local-[a-z0-9][a-z0-9-]*)$/.test(provenance.sandboxId)
+  ) {
+    throw new Error('review provenance is not bound to this reviewer executor');
+  }
+  return provenance;
+}
+
 export function validateReviewDraftPath(file, artifactRoot, nonce, role) {
   const resolvedFile = path.resolve(file);
   const expectedFile = path.join(path.resolve(artifactRoot), nonce, `draft-${role}.json`);
@@ -2589,6 +2634,53 @@ async function main() {
     );
     return;
   }
+  if (command === 'review-provenance') {
+    const role = assertSafeId(requiredOption(options, 'role'), 'role');
+    const evidenceMode = sourceMode(source);
+    const explicitSandboxId = process.env.SANDBOX_ID?.trim();
+    if (profile !== 'smoke' && (evidenceMode !== 'cloud' || !explicitSandboxId)) {
+      throw new Error("full/soak review requires the reviewer Cloud executor's SANDBOX_ID");
+    }
+    const provenance = {
+      version: CONTRACT_VERSION,
+      kind: 'review-provenance',
+      nonce,
+      product: catalog.matrix.product,
+      profile,
+      role,
+      sandboxId: explicitSandboxId ? `cloud-${explicitSandboxId}` : `local-${role}`,
+    };
+    validateReviewProvenance(provenance, {
+      nonce,
+      product: catalog.matrix.product,
+      profile,
+      role,
+    });
+    try {
+      await putRecord({
+        nonce,
+        kind: `review-provenance/${role}`,
+        value: provenance,
+        source,
+        artifactRoot,
+      });
+    } catch (error) {
+      if (!/(?:already contains|412)/.test(error instanceof Error ? error.message : String(error))) {
+        throw error;
+      }
+      const stored = await getRecord({
+        nonce,
+        kind: `review-provenance/${role}`,
+        source,
+        artifactRoot,
+      });
+      if (recordDigest(stored) !== recordDigest(provenance)) {
+        throw new Error(`review provenance for ${role} conflicts with its write-once capture`);
+      }
+    }
+    console.log(`CLEANROOM_REVIEW_SANDBOX_CAPTURED role=${role} sandbox=${provenance.sandboxId}`);
+    return;
+  }
   if (command === 'review-upload') {
     const role = assertSafeId(requiredOption(options, 'role'), 'role');
     const reviewKind = requiredOption(options, 'review-kind');
@@ -2605,19 +2697,22 @@ async function main() {
     for (const key of ['aggregateDigest', 'matrixSha256', 'runnerSha256']) {
       if (review[key] !== seal[key]) throw new Error(`review.${key} does not match campaign seal`);
     }
-    const evidenceMode = sourceMode(source);
-    const sandboxId = process.env.SANDBOX_ID?.trim();
-    if (profile !== 'smoke' && (evidenceMode !== 'cloud' || !sandboxId)) {
-      throw new Error("full/soak review requires the Cloud executor's SANDBOX_ID");
-    }
-    const expectedReviewSandboxId = sandboxId ? `cloud-${sandboxId}` : `local-${process.pid}`;
-    if (profile !== 'smoke' && review.sandboxId !== expectedReviewSandboxId) {
-      throw new Error('review sandboxId must be captured by the reviewer Cloud executor');
+    const provenance = validateReviewProvenance(
+      await getRecord({
+        nonce,
+        kind: `review-provenance/${role}`,
+        source,
+        artifactRoot,
+      }),
+      { nonce, product: catalog.matrix.product, profile, role }
+    );
+    if (review.sandboxId !== provenance.sandboxId) {
+      throw new Error('review sandboxId does not match its write-once reviewer-executor capture');
     }
     review.nonce = nonce;
     review.product = catalog.matrix.product;
     review.profile = profile;
-    review.sandboxId = review.sandboxId ?? expectedReviewSandboxId;
+    review.sandboxId = provenance.sandboxId;
     review.completedAt = new Date().toISOString();
     await putRecord({ nonce, kind: `reviews/${role}`, value: review, source, artifactRoot });
     console.log(`CLEANROOM_REVIEW_UPLOADED role=${role} verdict=${review.verdict}`);
@@ -2678,7 +2773,7 @@ async function main() {
     return;
   }
   throw new Error(
-    'usage: cleanroom.mjs <nonce|validate|storage-preflight|scope|gate-scope|lane|gate-lane|aggregate|seal|show|review-export|review-upload|gate-review|finalize|enforce> [options]'
+    'usage: cleanroom.mjs <nonce|validate|storage-preflight|scope|gate-scope|lane|gate-lane|aggregate|seal|show|review-export|review-provenance|review-upload|gate-review|finalize|enforce> [options]'
   );
 }
 
