@@ -14,6 +14,8 @@ import {
   buildFleetSpawnArgs,
   deriveFleetVerdict,
   executeFleetCommand,
+  findExactSentinelMessage,
+  findFleetAgentNode,
   loadFleetMatrix,
   loadWorkspaceCredentialFile,
   matchesSandboxFileInspection,
@@ -24,10 +26,12 @@ import {
   tryParseJson,
   validateFleetEvidence,
   validateFleetCommandCoverage,
+  validateFleetAcceptance,
   validateFleetMatrix,
   validateOperationArgvContract,
   validateRecoveryEvidence,
   validateReview,
+  validateSandboxRuntimeAttestation,
   validateSeal,
 } from '../../scripts/verify-features/fleet-daytona.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -52,6 +56,7 @@ function operationRecord(operation: {
   )?.[0];
   return {
     ...operation,
+    acceptanceProfile: fixtureMatrix.acceptance.operationProfiles[operation.id],
     status: 'pass',
     startedAt: '2026-09-04T00:00:00.000Z',
     finishedAt: '2026-09-04T00:00:00.001Z',
@@ -77,6 +82,12 @@ function operationRecord(operation: {
 }
 
 let fixtureMatrix: {
+  minimumCriticalLifecycleTrials: number;
+  inventorySha256: string;
+  requiredSnapshotRelayVersion: string;
+  acceptance: {
+    operationProfiles: Record<string, string>;
+  };
   commandSurface: Record<string, string[]>;
   operations: Array<{
     id: string;
@@ -88,6 +99,12 @@ let fixtureMatrix: {
 };
 
 function completeEvidence(matrix: {
+  minimumCriticalLifecycleTrials: number;
+  inventorySha256: string;
+  requiredSnapshotRelayVersion: string;
+  acceptance: {
+    operationProfiles: Record<string, string>;
+  };
   commandSurface: Record<string, string[]>;
   operations: Array<{
     id: string;
@@ -120,6 +137,42 @@ function completeEvidence(matrix: {
       cleanupState: 'absent',
     },
   ];
+  const criticalTrials = Array.from({ length: matrix.minimumCriticalLifecycleTrials }, (_, offset) => {
+    const node = resources[offset % resources.length];
+    const index = offset + 1;
+    const slot = offset % 2 === 0 ? 'a' : 'b';
+    const agentName = `critical-lifecycle-${slot}-${NONCE.slice(0, 16)}`;
+    return {
+      index,
+      status: 'pass',
+      nodeName: node.nodeName,
+      nodeId: node.nodeId,
+      agentName,
+      monotonicStartNs: String(index * 1_000),
+      monotonicEndNs: String(index * 1_000 + 1_000),
+      durationMs: 0.001,
+      spawned: true,
+      placementConfirmed: true,
+      initialSentinelObserved: true,
+      initialAckMessageIdHash: (index % 10).toString(16).repeat(64),
+      initialAckAgentName: agentName,
+      initialAckChannelName: 'general',
+      postReadyInjectionAccepted: true,
+      injectionMessageIdHash: ((index + 1) % 10).toString(16).repeat(64),
+      postReadySentinelObserved: true,
+      postReadyAckMessageIdHash: ((index + 2) % 10).toString(16).repeat(64),
+      postReadyAckAgentName: agentName,
+      postReadyAckChannelName: 'general',
+      postReadyReaderConfirmed: true,
+      releasedAndAbsent: true,
+      spawnArgv: ['agent-relay', 'fleet', 'spawn', 'codex', '--node', node.nodeName],
+      spawnExitCode: 0,
+      spawnTimedOut: false,
+      spawnStdoutBytes: 0,
+      spawnStderrBytes: 0,
+      spawnOutputTruncated: false,
+    };
+  });
   return {
     version: 1,
     kind: 'fleet-daytona-board',
@@ -148,11 +201,17 @@ function completeEvidence(matrix: {
       policyRestoration: { status: 'pass' },
     },
     baseline: {
+      agentCount: 0,
+      onlineAgentCount: 0,
+      fleetNodeCount: 0,
+      liveFleetNodeCount: 0,
       sandboxIdHashes: [],
       sandboxNameHashes: [],
       agentNameHashes: [],
+      fleetNodeNameHashes: [],
     },
     operations: matrix.operations.map(operationRecord),
+    criticalLifecycle: { status: 'pass', trials: criticalTrials },
     resources,
     ownershipIntents: resources.map(({ type, nodeName }) => ({ type, name: nodeName })),
     cleanup: { status: 'pass' },
@@ -176,6 +235,8 @@ describe('complete Daytona Fleet board', () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
     expect(matrix.operations).toHaveLength(95);
+    expect(() => validateFleetAcceptance(matrix)).not.toThrow();
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(95);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -202,6 +263,21 @@ describe('complete Daytona Fleet board', () => {
     ).toMatchObject({ expect: 'success' });
     const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
     expect(runner).toContain("['claude', 'opencode', 'pi', 'deepagents']");
+  });
+
+  it('binds every operation record to an executable acceptance profile', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+    expect(validateFleetEvidence(evidence, matrix)).toBe(evidence);
+
+    const unbound = structuredClone(evidence);
+    unbound.operations[0].acceptanceProfile = 'fleet-read';
+    expect(() => validateFleetEvidence(unbound, matrix)).toThrow(/acceptance profile/);
+
+    const missing = structuredClone(matrix);
+    delete missing.acceptance.operationProfiles['fleet-status'];
+    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 95/);
   });
 
   it('binds matrix argv contracts to the actual Fleet and direct-node argument builders', async () => {
@@ -238,6 +314,24 @@ describe('complete Daytona Fleet board', () => {
     validate(
       'fleet-spawn-provider-claude',
       buildFleetSpawnArgs({ provider: 'claude', agentName: 'worker', task: 'task', node: 'node-a' })
+    );
+    validate(
+      'fleet-spawn-metadata-channel-model-cwd',
+      buildFleetSpawnArgs({
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        node: 'node-a',
+        channel: 'proof',
+        model: 'gpt-test',
+        cwd: '/workspace',
+        persona: 'auditor',
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'qualification',
+        role: 'worker',
+        objective: 'prove metadata',
+      })
     );
 
     const native = buildDirectNodeSpawnPlan('opencode', 'worker', 'READY', { runtime: 'native' });
@@ -349,9 +443,7 @@ describe('complete Daytona Fleet board', () => {
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(
-      /references missing operation fleet-spawn-provider-gemini/
-    );
+    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 95 operations/);
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -451,6 +543,62 @@ describe('complete Daytona Fleet board', () => {
         manifest: { sha256: 'b'.repeat(64), snapshot: { name: 'candidate' } },
       }).sha256
     ).toBe('a'.repeat(64));
+  });
+
+  it('requires the actual Daytona CLI and broker bytes to match the clean-installed candidate', () => {
+    const expected = {
+      cliSha256: 'a'.repeat(64),
+      cliVersion: 'agent-relay v11.10.4-candidate.1',
+      brokerSha256: 'b'.repeat(64),
+      brokerBytes: 123,
+      packageVersion: '11.10.4-candidate.1',
+      platform: 'linux',
+      arch: 'x64',
+    };
+    const runtime = {
+      platform: 'linux',
+      arch: 'x64',
+      cliPath: '/opt/agent-relay/node_modules/agent-relay/dist/cli/index.js',
+      cliSha256: expected.cliSha256,
+      cliVersion: expected.cliVersion,
+      brokerPath: '/opt/agent-relay/node_modules/@agent-relay/broker-linux-x64/bin/agent-relay-broker',
+      brokerSha256: expected.brokerSha256,
+      brokerBytes: expected.brokerBytes,
+      brokerMode: '755',
+      brokerVersion: `agent-relay-broker ${expected.packageVersion}`,
+    };
+    expect(validateSandboxRuntimeAttestation(runtime, expected)).toBe(runtime);
+    expect(() =>
+      validateSandboxRuntimeAttestation({ ...runtime, cliSha256: 'c'.repeat(64) }, expected)
+    ).toThrow(/cliSha256/);
+    expect(() =>
+      validateSandboxRuntimeAttestation({ ...runtime, brokerSha256: 'd'.repeat(64) }, expected)
+    ).toThrow(/brokerSha256/);
+    expect(() =>
+      validateSandboxRuntimeAttestation({ ...runtime, cliPath: '/tmp/copied-index.js' }, expected)
+    ).toThrow(/installed candidate packages/);
+  });
+
+  it('accepts only an exact sender-bound agent acknowledgement', () => {
+    const messages = [
+      { id: 'msg-wrong', agentName: 'other-agent', channelName: 'general', text: 'ACK' },
+      { id: 'msg-substring', agentName: 'worker', channelName: 'general', text: 'ACK plus noise' },
+      { id: 'msg-exact', agentName: 'worker', channelName: 'general', text: 'ACK' },
+    ];
+    expect(findExactSentinelMessage(messages, 'ACK', 'worker')).toEqual(messages[2]);
+    expect(findExactSentinelMessage(messages.slice(0, 2), 'ACK', 'worker')).toBeUndefined();
+  });
+
+  it('accepts targeted placement only from an exact per-node Fleet row', () => {
+    const inventory = {
+      perNode: [{ name: 'worker', node: 'sandbox-node-a' }],
+      unplacedRoster: [{ name: 'other-worker', node: '(unplaced)' }],
+    };
+    expect(findFleetAgentNode(inventory, 'worker')).toBe('sandbox-node-a');
+    expect(findFleetAgentNode(inventory, 'other-worker')).toBeUndefined();
+    expect(
+      findFleetAgentNode({ perNode: [{ name: 'worker-copy', node: 'sandbox-node-b' }] }, 'worker')
+    ).toBeUndefined();
   });
 
   it('loads workspace credentials only from a private bounded file and binds the expected workspace', async () => {
@@ -570,6 +718,24 @@ describe('complete Daytona Fleet board', () => {
     dirty.provenance.sourceDirty = true;
     expect(() => validateFleetEvidence(dirty, matrix)).toThrow(/clean source tree/);
 
+    const ambientIdentity = structuredClone(evidence);
+    ambientIdentity.baseline.agentCount = 1;
+    ambientIdentity.baseline.agentNameHashes = ['9'.repeat(64)];
+    expect(() => validateFleetEvidence(ambientIdentity, matrix)).toThrow(/agentCount must be zero/);
+
+    const ambientNode = structuredClone(evidence);
+    ambientNode.baseline.fleetNodeCount = 1;
+    ambientNode.baseline.fleetNodeNameHashes = ['8'.repeat(64)];
+    expect(() => validateFleetEvidence(ambientNode, matrix)).toThrow(/fleetNodeCount must be zero/);
+
+    const shortLifecycle = structuredClone(evidence);
+    shortLifecycle.criticalLifecycle.trials.pop();
+    expect(() => validateFleetEvidence(shortLifecycle, matrix)).toThrow(/exactly 5 trials/);
+
+    const forgedAck = structuredClone(evidence);
+    forgedAck.criticalLifecycle.trials[0].initialAckAgentName = 'different-agent';
+    expect(() => validateFleetEvidence(forgedAck, matrix)).toThrow(/status is inconsistent/);
+
     const wrongCommand = structuredClone(evidence);
     const fleetNodes = wrongCommand.operations.find(({ id }) => id === 'fleet-nodes-name');
     fleetNodes.argv = ['agent-relay', 'fleet', 'status', '--name'];
@@ -599,6 +765,10 @@ describe('complete Daytona Fleet board', () => {
       candidateInstallAttestationSha256: 'd'.repeat(64),
       candidateInstallSourceSha: evidence.provenance.sourceCommit,
       candidateInstallVersion: evidence.environment.expectedRelayVersion,
+      candidateInstallPlatform: 'linux',
+      candidateInstallArch: 'x64',
+      candidateInstallBrokerSha256: 'e'.repeat(64),
+      candidateInstallBrokerBytes: 123,
     });
     evidence.resources.forEach((resource) => {
       Object.assign(resource, {
@@ -610,6 +780,18 @@ describe('complete Daytona Fleet board', () => {
           snapshot: { name: evidence.environment.expectedSnapshotName, mode: 'candidate' },
           promotion: { ssmWrite: false, selectorWrite: false, deploy: false },
           packages: { '@agent-relay/sdk': evidence.environment.expectedRelayVersion },
+        },
+        runtimeAttestation: {
+          platform: evidence.provenance.candidateInstallPlatform,
+          arch: evidence.provenance.candidateInstallArch,
+          cliPath: '/opt/agent-relay/node_modules/agent-relay/dist/cli/index.js',
+          cliSha256: evidence.provenance.cliSha256,
+          cliVersion: evidence.provenance.cliVersion,
+          brokerPath: '/opt/agent-relay/node_modules/@agent-relay/broker-linux-x64/bin/agent-relay-broker',
+          brokerSha256: evidence.provenance.candidateInstallBrokerSha256,
+          brokerBytes: evidence.provenance.candidateInstallBrokerBytes,
+          brokerMode: '755',
+          brokerVersion: `agent-relay-broker ${evidence.provenance.candidateInstallVersion}`,
         },
       });
     });
@@ -756,6 +938,15 @@ describe('complete Daytona Fleet board', () => {
     second.resources[0].nodeId = 'node_c';
     second.resources[1].id = '44444444-4444-4444-8444-444444444444';
     second.resources[1].nodeId = 'node_d';
+    second.criticalLifecycle.trials.forEach((trial: Record<string, unknown>, offset: number) => {
+      const resource = second.resources[offset % second.resources.length];
+      trial.nodeName = resource.nodeName;
+      trial.nodeId = resource.nodeId;
+      trial.agentName = `critical-lifecycle-${offset % 2 === 0 ? 'a' : 'b'}-${second.nonce.slice(0, 16)}`;
+      trial.initialAckAgentName = trial.agentName;
+      trial.postReadyAckAgentName = trial.agentName;
+      trial.spawnArgv = ['agent-relay', 'fleet', 'spawn', 'codex', '--node', resource.nodeName];
+    });
 
     const green = summarizeFleetCampaign(
       [
@@ -865,6 +1056,15 @@ describe('complete Daytona Fleet board', () => {
         });
         evidence.ownershipIntents.forEach((intent: { name: string }) => {
           intent.name = intent.name.replace(NONCE.slice(0, 16), nonce.slice(0, 16));
+        });
+        evidence.criticalLifecycle.trials.forEach((trial: Record<string, unknown>, trialIndex: number) => {
+          const resource = evidence.resources[trialIndex % evidence.resources.length];
+          trial.nodeName = resource.nodeName;
+          trial.nodeId = resource.nodeId;
+          trial.agentName = `critical-lifecycle-${trialIndex % 2 === 0 ? 'a' : 'b'}-${nonce.slice(0, 16)}`;
+          trial.initialAckAgentName = trial.agentName;
+          trial.postReadyAckAgentName = trial.agentName;
+          trial.spawnArgv = ['agent-relay', 'fleet', 'spawn', 'codex', '--node', resource.nodeName];
         });
         const attemptDir = path.join(matrix.artifactRoot, nonce);
         await mkdir(attemptDir, { recursive: true });

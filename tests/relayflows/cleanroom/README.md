@@ -75,6 +75,14 @@ every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
 post-ready injection, remote attach, Relayfile root/scoped/no-mount behavior,
 workflow execution, release, identity reconciliation, and exact sandbox cleanup.
+Every attempt also runs five critical targeted lifecycle trials across both nodes,
+including independent placement lookup, sender-bound initial and post-ready MCP
+acknowledgements, exact injection reader receipts, same-name reuse, and verified
+process/identity absence after release. The baseline rejects any total or online
+agent identity and any total or live Fleet node record; release qualification
+also hashes the actual CLI and broker executables inside each sandbox. See the
+exact 95-operation acceptance crosswalk and external gates in
+[`FLEET_ACCEPTANCE_AUDIT.md`](./FLEET_ACCEPTANCE_AUDIT.md).
 
 ```bash
 npm run verify:fleet-daytona:validate

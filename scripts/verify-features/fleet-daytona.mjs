@@ -27,6 +27,11 @@ const RELAY_WORKSPACE_ID = /^rw_[a-z0-9]{8}$/;
 const OPERATION_STATUSES = new Set(['pass', 'fail', 'blocked', 'safety-skipped']);
 const OWNED_AGENT_STATES = new Set(['created-by-run', 'ambiguous-after-checkpointed-absence']);
 const EXPECTATIONS = new Set(['success', 'expected-failure', 'sentinel', 'sentinel-and-exit', 'stream']);
+const CANDIDATE_SURFACES = new Set([
+  'operator-candidate',
+  'daytona-candidate',
+  'operator-and-daytona-candidate',
+]);
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
 const KNOWN_SECRET_ENV = [
   'RELAY_AGENT_TOKEN',
@@ -296,6 +301,13 @@ export function validateFleetMatrix(matrix) {
     throw new Error('matrix.minimumBoardNodes must be at least 2');
   }
   if (
+    !Number.isSafeInteger(matrix.minimumCriticalLifecycleTrials) ||
+    matrix.minimumCriticalLifecycleTrials < 5 ||
+    matrix.minimumCriticalLifecycleTrials > 20
+  ) {
+    throw new Error('matrix.minimumCriticalLifecycleTrials must be between 5 and 20');
+  }
+  if (
     typeof matrix.requiredSnapshotRelayVersion !== 'string' ||
     !matrix.requiredSnapshotRelayVersion.trim()
   ) {
@@ -341,6 +353,7 @@ export function validateFleetMatrix(matrix) {
   }
   if (matrix.operations.length !== 95)
     throw new Error('matrix.operations must contain exactly 95 operations');
+  validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const commandOperationIds = new Set();
   for (const [leaf, operationIds] of Object.entries(matrix.commandSurface)) {
@@ -404,6 +417,50 @@ export function validateFleetMatrix(matrix) {
     }
   }
   return matrix;
+}
+
+export function validateFleetAcceptance(matrix) {
+  const acceptance = assertObject(matrix.acceptance, 'matrix.acceptance');
+  if (acceptance.version !== CONTRACT_VERSION) {
+    throw new Error(`matrix.acceptance.version must be ${CONTRACT_VERSION}`);
+  }
+  const profiles = assertObject(acceptance.profiles, 'matrix.acceptance.profiles');
+  const operationProfiles = assertObject(acceptance.operationProfiles, 'matrix.acceptance.operationProfiles');
+  for (const [name, profileValue] of Object.entries(profiles)) {
+    assertSafeId(name, `acceptance profile ${name}`);
+    const profile = assertObject(profileValue, `acceptance profile ${name}`);
+    if (!CANDIDATE_SURFACES.has(profile.candidateSurface)) {
+      throw new Error(`acceptance profile ${name}.candidateSurface is invalid`);
+    }
+    if (typeof profile.executionScope !== 'string' || !profile.executionScope.trim()) {
+      throw new Error(`acceptance profile ${name}.executionScope is required`);
+    }
+    for (const key of ['effectAssertions', 'negativeAssertions']) {
+      if (
+        !Array.isArray(profile[key]) ||
+        profile[key].length === 0 ||
+        profile[key].some((entry) => typeof entry !== 'string' || !entry.trim())
+      ) {
+        throw new Error(`acceptance profile ${name}.${key} must contain non-empty assertions`);
+      }
+    }
+    for (const key of ['lifecycleAssertion', 'teardownAssertion', 'retryAssertion']) {
+      if (typeof profile[key] !== 'string' || !profile[key].trim()) {
+        throw new Error(`acceptance profile ${name}.${key} is required`);
+      }
+    }
+  }
+  const expectedIds = matrix.operations.map(({ id }) => id).sort();
+  const mappedIds = Object.keys(operationProfiles).sort();
+  if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 95 operations');
+  }
+  for (const [operationId, profile] of Object.entries(operationProfiles)) {
+    if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
+      throw new Error(`operation ${operationId} references unknown acceptance profile ${String(profile)}`);
+    }
+  }
+  return acceptance;
 }
 
 export function validateFleetCommandCoverage(matrix, inventory) {
@@ -476,6 +533,8 @@ function expectedOwnedAgentNames(matrix, nonce) {
     `relay-fleetboard-controller-${short}`,
     `relay-fleetboard-a-initial-${short}`,
     `relay-fleetboard-b-initial-${short}`,
+    `critical-lifecycle-a-${short}`,
+    `critical-lifecycle-b-${short}`,
     ...matrix.operations.map(({ id }) => `${id}-${short}`),
   ]);
 }
@@ -497,7 +556,7 @@ export function validateRecoveryEvidence(evidence, matrix, nonce) {
     throw new Error('recovery evidence identity is invalid');
   }
   const baseline = assertObject(evidence.baseline, 'recovery evidence.baseline');
-  for (const key of ['sandboxIdHashes', 'sandboxNameHashes', 'agentNameHashes']) {
+  for (const key of ['sandboxIdHashes', 'sandboxNameHashes', 'agentNameHashes', 'fleetNodeNameHashes']) {
     if (!Array.isArray(baseline[key]) || baseline[key].some((value) => !/^[0-9a-f]{64}$/.test(value))) {
       throw new Error(`recovery evidence.baseline.${key} is invalid`);
     }
@@ -841,6 +900,17 @@ export function findFleetAgentNode(payload, agentName) {
   return row && typeof row.node === 'string' ? row.node : undefined;
 }
 
+export function findExactSentinelMessage(payload, sentinel, from) {
+  if (!Array.isArray(payload)) return undefined;
+  return payload.find(
+    (message) =>
+      message?.text === sentinel &&
+      (!from || message?.agentName === from) &&
+      typeof message?.id === 'string' &&
+      message.id.length > 0
+  );
+}
+
 export function operationStatus(definition, result) {
   const expect = definition.expect;
   if (result.blockedReason) return 'blocked';
@@ -880,15 +950,154 @@ export function bindInspectedSnapshotManifest(inspected, inspectionError) {
     : { sha256: null, inspectionError };
 }
 
-export function deriveFleetVerdict(operations, cleanup) {
+export function validateSandboxRuntimeAttestation(runtime, expected) {
+  assertObject(runtime, 'sandbox runtime attestation');
+  assertObject(expected, 'expected sandbox runtime');
+  for (const key of ['cliSha256', 'brokerSha256']) {
+    if (!SHA256.test(runtime[key] ?? '') || runtime[key] !== expected[key]) {
+      throw new Error(`sandbox runtime ${key} does not match the clean-installed candidate`);
+    }
+  }
+  if (runtime.cliVersion !== expected.cliVersion) {
+    throw new Error('sandbox runtime CLI version does not match the clean-installed candidate');
+  }
+  if (runtime.brokerVersion !== `agent-relay-broker ${expected.packageVersion}`) {
+    throw new Error('sandbox runtime broker version does not match the clean-installed candidate');
+  }
+  if (
+    runtime.platform !== expected.platform ||
+    runtime.arch !== expected.arch ||
+    runtime.brokerMode !== '755' ||
+    !Number.isSafeInteger(runtime.brokerBytes) ||
+    runtime.brokerBytes !== expected.brokerBytes
+  ) {
+    throw new Error('sandbox runtime platform broker identity is invalid');
+  }
+  if (
+    typeof runtime.cliPath !== 'string' ||
+    !path.posix.isAbsolute(runtime.cliPath) ||
+    typeof runtime.brokerPath !== 'string' ||
+    !path.posix.isAbsolute(runtime.brokerPath)
+  ) {
+    throw new Error('sandbox runtime executable paths are not absolute');
+  }
+  const expectedCliSuffix = '/node_modules/agent-relay/dist/cli/index.js';
+  const expectedBrokerSuffix =
+    `/node_modules/@agent-relay/broker-${expected.platform}-${expected.arch}/bin/` +
+    (expected.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker');
+  if (!runtime.cliPath.endsWith(expectedCliSuffix) || !runtime.brokerPath.endsWith(expectedBrokerSuffix)) {
+    throw new Error('sandbox runtime executable paths do not identify the installed candidate packages');
+  }
+  return runtime;
+}
+
+export function deriveFleetVerdict(operations, cleanup, criticalLifecycle) {
   if (operations.some((operation) => operation.group !== 'cleanup' && operation.status === 'fail')) {
     return 'RED';
   }
+  if (criticalLifecycle?.status === 'fail') return 'RED';
   if (cleanup?.status !== 'pass') return 'INFRA_BLOCKED';
-  if (operations.some((operation) => ['blocked', 'safety-skipped'].includes(operation.status))) {
+  if (
+    criticalLifecycle?.status === 'blocked' ||
+    operations.some((operation) => ['blocked', 'safety-skipped'].includes(operation.status))
+  ) {
     return 'YELLOW';
   }
   return 'GREEN';
+}
+
+export function validateCriticalLifecycleEvidence(value, matrix, boardNodes, nonce) {
+  const critical = assertObject(value, 'evidence.criticalLifecycle');
+  if (!['pass', 'fail', 'blocked'].includes(critical.status)) {
+    throw new Error('evidence.criticalLifecycle.status is invalid');
+  }
+  if (!Array.isArray(critical.trials)) {
+    throw new Error('evidence.criticalLifecycle.trials must be an array');
+  }
+  if (critical.status !== 'blocked' && critical.trials.length !== matrix.minimumCriticalLifecycleTrials) {
+    throw new Error(
+      `critical lifecycle must contain exactly ${matrix.minimumCriticalLifecycleTrials} trials`
+    );
+  }
+  const boardByName = new Map(boardNodes.map((node) => [node.nodeName, node]));
+  const observedNodes = new Set();
+  for (const [index, trialValue] of critical.trials.entries()) {
+    const trial = assertObject(trialValue, `critical lifecycle trial ${index + 1}`);
+    if (trial.index !== index + 1 || !['pass', 'fail'].includes(trial.status)) {
+      throw new Error(`critical lifecycle trial ${index + 1} identity is invalid`);
+    }
+    const node = boardByName.get(trial.nodeName);
+    if (!node || node.nodeId !== trial.nodeId) {
+      throw new Error(`critical lifecycle trial ${index + 1} is not bound to an owned board node`);
+    }
+    observedNodes.add(trial.nodeName);
+    const expectedAgent = `critical-lifecycle-${index % 2 === 0 ? 'a' : 'b'}-${nonce.slice(0, 16)}`;
+    if (
+      trial.agentName !== expectedAgent ||
+      typeof trial.monotonicStartNs !== 'string' ||
+      !/^\d+$/.test(trial.monotonicStartNs) ||
+      typeof trial.monotonicEndNs !== 'string' ||
+      !/^\d+$/.test(trial.monotonicEndNs) ||
+      BigInt(trial.monotonicEndNs) < BigInt(trial.monotonicStartNs) ||
+      typeof trial.durationMs !== 'number' ||
+      trial.durationMs < 0
+    ) {
+      throw new Error(`critical lifecycle trial ${index + 1} timing or agent identity is invalid`);
+    }
+    const measuredDurationMs =
+      Number(BigInt(trial.monotonicEndNs) - BigInt(trial.monotonicStartNs)) / 1_000_000;
+    if (Math.abs(measuredDurationMs - trial.durationMs) > Math.max(1, measuredDurationMs * 0.001)) {
+      throw new Error(`critical lifecycle trial ${index + 1} duration is inconsistent`);
+    }
+    if (
+      !Array.isArray(trial.spawnArgv) ||
+      !argvContainsCommandInvocation(trial.spawnArgv, 'fleet spawn') ||
+      !trial.spawnArgv.includes('--node') ||
+      !trial.spawnArgv.includes(trial.nodeName)
+    ) {
+      throw new Error(`critical lifecycle trial ${index + 1} did not invoke targeted fleet spawn`);
+    }
+    const agentOriginatedAckProof =
+      SHA256.test(trial.initialAckMessageIdHash ?? '') &&
+      trial.initialAckAgentName === trial.agentName &&
+      trial.initialAckChannelName === 'general' &&
+      SHA256.test(trial.injectionMessageIdHash ?? '') &&
+      SHA256.test(trial.postReadyAckMessageIdHash ?? '') &&
+      trial.postReadyAckAgentName === trial.agentName &&
+      trial.postReadyAckChannelName === 'general' &&
+      trial.initialAckMessageIdHash !== trial.postReadyAckMessageIdHash;
+    const expectedStatus =
+      trial.spawned === true &&
+      trial.placementConfirmed === true &&
+      trial.initialSentinelObserved === true &&
+      trial.postReadyInjectionAccepted === true &&
+      trial.postReadySentinelObserved === true &&
+      trial.postReadyReaderConfirmed === true &&
+      trial.releasedAndAbsent === true &&
+      trial.spawnOutputTruncated === false &&
+      agentOriginatedAckProof
+        ? 'pass'
+        : 'fail';
+    if (trial.status !== expectedStatus) {
+      throw new Error(`critical lifecycle trial ${index + 1} status is inconsistent`);
+    }
+  }
+  if (critical.status === 'pass') {
+    if (
+      critical.trials.some(({ status }) => status !== 'pass') ||
+      observedNodes.size !== matrix.minimumBoardNodes
+    ) {
+      throw new Error('passing critical lifecycle must pass on both distinct board nodes');
+    }
+    const reusedNames = new Set(critical.trials.map(({ agentName }) => agentName));
+    if (reusedNames.size >= critical.trials.length) {
+      throw new Error('passing critical lifecycle did not prove same-name reuse');
+    }
+  }
+  if (critical.status === 'fail' && critical.trials.every(({ status }) => status === 'pass')) {
+    throw new Error('failed critical lifecycle has no failed trial');
+  }
+  return critical;
 }
 
 export function validateFleetEvidence(evidence, matrix) {
@@ -953,16 +1162,29 @@ export function validateFleetEvidence(evidence, matrix) {
       !SHA256.test(provenance.candidateInstallAttestationSha256 ?? '') ||
       provenance.candidateInstallSourceSha !== provenance.sourceCommit ||
       provenance.candidateInstallVersion !== provenance.cliVersion.replace(/^agent-relay v/, '') ||
-      provenance.candidateInstallVersion !== environment.expectedRelayVersion
+      provenance.candidateInstallVersion !== environment.expectedRelayVersion ||
+      provenance.candidateInstallPlatform !== 'linux' ||
+      !['arm64', 'x64'].includes(provenance.candidateInstallArch) ||
+      !SHA256.test(provenance.candidateInstallBrokerSha256 ?? '') ||
+      !Number.isSafeInteger(provenance.candidateInstallBrokerBytes) ||
+      provenance.candidateInstallBrokerBytes < 1
     ) {
       throw new Error('release qualification did not run a source-bound clean-installed Relay candidate');
     }
   }
   const baseline = assertObject(evidence.baseline, 'evidence.baseline');
-  for (const key of ['sandboxIdHashes', 'sandboxNameHashes', 'agentNameHashes']) {
+  for (const key of ['sandboxIdHashes', 'sandboxNameHashes', 'agentNameHashes', 'fleetNodeNameHashes']) {
     if (!Array.isArray(baseline[key]) || baseline[key].some((value) => !/^[0-9a-f]{64}$/.test(value))) {
       throw new Error(`evidence baseline.${key} is invalid`);
     }
+  }
+  for (const key of ['agentCount', 'onlineAgentCount', 'fleetNodeCount', 'liveFleetNodeCount']) {
+    if (baseline[key] !== 0) {
+      throw new Error(`evidence baseline.${key} must be zero in a clean disposable workspace`);
+    }
+  }
+  if (baseline.agentNameHashes.length !== 0 || baseline.fleetNodeNameHashes.length !== 0) {
+    throw new Error('evidence baseline contains ambient Relay agent or Fleet node identities');
   }
   if (!Array.isArray(evidence.operations)) throw new Error('evidence.operations must be an array');
   const expectedIds = matrix.operations.map(({ id }) => id);
@@ -982,6 +1204,10 @@ export function validateFleetEvidence(evidence, matrix) {
     const definition = matrix.operations.find(({ id }) => id === operation.id);
     if (!definition || operation.group !== definition.group || operation.expect !== definition.expect) {
       throw new Error(`operation ${operation.id} does not match its matrix definition`);
+    }
+    const acceptanceProfile = matrix.acceptance.operationProfiles[operation.id];
+    if (operation.acceptanceProfile !== acceptanceProfile) {
+      throw new Error(`operation ${operation.id} is not bound to acceptance profile ${acceptanceProfile}`);
     }
     if (operation.status !== operationStatus(definition, operation)) {
       throw new Error(`operation ${operation.id} status is inconsistent with its evidence`);
@@ -1106,6 +1332,15 @@ export function validateFleetEvidence(evidence, matrix) {
       if (resource.snapshotManifest?.packages?.['@agent-relay/sdk'] !== environment.expectedRelayVersion) {
         throw new Error(`sandbox ${resource.id} manifest has the wrong Relay SDK version`);
       }
+      validateSandboxRuntimeAttestation(resource.runtimeAttestation, {
+        cliSha256: provenance.cliSha256,
+        cliVersion: provenance.cliVersion,
+        brokerSha256: provenance.candidateInstallBrokerSha256,
+        brokerBytes: provenance.candidateInstallBrokerBytes,
+        packageVersion: provenance.candidateInstallVersion,
+        platform: provenance.candidateInstallPlatform,
+        arch: provenance.candidateInstallArch,
+      });
     }
   }
   for (const resource of evidence.resources.filter(({ type }) => type === 'relay-agent')) {
@@ -1141,7 +1376,8 @@ export function validateFleetEvidence(evidence, matrix) {
       throw new Error('workspace policy mutation was not restored to its exact initial override');
     }
   }
-  const derived = deriveFleetVerdict(evidence.operations, evidence.cleanup);
+  validateCriticalLifecycleEvidence(evidence.criticalLifecycle, matrix, boardNodes, evidence.nonce);
+  const derived = deriveFleetVerdict(evidence.operations, evidence.cleanup, evidence.criticalLifecycle);
   if (evidence.verdict !== derived) throw new Error(`evidence verdict must be ${derived}`);
   return evidence;
 }
@@ -1176,6 +1412,10 @@ export function summarizeFleetCampaign(attempts, matrix) {
     'candidateInstallAttestationSha256',
     'candidateInstallSourceSha',
     'candidateInstallVersion',
+    'candidateInstallPlatform',
+    'candidateInstallArch',
+    'candidateInstallBrokerSha256',
+    'candidateInstallBrokerBytes',
   ];
   for (const attempt of attempts) {
     assertSafeId(attempt.nonce, 'campaign attempt nonce');
@@ -1244,12 +1484,16 @@ export function summarizeFleetCampaign(attempts, matrix) {
       },
     };
   });
-  const hasProductFailure = operations.some(
-    ({ classification, group }) => group !== 'cleanup' && ['stable-fail', 'flaky'].includes(classification)
-  );
-  const hasIncomplete = operations.some(({ classification }) =>
-    ['blocked', 'safety-skipped', 'inconclusive'].includes(classification)
-  );
+  const hasProductFailure =
+    attempts.some(({ evidence }) => evidence.criticalLifecycle?.status === 'fail') ||
+    operations.some(
+      ({ classification, group }) => group !== 'cleanup' && ['stable-fail', 'flaky'].includes(classification)
+    );
+  const hasIncomplete =
+    attempts.some(({ evidence }) => evidence.criticalLifecycle?.status !== 'pass') ||
+    operations.some(({ classification }) =>
+      ['blocked', 'safety-skipped', 'inconclusive'].includes(classification)
+    );
   const cleanupStatus = attempts.every(({ evidence }) => evidence.cleanup.status === 'pass')
     ? 'pass'
     : 'fail';
@@ -1271,6 +1515,21 @@ export function summarizeFleetCampaign(attempts, matrix) {
       runnerSha256: evidence.provenance.runnerSha256,
       sandboxIds: evidence.resources.filter(({ type }) => type === 'daytona-sandbox').map(({ id }) => id),
     })),
+    criticalLifecycle: {
+      requiredTrialsPerAttempt: matrix.minimumCriticalLifecycleTrials,
+      attempts: attempts.map(({ nonce, evidence }) => ({
+        nonce,
+        status: evidence.criticalLifecycle.status,
+        trialCount: evidence.criticalLifecycle.trials.length,
+        passCount: evidence.criticalLifecycle.trials.filter(({ status }) => status === 'pass').length,
+        failCount: evidence.criticalLifecycle.trials.filter(({ status }) => status === 'fail').length,
+        nodeNames: [...new Set(evidence.criticalLifecycle.trials.map(({ nodeName }) => nodeName))],
+        totalDurationMs: evidence.criticalLifecycle.trials.reduce(
+          (total, { durationMs }) => total + durationMs,
+          0
+        ),
+      })),
+    },
     operations,
     cleanupStatus,
     productVerdict: hasProductFailure ? 'RED' : hasIncomplete ? 'YELLOW' : 'GREEN',
@@ -1304,6 +1563,7 @@ class FleetBoard {
       startedAt: new Date().toISOString(),
       cliEntrypoint: this.cli,
       operations: [],
+      criticalLifecycle: { status: 'pending', trials: [] },
       resources: [],
       ownershipIntents: [],
       environment: {
@@ -1388,7 +1648,9 @@ class FleetBoard {
   claimAgent(name, role, ownership = 'created-by-run') {
     if (this.baselineAgentNames.has(name)) throw new Error(`Cannot claim baseline Relay agent ${name}`);
     this.agentNames.add(name);
-    return this.resource('relay-agent', name, { role, ownership });
+    const resource = this.resource('relay-agent', name, { role, ownership });
+    resource.cleanupState = 'owned';
+    return resource;
   }
 
   async reconcileFailedSpawnIdentity(name, role) {
@@ -1462,6 +1724,10 @@ class FleetBoard {
       candidateInstallAttestationSha256,
       candidateInstallSourceSha: candidateAttestation?.sourceSha ?? null,
       candidateInstallVersion: candidateAttestation?.packageVersion ?? null,
+      candidateInstallPlatform: candidateAttestation?.platform ?? null,
+      candidateInstallArch: candidateAttestation?.arch ?? null,
+      candidateInstallBrokerSha256: candidateAttestation?.brokerSha256 ?? null,
+      candidateInstallBrokerBytes: candidateAttestation?.brokerBytes ?? null,
       capturedAt: new Date().toISOString(),
     };
     this.evidence.sourceCommit = this.evidence.provenance.sourceCommit;
@@ -1532,6 +1798,7 @@ class FleetBoard {
       id,
       group: definition.group,
       expect: definition.expect,
+      acceptanceProfile: this.matrix.acceptance.operationProfiles[id],
       status: operationStatus(definition, result),
       startedAt: result.startedAt ?? startedAt,
       finishedAt: result.finishedAt ?? new Date().toISOString(),
@@ -1640,8 +1907,10 @@ class FleetBoard {
     throw new Error('Daytona pagination exceeded 100 pages');
   }
 
-  async listOnlineWorkspaceAgentNames() {
-    const result = await execute(this.cliArgv('agent', 'list', '--status', 'online'), {
+  async listWorkspaceAgentNames(status) {
+    const args = ['agent', 'list'];
+    if (status) args.push('--status', status);
+    const result = await execute(this.cliArgv(...args), {
       timeoutMs: 60_000,
       maxCaptureBytes: 16 * 1024 * 1024,
     });
@@ -1657,6 +1926,30 @@ class FleetBoard {
     };
     visit(payload);
     return names;
+  }
+
+  async listAllWorkspaceAgentNames() {
+    return this.listWorkspaceAgentNames();
+  }
+
+  async listOnlineWorkspaceAgentNames() {
+    return this.listWorkspaceAgentNames('online');
+  }
+
+  async listAllFleetNodes() {
+    const result = await execute(this.cliArgv('fleet', 'nodes', '--all'), {
+      timeoutMs: 60_000,
+      maxCaptureBytes: 16 * 1024 * 1024,
+    });
+    if (result.exitCode !== 0) throw new Error(result._rawStderr || 'fleet nodes --all failed');
+    if (result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
+      throw new Error('fleet nodes --all JSON exceeded the capture bound');
+    }
+    const payload = tryParseJson(result._rawStdout);
+    if (!payload || !Array.isArray(payload.nodes)) {
+      throw new Error('fleet nodes --all returned invalid JSON');
+    }
+    return payload.nodes;
   }
 
   async exactAgentExists(name) {
@@ -1755,12 +2048,59 @@ class FleetBoard {
         extraSecrets: [this.controller.token],
       });
       last = `${result.stdout}\n${result.stderr}`.trim();
-      if (result.exitCode === 0 && result._rawStdout.includes(sentinel)) {
-        return { observed: true, detail: last, argv: result.argv };
+      if (
+        result.exitCode === 0 &&
+        result.stdoutCaptureTruncated !== true &&
+        result.stderrCaptureTruncated !== true
+      ) {
+        const payload = tryParseJson(result._rawStdout);
+        const exact = findExactSentinelMessage(payload, sentinel, from);
+        if (exact) {
+          return {
+            observed: true,
+            detail: last,
+            argv: result.argv,
+            messageIdHash: sha256(exact.id),
+            agentName: exact.agentName,
+            channelName: exact.channelName,
+          };
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
     return { observed: false, detail: last || `No message matched ${sentinel}` };
+  }
+
+  async waitForFleetPlacement(name, expectedNode, timeoutMs = 60_000) {
+    const deadline = Date.now() + timeoutMs;
+    let observedNode;
+    let lastExitCode = null;
+    let malformed = false;
+    while (Date.now() < deadline) {
+      const result = await execute(this.cliArgv('fleet', 'agent', 'list', '--all'), {
+        timeoutMs: 30_000,
+        maxCaptureBytes: 16 * 1024 * 1024,
+      });
+      lastExitCode = result.exitCode;
+      if (result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
+        malformed = true;
+        break;
+      }
+      const payload = result.exitCode === 0 ? tryParseJson(result._rawStdout) : undefined;
+      malformed = result.exitCode === 0 && (!payload || typeof payload !== 'object');
+      observedNode = findFleetAgentNode(payload, name);
+      if (observedNode && (expectedNode === undefined || observedNode === expectedNode)) {
+        return { pass: true, observedNode, lastExitCode, malformed: false };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    return {
+      pass: false,
+      observedNode,
+      expectedNode,
+      lastExitCode,
+      malformed,
+    };
   }
 
   async waitForAgentAbsent(name, timeoutMs = 45_000) {
@@ -1923,6 +2263,7 @@ class FleetBoard {
       requireInput('node', options.node, 'target_node', 'node');
       requireInput('model', options.model, 'model');
       requireInput('cwd', options.cwd, 'worker_cwd', 'cwd');
+      requireInput('persona', options.persona, 'persona');
       requireInput('organization', options.organization, 'organization');
       requireInput('project', options.project, 'project');
       requireInput('workstream', options.workstream, 'workstream');
@@ -1944,6 +2285,12 @@ class FleetBoard {
       const noConfirmContract =
         options.noConfirm !== true ||
         (rawResult.durationMs < (options.confirmTimeoutMs ?? 60_000) && invocation?.status === 'dispatched');
+      const expectedPlacementNode = options.node ?? sandbox?.nodeName;
+      const placement =
+        rawResult.exitCode === 0 && expectedPlacementNode
+          ? await this.waitForFleetPlacement(options.agentName, expectedPlacementNode, 60_000)
+          : { pass: false, observedNode: undefined, expectedNode: expectedPlacementNode };
+      const placementContract = placement.pass === true;
       let observedSentinel = false;
       let sentinelDetail = '';
       if (rawResult.exitCode === 0 && options.sentinel) {
@@ -1957,13 +2304,22 @@ class FleetBoard {
       }
       return {
         ...stripPrivateExecution(rawResult),
-        exitCode: rawResult.exitCode === 0 && sandboxContract && inputContract && noConfirmContract ? 0 : 1,
-        observedSentinel: observedSentinel && sandboxContract && inputContract && noConfirmContract,
+        exitCode:
+          rawResult.exitCode === 0 &&
+          sandboxContract &&
+          inputContract &&
+          noConfirmContract &&
+          placementContract
+            ? 0
+            : 1,
+        observedSentinel:
+          observedSentinel && sandboxContract && inputContract && noConfirmContract && placementContract,
         summary: [
           resource ? `sandboxId=${resource.id} nodeId=${resource.nodeId} provider=${resource.provider}` : '',
           sandboxChecks.join(' '),
           `inputContract=${inputContract} inputChecks=${JSON.stringify(inputChecks)}`,
           `noConfirmContract=${noConfirmContract} rawCommandMs=${Math.round(rawResult.durationMs)}`,
+          `placementContract=${placementContract} expectedNode=${expectedPlacementNode ?? 'missing'} observedNode=${placement.observedNode ?? 'missing'} placementListExit=${placement.lastExitCode ?? 'not-run'} placementMalformed=${placement.malformed === true}`,
           `agentOwnership=${agentOwnership}`,
           sentinelDetail,
         ]
@@ -2025,7 +2381,18 @@ class FleetBoard {
           '--',
           'node',
           '-e',
-          "const f=require('node:fs'),c=require('node:crypto'),p='/opt/agent-relay/snapshot-manifest.json',b=f.readFileSync(p);process.stdout.write(JSON.stringify({sha256:c.createHash('sha256').update(b).digest('hex'),manifest:JSON.parse(b)}))"
+          [
+            "const f=require('node:fs'),c=require('node:crypto'),cp=require('node:child_process'),p=require('node:path')",
+            "const digest=b=>c.createHash('sha256').update(b).digest('hex')",
+            "const cli=f.realpathSync(cp.execFileSync('which',['agent-relay'],{encoding:'utf8'}).trim())",
+            'let modules=p.dirname(cli)',
+            "while(p.basename(modules)!=='node_modules'&&p.dirname(modules)!==modules)modules=p.dirname(modules)",
+            "if(p.basename(modules)!=='node_modules')throw new Error('agent-relay is not installed from node_modules')",
+            "const broker=p.join(modules,'@agent-relay',`broker-${process.platform}-${process.arch}`,'bin',process.platform==='win32'?'agent-relay-broker.exe':'agent-relay-broker')",
+            'const cliBytes=f.readFileSync(cli),brokerBytes=f.readFileSync(broker),brokerStat=f.statSync(broker)',
+            "const manifestBytes=f.readFileSync('/opt/agent-relay/snapshot-manifest.json')",
+            "process.stdout.write(JSON.stringify({sha256:digest(manifestBytes),manifest:JSON.parse(manifestBytes),runtime:{platform:process.platform,arch:process.arch,cliPath:cli,cliSha256:digest(cliBytes),cliVersion:cp.execFileSync(cli,['version'],{encoding:'utf8'}).trim(),brokerPath:broker,brokerSha256:digest(brokerBytes),brokerBytes:brokerBytes.length,brokerMode:(brokerStat.mode&0o777).toString(8),brokerVersion:cp.execFileSync(broker,['--version'],{encoding:'utf8'}).trim()}}))",
+          ].join(';')
         ),
         { timeoutMs: 45_000, maxCaptureBytes: 1024 * 1024 }
       );
@@ -2034,6 +2401,9 @@ class FleetBoard {
         inspected,
         inspect.stderr || `exit ${inspect.exitCode}`
       );
+      resource.runtimeAttestation = inspected?.runtime ?? {
+        inspectionError: inspect.stderr || `exit ${inspect.exitCode}`,
+      };
     }
     await this.checkpoint();
   }
@@ -2217,6 +2587,7 @@ class FleetBoard {
         {
           channel: `fleetboard-${this.short}`,
           cwd: '/home/daytona',
+          persona: 'fleet-board-worker',
           organization: 'AgentWorkforce',
           project: 'relay',
           workstream: 'fleet-cleanroom',
@@ -2326,17 +2697,15 @@ class FleetBoard {
       else {
         await this.reconcileFailedSpawnIdentity(agentName, 'automatic-worker');
       }
-      const list = await execute(this.cliArgv('fleet', 'agent', 'list', '--all'), {
-        timeoutMs: 60_000,
-        maxCaptureBytes: 16 * 1024 * 1024,
-      });
-      const assignedNode = findFleetAgentNode(tryParseJson(list._rawStdout), agentName);
+      const placement = await this.waitForFleetPlacement(agentName, undefined, 60_000);
+      const assignedNode = placement.observedNode;
       const ownedPlacement = availableNodes.some(({ nodeName }) => nodeName === assignedNode);
       const observed = await this.waitForSentinel(sentinel, 60_000, agentName);
       return {
         ...stripPrivateExecution(commandResult),
-        observedSentinel: commandResult.exitCode === 0 && ownedPlacement && observed.observed,
-        summary: `assignedNode=${assignedNode ?? 'missing'} ownedPlacement=${ownedPlacement}\n${observed.detail}`,
+        observedSentinel:
+          commandResult.exitCode === 0 && placement.pass && ownedPlacement && observed.observed,
+        summary: `assignedNode=${assignedNode ?? 'missing'} placementObserved=${placement.pass} ownedPlacement=${ownedPlacement}\n${observed.detail}`,
       };
     });
     await this.releaseSupport(agentName, null);
@@ -2533,6 +2902,153 @@ class FleetBoard {
     for (const node of [this.nodeA, this.nodeB]) {
       if (node?.agentName) await this.releaseSupport(node.agentName, node);
     }
+  }
+
+  async criticalLifecycleRepeatability() {
+    const nodes = this.availableBoardNodes();
+    if (nodes.length < this.matrix.minimumBoardNodes || !this.controller) {
+      this.evidence.criticalLifecycle = {
+        status: 'blocked',
+        trials: [],
+        blockedReason: 'two live owned board nodes and the controller are required',
+      };
+      await this.checkpoint();
+      return;
+    }
+    const trials = [];
+    for (let offset = 0; offset < this.matrix.minimumCriticalLifecycleTrials; offset += 1) {
+      const index = offset + 1;
+      const node = nodes[offset % nodes.length];
+      const slot = offset % 2 === 0 ? 'a' : 'b';
+      const agentName = `critical-lifecycle-${slot}-${this.short}`;
+      const initialSentinel = `CRITICAL_LIFECYCLE_${index}_${this.short.toUpperCase()}_INITIAL`;
+      const postReadySentinel = `CRITICAL_LIFECYCLE_${index}_${this.short.toUpperCase()}_INJECTED`;
+      await this.creationIntent('relay-agent', agentName);
+      const monotonicStartNs = process.hrtime.bigint();
+      let spawn;
+      let placement = { pass: false };
+      let initial = { observed: false };
+      let injection;
+      let injectionMessageIdHash;
+      let postReady = { observed: false };
+      let postReadyReaderConfirmed = false;
+      let releasedAndAbsent = false;
+      try {
+        spawn = await execute(
+          this.cliArgv(
+            ...buildFleetSpawnArgs({
+              provider: 'codex',
+              agentName,
+              task: `Use Agent Relay MCP to post the exact text ${initialSentinel} to channel general, then remain idle.`,
+              node: node.nodeName,
+              model: process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna',
+              confirmTimeoutMs: 60_000,
+            })
+          ),
+          { timeoutMs: 120_000 }
+        );
+        if (spawn.exitCode === 0) this.claimAgent(agentName, 'critical-lifecycle-worker');
+        else await this.reconcileFailedSpawnIdentity(agentName, 'critical-lifecycle-worker');
+        placement = await this.waitForFleetPlacement(agentName, node.nodeName, 60_000);
+        initial = await this.waitForSentinel(initialSentinel, 60_000, agentName);
+        injection = await execute(
+          this.cliArgv(
+            'message',
+            'dm',
+            'send',
+            agentName,
+            `Use Agent Relay MCP to post the exact text ${postReadySentinel} to channel general.`,
+            '--mode',
+            'steer'
+          ),
+          { timeoutMs: 30_000, env: this.controllerEnv(), extraSecrets: [this.controller.token] }
+        );
+        const receipt = tryParseJson(injection._rawStdout);
+        const messageId = findStringDeep(receipt, ['messageId', 'id']);
+        injectionMessageIdHash = typeof messageId === 'string' ? sha256(messageId) : undefined;
+        postReady = await this.waitForSentinel(postReadySentinel, 90_000, agentName);
+        if (messageId) {
+          const readers = await execute(this.cliArgv('message', 'inbox', 'get_readers', messageId), {
+            timeoutMs: 30_000,
+            env: this.controllerEnv(),
+            extraSecrets: [this.controller.token],
+          });
+          const payload = readers.exitCode === 0 ? tryParseJson(readers._rawStdout) : undefined;
+          postReadyReaderConfirmed =
+            payload?.readers?.some?.((reader) => reader?.agentName === agentName) === true;
+        }
+        releasedAndAbsent = await this.releaseSupport(agentName, node);
+      } catch (error) {
+        await this.releaseSupport(agentName, node).catch(() => false);
+        spawn ??= {
+          argv: [],
+          exitCode: null,
+          timedOut: false,
+          stderr: redactFleetEvidence(error instanceof Error ? error.stack : String(error)),
+        };
+      }
+      const monotonicEndNs = process.hrtime.bigint();
+      const spawned = spawn?.exitCode === 0 && spawn?.timedOut !== true;
+      const agentOriginatedAckProof =
+        SHA256.test(initial.messageIdHash ?? '') &&
+        initial.agentName === agentName &&
+        initial.channelName === 'general' &&
+        SHA256.test(injectionMessageIdHash ?? '') &&
+        SHA256.test(postReady.messageIdHash ?? '') &&
+        postReady.agentName === agentName &&
+        postReady.channelName === 'general' &&
+        initial.messageIdHash !== postReady.messageIdHash;
+      const status =
+        spawned &&
+        placement.pass === true &&
+        initial.observed === true &&
+        injection?.exitCode === 0 &&
+        postReady.observed === true &&
+        postReadyReaderConfirmed &&
+        releasedAndAbsent &&
+        agentOriginatedAckProof
+          ? 'pass'
+          : 'fail';
+      trials.push({
+        index,
+        status,
+        nodeName: node.nodeName,
+        nodeId: node.nodeId,
+        agentName,
+        monotonicStartNs: monotonicStartNs.toString(),
+        monotonicEndNs: monotonicEndNs.toString(),
+        durationMs: Number(monotonicEndNs - monotonicStartNs) / 1_000_000,
+        spawned,
+        placementConfirmed: placement.pass === true,
+        initialSentinelObserved: initial.observed === true,
+        initialAckMessageIdHash: initial.messageIdHash,
+        initialAckAgentName: initial.agentName,
+        initialAckChannelName: initial.channelName,
+        postReadyInjectionAccepted: injection?.exitCode === 0,
+        injectionMessageIdHash,
+        postReadySentinelObserved: postReady.observed === true,
+        postReadyAckMessageIdHash: postReady.messageIdHash,
+        postReadyAckAgentName: postReady.agentName,
+        postReadyAckChannelName: postReady.channelName,
+        postReadyReaderConfirmed,
+        releasedAndAbsent,
+        spawnArgv: spawn?.argv ?? [],
+        spawnExitCode: spawn?.exitCode ?? null,
+        spawnTimedOut: spawn?.timedOut === true,
+        spawnStdoutBytes: spawn?.stdoutBytes ?? 0,
+        spawnStderrBytes: spawn?.stderrBytes ?? 0,
+        spawnOutputTruncated: spawn?.stdoutTruncated === true || spawn?.stderrTruncated === true,
+      });
+      this.evidence.criticalLifecycle = {
+        status: trials.some((trial) => trial.status === 'fail') ? 'fail' : 'pending',
+        trials,
+      };
+      await this.checkpoint();
+    }
+    this.evidence.criticalLifecycle.status = trials.every(({ status }) => status === 'pass')
+      ? 'pass'
+      : 'fail';
+    await this.checkpoint();
   }
 
   async nodeObservability() {
@@ -3643,7 +4159,7 @@ class FleetBoard {
       .map(({ id, name }) => ({ id, name }));
     const finalSandboxIdHashes = new Set(finalSandboxes.map(({ id }) => sha256(id)));
     const finalSandboxNameHashes = new Set(finalSandboxes.map(({ name }) => sha256(name)));
-    const finalAgentNames = await this.listOnlineWorkspaceAgentNames().catch(() => null);
+    const finalAgentNames = await this.listAllWorkspaceAgentNames().catch(() => null);
     const finalAgentNameHashes = finalAgentNames
       ? new Set([...finalAgentNames].map((name) => sha256(name)))
       : null;
@@ -3655,7 +4171,7 @@ class FleetBoard {
     );
     const missingBaselineAgentNameHashes = finalAgentNameHashes
       ? (this.baseline?.agentNameHashes ?? []).filter((hash) => !finalAgentNameHashes.has(hash))
-      : ['agent-online-list-reconciliation-failed'];
+      : ['agent-list-reconciliation-failed'];
     const baselinePreserved =
       missingBaselineSandboxIdHashes.length === 0 &&
       missingBaselineSandboxNameHashes.length === 0 &&
@@ -3690,29 +4206,31 @@ class FleetBoard {
     try {
       await this.captureProvenance();
       const baselineOperation = await this.record('daytona-baseline', async () => {
-        const [list, agentNames, fleetNodesResult] = await Promise.all([
+        const [list, agentNames, onlineAgentNames, fleetNodes] = await Promise.all([
           this.listDaytona(),
+          this.listAllWorkspaceAgentNames(),
           this.listOnlineWorkspaceAgentNames(),
-          execute(this.cliArgv('fleet', 'nodes'), {
-            timeoutMs: 60_000,
-            maxCaptureBytes: 4 * 1024 * 1024,
-          }),
+          this.listAllFleetNodes(),
         ]);
-        const fleetNodesPayload = tryParseJson(fleetNodesResult._rawStdout);
-        const liveFleetNodes = Array.isArray(fleetNodesPayload?.nodes)
-          ? fleetNodesPayload.nodes.filter(({ live, status }) => live === true || status === 'online')
-          : null;
+        const liveFleetNodes = fleetNodes.filter(({ live, status }) => live === true || status === 'online');
         this.baselineSandboxIds = new Set(list.map(({ id }) => id).filter(Boolean));
         this.baselineSandboxNames = new Set(list.map(({ name }) => name).filter(Boolean));
         this.baselineAgentNames = agentNames;
         this.baseline = {
           count: list.length,
-          onlineAgentCount: agentNames.size,
-          liveFleetNodeCount: liveFleetNodes?.length ?? null,
+          agentCount: agentNames.size,
+          onlineAgentCount: onlineAgentNames.size,
+          fleetNodeCount: fleetNodes.length,
+          liveFleetNodeCount: liveFleetNodes.length,
           capturedAt: new Date().toISOString(),
           sandboxIdHashes: [...this.baselineSandboxIds].map(sha256).sort(),
           sandboxNameHashes: [...this.baselineSandboxNames].map(sha256).sort(),
           agentNameHashes: [...agentNames].map(sha256).sort(),
+          fleetNodeNameHashes: fleetNodes
+            .map(({ name }) => name)
+            .filter((name) => typeof name === 'string' && name.length > 0)
+            .map(sha256)
+            .sort(),
         };
         this.evidence.baseline = this.baseline;
         const expectedWorkspaceId = this.evidence.environment.expectedWorkspaceId;
@@ -3724,19 +4242,20 @@ class FleetBoard {
           expectedWorkspaceId.length > 0 &&
           actualWorkspaceId === expectedWorkspaceId &&
           agentNames.size === 0 &&
-          Array.isArray(liveFleetNodes) &&
+          onlineAgentNames.size === 0 &&
+          fleetNodes.length === 0 &&
           liveFleetNodes.length === 0;
         this.evidence.environment.controlPlaneClean = clean;
         return {
           argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
           exitCode: clean ? 0 : 1,
           timedOut: false,
-          summary: `sandboxCount=${list.length} onlineAgentCount=${agentNames.size} liveFleetNodeCount=${liveFleetNodes?.length ?? 'invalid'} disposableWorkspaceAuthorized=${disposable} expectedWorkspaceMatches=${actualWorkspaceId === expectedWorkspaceId}`,
+          summary: `sandboxCount=${list.length} agentCount=${agentNames.size} onlineAgentCount=${onlineAgentNames.size} fleetNodeCount=${fleetNodes.length} liveFleetNodeCount=${liveFleetNodes.length} disposableWorkspaceAuthorized=${disposable} expectedWorkspaceMatches=${actualWorkspaceId === expectedWorkspaceId}`,
         };
       });
       if (baselineOperation.status !== 'pass') {
         throw new Error(
-          'Fleet proof requires an explicitly expected disposable workspace with zero Relay agents and zero live Fleet nodes'
+          'Fleet proof requires an explicitly expected disposable workspace with zero total/online Relay agents and zero total/live Fleet nodes'
         );
       }
       await this.registerController();
@@ -3792,6 +4311,7 @@ class FleetBoard {
       await this.mountedSandboxCases();
       await this.fleetPolicyAndStatus();
       await this.nodeSpawnMatrix();
+      await this.criticalLifecycleRepeatability();
       await this.nodeWorkflows();
       await this.fleetReleaseCases();
       await this.nodeLifecycle();
@@ -3808,11 +4328,24 @@ class FleetBoard {
           error instanceof Error ? error.stack : String(error)
         );
       }
+      if (this.evidence.criticalLifecycle.status === 'pending') {
+        this.evidence.criticalLifecycle = {
+          ...this.evidence.criticalLifecycle,
+          status: 'blocked',
+          blockedReason: fatal
+            ? 'campaign aborted before critical lifecycle repeatability'
+            : 'critical lifecycle repeatability was not reached',
+        };
+      }
       await this.fillMissingOperations(
         fatal ? 'campaign aborted after fatal runner error' : 'operation was not reached'
       );
       this.evidence.finishedAt = new Date().toISOString();
-      this.evidence.verdict = deriveFleetVerdict(this.evidence.operations, this.evidence.cleanup);
+      this.evidence.verdict = deriveFleetVerdict(
+        this.evidence.operations,
+        this.evidence.cleanup,
+        this.evidence.criticalLifecycle
+      );
       await this.checkpoint();
     }
     return this.evidence;
@@ -4160,7 +4693,11 @@ async function main() {
     );
     board.controller = controller ? { name: controller.id, token: '' } : null;
     await board.cleanup();
-    board.evidence.verdict = deriveFleetVerdict(board.evidence.operations, board.evidence.cleanup);
+    board.evidence.verdict = deriveFleetVerdict(
+      board.evidence.operations,
+      board.evidence.cleanup,
+      board.evidence.criticalLifecycle
+    );
     await board.checkpoint();
     if (board.evidence.cleanup.status !== 'pass') {
       throw new Error(`Fleet Daytona cleanup failed for nonce ${nonce}`);
