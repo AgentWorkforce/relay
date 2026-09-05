@@ -1448,6 +1448,7 @@ impl BrokerRuntime {
             &mut self.pending_requests,
             &mut self.pending_model_requests,
             &mut self.model_receipts,
+            &mut self.model_receipts_by_request,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,
             &mut self.resize_owners,

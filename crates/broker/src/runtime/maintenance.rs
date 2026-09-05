@@ -255,6 +255,7 @@ impl BrokerRuntime {
                 pending_requests,
                 pending_model_requests,
                 model_receipts,
+                model_receipts_by_request,
                 delivery_states,
                 agent_result_tokens,
                 resize_owners,

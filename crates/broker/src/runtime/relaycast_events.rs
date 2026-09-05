@@ -290,6 +290,7 @@ pub(super) async fn release_worker_locally(
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     pending_model_requests: &mut HashMap<String, PendingModelRequest>,
     model_receipts: &mut HashMap<WorkerName, ModelReceipt>,
+    model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
     resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
@@ -387,6 +388,7 @@ pub(super) async fn release_worker_locally(
     if outcome == ReleaseOutcome::Released {
         pending_model_requests.retain(|_, pending| pending.worker_name != name);
         model_receipts.remove(&name);
+        model_receipts_by_request.retain(|_, receipt| receipt.name != name);
         // Worker disappearance invalidates every resize lease for that target,
         // including a stale lease whose session was already pruned.
         resize_owners.remove(&name);
@@ -970,6 +972,7 @@ mod tests {
         let mut pending_requests = HashMap::new();
         let mut pending_model_requests = HashMap::new();
         let mut model_receipts = HashMap::new();
+        let mut model_receipts_by_request = HashMap::new();
         let mut delivery_states = HashMap::new();
         let mut agent_result_tokens = HashMap::new();
         let released_session_id = "released-view-session".to_string();
@@ -1052,6 +1055,7 @@ mod tests {
             &mut pending_requests,
             &mut pending_model_requests,
             &mut model_receipts,
+            &mut model_receipts_by_request,
             &mut delivery_states,
             &mut agent_result_tokens,
             &mut resize_owners,
