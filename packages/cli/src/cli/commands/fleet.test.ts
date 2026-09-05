@@ -822,9 +822,11 @@ describe('fleet command support', () => {
     ).rejects.toThrow('__exit__');
 
     expect(errors.join('\n')).toContain('dispatch failed');
-    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(expect.objectContaining({
-      workloadProfile: 'long-running-agent',
-    }));
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workloadProfile: 'long-running-agent',
+      })
+    );
     expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
       cloudWorkspaceId: 'cloud-workspace',
       sandboxId: 'sandbox-1',
