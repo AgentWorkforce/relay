@@ -258,6 +258,26 @@ fallback identity lacks a source SHA. This is implementation evidence only
 until those findings are repaired, independently re-reviewed, and a clean
 runner builds and proves the exact declared artifacts in Daytona.
 
+#### Relay checkout-packed prerelease result on 2026-09-05
+
+The Relay package lane has an independently repeatable clean-install control.
+Candidate `11.10.4-cleanroom.20260905.2`, source commit
+`1f724244c72c5f7867e764c255a12817f36bd6f0`, was built and installed in two
+fresh Daytona sandboxes using exact Node 22.22/npm 10.9.7. Both sandboxes built
+the same native broker SHA-256, produced the same candidate attestation
+SHA-256, reported the exact candidate version from both the JS CLI and broker,
+and passed all 266 changed-surface tests. Both exact sandbox IDs were then
+deleted and proved absent. Preserve the full IDs and hashes in
+`RELAY_PRERELEASE_DAYTONA_2026-09-05.md`.
+
+Do not promote this package proof into a Fleet pass. The live 95-operation
+board still cannot select the candidate's immutable snapshot/data plane or
+create and reclaim the required canonical ephemeral Cloud workspace. Cloud
+issues #3349 and #3351 remain the hard boundary. The next valid Fleet proof is
+two complete boards, each in a separate clean workspace, bound to the exact
+candidate manifest and Relayfile deployment, followed by exact absence checks
+and two fresh signoffs.
+
 Relay now contains a candidate two-artifact package producer contract: a manual,
 main-only workflow requires a unique unpublished prerelease and creates a
 payload attestation for the seven exact Relay protocol/source packages plus a

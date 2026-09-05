@@ -471,6 +471,39 @@
             "focal:live-gates",
             "confidence:0.88"
           ]
+        },
+        {
+          "ts": 1788631638292,
+          "type": "decision",
+          "content": "Kept clean-install proof separate from live Fleet acceptance: Kept clean-install proof separate from live Fleet acceptance",
+          "raw": {
+            "question": "Kept clean-install proof separate from live Fleet acceptance",
+            "chosen": "Kept clean-install proof separate from live Fleet acceptance",
+            "alternatives": [],
+            "reasoning": "Two Daytona sandboxes proved the exact Relay candidate package, broker digest, attestation, CLI surface, tests, and cleanup, but Cloud issues 3349/3351 still prevent binding the 95-operation Fleet board to an immutable candidate workspace and Relayfile data plane."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788631638787,
+          "type": "reflection",
+          "content": "Relay package lane is sealed; Relayflows review correctly stopped promotion on deeper shared-environment and provenance defects; set-model review stopped an unsupported/no-op implementation.",
+          "raw": {
+            "focalPoints": [
+              "candidate-provenance",
+              "independent-review",
+              "fleet-boundary"
+            ],
+            "adjustments": "Repair Relayflows through another review loop; require a real applied provider for set-model; do not inflate clean-install evidence into Fleet green.",
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "focal:candidate-provenance",
+            "focal:independent-review",
+            "focal:fleet-boundary",
+            "confidence:0.88"
+          ]
         }
       ]
     }
