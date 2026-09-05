@@ -222,12 +222,16 @@ try {
         }
       }, 'the exact broker to publish its connection file');
       const api = brokerClient(brokerUrl);
-      await waitFor(() => {
-        if (broker.exitCode !== null) {
-          throw new Error(`broker exited before readiness: ${brokerOutput}`);
-        }
-        return api('GET', '/api/status', undefined, 2_000).then(() => true);
-      }, 'the exact broker API to answer');
+      await waitFor(
+        () => {
+          if (broker.exitCode !== null) {
+            throw new Error(`broker exited before readiness: ${brokerOutput}`);
+          }
+          return api('GET', '/api/status', undefined, 2_000).then(() => true);
+        },
+        'the exact broker API to answer',
+        15_000
+      );
       await api('POST', '/api/spawn', {
         name: 'proof-worker',
         cli: 'cat',
