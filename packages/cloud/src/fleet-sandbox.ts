@@ -5,6 +5,8 @@ import { defaultApiUrl } from './types.js';
 type JsonRecord = Record<string, unknown>;
 
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // Mounted provisioning can spend up to 240s completing the initial Relayfile
 // sync, then up to 90s waiting for the enrolled node to report ready. Leave a
@@ -69,6 +71,10 @@ export type EnsureCloudFleetSandboxInput = {
   forceProvision?: boolean;
   /** Constrain provisioning to a provider that Cloud has enabled for routing. */
   providerId?: CloudFleetSandboxProviderId;
+  /** Immutable Daytona snapshot identifier selected for a qualification run. */
+  snapshotId?: string;
+  /** SHA-256 of the manifest that the selected snapshot must expose in-image. */
+  snapshotManifestSha256?: string;
   waitTimeoutMs?: number;
   /**
    * Repositories to clone into `/srv/agent-workforce/<name>` inside the
@@ -92,6 +98,8 @@ export type CloudFleetSandboxReady = {
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
+  snapshotId?: string;
+  snapshotManifestSha256?: string;
 };
 
 export type CloudFleetSandboxReused = {
@@ -103,6 +111,8 @@ export type CloudFleetSandboxReused = {
   activeAgents: number | null;
   maxAgents: number | null;
   providerId?: CloudFleetSandboxProviderId;
+  snapshotId?: string;
+  snapshotManifestSha256?: string;
 };
 
 export type CloudFleetSandboxProvisioningTimeout = {
@@ -113,6 +123,8 @@ export type CloudFleetSandboxProvisioningTimeout = {
   nodeName: string;
   waitedMs: number;
   providerId?: CloudFleetSandboxProviderId;
+  snapshotId?: string;
+  snapshotManifestSha256?: string;
 };
 
 export type EnsureCloudFleetSandboxResult =
@@ -245,7 +257,8 @@ function cleanupProviderId(
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
-  requestedProviderId?: CloudFleetSandboxProviderId
+  requestedProviderId?: CloudFleetSandboxProviderId,
+  requestedSnapshot?: { snapshotId: string; snapshotManifestSha256: string }
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   const outcome = readString(payload, 'outcome');
@@ -258,6 +271,22 @@ function normalizeEnsureResult(
         : `Cloud returned provider ${providerId} instead of requested provider ${requestedProviderId}.`
     );
   }
+  const observedSnapshotId = readString(payload, 'snapshotId');
+  const observedSnapshotManifestSha256 = readString(payload, 'snapshotManifestSha256');
+  if (
+    requestedSnapshot &&
+    (observedSnapshotId !== requestedSnapshot.snapshotId ||
+      observedSnapshotManifestSha256 !== requestedSnapshot.snapshotManifestSha256)
+  ) {
+    throw new Error('Cloud did not prove the requested immutable snapshot and manifest digest.');
+  }
+  const snapshotProof =
+    observedSnapshotId &&
+    SNAPSHOT_ID_PATTERN.test(observedSnapshotId) &&
+    observedSnapshotManifestSha256 &&
+    SHA256_PATTERN.test(observedSnapshotManifestSha256)
+      ? { snapshotId: observedSnapshotId, snapshotManifestSha256: observedSnapshotManifestSha256 }
+      : {};
 
   if (outcome === 'provisioned') {
     if (typeof payload.relayfileMounted !== 'boolean') {
@@ -272,6 +301,7 @@ function normalizeEnsureResult(
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
+      ...snapshotProof,
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
@@ -288,6 +318,7 @@ function normalizeEnsureResult(
       activeAgents: readNumber(payload, 'activeAgents') ?? null,
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
       ...(providerId === undefined ? {} : { providerId }),
+      ...snapshotProof,
     };
   }
 
@@ -300,6 +331,7 @@ function normalizeEnsureResult(
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
       ...(providerId === undefined ? {} : { providerId }),
+      ...snapshotProof,
     };
   }
 
@@ -318,6 +350,24 @@ export async function ensureCloudFleetSandbox(
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
+  const snapshotId = input.snapshotId?.trim();
+  const snapshotManifestSha256 = input.snapshotManifestSha256?.trim();
+  if ((snapshotId === undefined) !== (snapshotManifestSha256 === undefined)) {
+    throw new Error('snapshotId and snapshotManifestSha256 must be provided together.');
+  }
+  if (snapshotId !== undefined && !SNAPSHOT_ID_PATTERN.test(snapshotId)) {
+    throw new Error('snapshotId is not a safe immutable snapshot identifier.');
+  }
+  if (snapshotManifestSha256 !== undefined && !SHA256_PATTERN.test(snapshotManifestSha256)) {
+    throw new Error('snapshotManifestSha256 must be 64 lowercase hexadecimal characters.');
+  }
+  if (snapshotId !== undefined && input.providerId !== 'daytona') {
+    throw new Error('Exact snapshot selection requires providerId=daytona.');
+  }
+  const requestedSnapshot =
+    snapshotId !== undefined && snapshotManifestSha256 !== undefined
+      ? { snapshotId, snapshotManifestSha256 }
+      : undefined;
 
   const session = await ensureCloudSession({
     apiUrl: options.apiUrl || defaultApiUrl(),
@@ -343,6 +393,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
+          ...(requestedSnapshot ?? {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),
@@ -381,7 +432,7 @@ export async function ensureCloudFleetSandbox(
     throw error;
   }
   try {
-    return normalizeEnsureResult(payload, resolved.cloudWorkspaceId, input.providerId);
+    return normalizeEnsureResult(payload, resolved.cloudWorkspaceId, input.providerId, requestedSnapshot);
   } catch (error) {
     const providerId = isObject(payload) ? cleanupProviderId(payload, input.providerId) : input.providerId;
     throw new CloudFleetSandboxProvisionError(
