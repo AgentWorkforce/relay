@@ -3,7 +3,7 @@
   "product": "relay",
   "provider": "daytona",
   "minimumBoardNodes": 2,
-  "requiredSnapshotRelayVersion": "11.10.2",
+  "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
   "inventorySha256": "66ff1fbbb7b89e9c5807a40f41e62bf08342397bc8592b24d2faf0bcc11648a9",

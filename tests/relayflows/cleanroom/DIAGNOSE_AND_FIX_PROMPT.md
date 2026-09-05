@@ -361,7 +361,7 @@ A fresh 2026-09-05 Relay fleet inventory returned 3,290 node records: 145
 reported live, 3,145 offline, 354 named `fleet-ensure-*`, and 110 of those
 `fleet-ensure-*` records still live. The live version distribution was 110 on
 broker 11.8.2, two on 11.8.3, only one on 11.10.2, plus 32 implicit/SDK nodes.
-`finn-mini` reported 11.8.3 while the candidate line was 11.10.2. This is both
+`finn-mini` reported 11.8.3 while the current source line was 11.10.3. This is both
 an operational cleanup problem and a qualification provenance problem. Issue
 #1455 now carries the evidence. Use exact nonce-owned lookups; never treat a
 spawn on a stale broker as proof of the current candidate.
