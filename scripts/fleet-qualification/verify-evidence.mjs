@@ -3,7 +3,11 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { candidateManifestSha256, validateQualificationEvidence } from './evidence.mjs';
+import {
+  candidateManifestSha256,
+  canonicalizeCandidateManifest,
+  validateQualificationEvidence,
+} from './evidence.mjs';
 import { FLEET_QUALIFICATION_OPERATIONS } from './matrix.mjs';
 
 function argument(name) {
@@ -27,7 +31,14 @@ try {
   const raw = readFileSync(input);
   const evidence = JSON.parse(raw.toString('utf8'));
   const packedArtifactBytes = readFileSync(candidateArtifact);
-  const manifestFromFile = JSON.parse(readFileSync(candidateManifest, 'utf8'));
+  const manifestFileBytes = readFileSync(candidateManifest);
+  const manifestFileText = manifestFileBytes.toString('utf8');
+  const manifestFromFile = JSON.parse(manifestFileText);
+  if (manifestFileText !== canonicalizeCandidateManifest(manifestFromFile)) {
+    throw new Error(
+      'NOT_PASS: candidate manifest file is not normalized RFC 8785/JCS UTF-8 without a newline'
+    );
+  }
   const verdict = validateQualificationEvidence(evidence, FLEET_QUALIFICATION_OPERATIONS, {
     expectedRelayCommitSha: expectedHead,
     expectedCandidateArtifactSha256: createHash('sha256').update(packedArtifactBytes).digest('hex'),

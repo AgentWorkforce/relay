@@ -9,6 +9,7 @@ import {
   canonicalizeCandidateManifest,
   canonicalizeJson,
   commandArgvSha256,
+  IN_IMAGE_MANIFEST_PATH,
   normalizeDeploymentId,
   normalizeSha256,
   normalizeSnapshotId,
@@ -70,6 +71,7 @@ function validEvidence() {
     manifestObservation: {
       source: 'in-image',
       command: 'sha256sum manifest.json',
+      path: IN_IMAGE_MANIFEST_PATH,
       exitCode: 0,
       stdout: digest,
       observedAt: times.manifest,
@@ -421,6 +423,10 @@ describe('fleet qualification deterministic acceptance', () => {
     const manifest = validEvidence();
     manifest.nodes[0].manifestObservation.stdout = 'f'.repeat(64);
     expect(() => validate(manifest)).toThrow(/manifest output differs/);
+
+    const manifestPath = validEvidence();
+    manifestPath.nodes[0].manifestObservation.path = '/tmp/requested-manifest.json';
+    expect(() => validate(manifestPath)).toThrow(/canonical in-image path/);
 
     const artifact = validEvidence();
     artifact.nodes[0].artifactInstall.stdout = 'f'.repeat(64);

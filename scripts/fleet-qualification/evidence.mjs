@@ -6,6 +6,8 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const CANONICAL_ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
+export const IN_IMAGE_MANIFEST_PATH = '/opt/agent-relay/qualification/candidate-manifest.json';
+
 export class QualificationNotPassError extends Error {
   constructor(message) {
     super(`NOT_PASS: ${message}`);
@@ -183,6 +185,9 @@ function validateNode(node, manifestDigest, candidateArtifactSha256, index) {
     notPass(`${prefix} running-node snapshot output differs from observedDaytonaSnapshotId`);
   }
   requireSuccessfulObservation(node?.manifestObservation, `${prefix}.manifestObservation`, 'in-image');
+  if (node?.manifestObservation?.path !== IN_IMAGE_MANIFEST_PATH) {
+    notPass(`${prefix} manifest observation did not use the canonical in-image path`);
+  }
   if (
     normalizeSha256(node?.manifestObservation?.stdout, `${prefix}.manifestObservation.stdout`) !== imageDigest
   ) {
