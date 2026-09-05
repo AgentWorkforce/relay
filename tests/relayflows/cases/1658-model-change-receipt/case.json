@@ -3,7 +3,7 @@
   "id": "1658-model-change-receipt",
   "kind": "bugfix",
   "title": "Expose truthful correlated model-change receipts",
-  "requirements": [],
+  "requirements": ["broker-linux-x64"],
   "runner": {
     "command": ["node", "tests/relayflows/cases/1658-model-change-receipt/run.mjs"]
   },
