@@ -69,6 +69,7 @@ bin/agent-relay-standalone
 # SDK bundled broker binary (built/downloaded at install time)
 packages/sdk/bin/agent-relay-broker*
 packages/harness-driver/bin/agent-relay-broker*
+packages/broker-*/bin/agent-relay-broker*
 packages/broker-sdk/
 
 # Python
@@ -93,6 +94,9 @@ __pycache__/
 !/workflows/verify-features.ts
 !/workflows/audit-feature-manifest.ts
 !/workflows/pr-proof.ts
+!/workflows/verify-cleanroom.ts
+!/workflows/verify-fleet-daytona.ts
+!/workflows/diagnose-relay-orchestration-reliability.ts
 
 # Eval harness JSON reports (generated per run)
 tests/integration/broker/evals-reports/
