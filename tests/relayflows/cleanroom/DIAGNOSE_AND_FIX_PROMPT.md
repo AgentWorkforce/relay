@@ -55,10 +55,13 @@ stable passes, 33 stable failures, 20 mixed operations, and three incomplete
 workspace-policy mutations. The attempt totals were 48 pass / 41 fail / 1
 blocked / 3 safety-skipped and 45 pass / 41 fail / 4 blocked / 3
 safety-skipped. These numbers describe the retained artifacts, not a controlled
-reliability result. Both attempts were sealed individually, but they used
+reliability result. Each retained attempt contains 93 operation records; two of
+the 95 matrix operations produced no record and are therefore unproved. Both
+attempts were sealed individually, but they used
 different runner hashes, dirty source trees, an already crowded shared Relay
-workspace, and Relay 11.8.2 node images while the matrix required 11.10.2. The
-current hardened aggregator must reject that pair. Both `node-tail-agent`
+workspace, and Relay 11.8.2 node images while the then-current matrix required
+11.10.2; the current matrix requires 11.10.3. The hardened aggregator must
+reject that pair. Both `node-tail-agent`
 records were also false positives: they timed out with empty broker stdout and
 only a Daytona version warning on stderr. Do not quote “37 stable passes” as a
 current product or verifier claim.

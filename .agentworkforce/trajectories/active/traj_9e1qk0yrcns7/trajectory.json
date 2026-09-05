@@ -551,6 +551,64 @@
             "reasoning": "Qualification evidence must never use an lstat-then-open fallback because it leaves a symlink swap race; the Fleet/cleanroom acceptance environment is Linux and supported macOS hosts expose O_NOFOLLOW."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788637217664,
+          "type": "decision",
+          "content": "Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt: Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt",
+          "raw": {
+            "question": "Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt",
+            "chosen": "Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt",
+            "alternatives": [],
+            "reasoning": "A catalog-only pass cannot prove targeted placement, agent responsiveness, release absence, same-name reuse, or exact candidate binaries under repeated clean Daytona execution."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788637218228,
+          "type": "reflection",
+          "content": "Fleet proof code and deterministic gates are integrated and locally green; live candidate campaign remains gated by Cloud candidate-bound ephemeral workspaces, Relaycast crash-idempotency, and Relayfile 258 MiB acceptance.",
+          "raw": {
+            "focalPoints": [
+              "fleet-live-proof",
+              "cross-repo-gates",
+              "immutable-candidate"
+            ],
+            "adjustments": "Parallelize the independent cross-repo fixes while validating PR proof and Cloud implementation; do not claim Fleet green before exact clean candidate evidence.",
+            "confidence": 0.93
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet-live-proof",
+            "focal:cross-repo-gates",
+            "focal:immutable-candidate",
+            "confidence:0.93"
+          ]
+        },
+        {
+          "ts": 1788639178504,
+          "type": "reflection",
+          "content": "Fleet qualification normal CI is green, but immutable PR proof exposed Cloud sandbox_router_no_provider before allocation. Hardened verifier against 30+ review findings, preserved strict clean-workspace baseline, and added pre-spawn absence checks for reused lifecycle identities. Cloud, Relaycast, Relayfile, and set-model repairs are proceeding on isolated branches; live candidate proof remains intentionally RED until those land in a prerelease snapshot.",
+          "raw": {
+            "focalPoints": [
+              "fleet",
+              "cleanroom",
+              "cloud-router",
+              "relayfile",
+              "set-model"
+            ],
+            "adjustments": "Use exact-head Cloud dev deployment, require baseline/candidate Daytona evidence, and rerun all 95 commands plus five repeated lifecycle trials twice only after candidate contracts are integrated.",
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet",
+            "focal:cleanroom",
+            "focal:cloud-router",
+            "focal:relayfile",
+            "focal:set-model",
+            "confidence:0.88"
+          ]
         }
       ]
     }

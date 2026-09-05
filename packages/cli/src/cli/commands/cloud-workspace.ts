@@ -317,7 +317,9 @@ function apiFailure(operation: 'create' | 'delete', status: number): Error {
     return new Error('Ephemeral workspace was not found.');
   }
   if (status === 409) {
-    return new Error('Ephemeral workspace deletion is already in progress; retry shortly.');
+    return operation === 'delete'
+      ? new Error('Ephemeral workspace deletion is already in progress; retry shortly.')
+      : new Error('Ephemeral workspace creation conflicts with an existing idempotency request.');
   }
   return new Error(`Cloud failed to ${operation} the ephemeral workspace (HTTP ${status}).`);
 }
@@ -399,8 +401,8 @@ export function registerCloudWorkspaceCommands(
           reserved.commit({
             ...created.credential,
             cloud: {
-              apiUrl: session.auth.apiUrl,
               ...created.credential.cloud,
+              apiUrl: session.auth.apiUrl,
             },
           });
           const result = {

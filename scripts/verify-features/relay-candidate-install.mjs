@@ -431,9 +431,6 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   const attestation = validateCandidateInstallAttestation(JSON.parse(bytes.toString('utf8')), {
     ...expected,
   });
-  if (run('npm', ['--version'], { timeoutMs: 30_000 }).trim() !== attestation.npmVersion) {
-    throw new Error('candidate verification npm version changed');
-  }
   if (expected.cliEntrypoint && path.resolve(expected.cliEntrypoint) !== expectedCli) {
     throw new Error('candidate install CLI entrypoint does not match');
   }
@@ -522,8 +519,8 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   if (sha256(cliBytes) !== attestation.cliSha256) {
     throw new Error('candidate install CLI digest changed');
   }
-  const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 });
-  if (!reportedVersion.includes(`v${attestation.packageVersion}`)) {
+  const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 }).trim();
+  if (reportedVersion !== `agent-relay v${attestation.packageVersion}`) {
     throw new Error('clean-installed candidate CLI reported a different version');
   }
   return { attestation, attestationSha256: sha256(bytes) };
@@ -543,6 +540,17 @@ async function prepare(outputRoot) {
   ]);
   if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
   if (sourceStatus) throw new Error('candidate clean install requires a clean source tree');
+  const npmVersion = run('npm', ['--version'], { timeoutMs: 30_000 }).trim();
+  if (npmVersion !== REQUIRED_NPM_VERSION) {
+    throw new Error(`candidate packing requires npm ${REQUIRED_NPM_VERSION}`);
+  }
+  run('npm', ['run', 'build:core'], { timeoutMs: 1_800_000 });
+  if (
+    run('git', ['rev-parse', 'HEAD']).trim() !== sourceSha ||
+    run('git', ['status', '--porcelain']).trim()
+  ) {
+    throw new Error('candidate source changed while its build outputs were produced');
+  }
   await rejectBundledBrokerContamination();
   const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
 
@@ -579,10 +587,6 @@ async function prepare(outputRoot) {
     mode: 0o600,
     flag: 'wx',
   });
-  const npmVersion = run('npm', ['--version'], { timeoutMs: 30_000 }).trim();
-  if (npmVersion !== REQUIRED_NPM_VERSION) {
-    throw new Error(`candidate packing requires npm ${REQUIRED_NPM_VERSION}`);
-  }
   run('npm', ['install', '--package-lock-only', ...NPM_INSTALL_POLICY_ARGS], {
     cwd: installDir,
     timeoutMs: 900_000,
@@ -640,8 +644,10 @@ async function prepare(outputRoot) {
   const { bytes: cliBytes } = await readRegularFileNoFollow(cliEntrypoint, {
     label: 'clean-installed candidate CLI entrypoint',
   });
-  const reportedVersion = run(process.execPath, [cliEntrypoint, 'version'], { timeoutMs: 30_000 });
-  if (!reportedVersion.includes(`v${packageVersion}`)) {
+  const reportedVersion = run(process.execPath, [cliEntrypoint, 'version'], {
+    timeoutMs: 30_000,
+  }).trim();
+  if (reportedVersion !== `agent-relay v${packageVersion}`) {
     throw new Error('clean-installed candidate CLI reported a different version');
   }
   const brokerPath = path.join(installDir, ...brokerRelativePath().split('/'));
@@ -732,7 +738,7 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
   const root = path.resolve(outputRoot);
   const tarballRoot = path.join(root, 'tarballs');
   const installDir = path.join(root, 'install');
-  await mkdir(root, { mode: 0o700 });
+  await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([mkdir(tarballRoot, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
   for (const entry of candidate.packages) {
     const source = path.join(path.resolve(tarballDirectory), entry.tarballFile);

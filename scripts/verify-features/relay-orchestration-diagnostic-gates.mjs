@@ -1,7 +1,20 @@
 #!/usr/bin/env node
 
-import { spawn, execFile } from 'node:child_process';
-import { chmod, lstat, mkdir, readFile, readdir, readlink, stat, unlink, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
+import {
+  access,
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -29,8 +42,16 @@ function redact(value) {
   return String(value)
     .replace(/\brk_(?:live|test)_[A-Za-z0-9_-]+\b/g, '[REDACTED_RELAY_KEY]')
     .replace(/\brelay_(?:pa|ws)_[A-Za-z0-9._-]+\b/g, '[REDACTED_RELAY_TOKEN]')
+    .replace(
+      /\b(?:nt_live_|br_|rjt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_)[A-Za-z0-9._-]+\b/g,
+      '[REDACTED_CREDENTIAL]'
+    )
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED_JWT]')
-    .replace(/((?:authorization|token|api[_-]?key|secret)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+    .replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(
+      /((?:["']?(?:authorization|token|api[_-]?key|secret)["']?)\s*[:=]\s*)["']?(?:(?:Bearer|Token)\s+)?[^\s,;}"']+["']?/gi,
+      '$1[REDACTED]'
+    );
 }
 
 function bounded(value, maxBytes = MAX_OUTPUT_BYTES, sourceTruncated = false) {
@@ -82,6 +103,29 @@ async function pathExists(target) {
   } catch {
     return false;
   }
+}
+
+async function commandAvailable(command, env = process.env) {
+  if (!/^[A-Za-z0-9._+-]+$/.test(command)) return false;
+  const extensions =
+    process.platform === 'win32'
+      ? String(env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM')
+          .split(';')
+          .filter(Boolean)
+      : [''];
+  for (const directory of String(env.PATH ?? '')
+    .split(path.delimiter)
+    .filter(Boolean)) {
+    for (const extension of extensions) {
+      try {
+        await access(path.join(directory, `${command}${extension}`), fsConstants.X_OK);
+        return true;
+      } catch {
+        // Continue through the caller's PATH without invoking a shell.
+      }
+    }
+  }
+  return false;
 }
 
 export function runDiagnosticCommand(command, args, options = {}) {
@@ -187,7 +231,7 @@ async function sourceManifest(repo) {
   const { stdout } = await execFileAsync(
     'git',
     ['-C', repo, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-    { maxBuffer: 32 * 1024 * 1024 }
+    { maxBuffer: 32 * 1024 * 1024, timeout: 60_000 }
   );
   const files = [...new Set(stdout.split('\0').filter(Boolean))].sort();
   const manifest = [];
@@ -203,7 +247,13 @@ async function sourceManifest(repo) {
         continue;
       }
       if (info.isSymbolicLink()) {
-        manifest.push({ file, mode: info.mode & 0o777, hash: sha256(await readlink(target)) });
+        const linkTarget = await readlink(target);
+        const resolved = await realpath(target);
+        const relation = path.relative(repo, resolved);
+        if (relation === '..' || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation)) {
+          throw new Error(`diagnostic source symlink escapes its repository: ${file}`);
+        }
+        manifest.push({ file, mode: info.mode & 0o777, hash: sha256(linkTarget) });
         continue;
       }
       const { bytes, mode } = await readRegularFileNoFollow(target, {
@@ -344,11 +394,7 @@ async function preflight(artifactDir, runId) {
   const repos = await Promise.all(Object.entries(paths).map(([name, repo]) => snapshotRepo(name, repo)));
   const tools = {};
   for (const tool of ['node', 'git', 'gh', 'go', 'relayflows', 'agent-relay', 'daytona']) {
-    const result = await run('sh', ['-c', `command -v ${tool}`], {
-      cwd: RELAY_ROOT,
-      timeoutMs: 10_000,
-    });
-    tools[tool] = result.exitCode === 0;
+    tools[tool] = await commandAvailable(tool);
   }
   const requiredTools = ['node', 'git', 'gh', 'go', 'relayflows'];
   const missingTools = requiredTools.filter((tool) => !tools[tool]);
@@ -1310,7 +1356,7 @@ const REQUIRED_FAULTS = [
   'cleanup-reconcile',
   'deployed-reaper-dlq',
   'attach-503',
-  'image-smoke',
+  'snapshot-image-smoke-failure',
   'broker-timeout-cleanup',
 ];
 const REQUIRED_ACCEPTANCE = [

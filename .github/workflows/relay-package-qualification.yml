@@ -21,12 +21,17 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Require exact main prerelease source
+      - name: Require exact canonical prerelease source
         run: |
           set -euo pipefail
-          test "${GITHUB_REF}" = "refs/heads/main"
+          test "${GITHUB_REPOSITORY}" = "AgentWorkforce/relay"
+          case "${GITHUB_REF}" in
+            refs/heads/qualification/*) ;;
+            *) echo "qualification must run from refs/heads/qualification/*" >&2; exit 1 ;;
+          esac
           test -n "${GITHUB_SHA}"
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          node --input-type=module -e "import { assertPrereleaseVersion } from './scripts/verify-features/relay-package-qualification.mjs'; import packageJson from './package.json' with { type: 'json' }; assertPrereleaseVersion(packageJson.version);"
 
       - name: Set up exact Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -73,6 +78,7 @@ jobs:
         run: |
           node scripts/verify-features/relay-package-qualification.mjs create-payload \
             --source-sha "${GITHUB_SHA}" \
+            --source-ref "${GITHUB_REF}" \
             --run-id "${GITHUB_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --candidate-attestation "${RUNNER_TEMP}/relay-candidate-install/candidate-install-attestation.json" \

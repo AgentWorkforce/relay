@@ -429,13 +429,13 @@ describe('clean-room verification catalog', () => {
   it('keeps product execution deterministic and model reviewers offline behind exported evidence', async () => {
     const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
     expect(source).not.toContain('wf.agent(`lane-${lane}`');
-    expect(source).toContain("type: 'deterministic',\n      dependsOn: ['gate-scope']");
-    expect(source).toContain("command: command('lane', ` --lane ${lane}`)");
-    expect(source).toContain("command('review-export'");
-    expect(source).toContain("command('storage-preflight')");
-    expect(source).toContain("command(\n      'review-upload'");
-    expect(source).toContain('network: false');
-    expect(source).toContain('exec: []');
+    expect(source).toMatch(/type\s*:\s*["']deterministic["'][\s\S]*dependsOn\s*:\s*\[["']gate-scope["']\]/);
+    expect(source).toMatch(/command\s*:\s*command\(\s*["']lane["']\s*,\s*` --lane \$\{lane\}`\s*\)/);
+    expect(source).toMatch(/command\(\s*["']review-export["']/);
+    expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
+    expect(source).toMatch(/command\(\s*["']review-upload["']/);
+    expect(source).toMatch(/network\s*:\s*false/);
+    expect(source).toMatch(/exec\s*:\s*\[\s*\]/);
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
   });
 });

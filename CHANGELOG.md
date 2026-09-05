@@ -9,13 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay cloud workspace create/delete` manages TTL-bounded qualification workspaces through reveal-once `0600` credential files and refuses deletion without complete server cascade proof.
-- `agent-relay agent get <name>` performs a bounded exact lookup without downloading the full workspace roster and distinguishes confirmed absence from authentication or transport failures.
-- `agent-relay fleet spawn --sandbox` can select an immutable Daytona snapshot with a required in-image manifest digest, and fails closed when Cloud cannot prove the exact candidate identity.
+- `agent-relay cloud workspace create` creates time-limited disposable workspaces and saves the returned credential for later Fleet qualification.
+- `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
+- `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
+- `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
 
 ### Security
 
-- Dependency resolution requires patched `brace-expansion` and `undici` releases that prevent unbounded expansion and private-cache cross-user disclosure.
+- Patched `brace-expansion` prevents unbounded expansion, and the Relayfile adapter uses a patched `undici` release that prevents private-cache cross-user disclosure.
 
 ## [11.10.3] - 2026-09-05
 
