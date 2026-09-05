@@ -1,9 +1,10 @@
 /**
  * relay#1658 — the model control command must expose a machine-readable
- * receipt. This contract probe is intentionally independent of a real
- * provider: PTY/native providers cannot truthfully claim application without
- * a typed acknowledgement, while the broker/runtime unit tests cover the
- * accepted → provider-confirmed applied path and stale fencing.
+ * receipt. The head arm starts a real OpenCode AppServer, creates a real
+ * session, and requires the broker's typed confirmation GET to report the
+ * exact requested provider/model. PTY/native providers remain unsupported
+ * without a typed acknowledgement; their fail-closed contract is covered by
+ * the Fleet fixture and broker/runtime tests.
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -127,6 +128,17 @@ try {
     try {
       const providerPort = await freePort();
       const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
+      const providerVersion = spawnSync(providerBinary, ['--version'], {
+        cwd: stateDir,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: { ...process.env, HOME: stateDir },
+      });
+      if (providerVersion.error || providerVersion.status !== 0) {
+        throw new Error(
+          `real OpenCode CLI is unavailable: ${providerVersion.error?.message ?? providerVersion.stderr ?? `exit ${providerVersion.status}`}`
+        );
+      }
       provider = spawn(
         providerBinary,
         ['serve', '--hostname', '127.0.0.1', '--port', String(providerPort), '--pure'],
@@ -146,6 +158,9 @@ try {
       });
       provider.stderr.on('data', (chunk) => {
         providerOutput += chunk;
+      });
+      provider.once('error', (error) => {
+        providerOutput += `OpenCode process error: ${error.message}`;
       });
       const providerEndpoint = `http://127.0.0.1:${providerPort}`;
       await waitFor(async () => {
@@ -253,6 +268,18 @@ try {
       ) {
         throw new Error(`broker returned an invalid applied receipt: ${JSON.stringify(terminal)}`);
       }
+      const confirmedSessionResponse = await fetch(`${providerEndpoint}/session/${session.id}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!confirmedSessionResponse.ok) {
+        throw new Error(`OpenCode session confirmation failed: ${confirmedSessionResponse.status}`);
+      }
+      const confirmedSession = await confirmedSessionResponse.json();
+      if (confirmedSession.model?.providerID !== 'openai' || confirmedSession.model?.id !== 'gpt-5.4') {
+        throw new Error(
+          `OpenCode session did not retain the exact model: ${JSON.stringify(confirmedSession)}`
+        );
+      }
       const unsupportedAdmission = await api('POST', '/api/spawned/proof-worker/model', {
         // OpenCode accepts arbitrary provider IDs in its session model
         // endpoint. Use malformed model syntax so the broker's typed
@@ -275,7 +302,8 @@ try {
         unsupported.status !== 'rejected' ||
         unsupported.applied !== false ||
         unsupported.success !== false ||
-        unsupported.accepted !== true
+        unsupported.accepted !== true ||
+        !/provider\/model syntax/.test(unsupported.error ?? '')
       ) {
         throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
       }
