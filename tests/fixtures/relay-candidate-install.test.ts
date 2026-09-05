@@ -78,6 +78,14 @@ describe('Relay candidate clean-install attestation', () => {
       const created = path.join(parent, 'new-output');
       await expect(createPrivateOutputRoot(created)).resolves.toBe(path.resolve(created));
       expect((await lstat(created)).isDirectory()).toBe(true);
+
+      const contended = path.join(parent, 'contended-output');
+      const attempts = await Promise.allSettled([
+        createPrivateOutputRoot(contended),
+        createPrivateOutputRoot(contended),
+      ]);
+      expect(attempts.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+      expect(attempts.filter(({ status }) => status === 'rejected')).toHaveLength(1);
     } finally {
       await rm(parent, { recursive: true, force: true });
     }

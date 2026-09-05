@@ -16,7 +16,9 @@ import {
   parseFeatureManifest,
   redactEvidence,
   routeInventory,
+  validateCloudApiBaseUrl,
   validateCleanroomSeal,
+  validateGithubApiUrl,
   validateLaneEvidence,
   validateReviewDraftPath,
   verifyWriteOnceStorage,
@@ -403,6 +405,19 @@ describe('clean-room verification catalog', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('confines evidence and inventory traffic to authenticated HTTPS origins', () => {
+    expect(validateCloudApiBaseUrl('https://cloud.example.test/cloud').toString()).toBe(
+      'https://cloud.example.test/cloud/'
+    );
+    expect(validateCloudApiBaseUrl('http://127.0.0.1:8787').toString()).toBe('http://127.0.0.1:8787/');
+    expect(() => validateCloudApiBaseUrl('http://cloud.example.test')).toThrow(/HTTPS/);
+    expect(() => validateCloudApiBaseUrl('https://user:secret@cloud.example.test')).toThrow(/credentials/);
+    expect(validateGithubApiUrl('https://api.github.com/repos/owner/repo/issues').origin).toBe(
+      'https://api.github.com'
+    );
+    expect(() => validateGithubApiUrl('https://attacker.example/link')).toThrow(/GitHub inventory/);
   });
 
   it('binds clean-room signoff to the aggregate, matrix, and runner digests', () => {

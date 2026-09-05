@@ -567,14 +567,10 @@ function descriptorRoot(handle, fallback) {
 
 async function createPrivateOutputRootHandle(outputRoot) {
   const root = path.resolve(outputRoot);
-  try {
-    await lstat(root);
-    throw new Error('candidate output root must not already exist');
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
   await mkdir(path.dirname(root), { recursive: true, mode: 0o700 });
   try {
+    // mkdir is the existence check: its atomic EEXIST result avoids a
+    // check-then-create window where another process could replace the path.
     await mkdir(root, { mode: 0o700 });
   } catch (error) {
     if (error?.code === 'EEXIST') {
