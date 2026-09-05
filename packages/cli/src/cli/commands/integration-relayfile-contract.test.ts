@@ -385,7 +385,10 @@ describe('relayfile control-plane hello negotiation', () => {
           binary,
           autoStart: true,
           startTimeoutMs: 2000,
-          requestTimeoutMs: 1000,
+          // Full-suite workers can briefly contend on process startup. Keep
+          // this below the production default while allowing the fake
+          // binary's version probe to finish deterministically.
+          requestTimeoutMs: 5000,
         });
         await expect(bridge.ensureCompatible()).rejects.toMatchObject({
           code: 'VERSION_INCOMPATIBLE',
