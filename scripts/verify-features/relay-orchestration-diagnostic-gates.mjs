@@ -241,7 +241,10 @@ async function sourceManifest(repo) {
     for (const entry of entries) {
       const child = path.join(directory, entry.name);
       const relation = path.relative(canonicalRepo, child).split(path.sep).join('/');
-      if (!enumeratedSourcePaths.has(relation)) return false;
+      const entryIsEnumerated =
+        enumeratedSourcePaths.has(relation) ||
+        (entry.isDirectory() && files.some((sourcePath) => sourcePath.startsWith(`${relation}/`)));
+      if (!entryIsEnumerated) return false;
       if (entry.isDirectory() && !(await targetDirectoryIsEnumerated(child))) return false;
     }
     return true;
