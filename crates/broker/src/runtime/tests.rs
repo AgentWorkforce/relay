@@ -571,7 +571,13 @@ async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
         .child
         .start_kill()
         .expect("test worker should accept termination");
-    fixture.runtime.handle_maintenance_tick().await;
+    for _ in 0..20 {
+        fixture.runtime.handle_maintenance_tick().await;
+        if !fixture.runtime.workers.workers.contains_key("model-worker") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     assert!(!fixture.runtime.workers.workers.contains_key("model-worker"));
 
     // A same-name restart must not make the retained terminal receipt
