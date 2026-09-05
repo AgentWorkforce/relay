@@ -873,12 +873,18 @@ impl BrokerRuntime {
                 let revision = *model_revision;
                 let request_id = RequestId::new(format!("model_{}", Uuid::new_v4().simple()));
                 let generation = handle.generation;
+                // A terminal rejection (or a new pending request) must not
+                // erase the last provider-confirmed model. It remains useful
+                // to callers while the newer request is unresolved.
+                let last_effective_model = model_receipts
+                    .get(&name)
+                    .and_then(|receipt| receipt.effective_model.clone());
 
                 if !supports_model_mutation(handle) {
                     let receipt = ModelReceipt {
                         name: name.clone(),
                         requested_model: model,
-                        effective_model: None,
+                        effective_model: last_effective_model,
                         applied: false,
                         status: "unsupported".to_string(),
                         request_id: request_id.to_string(),
@@ -896,29 +902,23 @@ impl BrokerRuntime {
                 }
 
                 let set_model_timeout = set_model_write_timeout(timeout_ms);
-                let result = match timeout(
-                    set_model_timeout,
-                    workers.send_to_worker(
-                        &name,
-                        "set_model",
-                        Some(request_id.clone()),
-                        json!({ "model": model }),
-                    ),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow::anyhow!(
-                        "set_model timed out after {}ms for '{name}'",
-                        set_model_timeout.as_millis()
-                    )),
-                };
+                // Model application is confirmed by the provider response,
+                // not by the stdin writer. Once this frame is admitted to the
+                // worker-owned queue, an outer write timeout must not report a
+                // rejection while the frame can still be emitted. A full or
+                // closed queue is the only admission failure here.
+                let result = workers.try_send_to_worker(
+                    &name,
+                    "set_model",
+                    Some(request_id.clone()),
+                    json!({ "model": model }),
+                );
 
                 if let Err(error) = result {
                     let receipt = ModelReceipt {
                         name: name.clone(),
                         requested_model: model,
-                        effective_model: None,
+                        effective_model: last_effective_model,
                         applied: false,
                         status: "rejected".to_string(),
                         request_id: request_id.to_string(),
@@ -936,7 +936,7 @@ impl BrokerRuntime {
                     let pending = ModelReceipt {
                         name: name.clone(),
                         requested_model: model.clone(),
-                        effective_model: None,
+                        effective_model: last_effective_model,
                         applied: false,
                         status: "accepted_pending".to_string(),
                         request_id: request_id.to_string(),

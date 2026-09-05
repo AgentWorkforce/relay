@@ -456,6 +456,10 @@ class AgentRelayClient:
             payload["timeout_ms"] = timeout_ms
         return await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/model", json=payload)
 
+    async def get_model(self, name: str) -> dict[str, Any]:
+        """Return the latest correlated model mutation receipt for an agent."""
+        return await self._request("GET", f"/api/spawned/{quote(name, safe=str())}/model")
+
     # ── Channels ──────────────────────────────────────────────────────────
 
     async def subscribe_channels(self, name: str, channels: list[str]) -> None:

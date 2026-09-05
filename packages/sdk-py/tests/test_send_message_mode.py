@@ -49,6 +49,32 @@ async def test_client_send_message_includes_mode_in_payload():
 
 
 @pytest.mark.asyncio
+async def test_client_model_receipt_get_and_set_use_correlated_model_endpoint():
+    client = AgentRelayClient(base_url="http://broker.test")
+    calls: list[tuple[str, str, dict]] = []
+
+    async def fake_request(method: str, path: str, **kwargs):
+        calls.append((method, path, kwargs.get("json", {})))
+        return {"status": "accepted_pending", "request_id": "model_1"}
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    pending = await client.set_model("worker/one", "sonnet", timeout_ms=25)
+    receipt = await client.get_model("worker/one")
+
+    assert pending["request_id"] == "model_1"
+    assert receipt["status"] == "accepted_pending"
+    assert calls == [
+        (
+            "POST",
+            "/api/spawned/worker%2Fone/model",
+            {"model": "sonnet", "timeout_ms": 25},
+        ),
+        ("GET", "/api/spawned/worker%2Fone/model", {}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_human_send_message_passes_mode_and_sets_message_mode():
     relay = AgentRelay()
     client = AsyncMock()

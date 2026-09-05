@@ -1119,19 +1119,28 @@ impl BrokerRuntime {
                                     && receipt.generation == generation
                                     && receipt.revision == request.revision
                                 {
-                                    receipt.effective_model =
-                                        applied.then_some(request.requested_model.clone());
+                                    // Keep the previous confirmed model visible
+                                    // through a rejected/unsupported receipt.
+                                    if applied {
+                                        receipt.effective_model =
+                                            Some(request.requested_model.clone());
+                                    }
                                     receipt.applied = applied;
                                     receipt.status = status.to_string();
                                     receipt.success = applied;
                                     receipt.accepted = true;
                                     receipt.pending = false;
                                     receipt.error = error;
-                                }
-                            }
-                            if applied {
-                                if let Some(handle) = workers.workers.get_mut(&name) {
-                                    handle.spec.model = Some(request.requested_model.clone());
+                                    // The cache is part of the same revision
+                                    // transaction as the receipt. In
+                                    // particular, an out-of-order older
+                                    // response cannot roll it back.
+                                    if applied {
+                                        if let Some(handle) = workers.workers.get_mut(&name) {
+                                            handle.spec.model =
+                                                Some(request.requested_model.clone());
+                                        }
+                                    }
                                 }
                             }
                             return;
