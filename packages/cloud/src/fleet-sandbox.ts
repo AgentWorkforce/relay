@@ -20,7 +20,13 @@ export type CloudFleetSandboxRequestOptions = {
   timeoutMs?: number;
 };
 
-export type CloudFleetSandboxProviderId = 'daytona' | 'e2b';
+export type CloudFleetSandboxProviderId =
+  | 'daytona'
+  | 'e2b'
+  | 'vercel'
+  | 'freestyle'
+  | 'agent37'
+  | 'microsandbox';
 
 /**
  * Carries every safe identifier Cloud returned when provisioning failed after
@@ -88,13 +94,6 @@ export type CloudFleetSandboxWorkloadProfile =
   | 'standard'
   | 'long-running-agent'
   | 'standard-long-running-agent';
-export type CloudFleetSandboxProviderId =
-  | 'daytona'
-  | 'e2b'
-  | 'vercel'
-  | 'freestyle'
-  | 'agent37'
-  | 'microsandbox';
 
 const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] = [
   'daytona',
