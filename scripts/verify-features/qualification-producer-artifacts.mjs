@@ -66,6 +66,8 @@ function safeRelativePath(value) {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
+    value !== '.' &&
+    !value.endsWith('/') &&
     !path.posix.isAbsolute(value) &&
     !value.includes('\\') &&
     path.posix.normalize(value) === value &&

@@ -429,7 +429,7 @@ describe('clean-room verification catalog', () => {
   it('keeps product execution deterministic and model reviewers offline behind exported evidence', async () => {
     const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
     expect(source).not.toContain('wf.agent(`lane-${lane}`');
-    expect(source).toMatch(/type\s*:\s*["']deterministic["'][\s\S]*dependsOn\s*:\s*\[["']gate-scope["']\]/);
+    expect(source).toMatch(/type\s*:\s*["']deterministic["'],\s*dependsOn\s*:\s*\[["']gate-scope["']\]/);
     expect(source).toMatch(/command\s*:\s*command\(\s*["']lane["']\s*,\s*` --lane \$\{lane\}`\s*\)/);
     expect(source).toMatch(/command\(\s*["']review-export["']/);
     expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
@@ -437,5 +437,10 @@ describe('clean-room verification catalog', () => {
     expect(source).toMatch(/network\s*:\s*false/);
     expect(source).toMatch(/exec\s*:\s*\[\s*\]/);
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
+  });
+
+  it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    expect(workflow).toContain('(relayWorkflowRef !== undefined && relayWorkflowRef !== expectedRelayRef)');
   });
 });

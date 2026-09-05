@@ -221,6 +221,15 @@ function completeEvidence(matrix: {
 }
 
 describe('complete Daytona Fleet board', () => {
+  it('restricts each model preflight to its provider transport', async () => {
+    const workflow = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
+    expect(workflow).toContain("deny: ['*']");
+    expect(workflow).toContain('api.opencode.ai:443');
+    expect(workflow).toContain('api.openai.com:443');
+    expect(workflow).toContain('api.anthropic.com:443');
+    expect(workflow).not.toContain('network: true');
+  });
+
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
     const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
     const prepare = source.indexOf("wf.step('prepare-clean-installed-candidate'");

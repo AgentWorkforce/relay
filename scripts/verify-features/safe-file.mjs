@@ -20,9 +20,13 @@ async function openNoFollow(target, flags, label) {
   if (typeof noFollow !== 'number' || noFollow === 0) {
     throw new Error(`${label} cannot be opened safely: this platform does not support O_NOFOLLOW`);
   }
+  const nonBlock = fsConstants.O_NONBLOCK;
+  if (typeof nonBlock !== 'number' || nonBlock === 0) {
+    throw new Error(`${label} cannot be opened safely: this platform does not support O_NONBLOCK`);
+  }
 
   try {
-    return await open(target, flags | noFollow | fsConstants.O_NONBLOCK);
+    return await open(target, flags | noFollow | nonBlock);
   } catch (error) {
     if (error?.code === 'ELOOP') {
       throw new Error(`${label} must not be a symbolic link`, { cause: error });

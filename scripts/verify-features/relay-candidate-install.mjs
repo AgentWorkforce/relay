@@ -526,11 +526,34 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   return { attestation, attestationSha256: sha256(bytes) };
 }
 
-async function prepare(outputRoot) {
+export async function createPrivateOutputRoot(outputRoot) {
   const root = path.resolve(outputRoot);
+  try {
+    await lstat(root);
+    throw new Error('candidate output root must not already exist');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  await mkdir(path.dirname(root), { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(root, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error('candidate output root must not already exist', { cause: error });
+    }
+    throw error;
+  }
+  const info = await lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error('candidate output root must be a newly created directory');
+  }
+  return root;
+}
+
+async function prepare(outputRoot) {
+  const root = await createPrivateOutputRoot(outputRoot);
   const tarballDir = path.join(root, 'tarballs');
   const installDir = path.join(root, 'install');
-  await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([mkdir(tarballDir, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
 
   const [rootPackage, sourceSha, sourceStatus] = await Promise.all([
@@ -735,10 +758,9 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
   }
   validateCandidateLockfile(JSON.parse(lockfileBytes.toString('utf8')), candidate.packages);
 
-  const root = path.resolve(outputRoot);
+  const root = await createPrivateOutputRoot(outputRoot);
   const tarballRoot = path.join(root, 'tarballs');
   const installDir = path.join(root, 'install');
-  await mkdir(root, { recursive: true, mode: 0o700 });
   await Promise.all([mkdir(tarballRoot, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
   for (const entry of candidate.packages) {
     const source = path.join(path.resolve(tarballDirectory), entry.tarballFile);
