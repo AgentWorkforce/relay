@@ -74,15 +74,15 @@ try {
   if (arm === 'head' && hasJson) {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-'));
     const requestId = 'model_pr_proof_1658';
-    let mutationCount = 0;
-    const server = createServer((request, response) => {
+    const server = createServer(async (request, response) => {
       if (request.headers['x-api-key'] !== 'pr-proof-key') {
         response.writeHead(401).end();
         return;
       }
       response.setHeader('content-type', 'application/json');
       if (request.method === 'POST') {
-        const unsupported = mutationCount++ > 0;
+        const body = await readRequestJson(request);
+        const unsupported = body.model === 'unsupported/model';
         response.end(
           JSON.stringify({
             name: 'proof-worker',
@@ -194,4 +194,10 @@ function requiredValue(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable ${name}.`);
   return value;
+}
+
+async function readRequestJson(request) {
+  let body = '';
+  for await (const chunk of request) body += chunk;
+  return JSON.parse(body);
 }
