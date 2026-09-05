@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -25,8 +25,8 @@ describe('diagnosis source provenance', () => {
       readFile('package.json', 'utf8').then(JSON.parse),
       readFile('workflows/diagnose-relay-orchestration-reliability.ts', 'utf8'),
     ]);
-    expect(packageJson.scripts['diagnose:orchestration:dry-run']).toContain('DRY_RUN=1');
-    expect(workflow).toContain("dryRun: process.env.DRY_RUN === '1'");
+    expect(packageJson.scripts['diagnose:orchestration:dry-run']).toMatch(/(?:^|\s)DRY_RUN\s*=\s*1(?:\s|$)/);
+    expect(workflow).toMatch(/dryRun\s*:\s*process\.env\.DRY_RUN\s*===\s*["']1["']/);
   });
 
   it('ignores runtime Trail telemetry but detects real source drift', async () => {
@@ -63,6 +63,27 @@ describe('diagnosis source provenance', () => {
     expect(sourceChanged.contentSha256).not.toBe(before.contentSha256);
     expect(sourceChanged.dirtyPaths).toContain('M src/value.ts');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a tracked symlink that escapes the repository',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'diagnosis-source-symlink-'));
+      temporaryDirectories.push(root);
+      const repository = path.join(root, 'repo');
+      await mkdir(repository);
+      await writeFile(path.join(root, 'outside.txt'), 'outside\n');
+      await symlink('../outside.txt', path.join(repository, 'outside-link'));
+      await execFileAsync('git', ['init', '-q'], { cwd: repository });
+      await execFileAsync('git', ['config', 'user.name', 'diagnosis-test'], { cwd: repository });
+      await execFileAsync('git', ['config', 'user.email', 'diagnosis@example.invalid'], {
+        cwd: repository,
+      });
+      await execFileAsync('git', ['add', '.'], { cwd: repository });
+      await execFileAsync('git', ['commit', '-qm', 'fixture'], { cwd: repository });
+
+      await expect(snapshotRepo('fixture', repository)).rejects.toThrow('symlink escapes its repository');
+    }
+  );
 
   it('treats confirmed and in-progress critical/high bugs as promotion blockers', () => {
     expect(isPromotionBlockingBug({ severity: 'CRITICAL', status: 'CONFIRMED' })).toBe(true);

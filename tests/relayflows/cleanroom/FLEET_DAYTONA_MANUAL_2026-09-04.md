@@ -119,7 +119,8 @@ A subsequent independent verifier audit invalidated that aggregate as a
 controlled reliability campaign. The two attempts used different runner hashes,
 both had dirty source trees, their shared Relay workspace already contained
 roughly four thousand identities, and both used the Relay 11.8.2 snapshot while
-the matrix required 11.10.2. In addition, `node-tail-agent` was a false pass in
+the then-current matrix required 11.10.2; the current matrix requires 11.10.3.
+In addition, `node-tail-agent` was a false pass in
 both attempts: the command timed out with empty broker stdout and only Daytona's
 CLI/API version warning on stderr. The counts above remain the literal contents
 of the historical artifact; they must not be quoted as a current stable/flaky

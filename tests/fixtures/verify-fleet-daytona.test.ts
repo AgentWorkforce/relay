@@ -151,6 +151,7 @@ function completeEvidence(matrix: {
       monotonicStartNs: String(index * 1_000),
       monotonicEndNs: String(index * 1_000 + 1_000),
       durationMs: 0.001,
+      preSpawnAgentAbsent: true,
       spawned: true,
       placementConfirmed: true,
       initialSentinelObserved: true,
@@ -736,6 +737,10 @@ describe('complete Daytona Fleet board', () => {
     forgedAck.criticalLifecycle.trials[0].initialAckAgentName = 'different-agent';
     expect(() => validateFleetEvidence(forgedAck, matrix)).toThrow(/status is inconsistent/);
 
+    const staleIdentity = structuredClone(evidence);
+    staleIdentity.criticalLifecycle.trials[2].preSpawnAgentAbsent = false;
+    expect(() => validateFleetEvidence(staleIdentity, matrix)).toThrow(/status is inconsistent/);
+
     const wrongCommand = structuredClone(evidence);
     const fleetNodes = wrongCommand.operations.find(({ id }) => id === 'fleet-nodes-name');
     fleetNodes.argv = ['agent-relay', 'fleet', 'status', '--name'];
@@ -1100,11 +1105,10 @@ describe('complete Daytona Fleet board', () => {
         ])
       ).resolves.toBeDefined();
 
-      const mutated = completeEvidence(matrix);
-      await writeFile(
-        path.join(matrix.artifactRoot, attemptNonces[0], 'evidence.json'),
-        `${JSON.stringify(mutated, null, 2)}\n`
-      );
+      const attemptPath = path.join(matrix.artifactRoot, attemptNonces[0], 'evidence.json');
+      const mutated = JSON.parse(await readFile(attemptPath, 'utf8'));
+      mutated.finishedAt = '2026-09-04T00:00:02.000Z';
+      await writeFile(attemptPath, `${JSON.stringify(mutated, null, 2)}\n`);
       await expect(
         execFileAsync(process.execPath, [
           'scripts/verify-features/fleet-daytona.mjs',
@@ -1114,7 +1118,7 @@ describe('complete Daytona Fleet board', () => {
           '--nonce',
           'campaign-test',
         ])
-      ).rejects.toThrow();
+      ).rejects.toThrow(/sealed evidenceSha256 no longer matches/);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

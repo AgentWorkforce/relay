@@ -23,7 +23,7 @@ import { workflow } from '@relayflows/core';
 const MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const RUNNER = 'scripts/verify-features/cleanroom.mjs';
 const PROFILE = process.env.VERIFY_CLEANROOM_PROFILE ?? 'full';
-const REVIEW_ROUNDS = Number.parseInt(process.env.VERIFY_CLEANROOM_REVIEW_ROUNDS ?? '2', 10);
+const REVIEW_ROUNDS = Number(process.env.VERIFY_CLEANROOM_REVIEW_ROUNDS ?? '2');
 const NONCE = randomBytes(16).toString('hex');
 const SOURCE = 'auto';
 const STEP_TIMEOUT = 7_200_000;
@@ -275,7 +275,7 @@ async function main() {
       dependsOn: ['gate-scope'],
       command: command('lane', ` --lane ${lane}`),
       captureOutput: true,
-      failOnError: true,
+      failOnError: false,
       timeoutMs: STEP_TIMEOUT,
     });
     wf.step(gateStep, {
