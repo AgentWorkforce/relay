@@ -504,6 +504,41 @@
             "focal:fleet-boundary",
             "confidence:0.88"
           ]
+        },
+        {
+          "ts": 1788635288831,
+          "type": "decision",
+          "content": "Make exact candidate-bound two-node Fleet qualification the sole release gate: Make exact candidate-bound two-node Fleet qualification the sole release gate",
+          "raw": {
+            "question": "Make exact candidate-bound two-node Fleet qualification the sole release gate",
+            "chosen": "Make exact candidate-bound two-node Fleet qualification the sole release gate",
+            "alternatives": [],
+            "reasoning": "The 95-operation harness is structurally sound, but production-snapshot fallback cannot prove the candidate. Cloud #3351 must land before any Fleet GREEN verdict."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788635289357,
+          "type": "reflection",
+          "content": "Fleet critical path is now Cloud atomic workspace binding -> exact candidate snapshot -> two clean Daytona nodes -> all 95 operations twice -> lifecycle/teardown proof -> independent reviews.",
+          "raw": {
+            "focalPoints": [
+              "fleet",
+              "candidate-provenance",
+              "daytona",
+              "cloud-contract"
+            ],
+            "adjustments": "Paused non-Fleet tracks and assigned dedicated Cloud contract and Fleet proof-matrix owners",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet",
+            "focal:candidate-provenance",
+            "focal:daytona",
+            "focal:cloud-contract",
+            "confidence:0.9"
+          ]
         }
       ]
     }

@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay agent get <name>` performs a bounded exact lookup without downloading the full workspace roster and distinguishes confirmed absence from authentication or transport failures.
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona snapshot with a required in-image manifest digest, and fails closed when Cloud cannot prove the exact candidate identity.
 
+### Security
+
+- Dependency resolution requires the patched `brace-expansion` release that bounds intermediate array growth.
+
 ## [11.10.3] - 2026-09-05
 
 ### Added
