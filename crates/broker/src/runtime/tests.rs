@@ -699,6 +699,20 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
     let second_get = second_get_rx.await.unwrap().unwrap();
     assert_eq!(second_get["status"], "rejected");
     assert_eq!(second_get["accepted"], false);
+    let (stale_get_tx, stale_get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some("stale-receipt".into()),
+            reply: stale_get_tx,
+        })
+        .await;
+    let stale_error = stale_get_rx
+        .await
+        .unwrap()
+        .expect_err("stale receipt must fail closed");
+    assert!(stale_error.contains("unknown or stale model receipt"));
     fixture
         .runtime
         .handle_worker_event(WorkerEvent::Message {

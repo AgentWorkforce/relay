@@ -5,7 +5,7 @@
  * a typed acknowledgement, while the broker/runtime unit tests cover the
  * accepted → provider-confirmed applied path and stale fencing.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
@@ -47,6 +47,40 @@ function run(command, args, label) {
     throw new Error(`${label} exited with status ${result.status}: ${result.stderr ?? ''}`);
   }
   return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+function runAsync(command, args, label) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: targetDir,
+      env: { ...process.env, RELAY_SKIP_TELEMETRY: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`${label} timed out after 300000ms`));
+    }, 300_000);
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`${label} failed to run: ${error.message}`));
+    });
+    child.once('close', (status) => {
+      clearTimeout(timer);
+      if (status !== 0) {
+        reject(new Error(`${label} exited with status ${status}: ${stderr}`));
+        return;
+      }
+      resolve(`${stdout}${stderr}`);
+    });
+  });
 }
 
 try {
@@ -131,7 +165,7 @@ try {
     );
     process.env.AGENT_RELAY_STATE_DIR = stateDir;
     try {
-      const receiptOutput = run(
+      const receiptOutput = await runAsync(
         process.execPath,
         [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'openai/gpt-5.4', '--json'],
         'set-model receipt'
@@ -153,7 +187,7 @@ try {
         typeof receipt.generation === 'string';
       if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
 
-      const unsupportedOutput = run(
+      const unsupportedOutput = await runAsync(
         process.execPath,
         [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'unsupported/model', '--json'],
         'unsupported set-model receipt'
@@ -177,7 +211,7 @@ try {
   const outcome = hasJson ? 'fixed' : 'bug';
   const signature = hasJson ? 'set_model_exposes_json_receipt' : 'set_model_has_no_json_receipt';
   const details = hasJson
-    ? 'The head CLI advertises --json for the correlated model receipt; provider application remains governed by typed runtime confirmation.'
+    ? 'The head CLI advertises --json for the correlated model receipt and rejects an unsupported terminal response without claiming application; provider application remains governed by typed runtime confirmation.'
     : 'The base CLI has no --json receipt surface, so callers cannot consume request/generation/effective model state.';
   await writeFile(
     resultPath,
