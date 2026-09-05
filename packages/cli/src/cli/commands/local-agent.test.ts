@@ -901,6 +901,50 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('applied=false'));
   });
 
+  it('set-model polls an accepted receipt even when its request id is empty', async () => {
+    const { program, client } = harness();
+    client.setModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'accepted_pending',
+      request_id: '',
+      generation: 'generation-1',
+      revision: 1,
+      success: false,
+      accepted: true,
+      pending: true,
+    }));
+    client.getModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: 'opus',
+      applied: true,
+      status: 'applied',
+      request_id: '',
+      receipt_id: '',
+      generation: 'generation-1',
+      revision: 1,
+      success: true,
+      accepted: true,
+      pending: false,
+    }));
+    vi.useFakeTimers();
+    try {
+      const command = program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], {
+        from: 'user',
+      });
+      await vi.runAllTimersAsync();
+      await command;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(client.getModel).toHaveBeenCalledWith('lead', '');
+  });
+
   it('message flush drains a local broker agent queue', async () => {
     const client = { flushPending: vi.fn(async () => ({ flushed: 2 })) };
     const connectLocal = vi.fn(async () => client as never);

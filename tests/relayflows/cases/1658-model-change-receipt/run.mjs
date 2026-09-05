@@ -8,6 +8,7 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -122,34 +123,57 @@ try {
     const requestId = 'model_pr_proof_1658';
     let broker;
     let provider;
-    const providerRequests = [];
+    let providerOutput = '';
     try {
-      provider = createServer(async (request, response) => {
-        const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-        if (request.method === 'POST' && url.pathname.endsWith('/model')) {
-          const body = await readRequestJson(request);
-          providerRequests.push({ method: 'POST', path: url.pathname, body });
-          if (body.model?.providerID === 'unsupported') {
-            response.writeHead(422).end(JSON.stringify({ error: 'provider unavailable' }));
-            return;
-          }
-          response.writeHead(204).end();
-          return;
+      const providerPort = await freePort();
+      const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
+      provider = spawn(
+        providerBinary,
+        ['serve', '--hostname', '127.0.0.1', '--port', String(providerPort), '--pure'],
+        {
+          cwd: stateDir,
+          env: {
+            ...process.env,
+            HOME: stateDir,
+            RELAY_SKIP_TELEMETRY: '1',
+            OPENCODE_SERVER_PASSWORD: '',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
         }
-        if (request.method === 'GET' && url.pathname.endsWith('/ses-proof')) {
-          providerRequests.push({ method: 'GET', path: url.pathname });
-          response.setHeader('content-type', 'application/json');
-          response.end(JSON.stringify({ model: { providerID: 'openai', id: 'gpt-5.4' } }));
-          return;
+      );
+      provider.stdout.on('data', (chunk) => {
+        providerOutput += chunk;
+      });
+      provider.stderr.on('data', (chunk) => {
+        providerOutput += chunk;
+      });
+      const providerEndpoint = `http://127.0.0.1:${providerPort}`;
+      await waitFor(async () => {
+        if (provider.exitCode !== null) {
+          throw new Error(`OpenCode exited early: ${providerOutput}`);
         }
-        response.writeHead(404).end();
+        try {
+          const response = await fetch(`${providerEndpoint}/global/health`, {
+            signal: AbortSignal.timeout(2_000),
+          });
+          return response.ok;
+        } catch {
+          return null;
+        }
+      }, 'the real OpenCode server to answer');
+      const sessionResponse = await fetch(`${providerEndpoint}/session`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(5_000),
       });
-      await new Promise((resolve, reject) => {
-        provider.once('error', reject);
-        provider.listen(0, '127.0.0.1', resolve);
-      });
-      const providerAddress = provider.address();
-      const providerPort = typeof providerAddress === 'object' && providerAddress ? providerAddress.port : 0;
+      if (!sessionResponse.ok) {
+        throw new Error(`OpenCode session creation failed: ${sessionResponse.status}`);
+      }
+      const session = await sessionResponse.json();
+      if (typeof session.id !== 'string' || session.id.length === 0) {
+        throw new Error(`OpenCode session creation omitted id: ${JSON.stringify(session)}`);
+      }
       broker = spawn(
         binaryPath,
         ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', brokerStateDir],
@@ -183,15 +207,20 @@ try {
         }
       }, 'the exact broker to publish its connection file');
       const api = brokerClient(brokerUrl);
-      await waitFor(() => api('GET', '/api/status').then(() => true), 'the exact broker API to answer');
+      await waitFor(() => {
+        if (broker.exitCode !== null) {
+          throw new Error(`broker exited before readiness: ${brokerOutput}`);
+        }
+        return api('GET', '/api/status', undefined, 2_000).then(() => true);
+      }, 'the exact broker API to answer');
       await api('POST', '/api/spawn', {
         name: 'proof-worker',
         cli: 'cat',
         harness_config: {
           runtime: 'headless',
           protocol: 'opencode',
-          endpoint: `http://127.0.0.1:${providerPort}`,
-          sessionId: 'ses-proof',
+          endpoint: providerEndpoint,
+          sessionId: session.id,
         },
       });
       const admitted = await api('POST', '/api/spawned/proof-worker/model', {
@@ -224,9 +253,11 @@ try {
       ) {
         throw new Error(`broker returned an invalid applied receipt: ${JSON.stringify(terminal)}`);
       }
-      const beforeUnsupported = providerRequests.length;
       const unsupportedAdmission = await api('POST', '/api/spawned/proof-worker/model', {
-        model: 'unsupported/model',
+        // OpenCode accepts arbitrary provider IDs in its session model
+        // endpoint. Use malformed model syntax so the broker's typed
+        // provider path rejects before making a provider request.
+        model: 'unsupported',
         timeout_ms: 30_000,
       });
       const unsupported = await waitFor(async () => {
@@ -248,22 +279,15 @@ try {
       ) {
         throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
       }
-      const unsupportedRequests = providerRequests.slice(beforeUnsupported);
-      if (
-        unsupportedRequests.length !== 1 ||
-        unsupportedRequests[0].method !== 'POST' ||
-        unsupportedRequests[0].body.model?.providerID !== 'unsupported'
-      ) {
-        throw new Error(
-          `unsupported model unexpectedly reached confirmation: ${JSON.stringify(unsupportedRequests)}`
-        );
-      }
     } finally {
       if (broker && broker.exitCode === null) {
         broker.kill('SIGTERM');
         await new Promise((resolve) => broker.once('close', resolve));
       }
-      if (provider) await new Promise((resolve) => provider.close(resolve));
+      if (provider && provider.exitCode === null) {
+        provider.kill('SIGTERM');
+        await new Promise((resolve) => provider.once('close', resolve));
+      }
       await rm(brokerStateDir, { recursive: true, force: true });
     }
 
@@ -442,12 +466,26 @@ async function waitFor(predicate, label, timeoutMs = MODEL_OPERATION_TIMEOUT_MS)
   throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}.`);
 }
 
+async function freePort() {
+  const server = createNetServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  if (!address || typeof address !== 'object' || !address.port) {
+    throw new Error('failed to reserve a local OpenCode port');
+  }
+  return address.port;
+}
+
 function brokerClient(baseUrl) {
-  return async (method, route, body) => {
+  return async (method, route, body, timeoutMs = 15_000) => {
     const response = await fetch(`${baseUrl}${route}`, {
       method,
       headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();

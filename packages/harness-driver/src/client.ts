@@ -1225,7 +1225,7 @@ export class HarnessDriverClient {
   }
 
   async getModel(name: string, requestId?: string): Promise<ModelUpdateResult> {
-    const query = requestId ? `?request_id=${encodeURIComponent(requestId)}` : '';
+    const query = requestId !== undefined ? `?request_id=${encodeURIComponent(requestId)}` : '';
     const result = await this.transport.request<Partial<ModelUpdateResult>>(
       `/api/spawned/${encodeURIComponent(name)}/model${query}`
     );

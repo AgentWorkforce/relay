@@ -1119,6 +1119,10 @@ impl BrokerRuntime {
                                 Instant::now(),
                             );
                         }
+                        // The name-keyed receipt describes the live worker
+                        // only; correlated request receipts remain available
+                        // in the request cache until their retention TTL.
+                        model_receipts.remove(&name);
                         let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,

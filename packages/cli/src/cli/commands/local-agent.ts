@@ -843,7 +843,7 @@ export function registerLocalAgentCommands(
       await run(deps, async (client) => {
         let receipt = await client.setModel(name, model);
         const requestId = receipt.request_id ?? undefined;
-        if (receipt.status === 'accepted_pending' && requestId) {
+        if (receipt.status === 'accepted_pending' && requestId !== undefined) {
           const deadline = Date.now() + MODEL_RECEIPT_POLL_TIMEOUT_MS;
           while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, MODEL_RECEIPT_POLL_INTERVAL_MS));

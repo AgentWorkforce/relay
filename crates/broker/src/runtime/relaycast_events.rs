@@ -401,6 +401,9 @@ pub(super) async fn release_worker_locally(
                 Instant::now(),
             );
         }
+        // Keep request-keyed terminal receipts for correlated polling, but do
+        // not expose a released worker's last receipt as current state.
+        model_receipts.remove(&name);
         // Worker disappearance invalidates every resize lease for that target,
         // including a stale lease whose session was already pruned.
         resize_owners.remove(&name);
