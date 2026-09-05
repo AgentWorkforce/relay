@@ -44,6 +44,7 @@ import { track } from '../telemetry/index.js';
 import { registerCloudRoomCommands } from './cloud-room.js';
 import { registerCloudIntegrationCommands } from './cloud-integration.js';
 import { registerCloudWorkerCommands } from './cloud-worker.js';
+import { registerCloudWorkspaceCommands } from './cloud-workspace.js';
 
 const CLOUD_SYNC_PATCH_EXCLUDES = [
   '.agent-bin/**',
@@ -649,6 +650,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
   registerCloudWorkerCommands(cloudCommand, deps);
   registerCloudRoomCommands(cloudCommand, deps);
   registerCloudIntegrationCommands(cloudCommand, deps);
+  registerCloudWorkspaceCommands(cloudCommand, deps);
 
   // ── login ──────────────────────────────────────────────────────────────────
 

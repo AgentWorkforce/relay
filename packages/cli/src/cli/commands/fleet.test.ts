@@ -763,6 +763,148 @@ describe('fleet command support', () => {
     });
   });
 
+  it('fleet spawn sends the exact Daytona snapshot ID and companion manifest digest', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_candidate', node: { name: 'candidate-node' } })),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_abc' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      providerId: 'daytona' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-candidate',
+      nodeName: 'candidate-node',
+      sandboxId: 'sandbox-candidate',
+      relayWorkspaceId: 'rw_abc',
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+      snapshotId: 'snap_immutable_candidate_0905',
+      snapshotManifestSha256: 'a'.repeat(64),
+    }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'daytona',
+        '--sandbox-snapshot',
+        'snap_immutable_candidate_0905',
+        '--sandbox-snapshot-manifest-sha256',
+        'a'.repeat(64),
+        '--sandbox-name',
+        'candidate-node',
+        '--name',
+        'candidate-worker',
+        '--task',
+        'Wait for VERIFY',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'daytona',
+        snapshotId: 'snap_immutable_candidate_0905',
+        snapshotManifestSha256: 'a'.repeat(64),
+        forceProvision: true,
+      })
+    );
+    expect(JSON.parse(logs[0]!)).toMatchObject({
+      sandbox: {
+        snapshotId: 'snap_immutable_candidate_0905',
+        snapshotManifestSha256: 'a'.repeat(64),
+      },
+      invocation: { invocationId: 'inv_candidate' },
+    });
+  });
+
+  it.each([
+    ['--sandbox-snapshot', 'snap_immutable_candidate_0905'],
+    ['--sandbox-snapshot-manifest-sha256', 'a'.repeat(64)],
+  ])('fleet spawn rejects an unpaired candidate selector (%s)', async (flag, value) => {
+    const program = new Command();
+    program.exitOverride();
+    const ensureCloudFleetSandbox = vi.fn();
+    registerFleetCommands(program, {
+      ensureCloudFleetSandbox,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        ['fleet', 'spawn', 'codex', '--sandbox', flag, value, '--name', 'candidate-worker', '--task', 'Wait'],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('cli-exit:1');
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+
+  it('fleet spawn rejects a candidate snapshot without explicit Daytona selection', async () => {
+    const program = new Command();
+    program.exitOverride();
+    const ensureCloudFleetSandbox = vi.fn();
+    registerFleetCommands(program, {
+      ensureCloudFleetSandbox,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-snapshot',
+          'snap_immutable_candidate_0905',
+          '--sandbox-snapshot-manifest-sha256',
+          'a'.repeat(64),
+          '--name',
+          'candidate-worker',
+          '--task',
+          'Wait',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('cli-exit:1');
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+
   it('fleet spawn --sandbox deletes a freshly provisioned sandbox when dispatch fails', async () => {
     const placement = { spawn: vi.fn(async () => Promise.reject(new Error('dispatch failed'))) };
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);

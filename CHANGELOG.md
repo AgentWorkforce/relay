@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay cloud workspace create/delete` manages TTL-bounded qualification workspaces through reveal-once `0600` credential files and refuses deletion without complete server cascade proof.
+- `agent-relay agent get <name>` performs a bounded exact lookup without downloading the full workspace roster and distinguishes confirmed absence from authentication or transport failures.
+- `agent-relay fleet spawn --sandbox` can select an immutable Daytona snapshot with a required in-image manifest digest, and fails closed when Cloud cannot prove the exact candidate identity.
+
 ### Changed
 
 - `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.
