@@ -1,0 +1,440 @@
+{
+  "version": 1,
+  "product": "relay",
+  "provider": "daytona",
+  "minimumBoardNodes": 2,
+  "requiredSnapshotRelayVersion": "11.10.3",
+  "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
+  "inventoryFile": "fleet-cli-inventory.json",
+  "inventorySha256": "66ff1fbbb7b89e9c5807a40f41e62bf08342397bc8592b24d2faf0bcc11648a9",
+  "commandSurface": {
+    "fleet agent list": [
+      "fleet-agent-list-json",
+      "fleet-agent-list-pretty",
+      "fleet-agent-list-node",
+      "fleet-agent-list-all"
+    ],
+    "fleet config": ["fleet-config"],
+    "fleet disable": ["fleet-disable"],
+    "fleet enable": ["fleet-enable"],
+    "fleet inherit": ["fleet-inherit"],
+    "fleet nodes": ["fleet-nodes-default", "fleet-nodes-name", "fleet-nodes-capability", "fleet-nodes-all"],
+    "fleet release": ["fleet-release", "fleet-release-delete-agent", "fleet-release-reclaims-owned-sandbox"],
+    "fleet serve": ["fleet-serve-migration"],
+    "fleet spawn": [
+      "fleet-spawn-node",
+      "fleet-spawn-target-node-alias",
+      "fleet-spawn-automatic-owned-placement",
+      "fleet-spawn-session-ref",
+      "fleet-spawn-no-confirm-readiness",
+      "fleet-spawn-metadata-channel-model-cwd",
+      "fleet-spawn-provider-claude",
+      "fleet-spawn-provider-codex",
+      "fleet-spawn-provider-gemini",
+      "fleet-spawn-provider-aider",
+      "fleet-spawn-provider-goose",
+      "fleet-spawn-provider-grok",
+      "fleet-spawn-provider-opencode",
+      "fleet-spawn-reject-droid",
+      "fleet-spawn-sandbox-root-mount",
+      "fleet-spawn-sandbox-scoped-mount",
+      "fleet-spawn-sandbox-no-mount"
+    ],
+    "fleet status": ["fleet-status"],
+    "node up": ["node-up-already-running", "node-up-after-down"],
+    "node down": ["node-down-graceful", "node-down-all"],
+    "node status": ["node-status", "node-status-wait"],
+    "node metrics": ["node-metrics", "node-metrics-agent"],
+    "node deadletters": ["node-deadletters", "node-deadletters-json"],
+    "node redeliver": ["node-redeliver-all", "node-redeliver-requires-id"],
+    "node tail": ["node-tail-agent"],
+    "node agent list": ["node-agent-list", "node-agent-list-pretty", "node-agent-list-status"],
+    "node agent spawn": [
+      "node-agent-spawn-codex-auto-a",
+      "node-agent-spawn-codex-auto-b",
+      "node-agent-spawn-codex-pty",
+      "node-agent-spawn-codex-native",
+      "node-agent-spawn-task-exit",
+      "node-agent-spawn-exit-after-task",
+      "node-agent-spawn-provider-claude",
+      "node-agent-spawn-provider-gemini",
+      "node-agent-spawn-provider-droid",
+      "node-agent-spawn-provider-aider",
+      "node-agent-spawn-provider-goose",
+      "node-agent-spawn-provider-grok",
+      "node-agent-spawn-provider-opencode",
+      "node-agent-spawn-provider-claude-native",
+      "node-agent-spawn-provider-opencode-native",
+      "node-agent-spawn-provider-cursor",
+      "node-agent-spawn-provider-pi-native",
+      "node-agent-spawn-provider-deepagents-native"
+    ],
+    "node agent new": ["node-agent-new-view"],
+    "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
+    "node agent set-model": ["node-agent-set-model"],
+    "node agent attach": [
+      "node-agent-attach-view-json",
+      "node-agent-attach-drive-json",
+      "node-agent-attach-passthrough-json"
+    ],
+    "node agent message flush": ["node-agent-message-flush"],
+    "node agent message hold": ["node-agent-message-hold"],
+    "node agent message auto": ["node-agent-message-auto"],
+    "node workflow run": ["node-workflow-run"],
+    "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
+    "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
+  },
+  "operations": [
+    { "id": "daytona-baseline", "group": "topology", "expect": "success" },
+    { "id": "provision-node-a", "group": "topology", "expect": "success" },
+    { "id": "provision-node-b", "group": "topology", "expect": "success" },
+    { "id": "prove-distinct-fresh-daytona-nodes", "group": "topology", "expect": "success" },
+    { "id": "initial-task-sentinel-a", "group": "injection", "expect": "sentinel" },
+    { "id": "initial-task-sentinel-b", "group": "injection", "expect": "sentinel" },
+
+    { "id": "fleet-nodes-default", "group": "fleet", "expect": "success" },
+    { "id": "fleet-nodes-name", "group": "fleet", "expect": "success", "argvMustContain": ["--name"] },
+    {
+      "id": "fleet-nodes-capability",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--capability"]
+    },
+    { "id": "fleet-nodes-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
+    { "id": "fleet-agent-list-json", "group": "fleet", "expect": "success", "argvMustContain": ["--json"] },
+    {
+      "id": "fleet-agent-list-pretty",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--pretty"]
+    },
+    { "id": "fleet-agent-list-node", "group": "fleet", "expect": "success", "argvMustContain": ["--node"] },
+    { "id": "fleet-agent-list-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
+    { "id": "fleet-spawn-node", "group": "fleet-spawn", "expect": "sentinel", "argvMustContain": ["--node"] },
+    {
+      "id": "fleet-spawn-target-node-alias",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--target-node"]
+    },
+    { "id": "fleet-spawn-automatic-owned-placement", "group": "fleet-spawn", "expect": "sentinel" },
+    {
+      "id": "fleet-spawn-session-ref",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--session-ref"]
+    },
+    {
+      "id": "fleet-spawn-no-confirm-readiness",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--no-confirm"]
+    },
+    {
+      "id": "fleet-spawn-metadata-channel-model-cwd",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--channel", "--model", "--cwd"]
+    },
+    {
+      "id": "fleet-spawn-provider-claude",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["claude"]
+    },
+    {
+      "id": "fleet-spawn-provider-codex",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["codex"]
+    },
+    {
+      "id": "fleet-spawn-provider-gemini",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["gemini"]
+    },
+    {
+      "id": "fleet-spawn-provider-aider",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["aider"]
+    },
+    {
+      "id": "fleet-spawn-provider-goose",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["goose"]
+    },
+    {
+      "id": "fleet-spawn-provider-grok",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["grok"]
+    },
+    {
+      "id": "fleet-spawn-provider-opencode",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["opencode"]
+    },
+    {
+      "id": "fleet-spawn-reject-droid",
+      "group": "fleet-provider",
+      "expect": "expected-failure",
+      "mustContain": "unsupported CLI",
+      "argvMustContain": ["droid"]
+    },
+    {
+      "id": "fleet-spawn-sandbox-root-mount",
+      "group": "fleet-sandbox",
+      "expect": "sentinel",
+      "argvMustContain": ["--sandbox"]
+    },
+    {
+      "id": "fleet-spawn-sandbox-scoped-mount",
+      "group": "fleet-sandbox",
+      "expect": "sentinel",
+      "argvMustContain": ["--sandbox", "--sandbox-relayfile-path"]
+    },
+    {
+      "id": "fleet-spawn-sandbox-no-mount",
+      "group": "fleet-sandbox",
+      "expect": "sentinel",
+      "argvMustContain": ["--sandbox", "--no-sandbox-relayfile"]
+    },
+    { "id": "fleet-release", "group": "fleet", "expect": "success" },
+    { "id": "fleet-release-delete-agent", "group": "fleet", "expect": "success" },
+    { "id": "fleet-release-reclaims-owned-sandbox", "group": "fleet", "expect": "success" },
+    { "id": "fleet-config", "group": "fleet-policy", "expect": "success" },
+    {
+      "id": "fleet-enable",
+      "group": "fleet-policy",
+      "expect": "success",
+      "destructiveScope": "workspace-policy"
+    },
+    {
+      "id": "fleet-disable",
+      "group": "fleet-policy",
+      "expect": "success",
+      "destructiveScope": "workspace-policy"
+    },
+    {
+      "id": "fleet-inherit",
+      "group": "fleet-policy",
+      "expect": "success",
+      "destructiveScope": "workspace-policy"
+    },
+    { "id": "fleet-status", "group": "fleet", "expect": "success" },
+    {
+      "id": "fleet-serve-migration",
+      "group": "fleet",
+      "expect": "expected-failure",
+      "mustContain": "node up"
+    },
+
+    { "id": "post-ready-steer-a", "group": "injection", "expect": "sentinel" },
+    { "id": "post-ready-steer-b", "group": "injection", "expect": "sentinel" },
+    { "id": "post-ready-reader-ack", "group": "injection", "expect": "success" },
+
+    {
+      "id": "node-up-already-running",
+      "group": "node",
+      "expect": "success"
+    },
+    { "id": "node-down-graceful", "group": "node", "expect": "success" },
+    { "id": "node-up-after-down", "group": "node", "expect": "success" },
+    {
+      "id": "node-down-all",
+      "group": "node",
+      "expect": "success",
+      "destructiveScope": "sandbox-processes",
+      "argvMustContain": ["--all"]
+    },
+    { "id": "node-status", "group": "node", "expect": "success" },
+    { "id": "node-status-wait", "group": "node", "expect": "success", "argvMustContain": ["--wait-for"] },
+    { "id": "node-metrics", "group": "node", "expect": "success" },
+    { "id": "node-metrics-agent", "group": "node", "expect": "success", "argvMustContain": ["--agent"] },
+    { "id": "node-deadletters", "group": "node", "expect": "success" },
+    { "id": "node-deadletters-json", "group": "node", "expect": "success", "argvMustContain": ["--json"] },
+    { "id": "node-redeliver-all", "group": "node", "expect": "success", "argvMustContain": ["--all"] },
+    {
+      "id": "node-redeliver-requires-id",
+      "group": "node",
+      "expect": "expected-failure",
+      "mustContain": "Provide exactly one"
+    },
+    {
+      "id": "node-tail-agent",
+      "group": "node",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--agent"]
+    },
+
+    { "id": "node-agent-list", "group": "node-agent", "expect": "success" },
+    {
+      "id": "node-agent-list-pretty",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--pretty"]
+    },
+    {
+      "id": "node-agent-list-status",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--status"]
+    },
+    { "id": "node-agent-spawn-codex-auto-a", "group": "node-agent-spawn", "expect": "sentinel" },
+    { "id": "node-agent-spawn-codex-auto-b", "group": "node-agent-spawn", "expect": "sentinel" },
+    {
+      "id": "node-agent-spawn-codex-pty",
+      "group": "node-agent-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--runtime", "pty"]
+    },
+    {
+      "id": "node-agent-spawn-codex-native",
+      "group": "node-agent-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-task-exit",
+      "group": "node-agent-spawn",
+      "expect": "sentinel-and-exit",
+      "argvMustContain": ["--spawn-mode", "task-exit"]
+    },
+    {
+      "id": "node-agent-spawn-exit-after-task",
+      "group": "node-agent-spawn",
+      "expect": "sentinel-and-exit",
+      "argvMustContain": ["--exit-after-task"]
+    },
+    {
+      "id": "node-agent-spawn-provider-claude",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["claude"]
+    },
+    {
+      "id": "node-agent-spawn-provider-gemini",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["gemini"]
+    },
+    {
+      "id": "node-agent-spawn-provider-droid",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["droid"]
+    },
+    {
+      "id": "node-agent-spawn-provider-aider",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["aider"]
+    },
+    {
+      "id": "node-agent-spawn-provider-goose",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["goose"]
+    },
+    {
+      "id": "node-agent-spawn-provider-grok",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["grok"]
+    },
+    {
+      "id": "node-agent-spawn-provider-opencode",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["opencode"]
+    },
+    {
+      "id": "node-agent-spawn-provider-claude-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["claude", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-provider-opencode-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["opencode", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-provider-cursor",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["cursor"]
+    },
+    {
+      "id": "node-agent-spawn-provider-pi-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["pi", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-provider-deepagents-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["deepagents", "--runtime", "native"]
+    },
+    { "id": "node-agent-new-view", "group": "node-agent", "expect": "sentinel", "allowTimeout": true },
+    {
+      "id": "node-agent-set-model",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-attach-view-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-attach-drive-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-attach-passthrough-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--json"]
+    },
+    { "id": "node-agent-message-hold", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-message-flush", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-message-auto", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-release", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-same-name-reclaim", "group": "node-agent", "expect": "sentinel" },
+
+    { "id": "node-workflow-run", "group": "node-workflow", "expect": "success" },
+    { "id": "node-workflow-logs", "group": "node-workflow", "expect": "success" },
+    {
+      "id": "node-workflow-logs-follow",
+      "group": "node-workflow",
+      "expect": "success",
+      "argvMustContain": ["--follow"]
+    },
+    {
+      "id": "node-workflow-sync-dry-run",
+      "group": "node-workflow",
+      "expect": "success",
+      "argvMustContain": ["--dry-run"]
+    },
+    { "id": "node-workflow-sync", "group": "node-workflow", "expect": "success" },
+
+    { "id": "agent-identity-reconciliation", "group": "cleanup", "expect": "success" },
+    { "id": "owned-sandbox-cleanup", "group": "cleanup", "expect": "success" },
+    { "id": "daytona-baseline-restored", "group": "cleanup", "expect": "success" }
+  ]
+}

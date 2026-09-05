@@ -145,6 +145,7 @@ describe('registerCloudCommands', () => {
       'worker',
       'room',
       'integration',
+      'workspace',
       'login',
       'logout',
       'session',

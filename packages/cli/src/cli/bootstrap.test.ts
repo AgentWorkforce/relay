@@ -65,6 +65,8 @@ const expectedLeafCommands = [
   'cloud logs',
   'cloud sync',
   'cloud cancel',
+  'cloud workspace create',
+  'cloud workspace delete',
   'cloud worker register',
   'cloud worker start',
   'cloud worker status',
@@ -98,6 +100,7 @@ const expectedLeafCommands = [
   // workspace agents
   'agent register',
   'agent rotate',
+  'agent get',
   'agent list',
   'agent add',
   'agent remove',
@@ -277,6 +280,19 @@ describe('bootstrap CLI', () => {
     const leafCommandPaths = collectLeafCommandPaths(program);
 
     expect([...leafCommandPaths].sort()).toEqual([...expectedLeafCommands].sort());
+
+    const fleetMatrix = JSON.parse(
+      fs.readFileSync(path.resolve('tests/relayflows/cleanroom/fleet-daytona.matrix.json'), 'utf8')
+    ) as { commandSurface: Record<string, string[]> };
+    const orchestrationLeaves = leafCommandPaths.filter(
+      (command) => command.startsWith('fleet ') || command.startsWith('node ')
+    );
+    // The matrix also exercises the hidden `fleet serve` migration stub. The
+    // visible leaf collector intentionally excludes hidden commands, so add
+    // that one separately instead of weakening either contract.
+    expect(Object.keys(fleetMatrix.commandSurface).sort()).toEqual(
+      [...orchestrationLeaves, 'fleet serve'].sort()
+    );
   });
 
   it('keeps `local` as a hidden, routable alias of `node`', () => {
