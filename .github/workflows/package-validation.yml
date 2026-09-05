@@ -215,10 +215,11 @@ jobs:
           node-version: '22.14.0'
 
       - name: Upgrade npm before fresh resolution
-        # See node-compat.yml's identical step: npm <=10.9.x's arborist
-        # crashes re-resolving the harnesses package's peer set with no
-        # lockfile present (npm/cli#8261). See relay#1652. Applied here too
-        # so this job passes independent of merge order with that PR.
+        # See publish.yml's "Upgrade npm before fresh resolution" step: npm
+        # <=10.9.x's arborist crashes re-resolving the harnesses package's
+        # peer set once the lockfile is gone (npm/cli#8261). Fixed by npm
+        # version, not Node version — confirmed via repro on npm 10.9.4/Node
+        # 22.22.0 still crashing and npm 11.19.1/Node 22.14.0 succeeding.
         run: npm install -g npm@11.19.1
 
       # The publish workflow bumps versions, removes package-lock.json, then

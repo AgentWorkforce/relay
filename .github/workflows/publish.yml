@@ -436,6 +436,17 @@ jobs:
             }
           "
 
+      - name: Upgrade npm before fresh resolution
+        # npm <=10.9.x's arborist crashes ("Cannot read properties of null
+        # (reading 'edgesOut')", npm/cli#8261) walking the peer set of
+        # @agent-relay/harnesses' @ai-sdk/harness-pi -> pi-coding-agent chain
+        # once the lockfile is gone and it has to fully re-resolve. Confirmed
+        # this is an npm-version bug, not a Node-version one: the same crash
+        # reproduces on npm 10.9.4 (Node 22.22.0) and clears on npm 11.19.1
+        # without touching the Node pin. Pinned (not `npm@latest`) to keep CI
+        # deterministic.
+        run: npm install -g npm@11.19.1
+
       - name: Clean reinstall after version bump
         run: |
           # Clear npm cache and node_modules to ensure fresh platform-specific deps
