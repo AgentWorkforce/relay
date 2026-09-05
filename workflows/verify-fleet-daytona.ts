@@ -1,5 +1,5 @@
 /**
- * Complete Relay Fleet proof on two fresh Daytona sandboxes.
+ * Complete Relay Fleet proof on two fresh Daytona sandboxes per attempt.
  *
  * Heavy work is deterministic: public CLI commands run directly and immutable,
  * redacted evidence is checkpointed after every operation. Agents only review
@@ -95,6 +95,9 @@ function reviewTask(role: string, kind: 'supervisor' | 'fix' | 'review', priorRo
     '',
     'Read all prior review artifacts:',
     prior,
+    '',
+    'Inspect every one of the five critical lifecycle trials per attempt: exact targeted node placement, sender-bound initial and post-ready MCP ACK message hashes, steer receipt reader identity, same-name reuse, and release convergence.',
+    'Confirm the baseline has zero total/online agents and zero total/live Fleet nodes, and that every Daytona board sandbox hashes the actual candidate CLI and platform broker executable bytes.',
     '',
     `Write ${output} as strict JSON using exactly this contract:`,
     `{ "version": 1, "role": "${role}", "kind": "${kind}",`,
@@ -208,7 +211,7 @@ async function main() {
   await ensurePermissionPlaceholders();
   const wf = workflow('relay-fleet-daytona-comprehensive')
     .description(
-      'Run the 95-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes; preserve defects, clean exact resources, classify repeatability, and require fresh Claude/Codex evidence signoff.'
+      'Run the 95-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.'
     )
     .pattern('dag')
     .channel(`relay-fleet-daytona-${NONCE.slice(0, 8)}`)
