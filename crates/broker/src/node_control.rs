@@ -576,7 +576,7 @@ pub(crate) enum FleetControlEvent {
     Message(RelaycastToBroker),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeliveryDecision {
     Deliver { up_to_seq: u64 },
     Duplicate { up_to_seq: u64 },
@@ -980,6 +980,12 @@ impl FleetDeliveryBook {
         }
 
         if deliver.seq != cursor.received_up_to_seq.saturating_add(1) {
+            // A forward hole. Report it and let the caller withhold the ACK
+            // (see `plan_fleet_delivery`): the cursor deliberately stays put,
+            // so when the engine redelivers the frame that actually went
+            // missing it is accepted and the sequence becomes contiguous
+            // again. ACKing here would report progress this broker has not
+            // made for a message the agent never saw.
             return DeliveryDecision::Gap {
                 up_to_seq: cursor.acked_up_to_seq,
             };
@@ -2516,6 +2522,74 @@ mod tests {
             ..first
         };
         assert_eq!(book.observe(&gap), DeliveryDecision::Gap { up_to_seq: 1 });
+    }
+
+    /// A gap must leave the stream able to heal itself.
+    ///
+    /// Written while investigating the P0 of 2026-09-05, where agents stopped
+    /// receiving inbound dispatch permanently while staying alive, able to
+    /// send, and reporting `nodeConnected: true`. That outage was NOT traced to
+    /// this path, and this test does not claim it was — it pins the invariant
+    /// the path has to hold either way: a gap must not move the cursor, so that
+    /// the engine's redelivery of the genuinely missing frame is still
+    /// accepted.
+    ///
+    /// The assertion that matters is the last one — that delivery RESUMES.
+    #[test]
+    fn delivery_book_gap_leaves_the_cursor_ready_for_the_engine_to_heal_it() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 10);
+
+        // Frame 11 is delayed or dropped; the engine's frame 12 arrives first.
+        let after_hole = test_delivery("agent-a", "agent-a-id", 12);
+        assert_eq!(
+            book.observe(&after_hole),
+            DeliveryDecision::Gap { up_to_seq: 10 },
+            "a frame past a hole is a gap"
+        );
+
+        // Critical: observing a gap must not disturb the cursor, or the
+        // redelivery below can never be accepted.
+        assert_eq!(book.received_up_to_seq("agent-a-id"), 10);
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 10);
+
+        // The engine still holds seq 11 outstanding, because the gap was never
+        // ACKed, and redelivers it. The stream heals.
+        let missing = test_delivery("agent-a", "agent-a-id", 11);
+        assert_eq!(
+            book.observe(&missing),
+            DeliveryDecision::Deliver { up_to_seq: 11 },
+            "the redelivered missing frame must be accepted"
+        );
+        assert_eq!(book.commit_delivered(&missing), 11);
+
+        assert_eq!(
+            book.observe(&after_hole),
+            DeliveryDecision::Deliver { up_to_seq: 12 },
+            "and the frame that was gapped must now be deliverable — this is \
+             the agent waking back up"
+        );
+        assert_eq!(book.commit_delivered(&after_hole), 12);
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 12);
+    }
+
+    /// The floor a gap reports must never claim progress the broker has not
+    /// made. Reporting anything above the true floor would tell Relaycast the
+    /// missing frame was handled, and it would stop being redelivered.
+    #[test]
+    fn delivery_book_gap_reports_only_the_true_ack_floor() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 5);
+
+        for seq in [7_u64, 8, 9] {
+            assert_eq!(
+                book.observe(&test_delivery("agent-a", "agent-a-id", seq)),
+                DeliveryDecision::Gap { up_to_seq: 5 },
+                "seq {seq} must report the unchanged floor 5, never its own seq"
+            );
+        }
+        assert_eq!(book.received_up_to_seq("agent-a-id"), 5);
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 5);
     }
 
     #[test]
