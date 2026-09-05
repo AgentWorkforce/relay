@@ -1,0 +1,824 @@
+{
+  "version": 1,
+  "product": "relay",
+  "repository": "AgentWorkforce/relay",
+  "featureManifest": ".agentworkforce/features/manifest.yaml",
+  "isolatedEnvironment": {
+    "AGENT_RELAY_HOME": "relay-state",
+    "AGENT_RELAY_DATA_DIR": "relay-state"
+  },
+  "environmentDefaults": {
+    "AGENT_RELAY_TELEMETRY_DISABLED": "1"
+  },
+  "artifacts": {
+    "broker-binary": "target/release/agent-relay-broker",
+    "cli-entrypoint": "packages/cli/dist/cli/index.js"
+  },
+  "recentMergeDays": 90,
+  "evidencePolicy": {
+    "critical": "integration",
+    "hot": "integration",
+    "standard": "contract"
+  },
+  "profiles": {
+    "smoke": {
+      "lanes": [
+        "workspace-bootstrap",
+        "broker-agents",
+        "messaging-mcp",
+        "workflow-cloud",
+        "regression-corpus"
+      ],
+      "defaultRepeats": 1,
+      "requireFreshSandbox": false
+    },
+    "full": {
+      "lanes": [
+        "workspace-bootstrap",
+        "broker-agents",
+        "messaging-mcp",
+        "fleet-injection-attach",
+        "workflow-cloud",
+        "sdk-harness",
+        "polyglot-plugins",
+        "regression-corpus"
+      ],
+      "defaultRepeats": 3,
+      "requireFreshSandbox": true
+    },
+    "soak": {
+      "lanes": [
+        "workspace-bootstrap",
+        "broker-agents",
+        "messaging-mcp",
+        "fleet-injection-attach",
+        "workflow-cloud",
+        "sdk-harness",
+        "polyglot-plugins",
+        "regression-corpus"
+      ],
+      "defaultRepeats": 10,
+      "requireFreshSandbox": true
+    }
+  },
+  "commonSetup": [
+    {
+      "id": "npm-clean-install",
+      "command": ["npm", "ci"],
+      "timeoutSeconds": 900,
+      "requiredCommands": ["npm"]
+    }
+  ],
+  "lanes": [
+    {
+      "id": "workspace-bootstrap",
+      "title": "Fresh install, CLI, workspace and state isolation",
+      "requiredArtifacts": ["cli-entrypoint"],
+      "routingPriority": 70,
+      "issueNumbers": [1192, 1260, 1349, 1384, 1393, 1424, 1440, 1442, 1446, 1566, 1575, 1587],
+      "featureCategories": ["workspace", "setup", "telemetry", "node"],
+      "issueMatch": [
+        "workspace",
+        "state-dir",
+        "AGENT_RELAY_DATA_DIR",
+        "enroll",
+        "project pin",
+        "workspace key",
+        "update reports",
+        "standalone",
+        "version"
+      ],
+      "setup": [
+        {
+          "id": "build-cli",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "workspace-contract-suite",
+          "title": "Workspace precedence, activation and persisted state contracts",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/commands/workspace.test.ts",
+            "packages/cli/src/cli/commands/status.test.ts",
+            "packages/cli/src/cli/lib/workspace-store.test.ts",
+            "packages/cli/src/cli/lib/project-workspace-key.test.ts",
+            "packages/cli/src/cli/lib/workspace-session.test.ts",
+            "packages/cloud/src/workspace-store.test.ts",
+            "packages/cloud/src/project-workspace-key.test.ts",
+            "packages/cloud/src/workspaces.test.ts",
+            "packages/cli/src/cli/telemetry/config.test.ts"
+          ],
+          "timeoutSeconds": 600,
+          "evidence": "contract",
+          "coversCategories": ["workspace", "telemetry"]
+        },
+        {
+          "id": "built-cli-command-discovery",
+          "title": "The checkout-built CLI exposes the public command tree",
+          "command": ["node", "packages/cli/dist/cli/index.js", "--help"],
+          "timeoutSeconds": 60,
+          "mustContain": ["Agent-to-agent messaging", "node", "workspace", "mcp"],
+          "evidence": "integration",
+          "coversCategories": ["setup", "node"]
+        },
+        {
+          "id": "fresh-workspace-no-implicit-create",
+          "title": "A fresh project does not silently create or reuse a workspace",
+          "kind": "coverage-gap",
+          "reason": "Requires a direct checkout-built CLI probe in an empty HOME/project that asserts no local or hosted workspace is minted.",
+          "evidence": "integration",
+          "coversCategories": ["workspace"],
+          "issues": [1424, 1440, 1442, 1587]
+        }
+      ]
+    },
+    {
+      "id": "broker-agents",
+      "title": "Broker lifecycle, managed workers, readiness and release",
+      "requiredArtifacts": ["broker-binary", "cli-entrypoint"],
+      "routingPriority": 40,
+      "issueNumbers": [1328, 1374, 1416, 1443],
+      "featureCategories": ["broker", "agent-management", "local-agents"],
+      "issueMatch": [
+        "broker",
+        "worker",
+        "spawn",
+        "release",
+        "agent name",
+        "identity",
+        "registration",
+        "heartbeat",
+        "dead-letter",
+        "orphan"
+      ],
+      "setup": [
+        {
+          "id": "build-core",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        },
+        {
+          "id": "build-broker",
+          "command": ["cargo", "build", "--release", "--bin", "agent-relay-broker"],
+          "timeoutSeconds": 1800,
+          "requiredCommands": ["cargo"]
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "broker-process-integration",
+          "title": "Real broker protocol, lifecycle, injection and child cleanup",
+          "command": ["npm", "run", "test:integration:broker"],
+          "timeoutSeconds": 1800,
+          "environment": {
+            "AGENT_RELAY_BIN": "{{brokerBinary}}"
+          },
+          "forbidOutput": ["# SKIP"],
+          "evidence": "integration",
+          "coversCategories": ["broker", "agent-management", "local-agents"]
+        },
+        {
+          "id": "spawn-release-soak",
+          "title": "Repeated spawn, task completion, release and same-name reclaim",
+          "kind": "coverage-gap",
+          "reason": "Needs five real provider-backed workers per provider with readiness, exact task output, release absence, and same-name redispatch assertions.",
+          "evidence": "fault",
+          "coversCategories": ["local-agents"],
+          "issues": [1114, 1125, 1374, 1510, 1563, 1603, 1604]
+        }
+      ]
+    },
+    {
+      "id": "messaging-mcp",
+      "title": "Channels, DMs, inbox, actions and MCP stdio",
+      "requiredArtifacts": ["broker-binary", "cli-entrypoint"],
+      "routingPriority": 80,
+      "issueNumbers": [
+        1061, 1117, 1255, 1262, 1263, 1294, 1295, 1297, 1298, 1299, 1300, 1309, 1367, 1368, 1463, 1468, 1525,
+        1531, 1541, 1542, 1543, 1559, 1594, 1607, 1614, 1631, 1641, 1643
+      ],
+      "featureCategories": [
+        "messaging-channels",
+        "messaging-messages",
+        "messaging-dm",
+        "messaging-reactions",
+        "messaging-inbox",
+        "mcp"
+      ],
+      "issueMatch": [
+        "message",
+        "delivery",
+        "inbox",
+        "DM",
+        "channel",
+        "MCP",
+        "register_agent",
+        "recipient",
+        "observer",
+        "inject",
+        "queue",
+        "ack",
+        "dedup",
+        "replay",
+        "context.update",
+        "read-ack"
+      ],
+      "setup": [
+        {
+          "id": "build-core",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        },
+        {
+          "id": "compile-broker-tests",
+          "command": ["npm", "run", "test:integration:broker:build"],
+          "timeoutSeconds": 600
+        },
+        {
+          "id": "build-broker",
+          "command": ["cargo", "build", "--release", "--bin", "agent-relay-broker"],
+          "timeoutSeconds": 1800,
+          "requiredCommands": ["cargo"]
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "messaging-mcp-contracts",
+          "title": "CLI and MCP message contracts",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/agent-relay-mcp.protocol.test.ts",
+            "packages/cli/src/cli/agent-relay-mcp.startup.test.ts",
+            "packages/cli/src/cli/mcp/messaging-tools.delivery.test.ts",
+            "packages/cli/src/cli/mcp/messaging-tools.protocol.test.ts",
+            "packages/sdk/src/__tests__/messaging.test.ts",
+            "packages/sdk/src/__tests__/delivery-actions.test.ts"
+          ],
+          "timeoutSeconds": 600,
+          "evidence": "contract",
+          "coversCategories": [
+            "messaging-channels",
+            "messaging-messages",
+            "messaging-dm",
+            "messaging-reactions",
+            "messaging-inbox",
+            "mcp"
+          ]
+        },
+        {
+          "id": "messaging-mcp-process-roundtrip",
+          "title": "Real broker messaging and MCP injection round trips",
+          "command": [
+            "node",
+            "--test",
+            "tests/integration/broker/dist/messaging.test.js",
+            "tests/integration/broker/dist/channel-management.test.js",
+            "tests/integration/broker/dist/mcp-injection.test.js",
+            "tests/integration/broker/dist/mcp-hints.test.js",
+            "tests/integration/broker/dist/agent-spawns-agent.test.js"
+          ],
+          "timeoutSeconds": 900,
+          "environment": {
+            "AGENT_RELAY_BIN": "{{brokerBinary}}"
+          },
+          "forbidOutput": ["# SKIP"],
+          "evidence": "integration",
+          "coversCategories": [
+            "messaging-channels",
+            "messaging-messages",
+            "messaging-dm",
+            "messaging-inbox",
+            "mcp"
+          ],
+          "issues": [1117, 1255, 1367, 1368, 1471, 1525, 1541, 1542, 1594, 1614]
+        },
+        {
+          "id": "injection-replay-fault-matrix",
+          "title": "Queue bounds, retry backoff, crash replay, observer cursor and context updates",
+          "kind": "coverage-gap",
+          "reason": "Needs real fault injection for failed PTY writes, bounded held queues, stable delivery IDs, crash/restart dedup, observer cursors, context.update and delivery-mode drift.",
+          "evidence": "fault",
+          "coversCategories": ["messaging-messages", "messaging-dm", "messaging-inbox", "mcp"],
+          "issues": [1255, 1262, 1263, 1294, 1298, 1299, 1300, 1309, 1463, 1543, 1559, 1607]
+        }
+      ]
+    },
+    {
+      "id": "fleet-injection-attach",
+      "title": "Two-node fleet, placement, injection, attach and failure recovery",
+      "requiredArtifacts": ["broker-binary", "cli-entrypoint"],
+      "routingPriority": 90,
+      "issueNumbers": [
+        789, 1114, 1115, 1125, 1130, 1278, 1382, 1386, 1388, 1396, 1419, 1438, 1448, 1450, 1451, 1454, 1455,
+        1458, 1480, 1483, 1484, 1499, 1501, 1510, 1535, 1538, 1544, 1553, 1554, 1560, 1561, 1563, 1582, 1591,
+        1597, 1602, 1603, 1604, 1609, 1622, 1630, 1637
+      ],
+      "featureCategories": ["fleet"],
+      "issueMatch": [
+        "fleet",
+        "placement",
+        "node control",
+        "node-control",
+        "attach",
+        "PTY",
+        "inject",
+        "drive",
+        "passthrough",
+        "repoPaths",
+        "repo_keys"
+      ],
+      "setup": [
+        {
+          "id": "build-core",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        },
+        {
+          "id": "build-broker",
+          "command": ["cargo", "build", "--release", "--bin", "agent-relay-broker"],
+          "timeoutSeconds": 1800,
+          "requiredCommands": ["cargo"]
+        },
+        {
+          "id": "init-relaycast-fixture",
+          "command": ["git", "init", "{{fixtureRoot}}/relaycast"],
+          "timeoutSeconds": 60,
+          "profiles": ["full", "soak"]
+        },
+        {
+          "id": "add-relaycast-origin",
+          "command": [
+            "git",
+            "-C",
+            "{{fixtureRoot}}/relaycast",
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/AgentWorkforce/relaycast.git"
+          ],
+          "timeoutSeconds": 60,
+          "profiles": ["full", "soak"]
+        },
+        {
+          "id": "fetch-relaycast-fixture",
+          "command": [
+            "git",
+            "-C",
+            "{{fixtureRoot}}/relaycast",
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            "eb7563ffcf0e54698c23363c5753060f99d37dd3"
+          ],
+          "timeoutSeconds": 600,
+          "profiles": ["full", "soak"]
+        },
+        {
+          "id": "checkout-relaycast-fixture",
+          "command": ["git", "-C", "{{fixtureRoot}}/relaycast", "checkout", "--detach", "FETCH_HEAD"],
+          "timeoutSeconds": 60,
+          "profiles": ["full", "soak"]
+        },
+        {
+          "id": "install-relaycast-fixture",
+          "command": ["npm", "ci"],
+          "cwd": "{{fixtureRoot}}/relaycast",
+          "timeoutSeconds": 900,
+          "profiles": ["full", "soak"]
+        },
+        {
+          "id": "build-relaycast-fixture",
+          "command": [
+            "npm",
+            "run",
+            "build",
+            "--workspace",
+            "@relaycast/types",
+            "--workspace",
+            "@relaycast/a2a",
+            "--workspace",
+            "@relaycast/engine"
+          ],
+          "cwd": "{{fixtureRoot}}/relaycast",
+          "timeoutSeconds": 1200,
+          "profiles": ["full", "soak"]
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "fleet-attach-contracts",
+          "title": "Fleet, attach and input recovery contracts",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/commands/fleet.test.ts",
+            "packages/cli/src/cli/commands/fleet-agent.test.ts",
+            "packages/cli/src/cli/lib/fleet-sidecar.test.ts",
+            "packages/cli/src/cli/lib/fleet-spawn-confirmation.test.ts",
+            "packages/cli/src/cli/lib/attach-fleet-node.test.ts",
+            "packages/cli/src/cli/lib/attach-remote-node.test.ts",
+            "packages/cli/src/cli/lib/attach-input-recovery.test.ts",
+            "packages/cli/src/cli/lib/attach-drive.test.ts",
+            "packages/cli/src/cli/lib/attach-view.test.ts",
+            "packages/cli/src/cli/lib/attach-passthrough.test.ts"
+          ],
+          "timeoutSeconds": 900,
+          "evidence": "contract",
+          "coversCategories": ["fleet"],
+          "coversFeatures": [
+            "fleet-nodes",
+            "fleet-spawn",
+            "fleet-release",
+            "fleet-config",
+            "fleet-enable",
+            "fleet-disable",
+            "fleet-inherit",
+            "fleet-status"
+          ]
+        },
+        {
+          "id": "two-node-fleet-e2e",
+          "title": "Real two-node placement, five spawns, injection, reconcile and dedup",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "tests/e2e/fleet/fleet-e2e.test.ts",
+            "--config",
+            "vitest.e2e.config.ts",
+            "--reporter=verbose"
+          ],
+          "environment": {
+            "RELAYCAST_ENGINE_DIR": "{{fixtureRoot}}/relaycast",
+            "BROKER_BINARY_PATH": "{{repoRoot}}/target/release/agent-relay-broker"
+          },
+          "timeoutSeconds": 1200,
+          "profiles": ["full", "soak"],
+          "mustContain": ["spawn completes E2E"],
+          "forbidOutput": ["skipped", "SKIP", "no tests"],
+          "evidence": "fault",
+          "coversCategories": ["fleet"],
+          "coversFeatures": ["fleet-nodes", "fleet-spawn", "fleet-release", "fleet-status"],
+          "issues": [1448, 1458, 1535, 1538, 1543, 1554, 1563, 1591, 1602, 1603, 1604]
+        },
+        {
+          "id": "fleet-daytona-board-contract",
+          "title": "The complete two-Daytona Fleet board and evidence contract stay executable",
+          "command": ["npx", "vitest", "run", "tests/fixtures/verify-fleet-daytona.test.ts"],
+          "timeoutSeconds": 120,
+          "evidence": "contract",
+          "coversCategories": ["fleet"]
+        },
+        {
+          "id": "fleet-daytona-live-board",
+          "title": "Every Fleet and node-agent operation on two fresh Daytona nodes",
+          "kind": "coverage-gap",
+          "reason": "Run workflows/verify-fleet-daytona.ts from a Daytona-authenticated operator host. Its 95-operation board cannot borrow an operator's Daytona session inside a generic Cloud lane.",
+          "evidence": "fault",
+          "coversCategories": ["fleet"],
+          "issues": [1609, 1630]
+        }
+      ]
+    },
+    {
+      "id": "workflow-cloud",
+      "title": "Local Relayflows, Cloud control, rooms, workers and integrations",
+      "requiredArtifacts": ["cli-entrypoint"],
+      "routingPriority": 60,
+      "issueNumbers": [1265, 1481, 1620, 1621],
+      "featureCategories": [
+        "local-workflows",
+        "cloud",
+        "cloud-integrations",
+        "cloud-rooms",
+        "cloud-workers",
+        "integration",
+        "reflex"
+      ],
+      "issueMatch": [
+        "workflow",
+        "relayflow",
+        "Cloud",
+        "room",
+        "integration",
+        "webhook",
+        "subscription",
+        "reflex",
+        "daemon",
+        "sandbox"
+      ],
+      "setup": [
+        {
+          "id": "build-core",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "workflow-cloud-contracts",
+          "title": "Workflow, Cloud, room, worker and integration contracts",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/commands/local-workflow.test.ts",
+            "packages/cli/src/cli/commands/cloud.test.ts",
+            "packages/cli/src/cli/commands/cloud-room.test.ts",
+            "packages/cli/src/cli/commands/cloud-integration.test.ts",
+            "packages/cli/src/cli/commands/integration-webhook-create.test.ts",
+            "packages/cli/src/cli/commands/integration-subscribe.test.ts",
+            "packages/cli/src/cli/commands/reflex.test.ts",
+            "packages/cloud/src/workflows.test.ts",
+            "packages/cloud/src/worker.test.ts",
+            "packages/cloud/src/fleet-sandbox.test.ts"
+          ],
+          "timeoutSeconds": 900,
+          "evidence": "contract",
+          "coversCategories": [
+            "local-workflows",
+            "cloud",
+            "cloud-integrations",
+            "cloud-rooms",
+            "cloud-workers",
+            "integration",
+            "reflex"
+          ]
+        },
+        {
+          "id": "cloud-live-lifecycle",
+          "title": "Disposable Cloud run, logs, cancel, schedule, room, worker and integration lifecycle",
+          "kind": "coverage-gap",
+          "reason": "Requires a dedicated disposable Cloud workspace, worker enrollment token and capture endpoint; operator sessions are intentionally rejected.",
+          "requiredEnvironment": [
+            "VERIFY_RELAY_CLOUD_API_KEY",
+            "VERIFY_RELAY_WORKSPACE_KEY",
+            "VERIFY_RELAY_WORKER_TOKEN",
+            "VERIFY_RELAY_CAPTURE_URL"
+          ],
+          "evidence": "integration",
+          "coversCategories": ["cloud", "cloud-integrations", "cloud-rooms", "cloud-workers", "integration"],
+          "issues": [1265, 1393, 1481, 1620, 1621]
+        }
+      ]
+    },
+    {
+      "id": "sdk-harness",
+      "title": "TypeScript SDK, harness driver and runtime adapters",
+      "requiredArtifacts": ["cli-entrypoint"],
+      "routingPriority": 50,
+      "issueNumbers": [1060, 1067, 1296, 1316, 1317, 1318, 1359, 1395, 1590],
+      "featureCategories": ["harnesses", "sdk"],
+      "issueMatch": ["SDK", "harness", "adapter", "listener", "stream", "predictive", "event"],
+      "setup": [
+        {
+          "id": "build-core",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "sdk-harness-contracts",
+          "title": "SDK facade, delivery, actions, listeners and harness contracts",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/sdk/src/__tests__",
+            "packages/harness-driver/src",
+            "packages/harnesses/src",
+            "tests/integration/ai-sdk-harnesses"
+          ],
+          "timeoutSeconds": 1200,
+          "evidence": "contract",
+          "coversCategories": ["harnesses", "sdk"],
+          "issues": [1060, 1296, 1297, 1298, 1316, 1317, 1318, 1359]
+        },
+        {
+          "id": "real-provider-harness-matrix",
+          "title": "Authenticated provider lifecycle and message consumption matrix",
+          "kind": "coverage-gap",
+          "reason": "Requires isolated provider credentials and real Claude, Codex, Gemini, OpenCode, Droid, Cursor, Aider, Goose and Grok runs.",
+          "evidence": "integration",
+          "coversCategories": ["harnesses"]
+        }
+      ]
+    },
+    {
+      "id": "polyglot-plugins",
+      "title": "Python/Swift SDK parity and provider plugins",
+      "requiredArtifacts": [],
+      "routingPriority": 50,
+      "issueNumbers": [1509, 1564],
+      "featureCategories": [
+        "python-sdk",
+        "swift-sdk",
+        "skills",
+        "opencode-plugin",
+        "codex-relay-skill",
+        "gemini-relay-extension"
+      ],
+      "issueMatch": [
+        "Python",
+        "Swift",
+        "plugin",
+        "skill",
+        "Gemini",
+        "OpenCode",
+        "Codex",
+        "Aider",
+        "Goose",
+        "Cursor",
+        "Droid",
+        "Grok"
+      ],
+      "setup": [
+        {
+          "id": "create-python-venv",
+          "command": ["python3", "-m", "venv", "{{laneRoot}}/python-venv"],
+          "requiredCommands": ["python3"],
+          "timeoutSeconds": 120
+        },
+        {
+          "id": "install-python-sdk-dev",
+          "command": [
+            "{{laneRoot}}/python-venv/bin/python",
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "-e",
+            "packages/sdk-py[dev]"
+          ],
+          "timeoutSeconds": 600
+        },
+        {
+          "id": "install-opencode-plugin",
+          "command": [
+            "npm",
+            "install",
+            "--prefix",
+            "plugins/opencode-relay-plugin",
+            "--no-package-lock",
+            "--ignore-scripts"
+          ],
+          "requiredCommands": ["npm"],
+          "timeoutSeconds": 600
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "python-sdk-tests",
+          "title": "Python SDK orchestration and broker lifecycle contracts",
+          "command": ["{{laneRoot}}/python-venv/bin/python", "-m", "pytest", "packages/sdk-py/tests", "-q"],
+          "requiredCommands": ["python3"],
+          "timeoutSeconds": 900,
+          "evidence": "contract",
+          "coversCategories": ["python-sdk"]
+        },
+        {
+          "id": "swift-sdk-tests",
+          "title": "Swift hosted and broker SDK contracts",
+          "command": ["swift", "test", "--package-path", "packages/sdk-swift"],
+          "requiredCommands": ["swift"],
+          "timeoutSeconds": 1200,
+          "evidence": "contract",
+          "coversCategories": ["swift-sdk"]
+        },
+        {
+          "id": "opencode-plugin-tests",
+          "title": "OpenCode tool, spawn, inbox and polling contracts",
+          "command": ["npm", "test", "--prefix", "plugins/opencode-relay-plugin"],
+          "requiredCommands": ["npm"],
+          "timeoutSeconds": 600,
+          "evidence": "contract",
+          "coversCategories": ["opencode-plugin"]
+        },
+        {
+          "id": "gemini-extension-check",
+          "title": "Gemini extension server and hooks parse cleanly",
+          "command": ["npm", "run", "check", "--prefix", "plugins/gemini-relay-extension"],
+          "requiredCommands": ["npm"],
+          "timeoutSeconds": 120,
+          "evidence": "contract",
+          "coversCategories": ["gemini-relay-extension"]
+        },
+        {
+          "id": "skill-install-provider-e2e",
+          "title": "Install Codex/Claude/Gemini skills into fresh homes and run their hooks",
+          "kind": "coverage-gap",
+          "reason": "Needs authenticated provider CLIs in disposable homes; static file presence is not accepted as integration evidence.",
+          "evidence": "integration",
+          "coversCategories": ["skills", "codex-relay-skill", "gemini-relay-extension"]
+        },
+        {
+          "id": "native-sdk-ci-wiring",
+          "title": "Python and Swift SDK suites are mandatory in pull-request CI",
+          "kind": "coverage-gap",
+          "reason": "The clean-room lane runs native suites directly but does not prove that repository CI cannot omit them.",
+          "evidence": "integration",
+          "coversCategories": ["python-sdk", "swift-sdk"],
+          "issues": [1509]
+        }
+      ]
+    },
+    {
+      "id": "regression-corpus",
+      "title": "Merged head regression guards, protocol drift and security regressions",
+      "requiredArtifacts": ["broker-binary", "cli-entrypoint"],
+      "routingPriority": 100,
+      "issueNumbers": [
+        1059, 1122, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1311, 1314, 1315, 1370, 1389, 1390, 1405,
+        1409, 1418, 1422, 1460, 1492, 1512, 1526, 1562, 1570
+      ],
+      "featureCategories": [],
+      "issueMatch": [
+        "credential",
+        "secret",
+        "argv",
+        "redact",
+        "protocol",
+        "contract",
+        "flaky",
+        "CI-only",
+        "security",
+        "SQL",
+        "token"
+      ],
+      "fallbackIssues": true,
+      "setup": [
+        {
+          "id": "build-core",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 900
+        },
+        {
+          "id": "build-broker",
+          "command": ["cargo", "build", "--release", "--bin", "agent-relay-broker"],
+          "timeoutSeconds": 1800,
+          "requiredCommands": ["cargo"]
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "relayflow-head-regression-corpus",
+          "title": "Every merged PR case still reports its fixed head signature",
+          "kind": "relayflow-corpus",
+          "timeoutSeconds": 1800,
+          "evidence": "fault"
+        },
+        {
+          "id": "security-redaction-contracts",
+          "title": "Secrets, observer URLs, argv and error paths stay redacted",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/plugin-credential-safety.test.ts",
+            "packages/cli/src/cli/lib/redact.test.ts",
+            "packages/cloud/src/redact.test.ts",
+            "packages/cli/src/install-script.test.ts"
+          ],
+          "timeoutSeconds": 600,
+          "evidence": "contract",
+          "issues": [1059, 1370, 1379, 1389, 1405, 1409, 1460, 1526, 1570]
+        },
+        {
+          "id": "rust-protocol-regressions",
+          "title": "Broker, PTY and wire protocol regression suite",
+          "command": ["cargo", "test", "--workspace", "--all-targets"],
+          "requiredCommands": ["cargo"],
+          "timeoutSeconds": 2400,
+          "evidence": "contract",
+          "issues": [1293, 1294, 1295, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309]
+        },
+        {
+          "id": "runtime-secret-leak-probe",
+          "title": "Real child argv, environment, logs, observer URLs and file modes contain no secret",
+          "kind": "coverage-gap",
+          "reason": "Contract tests do not inspect real process listings, spawned-child environments, broker/SQL failures, observer transcripts or credential file modes.",
+          "evidence": "fault",
+          "issues": [1059, 1370, 1389, 1409, 1460, 1492, 1526, 1562, 1570]
+        },
+        {
+          "id": "relaycast-live-wire-contract",
+          "title": "Relay and Relaycast negotiate and reject malformed live wire contracts",
+          "kind": "coverage-gap",
+          "reason": "Needs a pinned Relaycast engine compatibility matrix for versions, casing, oversized/malformed frames and Rust/TypeScript event parity.",
+          "evidence": "integration",
+          "issues": [1122, 1301, 1302, 1304, 1305, 1306, 1307, 1308, 1512]
+        }
+      ]
+    }
+  ]
+}
