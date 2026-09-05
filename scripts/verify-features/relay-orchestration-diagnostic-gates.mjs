@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+import { readRegularFileNoFollow } from './safe-file.mjs';
+
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RELAY_ROOT = path.resolve(SCRIPT_DIR, '../..');
 const DEFAULT_ARTIFACT_DIR = path.join(
@@ -200,8 +202,14 @@ async function sourceManifest(repo) {
         manifest.push({ file, head: nested.head, contentSha256: nested.contentSha256 });
         continue;
       }
-      const hash = sha256(info.isSymbolicLink() ? await readlink(target) : await readFile(target));
-      manifest.push({ file, mode: info.mode & 0o777, hash });
+      if (info.isSymbolicLink()) {
+        manifest.push({ file, mode: info.mode & 0o777, hash: sha256(await readlink(target)) });
+        continue;
+      }
+      const { bytes, mode } = await readRegularFileNoFollow(target, {
+        label: `diagnostic source file ${file}`,
+      });
+      manifest.push({ file, mode, hash: sha256(bytes) });
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       manifest.push({ file, missing: true });
@@ -1436,8 +1444,9 @@ async function diagnosisSealPayload(artifactDir) {
     const target = path.join(artifactDir, name);
     const info = await lstat(target);
     if (info.isDirectory()) continue;
-    if (!info.isFile()) throw new Error(`diagnosis seal refuses non-file artifact: ${name}`);
-    const bytes = await readFile(target);
+    const { bytes } = await readRegularFileNoFollow(target, {
+      label: `diagnosis seal artifact ${name}`,
+    });
     files.push({ name, sha256: sha256(bytes), bytes: bytes.byteLength });
   }
   const gateImplementationSha256 = await gateImplementationHash();
