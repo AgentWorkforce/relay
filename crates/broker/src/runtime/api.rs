@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::HeadlessHarnessDriver;
 use crate::relaycast::retry_agent_registration;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
@@ -54,7 +55,8 @@ fn supports_model_mutation(handle: &WorkerHandle) -> bool {
         || matches!(
             handle.spec.harness_config.as_ref(),
             Some(ResolvedHarnessConfig::Headless(config))
-                if config.protocol.eq_ignore_ascii_case("opencode")
+                if config.driver == HeadlessHarnessDriver::AppServer
+                    && config.protocol.eq_ignore_ascii_case("opencode")
         )
 }
 
@@ -884,6 +886,7 @@ impl BrokerRuntime {
                 // to callers while the newer request is unresolved.
                 let last_effective_model = model_receipts
                     .get(&name)
+                    .filter(|receipt| receipt.generation == generation)
                     .and_then(|receipt| receipt.effective_model.clone());
 
                 if !supports_model_mutation(handle) {

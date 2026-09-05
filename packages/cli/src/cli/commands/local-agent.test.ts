@@ -830,6 +830,31 @@ describe('local agent subtree', () => {
     expect(client.setModel).toHaveBeenCalledWith('lead', 'opus');
   });
 
+  it('set-model --json emits a normalized correlated receipt', async () => {
+    const { program, log } = harness();
+    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], { from: 'user' });
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          name: 'lead',
+          requestedModel: 'opus',
+          effectiveModel: null,
+          applied: false,
+          status: 'accepted_pending',
+          requestId: 'model_1',
+          receiptId: 'model_1',
+          generation: 'generation-1',
+          revision: 1,
+          success: true,
+          accepted: true,
+          pending: true,
+        },
+        null,
+        2
+      )
+    );
+  });
+
   it('set-model reports unsupported without claiming application', async () => {
     const { program, client, log } = harness();
     client.setModel = vi.fn(async () => ({

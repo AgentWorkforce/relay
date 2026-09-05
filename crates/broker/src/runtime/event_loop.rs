@@ -362,6 +362,7 @@ impl ModelReceipt {
             "applied": self.applied,
             "status": self.status,
             "request_id": self.request_id,
+            "receipt_id": self.request_id,
             "generation": self.generation.to_string(),
             "revision": self.revision,
             "success": self.success,

@@ -655,6 +655,7 @@ public struct ModelUpdateResult: Codable, Sendable {
     public var applied: Bool?
     public var status: String?
     public var requestId: String?
+    public var receiptId: String?
     public var generation: String?
     public var revision: Int?
     public var success: Bool
@@ -664,7 +665,7 @@ public struct ModelUpdateResult: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case name, model, requestedModel = "requested_model", effectiveModel = "effective_model"
-        case applied, status, requestId = "request_id", generation, revision, success, accepted, pending, error
+        case applied, status, requestId = "request_id", receiptId = "receipt_id", generation, revision, success, accepted, pending, error
     }
 }
 

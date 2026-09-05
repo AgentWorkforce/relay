@@ -170,6 +170,8 @@ export interface ModelUpdateResult {
   applied: boolean;
   status: ModelUpdateStatus;
   request_id?: string | null;
+  /** Stable receipt identifier; equal to request_id on the broker wire. */
+  receipt_id?: string | null;
   generation?: string | null;
   revision?: number;
   success: boolean;

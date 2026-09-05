@@ -832,9 +832,37 @@ export function registerLocalAgentCommands(
     .description("Request a running agent's model change and report provider confirmation")
     .argument('<name>', 'Agent name')
     .argument('<model>', 'Model identifier to switch to')
-    .action(async (name: string, model: string) => {
+    .option('--json', 'Emit the correlated model mutation receipt as JSON')
+    .action(async (name: string, model: string, options: { json?: boolean }) => {
       await run(deps, async (client) => {
         const receipt = await client.setModel(name, model);
+        if (options.json) {
+          // The broker wire contract is snake_case; the CLI's JSON contract
+          // uses the same camelCase style as the other machine-readable CLI
+          // surfaces and names the correlation key `receiptId` explicitly.
+          deps.log(
+            JSON.stringify(
+              {
+                name: receipt.name ?? name,
+                requestedModel: receipt.requested_model ?? receipt.model ?? model,
+                effectiveModel: receipt.effective_model ?? null,
+                applied: receipt.applied === true,
+                status: receipt.status ?? 'unknown',
+                requestId: receipt.request_id ?? null,
+                receiptId: receipt.receipt_id ?? receipt.request_id ?? null,
+                generation: receipt.generation ?? null,
+                revision: receipt.revision ?? null,
+                success: receipt.success === true,
+                accepted: receipt.accepted === true,
+                pending: receipt.pending === true,
+                ...(receipt.error ? { error: receipt.error } : {}),
+              },
+              null,
+              2
+            )
+          );
+          return;
+        }
         if (receipt.status === 'applied' && receipt.applied) {
           deps.log(
             `Applied model ${receipt.effective_model ?? model} to ${name} (request ${receipt.request_id ?? 'unknown'}).`

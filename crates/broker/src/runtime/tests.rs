@@ -378,6 +378,41 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
     assert_eq!(accepted["applied"], false);
     let request_id = accepted["request_id"].as_str().unwrap().to_string();
 
+    // Unknown request ids and receipts from a prior worker generation are
+    // ignored without consuming the live pending request.
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": "model_unknown",
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation: Uuid::new_v4(),
+            value: json!({
+                "type": "set_model_response",
+                "request_id": request_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+
     fixture
         .runtime
         .handle_worker_event(WorkerEvent::Message {
