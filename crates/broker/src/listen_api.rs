@@ -4407,10 +4407,11 @@ mod auth_tests {
             match rx.recv().await {
                 Some(ListenApiRequest::GetModel {
                     name,
-                    request_id: _,
+                    request_id,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
+                    assert_eq!(request_id.as_deref(), Some("model_1"));
                     let _ = reply.send(Ok(json!({
                         "name": "worker-a",
                         "requested_model": "sonnet",
@@ -4432,7 +4433,7 @@ mod auth_tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri("/api/spawned/worker-a/model")
+                    .uri("/api/spawned/worker-a/model?request_id=model_1")
                     .method("GET")
                     .header("x-api-key", "secret")
                     .body(Body::empty())

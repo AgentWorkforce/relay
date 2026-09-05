@@ -14,6 +14,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1658-model-change-receipt';
+const MODEL_OPERATION_TIMEOUT_MS = 30_000;
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -60,8 +61,8 @@ function runAsync(command, args, label) {
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error(`${label} timed out after 300000ms`));
-    }, 300_000);
+      reject(new Error(`${label} timed out after ${MODEL_OPERATION_TIMEOUT_MS}ms`));
+    }, MODEL_OPERATION_TIMEOUT_MS);
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
     });

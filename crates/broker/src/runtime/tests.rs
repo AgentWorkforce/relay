@@ -130,6 +130,31 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     registry
 }
 
+async fn make_app_server_registry_with_worker(
+    name: &str,
+    protocol: &str,
+    endpoint: &str,
+    session_id: &str,
+) -> WorkerRegistry {
+    let mut registry = make_worker_registry_with_worker(name).await;
+    registry
+        .workers
+        .get_mut(name)
+        .expect("test worker should exist")
+        .spec
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: protocol.into(),
+        endpoint: endpoint.into(),
+        session_id: session_id.into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
+    }));
+    registry
+}
+
 /// A worker whose command channel accepts frames but never completes them —
 /// no writer task ever drains `command_rx`, so `deliver()` hangs forever.
 /// Models a handoff that outlives `retry_interval` deterministically (no
@@ -346,22 +371,13 @@ fn delivery_lifecycle_worker_event(
 
 #[tokio::test]
 async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
-    let mut registry = make_worker_registry_with_worker("model-worker").await;
-    registry
-        .workers
-        .get_mut("model-worker")
-        .unwrap()
-        .spec
-        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
-        driver: HeadlessHarnessDriver::AppServer,
-        protocol: "  opencode  ".into(),
-        endpoint: "http://127.0.0.1:1".into(),
-        session_id: "test-session".into(),
-        auth: None,
-        host: None,
-        release: None,
-        metadata: None,
-    }));
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "  opencode  ",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
     let generation = registry.workers["model-worker"].generation;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
 
@@ -525,22 +541,13 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
 
 #[tokio::test]
 async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
-    let mut registry = make_worker_registry_with_worker("model-worker").await;
-    registry
-        .workers
-        .get_mut("model-worker")
-        .unwrap()
-        .spec
-        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
-        driver: HeadlessHarnessDriver::AppServer,
-        protocol: "opencode".into(),
-        endpoint: "http://127.0.0.1:1".into(),
-        session_id: "test-session".into(),
-        auth: None,
-        host: None,
-        release: None,
-        metadata: None,
-    }));
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
     let generation = registry.workers["model-worker"].generation;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
@@ -614,22 +621,13 @@ fn model_receipt_retention_is_bounded_to_terminal_history() {
 
 #[tokio::test]
 async fn set_model_recognizes_builtin_opencode_app_server_capability() {
-    let mut registry = make_worker_registry_with_worker("opencode-worker").await;
-    registry
-        .workers
-        .get_mut("opencode-worker")
-        .unwrap()
-        .spec
-        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
-        driver: HeadlessHarnessDriver::AppServer,
-        protocol: "opencode".into(),
-        endpoint: "http://127.0.0.1:4096".into(),
-        session_id: "ses_test".into(),
-        auth: None,
-        host: None,
-        release: None,
-        metadata: None,
-    }));
+    let registry = make_app_server_registry_with_worker(
+        "opencode-worker",
+        "opencode",
+        "http://127.0.0.1:4096",
+        "ses_test",
+    )
+    .await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     fixture
@@ -651,22 +649,13 @@ async fn set_model_recognizes_builtin_opencode_app_server_capability() {
 
 #[tokio::test]
 async fn set_model_rejects_overlapping_request_without_overwriting_pending_receipt() {
-    let mut registry = make_worker_registry_with_worker("model-worker").await;
-    registry
-        .workers
-        .get_mut("model-worker")
-        .unwrap()
-        .spec
-        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
-        driver: HeadlessHarnessDriver::AppServer,
-        protocol: "opencode".into(),
-        endpoint: "http://127.0.0.1:1".into(),
-        session_id: "test-session".into(),
-        auth: None,
-        host: None,
-        release: None,
-        metadata: None,
-    }));
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
     let generation = registry.workers["model-worker"].generation;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
 
@@ -715,6 +704,21 @@ async fn set_model_rejects_overlapping_request_without_overwriting_pending_recei
     assert_eq!(rejected["status"], "rejected");
     assert_eq!(rejected["accepted"], false);
 
+    let (stale_tx, stale_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some("stale-receipt".into()),
+            reply: stale_tx,
+        })
+        .await;
+    let stale_error = stale_rx
+        .await
+        .unwrap()
+        .expect_err("stale receipt must fail closed");
+    assert!(stale_error.contains("unknown or stale model receipt"));
+
     fixture
         .runtime
         .handle_worker_event(WorkerEvent::Message {
@@ -756,158 +760,14 @@ async fn set_model_rejects_overlapping_request_without_overwriting_pending_recei
 }
 
 #[tokio::test]
-async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
-    let mut registry = make_worker_registry_with_worker("model-worker").await;
-    registry
-        .workers
-        .get_mut("model-worker")
-        .unwrap()
-        .spec
-        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
-        driver: HeadlessHarnessDriver::AppServer,
-        protocol: "opencode".into(),
-        endpoint: "http://127.0.0.1:1".into(),
-        session_id: "test-session".into(),
-        auth: None,
-        host: None,
-        release: None,
-        metadata: None,
-    }));
-    let generation = registry.workers["model-worker"].generation;
-    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
-
-    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
-            name: WorkerName::new("model-worker"),
-            model: "sonnet".into(),
-            timeout_ms: Some(1_000),
-            reply: first_tx,
-        })
-        .await;
-    let first = first_rx.await.unwrap().unwrap();
-    let first_id = first["request_id"].as_str().unwrap().to_string();
-
-    let (second_tx, second_rx) = tokio::sync::oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
-            name: WorkerName::new("model-worker"),
-            model: "opus".into(),
-            timeout_ms: Some(1_000),
-            reply: second_tx,
-        })
-        .await;
-    let second = second_rx.await.unwrap().unwrap();
-    let second_id = second["request_id"].as_str().unwrap().to_string();
-
-    // The admitted request can be confirmed while the overlapping request is
-    // rejected. Its effective model remains visible to GET callers.
-    let (second_get_tx, second_get_rx) = tokio::sync::oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
-            name: WorkerName::new("model-worker"),
-            request_id: Some(second_id),
-            reply: second_get_tx,
-        })
-        .await;
-    let second_get = second_get_rx.await.unwrap().unwrap();
-    assert_eq!(second_get["status"], "rejected");
-    assert_eq!(second_get["accepted"], false);
-    let (stale_get_tx, stale_get_rx) = tokio::sync::oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
-            name: WorkerName::new("model-worker"),
-            request_id: Some("stale-receipt".into()),
-            reply: stale_get_tx,
-        })
-        .await;
-    let stale_error = stale_get_rx
-        .await
-        .unwrap()
-        .expect_err("stale receipt must fail closed");
-    assert!(stale_error.contains("unknown or stale model receipt"));
-    fixture
-        .runtime
-        .handle_worker_event(WorkerEvent::Message {
-            name: WorkerName::new("model-worker"),
-            generation,
-            value: json!({
-                "type": "set_model_response",
-                "request_id": first_id,
-                "payload": {
-                    "status": "applied",
-                    "applied": true,
-                    "effective_model": "sonnet"
-                }
-            }),
-        })
-        .await;
-    assert_eq!(
-        fixture.runtime.workers.workers["model-worker"]
-            .spec
-            .model
-            .as_deref(),
-        Some("sonnet")
-    );
-    let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
-            name: WorkerName::new("model-worker"),
-            request_id: None,
-            reply: pending_tx,
-        })
-        .await;
-    let pending = pending_rx.await.unwrap().unwrap();
-    assert_eq!(pending["status"], "applied");
-    assert_eq!(pending["effective_model"], "sonnet");
-
-    assert_eq!(
-        fixture.runtime.workers.workers["model-worker"]
-            .spec
-            .model
-            .as_deref(),
-        Some("sonnet")
-    );
-    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
-            name: WorkerName::new("model-worker"),
-            request_id: None,
-            reply: get_tx,
-        })
-        .await;
-    let rejected = get_rx.await.unwrap().unwrap();
-    assert_eq!(rejected["status"], "applied");
-    assert_eq!(rejected["applied"], true);
-    assert_eq!(rejected["effective_model"], "sonnet");
-
-    cleanup_worker_registry(fixture.runtime.workers).await;
-}
-
-#[tokio::test]
 async fn set_model_queue_admission_is_pending_even_when_write_deadline_is_zero() {
-    let mut registry = make_worker_registry_with_worker("model-worker").await;
-    registry
-        .workers
-        .get_mut("model-worker")
-        .unwrap()
-        .spec
-        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
-        driver: HeadlessHarnessDriver::AppServer,
-        protocol: "opencode".into(),
-        endpoint: "http://127.0.0.1:1".into(),
-        session_id: "test-session".into(),
-        auth: None,
-        host: None,
-        release: None,
-        metadata: None,
-    }));
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     fixture

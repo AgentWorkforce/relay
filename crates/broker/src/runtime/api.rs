@@ -980,16 +980,7 @@ impl BrokerRuntime {
                     };
                     let value = receipt.json();
                     model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
-                    // A full queue can reject a newer request while an older
-                    // request is still in flight. Keep the older receipt in
-                    // the per-worker cache so its valid provider response can
-                    // still settle and be observed through GET.
-                    let has_pending_for_worker = pending_model_requests.values().any(|pending| {
-                        pending.worker_name == name && pending.generation == generation
-                    });
-                    if !has_pending_for_worker {
-                        model_receipts.insert(name, receipt);
-                    }
+                    model_receipts.insert(name, receipt);
                     let _ = reply.send(Ok(value));
                 } else {
                     let pending = ModelReceipt {
