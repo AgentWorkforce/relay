@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { validateQualificationEvidence } from './evidence.mjs';
+import { candidateManifestSha256, validateQualificationEvidence } from './evidence.mjs';
 import { FLEET_QUALIFICATION_OPERATIONS } from './matrix.mjs';
 
 function argument(name) {
@@ -13,15 +13,26 @@ function argument(name) {
 
 const input = argument('--input');
 const output = argument('--output');
-if (!input || !output) {
-  console.error('Usage: verify-evidence.mjs --input <raw-evidence.json> --output <verdict.json>');
+const expectedHead = argument('--expected-head');
+const candidateArtifact = argument('--candidate-artifact');
+const candidateManifest = argument('--candidate-manifest');
+if (!input || !output || !expectedHead || !candidateArtifact || !candidateManifest) {
+  console.error(
+    'Usage: verify-evidence.mjs --input <raw-evidence.json> --output <verdict.json> --expected-head <40-char-sha> --candidate-artifact <packed.tgz> --candidate-manifest <manifest.json>'
+  );
   process.exit(2);
 }
 
 try {
   const raw = readFileSync(input);
   const evidence = JSON.parse(raw.toString('utf8'));
-  const verdict = validateQualificationEvidence(evidence, FLEET_QUALIFICATION_OPERATIONS);
+  const packedArtifactBytes = readFileSync(candidateArtifact);
+  const manifestFromFile = JSON.parse(readFileSync(candidateManifest, 'utf8'));
+  const verdict = validateQualificationEvidence(evidence, FLEET_QUALIFICATION_OPERATIONS, {
+    expectedRelayCommitSha: expectedHead,
+    expectedCandidateArtifactSha256: createHash('sha256').update(packedArtifactBytes).digest('hex'),
+    expectedCandidateManifestSha256: candidateManifestSha256(manifestFromFile),
+  });
   const finalArtifact = {
     schemaVersion: 'relay-fleet-qualification-verdict/1',
     ...verdict,

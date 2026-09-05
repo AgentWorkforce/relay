@@ -8,9 +8,18 @@
  */
 import { workflow } from '@relayflows/core';
 
-const runId = process.env.FLEET_QUALIFICATION_RUN_ID ?? `fleet-${Date.now()}`;
+const requestedRunId = process.env.FLEET_QUALIFICATION_RUN_ID ?? `fleet-${Date.now()}`;
+if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requestedRunId)) {
+  throw new Error('FLEET_QUALIFICATION_RUN_ID must be a safe 1-128 character artifact name');
+}
+const runId = requestedRunId;
 const artifacts = `.workflow-artifacts/fleet-qualification/${runId}`;
 const rawEvidence = process.env.FLEET_QUALIFICATION_RAW_EVIDENCE ?? '';
+const expectedHead = process.env.FLEET_QUALIFICATION_EXPECTED_HEAD ?? '';
+const candidateArtifact = process.env.FLEET_QUALIFICATION_CANDIDATE_ARTIFACT ?? '';
+const candidateManifest = process.env.FLEET_QUALIFICATION_CANDIDATE_MANIFEST ?? '';
+
+const shQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 async function runWorkflow() {
   const result = await workflow('relay-fleet-qualification')
@@ -28,11 +37,14 @@ async function runWorkflow() {
       type: 'deterministic',
       command: [
         'set -eu',
-        `test -n ${JSON.stringify(rawEvidence)} || { echo "BLOCKED: FLEET_QUALIFICATION_RAW_EVIDENCE is required"; exit 2; }`,
-        `test -f ${JSON.stringify(rawEvidence)} || { echo "BLOCKED: raw evidence file is absent"; exit 2; }`,
-        `mkdir -p ${JSON.stringify(artifacts)}`,
+        `test -n ${shQuote(rawEvidence)} || { echo "BLOCKED: FLEET_QUALIFICATION_RAW_EVIDENCE is required"; exit 2; }`,
+        `test -f ${shQuote(rawEvidence)} || { echo "BLOCKED: raw evidence file is absent"; exit 2; }`,
+        `test -f ${shQuote(candidateArtifact)} || { echo "BLOCKED: packed candidate artifact is absent"; exit 2; }`,
+        `test -f ${shQuote(candidateManifest)} || { echo "BLOCKED: candidate manifest is absent"; exit 2; }`,
+        `printf '%s' ${shQuote(expectedHead)} | grep -Eq '^[0-9a-fA-F]{40}$' || { echo "BLOCKED: FLEET_QUALIFICATION_EXPECTED_HEAD must be a full Git SHA"; exit 2; }`,
+        `mkdir -p ${shQuote(artifacts)}`,
         'test "$(git status --porcelain --untracked-files=no)" = "" || { echo "BLOCKED: tracked worktree is dirty"; exit 2; }',
-        'git rev-parse HEAD',
+        `test "$(git rev-parse HEAD)" = ${shQuote(expectedHead.toLowerCase())} || { echo "BLOCKED: worktree HEAD differs from FLEET_QUALIFICATION_EXPECTED_HEAD"; exit 2; }`,
       ].join('\n'),
       captureOutput: true,
       failOnError: true,
@@ -50,8 +62,8 @@ async function runWorkflow() {
       dependsOn: ['source-inventory'],
       command: [
         'set -eu',
-        `node scripts/fleet-qualification/verify-evidence.mjs --input ${JSON.stringify(rawEvidence)} --output ${JSON.stringify(`${artifacts}/verdict.json`)}`,
-        `test -s ${JSON.stringify(`${artifacts}/verdict.json`)}`,
+        `node scripts/fleet-qualification/verify-evidence.mjs --input ${shQuote(rawEvidence)} --output ${shQuote(`${artifacts}/verdict.json`)} --expected-head ${shQuote(expectedHead.toLowerCase())} --candidate-artifact ${shQuote(candidateArtifact)} --candidate-manifest ${shQuote(candidateManifest)}`,
+        `test -s ${shQuote(`${artifacts}/verdict.json`)}`,
       ].join('\n'),
       captureOutput: true,
       failOnError: true,
@@ -61,7 +73,7 @@ async function runWorkflow() {
       dependsOn: ['verify-evidence'],
       command: [
         'set -eu',
-        `node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(v.verdict!=="PASS"||v.operationCount!==95||v.attemptCount!==190||v.nodeResourceIds.length<2)process.exit(1);console.log("FINAL_ACCEPTANCE_OK head="+process.argv[2]+" operations=95 attempts=190 nodes="+v.nodeResourceIds.length)' ${JSON.stringify(`${artifacts}/verdict.json`)} "$(git rev-parse HEAD)"`,
+        `node -e 'const fs=require("node:fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(v.verdict!=="PASS"||v.operationCount!==95||v.attemptCount!==190||v.nodeResourceIds.length<2||v.relayCommitSha!==process.argv[2])process.exit(1);console.log("FINAL_ACCEPTANCE_OK head="+process.argv[2]+" operations=95 attempts=190 nodes="+v.nodeResourceIds.length)' ${shQuote(`${artifacts}/verdict.json`)} ${shQuote(expectedHead.toLowerCase())}`,
       ].join('\n'),
       captureOutput: true,
       failOnError: true,

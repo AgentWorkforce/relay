@@ -121,6 +121,7 @@
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
     "@relayfile/relay-helpers": "^0.4.6",
+    "@relayflows/core": "1.0.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.3",

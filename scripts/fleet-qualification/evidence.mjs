@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 const ASCII_EDGE = /^[\x09-\x0d\x20]+|[\x09-\x0d\x20]+$/g;
 const CONTROL = /[\x00-\x1f\x7f]/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_SHA = /^[0-9a-f]{40}$/;
+const CANONICAL_ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export class QualificationNotPassError extends Error {
   constructor(message) {
@@ -103,7 +105,33 @@ export function candidateManifestSha256(manifest) {
 
 function requireIsoTimestamp(value, field) {
   requiredString(value, field);
-  if (Number.isNaN(Date.parse(value))) notPass(`${field} must be an ISO-8601 timestamp`);
+  if (
+    !CANONICAL_ISO_UTC.test(value) ||
+    Number.isNaN(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    notPass(`${field} must be a canonical ISO-8601 UTC timestamp`);
+  }
+}
+
+function requireSuccessfulObservation(observation, field, source) {
+  if (observation?.source !== source) notPass(`${field}.source must be ${source}`);
+  if (typeof observation?.command !== 'string' || !observation.command.trim()) {
+    notPass(`${field}.command is required`);
+  }
+  if (observation?.exitCode !== 0) notPass(`${field} must have exitCode 0`);
+  requireIsoTimestamp(observation?.observedAt, `${field}.observedAt`);
+}
+
+function sha256Text(value) {
+  return createHash('sha256').update(requiredString(value, 'text'), 'utf8').digest('hex');
+}
+
+export function commandArgvSha256(argv) {
+  if (!Array.isArray(argv) || argv.length === 0 || argv.some((token) => typeof token !== 'string')) {
+    notPass('command argv must be a non-empty array of strings');
+  }
+  return createHash('sha256').update(argv.join('\0'), 'utf8').digest('hex');
 }
 
 function validateNode(node, manifestDigest, candidateArtifactSha256, index) {
@@ -118,30 +146,62 @@ function validateNode(node, manifestDigest, candidateArtifactSha256, index) {
   if (imageDigest !== manifestDigest) {
     notPass(`${prefix}.inImageManifestSha256 does not equal the canonical candidate manifest digest`);
   }
+  requireSuccessfulObservation(
+    node?.provisionObservation,
+    `${prefix}.provisionObservation`,
+    'daytona-control-plane'
+  );
+  if (
+    normalizeSnapshotId(
+      node?.provisionObservation?.stdoutResourceId,
+      `${prefix}.provisionObservation.stdoutResourceId`
+    ) !== resourceId
+  ) {
+    notPass(`${prefix} provision output differs from the exact Daytona resource id`);
+  }
   if (node?.cleanliness?.before?.agentCount !== 0) {
     notPass(`${prefix} was not clean before its first attempt`);
   }
-  requireIsoTimestamp(node?.cleanliness?.before?.observedAt, `${prefix}.cleanliness.before.observedAt`);
+  requireSuccessfulObservation(node?.cleanliness?.before, `${prefix}.cleanliness.before`, 'target-host');
+  if (
+    !Array.isArray(node?.cleanliness?.before?.observedAgentIds) ||
+    node.cleanliness.before.observedAgentIds.length !== 0
+  ) {
+    notPass(`${prefix} pre-attempt agent inventory is not empty`);
+  }
   if (node?.provisionedForRun !== true) notPass(`${prefix} was not provisioned fresh for this run`);
   requireIsoTimestamp(node?.createdAt, `${prefix}.createdAt`);
+  requireSuccessfulObservation(node?.snapshotObservation, `${prefix}.snapshotObservation`, 'running-node');
   if (
-    node?.snapshotObservation?.source !== 'running-node' ||
-    typeof node?.snapshotObservation?.command !== 'string' ||
-    !node.snapshotObservation.command.trim()
+    normalizeSnapshotId(node?.snapshotObservation?.stdout, `${prefix}.snapshotObservation.stdout`) !==
+    snapshotId
   ) {
-    notPass(`${prefix} snapshot identity was not read back from the running node`);
+    notPass(`${prefix} running-node snapshot output differs from observedDaytonaSnapshotId`);
   }
-  requireIsoTimestamp(node?.snapshotObservation?.observedAt, `${prefix}.snapshotObservation.observedAt`);
+  requireSuccessfulObservation(node?.manifestObservation, `${prefix}.manifestObservation`, 'in-image');
   if (
-    node?.manifestObservation?.source !== 'in-image' ||
-    typeof node?.manifestObservation?.command !== 'string' ||
-    !node.manifestObservation.command.trim()
+    normalizeSha256(node?.manifestObservation?.stdout, `${prefix}.manifestObservation.stdout`) !== imageDigest
   ) {
-    notPass(`${prefix} manifest digest was not read or computed in-image`);
+    notPass(`${prefix} in-image manifest output differs from inImageManifestSha256`);
   }
-  requireIsoTimestamp(node?.manifestObservation?.observedAt, `${prefix}.manifestObservation.observedAt`);
   if (node?.cleanliness?.after?.absentById !== true) {
     notPass(`${prefix} teardown did not prove resource ${resourceId} absent by id`);
+  }
+  if (
+    node?.cleanliness?.after?.source !== 'daytona-control-plane' ||
+    normalizeSnapshotId(
+      node?.cleanliness?.after?.queriedResourceId,
+      `${prefix}.cleanliness.after.queriedResourceId`
+    ) !== resourceId ||
+    typeof node?.cleanliness?.after?.command !== 'string' ||
+    !node.cleanliness.after.command.trim() ||
+    node?.cleanliness?.after?.status !== 'not_found' ||
+    !Number.isInteger(node?.cleanliness?.after?.exitCode) ||
+    node.cleanliness.after.exitCode === 0 ||
+    typeof node?.cleanliness?.after?.observedError !== 'string' ||
+    !node.cleanliness.after.observedError.includes(resourceId)
+  ) {
+    notPass(`${prefix} teardown absence is not bound to an exact Daytona resource-id query`);
   }
   requireIsoTimestamp(node?.cleanliness?.after?.observedAt, `${prefix}.cleanliness.after.observedAt`);
   if (
@@ -159,6 +219,13 @@ function validateNode(node, manifestDigest, candidateArtifactSha256, index) {
   if (installedArtifactSha256 !== candidateArtifactSha256) {
     notPass(`${prefix} installed artifact digest differs from the pinned candidate artifact`);
   }
+  requireSuccessfulObservation(node?.artifactInstall, `${prefix}.artifactInstall`, 'target-host');
+  if (
+    normalizeSha256(node?.artifactInstall?.stdout, `${prefix}.artifactInstall.stdout`) !==
+    installedArtifactSha256
+  ) {
+    notPass(`${prefix} target-host artifact digest output differs from the installed artifact digest`);
+  }
   return {
     resourceId,
     snapshotId,
@@ -168,6 +235,8 @@ function validateNode(node, manifestDigest, candidateArtifactSha256, index) {
     cleanAfterAt: Date.parse(node.cleanliness.after.observedAt),
     snapshotObservedAt: Date.parse(node.snapshotObservation.observedAt),
     manifestObservedAt: Date.parse(node.manifestObservation.observedAt),
+    provisionObservedAt: Date.parse(node.provisionObservation.observedAt),
+    artifactObservedAt: Date.parse(node.artifactInstall.observedAt),
   };
 }
 
@@ -182,6 +251,27 @@ function validateAttempt(attempt, operation, attemptNumber, nodesById, manifest,
   if (!Number.isSafeInteger(attempt.targetHostPid) || attempt.targetHostPid <= 0) {
     notPass(`${prefix} lacks a real positive target-host PID`);
   }
+  const argv = attempt?.executionEvidence?.argv;
+  const operationTokens = operation.split(' ');
+  if (
+    !Array.isArray(argv) ||
+    argv[0] !== 'agent-relay' ||
+    operationTokens.some((token, index) => argv[index + 1] !== token)
+  ) {
+    notPass(`${prefix} execution argv does not invoke the enumerated operation`);
+  }
+  const argvDigest = commandArgvSha256(argv);
+  if (
+    attempt?.executionEvidence?.source !== 'target-host' ||
+    normalizeSha256(attempt?.executionEvidence?.argvSha256, `${prefix}.executionEvidence.argvSha256`) !==
+      argvDigest ||
+    attempt?.executionEvidence?.exitCode !== attempt.exitCode
+  ) {
+    notPass(`${prefix} execution evidence is not bound to target-host argv and exit code`);
+  }
+  normalizeSha256(attempt?.executionEvidence?.stdoutSha256, `${prefix}.executionEvidence.stdoutSha256`);
+  normalizeSha256(attempt?.executionEvidence?.stderrSha256, `${prefix}.executionEvidence.stderrSha256`);
+  requireIsoTimestamp(attempt?.executionEvidence?.observedAt, `${prefix}.executionEvidence.observedAt`);
   if (
     attempt?.processEvidence?.pid !== attempt.targetHostPid ||
     normalizeSnapshotId(
@@ -197,8 +287,19 @@ function validateAttempt(attempt, operation, attemptNumber, nodesById, manifest,
   requireIsoTimestamp(attempt?.processEvidence?.observedAt, `${prefix}.processEvidence.observedAt`);
   requireIsoTimestamp(attempt.startedAt, `${prefix}.startedAt`);
   requireIsoTimestamp(attempt.finishedAt, `${prefix}.finishedAt`);
-  if (Date.parse(attempt.finishedAt) < Date.parse(attempt.startedAt)) {
-    notPass(`${prefix} finished before it started`);
+  if (Date.parse(attempt.finishedAt) <= Date.parse(attempt.startedAt)) {
+    notPass(`${prefix} must finish after it starts`);
+  }
+  const startedAt = Date.parse(attempt.startedAt);
+  const finishedAt = Date.parse(attempt.finishedAt);
+  for (const [field, timestamp] of [
+    ['processEvidence.observedAt', attempt.processEvidence.observedAt],
+    ['executionEvidence.observedAt', attempt.executionEvidence.observedAt],
+  ]) {
+    const observedAt = Date.parse(timestamp);
+    if (observedAt <= startedAt || observedAt >= finishedAt) {
+      notPass(`${prefix}.${field} must be observed while the operation is running`);
+    }
   }
 
   const requested = normalizeDeploymentId(
@@ -243,12 +344,18 @@ function validateAttempt(attempt, operation, attemptNumber, nodesById, manifest,
     if (!expected || observedError !== expected) {
       notPass(`${prefix} refusal error differs from the exact expected error`);
     }
+    if (
+      normalizeSha256(attempt.executionEvidence.stderrSha256, `${prefix}.executionEvidence.stderrSha256`) !==
+      sha256Text(observedError)
+    ) {
+      notPass(`${prefix} refusal text is not bound to captured stderr`);
+    }
   } else {
     notPass(`${prefix}.outcome must be pass or expected_refusal`);
   }
 }
 
-export function validateQualificationEvidence(evidence, operations) {
+export function validateQualificationEvidence(evidence, operations, options = {}) {
   if (evidence?.schemaVersion !== 'relay-fleet-qualification/1') {
     notPass('schemaVersion must be relay-fleet-qualification/1');
   }
@@ -261,7 +368,26 @@ export function validateQualificationEvidence(evidence, operations) {
   ) {
     notPass('matrixOperations differs from the source-derived ordered inventory');
   }
+  const relayCommitSha = requiredString(evidence?.relayCommitSha, 'relayCommitSha').toLowerCase();
+  if (!GIT_SHA.test(relayCommitSha)) notPass('relayCommitSha must be a full 40-character Git SHA');
+  const expectedRelayCommitSha = requiredString(
+    options.expectedRelayCommitSha,
+    'expectedRelayCommitSha'
+  ).toLowerCase();
+  if (!GIT_SHA.test(expectedRelayCommitSha) || relayCommitSha !== expectedRelayCommitSha) {
+    notPass('relayCommitSha does not equal the exact head requested by the Relayflow');
+  }
+  if (evidence?.collector?.kind !== 'committed-relayflow' || evidence?.collector?.machineGenerated !== true) {
+    notPass('evidence must identify the committed Relayflow machine collector');
+  }
   const manifestDigest = candidateManifestSha256(evidence.candidateManifest);
+  const expectedCandidateManifestSha256 = normalizeSha256(
+    options.expectedCandidateManifestSha256,
+    'expectedCandidateManifestSha256'
+  );
+  if (manifestDigest !== expectedCandidateManifestSha256) {
+    notPass('candidateManifest differs from the manifest file supplied to the Relayflow');
+  }
   if (evidence?.candidateArtifact?.kind !== 'packed') {
     notPass('candidateArtifact.kind must be packed');
   }
@@ -269,6 +395,13 @@ export function validateQualificationEvidence(evidence, operations) {
     evidence?.candidateArtifact?.sha256,
     'candidateArtifact.sha256'
   );
+  const expectedCandidateArtifactSha256 = normalizeSha256(
+    options.expectedCandidateArtifactSha256,
+    'expectedCandidateArtifactSha256'
+  );
+  if (candidateArtifactSha256 !== expectedCandidateArtifactSha256) {
+    notPass('candidateArtifact differs from the packed artifact supplied to the Relayflow');
+  }
   if (!Array.isArray(evidence.nodes) || evidence.nodes.length < 2) {
     notPass('at least two fresh Daytona nodes are required');
   }
@@ -290,10 +423,23 @@ export function validateQualificationEvidence(evidence, operations) {
     if (attempts.length !== 2) notPass(`${operation} must have exactly two attempts`);
     validateAttempt(attempts[0], operation, 1, nodesById, evidence.candidateManifest, manifestDigest);
     validateAttempt(attempts[1], operation, 2, nodesById, evidence.candidateManifest, manifestDigest);
-    if (attempts[0].nodeResourceId === attempts[1].nodeResourceId) {
+    const firstNodeResourceId = normalizeSnapshotId(
+      attempts[0].nodeResourceId,
+      `attempts[${operation}#1].nodeResourceId`
+    );
+    const secondNodeResourceId = normalizeSnapshotId(
+      attempts[1].nodeResourceId,
+      `attempts[${operation}#2].nodeResourceId`
+    );
+    if (firstNodeResourceId === secondNodeResourceId) {
       notPass(`${operation} attempts must run on two distinct Daytona resource IDs`);
     }
   }
+
+  const usedNodeResourceIds = new Set(
+    evidence.attempts.map((attempt) => normalizeSnapshotId(attempt.nodeResourceId, 'attempt.nodeResourceId'))
+  );
+  if (usedNodeResourceIds.size < 2) notPass('matrix attempts used fewer than two Daytona resource IDs');
 
   for (const node of validatedNodes) {
     const nodeAttempts = evidence.attempts.filter(
@@ -301,15 +447,21 @@ export function validateQualificationEvidence(evidence, operations) {
     );
     const firstAttemptAt = Math.min(...nodeAttempts.map((attempt) => Date.parse(attempt.startedAt)));
     const lastAttemptAt = Math.max(...nodeAttempts.map((attempt) => Date.parse(attempt.finishedAt)));
+    if (nodeAttempts.length === 0) notPass(`resource ${node.resourceId} has no matrix attempts`);
     if (
-      node.createdAt > node.cleanBeforeAt ||
-      node.cleanBeforeAt > firstAttemptAt ||
-      node.snapshotObservedAt > firstAttemptAt ||
-      node.manifestObservedAt > firstAttemptAt
+      node.createdAt >= node.provisionObservedAt ||
+      node.provisionObservedAt >= node.cleanBeforeAt ||
+      node.cleanBeforeAt >= firstAttemptAt ||
+      node.snapshotObservedAt <= node.createdAt ||
+      node.snapshotObservedAt >= firstAttemptAt ||
+      node.manifestObservedAt <= node.createdAt ||
+      node.manifestObservedAt >= firstAttemptAt ||
+      node.artifactObservedAt <= node.createdAt ||
+      node.artifactObservedAt >= firstAttemptAt
     ) {
       notPass(`resource ${node.resourceId} lacks ordered pre-attempt cleanliness and identity proof`);
     }
-    if (node.cleanAfterAt < lastAttemptAt) {
+    if (node.cleanAfterAt <= lastAttemptAt) {
       notPass(`resource ${node.resourceId} teardown absence was not observed after its final attempt`);
     }
   }
@@ -331,6 +483,9 @@ export function validateQualificationEvidence(evidence, operations) {
     }
     for (const ref of proof.attemptRefs) {
       if (!attemptsByRef.has(ref)) notPass(`coverage.${capability} cites unknown attempt ${String(ref)}`);
+      if (capability !== 'failureSemantics' && attemptsByRef.get(ref)?.outcome !== 'pass') {
+        notPass(`coverage.${capability} must cite a successful operation attempt`);
+      }
     }
   }
   if (
@@ -346,9 +501,10 @@ export function validateQualificationEvidence(evidence, operations) {
     retryAllowed: false,
     operationCount: operations.length,
     attemptCount: expectedAttempts,
-    nodeResourceIds: [...nodesById.keys()],
+    nodeResourceIds: [...usedNodeResourceIds],
     candidateManifestSha256: manifestDigest,
     candidateArtifactSha256,
+    relayCommitSha,
     completedAt: new Date(Math.max(...validatedNodes.map((node) => node.cleanAfterAt))).toISOString(),
   };
 }
