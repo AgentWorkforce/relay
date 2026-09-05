@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Dependency resolution requires the patched `brace-expansion` release that bounds intermediate array growth.
+- Dependency resolution requires patched `brace-expansion` and `undici` releases that prevent unbounded expansion and private-cache cross-user disclosure.
 
 ## [11.10.3] - 2026-09-05
 
