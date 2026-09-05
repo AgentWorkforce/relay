@@ -65,7 +65,8 @@
     "010d99e6944adda21617080c3f2a269953227ece",
     "69f9b8193b1ef986aac2f3b340444b1c3095ce0b",
     "4feef65ca488cddf2e6b43958edec8b5e401bf91",
-    "56cceb1d9efba7e41d321367bfc34ba976eaeb8c"
+    "56cceb1d9efba7e41d321367bfc34ba976eaeb8c",
+    "0a99096eedb3ad1c2f442aaec0e70e5e63c01691"
   ],
   "filesChanged": [
     "CHANGELOG.md",
@@ -91,7 +92,7 @@
     "packages/sdk-py/tests/test_send_message_mode.py",
     "packages/sdk-swift/Sources/AgentRelayBrokerSDK/AgentRelayBrokerClient.swift",
     "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerTypes.swift",
-    "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/BrokerTypesTests.swift",
+    "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/AgentRelayBrokerSDKTests.swift",
     "tests/relayflows/cases/1658-model-change-receipt/case.json",
     "tests/relayflows/cases/1658-model-change-receipt/run.mjs"
   ],
@@ -99,6 +100,6 @@
   "tags": [],
   "_trace": {
     "startRef": "ca5cda002e47b431e77b86364a967573aa2034de",
-    "endRef": "56cceb1d9efba7e41d321367bfc34ba976eaeb8c"
+    "endRef": "0a99096eedb3ad1c2f442aaec0e70e5e63c01691"
   }
 }
