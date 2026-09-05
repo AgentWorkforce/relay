@@ -35,6 +35,8 @@ import {
   validateSeal,
 } from '../../scripts/verify-features/fleet-daytona.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
+import { preflightPermissions } from '../../scripts/verify-features/fleet-permissions.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   collectFleetCliInventory,
   compareFleetCliInventory,
@@ -222,12 +224,17 @@ function completeEvidence(matrix: {
 
 describe('complete Daytona Fleet board', () => {
   it('restricts each model preflight to its provider transport', async () => {
-    const workflow = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
-    expect(workflow).toContain("deny: ['*']");
-    expect(workflow).toContain('api.opencode.ai:443');
-    expect(workflow).toContain('api.openai.com:443');
-    expect(workflow).toContain('api.anthropic.com:443');
-    expect(workflow).not.toContain('network: true');
+    for (const [provider, host] of [
+      ['opencode', 'api.opencode.ai:443'],
+      ['codex', 'api.openai.com:443'],
+      ['claude', 'api.anthropic.com:443'],
+    ]) {
+      const policy = preflightPermissions(`preflight-${provider}`);
+      expect(policy.network).toEqual({ allow: expect.arrayContaining([host]), deny: ['*'] });
+      expect(policy.files).toEqual({ read: [], write: [], deny: ['**'] });
+      expect(policy.inherit).toBe(false);
+      expect(policy.network.allow).not.toContain('*');
+    }
   });
 
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {

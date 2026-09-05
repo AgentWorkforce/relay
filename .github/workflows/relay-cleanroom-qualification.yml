@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '17 3 * * *'
   release:
-    types: [prereleased, published]
+    types: [prereleased]
   repository_dispatch:
     types: [relay_candidate_qualification]
   workflow_dispatch:
