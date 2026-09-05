@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-darwin-arm64",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260905.1",
   "engines": {
     "node": ">=22.0.0"
   },
