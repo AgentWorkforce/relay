@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command, InvalidArgumentError } from 'commander';
@@ -43,6 +44,16 @@ type EphemeralWorkspaceCreateResponse = {
   requestedRelayfileCloudDeploymentId?: string;
   observedRelayfileCloudDeploymentId?: string;
   relayfileCloudAttestationSha256?: string;
+};
+
+type EphemeralWorkspaceReconciliationResponse = {
+  workspaceId: string;
+  relayWorkspaceId: string;
+  state: 'provisioning' | 'active' | 'failed' | 'deleting' | 'deleted';
+  credentialRevealed: boolean;
+  replay: true;
+  requestedRelayfileCloudDeploymentId: string;
+  observedRelayfileCloudDeploymentId: string;
 };
 
 type EphemeralWorkspaceDeleteResponse = {
@@ -118,6 +129,18 @@ function parseDeploymentId(value: string): string {
     throw new InvalidArgumentError('Relayfile Cloud deployment ID is invalid.');
   }
   return deploymentId;
+}
+
+function parseIdempotencyKey(value: string): string {
+  const key = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,255}$/u.test(key)) {
+    throw new InvalidArgumentError('Idempotency key must be 8-256 URL-safe characters.');
+  }
+  return key;
+}
+
+function durableCreateIdempotencyKey(absoluteCredentialPath: string): string {
+  return `relay-ephemeral:${createHash('sha256').update(absoluteCredentialPath).digest('hex')}`;
 }
 
 function reserveCredentialFile(file: string): ReservedCredentialFile {
@@ -230,6 +253,27 @@ function parseCreateResponse(
   return value as EphemeralWorkspaceCreateResponse;
 }
 
+function parseReconciliationResponse(
+  value: unknown,
+  expectedDeploymentId?: string
+): EphemeralWorkspaceReconciliationResponse | null {
+  if (
+    !isObject(value) ||
+    !APP_WORKSPACE_ID_PATTERN.test(String(value.workspaceId ?? '')) ||
+    !RELAY_WORKSPACE_ID_PATTERN.test(String(value.relayWorkspaceId ?? '')) ||
+    !['provisioning', 'active', 'failed', 'deleting', 'deleted'].includes(String(value.state)) ||
+    typeof value.credentialRevealed !== 'boolean' ||
+    value.replay !== true ||
+    !isNonEmptyString(value.requestedRelayfileCloudDeploymentId) ||
+    !isNonEmptyString(value.observedRelayfileCloudDeploymentId) ||
+    value.requestedRelayfileCloudDeploymentId !== value.observedRelayfileCloudDeploymentId ||
+    (expectedDeploymentId !== undefined && value.requestedRelayfileCloudDeploymentId !== expectedDeploymentId)
+  ) {
+    return null;
+  }
+  return value as EphemeralWorkspaceReconciliationResponse;
+}
+
 function parseDeleteResponse(
   value: unknown,
   expectedWorkspaceId: string
@@ -280,8 +324,14 @@ function parseDeleteResponse(
     !exactIdentity(daytona, ['workspaceId', 'relayWorkspaceId', 'remaining']) ||
     daytona.remaining !== 0 ||
     !isObject(cloud) ||
-    !exactIdentity(cloud, ['workspaceId', 'relayWorkspaceId', 'appWorkspaceRowsRemaining']) ||
+    !exactIdentity(cloud, [
+      'workspaceId',
+      'relayWorkspaceId',
+      'appWorkspaceRowsRemaining',
+      'workflowLaunchesInProgress',
+    ]) ||
     cloud.appWorkspaceRowsRemaining !== 0 ||
+    cloud.workflowLaunchesInProgress !== 0 ||
     !isObject(credentials) ||
     !exactIdentity(credentials, ['workspaceId', 'relayWorkspaceId', 'activeSessionsRemaining']) ||
     credentials.activeSessionsRemaining !== 0 ||
@@ -304,6 +354,70 @@ function parseDeleteResponse(
     return null;
   }
   return value as EphemeralWorkspaceDeleteResponse;
+}
+
+type AuthorizedApiAuth = Parameters<WorkspaceCommandDependencies['authorizedApiFetch']>[0];
+
+async function deleteEphemeralWorkspaceAndVerify(
+  deps: WorkspaceCommandDependencies,
+  auth: AuthorizedApiAuth,
+  workspaceId: string
+): Promise<EphemeralWorkspaceDeleteResult> {
+  const { response, auth: deleteAuth } = await deps.authorizedApiFetch(
+    auth,
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({ confirm: workspaceId, verifyCascade: true }),
+    },
+    { interactive: false }
+  );
+  if (!response.ok) {
+    throw apiFailure('delete', response.status);
+  }
+  const deleted = parseDeleteResponse(await response.json().catch(() => null), workspaceId);
+  if (!deleted) {
+    throw new Error('Cloud did not return complete cascade reconciliation proof.');
+  }
+  const { response: absenceResponse } = await deps.authorizedApiFetch(
+    deleteAuth,
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
+    { method: 'GET' },
+    { interactive: false }
+  );
+  if (absenceResponse.status !== 404) {
+    throw new Error('Cloud did not prove the deleted app workspace is absent.');
+  }
+  return {
+    ...deleted,
+    absence: { workspaceId, status: 404, verifiedAt: new Date().toISOString() },
+  };
+}
+
+async function reconcileAmbiguousCreate(
+  deps: WorkspaceCommandDependencies,
+  auth: AuthorizedApiAuth,
+  idempotencyKey: string,
+  expectedDeploymentId?: string
+): Promise<EphemeralWorkspaceReconciliationResponse | null> {
+  const { response } = await deps.authorizedApiFetch(
+    auth,
+    `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(idempotencyKey)}`,
+    { method: 'GET' },
+    { interactive: false }
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`Cloud could not reconcile the workspace create request (HTTP ${response.status}).`);
+  }
+  const reconciled = parseReconciliationResponse(
+    await response.json().catch(() => null),
+    expectedDeploymentId
+  );
+  if (!reconciled) {
+    throw new Error('Cloud returned an invalid workspace reconciliation response.');
+  }
+  return reconciled;
 }
 
 function apiFailure(operation: 'create' | 'delete', status: number): Error {
@@ -340,10 +454,15 @@ export function registerCloudWorkspaceCommands(
     .requiredOption('--ttl <duration>', 'TTL: 60-86400 seconds, or a value such as 30m or 24h', parseTtl)
     .requiredOption('--credential-file <path>', 'New file for the reveal-once credential (created 0600)')
     .option('--json', 'Print non-secret result metadata as JSON', false)
-    .option(
+    .requiredOption(
       '--relayfile-cloud-deployment <id>',
       'Require an exact prequalified Relayfile Cloud deployment',
       parseDeploymentId
+    )
+    .option(
+      '--idempotency-key <key>',
+      'Stable retry key; defaults to a hash of the absolute credential-file path',
+      parseIdempotencyKey
     )
     .action(
       async (options: {
@@ -352,37 +471,50 @@ export function registerCloudWorkspaceCommands(
         ttl: number;
         credentialFile: string;
         json?: boolean;
-        relayfileCloudDeployment?: string;
+        relayfileCloudDeployment: string;
+        idempotencyKey?: string;
       }) => {
         let reserved: ReservedCredentialFile | null = null;
+        let createAuth: AuthorizedApiAuth | null = null;
+        let createRequestSent = false;
+        let credentialCommitted = false;
+        let idempotencyKey: string | null = null;
         try {
-          // Cloud must first ship the bound deployment contract and a durable
-          // idempotency/reconciliation API. Sending this field to older Cloud
-          // versions is unsafe: unknown request fields are ignored, so Cloud
-          // can create a workspace whose reveal-once credential this client
-          // then rejects and discards. Keep the candidate path fail-closed
-          // before authentication, file reservation, or POST until that
-          // server contract is available end to end.
-          if (options.relayfileCloudDeployment) {
-            throw new Error('Relayfile Cloud candidate binding is not supported by the deployed Cloud API.');
-          }
           reserved = reserveCredentialFile(options.credentialFile);
+          idempotencyKey = options.idempotencyKey ?? durableCreateIdempotencyKey(reserved.absolutePath);
           const session = await deps.ensureCloudSession({
             apiUrl: defaultApiUrl(),
             interactive: false,
           });
+          createAuth = session.auth;
+          // Probe the candidate-aware reconciliation contract before the
+          // first mutation. Older Cloud versions ignore unknown POST fields
+          // and could otherwise create an unbound workspace.
+          const existing = await reconcileAmbiguousCreate(
+            deps,
+            createAuth,
+            idempotencyKey,
+            options.relayfileCloudDeployment
+          );
+          if (existing) {
+            await deleteEphemeralWorkspaceAndVerify(deps, createAuth, existing.workspaceId);
+            throw new Error(
+              'Recovered and deleted an earlier workspace for this idempotency key; retry with a new credential path or --idempotency-key.'
+            );
+          }
+          createRequestSent = true;
           const { response } = await deps.authorizedApiFetch(
             session.auth,
             '/api/v1/workspaces',
             {
               method: 'POST',
+              headers: { 'idempotency-key': idempotencyKey },
               body: JSON.stringify({
                 ephemeral: true,
                 name: options.name,
                 ttlSeconds: options.ttl,
-                ...(options.relayfileCloudDeployment
-                  ? { relayfileCloudDeploymentId: options.relayfileCloudDeployment }
-                  : {}),
+                idempotencyKey,
+                relayfileCloudDeploymentId: options.relayfileCloudDeployment,
               }),
             },
             { interactive: false }
@@ -405,19 +537,16 @@ export function registerCloudWorkspaceCommands(
               apiUrl: session.auth.apiUrl,
             },
           });
+          credentialCommitted = true;
           const result = {
             workspaceId: created.workspaceId,
             relayWorkspaceId: created.relayWorkspaceId,
             expiresAt: created.expiresAt,
             state: created.state,
             credentialFile: reserved.absolutePath,
-            ...(options.relayfileCloudDeployment
-              ? {
-                  requestedRelayfileCloudDeploymentId: created.requestedRelayfileCloudDeploymentId,
-                  observedRelayfileCloudDeploymentId: created.observedRelayfileCloudDeploymentId,
-                  relayfileCloudAttestationSha256: created.relayfileCloudAttestationSha256,
-                }
-              : {}),
+            requestedRelayfileCloudDeploymentId: created.requestedRelayfileCloudDeploymentId,
+            observedRelayfileCloudDeploymentId: created.observedRelayfileCloudDeploymentId,
+            relayfileCloudAttestationSha256: created.relayfileCloudAttestationSha256,
           };
           // The reveal-once credential is now durable. A presentation/logging
           // failure must not erase the only copy the caller can recover.
@@ -431,6 +560,25 @@ export function registerCloudWorkspaceCommands(
             deps.log(`Credential file: ${result.credentialFile}`);
           }
         } catch (error) {
+          let reconciliationFailure: Error | null = null;
+          if (!credentialCommitted && createRequestSent && createAuth && idempotencyKey) {
+            try {
+              const reconciled = await reconcileAmbiguousCreate(
+                deps,
+                createAuth,
+                idempotencyKey,
+                options.relayfileCloudDeployment
+              );
+              if (reconciled) {
+                await deleteEphemeralWorkspaceAndVerify(deps, createAuth, reconciled.workspaceId);
+              }
+            } catch (reconciliationError) {
+              reconciliationFailure =
+                reconciliationError instanceof Error
+                  ? reconciliationError
+                  : new Error('Cloud workspace reconciliation failed.');
+            }
+          }
           if (reserved) {
             try {
               reserved.discard();
@@ -439,7 +587,12 @@ export function registerCloudWorkspaceCommands(
               // error or print a possibly sensitive path from a thrown value.
             }
           }
-          deps.error(error instanceof Error ? error.message : 'Ephemeral workspace creation failed.');
+          const message = error instanceof Error ? error.message : 'Ephemeral workspace creation failed.';
+          deps.error(
+            reconciliationFailure
+              ? `${message} ${reconciliationFailure.message} Retry with the same credential path or --idempotency-key.`
+              : message
+          );
           deps.exit(1);
         }
       }
@@ -468,35 +621,7 @@ export function registerCloudWorkspaceCommands(
             apiUrl: defaultApiUrl(),
             interactive: false,
           });
-          const { response, auth: deleteAuth } = await deps.authorizedApiFetch(
-            session.auth,
-            `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
-            {
-              method: 'DELETE',
-              body: JSON.stringify({ confirm: workspaceId, verifyCascade: true }),
-            },
-            { interactive: false }
-          );
-          if (!response.ok) {
-            throw apiFailure('delete', response.status);
-          }
-          const deleted = parseDeleteResponse(await response.json().catch(() => null), workspaceId);
-          if (!deleted) {
-            throw new Error('Cloud did not return complete cascade reconciliation proof.');
-          }
-          const { response: absenceResponse } = await deps.authorizedApiFetch(
-            deleteAuth,
-            `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
-            { method: 'GET' },
-            { interactive: false }
-          );
-          if (absenceResponse.status !== 404) {
-            throw new Error('Cloud did not prove the deleted app workspace is absent.');
-          }
-          const result: EphemeralWorkspaceDeleteResult = {
-            ...deleted,
-            absence: { workspaceId, status: 404, verifiedAt: new Date().toISOString() },
-          };
+          const result = await deleteEphemeralWorkspaceAndVerify(deps, session.auth, workspaceId);
           if (options.json) {
             deps.log(JSON.stringify(result, null, 2));
           } else {
