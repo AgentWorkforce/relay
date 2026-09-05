@@ -220,7 +220,8 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
 }
 
 function buildNodeAppServerModelProofScript() {
-  return String.raw`const fs = require('node:fs');
+  return String.raw`(async () => {
+const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
@@ -415,6 +416,10 @@ try {
   result.cleanup = true;
 }
 process.stdout.write(JSON.stringify(result));
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack ? error.stack : error) + '\\n');
+  process.exitCode = 1;
+});
 `;
 }
 
