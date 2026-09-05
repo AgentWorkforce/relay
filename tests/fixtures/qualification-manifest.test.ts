@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -293,6 +295,12 @@ const digests = {
 };
 
 describe('qualification manifest', () => {
+  it('uses a Node runtime that satisfies the locked dependency engine floor', async () => {
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    expect(workflow.match(/node-version: 22\.22\.0/g)).toHaveLength(2);
+    expect(workflow).not.toContain('node-version: 22.14.0');
+  });
+
   it('binds four repositories, package/rebuild/acceptance producers, and the non-promoting snapshot', () => {
     expect(validateQualificationManifest(valid, { releaseId: 42, releaseTag: valid.releaseTag })).toEqual(
       valid

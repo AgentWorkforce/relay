@@ -160,6 +160,8 @@ describe('Relay package qualification producer', () => {
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).not.toMatch(/\n\s+push:/);
     expect(workflow).toContain('permissions:\n  contents: read');
+    expect(workflow).toContain('node-version: 22.22.0');
+    expect(workflow).not.toContain('node-version: 22.14.0');
     expect(workflow).toContain('test "${GITHUB_REF}" = "refs/heads/main"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"');
     expect(RELAY_PACKAGE_PRODUCER).toMatchObject({ event: 'workflow_dispatch', ref: 'main' });
