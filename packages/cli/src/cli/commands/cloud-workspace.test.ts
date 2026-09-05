@@ -17,6 +17,19 @@ const WORKSPACE_ID = '00000000-0000-4000-8000-000000000801';
 const RELAY_WORKSPACE_ID = 'rw_1234abcd';
 const EXPIRES_AT = '2026-09-06T00:00:00.000Z';
 const RELAYFILE_CLOUD_DEPLOYMENT_ID = 'rfcloud-candidate-71';
+
+function readPrivateJsonFile(file: string): unknown {
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const info = fs.fstatSync(descriptor);
+    expect(info.isFile()).toBe(true);
+    expect(info.mode & 0o777).toBe(0o600);
+    return JSON.parse(fs.readFileSync(descriptor, 'utf8'));
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 const auth = {
   apiUrl: 'https://cloud.test',
   accessToken: 'operator-access-secret',
@@ -165,8 +178,7 @@ describe('cloud workspace lifecycle commands', () => {
       },
       { interactive: false }
     );
-    expect(fs.statSync(credentialFile).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(fs.readFileSync(credentialFile, 'utf8'))).toEqual({
+    expect(readPrivateJsonFile(credentialFile)).toEqual({
       ...revealOnceResponse.credential,
       cloud: {
         apiUrl: 'https://cloud.test',

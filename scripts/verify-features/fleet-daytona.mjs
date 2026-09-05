@@ -2,12 +2,13 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { validateCandidateInstallAttestation } from './relay-candidate-install.mjs';
 import { inventorySha256, validateFleetCliInventory } from './fleet-cli-inventory.mjs';
+import { readRegularFileNoFollow } from './safe-file.mjs';
 
 const CONTRACT_VERSION = 1;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -64,14 +65,16 @@ export async function loadWorkspaceCredentialFile() {
   const configured = process.env.VERIFY_FLEET_WORKSPACE_KEY_FILE?.trim();
   if (!configured) return;
   const target = path.resolve(configured);
-  const info = await lstat(target);
-  if (!info.isFile() || info.size <= 0 || info.size > 64 * 1024 || (info.mode & 0o077) !== 0) {
+  const { bytes } = await readRegularFileNoFollow(target, {
+    label: 'VERIFY_FLEET_WORKSPACE_KEY_FILE',
+    maxBytes: 64 * 1024,
+    privateMode: true,
+    currentUserOwned: true,
+  });
+  if (bytes.length === 0) {
     throw new Error('VERIFY_FLEET_WORKSPACE_KEY_FILE must be a non-empty private regular file');
   }
-  if (typeof process.getuid === 'function' && info.uid !== process.getuid()) {
-    throw new Error('VERIFY_FLEET_WORKSPACE_KEY_FILE must be owned by the current user');
-  }
-  const value = JSON.parse(await readFile(target, 'utf8'));
+  const value = JSON.parse(bytes.toString('utf8'));
   const relay = value?.relay;
   const cloud = value?.cloud;
   const workspaceId = typeof value?.workspaceId === 'string' ? value.workspaceId.trim() : '';
@@ -1410,8 +1413,12 @@ class FleetBoard {
       throw new Error('Could not bind the board to source, Relay CLI, and Daytona versions');
     }
     const [cliBytes, runnerBytes] = await Promise.all([
-      readFile(this.cli),
-      readFile(fileURLToPath(import.meta.url)),
+      readRegularFileNoFollow(this.cli, { label: 'Fleet candidate CLI entrypoint' }).then(
+        (result) => result.bytes
+      ),
+      readRegularFileNoFollow(fileURLToPath(import.meta.url), {
+        label: 'Fleet qualification runner',
+      }).then((result) => result.bytes),
     ]);
     const cliSha256 = createHash('sha256').update(cliBytes).digest('hex');
     const candidateAttestationPath = process.env.VERIFY_FLEET_CANDIDATE_ATTESTATION?.trim();
@@ -1421,7 +1428,11 @@ class FleetBoard {
     let candidateAttestation = null;
     let candidateInstallAttestationSha256 = null;
     if (candidateAttestationPath) {
-      const bytes = await readFile(path.resolve(candidateAttestationPath));
+      const { bytes } = await readRegularFileNoFollow(path.resolve(candidateAttestationPath), {
+        label: 'Fleet candidate install attestation',
+        privateMode: true,
+        currentUserOwned: true,
+      });
       candidateInstallAttestationSha256 = createHash('sha256').update(bytes).digest('hex');
       candidateAttestation = validateCandidateInstallAttestation(JSON.parse(bytes.toString('utf8')), {
         sourceSha: head._rawStdout.trim(),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -530,6 +530,12 @@ describe('complete Daytona Fleet board', () => {
 
       await chmod(file, 0o644);
       await expect(loadWorkspaceCredentialFile()).rejects.toThrow(/private regular file/);
+
+      await chmod(file, 0o600);
+      const link = path.join(directory, 'workspace-link.json');
+      await symlink(file, link);
+      process.env.VERIFY_FLEET_WORKSPACE_KEY_FILE = link;
+      await expect(loadWorkspaceCredentialFile()).rejects.toThrow(/symbolic link/);
     } finally {
       for (const [key, value] of Object.entries({
         VERIFY_FLEET_WORKSPACE_KEY_FILE: previous.file,

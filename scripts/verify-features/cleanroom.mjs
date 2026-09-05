@@ -3,21 +3,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import {
-  access,
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { overwriteRegularFileNoFollow } from './safe-file.mjs';
 
 const CONTRACT_VERSION = 1;
 const NONCE_RE = /^[0-9a-f]{32}$/;
@@ -2052,12 +2043,11 @@ function reviewExportPath(artifactRoot, nonce, role, lane = null) {
 }
 
 async function writePrivateReviewExport(target, value) {
-  const info = await lstat(target);
-  if (!info.isFile() || info.isSymbolicLink()) {
-    throw new Error(`review export target is not a regular file: ${target}`);
-  }
-  await writeFile(target, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await chmod(target, 0o600);
+  await overwriteRegularFileNoFollow(target, `${JSON.stringify(value, null, 2)}\n`, {
+    label: `review export target ${target}`,
+    mode: 0o600,
+    currentUserOwned: true,
+  });
 }
 
 async function exportReviewInput({

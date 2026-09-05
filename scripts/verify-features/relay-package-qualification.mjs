@@ -10,6 +10,7 @@ import {
   validateCandidateInstallAttestation,
   validateCandidateLockfile,
 } from './relay-candidate-install.mjs';
+import { readRegularFileNoFollow } from './safe-file.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(SCRIPT_DIR, '../..');
@@ -236,19 +237,14 @@ export async function verifyRelayPackageFiles(value, directory) {
   if (actualRootFiles.join('\0') !== expectedRootFiles.sort().join('\0')) {
     throw new Error('Relay package payload contains an unexpected file set');
   }
-  for (const file of [
-    RELAY_PACKAGE_POLICY.file,
-    payload.candidate.attestationFile,
-    payload.candidate.lockfileFile,
-  ]) {
-    const info = await lstat(path.join(root, file));
-    if (!info.isFile()) throw new Error(`Relay package payload entry is not a regular file: ${file}`);
-  }
   const tarballDirectoryInfo = await lstat(path.join(root, payload.candidate.tarballDirectory));
   if (!tarballDirectoryInfo.isDirectory()) {
     throw new Error('Relay package candidate tarballs entry is not a directory');
   }
-  const candidateBytes = await readFile(path.join(root, payload.candidate.attestationFile));
+  const { bytes: candidateBytes } = await readRegularFileNoFollow(
+    path.join(root, payload.candidate.attestationFile),
+    { label: 'Relay package candidate attestation' }
+  );
   if (sha256(candidateBytes) !== payload.candidate.attestationSha256) {
     throw new Error('candidate clean-install attestation bytes changed');
   }
@@ -259,7 +255,10 @@ export async function verifyRelayPackageFiles(value, directory) {
   if (candidate.platform !== 'linux' || candidate.arch !== 'x64') {
     throw new Error('candidate clean install must target linux-x64 snapshots');
   }
-  const lockfileBytes = await readFile(path.join(root, payload.candidate.lockfileFile));
+  const { bytes: lockfileBytes } = await readRegularFileNoFollow(
+    path.join(root, payload.candidate.lockfileFile),
+    { label: 'Relay package candidate lockfile' }
+  );
   if (
     sha256(lockfileBytes) !== payload.candidate.lockfileSha256 ||
     payload.candidate.lockfileSha256 !== candidate.lockfileSha256
@@ -279,9 +278,9 @@ export async function verifyRelayPackageFiles(value, directory) {
   }
   for (const entry of candidate.packages) {
     const tarballPath = path.join(tarballRoot, entry.tarballFile);
-    const info = await lstat(tarballPath);
-    if (!info.isFile()) throw new Error(`candidate tarball is not a regular file: ${entry.name}`);
-    const bytes = await readFile(tarballPath);
+    const { bytes } = await readRegularFileNoFollow(tarballPath, {
+      label: `candidate tarball is not a regular file: ${entry.name}`,
+    });
     if (sha256(bytes) !== entry.tarballSha256) {
       throw new Error(`${entry.name} candidate tarball bytes changed`);
     }

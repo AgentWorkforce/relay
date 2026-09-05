@@ -130,7 +130,21 @@ describe('Relay candidate clean-install attestation', () => {
 
   it('re-verifies the private attestation, every tarball, every installed package, and the CLI', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-install-'));
+    const originalPath = process.env.PATH;
     try {
+      // The attestation deliberately binds npm 10.9.7. This is a verifier unit
+      // test, not a test of whichever npm happens to ship with a Node matrix
+      // image, so put an exact harmless version probe ahead of the host npm.
+      const fixtureBin = path.join(root, 'fixture-bin');
+      const fixtureNpm = path.join(fixtureBin, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+      await mkdir(fixtureBin, { recursive: true });
+      await writeFile(
+        fixtureNpm,
+        process.platform === 'win32' ? '@echo off\r\necho 10.9.7\r\n' : "#!/bin/sh\nprintf '10.9.7\\n'\n"
+      );
+      if (process.platform !== 'win32') await chmod(fixtureNpm, 0o755);
+      process.env.PATH = `${fixtureBin}${path.delimiter}${originalPath ?? ''}`;
+
       const input = fixture();
       const cliEntrypoint = path.join(root, 'install', ...input.cliRelativePath.split('/'));
       const cli = `console.log('agent-relay v${input.packageVersion}')\n`;
@@ -290,6 +304,8 @@ describe('Relay candidate clean-install attestation', () => {
         /(?:CLI digest|complete installed closure) changed/
       );
     } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
       await rm(root, { recursive: true, force: true });
     }
   });

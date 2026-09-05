@@ -16,6 +16,8 @@ import {
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readRegularFileNoFollow } from './safe-file.mjs';
+
 const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -95,10 +97,12 @@ export async function digestInstalledPackageTree(root) {
       if (!info.isFile()) {
         throw new Error(`installed candidate package contains a non-regular file: ${relative}`);
       }
-      const bytes = await readFile(absolute);
+      const { bytes, mode } = await readRegularFileNoFollow(absolute, {
+        label: `installed candidate package file ${relative}`,
+      });
       entries.push({
         path: relative,
-        mode: (info.mode & 0o777).toString(8).padStart(3, '0'),
+        mode: mode.toString(8).padStart(3, '0'),
         size: bytes.length,
         sha256: sha256(bytes),
       });
@@ -144,11 +148,13 @@ export async function digestInstalledClosureTree(root) {
       if (!info.isFile()) {
         throw new Error(`installed candidate closure contains a non-regular entry: ${relative}`);
       }
-      const bytes = await readFile(absolute);
+      const { bytes, mode } = await readRegularFileNoFollow(absolute, {
+        label: `installed candidate closure file ${relative}`,
+      });
       entries.push({
         path: relative,
         type: 'file',
-        mode: (info.mode & 0o777).toString(8).padStart(3, '0'),
+        mode: mode.toString(8).padStart(3, '0'),
         size: bytes.length,
         sha256: sha256(bytes),
       });
@@ -415,16 +421,13 @@ export function validateCandidateInstallAttestation(value, expected = {}) {
 
 export async function verifyCandidateInstall(attestationPath, expected = {}) {
   const target = path.resolve(attestationPath);
-  const info = await lstat(target);
-  if (!info.isFile() || (info.mode & 0o077) !== 0) {
-    throw new Error('candidate install attestation must be a private regular file');
-  }
-  if (typeof process.getuid === 'function' && info.uid !== process.getuid()) {
-    throw new Error('candidate install attestation must be owned by the current user');
-  }
+  const { bytes } = await readRegularFileNoFollow(target, {
+    label: 'candidate install attestation',
+    privateMode: true,
+    currentUserOwned: true,
+  });
   const root = path.dirname(target);
   const expectedCli = path.join(root, 'install', ...CLI_RELATIVE_PATH.split('/'));
-  const bytes = await readFile(target);
   const attestation = validateCandidateInstallAttestation(JSON.parse(bytes.toString('utf8')), {
     ...expected,
   });
@@ -435,7 +438,11 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
     throw new Error('candidate install CLI entrypoint does not match');
   }
   const installDir = path.join(root, 'install');
-  const lockfileBytes = await readFile(path.join(root, attestation.lockfileFile));
+  const { bytes: lockfileBytes } = await readRegularFileNoFollow(path.join(root, attestation.lockfileFile), {
+    label: 'candidate package lockfile',
+    privateMode: true,
+    currentUserOwned: true,
+  });
   if (
     lockfileBytes.length !== attestation.lockfileBytes ||
     sha256(lockfileBytes) !== attestation.lockfileSha256
@@ -444,8 +451,12 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   }
   validateCandidateLockfile(JSON.parse(lockfileBytes.toString('utf8')), attestation.packages);
   const [installManifestBytes, installedLockfileBytes, closureTree] = await Promise.all([
-    readFile(path.join(installDir, 'package.json')),
-    readFile(path.join(installDir, 'package-lock.json')),
+    readRegularFileNoFollow(path.join(installDir, 'package.json'), {
+      label: 'candidate install manifest',
+    }).then((result) => result.bytes),
+    readRegularFileNoFollow(path.join(installDir, 'package-lock.json'), {
+      label: 'installed candidate lockfile',
+    }).then((result) => result.bytes),
     digestInstalledClosureTree(path.join(installDir, 'node_modules')),
   ]);
   if (installManifestBytes.toString('utf8') !== candidateInstallManifestBytes(attestation.packages)) {
@@ -462,12 +473,12 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
     throw new Error('candidate complete installed closure changed');
   }
   const brokerPath = path.join(installDir, ...attestation.brokerRelativePath.split('/'));
-  const brokerInfo = await lstat(brokerPath);
-  if (!brokerInfo.isFile()) throw new Error('candidate broker is not a regular file');
-  if (attestation.platform !== 'win32' && (brokerInfo.mode & 0o777) !== 0o755) {
+  const { bytes: brokerBytes, mode: brokerMode } = await readRegularFileNoFollow(brokerPath, {
+    label: 'candidate broker',
+  });
+  if (attestation.platform !== 'win32' && brokerMode !== 0o755) {
     throw new Error('candidate broker mode is not exactly 0755');
   }
-  const brokerBytes = await readFile(brokerPath);
   if (sha256(brokerBytes) !== attestation.brokerSha256) {
     throw new Error('candidate broker digest changed');
   }
@@ -479,8 +490,12 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   for (const entry of attestation.packages) {
     const installedRoot = packageRoot(installDir, entry.name);
     const [tarballBytes, installedBytes, installedTree] = await Promise.all([
-      readFile(path.join(root, 'tarballs', entry.tarballFile)),
-      readFile(packagePath(installDir, entry.name)),
+      readRegularFileNoFollow(path.join(root, 'tarballs', entry.tarballFile), {
+        label: `candidate tarball ${entry.name}`,
+      }).then((result) => result.bytes),
+      readRegularFileNoFollow(packagePath(installDir, entry.name), {
+        label: `installed package manifest ${entry.name}`,
+      }).then((result) => result.bytes),
       digestInstalledPackageTree(installedRoot),
     ]);
     if (sha256(tarballBytes) !== entry.tarballSha256) {
@@ -501,9 +516,9 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
       throw new Error(`installed candidate package identity changed for ${entry.name}`);
     }
   }
-  const cliInfo = await lstat(expectedCli);
-  if (!cliInfo.isFile()) throw new Error('candidate CLI entrypoint is not a regular file');
-  const cliBytes = await readFile(expectedCli);
+  const { bytes: cliBytes } = await readRegularFileNoFollow(expectedCli, {
+    label: 'candidate CLI entrypoint',
+  });
   if (sha256(cliBytes) !== attestation.cliSha256) {
     throw new Error('candidate install CLI digest changed');
   }
@@ -548,7 +563,9 @@ async function prepare(outputRoot) {
     ]);
     const record = JSON.parse(output)[0];
     const tarballPath = path.join(tarballDir, requiredString(record.filename, `${directory} tarball`));
-    const bytes = await readFile(tarballPath);
+    const { bytes } = await readRegularFileNoFollow(tarballPath, {
+      label: `packed candidate tarball ${directory}`,
+    });
     packed.push({
       name: requiredString(packageJson.name, `${directory} package name`),
       version: packageJson.version,
@@ -571,7 +588,9 @@ async function prepare(outputRoot) {
     timeoutMs: 900_000,
   });
   const producedLockfile = path.join(installDir, 'package-lock.json');
-  const lockfileBytes = await readFile(producedLockfile);
+  const { bytes: lockfileBytes } = await readRegularFileNoFollow(producedLockfile, {
+    label: 'produced candidate lockfile',
+  });
   validateCandidateLockfile(JSON.parse(lockfileBytes.toString('utf8')), packed);
   const portableLockfile = path.join(root, LOCKFILE_NAME);
   await copyFile(producedLockfile, portableLockfile);
@@ -580,7 +599,9 @@ async function prepare(outputRoot) {
     cwd: installDir,
     timeoutMs: 900_000,
   });
-  const installedLockfileBytes = await readFile(producedLockfile);
+  const { bytes: installedLockfileBytes } = await readRegularFileNoFollow(producedLockfile, {
+    label: 'installed candidate lockfile',
+  });
   if (!installedLockfileBytes.equals(lockfileBytes)) {
     throw new Error('npm ci changed the candidate package lockfile');
   }
@@ -595,7 +616,9 @@ async function prepare(outputRoot) {
   for (const entry of packed) {
     const installedRoot = packageRoot(installDir, entry.name);
     const [installedBytes, installedTree] = await Promise.all([
-      readFile(packagePath(installDir, entry.name)),
+      readRegularFileNoFollow(packagePath(installDir, entry.name), {
+        label: `installed package manifest ${entry.name}`,
+      }).then((result) => result.bytes),
       digestInstalledPackageTree(installedRoot),
     ]);
     const installed = JSON.parse(installedBytes.toString('utf8'));
@@ -614,20 +637,20 @@ async function prepare(outputRoot) {
     });
   }
   const cliEntrypoint = path.join(installDir, ...CLI_RELATIVE_PATH.split('/'));
-  const cliInfo = await lstat(cliEntrypoint);
-  if (!cliInfo.isFile()) throw new Error('candidate CLI entrypoint is not a regular file');
-  const cliBytes = await readFile(cliEntrypoint);
+  const { bytes: cliBytes } = await readRegularFileNoFollow(cliEntrypoint, {
+    label: 'clean-installed candidate CLI entrypoint',
+  });
   const reportedVersion = run(process.execPath, [cliEntrypoint, 'version'], { timeoutMs: 30_000 });
   if (!reportedVersion.includes(`v${packageVersion}`)) {
     throw new Error('clean-installed candidate CLI reported a different version');
   }
   const brokerPath = path.join(installDir, ...brokerRelativePath().split('/'));
-  const brokerInfo = await lstat(brokerPath);
-  if (!brokerInfo.isFile()) throw new Error('clean-installed candidate broker is not a regular file');
-  if (process.platform !== 'win32' && (brokerInfo.mode & 0o777) !== 0o755) {
+  const { bytes: brokerBytes, mode: brokerMode } = await readRegularFileNoFollow(brokerPath, {
+    label: 'clean-installed candidate broker',
+  });
+  if (process.platform !== 'win32' && brokerMode !== 0o755) {
     throw new Error('clean-installed candidate broker mode is not exactly 0755');
   }
-  const brokerBytes = await readFile(brokerPath);
   const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
   if (brokerVersion !== `agent-relay-broker ${packageVersion}`) {
     throw new Error('clean-installed candidate broker reported a different version');
@@ -669,11 +692,16 @@ async function prepare(outputRoot) {
 }
 
 async function hydrate(attestationPath, tarballDirectory, outputRoot) {
+  const sourceAttestation = path.resolve(attestationPath);
   const [sourceSha, sourceStatus, rootPackage, sourceBytes] = await Promise.all([
     Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
     Promise.resolve(run('git', ['status', '--porcelain']).trim()),
     readFile('package.json', 'utf8').then(JSON.parse),
-    readFile(path.resolve(attestationPath)),
+    readRegularFileNoFollow(sourceAttestation, {
+      label: 'portable candidate attestation',
+      privateMode: true,
+      currentUserOwned: true,
+    }).then((result) => result.bytes),
   ]);
   if (sourceStatus) throw new Error('candidate hydration requires a clean source tree');
   const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
@@ -687,8 +715,12 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
   if (run('npm', ['--version'], { timeoutMs: 30_000 }).trim() !== candidate.npmVersion) {
     throw new Error('candidate hydration requires the attested npm version');
   }
-  const sourceLockfile = path.join(path.dirname(path.resolve(attestationPath)), candidate.lockfileFile);
-  const lockfileBytes = await readFile(sourceLockfile);
+  const sourceLockfile = path.join(path.dirname(sourceAttestation), candidate.lockfileFile);
+  const { bytes: lockfileBytes } = await readRegularFileNoFollow(sourceLockfile, {
+    label: 'portable candidate lockfile',
+    privateMode: true,
+    currentUserOwned: true,
+  });
   if (
     lockfileBytes.length !== candidate.lockfileBytes ||
     sha256(lockfileBytes) !== candidate.lockfileSha256
@@ -704,7 +736,9 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
   await Promise.all([mkdir(tarballRoot, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
   for (const entry of candidate.packages) {
     const source = path.join(path.resolve(tarballDirectory), entry.tarballFile);
-    const bytes = await readFile(source);
+    const { bytes } = await readRegularFileNoFollow(source, {
+      label: `portable candidate tarball ${entry.name}`,
+    });
     if (sha256(bytes) !== entry.tarballSha256) {
       throw new Error(`portable candidate tarball digest changed for ${entry.name}`);
     }
@@ -712,7 +746,7 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
     await copyFile(source, target);
   }
   const targetAttestation = path.join(root, 'candidate-install-attestation.json');
-  await copyFile(path.resolve(attestationPath), targetAttestation);
+  await copyFile(sourceAttestation, targetAttestation);
   await chmod(targetAttestation, 0o600);
   const targetPortableLockfile = path.join(root, candidate.lockfileFile);
   await copyFile(sourceLockfile, targetPortableLockfile);
