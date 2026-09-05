@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/integration-prompts",
-  "version": "11.10.4-cleanroom.20260905.1",
+  "version": "11.10.4-cleanroom.20260905.2",
   "engines": {
     "node": ">=22.0.0"
   },
