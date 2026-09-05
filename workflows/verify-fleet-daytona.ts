@@ -156,14 +156,22 @@ function reviewerPermissions(role: string) {
   };
 }
 
-function preflightPermissions() {
+function preflightPermissions(agentName: string) {
+  const provider = agentName.slice('preflight-'.length);
+  const modelTransportHosts: Record<string, string[]> = {
+    opencode: ['api.opencode.ai:443', 'opencode.ai:443', 'api.openrouter.ai:443', 'openrouter.ai:443'],
+    codex: ['api.openai.com:443', 'chatgpt.com:443', 'auth.openai.com:443'],
+    claude: ['api.anthropic.com:443'],
+  };
+  const allow = modelTransportHosts[provider];
+  if (!allow) throw new Error(`unknown Fleet preflight provider ${provider}`);
   return {
     description: 'Allow only the selected harness model transport for the allocation preflight.',
     why: 'The preflight proves the exact model is reachable before any Daytona resource is allocated.',
     access: 'restricted' as const,
     inherit: false,
     files: { read: [], write: [], deny: ['**'] },
-    network: true,
+    network: { allow, deny: ['*'] },
     exec: [],
   };
 }
@@ -481,7 +489,7 @@ async function main() {
   // audit the exact runtime policy before allowing this workflow to run live.
   for (const agent of wf.toConfig().agents) {
     agent.permissions = agent.name.startsWith('preflight-')
-      ? preflightPermissions()
+      ? preflightPermissions(agent.name)
       : reviewerPermissions(agent.name);
   }
 

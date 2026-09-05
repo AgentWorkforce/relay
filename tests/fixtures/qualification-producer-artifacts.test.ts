@@ -332,6 +332,19 @@ describe('fixed cross-repository qualification producers', () => {
         })
       ).rejects.toThrow('cold');
 
+      for (const markerRelativePath of ['.', 'qualification/']) {
+        const directoryMarker = structuredClone(evidence);
+        directoryMarker.cold.markerRelativePath = markerRelativePath;
+        const directoryMarkerBytes = `${JSON.stringify(directoryMarker)}\n`;
+        await writeFile(path.join(root, 'candidate-acceptance.json'), directoryMarkerBytes);
+        await expect(
+          verifyCloudSnapshotAcceptanceArtifact(root, {
+            ...acceptanceExpected,
+            evidenceSha256: sha256(directoryMarkerBytes),
+          })
+        ).rejects.toThrow('cold');
+      }
+
       const earlyCleanup = structuredClone(evidence);
       earlyCleanup.cold.cleanup.verifiedAt = '2026-09-05T12:00:00.000Z';
       const earlyCleanupBytes = `${JSON.stringify(earlyCleanup)}\n`;

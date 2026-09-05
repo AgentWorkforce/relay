@@ -54,6 +54,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const SHA1 = /^[a-f0-9]{40}$/;
 const SHA512_INTEGRITY = /^sha512-([A-Za-z0-9+/]+={0,2})$/;
 const QUALIFICATION_REF = /^refs\/heads\/qualification\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
+const MAX_SEMVER_LENGTH = 256;
 
 function validDotIdentifiers(value, rejectNumericLeadingZero) {
   if (!value || value.startsWith('.') || value.endsWith('.')) return false;
@@ -69,7 +70,7 @@ function validDotIdentifiers(value, rejectNumericLeadingZero) {
 }
 
 function parseExactSemver(value) {
-  if (typeof value !== 'string' || value.length === 0) return null;
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_SEMVER_LENGTH) return null;
   const buildSeparator = value.indexOf('+');
   const version = buildSeparator === -1 ? value : value.slice(0, buildSeparator);
   const build = buildSeparator === -1 ? null : value.slice(buildSeparator + 1);
@@ -114,7 +115,10 @@ function validQualificationRef(value) {
   return value
     .slice('refs/heads/'.length)
     .split('/')
-    .every((segment) => segment !== '.' && segment !== '..');
+    .every(
+      (segment) =>
+        segment.length > 0 && !segment.startsWith('.') && !segment.endsWith('.') && !segment.includes('..')
+    );
 }
 
 function sha256(bytes) {

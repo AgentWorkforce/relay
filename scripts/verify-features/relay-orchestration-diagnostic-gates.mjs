@@ -228,16 +228,18 @@ function isRuntimeTelemetryStatusLine(line) {
 // Artifacts are excluded because they are the output, not tested source. No raw
 // file contents or environment values are serialized into provenance.
 async function sourceManifest(repo) {
+  const canonicalRepo = await realpath(repo);
   const { stdout } = await execFileAsync(
     'git',
     ['-C', repo, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
     { maxBuffer: 32 * 1024 * 1024, timeout: 60_000 }
   );
   const files = [...new Set(stdout.split('\0').filter(Boolean))].sort();
+  const enumeratedSourcePaths = new Set(files);
   const manifest = [];
   for (const file of files) {
     if (file.startsWith('.workflow-artifacts/') || isRuntimeTelemetryPath(file)) continue;
-    const target = path.join(repo, file);
+    const target = path.join(canonicalRepo, file);
     try {
       const info = await lstat(target);
       if (info.isDirectory()) {
@@ -248,10 +250,22 @@ async function sourceManifest(repo) {
       }
       if (info.isSymbolicLink()) {
         const linkTarget = await readlink(target);
-        const resolved = await realpath(target);
-        const relation = path.relative(repo, resolved);
+        let targetExists = true;
+        const resolved = await realpath(target).catch((error) => {
+          if (error?.code !== 'ENOENT') throw error;
+          targetExists = false;
+          return path.resolve(path.dirname(target), linkTarget);
+        });
+        const relation = path.relative(canonicalRepo, resolved);
         if (relation === '..' || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation)) {
           throw new Error(`diagnostic source symlink escapes its repository: ${file}`);
+        }
+        const manifestTarget = relation.split(path.sep).join('/');
+        const targetIsEnumerated =
+          enumeratedSourcePaths.has(manifestTarget) ||
+          files.some((sourcePath) => sourcePath.startsWith(`${manifestTarget}/`));
+        if (targetExists && !targetIsEnumerated) {
+          throw new Error(`diagnostic source symlink target is absent from the enumerated manifest: ${file}`);
         }
         manifest.push({ file, mode: info.mode & 0o777, hash: sha256(linkTarget) });
         continue;

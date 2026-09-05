@@ -109,6 +109,16 @@ describe('Relay package qualification producer', () => {
       })
     ).toThrow(/exact semver/);
     expect(() =>
+      validateRelayPackagePayload({
+        schemaVersion: 2,
+        kind: 'relayPackages',
+        producer,
+        packages: { ...packages, '@agent-relay/agent': `1.0.0-${'a'.repeat(300)}` },
+        registry,
+        candidate,
+      })
+    ).toThrow(/exact semver/);
+    expect(() =>
       validateRelayPackageEnvelope({
         schemaVersion: 2,
         kind: 'relayPackages',
@@ -193,6 +203,10 @@ describe('Relay package qualification producer', () => {
       'refs/heads/main',
       'refs/heads/qualification/../main',
       'refs/heads/qualification//candidate',
+      'refs/heads/qualification/candidate/',
+      'refs/heads/qualification/.hidden',
+      'refs/heads/qualification/trailing.',
+      'refs/heads/qualification/can..didate',
     ]) {
       expect(() =>
         validateRelayPackagePayload({
@@ -217,6 +231,9 @@ describe('Relay package qualification producer', () => {
     expect(workflow).toContain('refs/heads/qualification/*');
     expect(workflow).toContain('test "${GITHUB_REPOSITORY}" = "AgentWorkforce/relay"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"');
+    expect(workflow.indexOf('- name: Set up exact Node.js')).toBeLessThan(
+      workflow.indexOf('- name: Require prerelease package version')
+    );
     expect(RELAY_PACKAGE_PRODUCER).toMatchObject({
       event: 'workflow_dispatch',
       ref: 'refs/heads/qualification/',
