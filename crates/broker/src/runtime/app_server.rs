@@ -37,6 +37,10 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
     });
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    // A start acknowledgement is an internal handshake. Frames for other
+    // operations may already be queued behind set_model; retain them while
+    // waiting so the handshake cannot silently lose ordered work.
+    let mut deferred_frames = std::collections::VecDeque::new();
     let mut worker_name = cmd
         .agent_name
         .clone()
@@ -44,22 +48,30 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
     let mut final_exit_code: Option<i32> = None;
     let final_exit_signal: Option<String> = None;
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        let frame: ProtocolEnvelope<Value> = match serde_json::from_str(&line) {
-            Ok(frame) => frame,
-            Err(error) => {
-                let _ = send_frame(
-                    &out_tx,
-                    "worker_error",
-                    None,
-                    json!({
-                        "code":"invalid_frame",
-                        "message": error.to_string(),
-                        "retryable": false,
-                    }),
-                )
-                .await;
-                continue;
+    loop {
+        let frame: ProtocolEnvelope<Value> = if let Some(frame) = deferred_frames.pop_front() {
+            frame
+        } else {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) | Err(_) => break,
+            };
+            match serde_json::from_str(&line) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    let _ = send_frame(
+                        &out_tx,
+                        "worker_error",
+                        None,
+                        json!({
+                            "code":"invalid_frame",
+                            "message": error.to_string(),
+                            "retryable": false,
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
             }
         };
 
@@ -242,9 +254,7 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                         let Ok(ack) = serde_json::from_str::<ProtocolEnvelope<Value>>(&line) else {
                             continue;
                         };
-                        if ack.msg_type == "set_model_started_ack"
-                            && ack.request_id == frame.request_id
-                        {
+                        if model_start_acknowledged(ack, &frame.request_id, &mut deferred_frames) {
                             return Ok(true);
                         }
                     }
@@ -359,6 +369,20 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
     let _ = writer_task.await;
 
     Ok(())
+}
+
+fn model_start_acknowledged(
+    frame: ProtocolEnvelope<Value>,
+    request_id: &Option<RequestId>,
+    deferred_frames: &mut std::collections::VecDeque<ProtocolEnvelope<Value>>,
+) -> bool {
+    if frame.msg_type == "set_model_started_ack" && frame.request_id.as_ref() == request_id.as_ref()
+    {
+        true
+    } else {
+        deferred_frames.push_back(frame);
+        false
+    }
 }
 
 fn app_server_auth_from_env() -> Option<AppServerAuthConfig> {
@@ -616,5 +640,51 @@ mod tests {
             format_app_server_delivery(&delivery),
             "Relay message from Lead to Worker:\n\nDo the thing"
         );
+    }
+}
+
+#[cfg(test)]
+mod model_start_ack_tests {
+    use super::*;
+
+    #[test]
+    fn start_ack_wait_preserves_nonmatching_queued_frames_in_order() {
+        let request_id = Some(RequestId::new("model-1"));
+        let mut deferred = std::collections::VecDeque::new();
+        let delivery = ProtocolEnvelope {
+            v: PROTOCOL_VERSION,
+            msg_type: "deliver_relay".to_string(),
+            request_id: Some(RequestId::new("delivery-1")),
+            payload: json!({"delivery_id": "delivery-1"}),
+        };
+        let ping = ProtocolEnvelope {
+            v: PROTOCOL_VERSION,
+            msg_type: "ping".to_string(),
+            request_id: None,
+            payload: json!({"ts_ms": 1}),
+        };
+        assert!(!model_start_acknowledged(
+            delivery.clone(),
+            &request_id,
+            &mut deferred
+        ));
+        assert!(!model_start_acknowledged(
+            ping.clone(),
+            &request_id,
+            &mut deferred
+        ));
+        assert_eq!(deferred.pop_front().unwrap().msg_type, delivery.msg_type);
+        assert_eq!(deferred.pop_front().unwrap().msg_type, ping.msg_type);
+        assert!(model_start_acknowledged(
+            ProtocolEnvelope {
+                v: PROTOCOL_VERSION,
+                msg_type: "set_model_started_ack".to_string(),
+                request_id: Some(RequestId::new("model-1")),
+                payload: json!({}),
+            },
+            &request_id,
+            &mut deferred
+        ));
+        assert!(deferred.is_empty());
     }
 }

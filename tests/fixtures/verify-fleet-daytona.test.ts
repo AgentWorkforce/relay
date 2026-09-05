@@ -342,6 +342,18 @@ describe('complete Daytona Fleet board', () => {
     validate('node-agent-spawn-task-exit', taskExit.args);
   });
 
+  it('treats PTY model mutation as an explicit unsupported receipt', async () => {
+    const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
+    const operation = (
+      await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json')
+    ).operations.find(({ id }: { id: string }) => id === 'node-agent-set-model');
+    expect(operation).toMatchObject({ expect: 'success', argvMustContain: ['--json'] });
+    expect(runner).toContain("payload?.status === 'unsupported'");
+    expect(runner).toContain('runtime=pty');
+    expect(runner).toContain('payload?.applied === false');
+    expect(runner).toContain('payload?.accepted === false');
+  });
+
   it('proves root, scoped, and disabled Relayfile mounts with exact marker bytes', async () => {
     const [scopeBytes, rootBytes, runner] = await Promise.all([
       readFile('tests/relayflows/cleanroom/relayfile-scope-marker.txt'),

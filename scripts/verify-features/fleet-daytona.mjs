@@ -3363,6 +3363,11 @@ class FleetBoard {
         await this.derived(id, { blockedReason: 'live owned board node or controller unavailable' });
       return;
     }
+    // This control worker is deliberately Codex-over-PTY. Raw terminal output
+    // cannot prove that the provider applied a model mutation, so the truthful
+    // Fleet assertion is an explicit unsupported terminal receipt. The positive
+    // requested -> applied provider proof runs through the typed OpenCode
+    // AppServer path in relay#1658's broker-bound RelayFlow case.
     await this.assertedCommand(
       'node-agent-set-model',
       this.inside(node.id, 'node', 'agent', 'set-model', controlName, 'gpt-5.6-luna', '--json'),
@@ -3371,16 +3376,17 @@ class FleetBoard {
         const pass =
           payload?.name === controlName &&
           payload?.requestedModel === 'gpt-5.6-luna' &&
-          payload?.effectiveModel === 'gpt-5.6-luna' &&
-          payload?.success === true &&
-          payload?.accepted === true &&
+          payload?.status === 'unsupported' &&
+          payload?.effectiveModel === null &&
+          payload?.success === false &&
+          payload?.accepted === false &&
           payload?.pending === false &&
-          payload?.applied === true &&
+          payload?.applied === false &&
           typeof payload?.receiptId === 'string' &&
           payload.receiptId.length > 0;
         return {
           pass,
-          summary: `issue=1658 requestedModel=${payload?.requestedModel ?? 'missing'} effectiveModel=${payload?.effectiveModel ?? 'missing'} accepted=${payload?.accepted} pending=${payload?.pending} applied=${payload?.applied} receipt=${typeof payload?.receiptId === 'string'}`,
+          summary: `issue=1658 runtime=pty requestedModel=${payload?.requestedModel ?? 'missing'} status=${payload?.status ?? 'missing'} effectiveModel=${payload?.effectiveModel ?? 'missing'} accepted=${payload?.accepted} pending=${payload?.pending} applied=${payload?.applied} receipt=${typeof payload?.receiptId === 'string'}`,
         };
       },
       { timeoutMs: 30_000 }
