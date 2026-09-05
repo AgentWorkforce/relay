@@ -47,10 +47,6 @@ const EXTERNAL_PACKAGE_NAMES = Object.freeze([
   '@agent-relay/events',
   '@agent-relay/sandbox',
 ]);
-const EXACT_SEMVER =
-  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const EXACT_PRERELEASE_SEMVER =
-  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 const ARTIFACT_DIGEST = /^sha256:[a-f0-9]{64}$/;
@@ -58,6 +54,53 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const SHA1 = /^[a-f0-9]{40}$/;
 const SHA512_INTEGRITY = /^sha512-([A-Za-z0-9+/]+={0,2})$/;
 const QUALIFICATION_REF = /^refs\/heads\/qualification\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
+
+function validDotIdentifiers(value, rejectNumericLeadingZero) {
+  if (!value || value.startsWith('.') || value.endsWith('.')) return false;
+  return value.split('.').every((identifier) => {
+    if (!/^[0-9A-Za-z-]+$/.test(identifier)) return false;
+    return !(
+      rejectNumericLeadingZero &&
+      identifier.length > 1 &&
+      identifier.startsWith('0') &&
+      /^[0-9]+$/.test(identifier)
+    );
+  });
+}
+
+function parseExactSemver(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const buildSeparator = value.indexOf('+');
+  const version = buildSeparator === -1 ? value : value.slice(0, buildSeparator);
+  const build = buildSeparator === -1 ? null : value.slice(buildSeparator + 1);
+  if (
+    (build !== null && (!validDotIdentifiers(build, false) || build.includes('+'))) ||
+    version.includes('+')
+  ) {
+    return null;
+  }
+  const prereleaseSeparator = version.indexOf('-');
+  const core = prereleaseSeparator === -1 ? version : version.slice(0, prereleaseSeparator);
+  const prerelease = prereleaseSeparator === -1 ? null : version.slice(prereleaseSeparator + 1);
+  const coreIdentifiers = core.split('.');
+  if (
+    coreIdentifiers.length !== 3 ||
+    !coreIdentifiers.every((identifier) => /^(?:0|[1-9][0-9]*)$/.test(identifier)) ||
+    (prerelease !== null && !validDotIdentifiers(prerelease, true))
+  ) {
+    return null;
+  }
+  return { prerelease };
+}
+
+function validExactSemver(value) {
+  return parseExactSemver(value) !== null;
+}
+
+function validExactPrereleaseSemver(value) {
+  const parsed = parseExactSemver(value);
+  return parsed !== null && parsed.prerelease !== null;
+}
 
 function validSha512Integrity(value) {
   const match = SHA512_INTEGRITY.exec(value ?? '');
@@ -92,7 +135,7 @@ function exactKeys(value, keys, label) {
 function requireExactVersions(packages, names, label) {
   exactKeys(packages, names, label);
   for (const name of names) {
-    if (!EXACT_SEMVER.test(packages[name])) throw new Error(`${label}.${name} must be exact semver`);
+    if (!validExactSemver(packages[name])) throw new Error(`${label}.${name} must be exact semver`);
   }
 }
 
@@ -220,7 +263,7 @@ export function assertUnpublishedNpmView(result, name, version) {
 }
 
 export function assertPrereleaseVersion(version) {
-  if (!EXACT_PRERELEASE_SEMVER.test(version)) {
+  if (!validExactPrereleaseSemver(version)) {
     throw new Error(`candidate version ${version} must be an exact prerelease semver`);
   }
 }
@@ -330,7 +373,7 @@ async function packageVersions() {
   if (config.name !== '@agent-relay/config' || sdk.name !== '@agent-relay/sdk') {
     throw new Error('local SDK-line package names are invalid');
   }
-  if (config.version !== sdk.version || !EXACT_SEMVER.test(config.version)) {
+  if (config.version !== sdk.version || !validExactSemver(config.version)) {
     throw new Error('local config and SDK versions must be the same exact semver');
   }
   return {
