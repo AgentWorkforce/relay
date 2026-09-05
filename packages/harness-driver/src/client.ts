@@ -180,6 +180,31 @@ export interface ModelUpdateResult {
   error?: string;
 }
 
+function normalizeModelUpdateResult(
+  result: Partial<ModelUpdateResult>,
+  name: string,
+  requestedModel?: string
+): ModelUpdateResult {
+  const requested_model = result.requested_model ?? result.model ?? requestedModel ?? null;
+  const request_id = result.request_id ?? null;
+  return {
+    name: result.name ?? name,
+    model: result.model ?? requested_model,
+    requested_model,
+    effective_model: result.effective_model ?? null,
+    applied: result.applied === true,
+    status: result.status ?? 'unknown',
+    request_id,
+    receipt_id: result.receipt_id ?? request_id,
+    generation: result.generation ?? null,
+    revision: result.revision,
+    success: result.success === true,
+    accepted: result.accepted ?? result.success === true,
+    pending: result.pending === true,
+    ...(result.error ? { error: result.error } : {}),
+  };
+}
+
 export interface WorkerStreamSubscriptionOptions {
   /** Filter by stream name, for example `stdout` or `stderr`. Defaults to all streams. */
   stream?: string;
@@ -1196,27 +1221,15 @@ export class HarnessDriverClient {
         body: JSON.stringify({ model, timeout_ms: opts?.timeoutMs }),
       }
     );
-    return {
-      name: result.name ?? name,
-      model: result.model ?? model,
-      requested_model: result.requested_model ?? result.model ?? model,
-      effective_model: result.effective_model ?? null,
-      applied: result.applied === true,
-      status: result.status ?? 'unknown',
-      request_id: result.request_id ?? null,
-      receipt_id: result.receipt_id ?? result.request_id ?? null,
-      generation: result.generation ?? null,
-      revision: result.revision,
-      success: result.success === true,
-      accepted: result.accepted ?? result.success === true,
-      pending: result.pending === true,
-      ...(result.error ? { error: result.error } : {}),
-    };
+    return normalizeModelUpdateResult(result, name, model);
   }
 
   async getModel(name: string, requestId?: string): Promise<ModelUpdateResult> {
     const query = requestId ? `?request_id=${encodeURIComponent(requestId)}` : '';
-    return this.transport.request(`/api/spawned/${encodeURIComponent(name)}/model${query}`);
+    const result = await this.transport.request<Partial<ModelUpdateResult>>(
+      `/api/spawned/${encodeURIComponent(name)}/model${query}`
+    );
+    return normalizeModelUpdateResult(result, name);
   }
 
   // ── Channels ───────────────────────────────────────────────────────

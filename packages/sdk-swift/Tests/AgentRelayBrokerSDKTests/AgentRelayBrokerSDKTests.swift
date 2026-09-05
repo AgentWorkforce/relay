@@ -677,6 +677,21 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
         XCTAssertEqual(requests.first?.path, "/api/spawned/Worker1/model")
     }
 
+    func testGetModelCanPollCorrelatedReceipt() async throws {
+        let http = MockRelayHTTP()
+        await http.setResponse(
+            #"{ "name": "Worker1", "request_id": "model_1", "status": "applied", "applied": true, "success": true }"#,
+            for: "/api/spawned/Worker1/model?request_id=model_1"
+        )
+        let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
+
+        let result = try await core.getModel(name: "Worker1", requestId: "model_1")
+
+        XCTAssertEqual(result.requestId, "model_1")
+        let requests = await http.allRequests()
+        XCTAssertEqual(requests.first?.path, "/api/spawned/Worker1/model?request_id=model_1")
+    }
+
     func testSubscribeChannelsPostsChannels() async throws {
         let http = MockRelayHTTP()
         let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)

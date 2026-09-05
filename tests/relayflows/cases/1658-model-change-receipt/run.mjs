@@ -117,6 +117,26 @@ try {
       if (request.method === 'POST') {
         const body = await readRequestJson(request);
         const unsupported = body.model === 'unsupported/model';
+        requests.push({ method: 'POST', model: body.model });
+        if (!unsupported) {
+          response.end(
+            JSON.stringify({
+              name: 'proof-worker',
+              requested_model: 'openai/gpt-5.4',
+              effective_model: null,
+              applied: false,
+              status: 'accepted_pending',
+              request_id: requestId,
+              receipt_id: requestId,
+              generation: 'generation-proof',
+              revision: 1,
+              success: false,
+              accepted: true,
+              pending: true,
+            })
+          );
+          return;
+        }
         response.end(
           JSON.stringify({
             name: 'proof-worker',
@@ -136,6 +156,8 @@ try {
         );
         return;
       }
+      const requestIdFromQuery = new URL(request.url, 'http://127.0.0.1').searchParams.get('request_id');
+      requests.push({ method: 'GET', requestId: requestIdFromQuery });
       response.end(
         JSON.stringify({
           name: 'proof-worker',
@@ -164,6 +186,7 @@ try {
       JSON.stringify({ url: `http://127.0.0.1:${port}`, api_key: 'pr-proof-key', pid: process.pid })
     );
     process.env.AGENT_RELAY_STATE_DIR = stateDir;
+    const requests = [];
     try {
       const receiptOutput = await runAsync(
         process.execPath,
@@ -186,6 +209,14 @@ try {
         typeof receipt.receiptId === 'string' &&
         typeof receipt.generation === 'string';
       if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
+      if (
+        requests.length !== 2 ||
+        requests[0].method !== 'POST' ||
+        requests[1].method !== 'GET' ||
+        requests[1].requestId !== requestId
+      ) {
+        throw new Error(`set-model did not poll its correlated receipt: ${JSON.stringify(requests)}`);
+      }
 
       const unsupportedOutput = await runAsync(
         process.execPath,
@@ -201,6 +232,9 @@ try {
         unsupported.success !== false
       ) {
         throw new Error(`unsupported set-model claimed application: ${JSON.stringify(unsupported)}`);
+      }
+      if (requests.length !== 3 || requests[2].method !== 'POST') {
+        throw new Error(`unsupported set-model unexpectedly polled: ${JSON.stringify(requests)}`);
       }
     } finally {
       await new Promise((resolve) => server.close(resolve));

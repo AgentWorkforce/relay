@@ -198,6 +198,16 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     .get("model")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                // Tell the broker when this frame leaves the worker queue so
+                // the provider deadline does not consume time spent behind a
+                // long-running delivery.
+                let _ = send_frame(
+                    &out_tx,
+                    "set_model_started",
+                    frame.request_id.clone(),
+                    json!({}),
+                )
+                .await;
                 let result = match protocol.as_str() {
                     "opencode" => {
                         set_opencode_model(

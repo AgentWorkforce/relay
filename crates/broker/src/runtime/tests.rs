@@ -50,14 +50,15 @@ use super::{
     pending_message_counts, persist_dead_letters_on_shutdown, persist_pending_on_shutdown,
     queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
     relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
-    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retry_pending_delivery,
-    save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason,
-    take_pending_for_worker, try_inject_pending_relay_message, AgentRuntime, BrokerRuntime,
-    DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
-    ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
-    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage, MAX_DEAD_LETTERS,
-    MAX_DELIVERY_RETRIES,
+    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retain_model_receipt,
+    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    synthetic_delivery_read_ack_reason, take_pending_for_worker,
+    terminalize_model_requests_for_worker, try_inject_pending_relay_message, AgentRuntime,
+    BrokerRuntime, DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext,
+    InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery,
+    PendingDeliveryStore, ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths,
+    TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -381,6 +382,33 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
     assert_eq!(accepted["success"], false);
     let request_id = accepted["request_id"].as_str().unwrap().to_string();
 
+    // Provider time starts when the supported worker dequeues the frame. A
+    // request that waited behind other work must still receive its full
+    // provider deadline after this event.
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .deadline = Instant::now() - Duration::from_secs(1);
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_started",
+                "request_id": request_id,
+            }),
+        })
+        .await;
+    assert!(
+        fixture.runtime.pending_model_requests[&request_id]
+            .provider_deadline
+            .unwrap()
+            > Instant::now()
+    );
+
     // Unknown request ids and receipts from a prior worker generation are
     // ignored without consuming the live pending request.
     fixture
@@ -493,6 +521,95 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
     assert_eq!(rejected["effective_model"], "sonnet");
 
     cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
+    let mut registry = make_worker_registry_with_worker("model-worker").await;
+    registry
+        .workers
+        .get_mut("model-worker")
+        .unwrap()
+        .spec
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".into(),
+        endpoint: "http://127.0.0.1:1".into(),
+        session_id: "test-session".into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
+    }));
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: None,
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+
+    terminalize_model_requests_for_worker(
+        &WorkerName::new("model-worker"),
+        generation,
+        &mut fixture.runtime.pending_model_requests,
+        &mut fixture.runtime.model_receipts,
+        &mut fixture.runtime.model_receipts_by_request,
+        Instant::now(),
+    );
+    fixture.runtime.workers.workers.remove("model-worker");
+
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some(request_id),
+            reply: get_tx,
+        })
+        .await;
+    let terminal = get_rx.await.unwrap().unwrap();
+    assert_eq!(terminal["status"], "rejected");
+    assert_eq!(terminal["accepted"], true);
+    assert_eq!(terminal["pending"], false);
+    assert_eq!(terminal["applied"], false);
+    assert!(terminal["error"]
+        .as_str()
+        .unwrap()
+        .contains("worker exited"));
+}
+
+#[test]
+fn model_receipt_retention_is_bounded_to_terminal_history() {
+    let now = Instant::now();
+    let mut receipt = super::ModelReceipt {
+        name: WorkerName::new("model-worker"),
+        requested_model: "sonnet".into(),
+        effective_model: None,
+        applied: false,
+        status: "rejected".into(),
+        request_id: "model_1".into(),
+        generation: Uuid::new_v4(),
+        revision: 1,
+        effective_revision: 0,
+        accepted: true,
+        pending: false,
+        success: false,
+        error: None,
+        updated_at: now,
+    };
+    assert!(retain_model_receipt(&receipt, now));
+    receipt.updated_at = now - super::MODEL_RECEIPT_RETENTION - Duration::from_secs(1);
+    assert!(!retain_model_receipt(&receipt, now));
+    receipt.pending = true;
+    assert!(retain_model_receipt(&receipt, now));
 }
 
 #[tokio::test]

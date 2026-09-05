@@ -909,6 +909,7 @@ impl BrokerRuntime {
                         pending: false,
                         success: false,
                         error: Some("worker provider does not expose typed model mutation".into()),
+                        updated_at: Instant::now(),
                     };
                     let value = receipt.json();
                     model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
@@ -940,6 +941,7 @@ impl BrokerRuntime {
                         pending: false,
                         success: false,
                         error: Some("a model change is already pending for this worker".into()),
+                        updated_at: Instant::now(),
                     };
                     let value = receipt.json();
                     model_receipts_by_request.insert(receipt.request_id.clone(), receipt);
@@ -974,6 +976,7 @@ impl BrokerRuntime {
                         pending: false,
                         success: false,
                         error: Some(error.to_string()),
+                        updated_at: Instant::now(),
                     };
                     let value = receipt.json();
                     model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
@@ -1003,6 +1006,7 @@ impl BrokerRuntime {
                         pending: true,
                         success: false,
                         error: None,
+                        updated_at: Instant::now(),
                     };
                     model_receipts_by_request.insert(pending.request_id.clone(), pending.clone());
                     model_receipts.insert(name.clone(), pending);
@@ -1014,6 +1018,8 @@ impl BrokerRuntime {
                             requested_model: model,
                             revision,
                             deadline: Instant::now() + set_model_receipt_timeout(timeout_ms),
+                            provider_deadline: None,
+                            provider_timeout: set_model_receipt_timeout(timeout_ms),
                         },
                     );
                     let _ = reply.send(Ok(model_receipts
@@ -1027,10 +1033,26 @@ impl BrokerRuntime {
                 request_id,
                 reply,
             } => {
-                let Some(handle) = workers.workers.get(&name) else {
-                    let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                let handle = workers.workers.get(&name);
+                if handle.is_none() {
+                    if let Some(request_id) = request_id {
+                        if let Some(receipt) = model_receipts_by_request
+                            .get(&request_id)
+                            .filter(|receipt| receipt.name == name)
+                        {
+                            let _ = reply.send(Ok(receipt.json()));
+                        } else {
+                            let _ = reply.send(Err(format!(
+                                "unknown or stale model receipt '{}' for worker '{}'",
+                                request_id, name
+                            )));
+                        }
+                    } else {
+                        let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                    }
                     return;
-                };
+                }
+                let handle = handle.expect("worker handle checked above");
                 let receipt = match request_id.as_deref() {
                     Some(request_id) => model_receipts_by_request
                         .get(request_id)

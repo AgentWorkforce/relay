@@ -1064,6 +1064,28 @@ impl BrokerRuntime {
                             object.insert("name".to_string(), Value::String(name.to_string()));
                         }
                         let _ = send_event(sdk_out_tx, agent_event).await;
+                    } else if msg_type == "set_model_started" {
+                        let Some(request_id) = value.get("request_id").and_then(Value::as_str)
+                        else {
+                            tracing::warn!(worker = %name, "ignoring model-start event without request_id");
+                            return;
+                        };
+                        let Some(request) = pending_model_requests.get_mut(request_id) else {
+                            tracing::debug!(worker = %name, request_id, "ignoring model-start event with no pending request");
+                            return;
+                        };
+                        if request.worker_name != name || request.generation != generation {
+                            tracing::warn!(
+                                worker = %name,
+                                request_id,
+                                "ignoring model-start event with mismatched worker generation"
+                            );
+                            return;
+                        }
+                        // The provider deadline begins when the supported
+                        // worker has actually dequeued the frame, not when
+                        // the broker admitted it behind another request.
+                        request.provider_deadline = Some(Instant::now() + request.provider_timeout);
                     } else if msg_type.ends_with("_response") {
                         if msg_type == "set_model_response" {
                             let Some(request_id) = value.get("request_id").and_then(Value::as_str)
@@ -1144,6 +1166,7 @@ impl BrokerRuntime {
                                     receipt.accepted = true;
                                     receipt.pending = false;
                                     receipt.error = error.clone();
+                                    receipt.updated_at = Instant::now();
                                 }
                             }
                             if let Some(receipt) = model_receipts_by_request.get_mut(request_id) {
@@ -1153,6 +1176,7 @@ impl BrokerRuntime {
                                 receipt.accepted = true;
                                 receipt.pending = false;
                                 receipt.error = error.clone();
+                                receipt.updated_at = Instant::now();
                                 if applied {
                                     receipt.effective_model = Some(request.requested_model.clone());
                                     receipt.effective_revision = request.revision;

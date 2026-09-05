@@ -154,7 +154,8 @@ impl BrokerRuntime {
         let expired_model_requests: Vec<String> = pending_model_requests
             .iter()
             .filter_map(|(request_id, pending)| {
-                (pending.deadline <= now).then_some(request_id.clone())
+                let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
+                (deadline <= now).then_some(request_id.clone())
             })
             .collect();
         for request_id in expired_model_requests {
@@ -169,6 +170,7 @@ impl BrokerRuntime {
                         receipt.error = Some(
                             "worker did not return a model receipt before the deadline".into(),
                         );
+                        receipt.updated_at = now;
                     }
                 }
                 if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
@@ -178,9 +180,15 @@ impl BrokerRuntime {
                     receipt.success = false;
                     receipt.error =
                         Some("worker did not return a model receipt before the deadline".into());
+                    receipt.updated_at = now;
                 }
             }
         }
+
+        // Request-specific receipts are useful for delayed pollers, including
+        // callers whose worker has exited, but retaining them forever would
+        // turn every unsupported/rejected attempt into unbounded state.
+        model_receipts_by_request.retain(|_, receipt| retain_model_receipt(receipt, now));
 
         let due_ids: Vec<DeliveryId> = pending_deliveries
             .iter()
@@ -308,11 +316,14 @@ impl BrokerRuntime {
         };
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
-            pending_model_requests.retain(|_, pending| {
-                !(pending.worker_name == *name && pending.generation == *generation)
-            });
-            model_receipts.remove(name);
-            model_receipts_by_request.retain(|_, receipt| receipt.name != *name);
+            terminalize_model_requests_for_worker(
+                name,
+                *generation,
+                pending_model_requests,
+                model_receipts,
+                model_receipts_by_request,
+                now,
+            );
             let mut retain_fleet_identity = false;
             let pending = pending_verified_spawns
                 .get(name)

@@ -331,7 +331,12 @@ pub(super) struct PendingModelRequest {
     pub(super) generation: Uuid,
     pub(super) requested_model: String,
     pub(super) revision: u64,
+    /// The outer queue deadline prevents a worker that never begins the
+    /// operation from leaving an admission pending forever. Once the worker
+    /// emits `set_model_started`, the provider deadline below supersedes it.
     pub(super) deadline: Instant,
+    pub(super) provider_deadline: Option<Instant>,
+    pub(super) provider_timeout: Duration,
 }
 
 /// Last model-change receipt for a worker generation. Queue admission is
@@ -355,6 +360,18 @@ pub(super) struct ModelReceipt {
     pub(super) pending: bool,
     pub(super) success: bool,
     pub(super) error: Option<String>,
+    /// Used to bound the request-keyed receipt cache. This is intentionally
+    /// monotonic and never exposed on the wire.
+    pub(super) updated_at: Instant,
+}
+
+/// Request-specific receipts remain readable after a worker exits, but only
+/// for a bounded period. A receipt is evidence for one operation, not a
+/// permanent per-worker history.
+pub(super) const MODEL_RECEIPT_RETENTION: Duration = Duration::from_secs(5 * 60);
+
+pub(super) fn retain_model_receipt(receipt: &ModelReceipt, now: Instant) -> bool {
+    receipt.pending || now.duration_since(receipt.updated_at) < MODEL_RECEIPT_RETENTION
 }
 
 impl ModelReceipt {
@@ -380,6 +397,56 @@ impl ModelReceipt {
         }
         value
     }
+}
+
+/// Convert admitted model requests into terminal receipts before removing a
+/// worker. Request-specific polling must be able to explain a worker exit
+/// instead of falling back to the stale `accepted_pending` snapshot.
+pub(super) fn terminalize_model_requests_for_worker(
+    worker_name: &WorkerName,
+    generation: Uuid,
+    pending_model_requests: &mut HashMap<String, PendingModelRequest>,
+    model_receipts: &mut HashMap<WorkerName, ModelReceipt>,
+    model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
+    now: Instant,
+) {
+    let effective_model = model_receipts
+        .get(worker_name)
+        .filter(|receipt| receipt.generation == generation)
+        .and_then(|receipt| receipt.effective_model.clone());
+    let request_ids: Vec<String> = pending_model_requests
+        .iter()
+        .filter_map(|(request_id, pending)| {
+            (pending.worker_name == *worker_name && pending.generation == generation)
+                .then_some(request_id.clone())
+        })
+        .collect();
+    for request_id in request_ids {
+        if let Some(pending) = pending_model_requests.remove(&request_id) {
+            let receipt = ModelReceipt {
+                name: worker_name.clone(),
+                requested_model: pending.requested_model,
+                effective_model: effective_model.clone(),
+                applied: false,
+                status: "rejected".into(),
+                request_id: request_id.clone(),
+                generation,
+                revision: pending.revision,
+                effective_revision: model_receipts
+                    .get(worker_name)
+                    .filter(|receipt| receipt.generation == generation)
+                    .map(|receipt| receipt.effective_revision)
+                    .unwrap_or_default(),
+                accepted: true,
+                pending: false,
+                success: false,
+                error: Some("worker exited before returning a model receipt".into()),
+                updated_at: now,
+            };
+            model_receipts_by_request.insert(request_id, receipt);
+        }
+    }
+    model_receipts.remove(worker_name);
 }
 
 impl BrokerRuntime {

@@ -60,7 +60,7 @@ async def test_client_model_receipt_get_and_set_use_correlated_model_endpoint():
     client._request = fake_request  # type: ignore[method-assign]
 
     pending = await client.set_model("worker/one", "sonnet", timeout_ms=25)
-    receipt = await client.get_model("worker/one")
+    receipt = await client.get_model("worker/one", request_id=pending["request_id"])
 
     assert pending["request_id"] == "model_1"
     assert receipt["status"] == "accepted_pending"
@@ -70,7 +70,7 @@ async def test_client_model_receipt_get_and_set_use_correlated_model_endpoint():
             "/api/spawned/worker%2Fone/model",
             {"model": "sonnet", "timeout_ms": 25},
         ),
-        ("GET", "/api/spawned/worker%2Fone/model", {}),
+        ("GET", "/api/spawned/worker%2Fone/model?request_id=model_1", {}),
     ]
 
 
