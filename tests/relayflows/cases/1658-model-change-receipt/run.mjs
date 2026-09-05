@@ -9,9 +9,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1658-model-change-receipt';
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
+const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
 if (arm !== 'base' && arm !== 'head') {
@@ -23,6 +25,11 @@ if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
+}
+const runnerPath = fileURLToPath(import.meta.url);
+const relativeRunner = path.relative(path.resolve(harnessDir), path.resolve(runnerPath));
+if (!relativeRunner || relativeRunner.startsWith('..') || path.isAbsolute(relativeRunner)) {
+  throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
 function run(command, args, label) {
