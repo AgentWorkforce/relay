@@ -85,16 +85,16 @@ try {
           JSON.stringify({
             name: 'proof-worker',
             requested_model: 'openai/gpt-5.4',
-            effective_model: null,
-            applied: false,
-            status: 'accepted_pending',
+            effective_model: 'openai/gpt-5.4',
+            applied: true,
+            status: 'applied',
             request_id: requestId,
             receipt_id: requestId,
             generation: 'generation-proof',
             revision: 1,
-            success: false,
+            success: true,
             accepted: true,
-            pending: true,
+            pending: false,
           })
         );
         return;
