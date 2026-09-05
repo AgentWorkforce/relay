@@ -960,6 +960,7 @@ impl BrokerRuntime {
                     Some(request_id.clone()),
                     json!({
                         "model": model,
+                        "provider_timeout_ms": set_model_receipt_timeout(timeout_ms).as_millis(),
                         "queue_deadline_ms": std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()

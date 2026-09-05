@@ -59,17 +59,9 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
             match serde_json::from_str(&line) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    let _ = send_frame(
-                        &out_tx,
-                        "worker_error",
-                        None,
-                        json!({
-                            "code":"invalid_frame",
-                            "message": error.to_string(),
-                            "retryable": false,
-                        }),
-                    )
-                    .await;
+                    let _ =
+                        send_frame(&out_tx, "worker_error", None, invalid_frame_payload(&error))
+                            .await;
                     continue;
                 }
             }
@@ -246,13 +238,24 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     json!({}),
                 )
                 .await;
-                let start_acknowledged = tokio::time::timeout(Duration::from_secs(5), async {
+                let ack_timeout = model_start_ack_timeout(&frame.payload);
+                let start_acknowledged = tokio::time::timeout(ack_timeout, async {
                     loop {
                         let Some(line) = lines.next_line().await? else {
                             return Ok::<bool, std::io::Error>(false);
                         };
-                        let Ok(ack) = serde_json::from_str::<ProtocolEnvelope<Value>>(&line) else {
-                            continue;
+                        let ack = match serde_json::from_str::<ProtocolEnvelope<Value>>(&line) {
+                            Ok(ack) => ack,
+                            Err(error) => {
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "worker_error",
+                                    None,
+                                    invalid_frame_payload(&error),
+                                )
+                                .await;
+                                continue;
+                            }
                         };
                         if model_start_acknowledged(ack, &frame.request_id, &mut deferred_frames) {
                             return Ok(true);
@@ -383,6 +386,23 @@ fn model_start_acknowledged(
         deferred_frames.push_back(frame);
         false
     }
+}
+
+fn model_start_ack_timeout(payload: &Value) -> Duration {
+    payload
+        .get("provider_timeout_ms")
+        .and_then(Value::as_u64)
+        .map(Duration::from_millis)
+        .filter(|timeout| !timeout.is_zero())
+        .unwrap_or_else(|| Duration::from_secs(5))
+}
+
+fn invalid_frame_payload(error: &serde_json::Error) -> Value {
+    json!({
+        "code":"invalid_frame",
+        "message": error.to_string(),
+        "retryable": false,
+    })
 }
 
 fn app_server_auth_from_env() -> Option<AppServerAuthConfig> {
@@ -686,5 +706,31 @@ mod model_start_ack_tests {
             &mut deferred
         ));
         assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn start_ack_wait_uses_provider_timeout_when_supplied() {
+        assert_eq!(
+            model_start_ack_timeout(&json!({"provider_timeout_ms": 65_000})),
+            Duration::from_secs(65)
+        );
+        assert_eq!(
+            model_start_ack_timeout(&json!({"provider_timeout_ms": 0})),
+            Duration::from_secs(5)
+        );
+        assert_eq!(model_start_ack_timeout(&json!({})), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn invalid_frame_diagnostic_is_non_retryable() {
+        let error = serde_json::from_str::<Value>("{").expect_err("malformed JSON");
+        assert_eq!(
+            invalid_frame_payload(&error),
+            json!({
+                "code": "invalid_frame",
+                "message": error.to_string(),
+                "retryable": false,
+            })
+        );
     }
 }
