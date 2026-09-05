@@ -135,7 +135,7 @@ function completeEvidence(matrix: {
       runnerSha256: 'b'.repeat(64),
       matrixSha256: 'PLACEHOLDER',
       inventorySha256: matrix.inventorySha256,
-      cliVersion: '11.10.2',
+      cliVersion: matrix.requiredSnapshotRelayVersion,
       daytonaVersion: '0.205.1',
       resolvedWorkspaceId: 'workspace_fixture',
     },

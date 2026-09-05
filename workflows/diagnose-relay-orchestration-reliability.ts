@@ -298,7 +298,7 @@ async function main() {
         repo: ROOT,
         report: 'relay-boundary.md',
         focus:
-          'Trace every Fleet/node-agent command and the request→sandbox→mount→node→agent→injection→release→reclaim state machine. Own duplicate dispatch, false-success, injection, attach, release, workspace lifecycle, and orchestration observability findings. Keep the 11.8.2 snapshot mismatch distinct from checkout 11.10.2 behavior.',
+          'Trace every Fleet/node-agent command and the request→sandbox→mount→node→agent→injection→release→reclaim state machine. Own duplicate dispatch, false-success, injection, attach, release, workspace lifecycle, and orchestration observability findings. Keep legacy snapshot behavior distinct from the exact checkout-packed candidate version.',
         peers: '@cloud-specialist, @relayfile-specialist, and @data-plane-specialist',
       }),
     })
