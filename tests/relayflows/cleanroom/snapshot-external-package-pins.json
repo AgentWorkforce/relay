@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "packages": {
+    "@agent-relay/agent": "7.1.1",
+    "@agent-relay/credential-proxy": "7.1.1",
+    "@agent-relay/events": "7.1.1",
+    "@agent-relay/sandbox": "0.1.14"
+  }
+}

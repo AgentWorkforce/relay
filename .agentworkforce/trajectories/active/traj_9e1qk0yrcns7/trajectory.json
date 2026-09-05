@@ -1,0 +1,481 @@
+{
+  "id": "traj_9e1qk0yrcns7",
+  "version": 1,
+  "task": {
+    "title": "diagnose-relay-orchestration-reliability-workflow",
+    "description": "Coordinate a read-only four-repository diagnosis of Relay Fleet, Relayfile ACL provisioning, large cold mounts, cleanup, and snapshot qualification; emit a reviewed bug ledger.",
+    "source": {
+      "system": "workflow-runner",
+      "id": "cdbfa60e5594b06da6af46ef"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-09-04T20:37:17.326Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-09-04T20:37:17.326Z"
+    },
+    {
+      "name": "lead",
+      "role": "specialist",
+      "joinedAt": "2026-09-04T20:37:25.418Z"
+    },
+    {
+      "name": "cloud-specialist",
+      "role": "specialist",
+      "joinedAt": "2026-09-04T20:37:27.419Z"
+    },
+    {
+      "name": "relayfile-specialist",
+      "role": "specialist",
+      "joinedAt": "2026-09-04T20:37:29.419Z"
+    },
+    {
+      "name": "data-plane-specialist",
+      "role": "specialist",
+      "joinedAt": "2026-09-04T20:37:31.419Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fzx25h022auy",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-04T20:37:17.326Z",
+      "endedAt": "2026-09-04T20:37:25.405Z",
+      "events": [
+        {
+          "ts": 1788554237327,
+          "type": "note",
+          "content": "Purpose: Coordinate a read-only four-repository diagnosis of Relay Fleet, Relayfile ACL provisioning, large cold mounts, cleanup, and snapshot qualification; emit a reviewed bug ledger."
+        },
+        {
+          "ts": 1788554237327,
+          "type": "note",
+          "content": "Approach: 23-step dag workflow — Parsed 23 steps, 22 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    },
+    {
+      "id": "chap_s4nm7lidl29c",
+      "title": "Execution: lead-coordinate, cloud-diagnosis, relayfile-diagnosis, data-plane-diagnosis, static-gates",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-04T20:37:25.405Z",
+      "endedAt": "2026-09-04T20:37:25.429Z",
+      "events": []
+    },
+    {
+      "id": "chap_9vr5whjk1mwa",
+      "title": "Execution: lead-coordinate",
+      "agentName": "lead",
+      "startedAt": "2026-09-04T20:37:25.429Z",
+      "endedAt": "2026-09-04T20:37:27.431Z",
+      "events": [
+        {
+          "ts": 1788554245430,
+          "type": "note",
+          "content": "\"lead-coordinate\": You are the lead on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "lead"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_t7zbcf44hf0s",
+      "title": "Execution: cloud-diagnosis",
+      "agentName": "cloud-specialist",
+      "startedAt": "2026-09-04T20:37:27.431Z",
+      "endedAt": "2026-09-04T20:37:29.430Z",
+      "events": [
+        {
+          "ts": 1788554247431,
+          "type": "note",
+          "content": "\"cloud-diagnosis\": You are the Cloud specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "cloud-specialist"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_sd2cnzv4tcxc",
+      "title": "Execution: relayfile-diagnosis",
+      "agentName": "relayfile-specialist",
+      "startedAt": "2026-09-04T20:37:29.430Z",
+      "endedAt": "2026-09-04T20:37:31.434Z",
+      "events": [
+        {
+          "ts": 1788554249430,
+          "type": "note",
+          "content": "\"relayfile-diagnosis\": You are the Relayfile client specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "relayfile-specialist"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_fddzbguhq6fl",
+      "title": "Execution: data-plane-diagnosis",
+      "agentName": "data-plane-specialist",
+      "startedAt": "2026-09-04T20:37:31.434Z",
+      "endedAt": "2026-09-04T20:39:44.160Z",
+      "events": [
+        {
+          "ts": 1788554251434,
+          "type": "note",
+          "content": "\"data-plane-diagnosis\": You are the Relayfile Cloud data-plane specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "data-plane-specialist"
+          }
+        },
+        {
+          "ts": 1788554370257,
+          "type": "note",
+          "content": "\"relayfile-diagnosis\" retrying (attempt 1/3)"
+        },
+        {
+          "ts": 1788554372275,
+          "type": "note",
+          "content": "\"data-plane-diagnosis\" retrying (attempt 1/3)"
+        }
+      ]
+    },
+    {
+      "id": "chap_xw1rp0gde3f3",
+      "title": "Execution: relayfile-diagnosis",
+      "agentName": "relayfile-specialist",
+      "startedAt": "2026-09-04T20:39:44.160Z",
+      "endedAt": "2026-09-04T20:39:45.304Z",
+      "events": [
+        {
+          "ts": 1788554384161,
+          "type": "note",
+          "content": "\"relayfile-diagnosis\": You are the Relayfile client specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "relayfile-specialist"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_yuf00i8ikxal",
+      "title": "Execution: data-plane-diagnosis",
+      "agentName": "data-plane-specialist",
+      "startedAt": "2026-09-04T20:39:45.304Z",
+      "endedAt": "2026-09-04T20:43:40.815Z",
+      "events": [
+        {
+          "ts": 1788554385304,
+          "type": "note",
+          "content": "\"data-plane-diagnosis\": You are the Relayfile Cloud data-plane specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "data-plane-specialist"
+          }
+        },
+        {
+          "ts": 1788554605859,
+          "type": "note",
+          "content": "\"relayfile-diagnosis\" retrying (attempt 2/3)"
+        },
+        {
+          "ts": 1788554605860,
+          "type": "note",
+          "content": "\"data-plane-diagnosis\" retrying (attempt 2/3)"
+        },
+        {
+          "ts": 1788554605861,
+          "type": "note",
+          "content": "\"cloud-diagnosis\" retrying (attempt 1/3)"
+        },
+        {
+          "ts": 1788554606493,
+          "type": "note",
+          "content": "\"lead-coordinate\" retrying (attempt 1/3)"
+        }
+      ]
+    },
+    {
+      "id": "chap_p7kdwcixfsad",
+      "title": "Execution: data-plane-diagnosis",
+      "agentName": "data-plane-specialist",
+      "startedAt": "2026-09-04T20:43:40.815Z",
+      "endedAt": "2026-09-04T20:43:42.547Z",
+      "events": [
+        {
+          "ts": 1788554620816,
+          "type": "note",
+          "content": "\"data-plane-diagnosis\": You are the Relayfile Cloud data-plane specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "data-plane-specialist"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_g1f6lk5nivr9",
+      "title": "Execution: relayfile-diagnosis",
+      "agentName": "relayfile-specialist",
+      "startedAt": "2026-09-04T20:43:42.547Z",
+      "endedAt": "2026-09-04T20:43:42.704Z",
+      "events": [
+        {
+          "ts": 1788554622547,
+          "type": "note",
+          "content": "\"relayfile-diagnosis\": You are the Relayfile client specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "relayfile-specialist"
+          }
+        }
+      ]
+    },
+    {
+      "id": "chap_fcdbzvn2ihrj",
+      "title": "Execution: cloud-diagnosis",
+      "agentName": "cloud-specialist",
+      "startedAt": "2026-09-04T20:43:42.704Z",
+      "events": [
+        {
+          "ts": 1788554622704,
+          "type": "note",
+          "content": "\"cloud-diagnosis\": You are the Cloud specialist on #relay-reliability-diagnosis-20260904-local2",
+          "raw": {
+            "agent": "cloud-specialist"
+          }
+        },
+        {
+          "ts": 1788598485916,
+          "type": "reflection",
+          "content": "Expanded Relay reliability campaign from diagnostic coverage to gated fix-and-proof program under resident Chief: three fix trains are active, Fleet cross-node supervision is being established, and completion requires baseline-fail/candidate-pass clean-install evidence plus dual fresh review.",
+          "raw": {
+            "focalPoints": [
+              "fleet-command-matrix",
+              "relayfile-258MiB",
+              "cloud-acl",
+              "snapshot-lifecycle",
+              "clean-install-proof"
+            ],
+            "adjustments": "Use Chief with at most three leads; count only proven process/output; no merge until installed E2E and CI/review gates are green",
+            "confidence": 0.72
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet-command-matrix",
+            "focal:relayfile-258MiB",
+            "focal:cloud-acl",
+            "focal:snapshot-lifecycle",
+            "focal:clean-install-proof",
+            "confidence:0.72"
+          ]
+        },
+        {
+          "ts": 1788600246856,
+          "type": "decision",
+          "content": "Qualification uses deterministic harnesses as the authoritative gate and model agents only for evidence review/signoff: Qualification uses deterministic harnesses as the authoritative gate and model agents only for evidence review/signoff",
+          "raw": {
+            "question": "Qualification uses deterministic harnesses as the authoritative gate and model agents only for evidence review/signoff",
+            "chosen": "Qualification uses deterministic harnesses as the authoritative gate and model agents only for evidence review/signoff",
+            "alternatives": [],
+            "reasoning": "The campaign is intended to expose flaky orchestration. A model verdict cannot substitute for exact baseline-fail, packed-candidate-pass, observed runtime identities, and resource-absence evidence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788600247351,
+          "type": "reflection",
+          "content": "Chief spawned three cross-node leads, but the initial local-only brief handoff and subsequent recipient resolution/remote attach failures blocked real work; preserved these as Fleet defects, moved the exact brief into a Relay channel message, and required Chief to verify real PTYs before counting agents. Relay focused qualification gates are green; 258 MiB source Workerd gate is green but baseline and packed-candidate proofs remain missing.",
+          "raw": {
+            "focalPoints": [
+              "relayflow",
+              "agent-relay",
+              "fleet",
+              "relayfile",
+              "release-proof"
+            ],
+            "adjustments": "Require channel-distributed immutable briefs, target-host process evidence, and fresh-node disk preflight; never treat roster presence or enqueued DMs as delivery.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:relayflow",
+            "focal:agent-relay",
+            "focal:fleet",
+            "focal:relayfile",
+            "focal:release-proof",
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1788601569053,
+          "type": "decision",
+          "content": "Count Fleet spawn confirmation as provisional, not proof: Count Fleet spawn confirmation as provisional, not proof",
+          "raw": {
+            "question": "Count Fleet spawn confirmation as provisional, not proof",
+            "chosen": "Count Fleet spawn confirmation as provisional, not proof",
+            "alternatives": [],
+            "reasoning": "Invocation inv_221926944412856320 returned confirmed/spawned true, then launcher cleanup failed and authoritative node inventory showed zero agents; qualification must require node-associated live presence plus PID/work product."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788602956027,
+          "type": "decision",
+          "content": "Replaced registry-byte equality for source packages with a portable source-bound Linux candidate closure: Replaced registry-byte equality for source packages with a portable source-bound Linux candidate closure",
+          "raw": {
+            "question": "Replaced registry-byte equality for source packages with a portable source-bound Linux candidate closure",
+            "chosen": "Replaced registry-byte equality for source packages with a portable source-bound Linux candidate closure",
+            "alternatives": [],
+            "reasoning": "A real npm pack proved @agent-relay/sdk source tarballs cannot byte-equal published multi-platform release tarballs; qualification must upload and consume the exact candidate tarballs produced from the Relay SHA, while retaining registry integrity only for external protocol packages."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788602956262,
+          "type": "reflection",
+          "content": "Deterministic qualification is exposing real gaps: Fleet spawn success without a resident agent, DM recipient resolution failure for an existing worker, response-reset data loss in the 258 MiB candidate, and stale provenance/scheduling/idempotency assumptions. Full-tree candidate hashing and portable tarball closure are now locally green; cross-repo consumption and live cleanroom proof remain open.",
+          "raw": {
+            "focalPoints": [
+              "fleet-runtime",
+              "relayfile-258m",
+              "provenance",
+              "cross-repo-lifecycle"
+            ],
+            "adjustments": "Require live PID/node association after spawn; repair response retries; bind all candidate bytes; add idempotent lifecycle recovery and fixed producer policy.",
+            "confidence": 0.82
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet-runtime",
+            "focal:relayfile-258m",
+            "focal:provenance",
+            "focal:cross-repo-lifecycle",
+            "confidence:0.82"
+          ]
+        },
+        {
+          "ts": 1788604506973,
+          "type": "decision",
+          "content": "Fail closed before Cloud workspace POST until bound deployment idempotency and reconciliation APIs ship: Fail closed before Cloud workspace POST until bound deployment idempotency and reconciliation APIs ship",
+          "raw": {
+            "question": "Fail closed before Cloud workspace POST until bound deployment idempotency and reconciliation APIs ship",
+            "chosen": "Fail closed before Cloud workspace POST until bound deployment idempotency and reconciliation APIs ship",
+            "alternatives": [],
+            "reasoning": "Current deployed Cloud ignores the unknown relayfileCloudDeploymentId field, can create a workspace, then the candidate CLI rejects the unbound reveal-once response and loses the only cleanup identity, guaranteeing orphan risk."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788604507091,
+          "type": "reflection",
+          "content": "Fresh review converted apparent near-green gates into concrete blockers: transitive npm closure was not locked, 258 MiB acceptance used the wrong one-file workload, Cloud candidate binding could orphan workspaces, and fixed producer semantics were incomplete. Root safety gates now fail closed while exact producer and workload proofs are being strengthened.",
+          "raw": {
+            "focalPoints": [
+              "provenance",
+              "idempotency",
+              "exact-workload",
+              "cleanup"
+            ],
+            "adjustments": "Use 24h TTL plus per-attempt lifetime checks; bind accepted snapshot proof; lock complete candidate closure; require exact original 1305-entry mount shape.",
+            "confidence": 0.92
+          },
+          "significance": "high",
+          "tags": [
+            "focal:provenance",
+            "focal:idempotency",
+            "focal:exact-workload",
+            "focal:cleanup",
+            "confidence:0.92"
+          ]
+        },
+        {
+          "ts": 1788626550326,
+          "type": "decision",
+          "content": "Fail closed on mutable Cloud evidence and queue-only set-model acknowledgements: Fail closed on mutable Cloud evidence and queue-only set-model acknowledgements",
+          "raw": {
+            "question": "Fail closed on mutable Cloud evidence and queue-only set-model acknowledgements",
+            "chosen": "Fail closed on mutable Cloud evidence and queue-only set-model acknowledgements",
+            "alternatives": [],
+            "reasoning": "Qualification cannot claim end-to-end behavior when evidence can be overwritten or when the CLI proves only enqueueing instead of downstream application."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788626550902,
+          "type": "reflection",
+          "content": "Harness and dry-run gates are green, but live certification remains blocked by Relayflows sandbox source/ID propagation, Cloud write-once storage, set-model application receipts, and Relayfile Cloud/Fleet-path binding.",
+          "raw": {
+            "focalPoints": [
+              "evidence-integrity",
+              "fleet-runtime",
+              "relayflows-daytona",
+              "relayfile-258"
+            ],
+            "adjustments": "Opened Cloud #3349 and Relay #1658; converted attach and workflow checks to behavioral probes; supervised cheap Agent Relay worker on Relayflows.",
+            "confidence": 0.72
+          },
+          "significance": "high",
+          "tags": [
+            "focal:evidence-integrity",
+            "focal:fleet-runtime",
+            "focal:relayflows-daytona",
+            "focal:relayfile-258",
+            "confidence:0.72"
+          ]
+        },
+        {
+          "ts": 1788627222574,
+          "type": "decision",
+          "content": "Treat node agent set-model as queue admission until a provider-correlated receipt proves application: Treat node agent set-model as queue admission until a provider-correlated receipt proves application",
+          "raw": {
+            "question": "Treat node agent set-model as queue admission until a provider-correlated receipt proves application",
+            "chosen": "Treat node agent set-model as queue admission until a provider-correlated receipt proves application",
+            "alternatives": [],
+            "reasoning": "Current broker response is accepted=true pending=true and every runtime lacks a request ID plus provider-confirmed effective-model state; the Fleet gate must fail closed rather than relabel a PTY write as application."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788628938557,
+          "type": "decision",
+          "content": "Changed the Relay package producer from every main push to a manual main-only prerelease run: Changed the Relay package producer from every main push to a manual main-only prerelease run",
+          "raw": {
+            "question": "Changed the Relay package producer from every main push to a manual main-only prerelease run",
+            "chosen": "Changed the Relay package producer from every main push to a manual main-only prerelease run",
+            "alternatives": [],
+            "reasoning": "The candidate gate must prove source packages are both prerelease and unpublished; attaching it to ordinary main pushes makes already-published stable versions fail by construction."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788628939071,
+          "type": "reflection",
+          "content": "Static and dry-run harness gates are green, but live qualification remains blocked by Cloud candidate binding/write-once evidence and version-skewed Fleet nodes; generic deletion evidence was hardened to exact target IDs plus GET 404.",
+          "raw": {
+            "focalPoints": [
+              "prerelease-producer",
+              "cleanup-evidence",
+              "fleet-version-skew",
+              "live-gates"
+            ],
+            "adjustments": "Track baseline/candidate separately; count no spawn or static gate as runtime proof; publish only self-contained fail-closed Cloud patch.",
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "focal:prerelease-producer",
+            "focal:cleanup-evidence",
+            "focal:fleet-version-skew",
+            "focal:live-gates",
+            "confidence:0.88"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
+}
