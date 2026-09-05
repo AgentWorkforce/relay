@@ -685,8 +685,20 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
     let second = second_rx.await.unwrap().unwrap();
     let second_id = second["request_id"].as_str().unwrap().to_string();
 
-    // The older request can be confirmed while the newer one is still
-    // pending. Its effective model must remain visible to GET callers.
+    // The admitted request can be confirmed while the overlapping request is
+    // rejected. Its effective model remains visible to GET callers.
+    let (second_get_tx, second_get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some(second_id),
+            reply: second_get_tx,
+        })
+        .await;
+    let second_get = second_get_rx.await.unwrap().unwrap();
+    assert_eq!(second_get["status"], "rejected");
+    assert_eq!(second_get["accepted"], false);
     fixture
         .runtime
         .handle_worker_event(WorkerEvent::Message {
@@ -722,23 +734,6 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
     let pending = pending_rx.await.unwrap().unwrap();
     assert_eq!(pending["status"], "applied");
     assert_eq!(pending["effective_model"], "sonnet");
-
-    fixture
-        .runtime
-        .handle_worker_event(WorkerEvent::Message {
-            name: WorkerName::new("model-worker"),
-            generation,
-            value: json!({
-                "type": "set_model_response",
-                "request_id": second_id,
-                "payload": {
-                    "status": "rejected",
-                    "applied": false,
-                    "error": "provider rejected model"
-                }
-            }),
-        })
-        .await;
 
     assert_eq!(
         fixture.runtime.workers.workers["model-worker"]
