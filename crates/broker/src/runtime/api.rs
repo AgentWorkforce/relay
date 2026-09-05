@@ -1031,13 +1031,23 @@ impl BrokerRuntime {
                     let _ = reply.send(Err(format!("unknown worker '{}'", name)));
                     return;
                 };
-                let value = request_id
-                    .as_deref()
-                    .and_then(|request_id| model_receipts_by_request.get(request_id))
-                    .or_else(|| model_receipts.get(&name))
-                    .filter(|receipt| receipt.generation == handle.generation)
-                    .map(ModelReceipt::json)
-                    .unwrap_or_else(|| {
+                let receipt = match request_id.as_deref() {
+                    Some(request_id) => model_receipts_by_request
+                        .get(request_id)
+                        .filter(|receipt| receipt.generation == handle.generation),
+                    None => model_receipts
+                        .get(&name)
+                        .filter(|receipt| receipt.generation == handle.generation),
+                };
+                let Some(receipt) = receipt else {
+                    if let Some(request_id) = request_id {
+                        let _ = reply.send(Err(format!(
+                            "unknown or stale model receipt '{}' for worker '{}'",
+                            request_id, name
+                        )));
+                        return;
+                    }
+                    let value = {
                         json!({
                             "name": name,
                             "model": handle.spec.model,
@@ -1052,7 +1062,11 @@ impl BrokerRuntime {
                             "accepted": false,
                             "pending": false,
                         })
-                    });
+                    };
+                    let _ = reply.send(Ok(value));
+                    return;
+                };
+                let value = receipt.json();
                 let _ = reply.send(Ok(value));
             }
             ListenApiRequest::Release {
