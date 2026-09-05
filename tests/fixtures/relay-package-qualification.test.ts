@@ -141,6 +141,10 @@ describe('Relay package qualification producer', () => {
       '11.11.01-rc.1',
       '11.11.0-01',
       '11.11.0-rc..1',
+      '11.11.0-rc_1',
+      '11.11.0-rc.1+',
+      '11.11.0-rc.1+build+other',
+      `0.0.0-0.${'--.'.repeat(20_000)}`,
     ]) {
       expect(() => assertPrereleaseVersion(version)).toThrow('must be an exact prerelease semver');
     }
