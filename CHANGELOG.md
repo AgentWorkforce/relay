@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [11.10.3] - 2026-09-05
+
+### Added
+
+- Select Relayflow engine generation
+
+### Fixed
+
+- Pin npm before fresh dependency resolution to avoid arborist crash
+- Stop Prettier auto-formatting .trajectories/, exempt it from the proof contract
+
 ## [11.10.2] - 2026-09-03
 
 ### Fixed
