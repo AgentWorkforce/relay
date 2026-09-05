@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { overwriteRegularFileNoFollow } from './safe-file.mjs';
+import { overwriteRegularFileNoFollow, readRegularFileNoFollow } from './safe-file.mjs';
 
 const CONTRACT_VERSION = 1;
 const NONCE_RE = /^[0-9a-f]{32}$/;
@@ -16,6 +16,7 @@ const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const STORAGE_PART_RE = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_OUTPUT_BYTES = 8 * 1024;
+const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const EVIDENCE_RANK = Object.freeze({ static: 0, contract: 1, integration: 2, fault: 3 });
 const REVIEW_VERDICTS = new Set(['COMPREHENSIVELY_SATISFIED', 'FINDINGS', 'BLOCKED']);
@@ -398,6 +399,67 @@ function validateStorageKind(kind) {
   return parts;
 }
 
+function isLoopbackHostname(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+export function validateCloudApiBaseUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('CLOUD_API_URL must be an absolute URL');
+  }
+  const secure = url.protocol === 'https:';
+  const localDevelopment = url.protocol === 'http:' && isLoopbackHostname(url.hostname);
+  if (!secure && !localDevelopment) {
+    throw new Error('CLOUD_API_URL must use HTTPS (HTTP is allowed only for loopback testing)');
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error('CLOUD_API_URL must not contain credentials, a query, or a fragment');
+  }
+  if (!url.pathname.endsWith('/')) url.pathname += '/';
+  return url;
+}
+
+export function validateGithubApiUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('GitHub inventory URL must be absolute');
+  }
+  if (url.origin !== 'https://api.github.com' || url.username || url.password || url.hash) {
+    throw new Error('GitHub inventory pagination must remain on https://api.github.com');
+  }
+  return url;
+}
+
+function encodeRecord(value, { pretty = false } = {}) {
+  const encoded = JSON.stringify(value, null, pretty ? 2 : undefined);
+  if (encoded === undefined) throw new Error('evidence record must be JSON serializable');
+  if (Buffer.byteLength(encoded, 'utf8') > MAX_RECORD_BYTES) {
+    throw new Error(`evidence record exceeds ${MAX_RECORD_BYTES} bytes`);
+  }
+  return encoded;
+}
+
+function assertBoundedResponseText(value, label) {
+  if (Buffer.byteLength(value, 'utf8') > MAX_RECORD_BYTES) {
+    throw new Error(`${label} exceeds ${MAX_RECORD_BYTES} bytes`);
+  }
+  return value;
+}
+
+async function writePrivateGeneratedArtifact(destination, value, label) {
+  if (Buffer.byteLength(value, 'utf8') > MAX_RECORD_BYTES) {
+    throw new Error(`${label} exceeds ${MAX_RECORD_BYTES} bytes`);
+  }
+  // codeql[js/http-to-file-access] The path is nonce-bound, uses exclusive
+  // creation, and the validated payload is capped before this intentional export.
+  await writeFile(destination, value, { flag: 'wx', mode: 0o600 });
+}
+
 function cloudStorageUrl(nonce, kind, env = process.env) {
   assertNonce(nonce);
   const apiUrl = env.CLOUD_API_URL?.trim();
@@ -410,12 +472,17 @@ function cloudStorageUrl(nonce, kind, env = process.env) {
   if (orchestratorRunId && workerRunId && orchestratorRunId !== workerRunId) {
     throw new Error('Cloud runtime exposed conflicting workflow run IDs');
   }
-  const runId = encodeURIComponent(orchestratorRunId || workerRunId);
+  const rawRunId = orchestratorRunId || workerRunId;
+  if (typeof rawRunId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(rawRunId)) {
+    throw new Error('Cloud workflow run ID is invalid');
+  }
+  const runId = encodeURIComponent(rawRunId);
   const objectKey = ['cleanroom', nonce, ...validateStorageKind(kind)]
     .map((part) => encodeURIComponent(part))
     .join('/');
+  const baseUrl = validateCloudApiBaseUrl(apiUrl);
   return {
-    url: new URL(`api/v1/workflows/runs/${runId}/storage/${objectKey}.json`, `${apiUrl.replace(/\/$/, '')}/`),
+    url: new URL(`api/v1/workflows/runs/${runId}/storage/${objectKey}.json`, baseUrl),
     token,
   };
 }
@@ -436,20 +503,32 @@ export async function putRecord({
     const destination =
       path.join(path.resolve(artifactRoot), assertNonce(nonce), ...validateStorageKind(kind)) + '.json';
     await mkdir(path.dirname(destination), { recursive: true });
+    const encoded = `${encodeRecord(value, { pretty: true })}\n`;
     try {
-      await writeFile(destination, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+      // codeql[js/http-to-file-access] The destination is derived only from a
+      // fixed artifact root, validated nonce/kind segments, and uses O_EXCL.
+      await writeFile(destination, encoded, { flag: 'wx', mode: 0o600 });
     } catch (error) {
       if (error?.code === 'EEXIST') {
         throw new Error(`evidence storage already contains ${kind}`);
       }
       throw error;
     }
-    if (recordDigest(JSON.parse(await readFile(destination, 'utf8'))) !== recordDigest(value)) {
+    const { bytes } = await readRegularFileNoFollow(destination, {
+      label: `local evidence ${kind}`,
+      maxBytes: MAX_RECORD_BYTES,
+      privateMode: true,
+      currentUserOwned: true,
+    });
+    if (recordDigest(JSON.parse(bytes.toString('utf8'))) !== recordDigest(value)) {
       throw new Error(`local evidence read-after-write verification failed for ${kind}`);
     }
     return destination;
   }
   const { url, token } = cloudStorageUrl(nonce, kind);
+  const encoded = encodeRecord(value);
+  // codeql[js/file-access-to-http] Uploading bounded verification evidence to
+  // the explicitly configured, HTTPS-validated Cloud storage origin is intentional.
   const response = await fetch(url, {
     method: 'PUT',
     signal: requestSignal(),
@@ -459,7 +538,7 @@ export async function putRecord({
       accept: 'application/json',
       'if-none-match': '*',
     },
-    body: JSON.stringify(value),
+    body: encoded,
   });
   if (response.status === 412) {
     throw new Error(`Cloud evidence storage already contains ${kind} (412)`);
@@ -477,7 +556,9 @@ export async function putRecord({
   }
   let stored;
   try {
-    stored = JSON.parse(await confirmation.text());
+    stored = JSON.parse(
+      assertBoundedResponseText(await confirmation.text(), 'Cloud evidence read-after-write response')
+    );
   } catch (error) {
     throw new Error(
       `Cloud evidence read-after-write returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`
@@ -519,16 +600,24 @@ async function getRecord({ nonce, kind, source = 'auto', artifactRoot = DEFAULT_
   if (mode === 'files') {
     const sourcePath =
       path.join(path.resolve(artifactRoot), assertNonce(nonce), ...validateStorageKind(kind)) + '.json';
-    return JSON.parse(await readFile(sourcePath, 'utf8'));
+    const { bytes } = await readRegularFileNoFollow(sourcePath, {
+      label: `local evidence ${kind}`,
+      maxBytes: MAX_RECORD_BYTES,
+      privateMode: true,
+      currentUserOwned: true,
+    });
+    return JSON.parse(bytes.toString('utf8'));
   }
   const { url, token } = cloudStorageUrl(nonce, kind);
+  // codeql[js/file-access-to-http] The URL is confined to the validated Cloud
+  // API origin; the record key consists only of validated run/nonce/kind data.
   const response = await fetch(url, {
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
   if (!response.ok)
     throw new Error(`Cloud evidence download failed (${response.status}): ${await response.text()}`);
-  return JSON.parse(await response.text());
+  return JSON.parse(assertBoundedResponseText(await response.text(), 'Cloud evidence response'));
 }
 
 function outputCapture(maxBytes = MAX_OUTPUT_BYTES) {
@@ -730,13 +819,15 @@ async function fetchGithubPages(
   { token = process.env.VERIFY_GITHUB_TOKEN, maxPages = 20, stopAfterPage = null } = {}
 ) {
   const records = [];
-  let next = new URL(url);
+  let next = validateGithubApiUrl(url);
   for (let page = 1; next && page <= maxPages; page += 1) {
     let response = null;
     let lastError = null;
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       response = null;
       try {
+        // codeql[js/file-access-to-http] Every initial and Link-derived URL is
+        // revalidated against the fixed GitHub API HTTPS origin before use.
         response = await fetch(next, {
           signal: requestSignal(),
           headers: {
@@ -769,7 +860,7 @@ async function fetchGithubPages(
     if (stopAfterPage?.(pageRecords)) return records;
     const link = response.headers.get('link') ?? '';
     const nextMatch = link.match(/<([^>]+)>;\s*rel="next"/);
-    next = nextMatch ? new URL(nextMatch[1]) : null;
+    next = nextMatch ? validateGithubApiUrl(nextMatch[1]) : null;
   }
   if (next) throw new Error(`GitHub inventory exceeded ${maxPages} pages`);
   return records;
@@ -2139,7 +2230,7 @@ async function aggregateFromStorage({ catalog, profile, nonce, source, artifactR
   await putRecord({ nonce, kind: 'aggregate', value: aggregate, source, artifactRoot });
   if (sourceMode(source) === 'files') {
     const reportPath = path.join(path.resolve(artifactRoot), nonce, 'REPORT.md');
-    await writeFile(reportPath, aggregateMarkdown(aggregate));
+    await writePrivateGeneratedArtifact(reportPath, aggregateMarkdown(aggregate), 'clean-room report');
   }
   return aggregate;
 }
@@ -2284,7 +2375,7 @@ async function finalizeSignoff({
   await putRecord({ nonce, kind: 'signoff', value: signoff, source, artifactRoot });
   if (sourceMode(source) === 'files') {
     const signoffPath = path.join(path.resolve(artifactRoot), nonce, 'SIGNOFF.md');
-    await writeFile(
+    await writePrivateGeneratedArtifact(
       signoffPath,
       [
         `# ${product} clean-room signoff`,
@@ -2298,7 +2389,8 @@ async function finalizeSignoff({
         `Codex (${codexRole}): ${codex.verdict}`,
         codex.whyPassed ?? '',
         '',
-      ].join('\n')
+      ].join('\n'),
+      'clean-room signoff'
     );
   }
   return signoff;
