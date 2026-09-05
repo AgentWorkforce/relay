@@ -219,6 +219,205 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
   ];
 }
 
+function buildNodeAppServerModelProofScript() {
+  return String.raw`const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { spawn, spawnSync } = require('node:child_process');
+
+const workerName = process.argv[1];
+const requestedModel = process.argv[2];
+const expectedNode = process.argv[3];
+const sandboxId = process.argv[4];
+const wait = async (predicate, label, timeoutMs = 60_000) => {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('timed out waiting for ' + label + (lastError ? ': ' + lastError.message : ''));
+};
+const freePort = async () => {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  if (!address || typeof address !== 'object' || !address.port) throw new Error('no free port');
+  return address.port;
+};
+const findConnection = async () => {
+  const roots = [
+    path.join(os.homedir(), '.agentworkforce', 'relay'),
+    path.join(process.cwd(), '.agentworkforce', 'relay'),
+  ];
+  const queue = roots.filter((root) => fs.existsSync(root)).map((root) => ({ root, depth: 0 }));
+  const candidates = [];
+  while (queue.length) {
+    const { root, depth } = queue.shift();
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const candidate = path.join(root, entry.name);
+      if (entry.isFile() && entry.name === 'connection.json') {
+        try {
+          const connection = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+          if (connection.url && connection.api_key) candidates.push({ connection, candidate });
+        } catch {}
+      } else if (entry.isDirectory() && depth < 6) queue.push({ root: candidate, depth: depth + 1 });
+    }
+  }
+  for (const { connection, candidate } of candidates) {
+    try {
+      const response = await fetch(connection.url + '/api/status', {
+        headers: { 'x-api-key': connection.api_key },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const status = response.ok ? await response.json() : null;
+      if (status?.node_name === expectedNode) return { ...connection, path: candidate };
+    } catch {}
+  }
+  throw new Error('no live node broker connection matched ' + JSON.stringify(expectedNode));
+};
+const jsonResponse = async (response, label) => {
+  const text = await response.text();
+  if (!response.ok) throw new Error(label + ' -> ' + response.status + ' ' + text.slice(0, 300));
+  try { return text ? JSON.parse(text) : {}; } catch (error) { throw new Error(label + ' was not JSON: ' + error.message); }
+};
+const parseCliJson = (output) => {
+  const first = output.indexOf('{');
+  const last = output.lastIndexOf('}');
+  if (first < 0 || last <= first) throw new Error('set-model did not emit JSON: ' + output.slice(-500));
+  return JSON.parse(output.slice(first, last + 1));
+};
+
+let opencode;
+let connection;
+let sessionId;
+let providerSessionUrl;
+let providerEndpoint;
+let workerCreated = false;
+let tempDir;
+const result = { worker: workerName, requestedModel, node: expectedNode, sandbox: sandboxId, cleanup: false };
+try {
+  connection = await findConnection();
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-model-proof-'));
+  const version = spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 10_000 });
+  if (version.error || version.status !== 0) throw new Error('OpenCode CLI unavailable');
+  result.providerVersion = (version.stdout || version.stderr || '').trim();
+  const port = await freePort();
+  providerEndpoint = 'http://127.0.0.1:' + port;
+  opencode = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--pure'], {
+    cwd: tempDir,
+    env: { ...process.env, HOME: tempDir, OPENCODE_SERVER_PASSWORD: '' },
+    detached: true,
+    stdio: 'ignore',
+  });
+  opencode.unref();
+  await wait(async () => {
+    const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(2_000) });
+    return response.ok;
+  }, 'real OpenCode server');
+  const session = await jsonResponse(await fetch(providerEndpoint + '/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+    signal: AbortSignal.timeout(5_000),
+  }), 'OpenCode session creation');
+  sessionId = session.id;
+  if (typeof sessionId !== 'string' || !sessionId) throw new Error('OpenCode session omitted id');
+  providerSessionUrl = providerEndpoint + '/session/' + encodeURIComponent(sessionId);
+  const headers = { 'content-type': 'application/json', 'x-api-key': connection.api_key };
+  await jsonResponse(await fetch(connection.url + '/api/spawn', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: workerName,
+      cli: 'opencode',
+      runtime: 'headless',
+      harness_config: { runtime: 'headless', protocol: 'opencode', endpoint: providerEndpoint, sessionId, release: 'delete' },
+    }),
+    signal: AbortSignal.timeout(10_000),
+  }), 'headless AppServer worker registration');
+  workerCreated = true;
+  const cliEnv = { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key };
+  const setModel = spawnSync('agent-relay', ['node', 'agent', 'set-model', workerName, requestedModel, '--json'], {
+    cwd: tempDir,
+    env: cliEnv,
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (setModel.error) throw setModel.error;
+  if (setModel.status !== 0) throw new Error('public set-model failed: ' + (setModel.stderr || setModel.stdout).slice(-1000));
+  const receipt = parseCliJson(setModel.stdout);
+  if (receipt.status !== 'applied' || receipt.applied !== true || receipt.effectiveModel !== requestedModel || receipt.pending !== false) {
+    throw new Error('public set-model returned invalid receipt: ' + JSON.stringify(receipt));
+  }
+  const confirmed = await jsonResponse(await fetch(providerEndpoint + '/api/session/' + encodeURIComponent(sessionId), {
+    signal: AbortSignal.timeout(5_000),
+  }), 'OpenCode session confirmation');
+  const sessionData = confirmed.data || confirmed;
+  const effective = sessionData.model && sessionData.model.providerID + '/' + sessionData.model.id;
+  if (effective !== requestedModel) throw new Error('OpenCode session model was ' + JSON.stringify(effective));
+  result.receipt = receipt;
+  result.providerModel = effective;
+} finally {
+  const cleanupErrors = [];
+  if (connection && workerCreated) {
+    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
+      cwd: tempDir || process.cwd(), env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
+      encoding: 'utf8', timeout: 60_000,
+    });
+    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
+    try {
+      await wait(async () => {
+        const response = await fetch(connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model', {
+          headers: { 'x-api-key': connection.api_key }, signal: AbortSignal.timeout(2_000),
+        });
+        return response.status === 404;
+      }, 'released AppServer worker to disappear', 15_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+  }
+  if (connection && sessionId) {
+    try {
+      const response = await fetch(providerSessionUrl, { method: 'DELETE', signal: AbortSignal.timeout(2_000) });
+      if (![200, 204, 404].includes(response.status)) cleanupErrors.push('OpenCode session delete failed');
+      await wait(async () => {
+        const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
+        return check.status === 404;
+      }, 'deleted OpenCode session to disappear', 15_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+  }
+  if (opencode && opencode.pid) {
+    try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try { process.kill(opencode.pid, 0); cleanupErrors.push('OpenCode process remained alive'); } catch {}
+    if (providerEndpoint) {
+      try {
+        const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
+        if (response.ok) cleanupErrors.push('OpenCode provider port remained reachable');
+      } catch {}
+    }
+  }
+  if (tempDir) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error.message); }
+    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
+  }
+  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
+  result.cleanup = true;
+}
+process.stdout.write(JSON.stringify(result));
+`;
+}
+
 function requiredOption(options, name) {
   const value = options[name];
   if (typeof value !== 'string' || !value.trim()) throw new Error(`--${name} is required`);
@@ -351,8 +550,8 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 95)
-    throw new Error('matrix.operations must contain exactly 95 operations');
+  if (matrix.operations.length !== 97)
+    throw new Error('matrix.operations must contain exactly 97 operations');
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const commandOperationIds = new Set();
@@ -453,7 +652,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 95 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 97 operations');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -3292,6 +3491,7 @@ class FleetBoard {
     await this.nodeAgentControls(autoANode);
     const autoBNode = nodeAt(1);
     await this.directNodeSpawn('node-agent-spawn-codex-auto-b', autoBNode, 'codex');
+    await this.nodeAgentAppServerModelProof('node-agent-set-model-app-server-b', autoBNode);
     await this.releaseSupport(`node-agent-spawn-codex-auto-b-${this.short}`, autoBNode, 'node');
     const ptyNode = nodeAt(2);
     await this.directNodeSpawn('node-agent-spawn-codex-pty', ptyNode, 'codex', {
@@ -3351,6 +3551,8 @@ class FleetBoard {
     if (!node?.nodeName || !this.controller) {
       for (const id of [
         'node-agent-set-model',
+        'node-agent-set-model-app-server-a',
+        'node-agent-set-model-app-server-b',
         'node-agent-attach-view-json',
         'node-agent-attach-drive-json',
         'node-agent-attach-passthrough-json',
@@ -3391,6 +3593,7 @@ class FleetBoard {
       },
       { timeoutMs: 30_000 }
     );
+    await this.nodeAgentAppServerModelProof('node-agent-set-model-app-server-a', node);
     for (const mode of ['view', 'drive', 'passthrough']) {
       const id = `node-agent-attach-${mode}-json`;
       await this.record(id, async () => {
@@ -3614,6 +3817,52 @@ class FleetBoard {
       };
     });
     await this.releaseSupport(controlName, node, 'node');
+  }
+
+  async nodeAgentAppServerModelProof(id, node) {
+    if (!node?.id || this.taintedNodeIds.has(node.id)) {
+      return this.derived(id, { blockedReason: `board node ${node?.letter ?? '?'} unavailable` });
+    }
+    const workerName = `${id}-${this.short}`;
+    const script = buildNodeAppServerModelProofScript();
+    return this.assertedCommand(
+      id,
+      this.daytonaArgv(
+        'sandbox',
+        'exec',
+        node.id,
+        '--timeout',
+        '180',
+        '--',
+        'node',
+        '-e',
+        script,
+        workerName,
+        'openai/gpt-5.4',
+        node.nodeName,
+        node.id
+      ),
+      (result) => {
+        const payload = tryParseJson(result._rawStdout);
+        const receipt = payload?.receipt;
+        const pass =
+          payload?.worker === workerName &&
+          payload?.requestedModel === 'openai/gpt-5.4' &&
+          payload?.providerModel === 'openai/gpt-5.4' &&
+          payload?.cleanup === true &&
+          receipt?.status === 'applied' &&
+          receipt?.applied === true &&
+          receipt?.effectiveModel === 'openai/gpt-5.4' &&
+          receipt?.pending === false &&
+          typeof receipt?.requestId === 'string' &&
+          receipt.requestId.length > 0;
+        return {
+          pass,
+          summary: `issue=1658 runtime=headless-app-server requestedModel=${payload?.requestedModel ?? 'missing'} providerModel=${payload?.providerModel ?? 'missing'} status=${receipt?.status ?? 'missing'} effectiveModel=${receipt?.effectiveModel ?? 'missing'} applied=${receipt?.applied} cleanup=${payload?.cleanup}`,
+        };
+      },
+      { timeoutMs: 180_000, maxCaptureBytes: 2 * 1024 * 1024 }
+    );
   }
 
   async nodeWorkflows() {

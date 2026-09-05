@@ -72,7 +72,11 @@
     ],
     "node agent new": ["node-agent-new-view"],
     "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
-    "node agent set-model": ["node-agent-set-model"],
+    "node agent set-model": [
+      "node-agent-set-model",
+      "node-agent-set-model-app-server-a",
+      "node-agent-set-model-app-server-b"
+    ],
     "node agent attach": [
       "node-agent-attach-view-json",
       "node-agent-attach-drive-json",
@@ -506,6 +510,8 @@
       "node-agent-spawn-provider-deepagents-native": "direct-node-spawn",
       "node-agent-new-view": "direct-node-spawn",
       "node-agent-set-model": "agent-control",
+      "node-agent-set-model-app-server-a": "agent-control",
+      "node-agent-set-model-app-server-b": "agent-control",
       "node-agent-attach-view-json": "agent-control",
       "node-agent-attach-drive-json": "agent-control",
       "node-agent-attach-passthrough-json": "agent-control",
@@ -845,6 +851,16 @@
       "group": "node-agent",
       "expect": "success",
       "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-set-model-app-server-a",
+      "group": "node-agent",
+      "expect": "success"
+    },
+    {
+      "id": "node-agent-set-model-app-server-b",
+      "group": "node-agent",
+      "expect": "success"
     },
     {
       "id": "node-agent-attach-view-json",
