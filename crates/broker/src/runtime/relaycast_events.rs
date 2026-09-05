@@ -314,7 +314,6 @@ pub(super) async fn release_worker_locally(
     }
     workers.supervisor.unregister(&name);
     workers.metrics.on_release(&name);
-    let release_generation = workers.workers.get(&name).map(|handle| handle.generation);
     let outcome = match workers.release(&name).await {
         Ok(()) => {
             workspace_http.forget_agent_registration(&name);
@@ -387,14 +386,12 @@ pub(super) async fn release_worker_locally(
         }
     };
     if outcome == ReleaseOutcome::Released {
-        let pending_request_ids: HashSet<String> = pending_model_requests
-            .iter()
-            .filter_map(|(request_id, pending)| {
-                (pending.worker_name == name && Some(pending.generation) == release_generation)
-                    .then_some(request_id.clone())
-            })
+        let generations: HashSet<Uuid> = pending_model_requests
+            .values()
+            .filter(|pending| pending.worker_name == name)
+            .map(|pending| pending.generation)
             .collect();
-        if let Some(generation) = release_generation {
+        for generation in generations {
             terminalize_model_requests_for_worker(
                 &name,
                 generation,
@@ -404,10 +401,6 @@ pub(super) async fn release_worker_locally(
                 Instant::now(),
             );
         }
-        model_receipts.remove(&name);
-        model_receipts_by_request.retain(|request_id, receipt| {
-            receipt.name != name || pending_request_ids.contains(request_id)
-        });
         // Worker disappearance invalidates every resize lease for that target,
         // including a stale lease whose session was already pruned.
         resize_owners.remove(&name);

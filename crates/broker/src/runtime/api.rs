@@ -1101,18 +1101,14 @@ impl BrokerRuntime {
                 // auto-restart of intentionally released agents.
                 workers.supervisor.unregister(&name);
                 workers.metrics.on_release(&name);
-                let release_generation = workers.workers.get(&name).map(|handle| handle.generation);
                 match workers.release(&name).await {
                     Ok(()) => {
-                        let pending_request_ids: HashSet<String> = pending_model_requests
-                            .iter()
-                            .filter_map(|(request_id, pending)| {
-                                (pending.worker_name == name
-                                    && Some(pending.generation) == release_generation)
-                                    .then_some(request_id.clone())
-                            })
+                        let generations: HashSet<Uuid> = pending_model_requests
+                            .values()
+                            .filter(|pending| pending.worker_name == name)
+                            .map(|pending| pending.generation)
                             .collect();
-                        if let Some(generation) = release_generation {
+                        for generation in generations {
                             terminalize_model_requests_for_worker(
                                 &name,
                                 generation,
@@ -1122,9 +1118,6 @@ impl BrokerRuntime {
                                 Instant::now(),
                             );
                         }
-                        model_receipts_by_request.retain(|request_id, receipt| {
-                            receipt.name != name || pending_request_ids.contains(request_id)
-                        });
                         let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,

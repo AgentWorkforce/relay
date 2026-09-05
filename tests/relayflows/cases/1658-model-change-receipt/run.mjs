@@ -447,6 +447,7 @@ function brokerClient(baseUrl) {
     const response = await fetch(`${baseUrl}${route}`, {
       method,
       headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
+      signal: AbortSignal.timeout(15_000),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();

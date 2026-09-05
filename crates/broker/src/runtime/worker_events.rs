@@ -1121,6 +1121,39 @@ impl BrokerRuntime {
                                 );
                                 return;
                             }
+                            if Instant::now()
+                                >= request.provider_deadline.unwrap_or(request.deadline)
+                            {
+                                let request = pending_model_requests
+                                    .remove(request_id)
+                                    .expect("validated late model request remains pending");
+                                let error =
+                                    "provider receipt arrived after the model request deadline";
+                                if let Some(receipt) =
+                                    model_receipts.get_mut(&name).filter(|receipt| {
+                                        receipt.request_id == request_id
+                                            && receipt.generation == generation
+                                            && receipt.revision == request.revision
+                                    })
+                                {
+                                    receipt.applied = false;
+                                    receipt.status = "rejected".into();
+                                    receipt.success = false;
+                                    receipt.pending = false;
+                                    receipt.error = Some(error.into());
+                                    receipt.updated_at = Instant::now();
+                                }
+                                if let Some(receipt) = model_receipts_by_request.get_mut(request_id)
+                                {
+                                    receipt.applied = false;
+                                    receipt.status = "rejected".into();
+                                    receipt.success = false;
+                                    receipt.pending = false;
+                                    receipt.error = Some(error.into());
+                                    receipt.updated_at = Instant::now();
+                                }
+                                return;
+                            }
                             let request = pending_model_requests
                                 .remove(request_id)
                                 .expect("validated model request remains pending");

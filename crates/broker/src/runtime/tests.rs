@@ -539,6 +539,67 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
 }
 
 #[tokio::test]
+async fn set_model_late_provider_receipt_is_rejected() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: None,
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .provider_deadline = Some(Instant::now() - Duration::from_secs(1));
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": request_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: None,
+            reply: get_tx,
+        })
+        .await;
+    let rejected = get_rx.await.unwrap().unwrap();
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(rejected["applied"], false);
+    assert!(rejected["error"].as_str().unwrap().contains("after"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
     let registry = make_app_server_registry_with_worker(
         "model-worker",
