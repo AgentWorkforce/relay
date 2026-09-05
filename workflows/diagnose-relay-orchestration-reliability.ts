@@ -151,7 +151,30 @@ function diagnosisPermissions(agentName: string) {
     'tests',
     'workflows',
   ];
-  const extensions = '{c,cc,cpp,css,go,h,html,js,json,jsonc,jsx,md,mjs,cjs,rs,sh,sql,toml,ts,tsx,yaml,yml}';
+  const extensions = [
+    'c',
+    'cc',
+    'cpp',
+    'css',
+    'go',
+    'h',
+    'html',
+    'js',
+    'json',
+    'jsonc',
+    'jsx',
+    'md',
+    'mjs',
+    'cjs',
+    'rs',
+    'sh',
+    'sql',
+    'toml',
+    'ts',
+    'tsx',
+    'yaml',
+    'yml',
+  ];
   const repoReads = (prefix: string) => [
     `${prefix}AGENTS.md`,
     `${prefix}CLAUDE.md`,
@@ -165,7 +188,7 @@ function diagnosisPermissions(agentName: string) {
     `${prefix}package.json`,
     `${prefix}package-lock.json`,
     ...sourceDirectories.flatMap((directory) => [
-      `${prefix}${directory}/**/*.${extensions}`,
+      ...extensions.map((extension) => `${prefix}${directory}/**/*.${extension}`),
       `${prefix}${directory}/**/Dockerfile*`,
     ]),
   ];
@@ -180,7 +203,7 @@ function diagnosisPermissions(agentName: string) {
         ...repoReads('../cloud/'),
         ...repoReads('../relayfile/'),
         ...repoReads('../relayfile-cloud/'),
-        `${ART}/context.json`,
+        `${ART}/*`,
       ],
       write: writesByAgent[agentName] ?? [],
       deny: [

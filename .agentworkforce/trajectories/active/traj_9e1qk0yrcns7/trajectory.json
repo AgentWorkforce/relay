@@ -609,6 +609,18 @@
             "focal:set-model",
             "confidence:0.88"
           ]
+        },
+        {
+          "ts": 1788642304334,
+          "type": "decision",
+          "content": "Fail closed on qualification provenance inputs and constrain preflight egress: Fail closed on qualification provenance inputs and constrain preflight egress",
+          "raw": {
+            "question": "Fail closed on qualification provenance inputs and constrain preflight egress",
+            "chosen": "Fail closed on qualification provenance inputs and constrain preflight egress",
+            "alternatives": [],
+            "reasoning": "Fresh PR review found exploitable symlink/path/ref boundary gaps and unrestricted model preflight networking. The qualification must reject ambiguous provenance instead of weakening its clean-room gate."
+          },
+          "significance": "high"
         }
       ]
     }
