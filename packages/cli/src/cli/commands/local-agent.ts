@@ -839,15 +839,16 @@ export function registerLocalAgentCommands(
     .action(async (name: string, model: string, options: { json?: boolean }) => {
       await run(deps, async (client) => {
         let receipt = await client.setModel(name, model);
-        if (receipt.status === 'accepted_pending' && receipt.request_id) {
+        const requestId = receipt.request_id ?? undefined;
+        if (receipt.status === 'accepted_pending' && requestId) {
           const deadline = Date.now() + MODEL_RECEIPT_POLL_TIMEOUT_MS;
           while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, MODEL_RECEIPT_POLL_INTERVAL_MS));
             try {
-              const latest = await client.getModel(name, receipt.request_id);
+              const latest = await client.getModel(name, requestId);
               // A newer request may have replaced the worker's current receipt;
               // never report that unrelated receipt as this command's result.
-              if (latest.request_id !== receipt.request_id) continue;
+              if (latest.request_id !== requestId) continue;
               receipt = latest;
               if (receipt.status !== 'accepted_pending') break;
             } catch {
