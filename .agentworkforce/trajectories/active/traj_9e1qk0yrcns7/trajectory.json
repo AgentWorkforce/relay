@@ -539,6 +539,18 @@
             "focal:cloud-contract",
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1788636349801,
+          "type": "decision",
+          "content": "Fail closed when O_NOFOLLOW is unavailable: Fail closed when O_NOFOLLOW is unavailable",
+          "raw": {
+            "question": "Fail closed when O_NOFOLLOW is unavailable",
+            "chosen": "Fail closed when O_NOFOLLOW is unavailable",
+            "alternatives": [],
+            "reasoning": "Qualification evidence must never use an lstat-then-open fallback because it leaves a symlink swap race; the Fleet/cleanroom acceptance environment is Linux and supported macOS hosts expose O_NOFOLLOW."
+          },
+          "significance": "high"
         }
       ]
     }
