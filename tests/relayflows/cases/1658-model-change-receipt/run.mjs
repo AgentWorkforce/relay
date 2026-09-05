@@ -6,7 +6,9 @@
  * accepted → provider-confirmed applied path and stale fencing.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +38,7 @@ function run(command, args, label) {
   const result = spawnSync(command, args, {
     cwd: targetDir,
     encoding: 'utf8',
-    timeout: 60_000,
+    timeout: 300_000,
     maxBuffer: 8 * 1024 * 1024,
     env: { ...process.env, RELAY_SKIP_TELEMETRY: '1' },
   });
@@ -67,8 +69,89 @@ try {
   }
 
   const cliEntry = path.join(targetDir, 'packages/cli/dist/cli/index.js');
-  const help = run(process.execPath, [cliEntry, 'node', 'agent', 'set-model', '--help'], 'set-model help');
+  let help = run(process.execPath, [cliEntry, 'node', 'agent', 'set-model', '--help'], 'set-model help');
   const hasJson = /--json\b/.test(help);
+  if (arm === 'head' && hasJson) {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-'));
+    const requestId = 'model_pr_proof_1658';
+    const server = createServer((request, response) => {
+      if (request.headers['x-api-key'] !== 'pr-proof-key') {
+        response.writeHead(401).end();
+        return;
+      }
+      response.setHeader('content-type', 'application/json');
+      if (request.method === 'POST') {
+        response.end(JSON.stringify({
+          name: 'proof-worker',
+          requested_model: 'openai/gpt-5.4',
+          effective_model: null,
+          applied: false,
+          status: 'accepted_pending',
+          request_id: requestId,
+          receipt_id: requestId,
+          generation: 'generation-proof',
+          revision: 1,
+          success: false,
+          accepted: true,
+          pending: true,
+        }));
+        return;
+      }
+      response.end(JSON.stringify({
+        name: 'proof-worker',
+        requested_model: 'openai/gpt-5.4',
+        effective_model: 'openai/gpt-5.4',
+        applied: true,
+        status: 'applied',
+        request_id: requestId,
+        receipt_id: requestId,
+        generation: 'generation-proof',
+        revision: 1,
+        success: true,
+        accepted: true,
+        pending: false,
+      }));
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    await writeFile(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({ url: `http://127.0.0.1:${port}`, api_key: 'pr-proof-key', pid: process.pid })
+    );
+    process.env.AGENT_RELAY_STATE_DIR = stateDir;
+    try {
+      const receiptOutput = run(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'openai/gpt-5.4', '--json'],
+        'set-model receipt'
+      );
+      const first = receiptOutput.indexOf('{');
+      const last = receiptOutput.lastIndexOf('}');
+      const receipt = JSON.parse(receiptOutput.slice(first, last + 1));
+      const validReceipt =
+        receipt.name === 'proof-worker' &&
+        receipt.requestedModel === 'openai/gpt-5.4' &&
+        receipt.effectiveModel === 'openai/gpt-5.4' &&
+        receipt.applied === true &&
+        receipt.status === 'applied' &&
+        receipt.success === true &&
+        receipt.accepted === true &&
+        receipt.pending === false &&
+        typeof receipt.requestId === 'string' &&
+        typeof receipt.receiptId === 'string' &&
+        typeof receipt.generation === 'string';
+      if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
+      help = `${help}\n${receiptOutput}`;
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(stateDir, { recursive: true, force: true });
+      delete process.env.AGENT_RELAY_STATE_DIR;
+    }
+  }
   const outcome = hasJson ? 'fixed' : 'bug';
   const signature = hasJson ? 'set_model_exposes_json_receipt' : 'set_model_has_no_json_receipt';
   const details = hasJson

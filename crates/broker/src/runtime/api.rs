@@ -886,6 +886,11 @@ impl BrokerRuntime {
                     .get(&name)
                     .filter(|receipt| receipt.generation == generation)
                     .and_then(|receipt| receipt.effective_model.clone());
+                let last_effective_revision = model_receipts
+                    .get(&name)
+                    .filter(|receipt| receipt.generation == generation)
+                    .map(|receipt| receipt.effective_revision)
+                    .unwrap_or_default();
 
                 if !supports_model_mutation(handle) {
                     let receipt = ModelReceipt {
@@ -897,6 +902,7 @@ impl BrokerRuntime {
                         request_id: request_id.to_string(),
                         generation,
                         revision,
+                        effective_revision: last_effective_revision,
                         accepted: false,
                         pending: false,
                         success: false,
@@ -930,6 +936,7 @@ impl BrokerRuntime {
                         request_id: request_id.to_string(),
                         generation,
                         revision,
+                        effective_revision: last_effective_revision,
                         accepted: false,
                         pending: false,
                         success: false,
@@ -957,6 +964,7 @@ impl BrokerRuntime {
                         request_id: request_id.to_string(),
                         generation,
                         revision,
+                        effective_revision: last_effective_revision,
                         accepted: true,
                         pending: true,
                         success: false,

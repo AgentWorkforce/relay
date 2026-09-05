@@ -619,6 +619,130 @@ async fn set_model_out_of_order_receipts_cannot_roll_back_confirmed_model_cache(
 }
 
 #[tokio::test]
+async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
+    let mut registry = make_worker_registry_with_worker("model-worker").await;
+    registry
+        .workers
+        .get_mut("model-worker")
+        .unwrap()
+        .spec
+        .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".into(),
+        endpoint: "http://127.0.0.1:1".into(),
+        session_id: "test-session".into(),
+        auth: None,
+        host: None,
+        release: None,
+        metadata: None,
+    }));
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: Some(1_000),
+            reply: first_tx,
+        })
+        .await;
+    let first = first_rx.await.unwrap().unwrap();
+    let first_id = first["request_id"].as_str().unwrap().to_string();
+
+    let (second_tx, second_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "opus".into(),
+            timeout_ms: Some(1_000),
+            reply: second_tx,
+        })
+        .await;
+    let second = second_rx.await.unwrap().unwrap();
+    let second_id = second["request_id"].as_str().unwrap().to_string();
+
+    // The older request can be confirmed while the newer one is still
+    // pending. Its effective model must remain visible to GET callers.
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": first_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+    assert_eq!(
+        fixture.runtime.workers.workers["model-worker"]
+            .spec
+            .model
+            .as_deref(),
+        Some("sonnet")
+    );
+    let (pending_tx, pending_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            reply: pending_tx,
+        })
+        .await;
+    let pending = pending_rx.await.unwrap().unwrap();
+    assert_eq!(pending["status"], "accepted_pending");
+    assert_eq!(pending["effective_model"], "sonnet");
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": second_id,
+                "payload": {
+                    "status": "rejected",
+                    "applied": false,
+                    "error": "provider rejected model"
+                }
+            }),
+        })
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers["model-worker"]
+            .spec
+            .model
+            .as_deref(),
+        Some("sonnet")
+    );
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            reply: get_tx,
+        })
+        .await;
+    let rejected = get_rx.await.unwrap().unwrap();
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(rejected["applied"], false);
+    assert_eq!(rejected["effective_model"], "sonnet");
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn set_model_queue_admission_is_pending_even_when_write_deadline_is_zero() {
     let mut registry = make_worker_registry_with_worker("model-worker").await;
     registry

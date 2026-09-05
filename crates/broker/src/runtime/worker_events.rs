@@ -1117,33 +1117,41 @@ impl BrokerRuntime {
                                     .map(str::to_owned)
                                     .or_else(|| Some("provider did not confirm the requested effective model".into()))
                             };
+                            let mut update_worker_model = false;
                             if let Some(receipt) = model_receipts.get_mut(&name) {
+                                if receipt.generation == generation
+                                    && applied
+                                    && request.revision >= receipt.effective_revision
+                                {
+                                    // A newer request can still be pending when
+                                    // an older provider receipt arrives. Keep
+                                    // that confirmed model visible until the
+                                    // newer request is itself confirmed, while
+                                    // preventing an older receipt from rolling
+                                    // back a newer confirmation.
+                                    receipt.effective_model = Some(request.requested_model.clone());
+                                    receipt.effective_revision = request.revision;
+                                    update_worker_model = true;
+                                }
                                 if receipt.request_id == request_id
                                     && receipt.generation == generation
                                     && receipt.revision == request.revision
                                 {
-                                    // Keep the previous confirmed model visible
-                                    // through a rejected/unsupported receipt.
-                                    if applied {
-                                        receipt.effective_model =
-                                            Some(request.requested_model.clone());
-                                    }
                                     receipt.applied = applied;
                                     receipt.status = status.to_string();
                                     receipt.success = applied;
                                     receipt.accepted = true;
                                     receipt.pending = false;
                                     receipt.error = error;
-                                    // The cache is part of the same revision
-                                    // transaction as the receipt. In
-                                    // particular, an out-of-order older
-                                    // response cannot roll it back.
-                                    if applied {
-                                        if let Some(handle) = workers.workers.get_mut(&name) {
-                                            handle.spec.model =
-                                                Some(request.requested_model.clone());
-                                        }
-                                    }
+                                }
+                            }
+                            // The worker cache follows the newest confirmed
+                            // provider revision, not merely the newest request
+                            // to finish. This also handles A-applied/B-rejected
+                            // without losing A's effective model.
+                            if update_worker_model {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.spec.model = Some(request.requested_model.clone());
                                 }
                             }
                             return;

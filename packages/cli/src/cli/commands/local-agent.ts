@@ -843,12 +843,18 @@ export function registerLocalAgentCommands(
           const deadline = Date.now() + MODEL_RECEIPT_POLL_TIMEOUT_MS;
           while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, MODEL_RECEIPT_POLL_INTERVAL_MS));
-            const latest = await client.getModel(name);
-            // A newer request may have replaced the worker's current receipt;
-            // never report that unrelated receipt as this command's result.
-            if (latest.request_id !== receipt.request_id) continue;
-            receipt = latest;
-            if (receipt.status !== 'accepted_pending') break;
+            try {
+              const latest = await client.getModel(name);
+              // A newer request may have replaced the worker's current receipt;
+              // never report that unrelated receipt as this command's result.
+              if (latest.request_id !== receipt.request_id) continue;
+              receipt = latest;
+              if (receipt.status !== 'accepted_pending') break;
+            } catch {
+              // Admission already succeeded; preserve that correlated pending
+              // receipt when confirmation transport is temporarily unavailable.
+              break;
+            }
           }
         }
         if (options.json) {

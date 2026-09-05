@@ -345,6 +345,10 @@ pub(super) struct ModelReceipt {
     pub(super) request_id: String,
     pub(super) generation: Uuid,
     pub(super) revision: u64,
+    /// Revision of the provider-confirmed `effective_model`. This is kept
+    /// separate from `revision`: a later request may still be pending (or
+    /// reject) while an earlier request's provider receipt arrives.
+    pub(super) effective_revision: u64,
     pub(super) accepted: bool,
     pub(super) pending: bool,
     pub(super) success: bool,
