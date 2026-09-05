@@ -149,7 +149,6 @@ try {
         typeof receipt.receiptId === 'string' &&
         typeof receipt.generation === 'string';
       if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
-      help = `${help}\n${receiptOutput}`;
     } finally {
       await new Promise((resolve) => server.close(resolve));
       await rm(stateDir, { recursive: true, force: true });

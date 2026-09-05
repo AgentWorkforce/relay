@@ -847,7 +847,16 @@ describe('local agent subtree', () => {
 
   it('set-model --json emits a normalized correlated receipt', async () => {
     const { program, log, client } = harness();
-    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], { from: 'user' });
+    vi.useFakeTimers();
+    try {
+      const command = program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], {
+        from: 'user',
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      await command;
+    } finally {
+      vi.useRealTimers();
+    }
     expect(log).toHaveBeenCalledWith(
       JSON.stringify(
         {
