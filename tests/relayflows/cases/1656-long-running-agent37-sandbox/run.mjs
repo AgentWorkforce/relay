@@ -130,10 +130,7 @@ try {
   );
 
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
-  const cliSource = await readFile(
-    path.join(targetDir, 'packages/cli/src/cli/commands/fleet.ts'),
-    'utf8'
-  );
+  const cliSource = await readFile(path.join(targetDir, 'packages/cli/src/cli/commands/fleet.ts'), 'utf8');
   const cliRequestsLongRunning = cliSource.includes("workloadProfile: 'long-running-agent'");
   const baseObserved =
     observation.workloadProfile === null && observation.providerId === null && !cliRequestsLongRunning;
