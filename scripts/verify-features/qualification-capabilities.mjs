@@ -22,8 +22,13 @@ function run(cli, args) {
 
 const SHA40 = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
-const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+
+function hasExactOption(output, option) {
+  const escaped = option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|\\s)${escaped}(?=[\\s,=]|$)`, 'm').test(output);
+}
 
 function validEffect(id, effects) {
   const effect = effects?.[id];
@@ -47,6 +52,7 @@ function validEffect(id, effects) {
       ids.every((value) => UUID.test(value)) &&
       Array.isArray(files) &&
       files.length === 2 &&
+      new Set(files.map((entry) => entry.workspaceId)).size === 2 &&
       files.every((entry) => ids.includes(entry.workspaceId) && entry.mode === '0600')
     );
   }
@@ -115,35 +121,38 @@ export function assessQualificationCapabilities(executions, effects = {}) {
     {
       id: 'candidate-snapshot-selector',
       command: ['fleet', 'spawn', '--help'],
-      pattern: /--sandbox-snapshot\b[\s\S]*--sandbox-snapshot-manifest-sha256\b/,
+      options: ['--sandbox-snapshot', '--sandbox-snapshot-manifest-sha256'],
     },
     {
       id: 'ephemeral-cloud-workspace-create',
       command: ['cloud', 'workspace', 'create', '--help'],
-      pattern: /--ephemeral\b[\s\S]*--ttl\b[\s\S]*--credential-file\b/,
+      options: ['--ephemeral', '--ttl', '--credential-file'],
     },
     {
       id: 'qualified-relayfile-cloud-binding',
       command: ['cloud', 'workspace', 'create', '--help'],
-      pattern: /--relayfile-cloud-deployment\b/,
+      options: ['--relayfile-cloud-deployment'],
     },
     {
       id: 'relayfile-258-mib-fleet-auto-mount',
       command: ['fleet', 'spawn', '--help'],
-      pattern: /--sandbox\b[\s\S]*--sandbox-relayfile-path\b[\s\S]*--no-sandbox-relayfile\b/,
+      options: ['--sandbox', '--sandbox-relayfile-path', '--no-sandbox-relayfile'],
     },
     {
       id: 'ephemeral-cloud-workspace-delete',
       command: ['cloud', 'workspace', 'delete', '--help'],
-      pattern: /--confirm\b[\s\S]*--verify-cascade\b/,
+      options: ['--confirm', '--verify-cascade'],
     },
   ];
   const results = requirements.map((requirement) => {
     const execution = executions.find(
       (candidate) => JSON.stringify(candidate.args) === JSON.stringify(requirement.command)
     );
+    const output = String(execution?.output ?? '');
     const available =
-      execution?.status === 0 && !execution.error && requirement.pattern.test(String(execution.output ?? ''));
+      execution?.status === 0 &&
+      !execution.error &&
+      requirement.options.every((option) => hasExactOption(output, option));
     const effectPass = validEffect(requirement.id, effects);
     return {
       id: requirement.id,

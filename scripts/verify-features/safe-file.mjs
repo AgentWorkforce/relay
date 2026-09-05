@@ -22,7 +22,7 @@ async function openNoFollow(target, flags, label) {
   }
 
   try {
-    return await open(target, flags | noFollow);
+    return await open(target, flags | noFollow | fsConstants.O_NONBLOCK);
   } catch (error) {
     if (error?.code === 'ELOOP') {
       throw new Error(`${label} must not be a symbolic link`, { cause: error });
@@ -57,9 +57,15 @@ export async function readRegularFileNoFollow(
       throw new Error(`${label} must be owned by the current user`);
     }
     const beforeIdentity = identity(before);
-    const bytes = await handle.readFile();
+    const bytes = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const { bytesRead } = await handle.read(bytes, offset, size - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
     const after = await handle.stat({ bigint: true });
-    if (!sameIdentity(beforeIdentity, identity(after)) || BigInt(bytes.length) !== after.size) {
+    if (!sameIdentity(beforeIdentity, identity(after)) || offset !== size || BigInt(offset) !== after.size) {
       throw new Error(`${label} changed while it was read`);
     }
     return { bytes, mode, uid, size };
@@ -81,9 +87,9 @@ export async function overwriteRegularFileNoFollow(
     if (currentUserOwned && typeof process.getuid === 'function' && Number(info.uid) !== process.getuid()) {
       throw new Error(`${label} must be owned by the current user`);
     }
+    await handle.chmod(mode);
     await handle.truncate(0);
     await handle.writeFile(value);
-    await handle.chmod(mode);
     await handle.sync();
   } finally {
     await handle.close();

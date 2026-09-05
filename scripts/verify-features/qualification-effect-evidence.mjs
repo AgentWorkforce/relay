@@ -144,7 +144,7 @@ function validateCreate(entry, expected) {
   };
 }
 
-function validateDelete(entry, expectedWorkspaceId) {
+function validateDelete(entry, expected) {
   const result = exactKeys(
     entry.result,
     [
@@ -198,7 +198,8 @@ function validateDelete(entry, expectedWorkspaceId) {
   const registry = section('registry', ['workspaceId', 'relayWorkspaceId', 'deleted']);
   const elapsedSeconds = Number(entry.elapsedSeconds);
   if (
-    workspaceId !== expectedWorkspaceId ||
+    workspaceId !== expected.workspaceId ||
+    relayWorkspaceId !== expected.relayWorkspaceId ||
     result.deleted !== true ||
     result.state !== 'deleted' ||
     typeof result.idempotent !== 'boolean' ||
@@ -357,15 +358,36 @@ export function composeQualificationEffects(input) {
     validateCreate(entry, { deploymentId, attestationSha256 })
   );
   const workspaceIds = creates.map(({ workspaceId }) => workspaceId);
+  const relayWorkspaceIds = creates.map(({ relayWorkspaceId }) => relayWorkspaceId);
+  if (new Set(relayWorkspaceIds).size !== relayWorkspaceIds.length) {
+    throw new Error('the two ephemeral app workspaces must use distinct Relay workspaces');
+  }
   if (!sameSet(workspaceIds, campaign.workspaceIds ?? [])) {
     throw new Error('Fleet campaign workspace IDs do not match the two created ephemeral workspaces');
+  }
+  const attemptBindings = attempts.map(({ evidence }, index) => {
+    const attempt = object(evidence, `Fleet attempt ${index + 1} evidence`);
+    return {
+      workspaceId: attempt.provenance?.resolvedWorkspaceId,
+      relayWorkspaceId: attempt.environment?.expectedRelayWorkspaceId,
+    };
+  });
+  for (const created of creates) {
+    if (
+      !attemptBindings.some(
+        (binding) =>
+          binding.workspaceId === created.workspaceId && binding.relayWorkspaceId === created.relayWorkspaceId
+      )
+    ) {
+      throw new Error('Fleet attempts are not bound to their distinct created Relay workspaces');
+    }
   }
 
   if (!Array.isArray(input.workspaceDeletes) || input.workspaceDeletes.length !== 2) {
     throw new Error('exactly two workspace deletes are required');
   }
   const deletes = input.workspaceDeletes.map((entry) => {
-    const expected = workspaceIds.find((workspaceId) => workspaceId === entry.result?.workspaceId);
+    const expected = creates.find(({ workspaceId }) => workspaceId === entry.result?.workspaceId);
     if (!expected) throw new Error(`${entry.label} does not target an owned created workspace`);
     return validateDelete(entry, expected);
   });

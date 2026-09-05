@@ -230,7 +230,7 @@ describe('fixed cross-repository qualification producers', () => {
           cleanup: {
             sandboxId,
             state: 'absent',
-            verifiedAt: '2026-09-05T12:00:00.000Z',
+            verifiedAt: '2026-09-05T12:00:30.000Z',
           },
         };
       };
@@ -320,6 +320,39 @@ describe('fixed cross-repository qualification producers', () => {
           evidenceSha256: sha256(substitutedBytes),
         })
       ).rejects.toThrow('concurrent[0]');
+
+      const escapingMarker = structuredClone(evidence);
+      escapingMarker.cold.markerRelativePath = '../outside.txt';
+      const escapingMarkerBytes = `${JSON.stringify(escapingMarker)}\n`;
+      await writeFile(path.join(root, 'candidate-acceptance.json'), escapingMarkerBytes);
+      await expect(
+        verifyCloudSnapshotAcceptanceArtifact(root, {
+          ...acceptanceExpected,
+          evidenceSha256: sha256(escapingMarkerBytes),
+        })
+      ).rejects.toThrow('cold');
+
+      const earlyCleanup = structuredClone(evidence);
+      earlyCleanup.cold.cleanup.verifiedAt = '2026-09-05T12:00:00.000Z';
+      const earlyCleanupBytes = `${JSON.stringify(earlyCleanup)}\n`;
+      await writeFile(path.join(root, 'candidate-acceptance.json'), earlyCleanupBytes);
+      await expect(
+        verifyCloudSnapshotAcceptanceArtifact(root, {
+          ...acceptanceExpected,
+          evidenceSha256: sha256(earlyCleanupBytes),
+        })
+      ).rejects.toThrow('cold');
+
+      const absoluteLargeFile = structuredClone(evidence);
+      absoluteLargeFile.additionalLargeFile.relativeFile = '/etc/passwd';
+      const absoluteLargeFileBytes = `${JSON.stringify(absoluteLargeFile)}\n`;
+      await writeFile(path.join(root, 'candidate-acceptance.json'), absoluteLargeFileBytes);
+      await expect(
+        verifyCloudSnapshotAcceptanceArtifact(root, {
+          ...acceptanceExpected,
+          evidenceSha256: sha256(absoluteLargeFileBytes),
+        })
+      ).rejects.toThrow('outside the fixed policy');
 
       evidence.concurrent[1]!.cleanup.state = 'present';
       const changed = `${JSON.stringify(evidence)}\n`;

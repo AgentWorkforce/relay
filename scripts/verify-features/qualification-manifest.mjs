@@ -33,6 +33,13 @@ function requiredSha(value, label, pattern) {
 }
 
 function positiveInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function normalizePositiveInteger(value, label) {
   const resolved = Number(value);
   if (!Number.isSafeInteger(resolved) || resolved <= 0) {
     throw new Error(`${label} must be a positive integer`);
@@ -245,8 +252,9 @@ export function validateQualificationBundle(
   const cloudFull = requiredObject(cloud.full, 'Cloud qualification.full');
   if (
     cloud.schemaVersion !== 1 ||
-    positiveInteger(cloudRun.runId, 'Cloud qualification runId') !== manifest.cloudQualification.runId ||
-    positiveInteger(cloudRun.runAttempt, 'Cloud qualification runAttempt') !==
+    normalizePositiveInteger(cloudRun.runId, 'Cloud qualification runId') !==
+      manifest.cloudQualification.runId ||
+    normalizePositiveInteger(cloudRun.runAttempt, 'Cloud qualification runAttempt') !==
       manifest.cloudQualification.runAttempt ||
     cloudRun.sha !== manifest.cloudSha ||
     cloudRun.conclusion !== 'success-required-from-workflow-api'
@@ -303,9 +311,9 @@ export function validateQualificationBundle(
   const deployment = requiredObject(dataPlane.deployment, 'Relayfile Cloud attestation.deployment');
   if (
     dataPlane.schemaVersion !== 1 ||
-    positiveInteger(dataPlaneRun.runId, 'Relayfile Cloud runId') !==
+    normalizePositiveInteger(dataPlaneRun.runId, 'Relayfile Cloud runId') !==
       manifest.relayfileCloudQualification.runId ||
-    positiveInteger(dataPlaneRun.runAttempt, 'Relayfile Cloud runAttempt') !==
+    normalizePositiveInteger(dataPlaneRun.runAttempt, 'Relayfile Cloud runAttempt') !==
       manifest.relayfileCloudQualification.runAttempt ||
     dataPlaneRun.sha !== manifest.relayfileCloudSha ||
     dataPlaneRun.conclusion !== 'success-required-from-workflow-api' ||

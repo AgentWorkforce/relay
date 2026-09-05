@@ -62,7 +62,7 @@ const relayPackagePayload = {
     workflow: 'Relay package qualification',
     workflowPath: '.github/workflows/relay-package-qualification.yml',
     event: 'workflow_dispatch',
-    ref: 'main',
+    ref: 'refs/heads/qualification/test-candidate',
     sourceGitSha: valid.relaySha,
     runId: String(valid.relayPackageQualification.runId),
     runAttempt: String(valid.relayPackageQualification.runAttempt),
@@ -86,7 +86,8 @@ const relayPackagePayload = {
       name,
       {
         version,
-        integrity: 'sha512-YQ==',
+        integrity:
+          'sha512-YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==',
         shasum: 'a'.repeat(40),
       },
     ])
@@ -244,7 +245,7 @@ const acceptanceRecord = (label: string, index: number) => {
     cleanup: {
       sandboxId,
       state: 'absent',
-      verifiedAt: '2026-09-05T12:00:00.000Z',
+      verifiedAt: '2026-09-05T12:00:30.000Z',
     },
   };
 };
@@ -297,14 +298,37 @@ const digests = {
 describe('qualification manifest', () => {
   it('uses a Node runtime that satisfies the locked dependency engine floor', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
-    expect(workflow.match(/node-version: 22\.22\.0/g)).toHaveLength(2);
-    expect(workflow).not.toContain('node-version: 22.14.0');
+    const versions = [...workflow.matchAll(/node-version:\s*["']?([0-9.]+)/g)].map((match) => match[1]);
+    expect(versions.length).toBeGreaterThan(0);
+    expect(versions.every((version) => version === '22.22.0')).toBe(true);
   });
 
   it('binds four repositories, package/rebuild/acceptance producers, and the non-promoting snapshot', () => {
     expect(validateQualificationManifest(valid, { releaseId: 42, releaseTag: valid.releaseTag })).toEqual(
       valid
     );
+  });
+
+  it('requires manifest-owned counters to be JSON integers rather than coercible values', () => {
+    for (const candidate of [
+      { ...valid, releaseId: '42' },
+      {
+        ...valid,
+        relayPackageQualification: { ...valid.relayPackageQualification, runId: '303' },
+      },
+      {
+        ...valid,
+        cloudQualification: { ...valid.cloudQualification, runAttempt: true },
+      },
+      {
+        ...valid,
+        cloudSnapshotAcceptance: { ...valid.cloudSnapshotAcceptance, runId: 151.5 },
+      },
+    ]) {
+      expect(() =>
+        validateQualificationManifest(candidate, { releaseId: 42, releaseTag: valid.releaseTag })
+      ).toThrow(/positive integer/);
+    }
   });
 
   it.each([

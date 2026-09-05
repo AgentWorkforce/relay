@@ -13,13 +13,14 @@
  *   RELAYFILE_CANDIDATE_REPO=/clean/checkout/of/pr-457 relayflows run ...
  */
 
-import { mkdir, open } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { lstat, mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 
-const RUN_ID = process.env.RELAY_RELIABILITY_RUN_ID ?? 'local-diagnosis';
+const RUN_ID = process.env.RELAY_RELIABILITY_RUN_ID ?? `local-diagnosis-${randomBytes(8).toString('hex')}`;
 const DISABLE_RELAYCAST = process.env.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1';
 if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(RUN_ID)) {
   throw new Error('RELAY_RELIABILITY_RUN_ID must contain lowercase letters, digits, and hyphens');
@@ -135,13 +136,52 @@ function diagnosisPermissions(agentName: string) {
     'fresh-claude-signoff': [`${ART}/diagnosis-final-claude.json`],
     'fresh-codex-signoff': [`${ART}/diagnosis-final-codex.json`],
   };
+  const sourceDirectories = [
+    '.github/workflows',
+    'apps',
+    'cmd',
+    'crates',
+    'docs',
+    'infra',
+    'local',
+    'migrations',
+    'packages',
+    'scripts',
+    'src',
+    'tests',
+    'workflows',
+  ];
+  const extensions = '{c,cc,cpp,css,go,h,html,js,json,jsonc,jsx,md,mjs,cjs,rs,sh,sql,toml,ts,tsx,yaml,yml}';
+  const repoReads = (prefix: string) => [
+    `${prefix}AGENTS.md`,
+    `${prefix}CLAUDE.md`,
+    `${prefix}GEMINI.md`,
+    `${prefix}README.md`,
+    `${prefix}CHANGELOG.md`,
+    `${prefix}Cargo.toml`,
+    `${prefix}Cargo.lock`,
+    `${prefix}go.mod`,
+    `${prefix}go.sum`,
+    `${prefix}package.json`,
+    `${prefix}package-lock.json`,
+    ...sourceDirectories.flatMap((directory) => [
+      `${prefix}${directory}/**/*.${extensions}`,
+      `${prefix}${directory}/**/Dockerfile*`,
+    ]),
+  ];
   return {
     description: `Constrain ${agentName} to read-only source diagnosis and explicit artifact outputs.`,
     why: 'The diagnosis workflow must not modify product repositories or use network credentials.',
     access: 'restricted' as const,
     inherit: false,
     files: {
-      read: ['**', '../cloud/**', '../relayfile/**', '../relayfile-cloud/**'],
+      read: [
+        ...repoReads(''),
+        ...repoReads('../cloud/'),
+        ...repoReads('../relayfile/'),
+        ...repoReads('../relayfile-cloud/'),
+        `${ART}/context.json`,
+      ],
       write: writesByAgent[agentName] ?? [],
       deny: [
         '.env',
@@ -151,6 +191,20 @@ function diagnosisPermissions(agentName: string) {
         '**/*secret*',
         '**/*credential*',
         '**/.git/**',
+        '**/.ssh/**',
+        '**/.aws/**',
+        '**/.config/**',
+        '**/.agent-relay/**',
+        '**/.relay/**',
+        '**/.npmrc',
+        '**/.netrc',
+        '**/*.pem',
+        '**/*.p12',
+        '**/*.pfx',
+        '**/*.log',
+        '**/node_modules/**',
+        '**/target/**',
+        '**/dist/**',
         '**/.workflow-artifacts/**/draft-*',
       ],
     },
@@ -201,6 +255,12 @@ async function ensurePermissionPlaceholders() {
 }
 
 async function main() {
+  try {
+    await lstat(ART);
+    throw new Error(`Diagnosis artifact directory already exists; choose a fresh run id: ${ART}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
   await mkdir(ART, { recursive: true, mode: 0o700 });
   await ensurePermissionPlaceholders();
 

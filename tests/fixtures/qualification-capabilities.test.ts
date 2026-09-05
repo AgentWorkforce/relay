@@ -152,6 +152,67 @@ describe('release qualification capability gate', () => {
     expect(assessment.results.every(({ status }) => status === 'BLOCKED')).toBe(true);
   });
 
+  it('matches the exact command and exact option tokens independently of help ordering', () => {
+    const reorderedHelp = assessQualificationCapabilities(
+      [
+        {
+          args: commands.selector,
+          status: 0,
+          output:
+            '--no-sandbox-relayfile, --sandbox-relayfile-path=<path> --sandbox-snapshot-manifest-sha256=<sha256> --sandbox-snapshot=<id> --sandbox',
+        },
+        {
+          args: commands.create,
+          status: 0,
+          output: '--credential-file=<path>, --ttl=<duration> --relayfile-cloud-deployment=<id> --ephemeral',
+        },
+        { args: commands.delete, status: 0, output: '--verify-cascade, --confirm=<id>' },
+      ],
+      effects
+    );
+    expect(reorderedHelp.ready).toBe(true);
+
+    const wrongCommand = assessQualificationCapabilities([
+      {
+        args: ['spawn', 'fleet', '--help'],
+        status: 0,
+        output:
+          '--sandbox --sandbox-snapshot <id> --sandbox-snapshot-manifest-sha256 <sha256> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
+      },
+    ]);
+    expect(wrongCommand.availabilityReady).toBe(false);
+
+    const prefixOnly = assessQualificationCapabilities([
+      { args: commands.selector, status: 0, output: '--sandbox' },
+    ]);
+    expect(prefixOnly.results.find(({ id }) => id === 'candidate-snapshot-selector')?.available).toBe(false);
+  });
+
+  it('rejects duplicate workspace and credential identities', () => {
+    const duplicateEffects = structuredClone(effects);
+    duplicateEffects['ephemeral-cloud-workspace-create'] = {
+      status: 'PASS',
+      workspaceIds: [workspaceIds[0], workspaceIds[0]],
+      credentialFiles: [
+        { workspaceId: workspaceIds[0], mode: '0600' },
+        { workspaceId: workspaceIds[0], mode: '0600' },
+      ],
+    };
+    const assessment = assessQualificationCapabilities(
+      [
+        {
+          args: commands.create,
+          status: 0,
+          output: '--ephemeral --ttl <duration> --credential-file <path> --relayfile-cloud-deployment <id>',
+        },
+      ],
+      duplicateEffects
+    );
+    expect(assessment.results.find(({ id }) => id === 'ephemeral-cloud-workspace-create')?.effectStatus).toBe(
+      'BLOCKED'
+    );
+  });
+
   it('blocks a production data-plane substitution even when workspace lifecycle exists', () => {
     const assessment = assessQualificationCapabilities(
       [

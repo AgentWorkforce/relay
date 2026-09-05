@@ -30,7 +30,7 @@ const result = await workflow('relay-pr-proof')
   // Finish inside the dispatcher's 60-minute polling deadline so Cloud can
   // persist terminal step state and retain its sandbox for diagnostics before
   // the GitHub runner issues an external cancellation.
-  .timeout(2_700_000)
+  .timeout(3_300_000)
   .agent('base-prover', {
     cli: 'codex',
     preset: 'worker',

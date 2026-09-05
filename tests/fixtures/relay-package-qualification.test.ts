@@ -20,6 +20,7 @@ const sha256 = (value: string | Buffer) => createHash('sha256').update(value).di
 
 const producer = {
   ...RELAY_PACKAGE_PRODUCER,
+  ref: 'refs/heads/qualification/test-candidate',
   sourceGitSha: 'a'.repeat(40),
   runId: '71',
   runAttempt: '2',
@@ -47,7 +48,8 @@ const registry = Object.fromEntries(
       name,
       {
         version,
-        integrity: 'sha512-YQ==',
+        integrity:
+          'sha512-YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==',
         shasum: 'a'.repeat(40),
       },
     ])
@@ -129,7 +131,17 @@ describe('Relay package qualification producer', () => {
     for (const version of ['11.11.0-rc.1', '11.11.0-beta.2', '11.11.0-alpha.3+build.7']) {
       expect(() => assertPrereleaseVersion(version)).not.toThrow();
     }
-    for (const version of ['11.11.0', '11.11.0+build.7', 'v11.11.0-rc.1', '11.11.0-']) {
+    for (const version of [
+      '11.11.0',
+      '11.11.0+build.7',
+      'v11.11.0-rc.1',
+      '11.11.0-',
+      '01.11.0-rc.1',
+      '11.01.0-rc.1',
+      '11.11.01-rc.1',
+      '11.11.0-01',
+      '11.11.0-rc..1',
+    ]) {
       expect(() => assertPrereleaseVersion(version)).toThrow('must be an exact prerelease semver');
     }
     expect(() =>
@@ -155,16 +167,56 @@ describe('Relay package qualification producer', () => {
     ).toThrow('could not prove');
   });
 
-  it('is manually dispatched from one exact main commit without write privileges', async () => {
+  it('rejects non-canonical registry integrity and qualification ref substitutions', () => {
+    expect(() =>
+      validateRelayPackagePayload({
+        schemaVersion: 2,
+        kind: 'relayPackages',
+        producer,
+        packages,
+        registry: {
+          ...registry,
+          '@agent-relay/agent': {
+            ...registry['@agent-relay/agent'],
+            integrity: 'sha512-YQ==',
+          },
+        },
+        candidate,
+      })
+    ).toThrow(/identity is invalid/);
+
+    for (const ref of [
+      'refs/heads/main',
+      'refs/heads/qualification/../main',
+      'refs/heads/qualification//candidate',
+    ]) {
+      expect(() =>
+        validateRelayPackagePayload({
+          schemaVersion: 2,
+          kind: 'relayPackages',
+          producer: { ...producer, ref },
+          packages,
+          registry,
+          candidate,
+        })
+      ).toThrow(/producer.ref/);
+    }
+  });
+
+  it('is manually dispatched from one exact canonical prerelease branch without write privileges', async () => {
     const workflow = await readFile('.github/workflows/relay-package-qualification.yml', 'utf8');
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).not.toMatch(/\n\s+push:/);
     expect(workflow).toContain('permissions:\n  contents: read');
     expect(workflow).toContain('node-version: 22.22.0');
     expect(workflow).not.toContain('node-version: 22.14.0');
-    expect(workflow).toContain('test "${GITHUB_REF}" = "refs/heads/main"');
+    expect(workflow).toContain('refs/heads/qualification/*');
+    expect(workflow).toContain('test "${GITHUB_REPOSITORY}" = "AgentWorkforce/relay"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"');
-    expect(RELAY_PACKAGE_PRODUCER).toMatchObject({ event: 'workflow_dispatch', ref: 'main' });
+    expect(RELAY_PACKAGE_PRODUCER).toMatchObject({
+      event: 'workflow_dispatch',
+      ref: 'refs/heads/qualification/',
+    });
   });
 
   it('keeps external protocol pins exact and local SDK/config versions aligned', async () => {
@@ -192,6 +244,7 @@ describe('Relay package qualification producer', () => {
   it('verifies the exact portable candidate attestation and tarball file set', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-package-payload-'));
     const outsideTarball = path.join(root, '..', `${path.basename(root)}-outside.tgz`);
+    const outsidePayload = path.join(root, '..', `${path.basename(root)}-outside.json`);
     try {
       const candidatePackages = [
         'agent-relay',
@@ -301,6 +354,15 @@ describe('Relay package qualification producer', () => {
         candidate: candidateAttestation,
       });
 
+      const payloadPath = path.join(root, RELAY_PACKAGE_POLICY.file);
+      const payloadBytes = `${JSON.stringify(portablePayload)}\n`;
+      await writeFile(outsidePayload, payloadBytes);
+      await rm(payloadPath);
+      await symlink(outsidePayload, payloadPath);
+      await expect(verifyRelayPackageFiles(portablePayload, root)).rejects.toThrow(/symbolic link|ELOOP/i);
+      await rm(payloadPath);
+      await writeFile(payloadPath, payloadBytes);
+
       await writeFile(path.join(root, 'tarballs', candidatePackages[2]!.tarballFile), 'substituted');
       await expect(verifyRelayPackageFiles(portablePayload, root)).rejects.toThrow(
         'candidate tarball bytes changed'
@@ -325,6 +387,7 @@ describe('Relay package qualification producer', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(outsideTarball, { force: true });
+      await rm(outsidePayload, { force: true });
     }
   });
 });

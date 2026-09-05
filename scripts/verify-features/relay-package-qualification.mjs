@@ -21,7 +21,7 @@ export const RELAY_PACKAGE_PRODUCER = Object.freeze({
   workflow: 'Relay package qualification',
   workflowPath: '.github/workflows/relay-package-qualification.yml',
   event: 'workflow_dispatch',
-  ref: 'main',
+  ref: 'refs/heads/qualification/',
 });
 
 export const RELAY_PACKAGE_POLICY = Object.freeze({
@@ -47,15 +47,32 @@ const EXTERNAL_PACKAGE_NAMES = Object.freeze([
   '@agent-relay/events',
   '@agent-relay/sandbox',
 ]);
-const EXACT_SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const EXACT_SEMVER =
+  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const EXACT_PRERELEASE_SEMVER =
-  /^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?(?:\+[0-9A-Za-z.-]+)?$/;
+  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:(?:0|[1-9][0-9]*)|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 const ARTIFACT_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SHA1 = /^[a-f0-9]{40}$/;
-const SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/;
+const SHA512_INTEGRITY = /^sha512-([A-Za-z0-9+/]+={0,2})$/;
+const QUALIFICATION_REF = /^refs\/heads\/qualification\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
+
+function validSha512Integrity(value) {
+  const match = SHA512_INTEGRITY.exec(value ?? '');
+  if (!match) return false;
+  const bytes = Buffer.from(match[1], 'base64');
+  return bytes.length === 64 && bytes.toString('base64') === match[1];
+}
+
+function validQualificationRef(value) {
+  if (!QUALIFICATION_REF.test(value ?? '') || value.includes('//')) return false;
+  return value
+    .slice('refs/heads/'.length)
+    .split('/')
+    .every((segment) => segment !== '.' && segment !== '..');
+}
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -86,7 +103,13 @@ function validateProducer(producer) {
     'producer'
   );
   for (const [key, expected] of Object.entries(RELAY_PACKAGE_PRODUCER)) {
-    if (producer[key] !== expected) throw new Error(`producer.${key} must equal ${expected}`);
+    if (key === 'ref') {
+      if (!validQualificationRef(producer.ref)) {
+        throw new Error(`producer.ref must use the ${expected} branch namespace`);
+      }
+    } else if (producer[key] !== expected) {
+      throw new Error(`producer.${key} must equal ${expected}`);
+    }
   }
   if (!GIT_SHA.test(producer.sourceGitSha)) throw new Error('producer.sourceGitSha must be 40 hex');
   if (!POSITIVE_INTEGER.test(String(producer.runId))) throw new Error('producer.runId is invalid');
@@ -112,7 +135,7 @@ export function validateRelayPackagePayload(value) {
     exactKeys(entry, ['version', 'integrity', 'shasum'], `registry.${name}`);
     if (
       entry.version !== value.packages[name] ||
-      !SHA512_INTEGRITY.test(entry.integrity) ||
+      !validSha512Integrity(entry.integrity) ||
       !SHA1.test(entry.shasum)
     ) {
       throw new Error(`registry.${name} identity is invalid`);
@@ -167,6 +190,7 @@ function npmJson(args) {
       cwd: ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'inherit'],
+      timeout: 60_000,
       maxBuffer: 16 * 1024 * 1024,
     })
   );
@@ -177,7 +201,7 @@ async function registryEvidence(packages) {
   for (const name of EXTERNAL_PACKAGE_NAMES) {
     const version = packages[name];
     const dist = npmJson(['view', `${name}@${version}`, 'dist', '--json']);
-    if (!SHA512_INTEGRITY.test(dist?.integrity ?? '') || !SHA1.test(dist?.shasum ?? '')) {
+    if (!validSha512Integrity(dist?.integrity) || !SHA1.test(dist?.shasum ?? '')) {
       throw new Error(`${name}@${version} has no valid npm distribution integrity`);
     }
     registry[name] = { version, integrity: dist.integrity, shasum: dist.shasum };
@@ -240,6 +264,13 @@ export async function verifyRelayPackageFiles(value, directory) {
   const tarballDirectoryInfo = await lstat(path.join(root, payload.candidate.tarballDirectory));
   if (!tarballDirectoryInfo.isDirectory()) {
     throw new Error('Relay package candidate tarballs entry is not a directory');
+  }
+  const { bytes: payloadBytes } = await readRegularFileNoFollow(path.join(root, RELAY_PACKAGE_POLICY.file), {
+    label: 'Relay package payload',
+    maxBytes: 16 * 1024 * 1024,
+  });
+  if (JSON.stringify(JSON.parse(payloadBytes.toString('utf8'))) !== JSON.stringify(payload)) {
+    throw new Error('Relay package payload bytes do not match the validated payload');
   }
   const { bytes: candidateBytes } = await readRegularFileNoFollow(
     path.join(root, payload.candidate.attestationFile),
@@ -328,10 +359,11 @@ async function createPayload() {
   const sourceGitSha = readFlag('--source-sha');
   const runId = readFlag('--run-id');
   const runAttempt = readFlag('--run-attempt');
+  const sourceRef = readFlag('--source-ref');
   const candidateAttestationPath = readFlag('--candidate-attestation');
   const candidateTarballsPath = readFlag('--candidate-tarballs');
-  if (!output || !candidateAttestationPath || !candidateTarballsPath) {
-    throw new Error('--output, --candidate-attestation, and --candidate-tarballs are required');
+  if (!output || !candidateAttestationPath || !candidateTarballsPath || !sourceRef) {
+    throw new Error('--output, --source-ref, --candidate-attestation, and --candidate-tarballs are required');
   }
   const packages = await packageVersions();
   const outputPath = path.resolve(output);
@@ -347,7 +379,7 @@ async function createPayload() {
   const payload = validateRelayPackagePayload({
     schemaVersion: 2,
     kind: 'relayPackages',
-    producer: { ...RELAY_PACKAGE_PRODUCER, sourceGitSha, runId, runAttempt },
+    producer: { ...RELAY_PACKAGE_PRODUCER, ref: sourceRef, sourceGitSha, runId, runAttempt },
     packages,
     registry: await registryEvidence(packages),
     candidate: {

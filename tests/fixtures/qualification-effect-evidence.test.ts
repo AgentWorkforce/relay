@@ -8,6 +8,7 @@ import { relayfileCloudEndpointIdentitySha256 } from '../../scripts/verify-featu
 import { CLOUD_SNAPSHOT_ACCEPTANCE_PRODUCER } from '../../scripts/verify-features/qualification-producer-artifacts.mjs';
 
 const workspaceIds = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+const relayWorkspaceIds = ['rw_12345678', 'rw_87654321'];
 const deploymentId = 'rfcloud-candidate-71';
 const snapshotId = 'snap_qualified_71';
 const relaySha = 'a'.repeat(40);
@@ -18,8 +19,7 @@ const endpointIdentitySha256 = relayfileCloudEndpointIdentitySha256(relayfileClo
 const scaleManifestSha256 = '905968a14268ec5e8ec38ae1d6b24749e855cac035976a87a65ef43f6612a55a';
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
-function deleteResult(workspaceId: string) {
-  const relayWorkspaceId = 'rw_12345678';
+function deleteResult(workspaceId: string, relayWorkspaceId: string) {
   return {
     workspaceId,
     relayWorkspaceId,
@@ -116,7 +116,7 @@ function fixture() {
       cleanup: {
         sandboxId,
         state: 'absent',
-        verifiedAt: '2026-09-05T12:00:00.000Z',
+        verifiedAt: '2026-09-05T12:00:30.000Z',
       },
     };
   };
@@ -213,9 +213,11 @@ function fixture() {
         candidateInstallAttestationSha256: 'e'.repeat(64),
       },
     },
-    fleetAttempts: ['a', 'b'].map((nonce) => ({
+    fleetAttempts: ['a', 'b'].map((nonce, index) => ({
       nonce,
       evidence: {
+        provenance: { resolvedWorkspaceId: workspaceIds[index] },
+        environment: { expectedRelayWorkspaceId: relayWorkspaceIds[index] },
         resources: [
           { type: 'daytona-sandbox', id: `sandbox-${nonce}-1`, observedSnapshotId: snapshotId },
           { type: 'daytona-sandbox', id: `sandbox-${nonce}-2`, observedSnapshotId: snapshotId },
@@ -227,7 +229,7 @@ function fixture() {
       label: index === 0 ? 'a' : 'b',
       result: {
         workspaceId,
-        relayWorkspaceId: 'rw_12345678',
+        relayWorkspaceId: relayWorkspaceIds[index],
         credentialFile: `/tmp/credential-${index}.json`,
         requestedRelayfileCloudDeploymentId: deploymentId,
         observedRelayfileCloudDeploymentId: deploymentId,
@@ -236,7 +238,7 @@ function fixture() {
       credential: {
         version: 1,
         workspaceId,
-        relayWorkspaceId: 'rw_12345678',
+        relayWorkspaceId: relayWorkspaceIds[index],
         cloud: { accessToken: 'secret', refreshToken: 'secret' },
         relay: { baseUrl: 'https://relay.example', workspaceKey: 'secret' },
       },
@@ -245,7 +247,7 @@ function fixture() {
     })),
     workspaceDeletes: workspaceIds.map((workspaceId, index) => ({
       label: index === 0 ? 'a' : 'b',
-      result: deleteResult(workspaceId),
+      result: deleteResult(workspaceId, relayWorkspaceIds[index]!),
       elapsedSeconds: 37 + index,
       timingWorkspaceId: workspaceId,
       timingOperationId: `delete-${workspaceId}`,
@@ -335,6 +337,23 @@ describe('qualification runtime effect composer', () => {
     const unrelatedTiming = fixture();
     unrelatedTiming.workspaceDeletes[0]!.timingOperationId = 'delete-other';
     expect(() => composeQualificationEffects(unrelatedTiming)).toThrow('complete cascade deletion');
+
+    const wrongRelayWorkspace = fixture();
+    wrongRelayWorkspace.workspaceDeletes[0]!.result.proof.relaycast.relayWorkspaceId = relayWorkspaceIds[1]!;
+    expect(() => composeQualificationEffects(wrongRelayWorkspace)).toThrow('targets a different workspace');
+  });
+
+  it('binds distinct Relay workspaces and each Fleet attempt to its matching create', () => {
+    const duplicateRelayWorkspace = fixture();
+    duplicateRelayWorkspace.workspaceCreates[1]!.result.relayWorkspaceId = relayWorkspaceIds[0]!;
+    duplicateRelayWorkspace.workspaceCreates[1]!.credential.relayWorkspaceId = relayWorkspaceIds[0]!;
+    expect(() => composeQualificationEffects(duplicateRelayWorkspace)).toThrow('distinct Relay workspace');
+
+    const mismatchedAttempt = fixture();
+    mismatchedAttempt.fleetAttempts[1]!.evidence.environment.expectedRelayWorkspaceId = relayWorkspaceIds[0]!;
+    expect(() => composeQualificationEffects(mismatchedAttempt)).toThrow(
+      'Fleet attempts are not bound to their distinct created Relay workspaces'
+    );
   });
 
   it('rejects a mutable snapshot or mismatched snapshot observation', () => {

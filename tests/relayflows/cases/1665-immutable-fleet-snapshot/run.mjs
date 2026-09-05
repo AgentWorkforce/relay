@@ -235,7 +235,7 @@ try {
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
-  const { port, stderr: serverStderr } = await waitForServerReady(server);
+  const { port, getStderr } = await waitForServerReady(server);
   const baseUrl = `http://127.0.0.1:${port}`;
   const cliPath = path.join(targetDir, 'packages/cli/dist/cli/index.js');
   const commonArgs = [
@@ -296,7 +296,7 @@ try {
           stdout: matching.stdout.slice(-2_000),
           stderr: matching.stderr.slice(-2_000),
           requests: state.requests,
-          serverStderr: serverStderr.slice(-2_000),
+          serverStderr: getStderr().slice(-2_000),
         })}.`
       );
     }
@@ -391,7 +391,7 @@ try {
             stderr: mismatching.stderr.slice(-2_000),
           },
           requests: state.requests,
-          serverStderr: serverStderr.slice(-2_000),
+          serverStderr: getStderr().slice(-2_000),
         })}.`
       );
     }
@@ -493,7 +493,7 @@ function waitForServerReady(child) {
         if (!Number.isInteger(ready.port) || ready.port <= 0) {
           throw new Error(`invalid port ${JSON.stringify(ready.port)}`);
         }
-        resolve({ port: ready.port, stderr });
+        resolve({ port: ready.port, getStderr: () => stderr });
       } catch (error) {
         reject(new Error(`fake Fleet control plane emitted invalid readiness: ${error.message}`));
       }

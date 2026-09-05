@@ -1,12 +1,16 @@
+import { execFile } from 'node:child_process';
 import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 import {
   overwriteRegularFileNoFollow,
   readRegularFileNoFollow,
 } from '../../scripts/verify-features/safe-file.mjs';
+
+const execFileAsync = promisify(execFile);
 
 describe('safe qualification file access', () => {
   it('reads and overwrites the opened inode while refusing symlinks and unsafe metadata', async () => {
@@ -49,4 +53,21 @@ describe('safe qualification file access', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a FIFO promptly instead of blocking on an attacker-controlled writer',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-safe-fifo-'));
+      try {
+        const fifo = path.join(root, 'evidence.fifo');
+        await execFileAsync('mkfifo', [fifo]);
+        await expect(readRegularFileNoFollow(fifo, { label: 'evidence FIFO' })).rejects.toThrow(
+          'regular file'
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    2_000
+  );
 });
