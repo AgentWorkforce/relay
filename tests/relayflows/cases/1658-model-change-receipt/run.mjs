@@ -74,6 +74,7 @@ try {
   if (arm === 'head' && hasJson) {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-'));
     const requestId = 'model_pr_proof_1658';
+    let mutationCount = 0;
     const server = createServer((request, response) => {
       if (request.headers['x-api-key'] !== 'pr-proof-key') {
         response.writeHead(401).end();
@@ -81,20 +82,22 @@ try {
       }
       response.setHeader('content-type', 'application/json');
       if (request.method === 'POST') {
+        const unsupported = mutationCount++ > 0;
         response.end(
           JSON.stringify({
             name: 'proof-worker',
-            requested_model: 'openai/gpt-5.4',
-            effective_model: 'openai/gpt-5.4',
-            applied: true,
-            status: 'applied',
+            requested_model: unsupported ? 'unsupported/model' : 'openai/gpt-5.4',
+            effective_model: unsupported ? null : 'openai/gpt-5.4',
+            applied: !unsupported,
+            status: unsupported ? 'unsupported' : 'applied',
             request_id: requestId,
             receipt_id: requestId,
             generation: 'generation-proof',
             revision: 1,
-            success: true,
+            success: !unsupported,
             accepted: true,
             pending: false,
+            ...(unsupported ? { error: 'provider capability unavailable' } : {}),
           })
         );
         return;
@@ -149,6 +152,22 @@ try {
         typeof receipt.receiptId === 'string' &&
         typeof receipt.generation === 'string';
       if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
+
+      const unsupportedOutput = run(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'unsupported/model', '--json'],
+        'unsupported set-model receipt'
+      );
+      const unsupportedFirst = unsupportedOutput.indexOf('{');
+      const unsupportedLast = unsupportedOutput.lastIndexOf('}');
+      const unsupported = JSON.parse(unsupportedOutput.slice(unsupportedFirst, unsupportedLast + 1));
+      if (
+        unsupported.status !== 'unsupported' ||
+        unsupported.applied !== false ||
+        unsupported.success !== false
+      ) {
+        throw new Error(`unsupported set-model claimed application: ${JSON.stringify(unsupported)}`);
+      }
     } finally {
       await new Promise((resolve) => server.close(resolve));
       await rm(stateDir, { recursive: true, force: true });

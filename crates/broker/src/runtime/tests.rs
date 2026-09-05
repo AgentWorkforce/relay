@@ -352,7 +352,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .spec
         .harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
         driver: HeadlessHarnessDriver::AppServer,
-        protocol: "opencode".into(),
+        protocol: "  opencode  ".into(),
         endpoint: "http://127.0.0.1:1".into(),
         session_id: "test-session".into(),
         auth: None,
@@ -530,7 +530,7 @@ async fn set_model_recognizes_builtin_opencode_app_server_capability() {
 }
 
 #[tokio::test]
-async fn set_model_out_of_order_receipts_cannot_roll_back_confirmed_model_cache() {
+async fn set_model_rejects_overlapping_request_without_overwriting_pending_receipt() {
     let mut registry = make_worker_registry_with_worker("model-worker").await;
     registry
         .workers
@@ -573,35 +573,37 @@ async fn set_model_out_of_order_receipts_cannot_roll_back_confirmed_model_cache(
         })
         .await;
     let second = second_rx.await.unwrap().unwrap();
-    let second_id = second["request_id"].as_str().unwrap().to_string();
+    assert_eq!(second["status"], "rejected");
+    assert_eq!(second["accepted"], false);
+    assert_eq!(second["pending"], false);
+    assert!(second["error"]
+        .as_str()
+        .unwrap()
+        .contains("already pending"));
 
-    // The newer request wins even when the provider completes the older one
-    // later. The stale response must not mutate either the receipt or cache.
-    for (request_id, model) in [(second_id, "opus"), (first_id, "sonnet")] {
-        fixture
-            .runtime
-            .handle_worker_event(WorkerEvent::Message {
-                name: WorkerName::new("model-worker"),
-                generation,
-                value: json!({
-                    "type": "set_model_response",
-                    "request_id": request_id,
-                    "payload": {
-                        "status": "applied",
-                        "applied": true,
-                        "effective_model": model
-                    }
-                }),
-            })
-            .await;
-    }
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": first_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
 
     assert_eq!(
         fixture.runtime.workers.workers["model-worker"]
             .spec
             .model
             .as_deref(),
-        Some("opus")
+        Some("sonnet")
     );
     let (get_tx, get_rx) = tokio::sync::oneshot::channel();
     fixture
@@ -613,8 +615,8 @@ async fn set_model_out_of_order_receipts_cannot_roll_back_confirmed_model_cache(
         .await;
     let receipt = get_rx.await.unwrap().unwrap();
     assert_eq!(receipt["status"], "applied");
-    assert_eq!(receipt["requested_model"], "opus");
-    assert_eq!(receipt["effective_model"], "opus");
+    assert_eq!(receipt["requested_model"], "sonnet");
+    assert_eq!(receipt["effective_model"], "sonnet");
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
@@ -699,7 +701,7 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
         })
         .await;
     let pending = pending_rx.await.unwrap().unwrap();
-    assert_eq!(pending["status"], "accepted_pending");
+    assert_eq!(pending["status"], "applied");
     assert_eq!(pending["effective_model"], "sonnet");
 
     fixture
@@ -735,8 +737,8 @@ async fn set_model_preserves_older_confirmation_when_newer_request_rejects() {
         })
         .await;
     let rejected = get_rx.await.unwrap().unwrap();
-    assert_eq!(rejected["status"], "rejected");
-    assert_eq!(rejected["applied"], false);
+    assert_eq!(rejected["status"], "applied");
+    assert_eq!(rejected["applied"], true);
     assert_eq!(rejected["effective_model"], "sonnet");
 
     cleanup_worker_registry(fixture.runtime.workers).await;

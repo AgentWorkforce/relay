@@ -36,7 +36,7 @@ const CLAUDE_MODEL_IDS: Record<'haiku' | 'sonnet' | 'opus', string> = {
   opus: 'claude-opus-4-8',
 };
 
-const MODEL_RECEIPT_POLL_TIMEOUT_MS = 30_000;
+const MODEL_RECEIPT_POLL_TIMEOUT_MS = 65_000;
 const MODEL_RECEIPT_POLL_INTERVAL_MS = 100;
 
 /**
@@ -241,8 +241,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
 }
 
 type AttachCredentialSelection =
-  | { ok: true; workspaceKey?: string; joinTicket?: string }
-  | { ok: false; error: string };
+  { ok: true; workspaceKey?: string; joinTicket?: string } | { ok: false; error: string };
 
 function resolveAttachCredentialSelection(
   rawWorkspaceKey: string | undefined,
@@ -884,7 +883,7 @@ export function registerLocalAgentCommands(
           );
           return;
         }
-        if (receipt.status === 'applied' && receipt.applied) {
+        if (receipt.status === 'applied' && receipt.applied === true) {
           deps.log(
             `Applied model ${receipt.effective_model ?? model} to ${name} (request ${receipt.request_id ?? 'unknown'}).`
           );
@@ -894,7 +893,7 @@ export function registerLocalAgentCommands(
           );
         } else {
           deps.log(
-            `Model request for ${name} was ${receipt.status}; applied=false (request ${receipt.request_id ?? 'unknown'})${receipt.error ? `: ${receipt.error}` : ''}.`
+            `Model request for ${name} was ${receipt.status ?? 'unknown'}; applied=false (request ${receipt.request_id ?? 'unknown'})${receipt.error ? `: ${receipt.error}` : ''}.`
           );
         }
       });

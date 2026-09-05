@@ -852,7 +852,7 @@ describe('local agent subtree', () => {
       const command = program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], {
         from: 'user',
       });
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.runAllTimersAsync();
       await command;
     } finally {
       vi.useRealTimers();

@@ -31,10 +31,11 @@ const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// `/model` writes use the same worker-owned stdin writer as protocol frames.
 /// Never let the runtime actor wait on its completion without a deadline.
 const DEFAULT_SET_MODEL_TIMEOUT: Duration = Duration::from_secs(5);
-/// OpenCode's typed mutation uses an HTTP client with a 30-second timeout.
-/// Keep the broker receipt alive for at least that long so a provider cannot
-/// apply a model after the broker has already recorded a timeout rejection.
-const MIN_MODEL_RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+/// OpenCode's typed mutation performs a mutation request followed by a
+/// confirmation read, each with a 30-second HTTP timeout. Keep the broker
+/// receipt alive for both requests plus a small scheduling margin so a
+/// provider cannot apply a model after the broker has recorded a timeout.
+const MIN_MODEL_RECEIPT_TIMEOUT: Duration = Duration::from_secs(65);
 
 fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
     timeout_ms
@@ -54,7 +55,7 @@ fn supports_model_mutation(handle: &WorkerHandle) -> bool {
         handle.spec.harness_config.as_ref(),
         Some(ResolvedHarnessConfig::Headless(config))
             if config.driver == HeadlessHarnessDriver::AppServer
-                && config.protocol.eq_ignore_ascii_case("opencode")
+                && config.protocol.trim().eq_ignore_ascii_case("opencode")
     )
 }
 
@@ -911,6 +912,34 @@ impl BrokerRuntime {
                     let value = receipt.json();
                     model_receipts.insert(name, receipt);
                     let _ = reply.send(Ok(value));
+                    return;
+                }
+
+                // A worker has one receipt slot. Admit only one mutation at a
+                // time so a later request cannot replace the correlation
+                // record while the earlier provider confirmation is in flight.
+                // Callers receive an explicit terminal rejection and can retry
+                // after the admitted request settles.
+                if pending_model_requests
+                    .values()
+                    .any(|pending| pending.worker_name == name && pending.generation == generation)
+                {
+                    let receipt = ModelReceipt {
+                        name,
+                        requested_model: model,
+                        effective_model: last_effective_model,
+                        applied: false,
+                        status: "rejected".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        effective_revision: last_effective_revision,
+                        accepted: false,
+                        pending: false,
+                        success: false,
+                        error: Some("a model change is already pending for this worker".into()),
+                    };
+                    let _ = reply.send(Ok(receipt.json()));
                     return;
                 }
 
@@ -2984,7 +3013,11 @@ mod set_model_timeout_tests {
         assert_eq!(set_model_receipt_timeout(None), MIN_MODEL_RECEIPT_TIMEOUT);
         assert_eq!(
             set_model_receipt_timeout(Some(45_000)),
-            Duration::from_millis(45_000)
+            MIN_MODEL_RECEIPT_TIMEOUT
+        );
+        assert_eq!(
+            set_model_receipt_timeout(Some(70_000)),
+            Duration::from_millis(70_000)
         );
     }
 }
