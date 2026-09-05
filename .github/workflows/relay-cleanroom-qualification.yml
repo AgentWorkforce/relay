@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '17 3 * * *'
   release:
-    types: [prereleased]
+    types: [prereleased, published]
   repository_dispatch:
     types: [relay_candidate_qualification]
   workflow_dispatch:
@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   diagnosis:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnosis')
+    if: github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnosis')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -108,6 +108,32 @@ jobs:
           codex --version | grep -F 0.153.3
           test "$(opencode --version | tail -1)" = 1.18.25
 
+      - name: Verify the exact published Relay package closure
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "v${version}" = "${RELEASE_TAG}"
+          install_root="$(mktemp -d)"
+          trap 'rm -rf "${install_root}"' EXIT
+          npm --prefix "${install_root}" init -y >/dev/null
+          for attempt in $(seq 1 12); do
+            if test "$(npm view "agent-relay@${version}" version 2>/dev/null)" = "${version}"; then
+              break
+            fi
+            if test "${attempt}" = 12; then
+              echo "agent-relay@${version} did not become readable from npm" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          npm --prefix "${install_root}" install --save-exact "agent-relay@${version}"
+          test "$("${install_root}/node_modules/.bin/agent-relay" version)" = "agent-relay v${version}"
+          "${install_root}/node_modules/.bin/agent-relay" node --help >/dev/null
+          npm --prefix "${install_root}" ls --all >/dev/null
+
       - name: Run sealed cross-repository diagnosis Relayflow
         id: diagnosis
         continue-on-error: true
@@ -142,7 +168,7 @@ jobs:
           node -e "if (process.env.DIAGNOSIS_OUTCOME !== 'success') throw new Error('diagnosis Relayflow did not complete')"
 
   qualification:
-    if: github.event_name == 'release' || github.event_name == 'repository_dispatch' || (github.event_name == 'schedule' && vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON != '') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'qualification')
+    if: (github.event_name == 'release' && github.event.release.prerelease == true) || github.event_name == 'repository_dispatch' || (github.event_name == 'schedule' && vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON != '') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'qualification')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     environment: snapshot-qualification

@@ -14,6 +14,7 @@ import {
   freshAttemptContext,
   loadCatalog,
   parseFeatureManifest,
+  readBoundedResponseText,
   redactEvidence,
   routeInventory,
   validateCloudApiBaseUrl,
@@ -21,6 +22,7 @@ import {
   validateGithubApiUrl,
   validateLaneEvidence,
   validateReviewDraftPath,
+  validateReviewProvenance,
   verifyWriteOnceStorage,
 } from '../../scripts/verify-features/cleanroom.mjs';
 
@@ -420,6 +422,13 @@ describe('clean-room verification catalog', () => {
     expect(() => validateGithubApiUrl('https://attacker.example/link')).toThrow(/GitHub inventory/);
   });
 
+  it('stops reading Cloud evidence when the byte limit is crossed', async () => {
+    await expect(readBoundedResponseText(new Response('exact'), 'fixture', 5)).resolves.toBe('exact');
+    await expect(readBoundedResponseText(new Response('too-large'), 'fixture', 5)).rejects.toThrow(
+      /exceeds 5 bytes/
+    );
+  });
+
   it('binds clean-room signoff to the aggregate, matrix, and runner digests', () => {
     const expected = {
       nonce: NONCE,
@@ -441,6 +450,23 @@ describe('clean-room verification catalog', () => {
     );
   });
 
+  it('binds review provenance to the exact reviewer executor', () => {
+    const expected = { nonce: NONCE, product: 'relay', profile: 'full', role: 'codex-review-1' };
+    const provenance = {
+      version: 1,
+      kind: 'review-provenance',
+      ...expected,
+      sandboxId: 'cloud-123e4567-e89b-12d3-a456-426614174000',
+    };
+    expect(validateReviewProvenance(provenance, expected)).toBe(provenance);
+    expect(() => validateReviewProvenance({ ...provenance, role: 'claude-review-1' }, expected)).toThrow(
+      /reviewer executor/
+    );
+    expect(() =>
+      validateReviewProvenance({ ...provenance, sandboxId: 'copied-from-lane' }, expected)
+    ).toThrow(/reviewer executor/);
+  });
+
   it('runs lanes in isolated agents and keeps model reviewers offline behind exported evidence', async () => {
     const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
     const runner = await readFile('scripts/verify-features/cleanroom.mjs', 'utf8');
@@ -450,17 +476,22 @@ describe('clean-room verification catalog', () => {
     expect(source).toMatch(/command\(\s*["']review-export["']/);
     expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
     expect(source).toMatch(/command\(\s*["']review-upload["']/);
-    expect(source).toContain('sandboxId": "cloud-${SANDBOX_ID}"');
-    expect(runner).toContain('review.sandboxId !== expectedReviewSandboxId');
-    expect(source).toMatch(/network\s*:\s*false/);
-    expect(source).toMatch(/exec\s*:\s*\[\s*\]/);
+    expect(source).toContain("const sandboxEnvironmentReference = '${SANDBOX_ID}'");
+    expect(source).toContain('"sandboxId": "cloud-${sandboxEnvironmentReference} or local-${role}"');
+    expect(runner).toContain('review.sandboxId !== provenance.sandboxId');
+    expect(runner).toContain('kind: `review-provenance/${role}`');
+    expect(source).toContain('agent.permissions = lanePermissions');
+    expect(source).toContain("access: 'restricted' as const");
+    expect(source).toContain('exec: [reviewProvenanceCommand(role)]');
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
   });
 
   it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
-    expect(workflow).toMatch(/release:\s*\n\s*types:\s*\[prereleased\]/);
-    expect(workflow).not.toMatch(/release:\s*\n\s*types:.*published/);
+    expect(workflow).toMatch(/release:\s*\n\s*types:\s*\[prereleased, published\]/);
+    expect(workflow).toContain('github.event.release.prerelease == false');
+    expect(workflow).toContain('github.event.release.prerelease == true');
+    expect(workflow).toContain('Verify the exact published Relay package closure');
     expect(workflow).toMatch(
       /relayWorkflowRef\s*!==\s*undefined\s*&&\s*relayWorkflowRef\s*!==\s*expectedRelayRef/
     );

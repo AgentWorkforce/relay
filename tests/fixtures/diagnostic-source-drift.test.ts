@@ -116,8 +116,8 @@ describe('diagnosis source provenance', () => {
     async () => {
       const repository = await mkdtemp(path.join(os.tmpdir(), 'diagnosis-source-directory-link-'));
       temporaryDirectories.push(repository);
-      await mkdir(path.join(repository, 'source'));
-      await writeFile(path.join(repository, 'source', 'tracked.ts'), 'export const tracked = 1;\n');
+      await mkdir(path.join(repository, 'source', 'nested'), { recursive: true });
+      await writeFile(path.join(repository, 'source', 'nested', 'tracked.ts'), 'export const tracked = 1;\n');
       await symlink('source', path.join(repository, 'source-link'));
       await execFileAsync('git', ['init', '-q'], { cwd: repository });
       await execFileAsync('git', ['config', 'user.name', 'diagnosis-test'], { cwd: repository });

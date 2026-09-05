@@ -578,10 +578,12 @@ async function createPrivateOutputRootHandle(outputRoot) {
     }
     throw error;
   }
-  const openFlags =
-    process.platform === 'win32'
-      ? 'r'
-      : fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  if (process.platform === 'win32') {
+    // Node cannot open directory handles on Windows. mkdir above is still an
+    // atomic must-not-exist boundary; subsequent I/O uses the created path.
+    return { root, ioRoot: root, handle: null };
+  }
+  const openFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
   const handle = await open(root, openFlags);
   const info = await handle.stat();
   if (!info.isDirectory() || info.isSymbolicLink()) {
@@ -593,7 +595,7 @@ async function createPrivateOutputRootHandle(outputRoot) {
 
 export async function createPrivateOutputRoot(outputRoot) {
   const created = await createPrivateOutputRootHandle(outputRoot);
-  await created.handle.close();
+  await created.handle?.close();
   return path.resolve(outputRoot);
 }
 
@@ -769,10 +771,12 @@ async function prepare(outputRoot) {
     } finally {
       await handle.close();
     }
-    process.stdout.write(`RELAY_CANDIDATE_INSTALL_READY cli=${cliEntrypoint}\n`);
+    process.stdout.write(
+      `RELAY_CANDIDATE_INSTALL_READY cli=${path.join(rootHandle.root, 'install', ...CLI_RELATIVE_PATH.split('/'))}\n`
+    );
   })().finally(async () => {
     if (activePrivateRootHandle === rootHandle) activePrivateRootHandle = undefined;
-    await rootHandle.handle.close();
+    await rootHandle.handle?.close();
   });
 }
 
@@ -853,11 +857,11 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
     });
     await verifyCandidateInstall(targetAttestation, { sourceSha, packageVersion });
     process.stdout.write(
-      `RELAY_CANDIDATE_INSTALL_HYDRATED cli=${path.join(installDir, ...CLI_RELATIVE_PATH.split('/'))}\n`
+      `RELAY_CANDIDATE_INSTALL_HYDRATED cli=${path.join(rootHandle.root, 'install', ...CLI_RELATIVE_PATH.split('/'))}\n`
     );
   })().finally(async () => {
     if (activePrivateRootHandle === rootHandle) activePrivateRootHandle = undefined;
-    await rootHandle.handle.close();
+    await rootHandle.handle?.close();
   });
 }
 

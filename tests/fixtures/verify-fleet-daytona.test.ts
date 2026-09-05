@@ -35,7 +35,10 @@ import {
   validateSeal,
 } from '../../scripts/verify-features/fleet-daytona.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { preflightPermissions } from '../../scripts/verify-features/fleet-permissions.mjs';
+import {
+  MODEL_TRANSPORT_HOSTS,
+  preflightPermissions,
+} from '../../scripts/verify-features/fleet-permissions.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   collectFleetCliInventory,
@@ -234,6 +237,11 @@ describe('complete Daytona Fleet board', () => {
       expect(policy.files).toEqual({ read: [], write: [], deny: ['**'] });
       expect(policy.inherit).toBe(false);
       expect(policy.network.allow).not.toContain('*');
+      for (const [otherProvider, otherHosts] of Object.entries(MODEL_TRANSPORT_HOSTS)) {
+        if (otherProvider === provider) continue;
+        expect(policy.network.allow).not.toEqual(expect.arrayContaining(otherHosts));
+        for (const otherHost of otherHosts) expect(policy.network.allow).not.toContain(otherHost);
+      }
     }
   });
 
