@@ -992,6 +992,46 @@ mod tests {
         let mut pending_model_requests = HashMap::new();
         let mut model_receipts = HashMap::new();
         let mut model_receipts_by_request = HashMap::new();
+        let release_generation = workers
+            .workers
+            .get(&released_agent)
+            .expect("release target should be registered")
+            .generation;
+        pending_model_requests.insert(
+            "release-model-request".to_string(),
+            PendingModelRequest {
+                worker_name: released_agent.clone(),
+                generation: release_generation,
+                requested_model: "openai/gpt-5.4".to_string(),
+                revision: 1,
+                deadline: Instant::now() + Duration::from_secs(30),
+                provider_deadline: None,
+                provider_timeout: Duration::from_secs(65),
+            },
+        );
+        model_receipts.insert(
+            released_agent.clone(),
+            ModelReceipt {
+                name: released_agent.clone(),
+                requested_model: "openai/gpt-5.4".to_string(),
+                effective_model: None,
+                applied: false,
+                status: "accepted_pending".to_string(),
+                request_id: "release-model-request".to_string(),
+                generation: release_generation,
+                revision: 1,
+                effective_revision: 0,
+                accepted: true,
+                pending: true,
+                success: false,
+                error: None,
+                updated_at: Instant::now(),
+            },
+        );
+        model_receipts_by_request.insert(
+            "release-model-request".to_string(),
+            model_receipts[&released_agent].clone(),
+        );
         let mut delivery_states = HashMap::new();
         let mut agent_result_tokens = HashMap::new();
         let released_session_id = "released-view-session".to_string();
@@ -1086,6 +1126,16 @@ mod tests {
         .await;
 
         assert_eq!(outcome, ReleaseOutcome::Released);
+        let released_receipt = model_receipts_by_request
+            .get("release-model-request")
+            .expect("release should retain a terminal model receipt");
+        assert_eq!(released_receipt.status, "rejected");
+        assert!(!released_receipt.pending);
+        assert!(!released_receipt.applied);
+        assert!(released_receipt
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("worker exited")));
         // MUST FIRE: releasing the target through the same lifecycle function
         // used by the fleet action emits a final code and reason for its view.
         let terminal_messages: Vec<TerminalControlCommand> =
