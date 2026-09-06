@@ -391,19 +391,34 @@ try {
   const version = spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 10_000 });
   if (version.error || version.status !== 0) throw new Error('OpenCode CLI unavailable');
   result.providerVersion = (version.stdout || version.stderr || '').trim();
-  const port = await freePort();
-  providerEndpoint = 'http://127.0.0.1:' + port;
-  opencode = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--pure'], {
-    cwd: tempDir,
-    env: { ...process.env, HOME: tempDir, OPENCODE_SERVER_PASSWORD: '' },
-    detached: true,
-    stdio: 'ignore',
-  });
-  opencode.unref();
-  await wait(async () => {
-    const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(2_000) });
-    return response.ok;
-  }, 'real OpenCode server');
+  let providerReady = false;
+  // freePort() closes its probe socket before the child binds; another local
+  // process can win that small race. Retry a bounded number of times, like the
+  // sibling 1658-model-change-receipt case, instead of failing the Fleet
+  // operation as a flaky verdict.
+  for (let attempt = 0; attempt < 3 && !providerReady; attempt += 1) {
+    const port = await freePort();
+    providerEndpoint = 'http://127.0.0.1:' + port;
+    opencode = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--pure'], {
+      cwd: tempDir,
+      env: { ...process.env, HOME: tempDir, OPENCODE_SERVER_PASSWORD: '' },
+      detached: true,
+      stdio: 'ignore',
+    });
+    opencode.unref();
+    try {
+      await wait(async () => {
+        if (opencode.exitCode !== null) return false;
+        const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(2_000) });
+        return response.ok;
+      }, 'real OpenCode server', 20_000);
+      providerReady = true;
+    } catch (error) {
+      try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
+      opencode = undefined;
+      if (attempt === 2) throw error;
+    }
+  }
   const session = await jsonResponse(await fetch(providerEndpoint + '/session', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -431,12 +446,24 @@ try {
       '--release',
       'delete',
   ];
+  const cliEnv = {
+    ...process.env,
+    // The public CLI resolves its broker through
+    // HarnessDriverClient.connect({ cwd }), which reads
+    // <cwd>/.agentworkforce/relay/connection.json unless
+    // AGENT_RELAY_STATE_DIR points at the discovered broker's state
+    // directory. RELAY_BROKER_URL/API_KEY alone are not consulted there,
+    // so without this the spawn from tempDir cannot reach the live node.
+    AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
+    RELAY_BROKER_URL: connection.url,
+    RELAY_BROKER_API_KEY: connection.api_key,
+  };
   const spawnWorker = spawnSync(
     'agent-relay',
     spawnArgv,
     {
       cwd: tempDir,
-      env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
+      env: cliEnv,
       encoding: 'utf8',
       timeout: 30_000,
       maxBuffer: 2 * 1024 * 1024,
@@ -449,7 +476,6 @@ try {
   }
   workerCreated = true;
   result.spawnArgv = ['agent-relay', ...spawnArgv];
-  const cliEnv = { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key };
   const setModel = spawnSync('agent-relay', ['node', 'agent', 'set-model', workerName, requestedModel, '--json'], {
     cwd: tempDir,
     env: cliEnv,
@@ -478,7 +504,11 @@ try {
   ) {
     throw new Error('public set-model returned invalid receipt: ' + JSON.stringify(receipt));
   }
-  const confirmed = await jsonResponse(await fetch(providerEndpoint + '/api/session/' + encodeURIComponent(sessionId), {
+  // Confirm through the same /session/{id} API the helper created and deletes
+  // with (providerSessionUrl); /api/session/{id} is the broker's separate v2
+  // model-mutation surface and is not the URL this server answers for reads
+  // of the session document.
+  const confirmed = await jsonResponse(await fetch(providerSessionUrl, {
     signal: AbortSignal.timeout(5_000),
   }), 'OpenCode session confirmation');
   const sessionData = confirmed.data || confirmed;
@@ -487,61 +517,7 @@ try {
   result.receipt = receipt;
   result.providerModel = effective;
 } finally {
-  const cleanupErrors = [];
-  if (connection && workerCreated) {
-    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
-      cwd: tempDir || process.cwd(), env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
-      encoding: 'utf8', timeout: 30_000,
-    });
-    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
-    try {
-      await wait(async () => {
-        const response = await fetch(connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model', {
-          headers: { 'x-api-key': connection.api_key }, signal: AbortSignal.timeout(2_000),
-        });
-        return response.status === 404;
-      }, 'released AppServer worker to disappear', 10_000);
-    } catch (error) { cleanupErrors.push(error.message); }
-  }
-  if (connection && sessionId) {
-    try {
-      const response = await fetch(providerSessionUrl, { method: 'DELETE', signal: AbortSignal.timeout(2_000) });
-      if (![200, 204, 404].includes(response.status)) cleanupErrors.push('OpenCode session delete failed');
-      await wait(async () => {
-        const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
-        return check.status === 404;
-      }, 'deleted OpenCode session to disappear', 10_000);
-    } catch (error) { cleanupErrors.push(error.message); }
-  }
-  if (opencode && opencode.pid) {
-    try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
-    try {
-      await wait(async () => {
-        if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
-        try { process.kill(opencode.pid, 0); return false; } catch { return true; }
-      }, 'OpenCode process to terminate', 10_000);
-    } catch (error) { cleanupErrors.push(error.message); }
-    if (providerEndpoint) {
-      try {
-        await wait(async () => {
-          try {
-            await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
-            return false;
-          } catch (error) {
-            // A refused connection proves the listener is gone. An HTTP
-            // response or request timeout still means the port is reachable.
-            return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
-          }
-        }, 'OpenCode provider port to close', 10_000);
-      } catch (error) { cleanupErrors.push(error.message); }
-    }
-  }
-  if (tempDir) {
-    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error.message); }
-    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
-  }
-  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
-  result.cleanup = true;
+  await runCleanup();
 }
 process.stdout.write(JSON.stringify(result));
 })().catch((error) => {
@@ -1201,7 +1177,87 @@ export function tryParseJson(text) {
           const opening = stack.pop();
           if ((opening === '{' && character !== '}') || (opening === '[' && character !== ']')) break;
           if (stack.length === 0) {
-            try {
+let cleanupState = 'idle';
+const runCleanup = async () => {
+  if (cleanupState !== 'idle') return;
+  cleanupState = 'running';
+  const cleanupErrors = [];
+  if (connection && workerCreated) {
+    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
+      cwd: tempDir || process.cwd(),
+      env: {
+        ...process.env,
+        AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
+        RELAY_BROKER_URL: connection.url,
+        RELAY_BROKER_API_KEY: connection.api_key,
+      },
+      encoding: 'utf8', timeout: 30_000,
+    });
+    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
+    try {
+      await wait(async () => {
+        const response = await fetch(connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model', {
+          headers: { 'x-api-key': connection.api_key }, signal: AbortSignal.timeout(2_000),
+        });
+        return response.status === 404;
+      }, 'released AppServer worker to disappear', 10_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+  }
+  if (connection && sessionId) {
+    try {
+      const response = await fetch(providerSessionUrl, { method: 'DELETE', signal: AbortSignal.timeout(2_000) });
+      if (![200, 204, 404].includes(response.status)) cleanupErrors.push('OpenCode session delete failed');
+      await wait(async () => {
+        const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
+        return check.status === 404;
+      }, 'deleted OpenCode session to disappear', 10_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+  }
+  if (opencode && opencode.pid) {
+    try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
+    try {
+      await wait(async () => {
+        if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
+        try { process.kill(opencode.pid, 0); return false; } catch { return true; }
+      }, 'OpenCode process to terminate', 10_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+    if (providerEndpoint) {
+      try {
+        await wait(async () => {
+          try {
+            await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
+            return false;
+          } catch (error) {
+            // A refused connection proves the listener is gone. An HTTP
+            // response or request timeout still means the port is reachable.
+            return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
+          }
+        }, 'OpenCode provider port to close', 10_000);
+      } catch (error) { cleanupErrors.push(error.message); }
+    }
+  }
+  if (tempDir) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error.message); }
+    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
+  }
+  cleanupState = 'done';
+  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
+  result.cleanup = true;
+};
+// Daytona's outer --timeout can SIGTERM this helper before it reaches its
+// finally block; without an explicit handler the detached OpenCode provider
+// would survive the wrapper's death until the sandbox itself is torn down.
+// Terminations run the same idempotent cleanup so the provider session,
+// process, and temporary directory are recovered on the wrapper's way out.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (cleanupState !== 'idle') return;
+    runCleanup()
+      .catch(() => {})
+      .finally(() => process.exit(1));
+  });
+}
+try {
               return JSON.parse(trimmed.slice(index, cursor + 1));
             } catch {
               break;
@@ -3981,6 +4037,11 @@ class FleetBoard {
     this.claimAgent(workerName, 'node-app-server-worker');
     await this.checkpoint();
     const script = buildNodeAppServerModelProofScript();
+    // The inner budgets (spawn 30s, set-model 60s, release 30s, four 10s
+    // disappearance/termination polls, plus bounded provider-startup retries)
+    // can approach 180s on a slow provider; the enclosing Daytona command
+    // gets 300s so the helper's finally block always runs its cleanup instead
+    // of being killed mid-flight and leaking the detached provider session.
     return this.assertedCommand(
       id,
       this.daytonaArgv(
@@ -3988,7 +4049,7 @@ class FleetBoard {
         'exec',
         node.id,
         '--timeout',
-        '180',
+        '300',
         '--',
         'node',
         '-e',
@@ -4011,6 +4072,11 @@ class FleetBoard {
           '--json',
         ];
         const publicSpawnArgv = payload?.spawnArgv;
+        // Assert the complete applied-receipt contract from the live CLI
+        // receipt (as the RelayFlow proof does), not just the helper-written
+        // payload constants: admission (accepted/success), correlation
+        // (name/requestedModel/requestId/generation), and confirmation
+        // (status/applied/effectiveModel/pending) must all hold.
         const pass =
           payload?.worker === workerName &&
           payload?.requestedModel === 'openai/gpt-5.4' &&
@@ -4018,20 +4084,42 @@ class FleetBoard {
           typeof payload?.providerVersion === 'string' &&
           payload.providerVersion.length > 0 &&
           payload?.cleanup === true &&
+          receipt?.name === workerName &&
+          receipt?.requestedModel === 'openai/gpt-5.4' &&
           receipt?.status === 'applied' &&
           receipt?.applied === true &&
+          receipt?.accepted === true &&
+          receipt?.success === true &&
           receipt?.effectiveModel === 'openai/gpt-5.4' &&
           receipt?.pending === false &&
           typeof receipt?.requestId === 'string' &&
           receipt.requestId.length > 0 &&
+          typeof receipt?.generation === 'string' &&
+          receipt.generation.length > 0 &&
+          // Ordered positional assertion of the public spawn argv: loose
+          // includes() checks would accept malformed or differently
+          // configured commands as valid evidence.
           Array.isArray(publicSpawnArgv) &&
+          publicSpawnArgv.length === 17 &&
           publicSpawnArgv[0] === 'agent-relay' &&
-          publicSpawnArgv.includes('spawn') &&
-          publicSpawnArgv.includes('--runtime') &&
-          publicSpawnArgv.includes('headless') &&
-          publicSpawnArgv.includes('--protocol') &&
-          publicSpawnArgv.includes('opencode') &&
-          publicSpawnArgv.includes('--session-id');
+          publicSpawnArgv[1] === 'node' &&
+          publicSpawnArgv[2] === 'agent' &&
+          publicSpawnArgv[3] === 'spawn' &&
+          publicSpawnArgv[4] === 'opencode' &&
+          publicSpawnArgv[5] === '--name' &&
+          publicSpawnArgv[6] === workerName &&
+          publicSpawnArgv[7] === '--runtime' &&
+          publicSpawnArgv[8] === 'headless' &&
+          publicSpawnArgv[9] === '--protocol' &&
+          publicSpawnArgv[10] === 'opencode' &&
+          publicSpawnArgv[11] === '--endpoint' &&
+          typeof publicSpawnArgv[12] === 'string' &&
+          publicSpawnArgv[12].startsWith('http://127.0.0.1:') &&
+          publicSpawnArgv[13] === '--session-id' &&
+          typeof publicSpawnArgv[14] === 'string' &&
+          publicSpawnArgv[14].length > 0 &&
+          publicSpawnArgv[15] === '--release' &&
+          publicSpawnArgv[16] === 'delete';
         return {
           pass,
           // The operation is a Daytona wrapper, but this nested argv is the
@@ -4041,7 +4129,7 @@ class FleetBoard {
           summary: `issue=1658 runtime=headless-app-server requestedModel=${payload?.requestedModel ?? 'missing'} providerModel=${payload?.providerModel ?? 'missing'} status=${receipt?.status ?? 'missing'} effectiveModel=${receipt?.effectiveModel ?? 'missing'} applied=${receipt?.applied} cleanup=${payload?.cleanup}`,
         };
       },
-      { timeoutMs: 180_000, maxCaptureBytes: 2 * 1024 * 1024 }
+      { timeoutMs: 300_000, maxCaptureBytes: 2 * 1024 * 1024 }
     );
   }
 

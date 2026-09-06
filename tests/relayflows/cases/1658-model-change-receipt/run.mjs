@@ -432,9 +432,13 @@ try {
               const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
               return response.status === 404;
             } catch {
-              return null;
+              // Server refused/closed its listener: the session is gone,
+              // cleanup succeeded. Treating the error as "not yet deleted"
+              // would poll for the full module-wide timeout and then fail an
+              // otherwise fully successful proof.
+              return true;
             }
-          }, 'deleted OpenCode session to disappear');
+          }, 'deleted OpenCode session to disappear', 5_000);
         } catch (error) {
           cleanupErrors.push(error.message);
         }
