@@ -4,8 +4,9 @@
   "task": {
     "title": "Fix fleet release intermittent internal server error for live remote agents (issue #1671)"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-06T02:05:24.901Z",
+  "completedAt": "2026-09-06T02:23:44.876Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-06T02:22:28.242Z",
+      "endedAt": "2026-09-06T02:23:44.876Z",
       "events": [
         {
           "ts": 1788661348242,
@@ -55,12 +57,29 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Implemented actionable and idempotent fleet release teardown: correlated typed broker errors, complete worker process-group termination, deterministic absence tests, and sealed two-arm RelayFlow case; opened PR #1672.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [
+    "d41526d0f"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_lixf6c559a1q/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/relaycast_events.rs",
+    "crates/broker/src/spawner.rs",
+    "crates/broker/src/worker.rs",
+    "tests/relayflows/cases/1671-fleet-release-absence/case.json",
+    "tests/relayflows/cases/1671-fleet-release-absence/run.mjs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "bef0c2be900a51c4393ccca9063a136413a6fc92",
-    "endRef": "bef0c2be900a51c4393ccca9063a136413a6fc92"
+    "endRef": "d41526d0fffc184c413bca3f03ae8e09f6a3f044",
+    "traceId": "95b3e3a6-0d38-4539-b1da-df093eefdbf1"
   }
 }

@@ -1,0 +1,209 @@
+{
+  "version": "1.0.0",
+  "id": "95b3e3a6-0d38-4539-b1da-df093eefdbf1",
+  "timestamp": "2026-09-06T02:23:44.964Z",
+  "trajectory": "traj_lixf6c559a1q",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_lixf6c559a1q/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 66,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1458,
+              "end_line": 1464,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 1474,
+              "end_line": 1480,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 1493,
+              "end_line": 1512,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 1515,
+              "end_line": 1532,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 1553,
+              "end_line": 1573,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 4437,
+              "end_line": 4457,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/relaycast_events.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 257,
+              "end_line": 269,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 275,
+              "end_line": 282,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 379,
+              "end_line": 385,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/spawner.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 18,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 280,
+              "end_line": 285,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 472,
+              "end_line": 482,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 489,
+              "end_line": 495,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 504,
+              "end_line": 518,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 580,
+              "end_line": 589,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            },
+            {
+              "start_line": 1251,
+              "end_line": 1286,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/worker.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1247,
+              "end_line": 1268,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1671-fleet-release-absence/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 21,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1671-fleet-release-absence/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 161,
+              "revision": "d41526d0fffc184c413bca3f03ae8e09f6a3f044"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
