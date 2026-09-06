@@ -357,8 +357,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
     const readDescendant = async (previousToken?: string) => {
       const probe = JSON.parse(readFileSync(pidPath, 'utf8')) as { pid?: number; token?: string };
-      expect(Number.isInteger(probe.pid)).toBe(true);
-      expect(typeof probe.token).toBe('string');
+      expect(Number.isInteger(probe.pid) && probe.pid > 0).toBe(true);
+      expect(typeof probe.token === 'string' && probe.token.length > 0).toBe(true);
       return previousToken === undefined || probe.token !== previousToken ? probe : null;
     };
     const descendant = await waitFor(readDescendant, {
