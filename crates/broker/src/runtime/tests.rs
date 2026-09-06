@@ -26,8 +26,9 @@ use crate::{
     util::{
         ansi::{floor_char_boundary, strip_ansi},
         terminal::{
-            detect_bypass_permissions_prompt, detect_claude_trust_prompt, is_auto_suggestion,
-            is_bypass_selection_menu, is_in_editor_mode,
+            claude_trust_prompt_action, detect_bypass_permissions_prompt,
+            detect_claude_trust_prompt, is_auto_suggestion, is_bypass_selection_menu,
+            is_in_editor_mode, ClaudeTrustPromptAction,
         },
     },
 };
@@ -4503,6 +4504,39 @@ fn claude_trust_prompt_full_match() {
     let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
     assert!(has_trust_ref);
     assert!(has_confirmation);
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::Confirm)
+    );
+}
+
+#[test]
+fn claude_trust_prompt_new_layout_moves_to_affirmative_row() {
+    let output = "take a moment to review what's in this folder first.\n\
+                       ❯ No, exit\n\
+                         Yes, I trust this folder\n\
+                       Enter to confirm · Esc to cancel";
+    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
+    assert!(has_trust_ref && has_confirmation);
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::MoveDown)
+    );
+}
+
+#[test]
+fn claude_trust_prompt_reversed_layout_moves_up_when_no_is_selected() {
+    let output = "  Yes, I trust this folder\n❯ No, exit\nEnter to confirm";
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::MoveUp)
+    );
+}
+
+#[test]
+fn claude_trust_prompt_without_selection_is_ambiguous() {
+    let output = "No, exit\nYes, I trust this folder\nEnter to confirm";
+    assert_eq!(claude_trust_prompt_action(output), None);
 }
 
 #[test]

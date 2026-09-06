@@ -1,0 +1,57 @@
+{
+  "id": "traj_dexk2u0gd6fs",
+  "version": 1,
+  "task": {
+    "title": "Fix Claude folder-trust auto-accept for both menu orderings",
+    "source": {
+      "system": "plain",
+      "id": "1654"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-06T06:26:18.815Z",
+  "completedAt": "2026-09-06T06:38:44.245Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T06:38:43.246Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_kcy5j1pt2b7q",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T06:38:43.246Z",
+      "endedAt": "2026-09-06T06:38:44.245Z",
+      "events": [
+        {
+          "ts": 1788676723247,
+          "type": "decision",
+          "content": "Parse the rendered Claude trust menu into explicit Confirm/MoveUp/MoveDown actions: Parse the rendered Claude trust menu into explicit Confirm/MoveUp/MoveDown actions",
+          "raw": {
+            "question": "Parse the rendered Claude trust menu into explicit Confirm/MoveUp/MoveDown actions",
+            "chosen": "Parse the rendered Claude trust menu into explicit Confirm/MoveUp/MoveDown actions",
+            "alternatives": [],
+            "reasoning": "The option order changed across Claude versions; requiring both labels and exactly one rendered selection marker preserves fail-closed behavior and avoids blind Enter."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made Claude folder-trust handling selection-aware for both menu orderings and added parser plus real-PTY regression coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6207d3dd642ad749bea0a0fcb5134f95e143a3d7",
+    "endRef": "6207d3dd642ad749bea0a0fcb5134f95e143a3d7"
+  }
+}
