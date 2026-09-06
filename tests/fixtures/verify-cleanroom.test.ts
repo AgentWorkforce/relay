@@ -27,6 +27,13 @@ import {
   validateReviewProvenance,
   verifyWriteOnceStorage,
 } from '../../scripts/verify-features/cleanroom.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  cleanroomLaneNetwork,
+  cleanroomLaneWritePaths,
+  cleanroomReviewNetwork,
+  MODEL_TRANSPORT_HOSTS,
+} from '../../scripts/verify-features/fleet-permissions.mjs';
 
 const NONCE = 'a'.repeat(32);
 
@@ -509,15 +516,50 @@ describe('clean-room verification catalog', () => {
     expect(source).toMatch(/command\(\s*["']review-export["']/);
     expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
     expect(source).toMatch(/command\(\s*["']review-upload["']/);
-    expect(source).toContain("const sandboxEnvironmentReference = '${SANDBOX_ID}'");
-    expect(source).toContain('"sandboxId": "cloud-${sandboxEnvironmentReference} or local-${role}"');
-    expect(runner).toContain('review.sandboxId !== provenance.sandboxId');
+    expect(source).toMatch(/const\s+sandboxEnvironmentReference\s*=\s*["']\$\{SANDBOX_ID\}["']/);
+    expect(source).toMatch(/"sandboxId"\s*:\s*"cloud-\$\{sandboxEnvironmentReference\} or local-\$\{role\}"/);
+    expect(runner).toMatch(/if\s*\(\s*review\.sandboxId\s*!==\s*provenance\.sandboxId\s*\)\s*\{/);
     expect(runner).toContain('kind: `review-provenance/${role}`');
     expect(runner.match(/redirect: 'error'/g)?.length).toBeGreaterThanOrEqual(4);
     expect(source).toContain('agent.permissions = lanePermissions');
     expect(source).toContain("access: 'restricted' as const");
     expect(source).toContain('exec: [reviewProvenanceCommand(role)]');
+    expect(source).toContain('write: cleanroomLaneWritePaths(NONCE, lane)');
+    expect(source).toContain('network: cleanroomLaneNetwork()');
+    expect(source).toContain('network: cleanroomReviewNetwork(role, cloudHost)');
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
+  });
+
+  it('grants each cleanroom agent only its exact output and required model transport', () => {
+    const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
+    expect(writes).toContain('packages/sdk-swift/.build/**');
+    expect(writes).toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`);
+    expect(writes).not.toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/**`);
+    expect(() => cleanroomLaneWritePaths('../escape', 'polyglot-plugins')).toThrow(/identity/);
+
+    const laneNetwork = cleanroomLaneNetwork();
+    expect(laneNetwork.allow).toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS.codex));
+    expect(laneNetwork.allow).not.toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS.claude));
+    expect(laneNetwork.allow).not.toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS.opencode));
+    expect(laneNetwork.allow).not.toContain('*');
+    expect(laneNetwork.deny).toEqual(['*']);
+
+    for (const [role, provider] of [
+      ['claude-review-1', 'claude'],
+      ['codex-review-1', 'codex'],
+      ['supervisor', 'opencode'],
+    ] as const) {
+      const withoutCloud = cleanroomReviewNetwork(role);
+      expect(withoutCloud.allow).toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS[provider]));
+      for (const [otherProvider, hosts] of Object.entries(MODEL_TRANSPORT_HOSTS)) {
+        if (otherProvider === provider) continue;
+        for (const host of hosts) expect(withoutCloud.allow).not.toContain(host);
+      }
+      expect(withoutCloud.deny).toEqual(['*']);
+      const withCloud = cleanroomReviewNetwork(role, 'cloud.example.test:443');
+      expect(withCloud.allow).toContain('cloud.example.test:443');
+    }
+    expect(() => cleanroomReviewNetwork('unknown-role')).toThrow(/unknown cleanroom reviewer/);
   });
 
   it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {

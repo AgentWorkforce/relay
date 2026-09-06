@@ -29,6 +29,22 @@ const DIAGNOSIS_AGENT_PROVIDERS = Object.freeze({
   'fresh-codex-signoff': 'codex',
 });
 
+const CLEANROOM_INFRASTRUCTURE_HOSTS = Object.freeze([
+  'agentrelay.com:443',
+  'api.github.com:443',
+  'github.com:443',
+  'codeload.github.com:443',
+  'registry.npmjs.org:443',
+  'crates.io:443',
+  'index.crates.io:443',
+  'static.crates.io:443',
+  'pypi.org:443',
+  'files.pythonhosted.org:443',
+  'localhost:*',
+  '127.0.0.1:*',
+  '[::1]:*',
+]);
+
 function modelTransportNetwork(provider, label) {
   const allow = MODEL_TRANSPORT_HOSTS[provider];
   if (!allow) throw new Error(`unknown ${label} model provider ${provider ?? '<missing>'}`);
@@ -54,4 +70,43 @@ export function fleetReviewerNetwork(agentName) {
 
 export function diagnosisAgentNetwork(agentName) {
   return modelTransportNetwork(DIAGNOSIS_AGENT_PROVIDERS[agentName], `diagnosis agent ${agentName}`);
+}
+
+export function cleanroomReviewNetwork(role, cloudHost) {
+  const provider =
+    role.startsWith('claude') || role === 'final-claude-signoff'
+      ? 'claude'
+      : role.startsWith('codex') || role === 'final-codex-signoff'
+        ? 'codex'
+        : role === 'supervisor' || role.startsWith('opencode')
+          ? 'opencode'
+          : undefined;
+  const allow = [...modelTransportNetwork(provider, `cleanroom reviewer ${role}`).allow];
+  if (cloudHost) allow.unshift(cloudHost);
+  return { allow: [...new Set(allow)], deny: ['*'] };
+}
+
+export function cleanroomLaneNetwork() {
+  return {
+    allow: [...new Set([...CLEANROOM_INFRASTRUCTURE_HOSTS, ...MODEL_TRANSPORT_HOSTS.codex])],
+    deny: ['*'],
+  };
+}
+
+export function cleanroomLaneWritePaths(nonce, lane) {
+  if (!/^[a-z0-9][a-z0-9-]{0,60}$/.test(nonce) || !/^[a-z0-9][a-z0-9-]{0,80}$/.test(lane)) {
+    throw new Error('cleanroom lane identity is invalid');
+  }
+  return [
+    'node_modules/**',
+    'target/**',
+    'packages/sdk-swift/.build/**',
+    'packages/*/dist/**',
+    'packages/*/node_modules/**',
+    'plugins/*/dist/**',
+    'plugins/*/node_modules/**',
+    'tests/integration/broker/dist/**',
+    '.agentworkforce/trajectories/**',
+    `.workflow-artifacts/verify-cleanroom/${nonce}/lanes/${lane}.json`,
+  ];
 }

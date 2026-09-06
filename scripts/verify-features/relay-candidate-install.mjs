@@ -344,12 +344,12 @@ function run(command, args, options = {}) {
       childCwd = invocation.cwd;
     }
   }
-  const result = spawnSync(command, childArgs, {
+  const result = spawnSync(rewritePrivatePath(command), childArgs, {
     cwd: rewritePrivatePath(childCwd),
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 300_000,
     maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1' },
+    env: { ...process.env, ...options.env, NO_COLOR: '1' },
     ...(privateRoot && process.platform !== 'win32'
       ? { stdio: ['ignore', 'pipe', 'pipe', privateRoot.handle.fd] }
       : {}),
@@ -359,6 +359,45 @@ function run(command, args, options = {}) {
     throw new Error(`${command} failed${detail ? `: ${detail.slice(-4096)}` : ''}`);
   }
   return result.stdout;
+}
+
+async function stageSourceBroker() {
+  const [rootPackage, sourceSha, sourceStatus] = await Promise.all([
+    readFile('package.json', 'utf8').then(JSON.parse),
+    Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
+    Promise.resolve(run('git', ['status', '--porcelain']).trim()),
+  ]);
+  if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
+  if (sourceStatus) throw new Error('source broker staging requires a clean source tree');
+  const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
+  run('cargo', ['build', '--locked', '--release', '--bin', 'agent-relay-broker'], {
+    timeoutMs: 1_800_000,
+    env: { AGENT_RELAY_VERSION: packageVersion },
+  });
+  const binary = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
+  const built = path.join('target', 'release', binary);
+  const destination = path.join('packages', platformPackage(), 'bin', binary);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await copyFile(built, destination);
+  if (process.platform !== 'win32') await chmod(destination, 0o755);
+  const { bytes, mode } = await readRegularFileNoFollow(destination, {
+    label: 'staged source broker',
+  });
+  if (bytes.length < 1 || (process.platform !== 'win32' && mode !== 0o755)) {
+    throw new Error('staged source broker is not an executable regular file');
+  }
+  if (
+    run(destination, ['--version'], { timeoutMs: 30_000 }).trim() !== `agent-relay-broker ${packageVersion}`
+  ) {
+    throw new Error('staged source broker reported a different version');
+  }
+  if (
+    run('git', ['rev-parse', 'HEAD']).trim() !== sourceSha ||
+    run('git', ['status', '--porcelain']).trim()
+  ) {
+    throw new Error('source changed while the broker was staged');
+  }
+  process.stdout.write(`RELAY_SOURCE_BROKER_STAGED package=${platformPackage()} bytes=${bytes.length}\n`);
 }
 
 function parseArgs(argv) {
@@ -912,6 +951,11 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
+  if (command === 'stage-source-broker') {
+    if (Object.keys(options).length > 0) throw new Error('stage-source-broker does not accept options');
+    await stageSourceBroker();
+    return;
+  }
   if (command === 'prepare') {
     await prepare(requiredString(options.output, '--output'));
     return;
