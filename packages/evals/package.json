@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/evals",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260906.3464",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -71,8 +71,8 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "11.10.3",
-    "@agent-relay/integration-prompts": "11.10.3"
+    "@agent-relay/harness-driver": "11.10.4-cleanroom.20260906.3464",
+    "@agent-relay/integration-prompts": "11.10.4-cleanroom.20260906.3464"
   },
   "publishConfig": {
     "access": "public"
