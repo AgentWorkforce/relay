@@ -351,8 +351,8 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 95)
-    throw new Error('matrix.operations must contain exactly 95 operations');
+  if (matrix.operations.length !== 94)
+    throw new Error('matrix.operations must contain exactly 94 operations');
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const commandOperationIds = new Set();
@@ -453,7 +453,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 95 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 94 operations');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -473,8 +473,25 @@ export function validateFleetCommandCoverage(matrix, inventory) {
     .filter((command) => command.leaf)
     .map((command) => command.path)
     .sort();
+  const deferredSurface = matrix.deferredCommandSurface ?? [];
+  if (
+    !Array.isArray(deferredSurface) ||
+    deferredSurface.some((commandPath) => typeof commandPath !== 'string' || !commandPath)
+  ) {
+    throw new Error('matrix.deferredCommandSurface must contain non-empty command paths');
+  }
+  const deferred = new Set(deferredSurface);
+  for (const commandPath of deferred) {
+    if (!leaves.includes(commandPath)) {
+      throw new Error(`matrix deferredCommandSurface references missing CLI command ${commandPath}`);
+    }
+    if (Object.prototype.hasOwnProperty.call(matrix.commandSurface, commandPath)) {
+      throw new Error(`matrix deferred command ${commandPath} must not map to an operation`);
+    }
+  }
+  const coveredLeaves = leaves.filter((commandPath) => !deferred.has(commandPath));
   const mapped = Object.keys(matrix.commandSurface).sort();
-  if (leaves.join('\0') !== mapped.join('\0')) {
+  if (coveredLeaves.join('\0') !== mapped.join('\0')) {
     throw new Error('matrix commandSurface must exactly cover every candidate Fleet/node command leaf');
   }
   if (
@@ -894,9 +911,13 @@ function findStringDeep(value, keys) {
   return undefined;
 }
 
-export function findFleetAgentNode(payload, agentName) {
+export function findFleetAgent(payload, agentName) {
   if (!payload || typeof payload !== 'object' || !Array.isArray(payload.perNode)) return undefined;
-  const row = payload.perNode.find((entry) => entry && typeof entry === 'object' && entry.name === agentName);
+  return payload.perNode.find((entry) => entry && typeof entry === 'object' && entry.name === agentName);
+}
+
+export function findFleetAgentNode(payload, agentName) {
+  const row = findFleetAgent(payload, agentName);
   return row && typeof row.node === 'string' ? row.node : undefined;
 }
 
@@ -942,6 +963,36 @@ export function operationStatus(definition, result) {
     return cleanExit && result.observedSentinel === true && result.observedExit === true ? 'pass' : 'fail';
   }
   return 'fail';
+}
+
+function noPartialCreationProofPass(proof, targetName) {
+  if (!proof || typeof proof !== 'object' || proof.targetName !== targetName) return false;
+  const before = proof.before;
+  const after = proof.after;
+  if (!before || !after) return false;
+  const snapshotKeys = ['agentNames', 'fleetNodeKeys', 'sandboxIds', 'sandboxKeys', 'workerProcesses'];
+  if (snapshotKeys.some((key) => !Array.isArray(before[key]) || !Array.isArray(after[key]))) return false;
+  const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const processNames = (snapshot) =>
+    snapshot.workerProcesses
+      .flatMap((entry) => (Array.isArray(entry?.names) ? entry.names : []))
+      .filter(Boolean)
+      .sort();
+  return (
+    !before.agentNames.includes(targetName) &&
+    !after.agentNames.includes(targetName) &&
+    !processNames(before).includes(targetName) &&
+    !processNames(after).includes(targetName) &&
+    !before.fleetNodeKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    !after.fleetNodeKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    !before.sandboxKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    !after.sandboxKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    same(before.agentNames, after.agentNames) &&
+    same(before.fleetNodeKeys, after.fleetNodeKeys) &&
+    same(before.sandboxIds, after.sandboxIds) &&
+    same(before.sandboxKeys, after.sandboxKeys) &&
+    same(before.workerProcesses, after.workerProcesses)
+  );
 }
 
 export function bindInspectedSnapshotManifest(inspected, inspectionError) {
@@ -1258,6 +1309,57 @@ export function validateFleetEvidence(evidence, matrix) {
     if (/\b(?:at|nt|rk|wk)_[A-Za-z0-9._~+/=-]{8,}\b/.test(serialized)) {
       throw new Error(`operation ${operation.id} contains an unredacted token`);
     }
+    if (operation.id.startsWith('initial-task-sentinel-')) {
+      if (
+        operation.derivedObservation !== true ||
+        operation.executionKind !== 'derived-observation' ||
+        typeof operation.derivedFrom !== 'string' ||
+        !operation.derivedFrom.startsWith('provision-node-')
+      ) {
+        throw new Error(
+          `operation ${operation.id} must be marked as a derived observation, not a command execution`
+        );
+      }
+    }
+
+    if (operation.id === 'fleet-spawn-reject-droid' && operation.status === 'pass') {
+      const targetName = `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`;
+      if (!noPartialCreationProofPass(operation.partialCreationProof, targetName)) {
+        throw new Error(
+          'fleet-spawn-reject-droid did not prove no agent, worker process, Cloud record, or Daytona sandbox was created'
+        );
+      }
+    }
+    if (
+      (operation.group === 'fleet-provider' ||
+        operation.group === 'fleet-spawn' ||
+        operation.group === 'fleet-sandbox' ||
+        operation.group === 'node-agent-provider' ||
+        operation.group === 'node-agent-spawn') &&
+      (operation.group !== 'node-agent-spawn' || operation.expect !== 'sentinel-and-exit') &&
+      operation.id !== 'fleet-spawn-reject-droid'
+    ) {
+      const expectedProvider =
+        operation.id.match(
+          /^(?:fleet-spawn-provider|node-agent-spawn-provider)-(claude|codex|gemini|aider|goose|grok|opencode|droid|cursor|pi|deepagents)(?:-native)?$/
+        )?.[1] ?? 'codex';
+      const expectedRuntime =
+        (operation.group === 'node-agent-provider' || operation.group === 'node-agent-spawn') &&
+        operation.id.endsWith('-native')
+          ? 'native'
+          : 'pty';
+      if (
+        operation.status === 'pass' &&
+        (operation.observedIdentitySource !== 'node-agent-list' ||
+          operation.observedAgentName !== `${operation.id}-${evidence.nonce.slice(0, 16)}` ||
+          operation.observedProvider !== expectedProvider ||
+          operation.observedRuntime !== expectedRuntime)
+      ) {
+        throw new Error(
+          `operation ${operation.id} did not prove the actual spawned agent provider/runtime identity`
+        );
+      }
+    }
   }
 
   if (!Array.isArray(evidence.resources)) throw new Error('evidence.resources must be an array');
@@ -1358,6 +1460,52 @@ export function validateFleetEvidence(evidence, matrix) {
     if (evidence.cleanup?.status === 'pass' && resource.cleanupState !== 'absent') {
       throw new Error(`Relay agent ${resource.id} was not cleaned up`);
     }
+    if (resource.sandboxId !== undefined) {
+      const sandbox = sandboxResources.find(({ id }) => id === resource.sandboxId);
+      if (
+        !sandbox ||
+        resource.sandboxNodeId !== sandbox.nodeId ||
+        resource.sandboxNodeName !== sandbox.nodeName ||
+        resource.cloudWorkspaceId !== sandbox.cloudWorkspaceId ||
+        resource.ownership !== 'created-by-run'
+      ) {
+        throw new Error(`Relay agent ${resource.id} is not bound to the exact owned sandbox identity`);
+      }
+    }
+  }
+  const sandboxRelease = evidence.operations.find(({ id }) => id === 'fleet-release-reclaims-owned-sandbox');
+  if (sandboxRelease?.status === 'pass') {
+    const proof = sandboxRelease.sandboxReleaseProof;
+    const sandbox = sandboxResources.find(({ id }) => id === proof?.sandboxId);
+    const worker = evidence.resources.find(
+      ({ type, id }) => type === 'relay-agent' && id === proof?.workerName
+    );
+    const intent = evidence.ownershipIntents.find(
+      ({ type, name }) => type === 'daytona-sandbox' && name === proof?.sandboxName
+    );
+    if (
+      !proof ||
+      !sandbox ||
+      !worker ||
+      !intent ||
+      proof.sandboxName !== sandbox.nodeName ||
+      proof.cloudWorkspaceId !== sandbox.cloudWorkspaceId ||
+      proof.relayWorkspaceId !== sandbox.relayWorkspaceId ||
+      proof.nodeId !== sandbox.nodeId ||
+      proof.workerName !== `${'fleet-spawn-sandbox-scoped-mount'}-${evidence.nonce.slice(0, 16)}` ||
+      worker.sandboxId !== sandbox.id ||
+      worker.sandboxNodeId !== sandbox.nodeId ||
+      intent.nonce !== evidence.nonce ||
+      proof.ownership !== 'created-by-run' ||
+      proof.ownershipNonce !== evidence.nonce ||
+      proof.workerProcessAbsent !== true ||
+      proof.workerIdentityAbsent !== true ||
+      proof.sandboxAbsent !== true
+    ) {
+      throw new Error(
+        'fleet release sandbox evidence is not bound to the exact owned sandbox, worker, and absence checks'
+      );
+    }
   }
   if (!['pass', 'fail'].includes(evidence.cleanup?.status)) {
     throw new Error('evidence cleanup status is invalid');
@@ -1456,7 +1604,13 @@ export function summarizeFleetCampaign(attempts, matrix) {
   const operations = matrix.operations.map(({ id, group }) => {
     const records = attempts.map(({ nonce, evidence }) => {
       const operation = evidence.operations.find((candidate) => candidate.id === id);
-      return { nonce, status: operation.status, durationMs: operation.durationMs };
+      return {
+        nonce,
+        status: operation.status,
+        durationMs: operation.durationMs,
+        executionKind: operation.executionKind ?? 'command',
+        derivedObservation: operation.derivedObservation === true,
+      };
     });
     const statuses = [...new Set(records.map(({ status }) => status))];
     const classification =
@@ -1486,6 +1640,13 @@ export function summarizeFleetCampaign(attempts, matrix) {
       },
     };
   });
+  const derivedObservationIds = new Set(
+    operations
+      .filter(({ attempts: records }) => records.every(({ derivedObservation }) => derivedObservation))
+      .map(({ id }) => id)
+  );
+  const derivedObservations = operations.filter(({ id }) => derivedObservationIds.has(id));
+  const commandExecutions = operations.filter(({ id }) => !derivedObservationIds.has(id));
   const hasProductFailure =
     attempts.some(({ evidence }) => evidence.criticalLifecycle?.status === 'fail') ||
     operations.some(
@@ -1533,6 +1694,14 @@ export function summarizeFleetCampaign(attempts, matrix) {
       })),
     },
     operations,
+    operationTotals: {
+      matrixOperationCount: operations.length,
+      independentCommandExecutionCount: commandExecutions.length,
+      derivedObservationCount: derivedObservations.length,
+      derivedObservationIds: [...derivedObservationIds].filter((id) =>
+        operations.some((operation) => operation.id === id)
+      ),
+    },
     cleanupStatus,
     productVerdict: hasProductFailure ? 'RED' : hasIncomplete ? 'YELLOW' : 'GREEN',
     infrastructureStatus: cleanupStatus === 'pass' ? 'PASS' : 'FAIL',
@@ -1818,6 +1987,9 @@ class FleetBoard {
         : Buffer.byteLength(result.stderr ?? ''),
       stdoutTruncated: result.stdoutTruncated === true,
       stderrTruncated: result.stderrTruncated === true,
+      executionKind: result.derivedObservation === true ? 'derived-observation' : 'command',
+      ...(result.derivedObservation === true ? { derivedObservation: true } : {}),
+      ...(result.derivedFrom ? { derivedFrom: result.derivedFrom } : {}),
       ...(result.signal ? { signal: result.signal } : {}),
       ...(result.stdout ? { stdout: redactFleetEvidence(result.stdout) } : {}),
       ...(result.stderr ? { stderr: redactFleetEvidence(result.stderr) } : {}),
@@ -1827,6 +1999,19 @@ class FleetBoard {
         : {}),
       ...(result.observedExit !== undefined ? { observedExit: result.observedExit === true } : {}),
       ...(result.observedStream !== undefined ? { observedStream: result.observedStream === true } : {}),
+      ...(result.observedAgentName !== undefined ? { observedAgentName: result.observedAgentName } : {}),
+      ...(result.observedProvider !== undefined ? { observedProvider: result.observedProvider } : {}),
+      ...(result.observedRuntime !== undefined ? { observedRuntime: result.observedRuntime } : {}),
+      ...(result.observedModel !== undefined ? { observedModel: result.observedModel } : {}),
+      ...(result.observedIdentitySource !== undefined
+        ? { observedIdentitySource: result.observedIdentitySource }
+        : {}),
+      ...(result.partialCreationProof !== undefined
+        ? { partialCreationProof: result.partialCreationProof }
+        : {}),
+      ...(result.sandboxReleaseProof !== undefined
+        ? { sandboxReleaseProof: result.sandboxReleaseProof }
+        : {}),
       ...(result.blockedReason ? { blockedReason: redactFleetEvidence(result.blockedReason) } : {}),
       ...(result.safetyReason ? { safetyReason: redactFleetEvidence(result.safetyReason) } : {}),
     };
@@ -1877,6 +2062,8 @@ class FleetBoard {
       observedStream: input.observedStream,
       blockedReason: input.blockedReason,
       safetyReason: input.safetyReason,
+      derivedObservation: true,
+      derivedFrom: input.derivedFrom,
     }));
   }
 
@@ -1952,6 +2139,101 @@ class FleetBoard {
       throw new Error('fleet nodes --all returned invalid JSON');
     }
     return payload.nodes;
+  }
+
+  async listNodeAgents(node) {
+    if (!node?.id) throw new Error('node identity is required to inspect worker processes');
+    const result = await execute(this.inside(node.id, 'node', 'agent', 'list'), {
+      timeoutMs: 30_000,
+      maxCaptureBytes: 4 * 1024 * 1024,
+    });
+    if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
+      throw new Error(result._rawStderr || 'node agent list failed');
+    }
+    const payload = tryParseJson(result._rawStdout);
+    const agents = Array.isArray(payload) ? payload : Array.isArray(payload?.agents) ? payload.agents : null;
+    if (!agents) throw new Error('node agent list returned invalid JSON');
+    return agents;
+  }
+
+  async waitForFleetAgentIdentity(node, name, expectedProvider, expectedRuntime = 'pty', expectedModel) {
+    const deadline = Date.now() + 60_000;
+    let last;
+    while (Date.now() < deadline) {
+      try {
+        const agents = await this.listNodeAgents(node);
+        const exact = agents.find((agent) => agent?.name === name);
+        last = exact;
+        const actualProvider = exact?.cli ?? exact?.provider;
+        const pass =
+          Boolean(exact) &&
+          actualProvider === expectedProvider &&
+          exact.runtime_kind === expectedRuntime &&
+          (expectedModel === undefined || exact.model === expectedModel);
+        if (pass) {
+          return {
+            pass: true,
+            agent: exact,
+            provider: actualProvider,
+            runtime: exact.runtime_kind,
+            model: exact.model,
+          };
+        }
+      } catch {
+        // Keep polling until the bounded identity deadline; an unreadable
+        // inventory is not proof that the worker launched correctly.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    return {
+      pass: false,
+      agent: last,
+      provider: last?.cli ?? last?.provider,
+      runtime: last?.runtime_kind,
+      model: last?.model,
+    };
+  }
+
+  async waitForSandboxAbsentId(sandboxId, timeoutMs = 45_000) {
+    if (!UUID.test(sandboxId ?? '')) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const present = (await this.listDaytona()).some(({ id }) => id === sandboxId);
+      if (!present) return true;
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+    return false;
+  }
+
+  async captureNoPartialCreationProof(name) {
+    const [agentNames, fleetNodes, sandboxes] = await Promise.all([
+      this.listAllWorkspaceAgentNames(),
+      this.listAllFleetNodes(),
+      this.listDaytona(),
+    ]);
+    const workerProcesses = [];
+    for (const node of this.availableBoardNodes()) {
+      const agents = await this.listNodeAgents(node);
+      workerProcesses.push({
+        nodeId: node.nodeId,
+        nodeName: node.nodeName,
+        names: agents
+          .map(({ name }) => name)
+          .filter(Boolean)
+          .sort(),
+      });
+    }
+    return {
+      targetName: name,
+      agentNames: [...agentNames].sort(),
+      fleetNodeKeys: fleetNodes.map(({ id, name }) => `${id ?? ''}:${name ?? ''}`).sort(),
+      sandboxIds: sandboxes
+        .map(({ id }) => id)
+        .filter(Boolean)
+        .sort(),
+      sandboxKeys: sandboxes.map(({ id, name }) => `${id ?? ''}:${name ?? ''}`).sort(),
+      workerProcesses,
+    };
   }
 
   async exactAgentExists(name) {
@@ -2119,13 +2401,7 @@ class FleetBoard {
     if (!node?.id) return false;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const result = await execute(this.inside(node.id, 'node', 'agent', 'list'), { timeoutMs: 30_000 });
-      const payload = result.exitCode === 0 ? tryParseJson(result._rawStdout) : undefined;
-      const agents = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.agents)
-          ? payload.agents
-          : null;
+      const agents = await this.listNodeAgents(node).catch(() => null);
       if (agents && !agents.some((agent) => agent?.name === name)) return true;
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
@@ -2214,6 +2490,19 @@ class FleetBoard {
       const payload = tryParseJson(rawResult._rawStdout);
       const sandbox = payload?.sandbox;
       const resource = this.addSandboxFromPayload(sandbox, options.sandboxRole ?? 'scenario');
+      if (resource) {
+        const workerResource = this.evidence.resources.find(
+          (entry) => entry.type === 'relay-agent' && entry.id === options.agentName
+        );
+        if (workerResource) {
+          Object.assign(workerResource, {
+            sandboxId: resource.id,
+            sandboxNodeId: resource.nodeId,
+            sandboxNodeName: resource.nodeName,
+            cloudWorkspaceId: resource.cloudWorkspaceId,
+          });
+        }
+      }
       if (resource) await this.checkpoint();
       let sandboxContract = true;
       const sandboxChecks = [];
@@ -2293,6 +2582,21 @@ class FleetBoard {
           ? await this.waitForFleetPlacement(options.agentName, expectedPlacementNode, 60_000)
           : { pass: false, observedNode: undefined, expectedNode: expectedPlacementNode };
       const placementContract = placement.pass === true;
+      const placementNode = expectedPlacementNode
+        ? ([this.nodeA, this.nodeB].find(({ nodeName } = {}) => nodeName === expectedPlacementNode) ??
+          (resource?.id ? { id: resource.id, nodeName: sandbox.nodeName } : undefined))
+        : undefined;
+      const identity =
+        rawResult.exitCode === 0 && placementNode
+          ? await this.waitForFleetAgentIdentity(
+              placementNode,
+              options.agentName,
+              options.provider,
+              options.runtime ?? 'pty',
+              options.model
+            )
+          : { pass: false };
+      const identityContract = identity.pass === true;
       let observedSentinel = false;
       let sentinelDetail = '';
       if (rawResult.exitCode === 0 && options.sentinel) {
@@ -2311,17 +2615,29 @@ class FleetBoard {
           sandboxContract &&
           inputContract &&
           noConfirmContract &&
-          placementContract
+          placementContract &&
+          identityContract
             ? 0
             : 1,
         observedSentinel:
-          observedSentinel && sandboxContract && inputContract && noConfirmContract && placementContract,
+          observedSentinel &&
+          sandboxContract &&
+          inputContract &&
+          noConfirmContract &&
+          placementContract &&
+          identityContract,
+        observedAgentName: identity.agent?.name,
+        observedProvider: identity.provider,
+        observedRuntime: identity.runtime,
+        observedModel: identity.model,
+        observedIdentitySource: identityContract ? 'node-agent-list' : 'node-agent-list-failed',
         summary: [
           resource ? `sandboxId=${resource.id} nodeId=${resource.nodeId} provider=${resource.provider}` : '',
           sandboxChecks.join(' '),
           `inputContract=${inputContract} inputChecks=${JSON.stringify(inputChecks)}`,
           `noConfirmContract=${noConfirmContract} rawCommandMs=${Math.round(rawResult.durationMs)}`,
           `placementContract=${placementContract} expectedNode=${expectedPlacementNode ?? 'missing'} observedNode=${placement.observedNode ?? 'missing'} placementListExit=${placement.lastExitCode ?? 'not-run'} placementMalformed=${placement.malformed === true}`,
+          `identityContract=${identityContract} observedAgent=${identity.agent?.name ?? 'missing'} observedProvider=${identity.provider ?? 'missing'} observedRuntime=${identity.runtime ?? 'missing'} observedModel=${identity.model ?? 'missing'}`,
           `agentOwnership=${agentOwnership}`,
           sentinelDetail,
         ]
@@ -2702,12 +3018,31 @@ class FleetBoard {
       const placement = await this.waitForFleetPlacement(agentName, undefined, 60_000);
       const assignedNode = placement.observedNode;
       const ownedPlacement = availableNodes.some(({ nodeName }) => nodeName === assignedNode);
+      const assignedNodeResource = availableNodes.find(({ nodeName }) => nodeName === assignedNode);
+      const identity = ownedPlacement
+        ? await this.waitForFleetAgentIdentity(
+            assignedNodeResource,
+            agentName,
+            'codex',
+            'pty',
+            process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna'
+          )
+        : { pass: false };
       const observed = await this.waitForSentinel(sentinel, 60_000, agentName);
       return {
         ...stripPrivateExecution(commandResult),
         observedSentinel:
-          commandResult.exitCode === 0 && placement.pass && ownedPlacement && observed.observed,
-        summary: `assignedNode=${assignedNode ?? 'missing'} placementObserved=${placement.pass} ownedPlacement=${ownedPlacement}\n${observed.detail}`,
+          commandResult.exitCode === 0 &&
+          placement.pass &&
+          ownedPlacement &&
+          identity.pass &&
+          observed.observed,
+        observedAgentName: identity.agent?.name,
+        observedProvider: identity.provider,
+        observedRuntime: identity.runtime,
+        observedModel: identity.model,
+        observedIdentitySource: identity.pass ? 'node-agent-list' : 'node-agent-list-failed',
+        summary: `assignedNode=${assignedNode ?? 'missing'} placementObserved=${placement.pass} ownedPlacement=${ownedPlacement} identityContract=${identity.pass} observedProvider=${identity.provider ?? 'missing'} observedRuntime=${identity.runtime ?? 'missing'}\n${observed.detail}`,
       };
     });
     await this.releaseSupport(agentName, null);
@@ -2741,19 +3076,28 @@ class FleetBoard {
         await this.releaseSupport(agentName, node);
       }
     }
-    await this.command(
-      'fleet-spawn-reject-droid',
-      this.cliArgv(
-        'fleet',
-        'spawn',
-        'droid',
-        '--name',
-        `fleet-spawn-provider-droid-${this.short}`,
-        '--task',
-        'This must be rejected by the public Fleet parser.'
-      ),
-      { timeoutMs: 15_000 }
-    );
+    const rejectedName = `fleet-spawn-provider-droid-${this.short}`;
+    await this.record('fleet-spawn-reject-droid', async () => {
+      const before = await this.captureNoPartialCreationProof(rejectedName);
+      const result = await execute(
+        this.cliArgv(
+          'fleet',
+          'spawn',
+          'droid',
+          '--name',
+          rejectedName,
+          '--task',
+          'This must be rejected by the public Fleet parser.'
+        ),
+        { timeoutMs: 15_000 }
+      );
+      const after = await this.captureNoPartialCreationProof(rejectedName);
+      return {
+        ...stripPrivateExecution(result),
+        partialCreationProof: { targetName: rejectedName, before, after },
+        summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
+      };
+    });
   }
 
   async mountedSandboxCases() {
@@ -2827,6 +3171,7 @@ class FleetBoard {
         ({ id: operationId }) => operationId === `provision-node-${letter}`
       );
       await this.derived(id, {
+        derivedFrom: `provision-node-${letter}`,
         argv: provision?.argv ?? [],
         exitCode: provision?.exitCode ?? 1,
         observedSentinel: provision?.observedSentinel === true,
@@ -3255,29 +3600,32 @@ class FleetBoard {
       if (extra.expectExit) observedExit = await this.waitForNodeAgentAbsent(node, agentName, 45_000);
       let inventoryContract = true;
       let inventorySummary = 'not-required-for-exit-lifecycle';
+      let observedAgent;
       if (!extra.expectExit) {
-        const list = await execute(this.inside(node.id, 'node', 'agent', 'list'), {
-          timeoutMs: 30_000,
-          maxCaptureBytes: 1024 * 1024,
-        });
-        const payload = tryParseJson(list._rawStdout);
-        const agents = Array.isArray(payload) ? payload : [];
+        const agents = await this.listNodeAgents(node);
         const exact = agents.find(({ name }) => name === agentName);
+        observedAgent = exact;
         const expectedRuntime = extra.runtime === 'native' ? 'native' : 'pty';
+        const actualProvider = exact?.cli ?? exact?.provider;
         inventoryContract =
           Boolean(exact) &&
-          exact.cli === provider &&
+          actualProvider === provider &&
           exact.runtime_kind === expectedRuntime &&
           (expectedModel === undefined || exact.model === expectedModel) &&
           (extra.channels === undefined ||
             extra.channels.every((channel) => exact.channels?.includes?.(channel) === true));
-        inventorySummary = `listed=${Boolean(exact)} cli=${exact?.cli ?? 'missing'} runtime=${exact?.runtime_kind ?? 'missing'} model=${exact?.model ?? 'missing'} channels=${JSON.stringify(exact?.channels ?? [])}`;
+        inventorySummary = `listed=${Boolean(exact)} provider=${actualProvider ?? 'missing'} runtime=${exact?.runtime_kind ?? 'missing'} model=${exact?.model ?? 'missing'} channels=${JSON.stringify(exact?.channels ?? [])}`;
       }
       return {
         ...stripPrivateExecution(commandResult),
         exitCode: commandResult.exitCode === 0 && inventoryContract ? 0 : 1,
         observedSentinel: observed.observed && inventoryContract,
         ...(observedExit === undefined ? {} : { observedExit }),
+        observedAgentName: observedAgent?.name,
+        observedProvider: observedAgent?.cli ?? observedAgent?.provider,
+        observedRuntime: observedAgent?.runtime_kind,
+        observedModel: observedAgent?.model,
+        observedIdentitySource: observedAgent ? 'node-agent-list' : 'not-required-exit-lifecycle',
         summary: `${inventorySummary}\n${observed.detail}`,
       };
     });
@@ -3359,7 +3707,6 @@ class FleetBoard {
     const controlName = `node-agent-spawn-codex-auto-a-${this.short}`;
     if (!node?.nodeName || !this.controller) {
       for (const id of [
-        'node-agent-set-model',
         'node-agent-attach-view-json',
         'node-agent-attach-drive-json',
         'node-agent-attach-passthrough-json',
@@ -3372,28 +3719,6 @@ class FleetBoard {
         await this.derived(id, { blockedReason: 'live owned board node or controller unavailable' });
       return;
     }
-    await this.assertedCommand(
-      'node-agent-set-model',
-      this.inside(node.id, 'node', 'agent', 'set-model', controlName, 'gpt-5.6-luna', '--json'),
-      (result) => {
-        const payload = tryParseJson(result._rawStdout);
-        const pass =
-          payload?.name === controlName &&
-          payload?.requestedModel === 'gpt-5.6-luna' &&
-          payload?.effectiveModel === 'gpt-5.6-luna' &&
-          payload?.success === true &&
-          payload?.accepted === true &&
-          payload?.pending === false &&
-          payload?.applied === true &&
-          typeof payload?.receiptId === 'string' &&
-          payload.receiptId.length > 0;
-        return {
-          pass,
-          summary: `issue=1658 requestedModel=${payload?.requestedModel ?? 'missing'} effectiveModel=${payload?.effectiveModel ?? 'missing'} accepted=${payload?.accepted} pending=${payload?.pending} applied=${payload?.applied} receipt=${typeof payload?.receiptId === 'string'}`,
-        };
-      },
-      { timeoutMs: 30_000 }
-    );
     for (const mode of ['view', 'drive', 'passthrough']) {
       const id = `node-agent-attach-${mode}-json`;
       await this.record(id, async () => {
@@ -3911,6 +4236,21 @@ class FleetBoard {
         (entry) => entry.type === 'daytona-sandbox' && entry.nodeName === scopedName
       );
       if (!resource) return { argv: [], blockedReason: 'scoped sandbox was not provisioned' };
+      const node = [this.nodeA, this.nodeB].find(({ nodeName } = {}) => nodeName === resource.nodeName);
+      const worker = this.evidence.resources.find(
+        (entry) => entry.type === 'relay-agent' && entry.id === scopedAgent
+      );
+      const intent = this.evidence.ownershipIntents.find(
+        ({ type, name }) => type === 'daytona-sandbox' && name === resource.nodeName
+      );
+      const ownershipBound =
+        resource.ownership === 'created-by-run' &&
+        intent?.nonce === this.nonce &&
+        intent?.name === resource.nodeName &&
+        worker?.sandboxId === resource.id &&
+        worker?.sandboxNodeId === resource.nodeId &&
+        worker?.sandboxNodeName === resource.nodeName &&
+        worker?.cloudWorkspaceId === resource.cloudWorkspaceId;
       const result = await execute(
         this.cliArgv(
           'fleet',
@@ -3929,10 +4269,35 @@ class FleetBoard {
         if (!present) break;
         await new Promise((resolve) => setTimeout(resolve, 3_000));
       }
+      const workerProcessAbsent =
+        Boolean(node) && (await this.waitForNodeAgentAbsent(node, scopedAgent, 45_000));
+      const workerIdentityAbsent = await this.waitForAgentAbsent(scopedAgent, 45_000);
+      const sandboxAbsent = await this.waitForSandboxAbsentId(resource.id, 45_000);
       return {
         ...stripPrivateExecution(result),
-        exitCode: result.exitCode === 0 && !present ? 0 : 1,
-        summary: `sandboxPresentAfterRelease=${present}`,
+        exitCode:
+          result.exitCode === 0 &&
+          !present &&
+          workerProcessAbsent &&
+          workerIdentityAbsent &&
+          sandboxAbsent &&
+          ownershipBound
+            ? 0
+            : 1,
+        sandboxReleaseProof: {
+          sandboxId: resource.id,
+          sandboxName: resource.nodeName,
+          cloudWorkspaceId: resource.cloudWorkspaceId,
+          relayWorkspaceId: resource.relayWorkspaceId,
+          nodeId: resource.nodeId,
+          workerName: scopedAgent,
+          ownership: resource.ownership,
+          ownershipNonce: intent?.nonce,
+          workerProcessAbsent,
+          workerIdentityAbsent,
+          sandboxAbsent,
+        },
+        summary: `sandboxId=${resource.id} sandboxName=${resource.nodeName} sandboxPresentAfterRelease=${present} workerProcessAbsent=${workerProcessAbsent} workerIdentityAbsent=${workerIdentityAbsent} sandboxAbsent=${sandboxAbsent} ownershipBound=${ownershipBound}`,
       };
     });
   }
