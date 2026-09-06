@@ -22,6 +22,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1671-fleet-release-absence';
+const ENGINE_ACTION_DEADLINE_MS = 30_000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
@@ -146,6 +147,11 @@ try {
     body: JSON.stringify({ reason: 'sealed relayflow release proof' }),
   });
   const releaseElapsedMs = Date.now() - releaseStarted;
+  if (releaseElapsedMs >= ENGINE_ACTION_DEADLINE_MS) {
+    throw new Error(
+      `artifact release exceeded the ${ENGINE_ACTION_DEADLINE_MS}ms engine action deadline: ${releaseElapsedMs}ms`
+    );
+  }
   if (releaseResult.status >= 300 || releaseResult.body.success === false) {
     throw new Error(`artifact release failed: ${JSON.stringify(releaseResult)}`);
   }
