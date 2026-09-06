@@ -394,9 +394,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           // identity completely when the public release requests deletion.
           // Both are roster absence; only a live/located row is a failure.
           return agent === null ||
-            ((agent.status === 'offline' || agent.status === 'released') &&
-              !agent.location_node_id)
-            ? agent ?? { name, status: 'released' }
+            ((agent.status === 'offline' || agent.status === 'released') && !agent.location_node_id)
+            ? (agent ?? { name, status: 'released' })
             : null;
         },
         { timeoutMs: 20_000, label: `${label}: engine roster absence` }
