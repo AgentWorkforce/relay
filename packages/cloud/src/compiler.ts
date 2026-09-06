@@ -1,5 +1,5 @@
 import ignore, { type Ignore } from 'ignore';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentPreset } from './permissions.js';
 
@@ -139,6 +139,46 @@ function resolveScopedWorkdirPatterns(projectDir: string, workdir?: string): str
 
 function matchesAny(relativePath: string, matcher: Ignore): boolean {
   return matcher.ignores(normalizeRelativePath(relativePath));
+}
+
+function exactFutureWritePath(projectDir: string, pattern: string): string | undefined {
+  const trimmed = String(pattern ?? '').trim();
+  if (trimmed === '' || trimmed.startsWith('!') || trimmed.endsWith('/') || /[*?[\]{}]/u.test(trimmed)) {
+    return undefined;
+  }
+
+  const relativePath = normalizeRelativePath(trimmed);
+  if (
+    relativePath === '' ||
+    relativePath === '.' ||
+    relativePath === '..' ||
+    relativePath.startsWith('../') ||
+    path.posix.normalize(relativePath) !== relativePath
+  ) {
+    return undefined;
+  }
+
+  const target = path.resolve(projectDir, ...relativePath.split('/'));
+  const relativeTarget = path.relative(projectDir, target);
+  if (relativeTarget === '' || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`)) {
+    return undefined;
+  }
+  if (existsSync(target)) {
+    return undefined;
+  }
+
+  const parent = path.dirname(target);
+  if (!existsSync(parent) || !lstatSync(parent).isDirectory()) {
+    return undefined;
+  }
+  const realProjectDir = realpathSync(projectDir);
+  const realParent = realpathSync(parent);
+  const relativeParent = path.relative(realProjectDir, realParent);
+  if (relativeParent === '..' || relativeParent.startsWith(`..${path.sep}`)) {
+    return undefined;
+  }
+
+  return relativePath;
 }
 
 function walkProjectFiles(projectDir: string, currentDir = projectDir, files: string[] = []): string[] {
@@ -408,6 +448,21 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
     }
 
     deniedPaths.push(relativePath);
+  }
+
+  // Exact YAML write rules can intentionally name a write-once file that does
+  // not exist yet. Preserve that path in the concrete mount plan when its
+  // parent directory already exists; glob rules remain limited to files found
+  // by the project walk.
+  for (const pattern of fileRules.write) {
+    const relativePath = exactFutureWritePath(projectDir, pattern);
+    if (
+      relativePath &&
+      !readwritePaths.includes(relativePath) &&
+      !matchesAny(relativePath, fileDenyMatcher)
+    ) {
+      readwritePaths.push(relativePath);
+    }
   }
 
   readonlyPaths.sort((left, right) => left.localeCompare(right));

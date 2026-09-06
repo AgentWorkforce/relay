@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
 - `agent-relay node status` bounds optional broker-detail reads so an unresponsive session endpoint cannot hang a liveness probe.
 - `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
+- `@agent-relay/cloud` permission compilation preserves exact future-file writes in Relayfile mount plans when the parent directory already exists.
 
 ### Security
 

@@ -395,11 +395,11 @@ describe('clean-room verification catalog', () => {
 
   it('isolates reviewer drafts by campaign nonce and exact role', () => {
     const root = '.workflow-artifacts/verify-cleanroom';
-    const exact = path.resolve(root, NONCE, 'draft-final-codex-signoff.json');
+    const exact = path.resolve(root, NONCE, 'review-drafts', 'final-codex-signoff', 'draft.json');
     expect(validateReviewDraftPath(exact, root, NONCE, 'final-codex-signoff')).toBe(exact);
     expect(() =>
       validateReviewDraftPath(
-        path.resolve(root, 'draft-final-codex-signoff.json'),
+        path.resolve(root, 'review-drafts', 'final-codex-signoff', 'draft.json'),
         root,
         NONCE,
         'final-codex-signoff'
@@ -521,12 +521,16 @@ describe('clean-room verification catalog', () => {
     expect(source).toMatch(/const\s+sandboxEnvironmentReference\s*=\s*["']\$\{SANDBOX_ID\}["']/);
     expect(source).toMatch(/"sandboxId"\s*:\s*"cloud-\$\{sandboxEnvironmentReference\} or local-\$\{role\}"/);
     expect(runner).toMatch(/if\s*\(\s*review\.sandboxId\s*!==\s*provenance\.sandboxId\s*\)\s*\{/);
-    expect(runner).toContain('kind: `review-provenance/${role}`');
+    expect(runner).toContain("return `review-provenance/${assertSafeId(role, 'role')}/capture`");
     expect(runner.match(/redirect: 'error'/g)?.length).toBeGreaterThanOrEqual(4);
     expect(source).toContain('agent.permissions = lanePermissions');
     expect(source).toContain("access: 'restricted' as const");
     expect(source).toContain('exec: [reviewProvenanceCommand(role)]');
     expect(source).toContain('write: cleanroomLaneWritePaths(NONCE, lane)');
+    expect(source).toContain('...lanes.map((lane) => `lanes/${lane}`)');
+    expect(source).toContain(
+      '...roles.flatMap((role) => [`review-drafts/${role}`, `review-provenance/${role}`])'
+    );
     expect(source).toContain('network: cleanroomLaneNetwork()');
     expect(source).toContain('network: cleanroomReviewNetwork(role, cloudHost)');
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
@@ -536,11 +540,16 @@ describe('clean-room verification catalog', () => {
     const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
     const evidenceScopes = cleanroomLaneEvidenceScopes(NONCE, 'polyglot-plugins');
     expect(writes).toContain('packages/sdk-swift/.build/**');
-    expect(writes).toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`);
+    expect(writes).toContain(
+      `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`
+    );
+    expect(writes).toContain(
+      `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/.mount-write-anchor`
+    );
     expect(writes).not.toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/**`);
     expect(evidenceScopes).toEqual([
-      `relayfile:fs:read:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`,
-      `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`,
+      `relayfile:fs:read:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`,
+      `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`,
     ]);
     expect(() => cleanroomLaneWritePaths('../escape', 'polyglot-plugins')).toThrow(/identity/);
 
@@ -575,7 +584,14 @@ describe('clean-room verification catalog', () => {
       await mkdir(path.join(projectDir, 'packages', 'fixture', 'dist'), { recursive: true });
       await writeFile(path.join(projectDir, 'packages', 'fixture', 'dist', 'placeholder'), 'fixture\n');
       const lane = 'polyglot-plugins';
-      const target = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}.json`;
+      const target = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}/evidence.json`;
+      const mountAnchor = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}/.mount-write-anchor`;
+      const otherTarget = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging/evidence.json`;
+      const otherMountAnchor = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging/.mount-write-anchor`;
+      await mkdir(path.dirname(path.join(projectDir, target)), { recursive: true });
+      await mkdir(path.dirname(path.join(projectDir, otherTarget)), { recursive: true });
+      await writeFile(path.join(projectDir, mountAnchor), 'lane anchor\n');
+      await writeFile(path.join(projectDir, otherMountAnchor), 'other lane anchor\n');
       const compiled = compileAgentPermissions({
         agentName: `lane-${lane}`,
         workspace: 'cleanroom-test',
@@ -588,14 +604,118 @@ describe('clean-room verification catalog', () => {
         },
       });
 
-      expect(compiled.readwritePaths).toEqual(['packages/fixture/dist/placeholder']);
-      expect(compiled.readwritePaths).not.toContain(target);
+      expect(compiled.readwritePaths).toEqual([mountAnchor, target, 'packages/fixture/dist/placeholder']);
       expect(compiled.scopes).toEqual(
         expect.arrayContaining([`relayfile:fs:read:/${target}`, `relayfile:fs:write:/${target}`])
+      );
+      expect(compiled.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}`]).toEqual([
+        'read',
+        'write',
+      ]);
+      expect(compiled.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes`]).toBeUndefined();
+      expect(compiled.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging`]).not.toContain(
+        'write'
       );
       expect(compiled.scopes).not.toContain(
         `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/**`
       );
+
+      await writeFile(path.join(projectDir, otherTarget), '{"lane":"messaging"}\n', { flag: 'wx' });
+      const afterOtherLaneWrites = compileAgentPermissions({
+        agentName: `lane-${lane}`,
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
+          files: { read: ['**'], write: cleanroomLaneWritePaths(NONCE, lane) },
+        },
+      });
+      expect(afterOtherLaneWrites.readwritePaths).not.toContain(otherTarget);
+      expect(afterOtherLaneWrites.scopes).not.toContain(`relayfile:fs:write:/${otherTarget}`);
+      expect(
+        afterOtherLaneWrites.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging`]
+      ).toEqual(['read']);
+      await writeFile(path.join(projectDir, target), '{"created":true}\n', { flag: 'wx' });
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('isolates each reviewer mount from lane evidence and other reviewer outputs', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-review-permissions-'));
+    try {
+      const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
+      const role = 'codex-review-1';
+      const otherRole = 'claude-review-1';
+      const input = `${artifactDir}/review-input-${role}.json`;
+      const laneInput = `${artifactDir}/review-input-${role}-lane-messaging.json`;
+      const ownDraft = `${artifactDir}/review-drafts/${role}/draft.json`;
+      const ownProvenance = `${artifactDir}/review-provenance/${role}/capture.json`;
+      const ownProvenanceAnchor = `${artifactDir}/review-provenance/${role}/.mount-write-anchor`;
+      const otherDraft = `${artifactDir}/review-drafts/${otherRole}/draft.json`;
+      const otherProvenance = `${artifactDir}/review-provenance/${otherRole}/capture.json`;
+      const otherProvenanceAnchor = `${artifactDir}/review-provenance/${otherRole}/.mount-write-anchor`;
+      const laneEvidence = `${artifactDir}/lanes/messaging/evidence.json`;
+
+      for (const directory of [
+        path.dirname(path.join(projectDir, ownDraft)),
+        path.dirname(path.join(projectDir, ownProvenance)),
+        path.dirname(path.join(projectDir, otherDraft)),
+        path.dirname(path.join(projectDir, otherProvenance)),
+        path.dirname(path.join(projectDir, laneEvidence)),
+      ]) {
+        await mkdir(directory, { recursive: true });
+      }
+      for (const target of [
+        input,
+        laneInput,
+        ownDraft,
+        ownProvenanceAnchor,
+        otherDraft,
+        otherProvenance,
+        otherProvenanceAnchor,
+        laneEvidence,
+      ]) {
+        await mkdir(path.dirname(path.join(projectDir, target)), { recursive: true });
+        await writeFile(path.join(projectDir, target), '{}\n');
+      }
+
+      const compiled = compileAgentPermissions({
+        agentName: role,
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          scopes: [`relayfile:fs:read:/${ownProvenance}`, `relayfile:fs:write:/${ownProvenance}`],
+          files: {
+            read: [input, laneInput],
+            write: [ownDraft, ownProvenanceAnchor, ownProvenance],
+            deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
+          },
+        },
+      });
+
+      expect(compiled.readonlyPaths).toEqual(expect.arrayContaining([input, laneInput]));
+      expect(compiled.readwritePaths).toEqual([ownDraft, ownProvenanceAnchor, ownProvenance]);
+      expect(compiled.acl[`/${artifactDir}/review-drafts/${role}`]).toEqual(['read', 'write']);
+      expect(compiled.acl[`/${artifactDir}/review-provenance/${role}`]).toEqual(['read', 'write']);
+      for (const forbiddenDirectory of [
+        `/${artifactDir}/lanes/messaging`,
+        `/${artifactDir}/review-drafts/${otherRole}`,
+        `/${artifactDir}/review-provenance/${otherRole}`,
+      ]) {
+        expect(compiled.acl[forbiddenDirectory]).not.toContain('write');
+      }
+      for (const forbiddenTarget of [laneEvidence, otherDraft, otherProvenance]) {
+        expect(compiled.readwritePaths).not.toContain(forbiddenTarget);
+        expect(compiled.scopes).not.toContain(`relayfile:fs:write:/${forbiddenTarget}`);
+      }
+
+      await writeFile(path.join(projectDir, ownDraft), '{"draft":true}\n');
+      await writeFile(path.join(projectDir, ownProvenance), '{"captured":true}\n', { flag: 'wx' });
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

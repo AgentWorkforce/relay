@@ -66,6 +66,71 @@ test('compileAgentScopes applies explicit file permissions', async () => {
   }
 });
 
+test('compileAgentScopes grants an exact future file through scopes and the mount ACL', async () => {
+  const workspace = await createWorkspace({});
+
+  try {
+    const target = 'evidence/lanes/future.json';
+    await mkdir(path.join(workspace.dir, 'evidence', 'lanes'), { recursive: true });
+    const compiled = compileAgentScopes({
+      agentName: 'lane-writer',
+      workspace: 'relay-test',
+      projectDir: workspace.dir,
+      permissions: {
+        access: 'restricted',
+        inherit: false,
+        files: {
+          read: ['**'],
+          write: [target],
+        },
+      },
+    });
+
+    assert.deepEqual(compiled.readwritePaths, [target]);
+    assert.deepEqual(compiled.scopes, [`relayfile:fs:read:/${target}`, `relayfile:fs:write:/${target}`]);
+    assert.deepEqual(compiled.acl['/evidence/lanes'], ['read', 'write']);
+    await writeFile(path.join(workspace.dir, target), '{"created":true}\n', { flag: 'wx' });
+  } finally {
+    await workspace.cleanup();
+  }
+});
+
+test('compileAgentScopes does not synthesize unsafe or denied future paths', async () => {
+  const workspace = await createWorkspace({
+    'evidence/lanes/existing.json': '{}\n',
+  });
+
+  try {
+    const compiled = compileAgentScopes({
+      agentName: 'lane-writer',
+      workspace: 'relay-test',
+      projectDir: workspace.dir,
+      permissions: {
+        access: 'restricted',
+        inherit: false,
+        files: {
+          write: [
+            'evidence/lanes/*.json',
+            'evidence/lanes/denied.json',
+            'missing-parent/future.json',
+            '../outside.json',
+          ],
+          deny: ['evidence/lanes/denied.json'],
+        },
+      },
+    });
+
+    assert.deepEqual(compiled.readwritePaths, ['evidence/lanes/existing.json']);
+    assert.equal(
+      compiled.readwritePaths.some((entry) => entry.includes('..')),
+      false
+    );
+    assert.deepEqual(compiled.acl['/evidence/lanes'], ['read', 'write']);
+  } finally {
+    await workspace.cleanup();
+  }
+});
+
 test('compileAgentScopes honors the readonly preset', async () => {
   const workspace = await createWorkspace({
     'docs/guide.md': '# guide\n',

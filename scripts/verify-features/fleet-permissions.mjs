@@ -97,7 +97,11 @@ function cleanroomLaneEvidencePath(nonce, lane) {
   if (!/^[a-z0-9][a-z0-9-]{0,60}$/.test(nonce) || !/^[a-z0-9][a-z0-9-]{0,80}$/.test(lane)) {
     throw new Error('cleanroom lane identity is invalid');
   }
-  return `.workflow-artifacts/verify-cleanroom/${nonce}/lanes/${lane}.json`;
+  return `.workflow-artifacts/verify-cleanroom/${nonce}/lanes/${lane}/evidence.json`;
+}
+
+function cleanroomLaneMountAnchorPath(nonce, lane) {
+  return cleanroomLaneEvidencePath(nonce, lane).replace(/evidence\.json$/u, '.mount-write-anchor');
 }
 
 export function cleanroomLaneEvidenceScopes(nonce, lane) {
@@ -117,6 +121,7 @@ export function cleanroomLaneWritePaths(nonce, lane) {
     'plugins/*/node_modules/**',
     'tests/integration/broker/dist/**',
     '.agentworkforce/trajectories/**',
+    cleanroomLaneMountAnchorPath(nonce, lane),
     evidencePath,
   ];
 }
