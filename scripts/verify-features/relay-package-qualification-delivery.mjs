@@ -41,13 +41,6 @@ function boundedString(value, pattern, label) {
   return value;
 }
 
-function workflowPathWithoutRef(value) {
-  assert(typeof value === 'string', 'workflow_run.path must be a string');
-  const parts = value.split('@');
-  assert(parts.length <= 2, 'workflow_run.path must contain at most one ref suffix');
-  return parts[0];
-}
-
 export function validateWorkflowRunEvent(value) {
   const event = object(value, 'event');
   const repository = object(event.repository, 'event.repository');
@@ -55,7 +48,7 @@ export function validateWorkflowRunEvent(value) {
 
   const run = object(event.workflow_run, 'event.workflow_run');
   exactString(run.name, PRODUCER_WORKFLOW_NAME, 'workflow_run.name');
-  exactString(workflowPathWithoutRef(run.path), PRODUCER_WORKFLOW_PATH, 'workflow_run.path');
+  exactString(run.path, PRODUCER_WORKFLOW_PATH, 'workflow_run.path');
   exactString(run.event, 'workflow_dispatch', 'workflow_run.event');
   exactString(run.status, 'completed', 'workflow_run.status');
   exactString(run.conclusion, 'success', 'workflow_run.conclusion');
@@ -103,10 +96,20 @@ function validateArtifact(artifact, context, name, sizeLimit) {
 export function selectQualificationArtifacts(contextValue, pageValues) {
   const context = object(contextValue, 'context');
   assert(Array.isArray(pageValues) && pageValues.length > 0, 'artifact pages must be a non-empty array');
+  assert.equal(pageValues.length, 1, 'bounded producer artifacts must fit in exactly one API page');
 
   const artifacts = pageValues.flatMap((page, index) => {
     const value = object(page, `artifact page ${index}`);
     assert(Array.isArray(value.artifacts), `artifact page ${index}.artifacts must be an array`);
+    assert(
+      Number.isSafeInteger(value.total_count) && value.total_count >= 0,
+      `artifact page ${index}.total_count must be a non-negative safe integer`
+    );
+    assert.equal(
+      value.total_count,
+      value.artifacts.length,
+      `artifact page ${index} must contain every producer artifact`
+    );
     return value.artifacts;
   });
   assert(artifacts.length <= MAX_ARTIFACTS, `producer run must expose at most ${MAX_ARTIFACTS} artifacts`);

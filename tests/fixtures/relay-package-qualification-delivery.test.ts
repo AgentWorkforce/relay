@@ -81,22 +81,15 @@ describe('trusted Relay package qualification delivery', () => {
     });
   });
 
-  it('accepts the Actions API path form with a ref suffix while keeping the path exact', () => {
-    expect(
-      validateWorkflowRunEvent(
-        workflowRunEvent({
-          path: `${CONTEXT.workflowPath}@${CONTEXT.sourceBranch}`,
-        })
-      )
-    ).toEqual(CONTEXT);
-  });
-
   it.each([
     ['main', { head_branch: 'main' }],
     ['an attacker-controlled nested qualification ref', { head_branch: 'qualification/attacker/payload' }],
     ['a traversal-shaped qualification ref', { head_branch: 'qualification/../main' }],
     ['a fork producer', { head_repository: { full_name: 'attacker/relay' } }],
     ['the wrong workflow path', { path: '.github/workflows/attacker.yml' }],
+    ['an empty workflow path ref suffix', { path: `${CONTEXT.workflowPath}@` }],
+    ['a matching workflow path ref suffix', { path: `${CONTEXT.workflowPath}@${CONTEXT.sourceBranch}` }],
+    ['a mismatched workflow path ref suffix', { path: `${CONTEXT.workflowPath}@main` }],
     [
       'the wrong workflow path with a trusted-looking ref suffix',
       { path: '.github/workflows/attacker.yml@qualification/candidate' },
@@ -138,7 +131,23 @@ describe('trusted Relay package qualification delivery', () => {
     const pages = artifactPages();
     pages[0].artifacts[0] = artifact(10, REQUEST_ARTIFACT_NAME, REQUEST_DIGEST, requestOverrides);
     pages[0].artifacts.push(...extras);
+    pages[0].total_count = pages[0].artifacts.length;
     expect(() => selectQualificationArtifacts(CONTEXT, pages)).toThrow();
+  });
+
+  it('rejects incomplete, extra-page, and over-limit artifact listings', () => {
+    const incomplete = artifactPages({ total_count: 4 });
+    expect(() => selectQualificationArtifacts(CONTEXT, incomplete)).toThrow(/every producer artifact/);
+
+    const extraPage = [...artifactPages(), { total_count: 0, artifacts: [] }];
+    expect(() => selectQualificationArtifacts(CONTEXT, extraPage)).toThrow(/exactly one API page/);
+
+    const overLimit = artifactPages();
+    for (let id = 13; id <= 18; id += 1) {
+      overLimit[0].artifacts.push(artifact(id, `unrelated-${id}`, `sha256:${id.toString(16).repeat(64)}`));
+    }
+    overLimit[0].total_count = overLimit[0].artifacts.length;
+    expect(() => selectQualificationArtifacts(CONTEXT, overLimit)).toThrow(/at most 8 artifacts/);
   });
 
   it('requires the uploaded request payload to exactly match the trusted run and attestation identity', () => {
