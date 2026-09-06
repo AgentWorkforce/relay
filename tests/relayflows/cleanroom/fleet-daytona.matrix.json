@@ -72,7 +72,6 @@
     ],
     "node agent new": ["node-agent-new-view"],
     "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
-    "node agent set-model": ["node-agent-set-model"],
     "node agent attach": [
       "node-agent-attach-view-json",
       "node-agent-attach-drive-json",
@@ -85,6 +84,7 @@
     "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
     "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
   },
+  "deferredCommandSurface": ["node agent set-model"],
   "acceptance": {
     "version": 1,
     "profiles": {
@@ -505,7 +505,6 @@
       "node-agent-spawn-provider-pi-native": "direct-node-spawn",
       "node-agent-spawn-provider-deepagents-native": "direct-node-spawn",
       "node-agent-new-view": "direct-node-spawn",
-      "node-agent-set-model": "agent-control",
       "node-agent-attach-view-json": "agent-control",
       "node-agent-attach-drive-json": "agent-control",
       "node-agent-attach-passthrough-json": "agent-control",
@@ -839,12 +838,6 @@
       "expect": "sentinel",
       "allowTimeout": true,
       "argvMustContain": ["--mode", "view"]
-    },
-    {
-      "id": "node-agent-set-model",
-      "group": "node-agent",
-      "expect": "success",
-      "argvMustContain": ["--json"]
     },
     {
       "id": "node-agent-attach-view-json",

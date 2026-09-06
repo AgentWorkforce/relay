@@ -482,7 +482,7 @@
           "id": "fleet-daytona-live-board",
           "title": "Every Fleet and node-agent operation on two fresh Daytona nodes",
           "kind": "coverage-gap",
-          "reason": "Run workflows/verify-fleet-daytona.ts from a Daytona-authenticated operator host. Its 95-operation board cannot borrow an operator's Daytona session inside a generic Cloud lane.",
+          "reason": "Run workflows/verify-fleet-daytona.ts from a Daytona-authenticated operator host. Its 94-operation board cannot borrow an operator's Daytona session inside a generic Cloud lane.",
           "evidence": "fault",
           "coversCategories": ["fleet"],
           "issues": [1609, 1630]
