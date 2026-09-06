@@ -453,6 +453,11 @@ impl BrokerRuntime {
     pub(super) async fn run(mut self) -> Result<()> {
         while !self.shutdown {
             let event = tokio::select! {
+                // A worker response already queued before a maintenance tick
+                // must settle its request before the expiry sweep can remove
+                // the correlation. The response carries its own receive time,
+                // so prioritizing this lane avoids actor-scheduling races.
+                biased;
                 _ = tokio::signal::ctrl_c() => RuntimeEvent::CtrlC,
                 _ = self.lease_check.tick() => RuntimeEvent::LeaseTick,
                 _ = self.sigterm.recv() => RuntimeEvent::Sigterm,
