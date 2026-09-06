@@ -276,6 +276,14 @@ function terminalSessionFailureSummary(error: TerminalSessionAttemptError): stri
   return 'The terminal-session request was rejected';
 }
 
+function terminalSessionRecoveryHint(error: TerminalSessionAttemptError | undefined): string {
+  if (error?.code !== 'node_not_found') return '';
+  return (
+    " If 'agent-relay node status' labels that broker LOCAL-ONLY, attach through SSH with " +
+    "'agent-relay node agent attach <agent> --ssh-host <host> --state-dir <path>'."
+  );
+}
+
 function isRetryableTerminalSessionFailure(code: string | undefined): boolean {
   // These structured responses are emitted before a session is returned, so
   // retrying cannot duplicate a successful allocation. A fetch timeout,
@@ -415,9 +423,10 @@ export async function startFleetNodeAttachProxy(
           ? 'not retried because the POST may have completed server-side'
           : 'not retried because the failure was terminal';
     const upstream = failure?.message ? ` Upstream message ${diagnosticValue(failure.message)}.` : '';
+    const recoveryHint = terminalSessionRecoveryHint(failure);
     throw new FleetNodeAttachError(
       `Error: ${failure ? terminalSessionFailureSummary(failure) : 'Terminal-session request failed'}.` +
-        `${upstream} Node ref ${diagnosticValue(options.node.trim())}, resolved node id unavailable (session creation did not complete);` +
+        `${upstream}${recoveryHint} Node ref ${diagnosticValue(options.node.trim())}, resolved node id unavailable (session creation did not complete);` +
         ` endpoint ${diagnosticValue(diagnosticEndpoint(sessionEndpoint))};${status}${code}` +
         ` timeout ${sessionRequestTimeoutMs}ms per attempt; overall budget ${sessionRequestTotalTimeoutMs}ms;` +
         ` attempts ${sessionRequestAttempts} (${retryNote}).`,
