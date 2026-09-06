@@ -496,9 +496,7 @@ try {
   );
   process.stdout.write(`${signature}\n`);
 } catch (error) {
-  await Promise.all(
-    [...activeProofDirs].map((directory) => rm(directory, { recursive: true, force: true }))
-  );
+  await Promise.all([...activeProofDirs].map((directory) => rm(directory, { recursive: true, force: true })));
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   throw error;
 }
