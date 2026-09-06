@@ -8,6 +8,17 @@ struct AppServerAuthConfig {
     password: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OpenCodeModelOutcome {
+    Applied(String),
+    /// The mutation was accepted, but confirmation could not be observed.
+    /// Keep the broker receipt pending until a subsequent response or its
+    /// deadline; an unavailable GET is not proof that the provider rejected
+    /// the change.
+    Pending(String),
+    Rejected(String),
+}
+
 const APP_SERVER_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand) -> Result<()> {
@@ -297,10 +308,22 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     )),
                 };
                 let response = match result {
-                    Ok(effective_model) => json!({
+                    Ok(OpenCodeModelOutcome::Applied(effective_model)) => json!({
                         "status": "applied",
                         "applied": true,
                         "effective_model": effective_model,
+                    }),
+                    Ok(OpenCodeModelOutcome::Pending(error)) => json!({
+                        "status": "accepted_pending",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": error,
+                    }),
+                    Ok(OpenCodeModelOutcome::Rejected(error)) => json!({
+                        "status": "rejected",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": error,
                     }),
                     Err(error) => json!({
                         "status": "rejected",
@@ -454,14 +477,16 @@ async fn send_opencode_prompt(
 /// OpenCode's V2 server API is the one built-in provider contract that can
 /// actually switch a live session's model. The 204 mutation is followed by a
 /// session read; returning `applied` is only valid when that read reports the
-/// exact requested provider/model reference.
+/// exact requested provider/model reference. If confirmation is unavailable,
+/// return a pending outcome so the broker retains uncertainty until its
+/// deadline.
 async fn set_opencode_model(
     http: &reqwest::Client,
     endpoint: &str,
     session_id: &str,
     requested_model: &str,
     auth: Option<&AppServerAuthConfig>,
-) -> Result<String> {
+) -> Result<OpenCodeModelOutcome> {
     let (provider_id, model_id) = requested_model
         .split_once('/')
         .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
@@ -476,19 +501,32 @@ async fn set_opencode_model(
     send_app_server_request(apply_app_server_auth(request, auth)).await?;
 
     let session_url = opencode_v2_session_url(endpoint, session_id, "");
-    let session = apply_app_server_auth(http.get(session_url), auth)
+    let session = match apply_app_server_auth(http.get(session_url), auth)
         .send()
         .await
-        .context("OpenCode model confirmation request failed")?;
+    {
+        Ok(session) => session,
+        Err(error) => {
+            return Ok(OpenCodeModelOutcome::Pending(format!(
+                "OpenCode model confirmation request failed: {error}"
+            )))
+        }
+    };
     if !session.status().is_success() {
         let status = session.status();
         let body = session.text().await.unwrap_or_default();
-        anyhow::bail!("OpenCode model confirmation failed with status {status}: {body}");
+        return Ok(OpenCodeModelOutcome::Pending(format!(
+            "OpenCode model confirmation failed with status {status}: {body}"
+        )));
     }
-    let body: Value = session
-        .json()
-        .await
-        .context("OpenCode model confirmation was not valid JSON")?;
+    let body: Value = match session.json().await {
+        Ok(body) => body,
+        Err(error) => {
+            return Ok(OpenCodeModelOutcome::Pending(format!(
+                "OpenCode model confirmation was not valid JSON: {error}"
+            )))
+        }
+    };
     let data = body.get("data").unwrap_or(&body);
     let confirmed_provider = data
         .get("model")
@@ -504,11 +542,11 @@ async fn set_opencode_model(
         confirmed_id.unwrap_or_default()
     );
     if effective_model != requested_model {
-        anyhow::bail!(
+        return Ok(OpenCodeModelOutcome::Rejected(format!(
             "OpenCode confirmed effective model '{effective_model}', not requested '{requested_model}'"
-        );
+        )));
     }
-    Ok(effective_model)
+    Ok(OpenCodeModelOutcome::Applied(effective_model))
 }
 
 async fn release_app_server(
@@ -636,9 +674,31 @@ mod tests {
             set_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
                 .await
                 .unwrap();
-        assert_eq!(effective, "openai/gpt-5.4");
+        assert_eq!(
+            effective,
+            OpenCodeModelOutcome::Applied("openai/gpt-5.4".into())
+        );
         switch.assert();
         confirm.assert();
+    }
+
+    #[tokio::test]
+    async fn opencode_model_mutation_keeps_pending_when_confirmation_is_unavailable() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/session/ses-1/model");
+            then.status(204);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(503).body("provider warming up");
+        });
+        let http = reqwest::Client::new();
+        let outcome =
+            set_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert!(matches!(outcome, OpenCodeModelOutcome::Pending(error) if error.contains("503")));
     }
 
     #[test]

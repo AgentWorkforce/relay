@@ -24,6 +24,7 @@ const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const binaryPath = requiredValue('RELAY_PR_PROOF_BROKER_BINARY');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
+const activeProofDirs = new Set();
 if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
 }
@@ -120,13 +121,14 @@ try {
   const hasJson = /--json\b/.test(help);
   if (arm === 'head' && hasJson) {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-'));
+    activeProofDirs.add(stateDir);
     const brokerStateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-broker-'));
+    activeProofDirs.add(brokerStateDir);
     const requestId = 'model_pr_proof_1658';
     let broker;
     let provider;
     let providerOutput = '';
     try {
-      const providerPort = await freePort();
       const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
       const providerVersion = spawnSync(providerBinary, ['--version'], {
         cwd: stateDir,
@@ -139,43 +141,61 @@ try {
           `real OpenCode CLI is unavailable: ${providerVersion.error?.message ?? providerVersion.stderr ?? `exit ${providerVersion.status}`}`
         );
       }
-      provider = spawn(
-        providerBinary,
-        ['serve', '--hostname', '127.0.0.1', '--port', String(providerPort), '--pure'],
-        {
-          cwd: stateDir,
-          env: {
-            ...process.env,
-            HOME: stateDir,
-            RELAY_SKIP_TELEMETRY: '1',
-            OPENCODE_SERVER_PASSWORD: '',
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        }
-      );
-      provider.stdout.on('data', (chunk) => {
-        providerOutput += chunk;
-      });
-      provider.stderr.on('data', (chunk) => {
-        providerOutput += chunk;
-      });
-      provider.once('error', (error) => {
-        providerOutput += `OpenCode process error: ${error.message}`;
-      });
-      const providerEndpoint = `http://127.0.0.1:${providerPort}`;
-      await waitFor(async () => {
-        if (provider.exitCode !== null) {
-          throw new Error(`OpenCode exited early: ${providerOutput}`);
-        }
+      let providerEndpoint;
+      let providerReady = false;
+      // freePort() necessarily closes its probe socket before the child binds;
+      // retry a bounded number of times if another local process wins that
+      // small race instead of treating the proof as a product failure.
+      for (let attempt = 0; attempt < 3 && !providerReady; attempt += 1) {
+        const providerPort = await freePort();
+        providerEndpoint = `http://127.0.0.1:${providerPort}`;
+        provider = spawn(
+          providerBinary,
+          ['serve', '--hostname', '127.0.0.1', '--port', String(providerPort), '--pure'],
+          {
+            cwd: stateDir,
+            env: {
+              ...process.env,
+              HOME: stateDir,
+              RELAY_SKIP_TELEMETRY: '1',
+              OPENCODE_SERVER_PASSWORD: '',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }
+        );
+        provider.stdout.on('data', (chunk) => {
+          providerOutput += chunk;
+        });
+        provider.stderr.on('data', (chunk) => {
+          providerOutput += chunk;
+        });
+        provider.once('error', (error) => {
+          providerOutput += `OpenCode process error: ${error.message}`;
+        });
         try {
-          const response = await fetch(`${providerEndpoint}/global/health`, {
-            signal: AbortSignal.timeout(2_000),
-          });
-          return response.ok;
-        } catch {
-          return null;
+          await waitFor(async () => {
+            if (provider.exitCode !== null) {
+              throw new Error(`OpenCode exited early: ${providerOutput}`);
+            }
+            try {
+              const response = await fetch(`${providerEndpoint}/global/health`, {
+                signal: AbortSignal.timeout(2_000),
+              });
+              return response.ok;
+            } catch {
+              return null;
+            }
+          }, 'the real OpenCode server to answer');
+          providerReady = true;
+        } catch (error) {
+          if (provider.exitCode === null) {
+            provider.kill('SIGTERM');
+            await new Promise((resolve) => provider.once('close', resolve));
+          }
+          provider = undefined;
+          if (attempt === 2) throw error;
         }
-      }, 'the real OpenCode server to answer');
+      }
       const sessionResponse = await fetch(`${providerEndpoint}/session`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -234,12 +254,13 @@ try {
       );
       await api('POST', '/api/spawn', {
         name: 'proof-worker',
-        cli: 'cat',
+        cli: 'opencode',
         harness_config: {
           runtime: 'headless',
           protocol: 'opencode',
           endpoint: providerEndpoint,
           sessionId: session.id,
+          release: 'delete',
         },
       });
       const admitted = await api('POST', '/api/spawned/proof-worker/model', {
@@ -321,11 +342,13 @@ try {
         await new Promise((resolve) => provider.once('close', resolve));
       }
       await rm(brokerStateDir, { recursive: true, force: true });
+      activeProofDirs.delete(brokerStateDir);
     }
 
     // Keep the CLI-facing check as part of the same head proof: the broker
     // receipt above is the source of truth, while this confirms JSON output is
     // advertised by the exact checkout used to build the probe.
+    const requests = [];
     const server = createServer(async (request, response) => {
       if (request.headers['x-api-key'] !== 'pr-proof-key') {
         response.writeHead(401).end();
@@ -404,7 +427,6 @@ try {
       JSON.stringify({ url: `http://127.0.0.1:${port}`, api_key: 'pr-proof-key', pid: process.pid })
     );
     process.env.AGENT_RELAY_STATE_DIR = stateDir;
-    const requests = [];
     try {
       const receiptOutput = await runAsync(
         process.execPath,
@@ -458,6 +480,7 @@ try {
     } finally {
       await new Promise((resolve) => server.close(resolve));
       await rm(stateDir, { recursive: true, force: true });
+      activeProofDirs.delete(stateDir);
       delete process.env.AGENT_RELAY_STATE_DIR;
     }
   }
@@ -473,6 +496,9 @@ try {
   );
   process.stdout.write(`${signature}\n`);
 } catch (error) {
+  await Promise.all(
+    [...activeProofDirs].map((directory) => rm(directory, { recursive: true, force: true }))
+  );
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   throw error;
 }

@@ -69,7 +69,7 @@ const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
 /// A full command queue means the worker is already backpressured. Do not
 /// retain another normal request indefinitely waiting for capacity.
-const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
+pub(crate) const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// A PTY can transiently stop draining while it handles a large redraw or a
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
@@ -226,6 +226,11 @@ pub(crate) enum WorkerEvent {
     Message {
         name: WorkerName,
         generation: Uuid,
+        /// Monotonic timestamp captured when the worker reader received the
+        /// frame. Runtime processing can be delayed by other actor work, but
+        /// receipt deadlines must describe transport arrival rather than
+        /// handler scheduling.
+        received_at: Instant,
         value: Value,
     },
     /// The worker-owned stdin writer failed after a command was accepted.
@@ -2396,6 +2401,9 @@ fn spawn_worker_reader<R>(
 
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            // Capture arrival before log I/O or channel backpressure can delay
+            // construction of the runtime event.
+            let received_at = Instant::now();
             if parse_json {
                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
                     if value
@@ -2423,6 +2431,7 @@ fn spawn_worker_reader<R>(
                         .send(WorkerEvent::Message {
                             name: name.clone(),
                             generation,
+                            received_at,
                             value,
                         })
                         .await
@@ -2466,6 +2475,7 @@ fn spawn_worker_reader<R>(
                 .send(WorkerEvent::Message {
                     name: name.clone(),
                     generation,
+                    received_at,
                     value: fallback,
                 })
                 .await

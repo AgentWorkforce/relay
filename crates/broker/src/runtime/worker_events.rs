@@ -683,6 +683,7 @@ impl BrokerRuntime {
             WorkerEvent::Message {
                 name,
                 generation,
+                received_at,
                 value,
             } => {
                 let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
@@ -1082,9 +1083,11 @@ impl BrokerRuntime {
                             );
                             return;
                         }
-                        // The provider deadline begins when the supported
-                        // worker has actually dequeued the frame, not when
-                        // the broker admitted it behind another request.
+                        // The provider window starts when this handler sends
+                        // the start acknowledgement. The event timestamp is
+                        // authoritative only for a response already received
+                        // from the worker; using it here could spend the
+                        // provider window while this actor was delayed.
                         request.provider_deadline = Some(Instant::now() + request.provider_timeout);
                         if let Err(error) = workers
                             .send_to_worker(
@@ -1121,8 +1124,7 @@ impl BrokerRuntime {
                                 );
                                 return;
                             }
-                            if Instant::now()
-                                >= request.provider_deadline.unwrap_or(request.deadline)
+                            if received_at >= request.provider_deadline.unwrap_or(request.deadline)
                             {
                                 let request = pending_model_requests
                                     .remove(request_id)
@@ -1154,14 +1156,50 @@ impl BrokerRuntime {
                                 }
                                 return;
                             }
-                            let request = pending_model_requests
-                                .remove(request_id)
-                                .expect("validated model request remains pending");
                             let payload = value.get("payload").cloned().unwrap_or(Value::Null);
                             let reported_status = payload
                                 .get("status")
                                 .and_then(Value::as_str)
                                 .unwrap_or("rejected");
+                            if matches!(reported_status, "accepted_pending" | "pending") {
+                                // A successful provider mutation followed by an
+                                // unavailable confirmation read is uncertainty,
+                                // not rejection. Retain the correlation until a
+                                // subsequent response or the provider deadline.
+                                if let Some(receipt) =
+                                    model_receipts.get_mut(&name).filter(|receipt| {
+                                        receipt.request_id == request_id
+                                            && receipt.generation == generation
+                                            && receipt.revision == request.revision
+                                    })
+                                {
+                                    receipt.status = "accepted_pending".into();
+                                    receipt.applied = false;
+                                    receipt.success = false;
+                                    receipt.pending = true;
+                                    receipt.error = payload
+                                        .get("error")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned);
+                                    receipt.updated_at = Instant::now();
+                                }
+                                if let Some(receipt) = model_receipts_by_request.get_mut(request_id)
+                                {
+                                    receipt.status = "accepted_pending".into();
+                                    receipt.applied = false;
+                                    receipt.success = false;
+                                    receipt.pending = true;
+                                    receipt.error = payload
+                                        .get("error")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned);
+                                    receipt.updated_at = Instant::now();
+                                }
+                                return;
+                            }
+                            let request = pending_model_requests
+                                .remove(request_id)
+                                .expect("validated model request remains pending");
                             let effective_model = payload
                                 .get("effective_model")
                                 .and_then(Value::as_str)

@@ -353,7 +353,9 @@ try {
     cwd: tempDir,
     env: cliEnv,
     encoding: 'utf8',
-    timeout: 120_000,
+    // Leave the outer 180-second Daytona command enough headroom for the
+    // worker/session/process cleanup in finally, even on the provider timeout.
+    timeout: 90_000,
     maxBuffer: 2 * 1024 * 1024,
   });
   if (setModel.error) throw setModel.error;
@@ -399,13 +401,25 @@ try {
   }
   if (opencode && opencode.pid) {
     try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    try { process.kill(opencode.pid, 0); cleanupErrors.push('OpenCode process remained alive'); } catch {}
+    try {
+      await wait(async () => {
+        if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
+        try { process.kill(opencode.pid, 0); return false; } catch { return true; }
+      }, 'OpenCode process to terminate', 15_000);
+    } catch (error) { cleanupErrors.push(error.message); }
     if (providerEndpoint) {
       try {
-        const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
-        if (response.ok) cleanupErrors.push('OpenCode provider port remained reachable');
-      } catch {}
+        await wait(async () => {
+          try {
+            await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
+            return false;
+          } catch (error) {
+            // A refused connection proves the listener is gone. An HTTP
+            // response or request timeout still means the port is reachable.
+            return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
+          }
+        }, 'OpenCode provider port to close', 15_000);
+      } catch (error) { cleanupErrors.push(error.message); }
     }
   }
   if (tempDir) {
@@ -417,7 +431,7 @@ try {
 }
 process.stdout.write(JSON.stringify(result));
 })().catch((error) => {
-  process.stderr.write(String(error && error.stack ? error.stack : error) + '\\n');
+  process.stderr.write(String(error && error.stack ? error.stack : error) + '\n');
   process.exitCode = 1;
 });
 `;
@@ -3557,7 +3571,6 @@ class FleetBoard {
       for (const id of [
         'node-agent-set-model',
         'node-agent-set-model-app-server-a',
-        'node-agent-set-model-app-server-b',
         'node-agent-attach-view-json',
         'node-agent-attach-drive-json',
         'node-agent-attach-passthrough-json',
@@ -3829,6 +3842,12 @@ class FleetBoard {
       return this.derived(id, { blockedReason: `board node ${node?.letter ?? '?'} unavailable` });
     }
     const workerName = `${id}-${this.short}`;
+    // The helper owns a broker worker even if its enclosing Daytona command is
+    // killed before the helper reaches its finally block. Claim it before the
+    // direct spawn so the campaign cleanup ledger can recover that identity.
+    await this.creationIntent('relay-agent', workerName);
+    this.claimAgent(workerName, 'node-app-server-worker');
+    await this.checkpoint();
     const script = buildNodeAppServerModelProofScript();
     return this.assertedCommand(
       id,
@@ -3850,10 +3869,21 @@ class FleetBoard {
       (result) => {
         const payload = tryParseJson(result._rawStdout);
         const receipt = payload?.receipt;
+        const nestedArgv = [
+          'agent-relay',
+          'node',
+          'agent',
+          'set-model',
+          workerName,
+          'openai/gpt-5.4',
+          '--json',
+        ];
         const pass =
           payload?.worker === workerName &&
           payload?.requestedModel === 'openai/gpt-5.4' &&
           payload?.providerModel === 'openai/gpt-5.4' &&
+          typeof payload?.providerVersion === 'string' &&
+          payload.providerVersion.length > 0 &&
           payload?.cleanup === true &&
           receipt?.status === 'applied' &&
           receipt?.applied === true &&
@@ -3863,6 +3893,10 @@ class FleetBoard {
           receipt.requestId.length > 0;
         return {
           pass,
+          // The operation is a Daytona wrapper, but this nested argv is the
+          // exact public command executed by the helper and is part of the
+          // sanitized evidence contract.
+          argv: [...(result.argv ?? []), ...nestedArgv],
           summary: `issue=1658 runtime=headless-app-server requestedModel=${payload?.requestedModel ?? 'missing'} providerModel=${payload?.providerModel ?? 'missing'} status=${receipt?.status ?? 'missing'} effectiveModel=${receipt?.effectiveModel ?? 'missing'} applied=${receipt?.applied} cleanup=${payload?.cleanup}`,
         };
       },

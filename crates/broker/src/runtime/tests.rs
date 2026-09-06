@@ -357,6 +357,7 @@ fn delivery_lifecycle_worker_event(
     WorkerEvent::Message {
         name: WorkerName::from(name),
         generation,
+        received_at: Instant::now(),
         value: json!({
             "type": event_type,
             "payload": {
@@ -408,9 +409,18 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .deadline = Instant::now() - Duration::from_secs(1);
     fixture
         .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .provider_timeout = Duration::from_secs(1);
+    fixture
+        .runtime
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation,
+            // The worker's start frame sat in the runtime channel before this
+            // handler ran. The provider clock must still begin at dispatch.
+            received_at: Instant::now() - Duration::from_secs(2),
             value: json!({
                 "type": "set_model_started",
                 "request_id": request_id,
@@ -431,6 +441,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation,
+            received_at: Instant::now(),
             value: json!({
                 "type": "set_model_response",
                 "request_id": "model_unknown",
@@ -447,6 +458,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation: Uuid::new_v4(),
+            received_at: Instant::now(),
             value: json!({
                 "type": "set_model_response",
                 "request_id": request_id,
@@ -464,6 +476,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation,
+            received_at: Instant::now(),
             value: json!({
                 "type": "set_model_response",
                 "request_id": request_id,
@@ -510,6 +523,7 @@ async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation,
+            received_at: Instant::now(),
             value: json!({
                 "type": "set_model_response",
                 "request_id": mismatch_request_id,
@@ -572,6 +586,7 @@ async fn set_model_late_provider_receipt_is_rejected() {
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation,
+            received_at: Instant::now(),
             value: json!({
                 "type": "set_model_response",
                 "request_id": request_id,
@@ -596,6 +611,147 @@ async fn set_model_late_provider_receipt_is_rejected() {
     assert_eq!(rejected["status"], "rejected");
     assert_eq!(rejected["applied"], false);
     assert!(rejected["error"].as_str().unwrap().contains("after"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn set_model_receipt_received_before_deadline_survives_handler_delay() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: None,
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+
+    // The worker reader received this response before its provider deadline,
+    // but the runtime actor did not process the queued event until after it.
+    // Deadline semantics must use transport receipt time, not handler time.
+    let received_at = Instant::now() - Duration::from_secs(2);
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .provider_deadline = Some(Instant::now() - Duration::from_secs(1));
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            received_at,
+            value: json!({
+                "type": "set_model_response",
+                "request_id": request_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await;
+
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: None,
+            reply: get_tx,
+        })
+        .await;
+    let applied = get_rx.await.unwrap().unwrap();
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["effective_model"], "sonnet");
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn set_model_unavailable_provider_confirmation_stays_pending() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: None,
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            received_at: Instant::now(),
+            value: json!({
+                "type": "set_model_started",
+                "request_id": request_id,
+            }),
+        })
+        .await;
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            received_at: Instant::now(),
+            value: json!({
+                "type": "set_model_response",
+                "request_id": request_id,
+                "payload": {
+                    "status": "accepted_pending",
+                    "applied": false,
+                    "effective_model": null,
+                    "error": "confirmation temporarily unavailable"
+                }
+            }),
+        })
+        .await;
+    assert!(fixture
+        .runtime
+        .pending_model_requests
+        .contains_key(&request_id));
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some(request_id),
+            reply: get_tx,
+        })
+        .await;
+    let pending = get_rx.await.unwrap().unwrap();
+    assert_eq!(pending["status"], "accepted_pending");
+    assert_eq!(pending["pending"], true);
+    assert_eq!(pending["applied"], false);
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
@@ -815,6 +971,7 @@ async fn set_model_rejects_overlapping_request_without_overwriting_pending_recei
         .handle_worker_event(WorkerEvent::Message {
             name: WorkerName::new("model-worker"),
             generation,
+            received_at: Instant::now(),
             value: json!({
                 "type": "set_model_response",
                 "request_id": first_id,

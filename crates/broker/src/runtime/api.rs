@@ -965,7 +965,7 @@ impl BrokerRuntime {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis()
-                            .saturating_add(set_model_receipt_timeout(timeout_ms).as_millis())
+                            .saturating_add(WORKER_COMMAND_QUEUE_TIMEOUT.as_millis())
                     }),
                 );
 
@@ -1016,7 +1016,10 @@ impl BrokerRuntime {
                             generation,
                             requested_model: model,
                             revision,
-                            deadline: Instant::now() + set_model_receipt_timeout(timeout_ms),
+                            // Admission has a short bounded queue window;
+                            // provider confirmation receives its own full
+                            // timeout after `set_model_started`.
+                            deadline: Instant::now() + WORKER_COMMAND_QUEUE_TIMEOUT,
                             provider_deadline: None,
                             provider_timeout: set_model_receipt_timeout(timeout_ms),
                         },

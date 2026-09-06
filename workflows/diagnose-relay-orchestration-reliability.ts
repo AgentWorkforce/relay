@@ -72,7 +72,7 @@ function reviewTask(reviewer: 'claude' | 'codex', final: boolean): string {
     `Perform a ${final ? 'fresh post-fix' : 'fresh-eyes'} evidence-integrity review of the cross-repository reliability diagnosis.`,
     `Read ${ART}/context.json, all four boundary reports, ${ART}/static-gates.json, ${ART}/bug-ledger.json, ${ART}/coverage-contract.json, the task prompt, and actual cited source files.`,
     'Do not trust prior summaries. Product RED is acceptable; false greens, duplicate symptoms, unsupported root-cause claims, missing owners, and untestable gates are findings.',
-    'Check that every failed static gate and every one of the 143 diagnosis coverage rows is represented by a bidirectional bug/unknown mapping, and that snapshot/prerelease qualification cannot pass on a stale image.',
+    'Check that every failed static gate and every one of the 145 diagnosis coverage rows is represented by a bidirectional bug/unknown mapping, and that snapshot/prerelease qualification cannot pass on a stale image.',
     'Re-run the qualification-manifest, qualification-capabilities, diagnostic-seal, and source-drift fixture suites. Capability help text is not runtime proof.',
     `Write ${output}. Use the structured finding fields from the workflow-writing standard.`,
     'Write NO_ISSUES_FOUND only when the diagnosis and release gates are comprehensive and evidence-backed, even if the product verdict remains RED.',
