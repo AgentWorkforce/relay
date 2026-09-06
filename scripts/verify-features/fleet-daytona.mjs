@@ -2074,9 +2074,7 @@ class FleetBoard {
       }
       return {
         ...stripPrivateExecution(result),
-        ...(Array.isArray(assertionResult.argv)
-          ? { argv: sanitizeFleetArgv(assertionResult.argv) }
-          : {}),
+        ...(Array.isArray(assertionResult.argv) ? { argv: sanitizeFleetArgv(assertionResult.argv) } : {}),
         exitCode: result.exitCode === 0 && assertionResult.pass ? 0 : 1,
         summary: assertionResult.summary,
       };
