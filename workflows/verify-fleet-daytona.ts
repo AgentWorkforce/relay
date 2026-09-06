@@ -218,7 +218,7 @@ async function main() {
   await ensurePermissionPlaceholders();
   const wf = workflow('relay-fleet-daytona-comprehensive')
     .description(
-      'Run the 95-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.'
+      'Run the 97-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.'
     )
     .pattern('dag')
     .channel(`relay-fleet-daytona-${NONCE.slice(0, 8)}`)

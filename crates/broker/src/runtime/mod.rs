@@ -54,7 +54,7 @@ use crate::cli::{
     DumpPtyCommand, DumpPtyFormat, HeadlessAppServerCommand, HeadlessCommand, InitCommand,
     ReclaimLegacyIdentityCommand,
 };
-use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
+use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry, WORKER_COMMAND_QUEUE_TIMEOUT};
 use crate::{broker, listen_api, worker_request};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;

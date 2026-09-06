@@ -3,7 +3,10 @@ use super::*;
 use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
-    pub(super) async fn handle_maintenance_tick(&mut self) {
+    pub(super) async fn handle_maintenance_tick_with_worker_queue_state(
+        &mut self,
+        worker_event_queue_empty: bool,
+    ) {
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -25,6 +28,9 @@ impl BrokerRuntime {
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
         let pending_requests = &mut self.pending_requests;
+        let pending_model_requests = &mut self.pending_model_requests;
+        let model_receipts = &mut self.model_receipts;
+        let model_receipts_by_request = &mut self.model_receipts_by_request;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_states = &mut self.delivery_states;
         let resize_owners = &mut self.resize_owners;
@@ -148,6 +154,52 @@ impl BrokerRuntime {
                 "worker request timed out before worker responded"
             );
         }
+        // A bounded worker-event drain runs immediately before this sweep.
+        // If more events remain queued, defer only model expiry so an
+        // already-received provider response cannot be rejected by actor
+        // scheduling; all other maintenance still proceeds this tick.
+        if worker_event_queue_empty {
+            let expired_model_requests: Vec<String> = pending_model_requests
+                .iter()
+                .filter_map(|(request_id, pending)| {
+                    let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
+                    (deadline <= now).then_some(request_id.clone())
+                })
+                .collect();
+            for request_id in expired_model_requests {
+                if let Some(pending) = pending_model_requests.remove(&request_id) {
+                    if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
+                        if receipt.request_id == request_id
+                            && receipt.generation == pending.generation
+                        {
+                            receipt.status = "rejected".into();
+                            receipt.applied = false;
+                            receipt.pending = false;
+                            receipt.success = false;
+                            receipt.error = Some(
+                                "worker did not return a model receipt before the deadline".into(),
+                            );
+                            receipt.updated_at = now;
+                        }
+                    }
+                    if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
+                        receipt.status = "rejected".into();
+                        receipt.applied = false;
+                        receipt.pending = false;
+                        receipt.success = false;
+                        receipt.error = Some(
+                            "worker did not return a model receipt before the deadline".into(),
+                        );
+                        receipt.updated_at = now;
+                    }
+                }
+            }
+        }
+
+        // Request-specific receipts are useful for delayed pollers, including
+        // callers whose worker has exited, but retaining them forever would
+        // turn every unsupported/rejected attempt into unbounded state.
+        model_receipts_by_request.retain(|_, receipt| retain_model_receipt(receipt, now));
 
         let due_ids: Vec<DeliveryId> = pending_deliveries
             .iter()
@@ -220,6 +272,9 @@ impl BrokerRuntime {
                 pending_deliveries,
                 dead_letters,
                 pending_requests,
+                pending_model_requests,
+                model_receipts,
+                model_receipts_by_request,
                 delivery_states,
                 agent_result_tokens,
                 resize_owners,
@@ -270,6 +325,32 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        // Release/reap can race a provider response already queued in the
+        // worker channel. The bounded drain above processes those frames while
+        // the generation is still admissible; only once the queue is empty is
+        // it safe to terminalize any remaining orphaned request.
+        if worker_event_queue_empty {
+            let orphaned_generations: HashSet<(WorkerName, Uuid)> = pending_model_requests
+                .values()
+                .filter(|pending| {
+                    workers
+                        .workers
+                        .get(&pending.worker_name)
+                        .is_none_or(|handle| handle.generation != pending.generation)
+                })
+                .map(|pending| (pending.worker_name.clone(), pending.generation))
+                .collect();
+            for (name, generation) in orphaned_generations {
+                terminalize_model_requests_for_worker(
+                    &name,
+                    generation,
+                    pending_model_requests,
+                    model_receipts,
+                    model_receipts_by_request,
+                    now,
+                );
+            }
+        }
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
             let mut retain_fleet_identity = false;

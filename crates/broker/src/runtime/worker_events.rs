@@ -617,6 +617,9 @@ impl BrokerRuntime {
         let dead_letters = &mut self.dead_letters;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
+        let pending_model_requests = &mut self.pending_model_requests;
+        let model_receipts = &mut self.model_receipts;
+        let model_receipts_by_request = &mut self.model_receipts_by_request;
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
@@ -680,10 +683,28 @@ impl BrokerRuntime {
             WorkerEvent::Message {
                 name,
                 generation,
+                received_at,
                 value,
             } => {
                 let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
-                if !worker_event_is_current(current_generation, generation) {
+                // A release/reap can remove the worker after the provider
+                // response entered this queue. Keep that correlated response
+                // admissible; teardown terminalization is deferred until the
+                // queue is drained, and this event may still prove `applied`.
+                let released_model_response = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|msg_type| msg_type == "set_model_response")
+                    && value
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .and_then(|request_id| pending_model_requests.get(request_id))
+                        .is_some_and(|request| {
+                            request.worker_name == name && request.generation == generation
+                        });
+                if !worker_event_is_current(current_generation, generation)
+                    && !released_model_response
+                {
                     tracing::debug!(
                         target = "agent_relay::broker",
                         worker = %name,
@@ -1061,7 +1082,223 @@ impl BrokerRuntime {
                             object.insert("name".to_string(), Value::String(name.to_string()));
                         }
                         let _ = send_event(sdk_out_tx, agent_event).await;
+                    } else if msg_type == "set_model_started" {
+                        let Some(request_id) = value.get("request_id").and_then(Value::as_str)
+                        else {
+                            tracing::warn!(worker = %name, "ignoring model-start event without request_id");
+                            return;
+                        };
+                        let Some(request) = pending_model_requests.get_mut(request_id) else {
+                            tracing::debug!(worker = %name, request_id, "ignoring model-start event with no pending request");
+                            return;
+                        };
+                        if request.worker_name != name || request.generation != generation {
+                            tracing::warn!(
+                                worker = %name,
+                                request_id,
+                                "ignoring model-start event with mismatched worker generation"
+                            );
+                            return;
+                        }
+                        // The provider window starts when this handler sends
+                        // the start acknowledgement. The event timestamp is
+                        // authoritative only for a response already received
+                        // from the worker; using it here could spend the
+                        // provider window while this actor was delayed.
+                        request.provider_deadline = Some(Instant::now() + request.provider_timeout);
+                        if let Err(error) = workers
+                            .send_to_worker(
+                                &name,
+                                "set_model_started_ack",
+                                Some(RequestId::new(request_id)),
+                                json!({}),
+                            )
+                            .await
+                        {
+                            tracing::debug!(
+                                worker = %name,
+                                request_id,
+                                error = %error,
+                                "failed to acknowledge model-start event"
+                            );
+                        }
                     } else if msg_type.ends_with("_response") {
+                        if msg_type == "set_model_response" {
+                            let Some(request_id) = value.get("request_id").and_then(Value::as_str)
+                            else {
+                                tracing::warn!(worker = %name, "dropping model receipt without request_id");
+                                return;
+                            };
+                            let Some(request) = pending_model_requests.get(request_id) else {
+                                tracing::debug!(worker = %name, request_id, "dropping model receipt with no pending request");
+                                return;
+                            };
+                            if request.worker_name != name || request.generation != generation {
+                                tracing::warn!(
+                                    worker = %name,
+                                    request_id,
+                                    "dropping model receipt with mismatched worker generation"
+                                );
+                                return;
+                            }
+                            if received_at >= request.provider_deadline.unwrap_or(request.deadline)
+                            {
+                                let request = pending_model_requests
+                                    .remove(request_id)
+                                    .expect("validated late model request remains pending");
+                                let error =
+                                    "provider receipt arrived after the model request deadline";
+                                if let Some(receipt) =
+                                    model_receipts.get_mut(&name).filter(|receipt| {
+                                        receipt.request_id == request_id
+                                            && receipt.generation == generation
+                                            && receipt.revision == request.revision
+                                    })
+                                {
+                                    receipt.applied = false;
+                                    receipt.status = "rejected".into();
+                                    receipt.success = false;
+                                    receipt.pending = false;
+                                    receipt.error = Some(error.into());
+                                    receipt.updated_at = Instant::now();
+                                }
+                                if let Some(receipt) = model_receipts_by_request.get_mut(request_id)
+                                {
+                                    receipt.applied = false;
+                                    receipt.status = "rejected".into();
+                                    receipt.success = false;
+                                    receipt.pending = false;
+                                    receipt.error = Some(error.into());
+                                    receipt.updated_at = Instant::now();
+                                }
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            let reported_status = payload
+                                .get("status")
+                                .and_then(Value::as_str)
+                                .unwrap_or("rejected");
+                            if matches!(reported_status, "accepted_pending" | "pending") {
+                                // A successful provider mutation followed by an
+                                // unavailable confirmation read is uncertainty,
+                                // not rejection. Retain the correlation until a
+                                // subsequent response (if one arrives) or the
+                                // provider deadline; this path does not retry
+                                // provider confirmation on its own.
+                                if let Some(receipt) =
+                                    model_receipts.get_mut(&name).filter(|receipt| {
+                                        receipt.request_id == request_id
+                                            && receipt.generation == generation
+                                            && receipt.revision == request.revision
+                                    })
+                                {
+                                    receipt.status = "accepted_pending".into();
+                                    receipt.applied = false;
+                                    receipt.success = false;
+                                    receipt.pending = true;
+                                    receipt.error = payload
+                                        .get("error")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned);
+                                    receipt.updated_at = Instant::now();
+                                }
+                                if let Some(receipt) = model_receipts_by_request.get_mut(request_id)
+                                {
+                                    receipt.status = "accepted_pending".into();
+                                    receipt.applied = false;
+                                    receipt.success = false;
+                                    receipt.pending = true;
+                                    receipt.error = payload
+                                        .get("error")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned);
+                                    receipt.updated_at = Instant::now();
+                                }
+                                return;
+                            }
+                            let request = pending_model_requests
+                                .remove(request_id)
+                                .expect("validated model request remains pending");
+                            let effective_model = payload
+                                .get("effective_model")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
+                            // Applied is deliberately earned, not copied from a
+                            // worker boolean: the provider must report the exact
+                            // requested model as its effective model.
+                            let applied = reported_status == "applied"
+                                && payload.get("applied").and_then(Value::as_bool) == Some(true)
+                                && effective_model.as_deref()
+                                    == Some(request.requested_model.as_str());
+                            let status = if applied {
+                                "applied"
+                            } else if reported_status == "unsupported" {
+                                "unsupported"
+                            } else {
+                                "rejected"
+                            };
+                            let error = if applied {
+                                None
+                            } else {
+                                payload
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                                    .or_else(|| Some("provider did not confirm the requested effective model".into()))
+                            };
+                            let mut update_worker_model = false;
+                            if let Some(receipt) = model_receipts.get_mut(&name) {
+                                if receipt.generation == generation
+                                    && applied
+                                    && request.revision >= receipt.effective_revision
+                                {
+                                    // A newer request can still be pending when
+                                    // an older provider receipt arrives. Keep
+                                    // that confirmed model visible until the
+                                    // newer request is itself confirmed, while
+                                    // preventing an older receipt from rolling
+                                    // back a newer confirmation.
+                                    receipt.effective_model = Some(request.requested_model.clone());
+                                    receipt.effective_revision = request.revision;
+                                    update_worker_model = true;
+                                }
+                                if receipt.request_id == request_id
+                                    && receipt.generation == generation
+                                    && receipt.revision == request.revision
+                                {
+                                    receipt.applied = applied;
+                                    receipt.status = status.to_string();
+                                    receipt.success = applied;
+                                    receipt.accepted = true;
+                                    receipt.pending = false;
+                                    receipt.error = error.clone();
+                                    receipt.updated_at = Instant::now();
+                                }
+                            }
+                            if let Some(receipt) = model_receipts_by_request.get_mut(request_id) {
+                                receipt.applied = applied;
+                                receipt.status = status.to_string();
+                                receipt.success = applied;
+                                receipt.accepted = true;
+                                receipt.pending = false;
+                                receipt.error = error.clone();
+                                receipt.updated_at = Instant::now();
+                                if applied {
+                                    receipt.effective_model = Some(request.requested_model.clone());
+                                    receipt.effective_revision = request.revision;
+                                }
+                            }
+                            // The worker cache follows the newest confirmed
+                            // provider revision, not merely the newest request
+                            // to finish. This also handles A-applied/B-rejected
+                            // without losing A's effective model.
+                            if update_worker_model {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.spec.model = Some(request.requested_model.clone());
+                                }
+                            }
+                            return;
+                        }
                         let terminal_input_session_id = value
                             .get("request_id")
                             .and_then(Value::as_str)

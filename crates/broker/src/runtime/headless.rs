@@ -379,6 +379,20 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                     .unwrap_or_default();
                 let _ = send_frame(&out_tx, "pong", frame.request_id, json!({"ts_ms": ts})).await;
             }
+            "set_model" => {
+                let _ = send_frame(
+                    &out_tx,
+                    "set_model_response",
+                    frame.request_id,
+                    json!({
+                        "status": "unsupported",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": "headless providers do not expose model mutation",
+                    }),
+                )
+                .await;
+            }
             "shutdown_worker" => {
                 break;
             }

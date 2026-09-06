@@ -1,0 +1,108 @@
+{
+  "id": "traj_vk6j2we7i49f",
+  "version": 1,
+  "task": {
+    "title": "Implement issue #1658 set-model applied receipt",
+    "source": {
+      "system": "plain",
+      "id": "1658"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-05T17:39:05.805Z",
+  "completedAt": "2026-09-05T21:35:45.000Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-05T17:54:22.984Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cukiykeqj6t1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-05T17:54:22.984Z",
+      "endedAt": "2026-09-05T21:35:45.000Z",
+      "events": [
+        {
+          "ts": 1788630862984,
+          "type": "decision",
+          "content": "Use an opt-in typed set_model worker protocol and fail closed for all current runtimes: Use an opt-in typed set_model worker protocol and fail closed for all current runtimes",
+          "raw": {
+            "question": "Use an opt-in typed set_model worker protocol and fail closed for all current runtimes",
+            "chosen": "Use an opt-in typed set_model worker protocol and fail closed for all current runtimes",
+            "alternatives": [],
+            "reasoning": "PTY output cannot prove provider consumption; headless/native adapters expose no setter. Correlated request IDs, worker generations, and exact effective-model matching prevent false applied receipts while preserving queue admission as accepted_pending."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788630863658,
+          "type": "reflection",
+          "content": "Implemented broker-owned model receipts, polling, typed worker responses, client surfaces, CLI messaging, deterministic positive/negative tests, and review fixes for overlap, provider deadlines, and fail-closed CLI output; focused broker and CLI suites pass.",
+          "raw": {
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.88"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented correlated set-model receipts with explicit accepted_pending/applied/rejected/unsupported states, worker generation and revision fencing, GET polling, typed worker protocol responses, CLI/SDK surfaces, and deterministic tests.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [
+    "40e758cb3b39e3cf73452109af88295458d721e2",
+    "dcc67384d3a5cc5f860b7862d7b77a9ed5192c66",
+    "4f827cf9f406cc9af5d38f73cc3cc5dc74a636f9",
+    "010d99e6944adda21617080c3f2a269953227ece",
+    "69f9b8193b1ef986aac2f3b340444b1c3095ce0b",
+    "4feef65ca488cddf2e6b43958edec8b5e401bf91",
+    "56cceb1d9efba7e41d321367bfc34ba976eaeb8c",
+    "0a99096eedb3ad1c2f442aaec0e70e5e63c01691",
+    "0dc0039db083ac84734d23e64a386112b20b2909",
+    "681f6887de005db1831799c0f92d02f234334096",
+    "a8cd49cd0beba4ecc5ac74f9f1f9da2fea76e56f"
+  ],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/app_server.rs",
+    "crates/broker/src/runtime/event_loop.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/headless.rs",
+    "crates/broker/src/runtime/init.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "crates/broker/src/runtime/relaycast_events.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/runtime/worker_events.rs",
+    "crates/broker/src/worker.rs",
+    "packages/cli/src/cli/commands/local-agent.test.ts",
+    "packages/cli/src/cli/commands/local-agent.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/protocol.ts",
+    "packages/harnesses/src/ai-sdk/sidecar.ts",
+    "packages/sdk-py/src/agent_relay/client.py",
+    "packages/sdk-py/tests/test_send_message_mode.py",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/AgentRelayBrokerClient.swift",
+    "packages/sdk-swift/Sources/AgentRelayBrokerSDK/BrokerTypes.swift",
+    "packages/sdk-swift/Tests/AgentRelayBrokerSDKTests/AgentRelayBrokerSDKTests.swift",
+    "tests/relayflows/cases/1658-model-change-receipt/case.json",
+    "tests/relayflows/cases/1658-model-change-receipt/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ca5cda002e47b431e77b86364a967573aa2034de",
+    "endRef": "a8cd49cd0beba4ecc5ac74f9f1f9da2fea76e56f"
+  }
+}

@@ -8,6 +8,18 @@ struct AppServerAuthConfig {
     password: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum OpenCodeModelOutcome {
+    Applied(String),
+    /// The mutation was accepted, but confirmation could not be observed.
+    /// Keep the broker receipt pending until a subsequent provider response
+    /// (if one arrives) or its deadline; an unavailable GET is not proof that
+    /// the provider rejected the change, and this worker does not claim that
+    /// it will retry confirmation on its own.
+    Pending(String),
+    Rejected(String),
+}
+
 const APP_SERVER_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand) -> Result<()> {
@@ -37,6 +49,10 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
     });
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    // A start acknowledgement is an internal handshake. Frames for other
+    // operations may already be queued behind set_model; retain them while
+    // waiting so the handshake cannot silently lose ordered work.
+    let mut deferred_frames = std::collections::VecDeque::new();
     let mut worker_name = cmd
         .agent_name
         .clone()
@@ -44,22 +60,22 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
     let mut final_exit_code: Option<i32> = None;
     let final_exit_signal: Option<String> = None;
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        let frame: ProtocolEnvelope<Value> = match serde_json::from_str(&line) {
-            Ok(frame) => frame,
-            Err(error) => {
-                let _ = send_frame(
-                    &out_tx,
-                    "worker_error",
-                    None,
-                    json!({
-                        "code":"invalid_frame",
-                        "message": error.to_string(),
-                        "retryable": false,
-                    }),
-                )
-                .await;
-                continue;
+    loop {
+        let frame: ProtocolEnvelope<Value> = if let Some(frame) = deferred_frames.pop_front() {
+            frame
+        } else {
+            let line = match lines.next_line().await {
+                Ok(Some(line)) => line,
+                Ok(None) | Err(_) => break,
+            };
+            match serde_json::from_str(&line) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    let _ =
+                        send_frame(&out_tx, "worker_error", None, invalid_frame_payload(&error))
+                            .await;
+                    continue;
+                }
             }
         };
 
@@ -192,6 +208,133 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     }
                 }
             }
+            "set_model" => {
+                let requested_model = frame
+                    .payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let queue_expired = frame
+                    .payload
+                    .get("queue_deadline_ms")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|deadline| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            >= u128::from(deadline)
+                    });
+                if queue_expired {
+                    let _ = send_frame(
+                        &out_tx,
+                        "set_model_response",
+                        frame.request_id,
+                        json!({
+                            "status": "rejected",
+                            "applied": false,
+                            "effective_model": null,
+                            "error": "model request expired before provider execution",
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
+                // Tell the broker when this frame leaves the worker queue so
+                // the provider deadline does not consume time spent behind a
+                // long-running delivery.
+                let _ = send_frame(
+                    &out_tx,
+                    "set_model_started",
+                    frame.request_id.clone(),
+                    json!({}),
+                )
+                .await;
+                let ack_timeout = model_start_ack_timeout(&frame.payload);
+                let start_acknowledged = tokio::time::timeout(ack_timeout, async {
+                    loop {
+                        let Some(line) = lines.next_line().await? else {
+                            return Ok::<bool, std::io::Error>(false);
+                        };
+                        let ack = match serde_json::from_str::<ProtocolEnvelope<Value>>(&line) {
+                            Ok(ack) => ack,
+                            Err(error) => {
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "worker_error",
+                                    None,
+                                    invalid_frame_payload(&error),
+                                )
+                                .await;
+                                continue;
+                            }
+                        };
+                        if model_start_acknowledged(ack, &frame.request_id, &mut deferred_frames) {
+                            return Ok(true);
+                        }
+                    }
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(false);
+                if !start_acknowledged {
+                    let _ = send_frame(
+                        &out_tx,
+                        "set_model_response",
+                        frame.request_id,
+                        json!({
+                            "status": "rejected",
+                            "applied": false,
+                            "effective_model": null,
+                            "error": "broker did not acknowledge model start",
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
+                let result = match protocol.as_str() {
+                    "opencode" => {
+                        set_opencode_model(
+                            &http,
+                            &endpoint,
+                            &session_id,
+                            requested_model,
+                            auth.as_ref(),
+                        )
+                        .await
+                    }
+                    other => Err(anyhow::anyhow!(
+                        "app-server protocol '{other}' does not expose typed model mutation"
+                    )),
+                };
+                let response = match result {
+                    Ok(OpenCodeModelOutcome::Applied(effective_model)) => json!({
+                        "status": "applied",
+                        "applied": true,
+                        "effective_model": effective_model,
+                    }),
+                    Ok(OpenCodeModelOutcome::Pending(error)) => json!({
+                        "status": "accepted_pending",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": error,
+                    }),
+                    Ok(OpenCodeModelOutcome::Rejected(error)) => json!({
+                        "status": "rejected",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": error,
+                    }),
+                    Err(error) => json!({
+                        "status": "rejected",
+                        "applied": false,
+                        "effective_model": null,
+                        "error": error.to_string(),
+                    }),
+                };
+                let _ = send_frame(&out_tx, "set_model_response", frame.request_id, response).await;
+            }
             "ping" => {
                 let ts = frame
                     .payload
@@ -255,6 +398,37 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
     Ok(())
 }
 
+fn model_start_acknowledged(
+    frame: ProtocolEnvelope<Value>,
+    request_id: &Option<RequestId>,
+    deferred_frames: &mut std::collections::VecDeque<ProtocolEnvelope<Value>>,
+) -> bool {
+    if frame.msg_type == "set_model_started_ack" && frame.request_id.as_ref() == request_id.as_ref()
+    {
+        true
+    } else {
+        deferred_frames.push_back(frame);
+        false
+    }
+}
+
+fn model_start_ack_timeout(payload: &Value) -> Duration {
+    payload
+        .get("provider_timeout_ms")
+        .and_then(Value::as_u64)
+        .map(Duration::from_millis)
+        .filter(|timeout| !timeout.is_zero())
+        .unwrap_or_else(|| Duration::from_secs(5))
+}
+
+fn invalid_frame_payload(error: &serde_json::Error) -> Value {
+    json!({
+        "code":"invalid_frame",
+        "message": error.to_string(),
+        "retryable": false,
+    })
+}
+
 fn app_server_auth_from_env() -> Option<AppServerAuthConfig> {
     let auth_type = std::env::var("AGENT_RELAY_APP_SERVER_AUTH_TYPE").ok()?;
     let normalized = auth_type.trim().to_ascii_lowercase();
@@ -299,6 +473,81 @@ async fn send_opencode_prompt(
         ]
     }));
     send_app_server_request(apply_app_server_auth(request, auth)).await
+}
+
+/// OpenCode's V2 server API is the one built-in provider contract that can
+/// actually switch a live session's model. The 204 mutation is followed by a
+/// session read; returning `applied` is only valid when that read reports the
+/// exact requested provider/model reference. If confirmation is unavailable,
+/// return a pending outcome so the broker retains uncertainty until its
+/// deadline.
+async fn set_opencode_model(
+    http: &reqwest::Client,
+    endpoint: &str,
+    session_id: &str,
+    requested_model: &str,
+    auth: Option<&AppServerAuthConfig>,
+) -> Result<OpenCodeModelOutcome> {
+    let (provider_id, model_id) = requested_model
+        .split_once('/')
+        .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("OpenCode models must use provider/model syntax"))?;
+    let model_url = opencode_v2_session_url(endpoint, session_id, "model");
+    let request = http.post(model_url).json(&json!({
+        "model": {
+            "providerID": provider_id,
+            "id": model_id,
+        }
+    }));
+    send_app_server_request(apply_app_server_auth(request, auth)).await?;
+
+    let session_url = opencode_v2_session_url(endpoint, session_id, "");
+    let session = match apply_app_server_auth(http.get(session_url), auth)
+        .send()
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            return Ok(OpenCodeModelOutcome::Pending(format!(
+                "OpenCode model confirmation request failed: {error}"
+            )))
+        }
+    };
+    if !session.status().is_success() {
+        let status = session.status();
+        let body = session.text().await.unwrap_or_default();
+        return Ok(OpenCodeModelOutcome::Pending(format!(
+            "OpenCode model confirmation failed with status {status}: {body}"
+        )));
+    }
+    let body: Value = match session.json().await {
+        Ok(body) => body,
+        Err(error) => {
+            return Ok(OpenCodeModelOutcome::Pending(format!(
+                "OpenCode model confirmation was not valid JSON: {error}"
+            )))
+        }
+    };
+    let data = body.get("data").unwrap_or(&body);
+    let confirmed_provider = data
+        .get("model")
+        .and_then(|model| model.get("providerID"))
+        .and_then(Value::as_str);
+    let confirmed_id = data
+        .get("model")
+        .and_then(|model| model.get("id").or_else(|| model.get("modelID")))
+        .and_then(Value::as_str);
+    let effective_model = format!(
+        "{}/{}",
+        confirmed_provider.unwrap_or_default(),
+        confirmed_id.unwrap_or_default()
+    );
+    if effective_model != requested_model {
+        return Ok(OpenCodeModelOutcome::Rejected(format!(
+            "OpenCode confirmed effective model '{effective_model}', not requested '{requested_model}'"
+        )));
+    }
+    Ok(OpenCodeModelOutcome::Applied(effective_model))
 }
 
 async fn release_app_server(
@@ -373,9 +622,20 @@ fn opencode_session_url(endpoint: &str, session_id: &str, action: &str) -> Strin
     }
 }
 
+fn opencode_v2_session_url(endpoint: &str, session_id: &str, action: &str) -> String {
+    let base = endpoint.trim_end_matches('/');
+    let session = urlencoding::encode(session_id);
+    if action.is_empty() {
+        format!("{base}/api/session/{session}")
+    } else {
+        format!("{base}/api/session/{session}/{action}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::{Method::GET, Method::POST, MockServer};
 
     #[test]
     fn opencode_session_url_escapes_session_id() {
@@ -383,6 +643,63 @@ mod tests {
             opencode_session_url("http://127.0.0.1:4096/", "ses/one", "prompt_async"),
             "http://127.0.0.1:4096/session/ses%2Fone/prompt_async"
         );
+    }
+
+    #[test]
+    fn opencode_v2_session_url_uses_model_api() {
+        assert_eq!(
+            opencode_v2_session_url("http://127.0.0.1:4096/", "ses/one", "model"),
+            "http://127.0.0.1:4096/api/session/ses%2Fone/model"
+        );
+    }
+
+    #[tokio::test]
+    async fn opencode_model_mutation_requires_exact_session_confirmation() {
+        let server = MockServer::start();
+        let switch = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/session/ses-1/model")
+                .json_body(json!({
+                    "model": { "providerID": "openai", "id": "gpt-5.4" }
+                }));
+            then.status(204);
+        });
+        let confirm = server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(200).json_body(json!({
+                "data": { "model": { "providerID": "openai", "id": "gpt-5.4" } }
+            }));
+        });
+        let http = reqwest::Client::new();
+        let effective =
+            set_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert_eq!(
+            effective,
+            OpenCodeModelOutcome::Applied("openai/gpt-5.4".into())
+        );
+        switch.assert();
+        confirm.assert();
+    }
+
+    #[tokio::test]
+    async fn opencode_model_mutation_keeps_pending_when_confirmation_is_unavailable() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/session/ses-1/model");
+            then.status(204);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(503).body("provider warming up");
+        });
+        let http = reqwest::Client::new();
+        let outcome =
+            set_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert!(matches!(outcome, OpenCodeModelOutcome::Pending(error) if error.contains("503")));
     }
 
     #[test]
@@ -403,6 +720,78 @@ mod tests {
         assert_eq!(
             format_app_server_delivery(&delivery),
             "Relay message from Lead to Worker:\n\nDo the thing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod model_start_ack_tests {
+    use super::*;
+
+    #[test]
+    fn start_ack_wait_preserves_nonmatching_queued_frames_in_order() {
+        let request_id = Some(RequestId::new("model-1"));
+        let mut deferred = std::collections::VecDeque::new();
+        let delivery = ProtocolEnvelope {
+            v: PROTOCOL_VERSION,
+            msg_type: "deliver_relay".to_string(),
+            request_id: Some(RequestId::new("delivery-1")),
+            payload: json!({"delivery_id": "delivery-1"}),
+        };
+        let ping = ProtocolEnvelope {
+            v: PROTOCOL_VERSION,
+            msg_type: "ping".to_string(),
+            request_id: None,
+            payload: json!({"ts_ms": 1}),
+        };
+        assert!(!model_start_acknowledged(
+            delivery.clone(),
+            &request_id,
+            &mut deferred
+        ));
+        assert!(!model_start_acknowledged(
+            ping.clone(),
+            &request_id,
+            &mut deferred
+        ));
+        assert_eq!(deferred.pop_front().unwrap().msg_type, delivery.msg_type);
+        assert_eq!(deferred.pop_front().unwrap().msg_type, ping.msg_type);
+        assert!(model_start_acknowledged(
+            ProtocolEnvelope {
+                v: PROTOCOL_VERSION,
+                msg_type: "set_model_started_ack".to_string(),
+                request_id: Some(RequestId::new("model-1")),
+                payload: json!({}),
+            },
+            &request_id,
+            &mut deferred
+        ));
+        assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn start_ack_wait_uses_provider_timeout_when_supplied() {
+        assert_eq!(
+            model_start_ack_timeout(&json!({"provider_timeout_ms": 65_000})),
+            Duration::from_secs(65)
+        );
+        assert_eq!(
+            model_start_ack_timeout(&json!({"provider_timeout_ms": 0})),
+            Duration::from_secs(5)
+        );
+        assert_eq!(model_start_ack_timeout(&json!({})), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn invalid_frame_diagnostic_is_non_retryable() {
+        let error = serde_json::from_str::<Value>("{").expect_err("malformed JSON");
+        assert_eq!(
+            invalid_frame_payload(&error),
+            json!({
+                "code": "invalid_frame",
+                "message": error.to_string(),
+                "retryable": false,
+            })
         );
     }
 }

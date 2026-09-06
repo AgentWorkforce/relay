@@ -13,10 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
 - `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
+- `node agent spawn` and `node agent new` accept typed headless AppServer endpoint, protocol, session, and release options for provider-confirmed model changes.
 
 ### Security
 
 - Patched `brace-expansion` prevents unbounded expansion, and the Relayfile adapter uses a patched `undici` release that prevents private-cache cross-user disclosure.
+
+### Fixed
+
+- `node agent set-model` now returns correlated applied, pending, rejected, or unsupported receipts and exposes the last confirmed effective model.
+- `node agent set-model` no longer reports queue admission as a successful model application.
 
 ## [11.10.3] - 2026-09-05
 

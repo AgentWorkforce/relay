@@ -263,6 +263,20 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       }
       continue;
     }
+    if (frame.type === 'set_model') {
+      await write({
+        v: 2,
+        type: 'set_model_response',
+        request_id: frame.request_id,
+        payload: {
+          status: 'unsupported',
+          applied: false,
+          effective_model: null,
+          error: 'native harnesses do not expose model mutation',
+        },
+      });
+      continue;
+    }
     if (frame.type === 'shutdown_worker') {
       await host.destroy();
       await write({ v: 2, type: 'worker_exited', payload: { code: 0 } });

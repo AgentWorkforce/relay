@@ -219,6 +219,338 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
   ];
 }
 
+// Parse a receipt from CLI output that may include logs and pretty-printed JSON.
+// The scan is string-aware so braces inside quoted error text do not terminate a
+// candidate prematurely; the receipt fields distinguish it from log objects.
+export function parseCliJson(output) {
+  const text = String(output ?? '');
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Ignore unrelated or malformed log objects and inspect the next one.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error('set-model did not emit a complete JSON receipt: ' + text.slice(-500));
+}
+
+function buildNodeAppServerModelProofScript() {
+  return String.raw`(async () => {
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { spawn, spawnSync } = require('node:child_process');
+
+const workerName = process.argv[1];
+const requestedModel = process.argv[2];
+const expectedNode = process.argv[3];
+const sandboxId = process.argv[4];
+const wait = async (predicate, label, timeoutMs = 60_000) => {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('timed out waiting for ' + label + (lastError ? ': ' + lastError.message : ''));
+};
+const freePort = async () => {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  if (!address || typeof address !== 'object' || !address.port) throw new Error('no free port');
+  return address.port;
+};
+const findConnection = async () => {
+  const roots = [
+    path.join(os.homedir(), '.agentworkforce', 'relay'),
+    path.join(process.cwd(), '.agentworkforce', 'relay'),
+  ];
+  const queue = roots.filter((root) => fs.existsSync(root)).map((root) => ({ root, depth: 0 }));
+  const candidates = [];
+  while (queue.length) {
+    const { root, depth } = queue.shift();
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const candidate = path.join(root, entry.name);
+      if (entry.isFile() && entry.name === 'connection.json') {
+        try {
+          const connection = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+          if (connection.url && connection.api_key) candidates.push({ connection, candidate });
+        } catch {}
+      } else if (entry.isDirectory() && depth < 6) queue.push({ root: candidate, depth: depth + 1 });
+    }
+  }
+  for (const { connection, candidate } of candidates) {
+    try {
+      const response = await fetch(connection.url + '/api/status', {
+        headers: { 'x-api-key': connection.api_key },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const status = response.ok ? await response.json() : null;
+      if (status?.node_name === expectedNode) return { ...connection, path: candidate };
+    } catch {}
+  }
+  throw new Error('no live node broker connection matched ' + JSON.stringify(expectedNode));
+};
+const jsonResponse = async (response, label) => {
+  const text = await response.text();
+  if (!response.ok) throw new Error(label + ' -> ' + response.status + ' ' + text.slice(0, 300));
+  try { return text ? JSON.parse(text) : {}; } catch (error) { throw new Error(label + ' was not JSON: ' + error.message); }
+};
+const parseCliJson = (output) => {
+  const text = String(output);
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Logs are untrusted; try the next candidate object.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error(
+    'set-model did not emit a complete JSON receipt: ' + String(output).slice(-500)
+  );
+};
+
+let opencode;
+let connection;
+let sessionId;
+let providerSessionUrl;
+let providerEndpoint;
+let workerCreated = false;
+let tempDir;
+const result = { worker: workerName, requestedModel, node: expectedNode, sandbox: sandboxId, cleanup: false };
+try {
+  connection = await findConnection();
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-model-proof-'));
+  const version = spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 10_000 });
+  if (version.error || version.status !== 0) throw new Error('OpenCode CLI unavailable');
+  result.providerVersion = (version.stdout || version.stderr || '').trim();
+  const port = await freePort();
+  providerEndpoint = 'http://127.0.0.1:' + port;
+  opencode = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--pure'], {
+    cwd: tempDir,
+    env: { ...process.env, HOME: tempDir, OPENCODE_SERVER_PASSWORD: '' },
+    detached: true,
+    stdio: 'ignore',
+  });
+  opencode.unref();
+  await wait(async () => {
+    const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(2_000) });
+    return response.ok;
+  }, 'real OpenCode server');
+  const session = await jsonResponse(await fetch(providerEndpoint + '/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+    signal: AbortSignal.timeout(5_000),
+  }), 'OpenCode session creation');
+  sessionId = session.id;
+  if (typeof sessionId !== 'string' || !sessionId) throw new Error('OpenCode session omitted id');
+  providerSessionUrl = providerEndpoint + '/session/' + encodeURIComponent(sessionId);
+  const spawnArgv = [
+      'node',
+      'agent',
+      'spawn',
+      'opencode',
+      '--name',
+      workerName,
+      '--runtime',
+      'headless',
+      '--protocol',
+      'opencode',
+      '--endpoint',
+      providerEndpoint,
+      '--session-id',
+      sessionId,
+      '--release',
+      'delete',
+  ];
+  const spawnWorker = spawnSync(
+    'agent-relay',
+    spawnArgv,
+    {
+      cwd: tempDir,
+      env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+    }
+  );
+  if (spawnWorker.error || spawnWorker.status !== 0) {
+    throw new Error(
+      'public headless AppServer spawn failed: ' + (spawnWorker.stderr || spawnWorker.stdout).slice(-1000)
+    );
+  }
+  workerCreated = true;
+  result.spawnArgv = ['agent-relay', ...spawnArgv];
+  const cliEnv = { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key };
+  const setModel = spawnSync('agent-relay', ['node', 'agent', 'set-model', workerName, requestedModel, '--json'], {
+    cwd: tempDir,
+    env: cliEnv,
+    encoding: 'utf8',
+    // Leave the outer 180-second Daytona command enough headroom for the
+    // worker/session/process cleanup in finally, even on the provider timeout.
+    timeout: 60_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (setModel.error) throw setModel.error;
+  if (setModel.status !== 0) throw new Error('public set-model failed: ' + (setModel.stderr || setModel.stdout).slice(-1000));
+  const receipt = parseCliJson(setModel.stdout);
+  if (
+    receipt.name !== workerName ||
+    receipt.requestedModel !== requestedModel ||
+    receipt.status !== 'applied' ||
+    receipt.applied !== true ||
+    receipt.accepted !== true ||
+    receipt.success !== true ||
+    receipt.effectiveModel !== requestedModel ||
+    receipt.pending !== false ||
+    typeof receipt.requestId !== 'string' ||
+    receipt.requestId.length === 0 ||
+    typeof receipt.generation !== 'string' ||
+    receipt.generation.length === 0
+  ) {
+    throw new Error('public set-model returned invalid receipt: ' + JSON.stringify(receipt));
+  }
+  const confirmed = await jsonResponse(await fetch(providerEndpoint + '/api/session/' + encodeURIComponent(sessionId), {
+    signal: AbortSignal.timeout(5_000),
+  }), 'OpenCode session confirmation');
+  const sessionData = confirmed.data || confirmed;
+  const effective = sessionData.model && sessionData.model.providerID + '/' + sessionData.model.id;
+  if (effective !== requestedModel) throw new Error('OpenCode session model was ' + JSON.stringify(effective));
+  result.receipt = receipt;
+  result.providerModel = effective;
+} finally {
+  const cleanupErrors = [];
+  if (connection && workerCreated) {
+    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
+      cwd: tempDir || process.cwd(), env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
+      encoding: 'utf8', timeout: 30_000,
+    });
+    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
+    try {
+      await wait(async () => {
+        const response = await fetch(connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model', {
+          headers: { 'x-api-key': connection.api_key }, signal: AbortSignal.timeout(2_000),
+        });
+        return response.status === 404;
+      }, 'released AppServer worker to disappear', 10_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+  }
+  if (connection && sessionId) {
+    try {
+      const response = await fetch(providerSessionUrl, { method: 'DELETE', signal: AbortSignal.timeout(2_000) });
+      if (![200, 204, 404].includes(response.status)) cleanupErrors.push('OpenCode session delete failed');
+      await wait(async () => {
+        const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
+        return check.status === 404;
+      }, 'deleted OpenCode session to disappear', 10_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+  }
+  if (opencode && opencode.pid) {
+    try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
+    try {
+      await wait(async () => {
+        if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
+        try { process.kill(opencode.pid, 0); return false; } catch { return true; }
+      }, 'OpenCode process to terminate', 10_000);
+    } catch (error) { cleanupErrors.push(error.message); }
+    if (providerEndpoint) {
+      try {
+        await wait(async () => {
+          try {
+            await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
+            return false;
+          } catch (error) {
+            // A refused connection proves the listener is gone. An HTTP
+            // response or request timeout still means the port is reachable.
+            return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
+          }
+        }, 'OpenCode provider port to close', 10_000);
+      } catch (error) { cleanupErrors.push(error.message); }
+    }
+  }
+  if (tempDir) {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error.message); }
+    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
+  }
+  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
+  result.cleanup = true;
+}
+process.stdout.write(JSON.stringify(result));
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack ? error.stack : error) + '\n');
+  process.exitCode = 1;
+});
+`;
+}
+
 function requiredOption(options, name) {
   const value = options[name];
   if (typeof value !== 'string' || !value.trim()) throw new Error(`--${name} is required`);
@@ -351,8 +683,8 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 95)
-    throw new Error('matrix.operations must contain exactly 95 operations');
+  if (matrix.operations.length !== 97)
+    throw new Error('matrix.operations must contain exactly 97 operations');
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const commandOperationIds = new Set();
@@ -453,7 +785,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 95 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 97 operations');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -1362,6 +1694,14 @@ export function validateFleetEvidence(evidence, matrix) {
   if (!['pass', 'fail'].includes(evidence.cleanup?.status)) {
     throw new Error('evidence cleanup status is invalid');
   }
+  const failedReleaseAttempt = (evidence.cleanup?.attempts ?? []).find(
+    ({ type, exitCode }) => typeof type === 'string' && type.includes('release') && exitCode !== 0
+  );
+  if (evidence.cleanup?.status === 'pass' && failedReleaseAttempt) {
+    throw new Error(
+      `cleanup cannot pass after release failure for ${failedReleaseAttempt.target ?? 'unknown target'}`
+    );
+  }
   const mutationOperations = evidence.operations.filter(({ id }) =>
     ['fleet-enable', 'fleet-disable', 'fleet-inherit'].includes(id)
   );
@@ -1858,6 +2198,7 @@ class FleetBoard {
       }
       return {
         ...stripPrivateExecution(result),
+        ...(Array.isArray(assertionResult.argv) ? { argv: sanitizeFleetArgv(assertionResult.argv) } : {}),
         exitCode: result.exitCode === 0 && assertionResult.pass ? 0 : 1,
         summary: assertionResult.summary,
       };
@@ -3301,6 +3642,7 @@ class FleetBoard {
     await this.nodeAgentControls(autoANode);
     const autoBNode = nodeAt(1);
     await this.directNodeSpawn('node-agent-spawn-codex-auto-b', autoBNode, 'codex');
+    await this.nodeAgentAppServerModelProof('node-agent-set-model-app-server-b', autoBNode);
     await this.releaseSupport(`node-agent-spawn-codex-auto-b-${this.short}`, autoBNode, 'node');
     const ptyNode = nodeAt(2);
     await this.directNodeSpawn('node-agent-spawn-codex-pty', ptyNode, 'codex', {
@@ -3360,6 +3702,7 @@ class FleetBoard {
     if (!node?.nodeName || !this.controller) {
       for (const id of [
         'node-agent-set-model',
+        'node-agent-set-model-app-server-a',
         'node-agent-attach-view-json',
         'node-agent-attach-drive-json',
         'node-agent-attach-passthrough-json',
@@ -3372,6 +3715,11 @@ class FleetBoard {
         await this.derived(id, { blockedReason: 'live owned board node or controller unavailable' });
       return;
     }
+    // This control worker is deliberately Codex-over-PTY. Raw terminal output
+    // cannot prove that the provider applied a model mutation, so the truthful
+    // Fleet assertion is an explicit unsupported terminal receipt. The positive
+    // requested -> applied provider proof runs through the typed OpenCode
+    // AppServer path in relay#1658's broker-bound RelayFlow case.
     await this.assertedCommand(
       'node-agent-set-model',
       this.inside(node.id, 'node', 'agent', 'set-model', controlName, 'gpt-5.6-luna', '--json'),
@@ -3380,20 +3728,22 @@ class FleetBoard {
         const pass =
           payload?.name === controlName &&
           payload?.requestedModel === 'gpt-5.6-luna' &&
-          payload?.effectiveModel === 'gpt-5.6-luna' &&
-          payload?.success === true &&
-          payload?.accepted === true &&
+          payload?.status === 'unsupported' &&
+          payload?.effectiveModel === null &&
+          payload?.success === false &&
+          payload?.accepted === false &&
           payload?.pending === false &&
-          payload?.applied === true &&
+          payload?.applied === false &&
           typeof payload?.receiptId === 'string' &&
           payload.receiptId.length > 0;
         return {
           pass,
-          summary: `issue=1658 requestedModel=${payload?.requestedModel ?? 'missing'} effectiveModel=${payload?.effectiveModel ?? 'missing'} accepted=${payload?.accepted} pending=${payload?.pending} applied=${payload?.applied} receipt=${typeof payload?.receiptId === 'string'}`,
+          summary: `issue=1658 runtime=pty requestedModel=${payload?.requestedModel ?? 'missing'} status=${payload?.status ?? 'missing'} effectiveModel=${payload?.effectiveModel ?? 'missing'} accepted=${payload?.accepted} pending=${payload?.pending} applied=${payload?.applied} receipt=${typeof payload?.receiptId === 'string'}`,
         };
       },
       { timeoutMs: 30_000 }
     );
+    await this.nodeAgentAppServerModelProof('node-agent-set-model-app-server-a', node);
     for (const mode of ['view', 'drive', 'passthrough']) {
       const id = `node-agent-attach-${mode}-json`;
       await this.record(id, async () => {
@@ -3617,6 +3967,82 @@ class FleetBoard {
       };
     });
     await this.releaseSupport(controlName, node, 'node');
+  }
+
+  async nodeAgentAppServerModelProof(id, node) {
+    if (!node?.id || this.taintedNodeIds.has(node.id)) {
+      return this.derived(id, { blockedReason: `board node ${node?.letter ?? '?'} unavailable` });
+    }
+    const workerName = `${id}-${this.short}`;
+    // The helper owns a broker worker even if its enclosing Daytona command is
+    // killed before the helper reaches its finally block. Claim it before the
+    // direct spawn so the campaign cleanup ledger can recover that identity.
+    await this.creationIntent('relay-agent', workerName);
+    this.claimAgent(workerName, 'node-app-server-worker');
+    await this.checkpoint();
+    const script = buildNodeAppServerModelProofScript();
+    return this.assertedCommand(
+      id,
+      this.daytonaArgv(
+        'sandbox',
+        'exec',
+        node.id,
+        '--timeout',
+        '180',
+        '--',
+        'node',
+        '-e',
+        script,
+        workerName,
+        'openai/gpt-5.4',
+        node.nodeName,
+        node.id
+      ),
+      (result) => {
+        const payload = tryParseJson(result._rawStdout);
+        const receipt = payload?.receipt;
+        const nestedArgv = [
+          'agent-relay',
+          'node',
+          'agent',
+          'set-model',
+          workerName,
+          'openai/gpt-5.4',
+          '--json',
+        ];
+        const publicSpawnArgv = payload?.spawnArgv;
+        const pass =
+          payload?.worker === workerName &&
+          payload?.requestedModel === 'openai/gpt-5.4' &&
+          payload?.providerModel === 'openai/gpt-5.4' &&
+          typeof payload?.providerVersion === 'string' &&
+          payload.providerVersion.length > 0 &&
+          payload?.cleanup === true &&
+          receipt?.status === 'applied' &&
+          receipt?.applied === true &&
+          receipt?.effectiveModel === 'openai/gpt-5.4' &&
+          receipt?.pending === false &&
+          typeof receipt?.requestId === 'string' &&
+          receipt.requestId.length > 0 &&
+          Array.isArray(publicSpawnArgv) &&
+          publicSpawnArgv[0] === 'agent-relay' &&
+          publicSpawnArgv.includes('spawn') &&
+          publicSpawnArgv.includes('--runtime') &&
+          publicSpawnArgv.includes('headless') &&
+          publicSpawnArgv.includes('--protocol') &&
+          publicSpawnArgv.includes('opencode') &&
+          publicSpawnArgv.includes('--session-id');
+        return {
+          pass,
+          // The operation is a Daytona wrapper, but this nested argv is the
+          // exact public command executed by the helper and is part of the
+          // sanitized evidence contract.
+          argv: [...(result.argv ?? []), ...(publicSpawnArgv ?? []), ...nestedArgv],
+          summary: `issue=1658 runtime=headless-app-server requestedModel=${payload?.requestedModel ?? 'missing'} providerModel=${payload?.providerModel ?? 'missing'} status=${receipt?.status ?? 'missing'} effectiveModel=${receipt?.effectiveModel ?? 'missing'} applied=${receipt?.applied} cleanup=${payload?.cleanup}`,
+        };
+      },
+      { timeoutMs: 180_000, maxCaptureBytes: 2 * 1024 * 1024 }
+    );
   }
 
   async nodeWorkflows() {

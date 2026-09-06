@@ -1,0 +1,679 @@
+/**
+ * relay#1658 — the model control command must expose a machine-readable
+ * receipt. The head arm starts a real OpenCode AppServer, creates a real
+ * session, and requires the broker's typed confirmation GET to report the
+ * exact requested provider/model. PTY/native providers remain unsupported
+ * without a typed acknowledgement; their fail-closed contract is covered by
+ * the Fleet fixture and broker/runtime tests.
+ */
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+const CASE_ID = '1658-model-change-receipt';
+const MODEL_OPERATION_TIMEOUT_MS = 30_000;
+const PROBE_TIMEOUT_MS = 30_000;
+const BROKER_API_KEY = 'pr-proof-broker-key';
+const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
+const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
+const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
+const binaryPath = requiredValue('RELAY_PR_PROOF_BROKER_BINARY');
+const arm = requiredValue('RELAY_PR_PROOF_ARM');
+const activeProofDirs = new Set();
+if (arm !== 'base' && arm !== 'head') {
+  throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
+}
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
+const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
+  encoding: 'utf8',
+  timeout: PROBE_TIMEOUT_MS,
+}).trim();
+if (targetSha !== expectedSha) {
+  throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
+}
+const runnerPath = fileURLToPath(import.meta.url);
+const relativeRunner = path.relative(path.resolve(harnessDir), path.resolve(runnerPath));
+if (!relativeRunner || relativeRunner.startsWith('..') || path.isAbsolute(relativeRunner)) {
+  throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
+}
+
+function run(command, args, label) {
+  const result = spawnSync(command, args, {
+    cwd: targetDir,
+    encoding: 'utf8',
+    timeout: 300_000,
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, RELAY_SKIP_TELEMETRY: '1' },
+  });
+  if (result.error) throw new Error(`${label} failed to run: ${result.error.message}`);
+  if (result.status !== 0) {
+    throw new Error(`${label} exited with status ${result.status}: ${result.stderr ?? ''}`);
+  }
+  return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+function runAsync(command, args, label) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: targetDir,
+      env: { ...process.env, RELAY_SKIP_TELEMETRY: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      const killTimer = setTimeout(() => {
+        child.kill('SIGKILL');
+      }, 1_000);
+      child.once('close', () => clearTimeout(killTimer));
+      reject(new Error(`${label} timed out after ${MODEL_OPERATION_TIMEOUT_MS}ms`));
+    }, MODEL_OPERATION_TIMEOUT_MS);
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(new Error(`${label} failed to run: ${error.message}`));
+    });
+    child.once('close', (status) => {
+      clearTimeout(timer);
+      if (status !== 0) {
+        reject(new Error(`${label} exited with status ${status}: ${stderr}`));
+        return;
+      }
+      resolve(`${stdout}${stderr}`);
+    });
+  });
+}
+
+async function terminateChild(child, label) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return true;
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // The process may have exited between the state check and SIGTERM.
+  }
+  if (await waitForChildClose(child, 2_000)) return true;
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Report the bounded wait below instead of hanging teardown.
+  }
+  if (await waitForChildClose(child, 2_000)) return true;
+  throw new Error(`${label} did not terminate after SIGTERM/SIGKILL`);
+}
+
+function waitForChildClose(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.removeListener('close', onClose);
+      resolve(false);
+    }, timeoutMs);
+    const onClose = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once('close', onClose);
+  });
+}
+
+function parseReceiptJson(output, label) {
+  const text = String(output ?? '');
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Ignore unrelated or malformed log objects and inspect the next one.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error(`${label} did not emit a complete JSON receipt: ${text.slice(-500)}`);
+}
+
+try {
+  // Build the CLI from the exact checkout so this probe cannot accidentally
+  // execute a globally installed command or a stale dist tree.
+  run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], 'dependency installation');
+  for (const step of [
+    'build:session',
+    'build:config',
+    'build:cloud',
+    'build:utils',
+    'build:policy',
+    'build:sdk',
+    'build:harness-driver',
+    'build:harnesses',
+    'build:fleet',
+    'build:cli',
+  ]) {
+    run('npm', ['run', step], `${step} build`);
+  }
+
+  const cliEntry = path.join(targetDir, 'packages/cli/dist/cli/index.js');
+  let help = run(process.execPath, [cliEntry, 'node', 'agent', 'set-model', '--help'], 'set-model help');
+  const hasJson = /--json\b/.test(help);
+  if (arm === 'head' && hasJson) {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-'));
+    activeProofDirs.add(stateDir);
+    const brokerStateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-broker-'));
+    activeProofDirs.add(brokerStateDir);
+    const requestId = 'model_pr_proof_1658';
+    let broker;
+    let provider;
+    let providerEndpoint;
+    let providerSessionId;
+    let providerOutput = '';
+    let proofFailure;
+    try {
+      const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
+      const providerVersion = spawnSync(providerBinary, ['--version'], {
+        cwd: stateDir,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: { ...process.env, HOME: stateDir },
+      });
+      if (providerVersion.error || providerVersion.status !== 0) {
+        throw new Error(
+          `real OpenCode CLI is unavailable: ${providerVersion.error?.message ?? providerVersion.stderr ?? `exit ${providerVersion.status}`}`
+        );
+      }
+      let providerReady = false;
+      // freePort() necessarily closes its probe socket before the child binds;
+      // retry a bounded number of times if another local process wins that
+      // small race instead of treating the proof as a product failure.
+      for (let attempt = 0; attempt < 3 && !providerReady; attempt += 1) {
+        const providerPort = await freePort();
+        providerEndpoint = `http://127.0.0.1:${providerPort}`;
+        provider = spawn(
+          providerBinary,
+          ['serve', '--hostname', '127.0.0.1', '--port', String(providerPort), '--pure'],
+          {
+            cwd: stateDir,
+            env: {
+              ...process.env,
+              HOME: stateDir,
+              RELAY_SKIP_TELEMETRY: '1',
+              OPENCODE_SERVER_PASSWORD: '',
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }
+        );
+        provider.stdout.on('data', (chunk) => {
+          providerOutput += chunk;
+        });
+        provider.stderr.on('data', (chunk) => {
+          providerOutput += chunk;
+        });
+        provider.once('error', (error) => {
+          providerOutput += `OpenCode process error: ${error.message}`;
+        });
+        try {
+          await waitFor(async () => {
+            if (provider.exitCode !== null) {
+              throw new Error(`OpenCode exited early: ${providerOutput}`);
+            }
+            try {
+              const response = await fetch(`${providerEndpoint}/global/health`, {
+                signal: AbortSignal.timeout(2_000),
+              });
+              return response.ok;
+            } catch {
+              return null;
+            }
+          }, 'the real OpenCode server to answer');
+          providerReady = true;
+        } catch (error) {
+          if (provider.exitCode === null) {
+            await terminateChild(provider, 'OpenCode startup process');
+          }
+          provider = undefined;
+          if (attempt === 2) throw error;
+        }
+      }
+      const sessionResponse = await fetch(`${providerEndpoint}/session`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!sessionResponse.ok) {
+        throw new Error(`OpenCode session creation failed: ${sessionResponse.status}`);
+      }
+      const session = await sessionResponse.json();
+      if (typeof session.id !== 'string' || session.id.length === 0) {
+        throw new Error(`OpenCode session creation omitted id: ${JSON.stringify(session)}`);
+      }
+      providerSessionId = session.id;
+      broker = spawn(
+        binaryPath,
+        ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', brokerStateDir],
+        {
+          cwd: brokerStateDir,
+          env: {
+            PATH: process.env.PATH,
+            HOME: brokerStateDir,
+            TMPDIR: process.env.TMPDIR ?? '/tmp',
+            RELAY_BROKER_API_KEY: BROKER_API_KEY,
+            RELAY_SKIP_TELEMETRY: '1',
+            RUST_LOG: 'info',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }
+      );
+      let brokerOutput = '';
+      broker.stdout.on('data', (chunk) => {
+        brokerOutput += chunk;
+      });
+      broker.stderr.on('data', (chunk) => {
+        brokerOutput += chunk;
+      });
+      const brokerUrl = await waitFor(async () => {
+        if (broker.exitCode !== null) throw new Error(`broker exited early: ${brokerOutput}`);
+        try {
+          const connection = JSON.parse(await readFile(path.join(brokerStateDir, 'connection.json'), 'utf8'));
+          return connection.url;
+        } catch {
+          return null;
+        }
+      }, 'the exact broker to publish its connection file');
+      const api = brokerClient(brokerUrl);
+      await waitFor(
+        () => {
+          if (broker.exitCode !== null) {
+            throw new Error(`broker exited before readiness: ${brokerOutput}`);
+          }
+          return api('GET', '/api/status', undefined, 2_000).then(() => true);
+        },
+        'the exact broker API to answer',
+        15_000
+      );
+      await api('POST', '/api/spawn', {
+        name: 'proof-worker',
+        cli: 'opencode',
+        harness_config: {
+          runtime: 'headless',
+          protocol: 'opencode',
+          endpoint: providerEndpoint,
+          sessionId: session.id,
+          release: 'delete',
+        },
+      });
+      const admitted = await api('POST', '/api/spawned/proof-worker/model', {
+        model: 'openai/gpt-5.4',
+        timeout_ms: 30_000,
+      });
+      if (admitted.status !== 'accepted_pending' || admitted.applied !== false) {
+        throw new Error(`broker admission was not pending: ${JSON.stringify(admitted)}`);
+      }
+      if (typeof admitted.request_id !== 'string') {
+        throw new Error(`broker admission omitted request_id: ${JSON.stringify(admitted)}`);
+      }
+      const terminal = await waitFor(async () => {
+        try {
+          const receipt = await api(
+            'GET',
+            `/api/spawned/proof-worker/model?request_id=${encodeURIComponent(admitted.request_id)}`
+          );
+          return receipt.status === 'applied' ? receipt : null;
+        } catch {
+          return null;
+        }
+      }, 'the exact current-generation applied receipt');
+      if (
+        terminal.request_id !== admitted.request_id ||
+        terminal.requested_model !== 'openai/gpt-5.4' ||
+        terminal.effective_model !== 'openai/gpt-5.4' ||
+        terminal.applied !== true ||
+        terminal.pending !== false
+      ) {
+        throw new Error(`broker returned an invalid applied receipt: ${JSON.stringify(terminal)}`);
+      }
+      const confirmedSessionResponse = await fetch(`${providerEndpoint}/session/${session.id}`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!confirmedSessionResponse.ok) {
+        throw new Error(`OpenCode session confirmation failed: ${confirmedSessionResponse.status}`);
+      }
+      const confirmedSession = await confirmedSessionResponse.json();
+      if (confirmedSession.model?.providerID !== 'openai' || confirmedSession.model?.id !== 'gpt-5.4') {
+        throw new Error(
+          `OpenCode session did not retain the exact model: ${JSON.stringify(confirmedSession)}`
+        );
+      }
+      const unsupportedAdmission = await api('POST', '/api/spawned/proof-worker/model', {
+        // OpenCode accepts arbitrary provider IDs in its session model
+        // endpoint. Use malformed model syntax so the broker's typed
+        // provider path rejects before making a provider request.
+        model: 'unsupported',
+        timeout_ms: 30_000,
+      });
+      const unsupported = await waitFor(async () => {
+        try {
+          const receipt = await api(
+            'GET',
+            `/api/spawned/proof-worker/model?request_id=${encodeURIComponent(unsupportedAdmission.request_id)}`
+          );
+          return receipt.status === 'accepted_pending' ? null : receipt;
+        } catch {
+          return null;
+        }
+      }, 'the exact unsupported terminal receipt');
+      if (
+        unsupported.status !== 'rejected' ||
+        unsupported.applied !== false ||
+        unsupported.success !== false ||
+        unsupported.accepted !== true ||
+        !/provider\/model syntax/.test(unsupported.error ?? '')
+      ) {
+        throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
+      }
+    } catch (error) {
+      proofFailure = error;
+      throw error;
+    } finally {
+      const cleanupErrors = [];
+      if (broker && broker.exitCode === null) {
+        try {
+          await terminateChild(broker, 'broker');
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
+      }
+      if (providerEndpoint && providerSessionId && provider && provider.exitCode === null) {
+        try {
+          const sessionUrl = `${providerEndpoint}/session/${encodeURIComponent(providerSessionId)}`;
+          const deleted = await fetch(sessionUrl, {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(2_000),
+          });
+          if (![200, 204, 404].includes(deleted.status)) {
+            throw new Error(`OpenCode session deletion failed: ${deleted.status}`);
+          }
+          await waitFor(async () => {
+            try {
+              const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
+              return response.status === 404;
+            } catch {
+              return null;
+            }
+          }, 'deleted OpenCode session to disappear');
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
+      }
+      if (provider && provider.exitCode === null) {
+        try {
+          await terminateChild(provider, 'OpenCode provider');
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
+      }
+      try {
+        await rm(brokerStateDir, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(`broker state cleanup failed: ${error.message}`);
+      }
+      activeProofDirs.delete(brokerStateDir);
+      if (cleanupErrors.length > 0) {
+        const cleanupMessage = `proof cleanup failed: ${cleanupErrors.join('; ')}`;
+        if (proofFailure) {
+          const primary = proofFailure instanceof Error ? proofFailure : new Error(String(proofFailure));
+          primary.message = `${primary.message}; ${cleanupMessage}`;
+          throw primary;
+        }
+        throw new Error(cleanupMessage);
+      }
+    }
+
+    // Keep the CLI-facing check as part of the same head proof: the broker
+    // receipt above is the source of truth, while this confirms JSON output is
+    // advertised by the exact checkout used to build the probe.
+    const requests = [];
+    const server = createServer(async (request, response) => {
+      if (request.headers['x-api-key'] !== 'pr-proof-key') {
+        response.writeHead(401).end();
+        return;
+      }
+      response.setHeader('content-type', 'application/json');
+      if (request.method === 'POST') {
+        const body = await readRequestJson(request);
+        const unsupported = body.model === 'unsupported/model';
+        requests.push({ method: 'POST', model: body.model });
+        if (!unsupported) {
+          response.end(
+            JSON.stringify({
+              name: 'proof-worker',
+              requested_model: 'openai/gpt-5.4',
+              effective_model: null,
+              applied: false,
+              status: 'accepted_pending',
+              request_id: requestId,
+              receipt_id: requestId,
+              generation: 'generation-proof',
+              revision: 1,
+              success: false,
+              accepted: true,
+              pending: true,
+            })
+          );
+          return;
+        }
+        response.end(
+          JSON.stringify({
+            name: 'proof-worker',
+            requested_model: unsupported ? 'unsupported/model' : 'openai/gpt-5.4',
+            effective_model: unsupported ? null : 'openai/gpt-5.4',
+            applied: !unsupported,
+            status: unsupported ? 'unsupported' : 'applied',
+            request_id: requestId,
+            receipt_id: requestId,
+            generation: 'generation-proof',
+            revision: 1,
+            success: !unsupported,
+            accepted: !unsupported,
+            pending: false,
+            ...(unsupported ? { error: 'provider capability unavailable' } : {}),
+          })
+        );
+        return;
+      }
+      const requestIdFromQuery = new URL(request.url, 'http://127.0.0.1').searchParams.get('request_id');
+      requests.push({ method: 'GET', requestId: requestIdFromQuery });
+      response.end(
+        JSON.stringify({
+          name: 'proof-worker',
+          requested_model: 'openai/gpt-5.4',
+          effective_model: 'openai/gpt-5.4',
+          applied: true,
+          status: 'applied',
+          request_id: requestId,
+          receipt_id: requestId,
+          generation: 'generation-proof',
+          revision: 1,
+          success: true,
+          accepted: true,
+          pending: false,
+        })
+      );
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+    await writeFile(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({ url: `http://127.0.0.1:${port}`, api_key: 'pr-proof-key', pid: process.pid })
+    );
+    process.env.AGENT_RELAY_STATE_DIR = stateDir;
+    try {
+      const receiptOutput = await runAsync(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'openai/gpt-5.4', '--json'],
+        'set-model receipt'
+      );
+      const receipt = parseReceiptJson(receiptOutput, 'set-model receipt');
+      const validReceipt =
+        receipt.name === 'proof-worker' &&
+        receipt.requestedModel === 'openai/gpt-5.4' &&
+        receipt.effectiveModel === 'openai/gpt-5.4' &&
+        receipt.applied === true &&
+        receipt.status === 'applied' &&
+        receipt.success === true &&
+        receipt.accepted === true &&
+        receipt.pending === false &&
+        typeof receipt.requestId === 'string' &&
+        typeof receipt.receiptId === 'string' &&
+        typeof receipt.generation === 'string';
+      if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
+      if (
+        requests.length !== 2 ||
+        requests[0].method !== 'POST' ||
+        requests[1].method !== 'GET' ||
+        requests[1].requestId !== requestId
+      ) {
+        throw new Error(`set-model did not poll its correlated receipt: ${JSON.stringify(requests)}`);
+      }
+
+      const unsupportedOutput = await runAsync(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'unsupported/model', '--json'],
+        'unsupported set-model receipt'
+      );
+      const unsupported = parseReceiptJson(unsupportedOutput, 'unsupported set-model receipt');
+      if (
+        unsupported.status !== 'unsupported' ||
+        unsupported.applied !== false ||
+        unsupported.success !== false ||
+        unsupported.accepted !== false
+      ) {
+        throw new Error(`unsupported set-model claimed application: ${JSON.stringify(unsupported)}`);
+      }
+      if (requests.length !== 3 || requests[2].method !== 'POST') {
+        throw new Error(`unsupported set-model unexpectedly polled: ${JSON.stringify(requests)}`);
+      }
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await rm(stateDir, { recursive: true, force: true });
+      activeProofDirs.delete(stateDir);
+      delete process.env.AGENT_RELAY_STATE_DIR;
+    }
+  }
+  const outcome = hasJson ? 'fixed' : 'bug';
+  const signature = hasJson ? 'set_model_exposes_json_receipt' : 'set_model_has_no_json_receipt';
+  const details = hasJson
+    ? 'The head CLI advertises --json for the correlated model receipt and rejects an unsupported terminal response without claiming application; provider application remains governed by typed runtime confirmation.'
+    : 'The base CLI has no --json receipt surface, so callers cannot consume request/generation/effective model state.';
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`,
+    'utf8'
+  );
+  process.stdout.write(`${signature}\n`);
+} catch (error) {
+  await Promise.all([...activeProofDirs].map((directory) => rm(directory, { recursive: true, force: true })));
+  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+  throw error;
+}
+
+function requiredValue(name) {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing required environment variable ${name}.`);
+  return value;
+}
+
+async function waitFor(predicate, label, timeoutMs = MODEL_OPERATION_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}.`);
+}
+
+async function freePort() {
+  const server = createNetServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  if (!address || typeof address !== 'object' || !address.port) {
+    throw new Error('failed to reserve a local OpenCode port');
+  }
+  return address.port;
+}
+
+function brokerClient(baseUrl) {
+  return async (method, route, body, timeoutMs = 15_000) => {
+    const response = await fetch(`${baseUrl}${route}`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
+      signal: AbortSignal.timeout(timeoutMs),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const text = await response.text();
+    let parsed = {};
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = { raw: text };
+    }
+    if (!response.ok) {
+      throw new Error(`${method} ${route} -> ${response.status} ${text.slice(0, 300)}`);
+    }
+    return parsed;
+  };
+}
+
+async function readRequestJson(request) {
+  let body = '';
+  for await (const chunk of request) body += chunk;
+  return JSON.parse(body);
+}

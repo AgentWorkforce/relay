@@ -250,6 +250,10 @@ pub(crate) struct BrokerRuntime {
     pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
+    pub(super) pending_model_requests: HashMap<String, PendingModelRequest>,
+    pub(super) model_receipts: HashMap<WorkerName, ModelReceipt>,
+    pub(super) model_receipts_by_request: HashMap<String, ModelReceipt>,
+    pub(super) model_revision: u64,
     /// Persona/capability spawns whose action result is held until the harness
     /// proves readiness with worker_ready. Keyed by the node-local worker name.
     pub(super) pending_verified_spawns: HashMap<WorkerName, super::fleet::PendingVerifiedSpawn>,
@@ -319,7 +323,155 @@ pub(super) struct TerminalInputRequest {
     pub(super) deadline: Instant,
 }
 
+/// A model change accepted by the worker writer, awaiting a typed provider
+/// receipt. The generation is part of the correlation key: a late response
+/// from a restarted same-name worker must never mutate current state.
+pub(super) struct PendingModelRequest {
+    pub(super) worker_name: WorkerName,
+    pub(super) generation: Uuid,
+    pub(super) requested_model: String,
+    pub(super) revision: u64,
+    /// The outer queue deadline prevents a worker that never begins the
+    /// operation from leaving an admission pending forever. Once the worker
+    /// emits `set_model_started`, the provider deadline below supersedes it.
+    pub(super) deadline: Instant,
+    pub(super) provider_deadline: Option<Instant>,
+    pub(super) provider_timeout: Duration,
+}
+
+/// Last model-change receipt for a worker generation. Queue admission is
+/// intentionally represented by `accepted_pending`; only a provider response
+/// can produce `applied: true`.
+#[derive(Clone)]
+pub(super) struct ModelReceipt {
+    pub(super) name: WorkerName,
+    pub(super) requested_model: String,
+    pub(super) effective_model: Option<String>,
+    pub(super) applied: bool,
+    pub(super) status: String,
+    pub(super) request_id: String,
+    pub(super) generation: Uuid,
+    pub(super) revision: u64,
+    /// Revision of the provider-confirmed `effective_model`. This is kept
+    /// separate from `revision`: a later request may still be pending (or
+    /// reject) while an earlier request's provider receipt arrives.
+    pub(super) effective_revision: u64,
+    pub(super) accepted: bool,
+    pub(super) pending: bool,
+    pub(super) success: bool,
+    pub(super) error: Option<String>,
+    /// Used to bound the request-keyed receipt cache. This is intentionally
+    /// monotonic and never exposed on the wire.
+    pub(super) updated_at: Instant,
+}
+
+/// Request-specific receipts remain readable after a worker exits, but only
+/// for a bounded period. A receipt is evidence for one operation, not a
+/// permanent per-worker history.
+pub(super) const MODEL_RECEIPT_RETENTION: Duration = Duration::from_secs(5 * 60);
+
+pub(super) fn retain_model_receipt(receipt: &ModelReceipt, now: Instant) -> bool {
+    receipt.pending || now.duration_since(receipt.updated_at) < MODEL_RECEIPT_RETENTION
+}
+
+impl ModelReceipt {
+    pub(super) fn json(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "name": self.name,
+            // `model` remains for clients written against the old endpoint.
+            "model": self.requested_model,
+            "requested_model": self.requested_model,
+            "effective_model": self.effective_model,
+            "applied": self.applied,
+            "status": self.status,
+            "request_id": self.request_id,
+            "receipt_id": self.request_id,
+            "generation": self.generation.to_string(),
+            "revision": self.revision,
+            "effective_revision": self.effective_revision,
+            "success": self.success,
+            "accepted": self.accepted,
+            "pending": self.pending,
+        });
+        if let Some(error) = &self.error {
+            value["error"] = serde_json::Value::String(error.clone());
+        }
+        value
+    }
+}
+
+/// Convert admitted model requests into terminal receipts before removing a
+/// worker. Request-specific polling must be able to explain a worker exit
+/// instead of falling back to the stale `accepted_pending` snapshot.
+pub(super) fn terminalize_model_requests_for_worker(
+    worker_name: &WorkerName,
+    generation: Uuid,
+    pending_model_requests: &mut HashMap<String, PendingModelRequest>,
+    model_receipts: &mut HashMap<WorkerName, ModelReceipt>,
+    model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
+    now: Instant,
+) {
+    let effective_model = model_receipts
+        .get(worker_name)
+        .filter(|receipt| receipt.generation == generation)
+        .and_then(|receipt| receipt.effective_model.clone());
+    let request_ids: Vec<String> = pending_model_requests
+        .iter()
+        .filter_map(|(request_id, pending)| {
+            (pending.worker_name == *worker_name && pending.generation == generation)
+                .then_some(request_id.clone())
+        })
+        .collect();
+    for request_id in request_ids {
+        if let Some(pending) = pending_model_requests.remove(&request_id) {
+            let receipt = ModelReceipt {
+                name: worker_name.clone(),
+                requested_model: pending.requested_model,
+                effective_model: effective_model.clone(),
+                applied: false,
+                status: "rejected".into(),
+                request_id: request_id.clone(),
+                generation,
+                revision: pending.revision,
+                effective_revision: model_receipts
+                    .get(worker_name)
+                    .filter(|receipt| receipt.generation == generation)
+                    .map(|receipt| receipt.effective_revision)
+                    .unwrap_or_default(),
+                accepted: true,
+                pending: false,
+                success: false,
+                error: Some("worker exited before returning a model receipt".into()),
+                updated_at: now,
+            };
+            model_receipts_by_request.insert(request_id, receipt);
+        }
+    }
+    model_receipts.remove(worker_name);
+}
+
+const MAX_WORKER_EVENTS_BEFORE_MAINTENANCE: usize = 32;
+
 impl BrokerRuntime {
+    /// Settle a bounded batch of already-queued worker events before the
+    /// maintenance sweep. This protects a queued model receipt without
+    /// disabling maintenance indefinitely under a continuously busy worker
+    /// channel. The returned flag tells the expiry sweep whether the queue is
+    /// empty; model requests stay pending while more events await dispatch.
+    pub(super) async fn drain_worker_events_before_maintenance(&mut self) -> bool {
+        for _ in 0..MAX_WORKER_EVENTS_BEFORE_MAINTENANCE {
+            match self.worker_event_rx.try_recv() {
+                Ok(event) => self.handle_worker_event(event).await,
+                Err(mpsc::error::TryRecvError::Empty) => return true,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.worker_events_open = false;
+                    return true;
+                }
+            }
+        }
+        self.worker_event_rx.is_empty()
+    }
+
     pub(super) async fn run(mut self) -> Result<()> {
         while !self.shutdown {
             let event = tokio::select! {
@@ -385,7 +537,10 @@ impl BrokerRuntime {
                     self.worker_events_open = false;
                 }
                 RuntimeEvent::MaintenanceTick => {
-                    self.handle_maintenance_tick().await;
+                    let worker_event_queue_empty =
+                        self.drain_worker_events_before_maintenance().await;
+                    self.handle_maintenance_tick_with_worker_queue_state(worker_event_queue_empty)
+                        .await;
                 }
             }
 

@@ -1,4 +1,5 @@
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
+import type { ResolvedHarnessConfig } from '@agent-relay/harness-driver';
 import {
   createNativeHarnessLaunch,
   resolveHarnessRuntime,
@@ -34,7 +35,9 @@ export interface ClientSpawnOptions {
   spawnMode?: 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
   exitAfterTask?: boolean;
   /** Harness execution runtime. `auto` preserves each adapter's rollout default. */
-  runtime?: HarnessRuntime;
+  runtime?: HarnessRuntime | 'headless';
+  /** Explicit attached AppServer configuration for the public headless lane. */
+  harnessConfig?: ResolvedHarnessConfig;
 }
 
 const NATIVE_SIDECAR_COMMAND = '__ai-sdk-sidecar';
@@ -54,7 +57,7 @@ export function nativeSidecarLaunch(
 export function resolvedSpawnRuntime(
   options: Pick<ClientSpawnOptions, 'cli' | 'runtime'>
 ): SelectedHarnessRuntime {
-  return resolveHarnessRuntime(options.cli, options.runtime);
+  return resolveHarnessRuntime(options.cli, options.runtime as HarnessRuntime | undefined);
 }
 
 export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<HarnessDriverClient> {
@@ -96,7 +99,20 @@ export async function spawnAgentWithClient(
   client: HarnessDriverClient,
   options: ClientSpawnOptions
 ): Promise<void> {
-  const runtime = resolvedSpawnRuntime(options);
+  if (options.runtime === 'headless') {
+    if (options.harnessConfig?.runtime !== 'headless') {
+      throw new Error(
+        'Headless runtime requires --protocol, --endpoint, and --session-id AppServer configuration'
+      );
+    }
+    const { runtime: _runtime, harnessConfig, ...headlessOptions } = options;
+    await client.spawnHeadless({ ...headlessOptions, harnessConfig });
+    return;
+  }
+  const runtime = resolvedSpawnRuntime({
+    cli: options.cli,
+    runtime: options.runtime as HarnessRuntime | undefined,
+  });
   if (runtime === 'pty') {
     const { runtime: _runtime, ...ptyOptions } = options;
     await client.spawnPty(ptyOptions);

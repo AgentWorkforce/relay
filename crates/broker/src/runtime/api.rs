@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::HeadlessHarnessDriver;
 use crate::relaycast::retry_agent_registration;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
@@ -30,11 +31,32 @@ const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// `/model` writes use the same worker-owned stdin writer as protocol frames.
 /// Never let the runtime actor wait on its completion without a deadline.
 const DEFAULT_SET_MODEL_TIMEOUT: Duration = Duration::from_secs(5);
+/// OpenCode's typed mutation performs a mutation request followed by a
+/// confirmation read, each with a 30-second HTTP timeout. Keep the broker
+/// receipt alive for both requests plus a small scheduling margin so a
+/// provider cannot apply a model after the broker has recorded a timeout.
+const MIN_MODEL_RECEIPT_TIMEOUT: Duration = Duration::from_secs(65);
 
 fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
     timeout_ms
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
+}
+
+fn set_model_receipt_timeout(timeout_ms: Option<u64>) -> Duration {
+    set_model_write_timeout(timeout_ms).max(MIN_MODEL_RECEIPT_TIMEOUT)
+}
+
+/// Model mutation is supported only for the built-in OpenCode app-server path.
+/// A raw `/model` PTY injection or untyped sidecar response cannot prove that
+/// a provider consumed the command, so every other runtime fails closed.
+fn supports_model_mutation(handle: &WorkerHandle) -> bool {
+    matches!(
+        handle.spec.harness_config.as_ref(),
+        Some(ResolvedHarnessConfig::Headless(config))
+            if config.driver == HeadlessHarnessDriver::AppServer
+                && config.protocol.trim().eq_ignore_ascii_case("opencode")
+    )
 }
 
 /// Resolve the named recipient whose presence accompanies an HTTP send.
@@ -299,6 +321,10 @@ impl BrokerRuntime {
         let dead_letters = &mut self.dead_letters;
         let obligation_store = &mut self.obligation_store;
         let pending_requests = &mut self.pending_requests;
+        let pending_model_requests = &mut self.pending_model_requests;
+        let model_receipts = &mut self.model_receipts;
+        let model_receipts_by_request = &mut self.model_receipts_by_request;
+        let model_revision = &mut self.model_revision;
         let resize_owners = &mut self.resize_owners;
         let delivery_states = &mut self.delivery_states;
         let agent_result_tokens = &mut self.agent_result_tokens;
@@ -847,45 +873,225 @@ impl BrokerRuntime {
                 timeout_ms,
                 reply,
             } => {
-                if !workers.workers.contains_key(&name) {
+                let Some(handle) = workers.workers.get(&name) else {
                     let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                    return;
+                };
+                *model_revision = (*model_revision).saturating_add(1);
+                let revision = *model_revision;
+                let request_id = RequestId::new(format!("model_{}", Uuid::new_v4().simple()));
+                let generation = handle.generation;
+                // A terminal rejection (or a new pending request) must not
+                // erase the last provider-confirmed model. It remains useful
+                // to callers while the newer request is unresolved.
+                let last_effective_model = model_receipts
+                    .get(&name)
+                    .filter(|receipt| receipt.generation == generation)
+                    .and_then(|receipt| receipt.effective_model.clone());
+                let last_effective_revision = model_receipts
+                    .get(&name)
+                    .filter(|receipt| receipt.generation == generation)
+                    .map(|receipt| receipt.effective_revision)
+                    .unwrap_or_default();
+
+                if !supports_model_mutation(handle) {
+                    let receipt = ModelReceipt {
+                        name: name.clone(),
+                        requested_model: model,
+                        effective_model: last_effective_model,
+                        applied: false,
+                        status: "unsupported".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        effective_revision: last_effective_revision,
+                        accepted: false,
+                        pending: false,
+                        success: false,
+                        error: Some("worker provider does not expose typed model mutation".into()),
+                        updated_at: Instant::now(),
+                    };
+                    let value = receipt.json();
+                    model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
+                    model_receipts.insert(name, receipt);
+                    let _ = reply.send(Ok(value));
                     return;
                 }
 
-                let model_command = format!("/model {}\n", model);
-                let set_model_timeout = set_model_write_timeout(timeout_ms);
-                // `send_raw_to_worker` completes only after the command enters
-                // the worker-owned writer queue. Tokio channel sends are
-                // cancellation-safe, so a timeout means the command was not
-                // admitted; once admitted, report it as pending rather than
-                // claiming it failed while the writer can still emit it.
-                let result = match timeout(
-                    set_model_timeout,
-                    workers.send_raw_to_worker(&name, model_command.into_bytes()),
-                )
-                .await
+                // A worker has one receipt slot. Admit only one mutation at a
+                // time so a later request cannot replace the correlation
+                // record while the earlier provider confirmation is in flight.
+                // Callers receive an explicit terminal rejection and can retry
+                // after the admitted request settles.
+                if pending_model_requests
+                    .values()
+                    .any(|pending| pending.worker_name == name && pending.generation == generation)
                 {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow::anyhow!(
-                        "set_model timed out after {}ms for '{name}'",
-                        set_model_timeout.as_millis()
-                    )),
-                };
-
-                match result {
-                    Ok(()) => {
-                        let _ = reply.send(Ok(json!({
-                            "name": name,
-                            "model": model,
-                            "success": true,
-                            "accepted": true,
-                            "pending": true,
-                        })));
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error.to_string()));
-                    }
+                    let receipt = ModelReceipt {
+                        name,
+                        requested_model: model,
+                        effective_model: last_effective_model,
+                        applied: false,
+                        status: "rejected".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        effective_revision: last_effective_revision,
+                        accepted: false,
+                        pending: false,
+                        success: false,
+                        error: Some("a model change is already pending for this worker".into()),
+                        updated_at: Instant::now(),
+                    };
+                    let value = receipt.json();
+                    model_receipts_by_request.insert(receipt.request_id.clone(), receipt);
+                    let _ = reply.send(Ok(value));
+                    return;
                 }
+
+                // Model application is confirmed by the provider response,
+                // not by the stdin writer. Once this frame is admitted to the
+                // worker-owned queue, an outer write timeout must not report a
+                // rejection while the frame can still be emitted. A full or
+                // closed queue is the only admission failure here.
+                let result = workers.try_send_to_worker(
+                    &name,
+                    "set_model",
+                    Some(request_id.clone()),
+                    json!({
+                        "model": model,
+                        "provider_timeout_ms": set_model_receipt_timeout(timeout_ms).as_millis(),
+                        "queue_deadline_ms": std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            .saturating_add(WORKER_COMMAND_QUEUE_TIMEOUT.as_millis())
+                    }),
+                );
+
+                if let Err(error) = result {
+                    let receipt = ModelReceipt {
+                        name: name.clone(),
+                        requested_model: model,
+                        effective_model: last_effective_model,
+                        applied: false,
+                        status: "rejected".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        effective_revision: last_effective_revision,
+                        accepted: false,
+                        pending: false,
+                        success: false,
+                        error: Some(error.to_string()),
+                        updated_at: Instant::now(),
+                    };
+                    let value = receipt.json();
+                    model_receipts_by_request.insert(receipt.request_id.clone(), receipt.clone());
+                    model_receipts.insert(name, receipt);
+                    let _ = reply.send(Ok(value));
+                } else {
+                    let pending = ModelReceipt {
+                        name: name.clone(),
+                        requested_model: model.clone(),
+                        effective_model: last_effective_model,
+                        applied: false,
+                        status: "accepted_pending".to_string(),
+                        request_id: request_id.to_string(),
+                        generation,
+                        revision,
+                        effective_revision: last_effective_revision,
+                        accepted: true,
+                        pending: true,
+                        success: false,
+                        error: None,
+                        updated_at: Instant::now(),
+                    };
+                    model_receipts_by_request.insert(pending.request_id.clone(), pending.clone());
+                    model_receipts.insert(name.clone(), pending);
+                    pending_model_requests.insert(
+                        request_id.to_string(),
+                        PendingModelRequest {
+                            worker_name: name.clone(),
+                            generation,
+                            requested_model: model,
+                            revision,
+                            // Admission has a short bounded queue window;
+                            // provider confirmation receives its own full
+                            // timeout after `set_model_started`.
+                            deadline: Instant::now() + WORKER_COMMAND_QUEUE_TIMEOUT,
+                            provider_deadline: None,
+                            provider_timeout: set_model_receipt_timeout(timeout_ms),
+                        },
+                    );
+                    let _ = reply.send(Ok(model_receipts
+                        .get(&name)
+                        .expect("pending model receipt was inserted")
+                        .json()));
+                }
+            }
+            ListenApiRequest::GetModel {
+                name,
+                request_id,
+                reply,
+            } => {
+                let handle = workers.workers.get(&name);
+                if handle.is_none() {
+                    if let Some(request_id) = request_id {
+                        if let Some(receipt) = model_receipts_by_request
+                            .get(&request_id)
+                            .filter(|receipt| receipt.name == name)
+                        {
+                            let _ = reply.send(Ok(receipt.json()));
+                        } else {
+                            let _ = reply.send(Err(format!(
+                                "unknown or stale model receipt '{}' for worker '{}'",
+                                request_id, name
+                            )));
+                        }
+                    } else {
+                        let _ = reply.send(Err(format!("unknown worker '{}'", name)));
+                    }
+                    return;
+                }
+                let handle = handle.expect("worker handle checked above");
+                let receipt = match request_id.as_deref() {
+                    Some(request_id) => model_receipts_by_request
+                        .get(request_id)
+                        .filter(|receipt| receipt.name == name),
+                    None => model_receipts
+                        .get(&name)
+                        .filter(|receipt| receipt.generation == handle.generation),
+                };
+                let Some(receipt) = receipt else {
+                    if let Some(request_id) = request_id {
+                        let _ = reply.send(Err(format!(
+                            "unknown or stale model receipt '{}' for worker '{}'",
+                            request_id, name
+                        )));
+                        return;
+                    }
+                    let value = {
+                        json!({
+                            "name": name,
+                            "model": handle.spec.model,
+                            "requested_model": Value::Null,
+                            "effective_model": Value::Null,
+                            "applied": false,
+                            "status": "unknown",
+                            "request_id": Value::Null,
+                            "generation": handle.generation.to_string(),
+                            "revision": 0,
+                            "success": false,
+                            "accepted": false,
+                            "pending": false,
+                        })
+                    };
+                    let _ = reply.send(Ok(value));
+                    return;
+                };
+                let value = receipt.json();
+                let _ = reply.send(Ok(value));
             }
             ListenApiRequest::Release {
                 name,
@@ -901,6 +1107,10 @@ impl BrokerRuntime {
                 workers.metrics.on_release(&name);
                 match workers.release(&name).await {
                     Ok(()) => {
+                        // The name-keyed receipt describes the live worker
+                        // only; correlated request receipts remain available
+                        // in the request cache until their retention TTL.
+                        model_receipts.remove(&name);
                         let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
                             fleet_control_tx,
                             fleet_delivery_book,
@@ -1057,6 +1267,7 @@ impl BrokerRuntime {
                             };
                             // Idempotent release is still terminal for any stale
                             // attach state left behind after the process exited.
+                            model_receipts.remove(&name);
                             resize_owners.remove(&name);
                             pty_observability.remove(&name);
                             super::fleet::close_terminal_sessions_for_worker(
@@ -2829,7 +3040,10 @@ mod skill_injection_tests {
 
 #[cfg(test)]
 mod set_model_timeout_tests {
-    use super::{set_model_write_timeout, DEFAULT_SET_MODEL_TIMEOUT};
+    use super::{
+        set_model_receipt_timeout, set_model_write_timeout, DEFAULT_SET_MODEL_TIMEOUT,
+        MIN_MODEL_RECEIPT_TIMEOUT,
+    };
     use std::time::Duration;
 
     #[test]
@@ -2842,6 +3056,19 @@ mod set_model_timeout_tests {
         assert_eq!(
             set_model_write_timeout(Some(10_000)),
             Duration::from_millis(10_000)
+        );
+    }
+
+    #[test]
+    fn receipt_timeout_covers_the_provider_http_deadline() {
+        assert_eq!(set_model_receipt_timeout(None), MIN_MODEL_RECEIPT_TIMEOUT);
+        assert_eq!(
+            set_model_receipt_timeout(Some(45_000)),
+            MIN_MODEL_RECEIPT_TIMEOUT
+        );
+        assert_eq!(
+            set_model_receipt_timeout(Some(70_000)),
+            Duration::from_millis(70_000)
         );
     }
 }
