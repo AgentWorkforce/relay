@@ -103,6 +103,12 @@ const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^\.agentworkforce\//,
   /^scripts\/pr-proof\//,
   /^scripts\/evals\//,
+  // Fleet qualification tooling. Imported only by workflows/fleet-qualification.ts
+  // and tests/fixtures/, both already exempt above; referenced by nothing under
+  // packages/ or .github/, and not in any package's `files` array. It exists to
+  // grade a release campaign, not to ship in one. Same class as pr-proof/ and
+  // evals/ — and unlike inject-posthog-key.mjs, no publish step runs it.
+  /^scripts\/fleet-qualification\//,
   /^tests\//,
   /^[^/]*\.md$/,
   // Top-level repo metadata that cannot reach a shipped artifact.
