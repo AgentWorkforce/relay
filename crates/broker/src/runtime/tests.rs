@@ -327,6 +327,157 @@ async fn first_release_after_worker_exit_releases_persisted_exact_identity() {
     release.assert_hits(1);
 }
 
+#[tokio::test]
+async fn release_after_broker_restart_refuses_unowned_live_persisted_process() {
+    let name = WorkerName::from("persisted-live-worker");
+    let generation = Uuid::new_v4();
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+    let workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.state.agents.insert(
+        name.clone(),
+        crate::broker::PersistedAgent {
+            runtime: AgentRuntime::Pty,
+            parent: None,
+            channels: vec![],
+            pid: Some(std::process::id()),
+            started_at: None,
+            spec: None,
+            restart_policy: None,
+            initial_task: None,
+            relaycast_agent_id: Some("agent-persisted-live".into()),
+            generation: Some(generation),
+        },
+    );
+    let (reply, response) = tokio::sync::oneshot::channel();
+
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::Release {
+            name: name.clone(),
+            reason: Some("release after broker restart".into()),
+            expected_generation: Some(generation),
+            reply,
+        })
+        .await;
+
+    let error = response
+        .await
+        .expect("release response")
+        .expect_err("an unowned live persisted process must fail closed");
+    assert!(error.contains("live persisted process"), "{error}");
+    assert!(
+        fixture.runtime.state.agents.contains_key(&name),
+        "the exact persisted identity must remain retryable"
+    );
+    assert!(fixture.runtime.state.pending_identity_releases.is_empty());
+}
+
+#[tokio::test]
+async fn release_after_broker_restart_recovers_dead_persisted_exact_identity() {
+    use httpmock::{Method::GET, Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let name = WorkerName::from("persisted-dead-worker");
+    let agent_id = "agent-persisted-dead";
+    let generation = Uuid::new_v4();
+    let current = server.mock(|when, then| {
+        when.method(GET).path("/v1/agents/persisted-dead-worker");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "id": agent_id,
+                "workspace_id": "ws_demo",
+                "name": name.as_str(),
+                "type": "agent",
+                "status": "offline",
+                "persona": null,
+                "metadata": {},
+                "channels": []
+            }
+        }));
+    });
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(
+                json!({
+                    "name": name.as_str(),
+                    "delete_agent": true,
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "invocation_id": "inv-release-persisted-dead",
+                "action_name": "release",
+                "handler_agent_id": null,
+                "handler_node_id": null,
+                "dispatched_node_id": null,
+                "input": {},
+                "status": "completed",
+                "created_at": "2026-09-06T00:00:00Z"
+            }
+        }));
+    });
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+    let workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    fixture.runtime.state.agents.insert(
+        name.clone(),
+        crate::broker::PersistedAgent {
+            runtime: AgentRuntime::Pty,
+            parent: None,
+            channels: vec![],
+            pid: None,
+            started_at: None,
+            spec: None,
+            restart_policy: None,
+            initial_task: None,
+            relaycast_agent_id: Some(agent_id.into()),
+            generation: Some(generation),
+        },
+    );
+    let (reply, response) = tokio::sync::oneshot::channel();
+
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::Release {
+            name: name.clone(),
+            reason: Some("cleanup after broker restart".into()),
+            expected_generation: Some(generation),
+            reply,
+        })
+        .await;
+
+    let result = response
+        .await
+        .expect("release response")
+        .expect("dead persisted worker should finish exact cleanup");
+    assert_eq!(result["success"], true);
+    assert!(!fixture.runtime.state.agents.contains_key(&name));
+    assert!(!fixture
+        .runtime
+        .state
+        .pending_identity_releases
+        .contains_key(&name));
+    current.assert_hits(1);
+    release.assert_hits(1);
+}
+
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,

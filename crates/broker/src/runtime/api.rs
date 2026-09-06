@@ -900,12 +900,19 @@ impl BrokerRuntime {
                 }
                 let current_generation = workers.workers.get(&name).map(|worker| worker.generation);
                 if let Some(expected) = expected_generation {
-                    let observed = current_generation.or_else(|| {
-                        state
-                            .pending_identity_releases
-                            .get(&name)
-                            .map(|pending| pending.generation)
-                    });
+                    let observed = current_generation
+                        .or_else(|| {
+                            state
+                                .pending_identity_releases
+                                .get(&name)
+                                .map(|pending| pending.generation)
+                        })
+                        .or_else(|| {
+                            state
+                                .agents
+                                .get(&name)
+                                .and_then(|persisted| persisted.generation)
+                        });
                     if observed.is_some_and(|generation| generation != expected) {
                         let _ = reply.send(Err(format!(
                             "stale release generation for '{name}': expected {expected}, current generation is {}",
@@ -913,6 +920,31 @@ impl BrokerRuntime {
                         )));
                         return;
                     }
+                }
+                // A broker restart cannot reconstruct the tokio Child handle
+                // for a still-running process recorded in state. Never turn
+                // that unowned process into an "already released" success: a
+                // PID alone is not a safe post-restart kill capability and may
+                // be reused. Keep the exact persisted identity intact and ask
+                // the caller to retry after the process is observably gone.
+                let persisted_unowned_process_may_be_live = current_generation.is_none()
+                    && state.agents.get(&name).is_some_and(|persisted| {
+                        #[cfg(unix)]
+                        {
+                            persisted.pid.is_some_and(broker::is_pid_alive)
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // Without an owned process handle, non-Unix builds
+                            // cannot prove that a persisted PID is dead.
+                            persisted.pid.is_some()
+                        }
+                    });
+                if persisted_unowned_process_may_be_live {
+                    let _ = reply.send(Err(format!(
+                        "worker '{name}' has a live persisted process but this broker no longer owns its process handle; refusing to report release success"
+                    )));
+                    return;
                 }
                 let fallback_agent_id = fleet_delivery_book
                     .active_agent_id(name.as_str())
@@ -922,6 +954,24 @@ impl BrokerRuntime {
                 });
                 if exact_identity.is_none() {
                     exact_identity = state.pending_identity_releases.get(&name).cloned();
+                }
+                if exact_identity.is_none() {
+                    // A persisted process that is now observably gone may have
+                    // survived an ungraceful broker restart without passing
+                    // through the runtime exit sweep. Promote its exact state
+                    // into the same pending-cleanup path used by ordinary
+                    // exits before removing the active record.
+                    let persisted_generation = state
+                        .agents
+                        .get(&name)
+                        .and_then(|persisted| persisted.generation);
+                    if let Some(generation) = persisted_generation {
+                        exact_identity = state.defer_identity_release(
+                            &name,
+                            generation,
+                            fallback_agent_id.as_deref(),
+                        );
+                    }
                 }
                 // Unregister from supervisor before release to prevent
                 // auto-restart of intentionally released agents.
