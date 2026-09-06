@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/config",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260906.1665.4",
   "engines": {
     "node": ">=22.0.0"
   },

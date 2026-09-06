@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260906.1665.4",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
