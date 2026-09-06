@@ -443,9 +443,26 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(releasedAgain.status).toBe(0);
     expect(releasedAgain.stdout).toContain(name);
     await assertReleaseAbsence(secondDescendantPid, 'second release');
-    const repeatedRelease = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
-    expect(repeatedRelease.status).toBe(0);
-    expect(repeatedRelease.stdout).toContain(name);
+    // The engine intentionally frees the released name, so a second engine
+    // command would correctly report `agent_not_found` rather than risk
+    // releasing a newer same-name worker. Idempotency belongs to the owning
+    // node-control endpoint: retry the public DELETE after the worker is gone.
+    const connection = JSON.parse(
+      readFileSync(path.join(nodeA.projectDir, '.agentworkforce', 'relay', 'connection.json'), 'utf8')
+    ) as { url: string; api_key: string };
+    const brokerUrl = new URL(connection.url);
+    expect(brokerUrl.protocol).toBe('http:');
+    expect(brokerUrl.hostname).toBe('127.0.0.1');
+    const repeatedRelease = await fetch(`${brokerUrl.origin}/api/spawned/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: {
+        authorization: `Bearer ${connection.api_key}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ reason: 'idempotent node-control retry' }),
+    });
+    expect(repeatedRelease.status).toBe(200);
+    expect(await repeatedRelease.json()).toMatchObject({ success: true, name });
     await assertReleaseAbsence(secondDescendantPid, 'idempotent repeated release');
   }, 90_000);
 
