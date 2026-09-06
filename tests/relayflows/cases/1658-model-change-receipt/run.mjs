@@ -201,6 +201,7 @@ try {
     let providerEndpoint;
     let providerSessionId;
     let providerOutput = '';
+    let proofFailure;
     try {
       const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
       const providerVersion = spawnSync(providerBinary, ['--version'], {
@@ -404,6 +405,9 @@ try {
       ) {
         throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
       }
+    } catch (error) {
+      proofFailure = error;
+      throw error;
     } finally {
       const cleanupErrors = [];
       if (broker && broker.exitCode === null) {
@@ -448,7 +452,15 @@ try {
         cleanupErrors.push(`broker state cleanup failed: ${error.message}`);
       }
       activeProofDirs.delete(brokerStateDir);
-      if (cleanupErrors.length > 0) throw new Error(`proof cleanup failed: ${cleanupErrors.join('; ')}`);
+      if (cleanupErrors.length > 0) {
+        const cleanupMessage = `proof cleanup failed: ${cleanupErrors.join('; ')}`;
+        if (proofFailure) {
+          const primary = proofFailure instanceof Error ? proofFailure : new Error(String(proofFailure));
+          primary.message = `${primary.message}; ${cleanupMessage}`;
+          throw primary;
+        }
+        throw new Error(cleanupMessage);
+      }
     }
 
     // Keep the CLI-facing check as part of the same head proof: the broker
