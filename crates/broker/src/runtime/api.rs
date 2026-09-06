@@ -4,6 +4,47 @@ use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
 
+/// Retain registration authority even when delivery binding warns. Resolve
+/// before launch; an unresolved token remains cached for a later spawn retry.
+pub(super) async fn prepare_http_spawn_registration(
+    client: &RelaycastHttpClient,
+    book: &mut FleetDeliveryBook,
+    node: &str,
+    name: &WorkerName,
+    token: &str,
+) -> Result<(crate::node_control::AgentRegistrationToken, Option<String>), String> {
+    let registration = super::fleet::resolve_fleet_agent_token_identity(client, book, name, token)
+        .await
+        .map_err(|error| format!(
+            "registered agent '{name}' but could not resolve its identity; retry spawn with the cached credential: {error}"
+        ))?;
+    let warning =
+        super::relaycast_events::bind_http_registered_agent_to_node(client, node, name).await;
+    Ok((registration, warning))
+}
+
+/// Drain every retained generation, leaving the failing record and all older
+/// records durable for the next retry.
+async fn drain_identity_releases(
+    state: &mut broker::BrokerState,
+    client: &RelaycastHttpClient,
+    name: &WorkerName,
+    reason: Option<&str>,
+) -> Option<String> {
+    while let Some(identity) = state.pending_identity_releases.get(name).cloned() {
+        if let Err(error) = client
+            .release_agent_identity_exact(name, &identity.agent_id, reason)
+            .await
+        {
+            tracing::warn!(worker = %name, agent_id = %identity.agent_id, generation = %identity.generation,
+                error = %error, "failed to release retained worker identity");
+            return Some(error.to_string());
+        }
+        state.clear_pending_identity_release(name, &identity);
+    }
+    None
+}
+
 /// Default name recorded on observer tokens minted via `/api/observer-token`
 /// when the caller doesn't supply one.
 const DEFAULT_OBSERVER_TOKEN_NAME: &str = "pear-dashboard-observer";
@@ -394,11 +435,10 @@ impl BrokerRuntime {
                             fleet_registration = Some((registration, None, session_ref.clone()));
                         }
                         Err(error) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "could not resolve supplied agent token for reconnect inventory"
-                            );
+                            let _ = reply.send(Err(format!(
+                                "could not resolve supplied agent identity for '{name}': {error}"
+                            )));
+                            return;
                         }
                     }
                     Some(token)
@@ -457,34 +497,23 @@ impl BrokerRuntime {
                                     // delivery. Bind it to this node so it is
                                     // deliverable, surfacing a loud warning if the
                                     // bind fails.
-                                    let bind_warning = super::relaycast_events::bind_http_registered_agent_to_node(
+                                    match prepare_http_spawn_registration(
                                         relaycast_http,
+                                        fleet_delivery_book,
                                         fleet_node_name,
                                         &name,
+                                        &token,
                                     )
-                                    .await;
-                                    if let Some(warning) = bind_warning {
-                                        preregistration_warning = Some(warning);
-                                    } else {
-                                        match super::fleet::resolve_fleet_agent_token_identity(
-                                            relaycast_http,
-                                            fleet_delivery_book,
-                                            &name,
-                                            &token,
-                                        )
-                                        .await
-                                        {
-                                            Ok(registration) => {
-                                                fleet_registration =
-                                                    Some((registration, None, session_ref.clone()));
-                                            }
-                                            Err(error) => {
-                                                tracing::warn!(
-                                                    worker = %name,
-                                                    error = %error,
-                                                    "could not resolve HTTP-registered agent for reconnect inventory"
-                                                );
-                                            }
+                                    .await
+                                    {
+                                        Ok((registration, warning)) => {
+                                            preregistration_warning = warning;
+                                            fleet_registration =
+                                                Some((registration, None, session_ref.clone()));
+                                        }
+                                        Err(error) => {
+                                            let _ = reply.send(Err(error));
+                                            return;
                                         }
                                     }
                                     Some(token)
@@ -668,6 +697,9 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        let relaycast_agent_id = fleet_registration
+                            .as_ref()
+                            .map(|(token, _, _)| token.agent_id.clone());
                         if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
                         {
                             super::fleet::record_fleet_inventory_agent(
@@ -716,10 +748,7 @@ impl BrokerRuntime {
                                 || effective_spec.shadow_mode.is_some(),
                         });
                         let pid = workers.harness_pid(&name);
-                        let generation = workers
-                            .workers
-                            .get(&name)
-                            .map(|handle| handle.generation.to_string());
+                        let generation = workers.workers.get(&name).map(|handle| handle.generation);
                         state.agents.insert(
                             name.clone(),
                             broker::PersistedAgent {
@@ -736,6 +765,8 @@ impl BrokerRuntime {
                                 spec: Some(effective_spec.clone()),
                                 restart_policy: None,
                                 initial_task: effective_task,
+                                relaycast_agent_id,
+                                generation,
                             },
                         );
                         if paths.persist {
@@ -890,10 +921,86 @@ impl BrokerRuntime {
             ListenApiRequest::Release {
                 name,
                 reason,
+                expected_generation,
                 reply,
             } => {
                 if let Some(ref r) = reason {
                     tracing::info!(worker = %name, reason = %r, "releasing agent via HTTP API");
+                }
+                let current_generation = workers.workers.get(&name).map(|worker| worker.generation);
+                if let Some(expected) = expected_generation {
+                    let observed = current_generation
+                        .or_else(|| {
+                            state
+                                .agents
+                                .get(&name)
+                                .and_then(|persisted| persisted.generation)
+                        })
+                        .or_else(|| {
+                            state
+                                .pending_identity_releases
+                                .get(&name)
+                                .map(|pending| pending.generation)
+                        });
+                    if observed.is_some_and(|generation| generation != expected) {
+                        let _ = reply.send(Err(format!(
+                            "stale release generation for '{name}': expected {expected}, current generation is {}",
+                            observed.expect("checked as some")
+                        )));
+                        return;
+                    }
+                }
+                // A broker restart cannot reconstruct the tokio Child handle
+                // for a still-running process recorded in state. Never turn
+                // that unowned process into an "already released" success: a
+                // PID alone is not a safe post-restart kill capability and may
+                // be reused. Keep the exact persisted identity intact and ask
+                // the caller to retry after the process is observably gone.
+                let persisted_unowned_process_may_be_live = current_generation.is_none()
+                    && state.agents.get(&name).is_some_and(|persisted| {
+                        #[cfg(unix)]
+                        {
+                            persisted.pid.is_some_and(broker::is_pid_alive)
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // Without an owned process handle, non-Unix builds
+                            // cannot prove that a persisted PID is dead.
+                            persisted.pid.is_some()
+                        }
+                    });
+                if persisted_unowned_process_may_be_live {
+                    let _ = reply.send(Err(format!(
+                        "worker '{name}' has a live persisted process but this broker no longer owns its process handle; refusing to report release success"
+                    )));
+                    return;
+                }
+                let fallback_agent_id = fleet_delivery_book
+                    .active_agent_id(name.as_str())
+                    .map(str::to_string);
+                let mut exact_identity = current_generation.and_then(|generation| {
+                    state.defer_identity_release(&name, generation, fallback_agent_id.as_deref())
+                });
+                if exact_identity.is_none() {
+                    // A persisted process that is now observably gone may have
+                    // survived an ungraceful broker restart without passing
+                    // through the runtime exit sweep. Promote its exact state
+                    // into the same pending-cleanup path used by ordinary
+                    // exits before removing the active record.
+                    let persisted_generation = state
+                        .agents
+                        .get(&name)
+                        .and_then(|persisted| persisted.generation);
+                    if let Some(generation) = persisted_generation {
+                        exact_identity = state.defer_identity_release(
+                            &name,
+                            generation,
+                            fallback_agent_id.as_deref(),
+                        );
+                    }
+                }
+                if exact_identity.is_none() {
+                    exact_identity = state.pending_identity_releases.get(&name).cloned();
                 }
                 // Unregister from supervisor before release to prevent
                 // auto-restart of intentionally released agents.
@@ -915,19 +1022,18 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        let relaycast_release_error = match relaycast_http
-                            .release_agent_identity(&name, reason.as_deref())
-                            .await
-                        {
-                            Ok(()) => None,
-                            Err(error) => {
-                                tracing::warn!(
-                                    worker = %name,
-                                    error = %error,
-                                    "failed to release worker identity in relaycast"
-                                );
-                                Some(error.to_string())
-                            }
+                        let relaycast_release_error = match exact_identity.as_ref() {
+                            Some(_) => drain_identity_releases(state, relaycast_http, &name, reason.as_deref()).await,
+                            // A broker with no Relaycast client has no remote
+                            // identity to clean up. Preserve the historical
+                            // local-only release behavior in that mode. When a
+                            // client exists, missing identity authority must
+                            // fail closed rather than reverting to a dangerous
+                            // name-only release.
+                            None if relaycast_http.relay_client().is_none() => None,
+                            None => Some(format!(
+                                "no immutable Relaycast identity was recorded for worker generation '{name}'; refusing unsafe name-only release"
+                            )),
                         };
                         let dropped = take_pending_for_worker(pending_deliveries, &name);
                         if !dropped.is_empty() {
@@ -1041,18 +1147,34 @@ impl BrokerRuntime {
                             // itself rather than only forgetting the cached
                             // token, or a retry can never actually free the
                             // seat.
-                            let relaycast_release_error = match relaycast_http
-                                .release_agent_identity(&name, reason.as_deref())
-                                .await
-                            {
-                                Ok(()) => None,
-                                Err(error) => {
-                                    tracing::warn!(
+                            // A missing local worker is normally a duplicate
+                            // of a completed Fleet release. Do not send
+                            // another name-based Relaycast release: a newer
+                            // same-name worker may have been registered
+                            // elsewhere, and the engine would otherwise
+                            // dispatch this retry to that live worker. The
+                            // spawn/reap lifecycle records its immutable id and
+                            // process generation in
+                            // `pending_identity_releases`; only that exact
+                            // marker is eligible for a remote retry.
+                            let retry_identity =
+                                state.pending_identity_releases.get(&name).cloned();
+                            let relaycast_release_error = match retry_identity.as_ref() {
+                                None => {
+                                    tracing::debug!(
                                         worker = %name,
-                                        error = %error,
-                                        "failed to release already-exited worker identity in relaycast"
+                                        "skipping duplicate Relaycast release without pending identity cleanup"
                                     );
-                                    Some(error.to_string())
+                                    None
+                                }
+                                Some(_) => {
+                                    drain_identity_releases(
+                                        state,
+                                        relaycast_http,
+                                        &name,
+                                        reason.as_deref(),
+                                    )
+                                    .await
                                 }
                             };
                             // Idempotent release is still terminal for any stale
@@ -1069,6 +1191,11 @@ impl BrokerRuntime {
                                 "terminal worker was released",
                             );
                             state.agents.remove(&name);
+                            if let (None, Some(identity)) =
+                                (&relaycast_release_error, retry_identity.as_ref())
+                            {
+                                state.clear_pending_identity_release(&name, identity);
+                            }
                             if paths.persist {
                                 let _ = state.save(&paths.state);
                             }
@@ -2868,6 +2995,8 @@ fn persist_agent_channels(
             spec: Some(spec.clone()),
             restart_policy: None,
             initial_task: None,
+            relaycast_agent_id: None,
+            generation: None,
         });
     agent.runtime = runtime;
     agent.parent = parent;

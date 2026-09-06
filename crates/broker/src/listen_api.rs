@@ -75,6 +75,9 @@ pub enum ListenApiRequest {
     Release {
         name: WorkerName,
         reason: Option<String>,
+        /// Exact process generation captured by a spawned-agent handle. When
+        /// present, a same-name replacement must never satisfy this request.
+        expected_generation: Option<Uuid>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
@@ -1376,13 +1379,41 @@ async fn listen_api_release(
     axum::extract::Path(name): axum::extract::Path<String>,
     body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let reason = body.and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let body = body.map(|body| body.0).unwrap_or(Value::Null);
+    let reason = body.get("reason").and_then(Value::as_str).map(String::from);
+    let expected_generation = match body.get("generation") {
+        None => None,
+        Some(Value::String(generation)) => match Uuid::parse_str(generation) {
+            Ok(generation) => Some(generation),
+            Err(_) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({
+                        "success": false,
+                        "name": name,
+                        "error": "generation must be a valid UUID"
+                    })),
+                );
+            }
+        },
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "name": name,
+                    "error": "generation must be a valid UUID"
+                })),
+            );
+        }
+    };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::Release {
             name: WorkerName::new(name.clone()),
             reason,
+            expected_generation,
             reply: reply_tx,
         })
         .await
@@ -4301,6 +4332,81 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn release_route_forwards_exact_worker_generation() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let generation = uuid::Uuid::new_v4();
+        let release_replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::Release {
+                    name,
+                    reason,
+                    expected_generation,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(reason.as_deref(), Some("finished"));
+                    assert_eq!(expected_generation, Some(generation));
+                    let _ = reply.send(Ok(json!({ "success": true, "name": "worker-a" })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a")
+                    .method("DELETE")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "reason": "finished",
+                            "generation": generation,
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        release_replier
+            .await
+            .expect("release replier should complete");
+    }
+
+    #[tokio::test]
+    async fn release_route_rejects_invalid_worker_generation_without_dispatch() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a")
+                    .method("DELETE")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "generation": "not-a-uuid" }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid input must not reach the broker"
+        );
+        let body = response_json(response).await;
+        assert_eq!(body["success"], false);
+        assert_eq!(body["error"], "generation must be a valid UUID");
     }
 
     #[tokio::test]

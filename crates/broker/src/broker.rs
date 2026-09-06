@@ -6,7 +6,7 @@ use crate::{
     supervisor::RestartPolicy,
 };
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub(crate) mod continuity;
 pub(crate) mod delivery_verification;
@@ -28,6 +28,59 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct BrokerState {
     pub(crate) agents: HashMap<WorkerName, PersistedAgent>,
+    /// Identities whose local process has been released but whose Relaycast
+    /// terminal release still needs a retry. This is deliberately separate
+    /// from `agents`: a stale persisted worker entry is not evidence that a
+    /// name-based remote release is safe (the name may have been reused).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_pending_identity_releases",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
+    pub(crate) pending_identity_releases: HashMap<WorkerName, PendingIdentityRelease>,
+    /// Older generations remain retryable when a same-name worker exits again.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) superseded_identity_releases: HashMap<WorkerName, Vec<PendingIdentityRelease>>,
+}
+
+fn deserialize_pending_identity_releases<'de, D>(
+    deserializer: D,
+) -> std::result::Result<HashMap<WorkerName, PendingIdentityRelease>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StoredPendingIdentityReleases {
+        Exact(HashMap<WorkerName, PendingIdentityRelease>),
+        LegacyNames(Vec<WorkerName>),
+    }
+
+    match StoredPendingIdentityReleases::deserialize(deserializer)? {
+        StoredPendingIdentityReleases::Exact(exact) => Ok(exact),
+        // The unpublished name-only shape has no identity/generation proof.
+        // Discard it rather than either refusing to start or reviving an unsafe
+        // name-based release after upgrade.
+        StoredPendingIdentityReleases::LegacyNames(names) => {
+            tracing::warn!(
+                count = names.len(),
+                "discarding legacy name-only pending identity releases"
+            );
+            Ok(HashMap::new())
+        }
+    }
+}
+
+/// The exact Relaycast identity owned by one local worker process generation.
+///
+/// Relaycast's release endpoint is name-addressed, so a retry must first prove
+/// that the name still resolves to this immutable id. The local generation is
+/// an independent guard against a stale handle releasing a replacement process
+/// that recovered the same Relaycast identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingIdentityRelease {
+    pub(crate) agent_id: String,
+    pub(crate) generation: uuid::Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,9 +98,91 @@ pub(crate) struct PersistedAgent {
     pub(crate) restart_policy: Option<RestartPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) initial_task: Option<String>,
+    /// Immutable Relaycast id bound by `agent.register` for this process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) relaycast_agent_id: Option<String>,
+    /// Broker-local process generation that owns `relaycast_agent_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) generation: Option<uuid::Uuid>,
 }
 
 impl BrokerState {
+    /// Preserve the exact remote identity before removing an exited worker.
+    ///
+    /// `fallback_agent_id` is the authoritative in-memory fleet binding. It
+    /// covers state files written before these fields existed while never
+    /// falling back to a name-only remote release.
+    pub(crate) fn defer_identity_release(
+        &mut self,
+        name: &WorkerName,
+        generation: uuid::Uuid,
+        fallback_agent_id: Option<&str>,
+    ) -> Option<PendingIdentityRelease> {
+        let persisted = self.agents.get(name);
+        if persisted
+            .and_then(|agent| agent.generation)
+            .is_some_and(|stored| stored != generation)
+        {
+            return None;
+        }
+        let agent_id = fallback_agent_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .or_else(|| {
+                persisted
+                    .and_then(|agent| agent.relaycast_agent_id.as_deref())
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+            })?;
+        let pending = PendingIdentityRelease {
+            agent_id: agent_id.to_string(),
+            generation,
+        };
+        if let Some(previous) = self
+            .pending_identity_releases
+            .insert(name.clone(), pending.clone())
+        {
+            if previous != pending {
+                self.superseded_identity_releases
+                    .entry(name.clone())
+                    .or_default()
+                    .push(previous);
+            }
+        }
+        Some(pending)
+    }
+
+    pub(crate) fn clear_pending_identity_release(
+        &mut self,
+        name: &WorkerName,
+        released: &PendingIdentityRelease,
+    ) {
+        if self.pending_identity_releases.get(name) == Some(released) {
+            self.pending_identity_releases.remove(name);
+            if let Some(older) = self.superseded_identity_releases.get_mut(name) {
+                if let Some(next) = older.pop() {
+                    self.pending_identity_releases.insert(name.clone(), next);
+                }
+                if older.is_empty() {
+                    self.superseded_identity_releases.remove(name);
+                }
+            }
+        }
+    }
+
+    /// Remove one exited process while atomically retaining the exact cleanup
+    /// lease in broker state. Callers save the state after this returns, so a
+    /// restart can never observe the agent removed without its pending release.
+    pub(crate) fn remove_agent_after_exit(
+        &mut self,
+        name: &WorkerName,
+        generation: uuid::Uuid,
+        fallback_agent_id: Option<&str>,
+    ) -> Option<PersistedAgent> {
+        self.defer_identity_release(name, generation, fallback_agent_id);
+        self.agents.remove(name)
+    }
+
     pub(crate) fn load(path: &Path) -> Result<Self> {
         let body = std::fs::read_to_string(path)
             .with_context(|| format!("failed reading state file {}", path.display()))?;
@@ -89,7 +224,11 @@ impl BrokerState {
             .collect();
 
         for name in &dead {
-            self.agents.remove(name);
+            if let Some(generation) = self.agents.get(name).and_then(|agent| agent.generation) {
+                self.remove_agent_after_exit(name, generation, None);
+            } else {
+                self.agents.remove(name);
+            }
         }
         dead
     }
@@ -104,7 +243,11 @@ impl BrokerState {
             .map(|(name, _)| name.clone())
             .collect();
         for name in &dead {
-            self.agents.remove(name);
+            if let Some(generation) = self.agents.get(name).and_then(|agent| agent.generation) {
+                self.remove_agent_after_exit(name, generation, None);
+            } else {
+                self.agents.remove(name);
+            }
         }
         dead
     }
@@ -114,6 +257,66 @@ impl BrokerState {
 mod tests {
     use super::*;
     use crate::protocol::AgentRuntime;
+
+    fn persisted_identity(id: &str, generation: uuid::Uuid) -> PersistedAgent {
+        serde_json::from_value(serde_json::json!({
+            "runtime": "pty", "parent": null, "channels": [],
+            "relaycast_agent_id": id, "generation": generation
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn defer_identity_release_prefers_valid_authoritative_binding() {
+        for (fallback, expected) in [
+            (Some(" agent-rebound "), "agent-rebound"),
+            (Some("  "), "agent-persisted"),
+            (None, "agent-persisted"),
+        ] {
+            let generation = uuid::Uuid::new_v4();
+            let mut state = BrokerState::default();
+            let name = WorkerName::from("rebound");
+            state.agents.insert(
+                name.clone(),
+                persisted_identity("agent-persisted", generation),
+            );
+            let pending = state
+                .defer_identity_release(&name, generation, fallback)
+                .unwrap();
+            assert_eq!(pending.agent_id, expected);
+        }
+    }
+
+    #[test]
+    fn pending_releases_preserve_both_generations_across_restart() {
+        let mut state = BrokerState::default();
+        let name = WorkerName::from("replacement");
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        state
+            .agents
+            .insert(name.clone(), persisted_identity("agent-old", first));
+        let old = state.defer_identity_release(&name, first, None).unwrap();
+        state
+            .agents
+            .insert(name.clone(), persisted_identity("agent-new", second));
+        let new = state.defer_identity_release(&name, second, None).unwrap();
+        // Repeated deferral must not duplicate one generation.
+        state.defer_identity_release(&name, second, None);
+        let mut restored: BrokerState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(
+            restored.superseded_identity_releases[&name],
+            vec![old.clone()]
+        );
+        restored.clear_pending_identity_release(&name, &old);
+        assert_eq!(restored.pending_identity_releases[&name], new);
+        restored.clear_pending_identity_release(&name, &new);
+        assert_eq!(restored.pending_identity_releases[&name], old);
+        restored.clear_pending_identity_release(&name, &old);
+        assert!(restored.pending_identity_releases.is_empty());
+        assert!(restored.superseded_identity_releases.is_empty());
+    }
 
     #[test]
     fn broker_state_default_is_empty() {
@@ -126,6 +329,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         let mut state = BrokerState::default();
+        let pending = PendingIdentityRelease {
+            agent_id: "agent-pending".into(),
+            generation: uuid::Uuid::new_v4(),
+        };
+        state
+            .pending_identity_releases
+            .insert("pending".into(), pending.clone());
         state.agents.insert(
             "w1".into(),
             PersistedAgent {
@@ -137,18 +347,35 @@ mod tests {
                 spec: None,
                 restart_policy: None,
                 initial_task: None,
+                relaycast_agent_id: Some("agent-w1".into()),
+                generation: Some(uuid::Uuid::new_v4()),
             },
         );
         state.save(&path).unwrap();
         let loaded = BrokerState::load(&path).unwrap();
         assert_eq!(loaded.agents.len(), 1);
         assert!(loaded.agents.contains_key("w1"));
+        assert_eq!(
+            loaded.pending_identity_releases.get("pending"),
+            Some(&pending)
+        );
     }
 
     #[test]
     fn broker_state_load_missing_file_errors() {
         let result = BrokerState::load(Path::new("/nonexistent/state.json"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn broker_state_load_discards_unverifiable_name_only_pending_releases() {
+        let state: BrokerState = serde_json::from_value(serde_json::json!({
+            "agents": {},
+            "pending_identity_releases": ["stale-name"]
+        }))
+        .expect("legacy pending-release state should remain loadable");
+
+        assert!(state.pending_identity_releases.is_empty());
     }
 
     #[test]
@@ -165,11 +392,43 @@ mod tests {
                 spec: None,
                 restart_policy: None,
                 initial_task: None,
+                relaycast_agent_id: None,
+                generation: None,
             },
         );
         let reaped = state.reap_dead_agents();
         assert_eq!(reaped, vec!["ghost"]);
         assert!(state.agents.is_empty());
+    }
+
+    #[test]
+    fn reap_dead_agents_retains_exact_identity_cleanup_for_first_release() {
+        let generation = uuid::Uuid::new_v4();
+        let mut state = BrokerState::default();
+        state.agents.insert(
+            "exited".into(),
+            PersistedAgent {
+                runtime: AgentRuntime::Pty,
+                parent: None,
+                channels: vec![],
+                pid: None,
+                started_at: None,
+                spec: None,
+                restart_policy: None,
+                initial_task: None,
+                relaycast_agent_id: Some("agent-old-generation".into()),
+                generation: Some(generation),
+            },
+        );
+
+        assert_eq!(state.reap_dead_agents(), vec![WorkerName::from("exited")]);
+        assert_eq!(
+            state.pending_identity_releases.get("exited"),
+            Some(&PendingIdentityRelease {
+                agent_id: "agent-old-generation".into(),
+                generation,
+            })
+        );
     }
 
     #[test]
@@ -186,6 +445,8 @@ mod tests {
                 spec: None,
                 restart_policy: None,
                 initial_task: None,
+                relaycast_agent_id: None,
+                generation: None,
             },
         );
         assert!(state.reap_dead_agents().is_empty());

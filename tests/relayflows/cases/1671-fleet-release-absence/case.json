@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1671-fleet-release-absence",
+  "kind": "bugfix",
+  "title": "fleet release is bounded, correlated, and proves remote absence",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1671-fleet-release-absence/run.mjs"]
+  },
+  "requirements": ["broker-linux-x64"],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "fleet_release_can_drop_cause_and_strand_descendants"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "fleet_release_reports_cause_and_proves_absence"
+    }
+  }
+}

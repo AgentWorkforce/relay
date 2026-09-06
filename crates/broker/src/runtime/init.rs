@@ -501,6 +501,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             relay_workspaces_json.clone(),
         ),
     ];
+    // `node up` deliberately strips ambient variables before starting the
+    // broker, but the isolated project path is an explicit worker boundary:
+    // harnesses use it for their local state and observable artifacts. Keep
+    // it available to the worker instead of silently dropping it here.
+    if let Ok(project) = std::env::var("AGENT_RELAY_PROJECT") {
+        let project = project.trim();
+        if !project.is_empty() {
+            worker_env.push(("AGENT_RELAY_PROJECT".to_string(), project.to_string()));
+        }
+    }
     // Pass RELAY_BASE_URL to workers only when an override is configured; when
     // unset, workers inherit the SDK default.
     if let Some(base) = configured_base.as_deref() {

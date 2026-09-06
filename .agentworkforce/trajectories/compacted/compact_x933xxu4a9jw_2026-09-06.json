@@ -1,0 +1,150 @@
+{
+  "id": "compact_x933xxu4a9jw",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-06T12:48:57.675Z",
+  "sourceTrajectories": [
+    "traj_q8t42joz0a7r"
+  ],
+  "dateRange": {
+    "start": "2026-09-06T03:50:31.243Z",
+    "end": "2026-09-06T12:48:07.997Z"
+  },
+  "summary": {
+    "totalDecisions": 4,
+    "totalEvents": 7,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "naming",
+      "decisions": [
+        {
+          "question": "Bind deferred Relaycast cleanup to persisted immutable agent id plus local worker generation",
+          "chosen": "Bind deferred Relaycast cleanup to persisted immutable agent id plus local worker generation",
+          "reasoning": "A name-only tombstone can target a replacement. Persist the remote id and process generation at spawn, move that lease to pending before exited state is removed, reject a mismatched live generation, and probe the current remote id before any name-based release call.",
+          "fromTrajectory": "traj_q8t42joz0a7r"
+        },
+        {
+          "question": "Keep remote takeover P1 open; no safe client-only atomic release guard exists",
+          "chosen": "Keep remote takeover P1 open; no safe client-only atomic release guard exists",
+          "reasoning": "Pinned SDK 7.0.0 and Relaycast main 8e36b742 expose only name/reason/delete_agent. The same-ID takeover reproduction dispatches an unsafe release. Preserve the blocker rather than invent a condition the server strips.",
+          "fromTrajectory": "traj_q8t42joz0a7r"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Use bounded owned-group teardown and exact artifact proof",
+          "chosen": "Use bounded owned-group teardown and exact artifact proof",
+          "reasoning": "The release path is capped at 1s writer + 25s grace + 2s reap (28s total), Unix workers use private process groups with ESRCH-only absence semantics, and Windows workers retain a kill-on-close Job Object; sealed head proof measured 25.011s with broker/engine/process absence.",
+          "fromTrajectory": "traj_q8t42joz0a7r"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Continue the existing PR 1672 trajectory; prioritize authoritative binding and mutation-tested restart guards",
+          "chosen": "Continue the existing PR 1672 trajectory; prioritize authoritative binding and mutation-tested restart guards",
+          "reasoning": "This worktree already contains the same active release qualification task; preserve its existing history.",
+          "fromTrajectory": "traj_q8t42joz0a7r"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".agentworkforce/trajectories/active/traj_q8t42joz0a7r/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_3p66udrdfua5/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_3p66udrdfua5/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_4prask91v3be/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_ctp82sw8vi1o.trace.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_ctp82sw8vi1o/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_ctp82sw8vi1o/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_dst0mw1p1z2v/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_dst0mw1p1z2v/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_lydqmcc5huhs.trace.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_lydqmcc5huhs/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_lydqmcc5huhs/trajectory.json",
+    ".agentworkforce/trajectories/relay-1672-review-0906.md",
+    ".github/workflows/relay-cleanroom-qualification.yml",
+    ".github/workflows/relay-package-qualification-delivery.yml",
+    ".github/workflows/relay-package-qualification.yml",
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "crates/broker/Cargo.toml",
+    "crates/broker/src/broker.rs",
+    "crates/broker/src/cli_mcp_args.rs",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/relaycast/auth.rs",
+    "crates/broker/src/relaycast/ws.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "crates/broker/src/runtime/relaycast_events.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/runtime/worker_events.rs",
+    "crates/broker/src/spawner.rs",
+    "crates/broker/src/worker.rs",
+    "packages/harness-driver/src/agent-handle.ts",
+    "packages/harness-driver/src/agent-result.test.ts",
+    "packages/harness-driver/src/broker-driver.ts",
+    "packages/harness-driver/src/client.ts",
+    "scripts/verify-features/relay-package-qualification-delivery.mjs",
+    "tests/e2e/fleet/fleet-e2e.test.ts",
+    "tests/e2e/fleet/nodes/stub-agent.cjs",
+    "tests/fixtures/qualification-dispatch-bootstrap.test.ts",
+    "tests/fixtures/relay-package-qualification-delivery.test.ts",
+    "tests/relayflows/cases/1671-fleet-release-absence/run.mjs",
+    "tests/relayflows/cases/1673-relaycast-registration-diagnostics/case.json",
+    "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs",
+    "tests/relayflows/cases/1676-trusted-cloud-dispatch/case.json",
+    "tests/relayflows/cases/1676-trusted-cloud-dispatch/run.mjs"
+  ],
+  "commits": [
+    "c7cff1686",
+    "395415497",
+    "7375dbd88",
+    "788f18f68",
+    "b31f552ef",
+    "4de44535f",
+    "487ad0971",
+    "8f10e4749",
+    "085b8b64f",
+    "b81014bfe",
+    "33a677496",
+    "9fc03f018",
+    "95886178b",
+    "8d677d45e",
+    "ace156d84",
+    "1dbd8a667",
+    "1d30d789b",
+    "dfdb89d33",
+    "01920efec",
+    "0954a53ad",
+    "ca5e4c47b",
+    "2c87841a3",
+    "046d9e970",
+    "b983a3299",
+    "f3c7d1328",
+    "d0d09e581",
+    "f249a2a4a",
+    "2eb06d47e",
+    "5e2de44d5",
+    "f47af8963",
+    "ba356a7d8",
+    "c0bb17994",
+    "a38de72eb",
+    "b5502e4a2",
+    "db3cceccd",
+    "c4f05f65c",
+    "6537ddfb2",
+    "6207d3dd6"
+  ]
+}

@@ -220,6 +220,41 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
     await expect(handle.release('done')).resolves.toEqual({ name: 'worker' });
     expect(stub.release).toHaveBeenCalledWith('worker', 'done');
   });
+
+  it('binds release requests to the handle generation', async () => {
+    const stub = createStubClient();
+    const handle = new SpawnedAgentHandle(
+      { name: 'worker', runtime: 'pty', generation: 'generation-1' },
+      stub as unknown as HarnessDriverClient
+    );
+
+    await expect(handle.release('done')).resolves.toEqual({ name: 'worker' });
+    expect(stub.release).toHaveBeenCalledWith('worker', 'done', 'generation-1');
+  });
+
+  it('serializes the expected generation on broker release', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ name: 'worker' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    const client = new HarnessDriverClient({
+      baseUrl: 'http://127.0.0.1:3889',
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await client.release('worker', 'done', 'generation-1');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:3889/api/spawned/worker',
+      expect.objectContaining({
+        method: 'DELETE',
+        body: JSON.stringify({ reason: 'done', generation: 'generation-1' }),
+      })
+    );
+  });
 });
 
 describe('HarnessDriverClient spawn serialization', () => {

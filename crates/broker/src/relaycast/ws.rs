@@ -928,11 +928,48 @@ impl RelaycastHttpClient {
     /// invalidates the current credential. Relaycast's wire shape has one audit
     /// string rather than separate reason/actor fields, so preserve both facts
     /// in that durable value and never emit a null-reason release.
-    pub async fn release_agent_identity(
+    pub async fn release_agent_identity_exact(
         &self,
         agent_name: &str,
+        expected_agent_id: &str,
         reason: Option<&str>,
     ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        match relay.get_agent(agent_name).await {
+            Ok(agent) if agent.id != expected_agent_id => {
+                // The old immutable identity is already absent. Releasing the
+                // current name would target a replacement, so this is the
+                // generation-safe form of an idempotent success.
+                tracing::info!(
+                    agent = %agent_name,
+                    expected_agent_id = %expected_agent_id,
+                    current_agent_id = %agent.id,
+                    "skipping stale identity release because the name belongs to a replacement"
+                );
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(error) if error.code() == Some("agent_not_found") => {
+                tracing::info!(
+                    agent = %agent_name,
+                    expected_agent_id = %expected_agent_id,
+                    "agent identity was already released before exact cleanup"
+                );
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "failed to verify exact agent identity '{agent_name}' ({expected_agent_id}) before release: {error}"
+                ));
+            }
+        }
+
+        self.release_agent_identity(agent_name, reason).await
+    }
+
+    async fn release_agent_identity(&self, agent_name: &str, reason: Option<&str>) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
                 .map(str::trim)
@@ -943,7 +980,13 @@ impl RelaycastHttpClient {
             let request = ReleaseAgentRequest {
                 name: agent_name.to_string(),
                 reason: Some(attributed_reason),
-                delete_agent: None,
+                // The broker has already terminated its local process before
+                // asking Relaycast to release the identity.  Requesting the
+                // terminal/tombstone form is important for retries: when a
+                // prior release left an offline row with no live host, the
+                // engine can complete this idempotently instead of returning
+                // `agent_host_unavailable` for the non-delete form.
+                delete_agent: Some(true),
             };
             // Invalidate the cached token before the call so an ambiguous
             // response (e.g. a timeout after Relaycast committed the release)
@@ -955,6 +998,16 @@ impl RelaycastHttpClient {
             match relay.release_agent(request).await {
                 Ok(_) => {
                     tracing::info!(agent = %agent_name, "released agent identity");
+                }
+                Err(error) if error.code() == Some("agent_not_found") => {
+                    // Release is a terminal operation. A retry after the
+                    // engine has already tombstoned the identity is a
+                    // successful no-op, not a broker failure.
+                    tracing::info!(
+                        agent = %agent_name,
+                        error = %error,
+                        "agent identity was already released"
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(agent = %agent_name, error = %error, "failed to release agent identity");
@@ -1784,13 +1837,30 @@ mod tests {
     #[tokio::test]
     async fn explicit_agent_release_records_a_reason_and_actor() {
         let server = MockServer::start();
+        let current = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "workspace_id": "ws_test",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "active",
+                    "persona": null,
+                    "metadata": {},
+                    "channels": []
+                }
+            }));
+        });
         let release = server.mock(|when, then| {
             when.method(POST)
                 .path("/v1/agents/release")
                 .header("authorization", "Bearer rk_live_test")
                 .json_body(json!({
                     "name": "worker-a",
-                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)",
+                    "delete_agent": true
                 }));
             then.status(200).json_body(json!({
                 "ok": true,
@@ -1812,11 +1882,90 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .release_agent_identity("worker-a", None)
+            .release_agent_identity_exact("worker-a", "agent_worker_a", None)
             .await
             .expect("explicit release should succeed");
 
+        current.assert_hits(1);
         release.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn repeated_agent_release_treats_not_found_as_success() {
+        let server = MockServer::start();
+        let current = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/worker-a")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "agent_not_found",
+                    "message": "Agent \"worker-a\" not found"
+                }
+            }));
+        });
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(500).json_body(json!({
+                "ok": false,
+                "error": { "code": "must_not_release", "message": "must not release" }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .release_agent_identity_exact("worker-a", "agent_worker_a", Some("idempotent retry"))
+            .await
+            .expect("a retry after terminal release should be a successful no-op");
+
+        current.assert_hits(1);
+        release.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn exact_agent_release_does_not_release_a_same_name_replacement() {
+        use httpmock::Method::GET;
+
+        let server = MockServer::start();
+        let current = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/worker-a")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent-replacement",
+                    "workspace_id": "ws_test",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "active",
+                    "persona": null,
+                    "metadata": {},
+                    "channels": []
+                }
+            }));
+        });
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(500).json_body(json!({
+                "ok": false,
+                "error": { "code": "must_not_release", "message": "must not release" }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let result = client
+            .release_agent_identity_exact("worker-a", "agent-old-generation", Some("stale retry"))
+            .await;
+
+        current.assert_hits(1);
+        assert_eq!(
+            release.hits(),
+            0,
+            "a stale cleanup must never dispatch a release to the replacement"
+        );
+        result.expect("a missing old identity is an idempotent release success");
     }
 
     #[tokio::test]

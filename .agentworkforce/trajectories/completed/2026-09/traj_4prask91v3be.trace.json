@@ -1,0 +1,182 @@
+{
+  "version": "1.0.0",
+  "id": "bf5ab2b8-a274-4fe2-8345-d862feb92228",
+  "timestamp": "2026-09-06T02:53:06.313Z",
+  "trajectory": "traj_4prask91v3be",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_4prask91v3be/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 62,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 16,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/worker_events.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 668,
+              "end_line": 676,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/spawner.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 4,
+              "end_line": 10,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 469,
+              "end_line": 478,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 483,
+              "end_line": 552,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 556,
+              "end_line": 569,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 1309,
+              "end_line": 1321,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/worker.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1541,
+              "end_line": 1547,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 1550,
+              "end_line": 1557,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 1644,
+              "end_line": 1656,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/e2e/fleet/fleet-e2e.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 362,
+              "end_line": 370,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 373,
+              "end_line": 379,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 383,
+              "end_line": 392,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 888,
+              "end_line": 899,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1671-fleet-release-absence/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 4,
+              "end_line": 20,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 64,
+              "end_line": 85,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            },
+            {
+              "start_line": 107,
+              "end_line": 116,
+              "revision": "eab176578c1a344e257a10fd037725c9f3b060a6"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

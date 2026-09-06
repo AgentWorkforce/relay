@@ -45,7 +45,10 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
     "AGENT_RELAY_APP_SERVER_AUTH_PASSWORD",
 ];
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
-const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
+// Relaycast's action dispatch deadline is 30s. Keep app-server shutdown
+// inside that window so the engine does not retry the still-running release on
+// another node while this broker is waiting for the provider to exit.
+const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(25);
 
 /// How long a worker may go without reporting `worker_ready` before the broker
 /// treats its harness as failed-to-start.
@@ -65,7 +68,10 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// How long to wait for a SIGKILLed orphan wrapper to be reaped before giving
 /// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
 /// maintenance tick, which also drives delivery retries.
-const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+// Failure/orphan cleanup is deliberately short. Explicit user release uses
+// the configured 25s worker grace; maintenance must not block its event loop
+// for seconds while a dead harness is being removed.
+const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_millis(100);
 const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
 /// A full command queue means the worker is already backpressured. Do not
 /// retain another normal request indefinitely waiting for capacity.
@@ -74,6 +80,11 @@ const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
 const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Release must leave room inside the fleet action deadline for broker
+/// deregistration and result delivery. A shutdown frame is best effort; a
+/// blocked writer must not consume the entire five-second normal write budget
+/// before the configured 25-second process grace begins.
+const WORKER_RELEASE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -183,6 +194,8 @@ pub(crate) struct WorkerHandle {
     pub(crate) parent: Option<String>,
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
+    #[cfg(windows)]
+    pub(crate) process_tree: crate::spawner::ProcessTreeOwner,
     pub(crate) command_tx: mpsc::Sender<WorkerWriteCommand>,
     pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
@@ -1247,7 +1260,41 @@ impl WorkerRegistry {
             command.current_dir(cwd);
         }
 
+        // Keep every harness child in a private process group. A worker is
+        // often a wrapper (`agent-relay pty`/`headless`) that launches the real
+        // CLI; killing only the wrapper leaves that child alive after a fleet
+        // release and the node heartbeat can continue advertising a ghost.
+        // `terminate_child` signals this group and then reaps the wrapper.
+        #[cfg(unix)]
+        unsafe {
+            command.pre_exec(|| {
+                if nix::libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+
+        #[cfg(windows)]
+        command.creation_flags(crate::spawner::CREATE_SUSPENDED);
+
         let mut child = command.spawn().context("failed to spawn worker")?;
+        #[cfg(windows)]
+        let process_tree = match crate::spawner::attach_process_tree(&child) {
+            Ok(owner) => owner,
+            Err(error) => {
+                crate::spawner::cleanup_attach_failure(&mut child).await;
+                return Err(error).context("failed to establish worker process-tree ownership");
+            }
+        };
+        #[cfg(windows)]
+        if let Err(error) = crate::spawner::resume_process(&child) {
+            let _ = process_tree.terminate();
+            let _ = child.start_kill();
+            let _ = timeout(Duration::from_secs(1), child.wait()).await;
+            return Err(error).context("failed to resume worker");
+        }
         if direct_native_harness_sidecar {
             initial_harness_pid = child.id();
         }
@@ -1290,6 +1337,8 @@ impl WorkerRegistry {
             spec: spec.clone(),
             parent,
             workspace_id,
+            #[cfg(windows)]
+            process_tree,
             child,
             command_tx,
             harness_pid: initial_harness_pid,
@@ -1505,7 +1554,7 @@ impl WorkerRegistry {
         {
             // Cancelling this wait cannot cancel the worker-owned write; it
             // only bounds release before the normal process termination path.
-            let _ = timeout(WORKER_WRITE_TIMEOUT, completion_rx).await;
+            let _ = timeout(WORKER_RELEASE_WRITE_TIMEOUT, completion_rx).await;
         }
 
         let result = terminate_child(&mut handle.child, release_grace).await;
@@ -1531,10 +1580,17 @@ impl WorkerRegistry {
         if handle.child.id().is_none() {
             return Ok(());
         }
-        handle
-            .child
-            .start_kill()
-            .with_context(|| format!("failed to terminate worker '{name}' after writer failure"))
+        #[cfg(windows)]
+        if let Err(error) = handle.process_tree.terminate() {
+            tracing::warn!(
+                target = "relay_broker::worker",
+                worker = %name,
+                error = %error,
+                "failed to terminate worker process tree after command writer failure"
+            );
+        }
+        crate::spawner::request_child_termination(&mut handle.child);
+        Ok(())
     }
 
     pub(crate) async fn shutdown_all(&mut self) -> Result<()> {
@@ -1626,26 +1682,13 @@ impl WorkerRegistry {
                         reason = orphan.reason(),
                         "reap_exited: harness gone but wrapper alive — killing orphaned wrapper"
                     );
-                    // SIGKILL *and* reap. Dropping the `Child` without waiting
-                    // leaves the wrapper to tokio's best-effort background
-                    // reaper, so a run of failed agent starts accumulates
-                    // zombies. SIGKILL cannot be caught, so this returns
-                    // promptly — but the deadline keeps a wrapper wedged in
-                    // uninterruptible sleep from stalling the maintenance tick,
-                    // which also drives delivery retries.
-                    if let Err(error) = handle.child.start_kill() {
-                        tracing::warn!(worker = %name, %error, "failed to signal orphaned wrapper");
-                    }
-                    match timeout(ORPHAN_REAP_TIMEOUT, handle.child.wait()).await {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => {
-                            tracing::warn!(worker = %name, %error, "orphaned wrapper wait failed")
-                        }
-                        Err(_) => tracing::warn!(
-                            worker = %name,
-                            timeout_ms = ORPHAN_REAP_TIMEOUT.as_millis(),
-                            "orphaned wrapper did not exit before the reap deadline"
-                        ),
+                    // Use the same bounded process-group teardown as explicit
+                    // release. Dropping the Child without waiting can leave
+                    // descendants behind even after the wrapper is gone.
+                    if let Err(error) =
+                        terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT).await
+                    {
+                        tracing::warn!(worker = %name, %error, "failed to terminate orphaned worker group");
                     }
                 }
                 self.workers.remove(&name);
@@ -2896,6 +2939,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -2949,6 +2994,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -3010,6 +3057,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -3070,6 +3119,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -3421,6 +3472,19 @@ sleep 30
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
+    }
+
+    #[test]
+    fn app_server_release_grace_stays_inside_fleet_action_deadline() {
+        // The engine's ACTION_DISPATCH_TIMEOUT_MS is 30s. A previous 35s
+        // broker grace exceeded it and allowed a duplicate release dispatch
+        // before the original node could report completion.
+        let reap_bound = APP_SERVER_RELEASE_GRACE.min(Duration::from_secs(2));
+        assert!(
+            WORKER_RELEASE_WRITE_TIMEOUT + APP_SERVER_RELEASE_GRACE + reap_bound
+                < Duration::from_secs(30),
+            "release budget exceeds fleet action deadline"
+        );
     }
 
     #[test]

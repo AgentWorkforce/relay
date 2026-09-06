@@ -6,7 +6,10 @@
 // brief reaches it. Before that boundary it deliberately discards input, which
 // models a TUI consuming startup keystrokes before its prompt is ready.
 const { mkdirSync, writeFileSync } = require('node:fs');
+const { spawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const path = require('node:path');
+const { RELEASE_PROBE_PID_FILE } = require('./release-probe-constants.cjs');
 
 const readyDelayMs = Number.parseInt(process.env.RELAY_E2E_STUB_READY_DELAY_MS ?? '0', 10) || 0;
 let ready = false;
@@ -15,6 +18,29 @@ const recordedNonces = new Set();
 const nonceMarker = 'RELAY_E2E_BRIEF_NONCE=';
 const maxNonceLength = 256;
 const noncePattern = new RegExp(`${nonceMarker}([A-Za-z0-9_-]{1,${maxNonceLength}})(?=[^A-Za-z0-9_-])`, 'g');
+
+// The release regression harness deliberately creates a grandchild that the
+// wrapper does not clean up on SIGTERM. Base brokers signal only this process;
+// fixed brokers signal the private worker process group. The PID is written
+// under the node's isolated project directory so the test can prove absence
+// without relying on a process-name scan.
+let releaseProbeChild;
+if (process.env.RELAY_E2E_SPAWN_DESCENDANT === '1') {
+  const projectDir = process.env.AGENT_RELAY_PROJECT;
+  if (!projectDir) throw new Error('release probe requires AGENT_RELAY_PROJECT');
+  const pidPath = path.join(projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
+  mkdirSync(path.dirname(pidPath), { recursive: true });
+  releaseProbeChild = spawn('sleep', ['300'], { stdio: 'ignore' });
+  releaseProbeChild.once('error', (error) => {
+    process.stderr.write(`release probe descendant failed to spawn: ${error.message}\n`);
+    process.exit(1);
+  });
+  // Child.pid is not guaranteed until the spawn event. Writing only after that
+  // event removes the PID-file race used by the release absence assertion.
+  releaseProbeChild.once('spawn', () =>
+    writeFileSync(pidPath, JSON.stringify({ pid: releaseProbeChild.pid, token: randomUUID() }) + '\n')
+  );
+}
 
 function recordBriefNonce(nonce) {
   if (recordedNonces.has(nonce)) return;

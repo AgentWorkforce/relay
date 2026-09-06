@@ -1458,7 +1458,7 @@ impl BrokerRuntime {
 
         self.pty_observability.remove(&name);
 
-        let mut deregistration_failed = false;
+        let mut deregistration_error: Option<String> = None;
         if outcome == super::relaycast_events::ReleaseOutcome::Released {
             match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
                 .await
@@ -1474,7 +1474,7 @@ impl BrokerRuntime {
                 }
                 Err(error) => {
                     tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
-                    deregistration_failed = true;
+                    deregistration_error = Some(error);
                     prune_fleet_inventory_entry(
                         &self.fleet_control_tx,
                         &mut self.fleet_inventory,
@@ -1493,9 +1493,20 @@ impl BrokerRuntime {
         }
         self.publish_fleet_load(true).await;
         match outcome {
-            super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
-                self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
-                    .await;
+            super::relaycast_events::ReleaseOutcome::Released if deregistration_error.is_some() => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &Self::release_action_failure(
+                        "release_deregistration_failed",
+                        &invoke.invocation_id,
+                        &self.fleet_node_name,
+                        &name,
+                        deregistration_error
+                            .as_deref()
+                            .unwrap_or("unknown deregistration failure"),
+                    ),
+                )
+                .await;
             }
             super::relaycast_events::ReleaseOutcome::Released => {
                 self.reply_action_output(
@@ -1504,9 +1515,18 @@ impl BrokerRuntime {
                 )
                 .await;
             }
-            super::relaycast_events::ReleaseOutcome::Failed => {
-                self.reply_action_error(&invoke.invocation_id, "release_failed")
-                    .await;
+            super::relaycast_events::ReleaseOutcome::Failed { error } => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &Self::release_action_failure(
+                        "release_failed",
+                        &invoke.invocation_id,
+                        &self.fleet_node_name,
+                        &name,
+                        &error,
+                    ),
+                )
+                .await;
             }
         }
     }
@@ -1531,6 +1551,21 @@ impl BrokerRuntime {
             }),
         })
         .await;
+    }
+
+    /// Keep release failures machine-identifiable while retaining enough
+    /// correlation for an operator to find the node log and Relaycast
+    /// invocation. Relaycast's node action wire has a single string `error`
+    /// field, so this stable `code:` prefix is the typed boundary available to
+    /// older engines as well as current ones.
+    fn release_action_failure(
+        code: &str,
+        invocation_id: &str,
+        node: &str,
+        worker: &str,
+        cause: &str,
+    ) -> String {
+        format!("{code}: worker='{worker}' node='{node}' invocation_id='{invocation_id}': {cause}")
     }
 
     async fn send_fleet_action_result(&self, result: ActionResult) {
@@ -4401,5 +4436,22 @@ mod tests {
                 "{action_result_type} must not emit a dashboard relay_inbound event"
             );
         }
+    }
+
+    #[test]
+    fn release_failure_preserves_typed_code_and_correlation() {
+        let message = BrokerRuntime::release_action_failure(
+            "release_failed",
+            "inv-release-1671",
+            "finn-mini",
+            "relaycast-374-retry-finn-0906",
+            "worker command writer is unavailable",
+        );
+
+        assert!(message.starts_with("release_failed:"));
+        assert!(message.contains("worker='relaycast-374-retry-finn-0906'"));
+        assert!(message.contains("node='finn-mini'"));
+        assert!(message.contains("invocation_id='inv-release-1671'"));
+        assert!(message.contains("worker command writer is unavailable"));
     }
 }

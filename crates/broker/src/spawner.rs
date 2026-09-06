@@ -1,10 +1,23 @@
 use std::{collections::HashMap, fs, path::Path, process::Stdio, time::Duration};
 
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
 use crate::relaycast::configure_agent_relay_mcp_with_token;
 use anyhow::{Context, Result};
 use tokio::{
     process::{Child, Command},
-    time::timeout,
+    time::{sleep, timeout},
+};
+
+#[cfg(windows)]
+pub(crate) const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+#[cfg(unix)]
+use nix::{
+    errno::Errno,
+    sys::signal::{kill, Signal},
+    unistd::Pid,
 };
 
 use crate::cli::command_parse::parse_cli_command;
@@ -18,6 +31,164 @@ pub(crate) const RELAY_ATTEST_SPONSOR_ID: &str = "RELAY_ATTEST_SPONSOR_ID";
 /// resolves; legacy wrap spawns may receive it through `CommitAttestation`.
 /// The hook stamps it as a `Session-Id:` git trailer.
 pub(crate) const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
+
+/// Windows process-tree ownership. Closing the job handle terminates every
+/// descendant, including one that outlives the wrapper or ignores CTRL events.
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct ProcessTreeOwner(OwnedHandle);
+
+#[cfg(windows)]
+impl ProcessTreeOwner {
+    /// Immediately terminate every process currently assigned to this job.
+    /// This is used for asynchronous writer failures where waiting for the
+    /// normal reap path would leave descendants alive in the meantime.
+    pub(crate) fn terminate(&self) -> Result<()> {
+        use std::ffi::c_void;
+
+        type Handle = *mut c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+        }
+
+        let terminated = unsafe { TerminateJobObject(self.0.as_raw_handle() as Handle, 1) };
+        if terminated == 0 {
+            return Err(std::io::Error::last_os_error()).context("TerminateJobObject failed");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn attach_process_tree(child: &Child) -> Result<ProcessTreeOwner> {
+    use std::{ffi::c_void, mem::size_of, ptr::null};
+
+    type Handle = *mut c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn SetInformationJobObject(
+            job: Handle,
+            info_class: u32,
+            info: *const c_void,
+            info_len: u32,
+        ) -> i32;
+    }
+
+    #[repr(C)]
+    struct BasicLimitInformation {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        min_working_set_size: usize,
+        max_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+    #[repr(C)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+    #[repr(C)]
+    struct ExtendedLimitInformation {
+        basic: BasicLimitInformation,
+        io: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    // JOBOBJECT_EXTENDED_LIMIT_INFORMATION and
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE from Win32 Job Objects.
+    const EXTENDED_LIMIT_INFORMATION: u32 = 9;
+    const KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    let job = unsafe { CreateJobObjectW(null(), null()) };
+    if job.is_null() {
+        return Err(std::io::Error::last_os_error()).context("CreateJobObjectW failed");
+    }
+    let owner = unsafe { OwnedHandle::from_raw_handle(job.cast()) };
+    let limits = ExtendedLimitInformation {
+        basic: BasicLimitInformation {
+            per_process_user_time_limit: 0,
+            per_job_user_time_limit: 0,
+            limit_flags: KILL_ON_JOB_CLOSE,
+            min_working_set_size: 0,
+            max_working_set_size: 0,
+            active_process_limit: 0,
+            affinity: 0,
+            priority_class: 0,
+            scheduling_class: 0,
+        },
+        io: IoCounters {
+            read_operation_count: 0,
+            write_operation_count: 0,
+            other_operation_count: 0,
+            read_transfer_count: 0,
+            write_transfer_count: 0,
+            other_transfer_count: 0,
+        },
+        process_memory_limit: 0,
+        job_memory_limit: 0,
+        peak_process_memory_used: 0,
+        peak_job_memory_used: 0,
+    };
+    let configured = unsafe {
+        SetInformationJobObject(
+            owner.as_raw_handle() as Handle,
+            EXTENDED_LIMIT_INFORMATION,
+            (&limits as *const ExtendedLimitInformation).cast(),
+            size_of::<ExtendedLimitInformation>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("SetInformationJobObject(KILL_ON_JOB_CLOSE) failed");
+    }
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no process handle"))?;
+    let assigned =
+        unsafe { AssignProcessToJobObject(owner.as_raw_handle() as Handle, process as Handle) };
+    if assigned == 0 {
+        return Err(std::io::Error::last_os_error()).context("AssignProcessToJobObject failed");
+    }
+    Ok(ProcessTreeOwner(owner))
+}
+
+#[cfg(windows)]
+pub(crate) fn resume_process(child: &Child) -> Result<()> {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        // NtResumeProcess resumes the primary process thread created with
+        // CREATE_SUSPENDED. The Job Object is assigned before this call, so a
+        // wrapper cannot create an unowned descendant during attachment.
+        fn NtResumeProcess(process: Handle) -> i32;
+    }
+
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no process handle"))?;
+    let status = unsafe { NtResumeProcess(process as Handle) };
+    if status != 0 {
+        return Err(anyhow::anyhow!(
+            "NtResumeProcess failed with status 0x{status:08x}"
+        ));
+    }
+    Ok(())
+}
 const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
@@ -274,16 +445,12 @@ pub(crate) fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_
     ));
 }
 
-#[cfg(unix)]
-use nix::{
-    sys::signal::{kill, Signal},
-    unistd::Pid,
-};
-
 #[derive(Debug)]
 struct ManagedChild {
     parent: Option<String>,
     child: Child,
+    #[cfg(windows)]
+    process_tree: ProcessTreeOwner,
 }
 
 #[derive(Debug, Default)]
@@ -411,13 +578,35 @@ impl Spawner {
             });
         }
 
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_SUSPENDED);
+
         let child = cmd.spawn().context("failed to spawn wrap-mode child")?;
         let pid = child.id().context("spawned child missing pid")?;
+        #[cfg(windows)]
+        let process_tree = match attach_process_tree(&child) {
+            Ok(owner) => owner,
+            Err(error) => {
+                let mut child = child;
+                cleanup_attach_failure(&mut child).await;
+                return Err(error).context("failed to establish wrap process-tree ownership");
+            }
+        };
+        #[cfg(windows)]
+        if let Err(error) = resume_process(&child) {
+            let _ = process_tree.terminate();
+            let mut child = child;
+            let _ = child.start_kill();
+            let _ = timeout(Duration::from_secs(1), child.wait()).await;
+            return Err(error).context("failed to resume wrap-mode child");
+        }
 
         self.children.insert(
             child_name.to_string(),
             ManagedChild {
                 parent: parent.map(ToOwned::to_owned),
+                #[cfg(windows)]
+                process_tree,
                 child,
             },
         );
@@ -469,35 +658,178 @@ impl Spawner {
 }
 
 pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> Result<()> {
+    let pid = child.id();
     #[cfg(unix)]
     {
-        if let Some(pid) = child.id() {
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+        if let Some(pid) = pid {
+            // Worker wrappers are session leaders (see WorkerRegistry::spawn),
+            // so signal the whole process group. The direct signal is retained
+            // only for the initial graceful request to legacy children; all
+            // post-wait liveness and force-kill decisions use the group identity
+            // or the still-owned Child handle, never a reusable raw PID.
+            signal_process_group(pid, Signal::SIGTERM);
         }
     }
 
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill().await;
+    // Do not let a fast-exiting wrapper shorten the descendant grace period.
+    // Its PID can be reaped while a child remains in the private group, so the
+    // group probe below is independent of the wrapper's wait result.
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    let _ = timeout(timeout_duration, child.wait()).await;
+    while tokio::time::Instant::now() < deadline {
+        #[cfg(unix)]
+        if match pid {
+            Some(pid) => !process_group_alive(pid),
+            None => true,
+        } {
+            break;
+        }
+        #[cfg(windows)]
+        if child.try_wait()?.is_some() {
+            // A Job Object retained by the owning worker handle will tear down
+            // descendants when it is dropped; do not spend the remaining grace
+            // interval sleeping after the wrapper has already exited.
+            break;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        sleep(remaining.min(Duration::from_millis(50))).await;
     }
 
-    if timeout(timeout_duration, child.wait()).await.is_err() {
-        #[cfg(unix)]
-        {
-            if let Some(pid) = child.id() {
-                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        if process_group_alive(pid) {
+            // The worker owns this process group (setsid), so the negative PID
+            // remains the safe identity even after the wrapper has exited.
+            let _ = kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL);
+        } else if child.try_wait()?.is_none() {
+            // Legacy non-session workers have no safe descendant identity. If
+            // the wrapper itself is still owned and live, use Child's handle;
+            // never send a later signal to a bare PID that could be reused.
+            child
+                .start_kill()
+                .context("failed to kill legacy worker wrapper")?;
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(pid) = pid {
+        // The attached Job Object is the ownership boundary for descendants.
+        // Only use taskkill while Child still proves that this PID is live;
+        // after wait resolves, the raw PID may have been reused. In that case
+        // dropping ProcessTreeOwner below terminates the complete tree.
+        if child.try_wait()?.is_none() {
+            if !terminate_process_tree(pid).await {
+                child
+                    .start_kill()
+                    .context("failed to kill worker wrapper after taskkill failure")?;
             }
         }
+    }
 
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill().await;
+    // Reaping must be bounded too: an uninterruptible wrapper must not stall
+    // the broker's runtime loop forever after the grace deadline.
+    let reap_timeout = timeout_duration.min(Duration::from_secs(2));
+    match timeout(reap_timeout, child.wait()).await {
+        Ok(result) => {
+            result.context("failed waiting for terminated worker")?;
         }
-
-        let _ = child.wait().await;
+        Err(_) => anyhow::bail!(
+            "worker process did not exit within {} ms after termination",
+            reap_timeout.as_millis()
+        ),
     }
 
     Ok(())
+}
+
+/// Request immediate teardown after an owned worker control channel fails.
+///
+/// This is intentionally synchronous: writer failures are delivered on the
+/// broker's event loop, so waiting for a grace interval there would pause all
+/// API and Relaycast work. The normal reap sweep still owns the Child and
+/// collects its exit status; this function only initiates the ownership-safe
+/// termination request.
+pub(crate) fn request_child_termination(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        signal_process_group(pid, Signal::SIGTERM);
+        signal_process_group(pid, Signal::SIGKILL);
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = child.start_kill();
+    }
+}
+
+#[cfg(windows)]
+pub(crate) async fn terminate_process_tree(pid: u32) -> bool {
+    let taskkill = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("taskkill.exe")
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
+    matches!(
+        timeout(
+        Duration::from_secs(1),
+        tokio::process::Command::new(taskkill)
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            // If the one-second bound fires, terminate taskkill itself before
+            // its PID-only command can outlive this ownership decision.
+            .kill_on_drop(true)
+            .status(),
+        )
+        .await,
+        Ok(Ok(status)) if status.success()
+    )
+}
+
+#[cfg(windows)]
+pub(crate) async fn cleanup_attach_failure(child: &mut Child) {
+    // Assignment can fail after the wrapper has started its own children. Use
+    // the OS tree operation only while Child proves that the wrapper is still
+    // live; after wait resolves, a raw PID may have been reused. Child's
+    // process handle remains safe for the wrapper itself in either case.
+    let wrapper_live = child
+        .try_wait()
+        .map(|status| status.is_none())
+        .unwrap_or(false);
+    if wrapper_live {
+        if let Some(pid) = child.id() {
+            if !terminate_process_tree(pid).await {
+                let _ = child.start_kill();
+            }
+        } else {
+            let _ = child.start_kill();
+        }
+    } else {
+        let _ = child.start_kill();
+    }
+    let _ = timeout(Duration::from_secs(1), child.wait()).await;
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: Signal) {
+    // A negative PID addresses the process group whose id is `pid`. It is a
+    // no-op error for legacy children that are not group leaders; the direct
+    // signal below is only the initial graceful legacy fallback.
+    let _ = kill(Pid::from_raw(-(pid as i32)), signal);
+    let _ = kill(Pid::from_raw(pid as i32), signal);
+}
+
+#[cfg(unix)]
+fn process_group_alive(pid: u32) -> bool {
+    // A negative PID addresses the private worker group. Do not probe the raw
+    // wrapper PID here: after child.wait() it can be reused for an unrelated
+    // process, while the group identity remains tied to this worker session.
+    match kill(Pid::from_raw(-(pid as i32)), None) {
+        Ok(()) | Err(Errno::EPERM) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => true,
+    }
 }
 
 pub fn spawn_env_vars(
@@ -567,7 +899,11 @@ mod tests {
     use std::{fs, path::Path, process::Command as StdCommand, time::Duration};
 
     #[cfg(unix)]
-    use nix::unistd::{getsid, Pid};
+    use nix::{
+        errno::Errno,
+        sys::signal::kill,
+        unistd::{getsid, Pid},
+    };
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::{tempdir, TempDir};
@@ -1236,6 +1572,52 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn release_terminates_the_worker_process_group() {
+        // A broker worker is a wrapper that can own a real harness child. The
+        // wrapper must be a session leader so release cannot strand that child
+        // after killing only the wrapper PID.
+        let mut child = Command::new("sh");
+        // Let the wrapper exit immediately while a nested descendant ignores
+        // SIGTERM. This specifically proves group liveness is checked after
+        // child.wait() resolves, then force-killed at the bounded deadline.
+        child.args([
+            "-c",
+            "sh -c \"trap '' TERM HUP; while :; do sleep 1; done\" & exit 0",
+        ]);
+        unsafe {
+            child.pre_exec(|| {
+                if nix::libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = child.spawn().unwrap();
+        let pid = child.id().expect("worker has a pid");
+
+        terminate_child(&mut child, Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        assert!(child.try_wait().unwrap().is_some());
+        // The process-group probe is the important assertion: a direct PID
+        // kill would leave the background `sleep` alive in the worker group.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            if matches!(kill(Pid::from_raw(-(pid as i32)), None), Err(Errno::ESRCH)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(matches!(
+            kill(Pid::from_raw(-(pid as i32)), None),
+            Err(Errno::ESRCH)
+        ));
+    }
+
+    #[tokio::test]
     async fn reap_removes_exited_children() {
         let mut spawner = Spawner::new();
         let mut child = Command::new("sleep").arg("0").spawn().unwrap();
@@ -1245,6 +1627,8 @@ mod tests {
             "test".into(),
             super::ManagedChild {
                 parent: None,
+                #[cfg(windows)]
+                process_tree: super::attach_process_tree(&child).unwrap(),
                 child,
             },
         );

@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -28,6 +30,7 @@ import {
   preflight,
   registerAgent,
   releaseAgent,
+  REPO_ROOT,
   sendDm,
   startCloudEnrollmentEndpoint,
   startEngine,
@@ -35,6 +38,11 @@ import {
   type EngineHandle,
   type NodeRosterEntry,
 } from './harness.js';
+
+const require = createRequire(import.meta.url);
+const { RELEASE_PROBE_PID_FILE } = require('./nodes/release-probe-constants.cjs') as {
+  RELEASE_PROBE_PID_FILE: string;
+};
 
 /**
  * Two-node fleet E2E (Phase 6). Boots a REAL stack — a relaycast engine (node
@@ -189,9 +197,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       // Pin capacity so the node advertises a distinct harness (`claude`) plus the
       // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
       // capacity for that harness, so every shadow the node defines (spawn:claude,
-      // spawn:pool) needs matching broker capacity — otherwise the delegation has
-      // nothing to run.
-      capacityHarnesses: 'claude,pool',
+      // spawn:pool, spawn:release-probe) needs matching broker capacity — otherwise
+      // the delegation has nothing to run.
+      capacityHarnesses: 'claude,pool,release-probe',
     });
     nodeB = new FleetNode({
       name: 'node-b',
@@ -260,6 +268,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       'release',
       'spawn:claude',
       'spawn:pool',
+      'spawn:release-probe',
       'work',
     ]);
     expect(b.capabilities.map((c) => c.name).sort()).toEqual([
@@ -327,6 +336,138 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       (await getNodes(engine, workspaceKey, { capability: 'spawn:pool' })).map((n) => n.name).sort()
     ).toEqual(['node-a', 'node-b']);
   });
+
+  it('public fleet release proves process, node heartbeat, and engine roster absence', async () => {
+    const name = `release-1671-${Date.now().toString(36)}`;
+    const spawned = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'release-probe',
+      name,
+      target_node: 'node-a',
+    });
+    expect(spawned.status).toBe(201);
+    const spawnDone = await waitFor(
+      async () => {
+        const invocation = await getInvocation(engine, driverToken, 'spawn', spawned.invocationId!);
+        return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
+      },
+      { timeoutMs: 30_000, label: 'release probe spawn settled' }
+    );
+    expect(spawnDone.status).toBe('completed');
+
+    const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
+    const readDescendant = async (previousToken?: string) => {
+      const probe = JSON.parse(readFileSync(pidPath, 'utf8')) as { pid?: number; token?: string };
+      expect(Number.isInteger(probe.pid) && probe.pid > 0).toBe(true);
+      expect(typeof probe.token === 'string' && probe.token.length > 0).toBe(true);
+      return previousToken === undefined || probe.token !== previousToken ? probe : null;
+    };
+    const descendant = await waitFor(readDescendant, {
+      timeoutMs: 10_000,
+      label: 'release probe descendant pid',
+    });
+    const descendantPid = descendant.pid!;
+
+    const cli = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
+    const released = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
+    expect(released.status).toBe(0);
+    expect(released.stdout).toContain(name);
+
+    const assertReleaseAbsence = async (pid: number, label: string) => {
+      await waitFor(
+        async () => {
+          try {
+            process.kill(pid, 0);
+            return false;
+          } catch (error) {
+            return error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH'
+              ? true
+              : null;
+          }
+        },
+        { timeoutMs: 12_000, intervalMs: 200, label: `${label}: descendant absent` }
+      );
+
+      await waitFor(
+        async () => {
+          const agent = await getAgent(engine, workspaceKey, name);
+          // Relaycast may retain a terminal tombstone, or may remove the
+          // identity completely when the public release requests deletion.
+          // Both are roster absence; only a live/located row is a failure.
+          return agent === null ||
+            ((agent.status === 'offline' || agent.status === 'released') && !agent.location_node_id)
+            ? (agent ?? { name, status: 'released' })
+            : null;
+        },
+        { timeoutMs: 20_000, label: `${label}: engine roster absence` }
+      );
+      await waitFor(
+        async () => {
+          const nodeEntry = (await getNodes(engine, workspaceKey, { name: 'node-a' }))[0];
+          const live = nodeEntry?.capabilities.find(
+            (capability) => capability.name === 'relay:live-agents:v1'
+          );
+          const names =
+            live?.metadata && typeof live.metadata === 'object' && Array.isArray(live.metadata.names)
+              ? live.metadata.names
+              : [];
+          return !names.includes(name) ? nodeEntry : null;
+        },
+        { timeoutMs: 20_000, label: `${label}: node heartbeat absence` }
+      );
+    };
+
+    await assertReleaseAbsence(descendantPid, 'first release');
+
+    // A release is idempotent and frees the name: spawn the same name again,
+    // then release it through the same public CLI path and prove the second
+    // terminal state too.
+    const respawned = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'release-probe',
+      name,
+      target_node: 'node-a',
+    });
+    expect(respawned.status).toBe(201);
+    const respawnDone = await waitFor(
+      async () => {
+        const invocation = await getInvocation(engine, driverToken, 'spawn', respawned.invocationId!);
+        return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
+      },
+      { timeoutMs: 30_000, label: 'same-name respawn settled' }
+    );
+    expect(respawnDone.status).toBe('completed');
+    const secondDescendant = await waitFor(() => readDescendant(descendant.token), {
+      timeoutMs: 10_000,
+      label: 'same-name respawn descendant pid',
+    });
+    const secondDescendantPid = secondDescendant.pid!;
+    expect(secondDescendant.token).not.toBe(descendant.token);
+    const releasedAgain = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
+    expect(releasedAgain.status).toBe(0);
+    expect(releasedAgain.stdout).toContain(name);
+    await assertReleaseAbsence(secondDescendantPid, 'second release');
+    // The engine intentionally frees the released name, so a second engine
+    // command would correctly report `agent_not_found` rather than risk
+    // releasing a newer same-name worker. Idempotency belongs to the owning
+    // node-control endpoint: retry the public DELETE after the worker is gone.
+    const connection = JSON.parse(
+      readFileSync(path.join(nodeA.projectDir, '.agentworkforce', 'relay', 'connection.json'), 'utf8')
+    ) as { url: string; api_key: string };
+    const brokerUrl = new URL(connection.url);
+    expect(brokerUrl.protocol).toBe('http:');
+    expect(brokerUrl.hostname).toBe('127.0.0.1');
+    const repeatedRelease = await fetch(`${brokerUrl.origin}/api/spawned/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: {
+        authorization: `Bearer ${connection.api_key}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ reason: 'idempotent node-control retry' }),
+    });
+    const repeatedReleaseBody = await repeatedRelease.json();
+    expect(repeatedRelease.status, JSON.stringify(repeatedReleaseBody)).toBe(200);
+    expect(repeatedReleaseBody).toMatchObject({ success: true, name });
+    await assertReleaseAbsence(secondDescendantPid, 'idempotent repeated release');
+  }, 90_000);
 
   it('cross-node dispatch: a node-native action runs on its owning node and acks the result', async () => {
     // Fleet-provider actions are node-scoped, so they are invoked on their owning node.
@@ -779,6 +920,38 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     }
   }, 70_000);
 });
+
+function runFleetRelease(
+  cli: string,
+  name: string,
+  workspaceKey: string,
+  baseUrl: string
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [cli, 'fleet', 'release', name, '--workspace-key', workspaceKey, '--base-url', baseUrl],
+      {
+        env: { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.once('error', reject);
+    child.once('close', (status) => {
+      clearTimeout(timeout);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
 
 /**
  * Bounded durable mailbox (§8) — TTL dead-letter + overflow. These exercise the

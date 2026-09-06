@@ -326,7 +326,7 @@ export async function startCloudEnrollmentEndpoint(input: {
 export interface NodeRosterEntry {
   id: string;
   name: string;
-  capabilities: Array<{ name: string }>;
+  capabilities: Array<{ name: string; metadata?: Record<string, unknown> }>;
   status: string;
   live: boolean;
   handlers_live: boolean;
@@ -678,7 +678,12 @@ export async function getAgent(
   engine: EngineHandle,
   workspaceKey: string,
   name: string
-): Promise<{ name: string; metadata?: Record<string, unknown> } | null> {
+): Promise<{
+  name: string;
+  status?: string;
+  location_node_id?: string | null;
+  metadata?: Record<string, unknown>;
+} | null> {
   const { status, body } = await engine.fetchJson(`/v1/agents/${name}`, {
     headers: { authorization: `Bearer ${workspaceKey}` },
   });
