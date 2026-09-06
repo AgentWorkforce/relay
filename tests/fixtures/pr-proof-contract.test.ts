@@ -1877,6 +1877,22 @@ describe('trusted dispatcher source contract', () => {
     expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
+  it('uses a fixed bounded record when short-secret redaction expands the fallback', () => {
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: 'a'.repeat(1_024),
+        status: 'a'.repeat(1_024),
+        failure: { causeChain: Array.from({ length: 20 }, () => 'x'.repeat(2_000)) },
+      },
+      ['a']
+    );
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+    });
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+  });
+
   it('always returns valid UTF-8 JSON inside the terminal diagnostic byte limit', () => {
     const diagnostic = terminalStatusDiagnostic({
       run: {

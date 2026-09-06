@@ -151,7 +151,7 @@ export function terminalStatusDiagnostic(payload, secrets = []) {
   );
   diagnostic = redactTerminalDiagnostic(diagnostic, declaredSecrets);
   if (Buffer.byteLength(diagnostic, 'utf8') <= MAX_TERMINAL_DIAGNOSTIC_BYTES) return diagnostic;
-  return redactTerminalDiagnostic(
+  const fallback = redactTerminalDiagnostic(
     JSON.stringify(
       {
         runId: evidence.runId,
@@ -163,6 +163,10 @@ export function terminalStatusDiagnostic(payload, secrets = []) {
     ),
     declaredSecrets
   );
+  if (Buffer.byteLength(fallback, 'utf8') <= MAX_TERMINAL_DIAGNOSTIC_BYTES) return fallback;
+  return JSON.stringify({
+    error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+  });
 }
 
 function requiredCredential(env, name) {
