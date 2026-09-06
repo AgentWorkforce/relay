@@ -733,6 +733,13 @@ export type WorkerToBroker =
             error?: never;
           }
         | {
+            /** Admission succeeded, but provider confirmation is not available yet. */
+            status: 'accepted_pending';
+            applied: false;
+            effective_model?: string | null;
+            error?: string;
+          }
+        | {
             status: 'rejected' | 'unsupported';
             applied: false;
             effective_model?: string | null;
