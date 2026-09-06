@@ -283,14 +283,20 @@ describe('bootstrap CLI', () => {
 
     const fleetMatrix = JSON.parse(
       fs.readFileSync(path.resolve('tests/relayflows/cleanroom/fleet-daytona.matrix.json'), 'utf8')
-    ) as { commandSurface: Record<string, string[]> };
+    ) as { commandSurface: Record<string, string[]>; deferredCommandSurface?: string[] };
     const orchestrationLeaves = leafCommandPaths.filter(
       (command) => command.startsWith('fleet ') || command.startsWith('node ')
     );
+    const provenCommands = Object.keys(fleetMatrix.commandSurface);
+    const deferredCommands = fleetMatrix.deferredCommandSurface ?? [];
     // The matrix also exercises the hidden `fleet serve` migration stub. The
     // visible leaf collector intentionally excludes hidden commands, so add
-    // that one separately instead of weakening either contract.
-    expect(Object.keys(fleetMatrix.commandSurface).sort()).toEqual(
+    // that one separately instead of weakening either contract. Deferred
+    // commands remain part of the complete CLI inventory, but must stay
+    // disjoint from the operations this head claims to prove.
+    expect(deferredCommands.filter((command) => provenCommands.includes(command))).toEqual([]);
+    expect(new Set(deferredCommands).size).toBe(deferredCommands.length);
+    expect([...provenCommands, ...deferredCommands].sort()).toEqual(
       [...orchestrationLeaves, 'fleet serve'].sort()
     );
   });
