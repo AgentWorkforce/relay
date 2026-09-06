@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1682-trusted-cleanroom-runner",
+  "kind": "bugfix",
+  "title": "Keep cleanroom qualification secrets in a trusted default-branch runner",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1682-trusted-cleanroom-runner/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 120,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "trusted_cleanroom_runner_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "trusted_cleanroom_rejects_unapproved_ref_execution"
+    }
+  }
+}

@@ -93,6 +93,7 @@ __pycache__/
 !/workflows/verify-features.ts
 !/workflows/audit-feature-manifest.ts
 !/workflows/pr-proof.ts
+!/workflows/verify-fleet-daytona.ts
 
 # Eval harness JSON reports (generated per run)
 tests/integration/broker/evals-reports/
