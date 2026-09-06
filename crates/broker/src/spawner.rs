@@ -670,6 +670,26 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
     Ok(())
 }
 
+/// Request immediate teardown after an owned worker control channel fails.
+///
+/// This is intentionally synchronous: writer failures are delivered on the
+/// broker's event loop, so waiting for a grace interval there would pause all
+/// API and Relaycast work. The normal reap sweep still owns the Child and
+/// collects its exit status; this function only initiates the ownership-safe
+/// termination request.
+pub(crate) fn request_child_termination(child: &mut Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        signal_process_group(pid, Signal::SIGTERM);
+        signal_process_group(pid, Signal::SIGKILL);
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = child.start_kill();
+    }
+}
+
 #[cfg(windows)]
 async fn terminate_process_tree(pid: u32) {
     let taskkill = std::env::var_os("SystemRoot")

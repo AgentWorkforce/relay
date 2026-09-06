@@ -1561,7 +1561,7 @@ impl WorkerRegistry {
     /// registry and supervisor entries intact. The normal reap path observes
     /// the exit and applies the configured restart policy; unlike `release`,
     /// this is an unexpected fault rather than an intentional teardown.
-    pub(crate) async fn terminate_after_writer_failure(&mut self, name: &str) -> Result<()> {
+    pub(crate) fn terminate_after_writer_failure(&mut self, name: &str) -> Result<()> {
         let handle = self
             .workers
             .get_mut(name)
@@ -1570,9 +1570,8 @@ impl WorkerRegistry {
         if handle.child.id().is_none() {
             return Ok(());
         }
-        terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT)
-            .await
-            .with_context(|| format!("failed to terminate worker '{name}' after writer failure"))
+        crate::spawner::request_child_termination(&mut handle.child);
+        Ok(())
     }
 
     pub(crate) async fn shutdown_all(&mut self) -> Result<()> {
