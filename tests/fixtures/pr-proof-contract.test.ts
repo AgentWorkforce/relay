@@ -194,10 +194,11 @@ describe('RelayFlow PR proof classification', () => {
 describe('RelayFlow case manifest', () => {
   it('runs the immutable Fleet snapshot proof over a trusted local HTTPS endpoint', async () => {
     const source = await readFile('tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs', 'utf8');
-    expect(source).toContain("import https from 'node:https'");
-    expect(source).toContain("'openssl'");
-    expect(source).toContain('const baseUrl = `https://127.0.0.1:${port}`');
-    expect(source).toContain('NODE_EXTRA_CA_CERTS: tlsCertificatePath');
+    expect(source).toMatch(/import\s+https\s+from\s+['"]node:https['"]/);
+    expect(source).toMatch(/run\(\s*OPENSSL_PATH/);
+    expect(source).toMatch(/const\s+baseUrl\s*=\s*`https:\/\/127\.0\.0\.1:\$\{port\}`/);
+    expect(source).toMatch(/NODE_EXTRA_CA_CERTS\s*:\s*tlsCertificatePath/);
+    expect(source).toMatch(/TLS_CERTIFICATE_TIMEOUT_MS\s*=\s*30_000/);
     expect(source).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
   });
 
