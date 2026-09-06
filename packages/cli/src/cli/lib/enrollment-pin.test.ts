@@ -28,10 +28,57 @@ describe('linkEnrolledNodeToProjectPin', () => {
 
     const result = linkEnrolledNodeToProjectPin({ nodeId: 'node_abc', projectDataDir: dataDir });
 
-    expect(result).toMatchObject({ status: 'linked', nodeId: 'node_abc' });
+    expect(result).toMatchObject({
+      status: 'linked',
+      nodeId: 'node_abc',
+      workspaceVerified: false,
+    });
     expect(readProjectWorkspaceSession(dataDir)).toEqual({
       workspaceKey: 'rk_live_pinned',
       enrolledNodeId: 'node_abc',
+    });
+  });
+
+  it('links a pin when its workspace id matches the enrollment and preserves that id', () => {
+    const dataDir = projectDataDir();
+    writeProjectWorkspaceKey(dataDir, 'rk_live_pinned', { workspaceId: 'rw_same' });
+
+    const result = linkEnrolledNodeToProjectPin({
+      nodeId: 'node_abc',
+      relayWorkspaceId: 'rw_same',
+      projectDataDir: dataDir,
+    });
+
+    expect(result).toMatchObject({
+      status: 'linked',
+      nodeId: 'node_abc',
+      workspaceVerified: true,
+    });
+    expect(readProjectWorkspaceSession(dataDir)).toEqual({
+      workspaceKey: 'rk_live_pinned',
+      enrolledNodeId: 'node_abc',
+      workspaceId: 'rw_same',
+    });
+  });
+
+  it('does not link a pin whose workspace id differs from the enrollment', () => {
+    const dataDir = projectDataDir();
+    writeProjectWorkspaceKey(dataDir, 'rk_live_pinned', { workspaceId: 'rw_other' });
+
+    const result = linkEnrolledNodeToProjectPin({
+      nodeId: 'node_abc',
+      relayWorkspaceId: 'rw_enrolled',
+      projectDataDir: dataDir,
+    });
+
+    expect(result).toMatchObject({
+      status: 'workspace-conflict',
+      relayWorkspaceId: 'rw_enrolled',
+      pinnedWorkspaceId: 'rw_other',
+    });
+    expect(readProjectWorkspaceSession(dataDir)).toEqual({
+      workspaceKey: 'rk_live_pinned',
+      workspaceId: 'rw_other',
     });
   });
 
@@ -51,6 +98,7 @@ describe('linkEnrolledNodeToProjectPin', () => {
     expect(linkEnrolledNodeToProjectPin({ nodeId: 'node_abc', projectDataDir: dataDir })).toMatchObject({
       status: 'unchanged',
       nodeId: 'node_abc',
+      workspaceVerified: false,
     });
   });
 

@@ -89,9 +89,14 @@ Workspace source: repository pin (.agentworkforce/relay/workspace-key.json)
 
 A Cloud enrollment (`RELAY_NODE_TOKEN`, or a record in the Fleet enrollment
 store) selects the node's _identity_, not its workspace, so it never appears on
-the ladder. If a stored enrollment addresses a different workspace than the
-repository pin, `node up` refuses to start and names both source files and
-workspace IDs, never their keys.
+the ladder. When the repository pin's recorded workspace ID matches the stored
+enrollment, `node up` retains that enrolled node identity even if the pin has no
+`enrolledNodeId`; the pin still supplies the workspace key. The same applies to
+an explicit flag or environment key that is byte-identical to that pin. A
+genuinely different explicit key still wins and warns that the enrollment is
+being skipped. Without an explicit key, a stored enrollment that addresses a
+different workspace than the repository pin stops startup and names both source
+files and workspace IDs, never their keys.
 
 `workspace create`, `join`, and `switch` select a named workspace globally and
 pin it to the current project. A changed selection records the old name, so an
