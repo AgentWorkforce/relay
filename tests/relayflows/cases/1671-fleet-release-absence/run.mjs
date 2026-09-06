@@ -59,10 +59,7 @@ if (help.error || help.status !== 0 || !`${help.stdout ?? ''}${help.stderr ?? ''
 }
 
 const fleet = await readFile(path.join(targetDir, 'crates/broker/src/runtime/fleet.rs'), 'utf8');
-const events = await readFile(
-  path.join(targetDir, 'crates/broker/src/runtime/relaycast_events.rs'),
-  'utf8'
-);
+const events = await readFile(path.join(targetDir, 'crates/broker/src/runtime/relaycast_events.rs'), 'utf8');
 const spawner = await readFile(path.join(targetDir, 'crates/broker/src/spawner.rs'), 'utf8');
 const worker = await readFile(path.join(targetDir, 'crates/broker/src/worker.rs'), 'utf8');
 
@@ -89,8 +86,11 @@ if (arm === 'base') {
       })}`
     );
   }
-  await observe('fleet_release_can_drop_cause_and_strand_descendants', 'bug',
-    'The base action wire collapses release failures to bare release_failed and worker teardown has no private process-group guarantee.');
+  await observe(
+    'fleet_release_can_drop_cause_and_strand_descendants',
+    'bug',
+    'The base action wire collapses release failures to bare release_failed and worker teardown has no private process-group guarantee.'
+  );
 } else {
   if (!typedFailure || !processGroupTeardown || !rosterReconcile) {
     throw new Error(
@@ -120,7 +120,9 @@ if (arm === 'base') {
     { cwd: targetDir, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024 }
   );
   if (test.error || test.status !== 0 || !`${test.stdout ?? ''}${test.stderr ?? ''}`.includes('1 passed')) {
-    throw new Error(`head process-group proof failed: ${test.error?.message ?? `${test.stdout}\n${test.stderr}`}`);
+    throw new Error(
+      `head process-group proof failed: ${test.error?.message ?? `${test.stdout}\n${test.stderr}`}`
+    );
   }
   await observe(
     'fleet_release_reports_cause_and_proves_absence',
