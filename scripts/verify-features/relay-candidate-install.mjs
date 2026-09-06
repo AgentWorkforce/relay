@@ -289,6 +289,23 @@ async function rejectBundledBrokerContamination() {
   }
 }
 
+export function privateNpmInvocation(args, childRoot, suffix, platform = process.platform) {
+  if (platform === 'linux') {
+    return {
+      command: '/bin/sh',
+      args: [
+        '-c',
+        'cd -- "$1" && shift && exec "$@"',
+        'relay-private-cwd',
+        `${childRoot}${suffix}`,
+        'npm',
+        ...args,
+      ],
+    };
+  }
+  return { command: 'npm', args: ['--prefix', `${childRoot}${suffix}`, ...args] };
+}
+
 function run(command, args, options = {}) {
   const privateRoot = activePrivateRootHandle;
   const childRoot = privateRoot
@@ -306,6 +323,7 @@ function run(command, args, options = {}) {
     }
     return value;
   };
+  let childCommand = command;
   let childArgs = args.map(rewritePrivatePath);
   let childCwd = options.cwd;
   if (privateRoot && typeof options.cwd === 'string') {
@@ -315,11 +333,13 @@ function run(command, args, options = {}) {
     );
     if (prefix && command === 'npm') {
       const suffix = options.cwd.slice(prefix.length);
-      childArgs = ['--prefix', `${childRoot}${suffix}`, ...childArgs];
+      const invocation = privateNpmInvocation(childArgs, childRoot, suffix);
+      childCommand = invocation.command;
+      childArgs = invocation.args;
       childCwd = undefined;
     }
   }
-  const result = spawnSync(command, childArgs, {
+  const result = spawnSync(childCommand, childArgs, {
     cwd: rewritePrivatePath(childCwd),
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 300_000,
