@@ -97,6 +97,38 @@ function runAsync(command, args, label) {
   });
 }
 
+async function terminateChild(child, label) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return true;
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // The process may have exited between the state check and SIGTERM.
+  }
+  if (await waitForChildClose(child, 2_000)) return true;
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Report the bounded wait below instead of hanging teardown.
+  }
+  if (await waitForChildClose(child, 2_000)) return true;
+  throw new Error(`${label} did not terminate after SIGTERM/SIGKILL`);
+}
+
+function waitForChildClose(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.removeListener('close', onClose);
+      resolve(false);
+    }, timeoutMs);
+    const onClose = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once('close', onClose);
+  });
+}
+
 function parseReceiptJson(output, label) {
   const text = String(output ?? '');
   for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
@@ -228,8 +260,7 @@ try {
           providerReady = true;
         } catch (error) {
           if (provider.exitCode === null) {
-            provider.kill('SIGTERM');
-            await new Promise((resolve) => provider.once('close', resolve));
+            await terminateChild(provider, 'OpenCode startup process');
           }
           provider = undefined;
           if (attempt === 2) throw error;
@@ -373,12 +404,10 @@ try {
       }
     } finally {
       if (broker && broker.exitCode === null) {
-        broker.kill('SIGTERM');
-        await new Promise((resolve) => broker.once('close', resolve));
+        await terminateChild(broker, 'broker');
       }
       if (provider && provider.exitCode === null) {
-        provider.kill('SIGTERM');
-        await new Promise((resolve) => provider.once('close', resolve));
+        await terminateChild(provider, 'OpenCode provider');
       }
       await rm(brokerStateDir, { recursive: true, force: true });
       activeProofDirs.delete(brokerStateDir);
