@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "id": "6dbcdd92-7ec6-47f6-906a-00af94917c90",
+  "timestamp": "2026-09-06T02:45:14.078Z",
+  "trajectory": "traj_ctp82sw8vi1o",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_0gu6qrjdk9ka/summary.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_0gu6qrjdk9ka/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_zicp3kmmhrmn/summary.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_zicp3kmmhrmn/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "id": "traj_dst0mw1p1z2v",
+  "version": 1,
+  "task": {
+    "title": "Close PR 1673 proof response timestamp review gap",
+    "source": {
+      "system": "plain",
+      "id": "relay#1673"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-06T03:16:37.959Z",
+  "completedAt": "2026-09-06T03:16:50.053Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T03:16:49.072Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_98l222xktt6j",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T03:16:49.072Z",
+      "endedAt": "2026-09-06T03:16:50.053Z",
+      "events": [
+        {
+          "ts": 1788664609073,
+          "type": "decision",
+          "content": "Record lastResponseAtMs in response.end completion callback: Record lastResponseAtMs in response.end completion callback",
+          "raw": {
+            "question": "Record lastResponseAtMs in response.end completion callback",
+            "chosen": "Record lastResponseAtMs in response.end completion callback",
+            "alternatives": [],
+            "reasoning": "The timing assertion must measure broker return only after the controlled 503 has fully flushed, exactly matching review feedback."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Moved the RelayFlow 1673 terminal timing origin to the completed HTTP response callback; syntax and formatting pass; exact-head Cloud proof will rerun after push.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "52cc9c225"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_dst0mw1p1z2v/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_dst0mw1p1z2v/trajectory.json",
+    "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f020f73d7675a5a4c1161d5c35ffd51ad0300647",
+    "endRef": "52cc9c22551418df1c425efdd8b9811e56469b52"
+  }
+}
