@@ -45,7 +45,13 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1656-long-running-agent37-sandbox';
-const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
+// Separate budgets, both inside case.json's 900s per-arm deadline. The install
+// and the probe are very different jobs and a shared cap sizes neither: a
+// timeout on either is an INFRASTRUCTURE failure, which cannot report red or
+// green, so the install must never be able to starve the probe of its budget.
+// Measured in Cloud on this case: install 18s, probe 2s. These are ~25x that.
+const INSTALL_TIMEOUT_MS = 8 * 60 * 1000;
+const PROBE_TIMEOUT_MS = 5 * 60 * 1000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -290,7 +296,8 @@ try {
     'npm',
     ['ci', '--ignore-scripts', '--no-audit', '--no-fund'],
     targetDir,
-    'workspace dependency installation'
+    'workspace dependency installation',
+    INSTALL_TIMEOUT_MS
   );
 
   await writeGeneratedFile(probePath, probeSource);
@@ -300,6 +307,7 @@ try {
     ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, configPath)],
     targetDir,
     'long-running Agent37 CLI probe',
+    PROBE_TIMEOUT_MS,
     { RELAY_PR1656_OBSERVATION_PATH: observationPath }
   );
 
@@ -388,12 +396,12 @@ async function writeGeneratedFile(targetPath, source) {
   }
 }
 
-function run(command, args, cwd, label, extraEnv = {}) {
+function run(command, args, cwd, label, timeoutMs, extraEnv = {}) {
   const completed = spawnSync(command, args, {
     cwd,
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'inherit', 'inherit'],
-    timeout: COMMAND_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
   if (completed.status !== 0) {
