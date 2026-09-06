@@ -31,7 +31,12 @@ function deleteResult(workspaceId: string, relayWorkspaceId: string) {
     verifiedAt: '2026-09-05T12:00:30.000Z',
     proof: {
       daytona: { workspaceId, relayWorkspaceId, remaining: 0 },
-      cloud: { workspaceId, relayWorkspaceId, appWorkspaceRowsRemaining: 0 },
+      cloud: {
+        workspaceId,
+        relayWorkspaceId,
+        appWorkspaceRowsRemaining: 0,
+        workflowLaunchesInProgress: 0,
+      },
       credentials: { workspaceId, relayWorkspaceId, activeSessionsRemaining: 0 },
       relaycast: {
         workspaceId,
@@ -333,6 +338,10 @@ describe('qualification runtime effect composer', () => {
     const stillPresent = fixture();
     stillPresent.workspaceDeletes[0]!.result.absence.status = 200;
     expect(() => composeQualificationEffects(stillPresent)).toThrow('complete cascade deletion');
+
+    const launchStillRunning = fixture();
+    launchStillRunning.workspaceDeletes[0]!.result.proof.cloud.workflowLaunchesInProgress = 1;
+    expect(() => composeQualificationEffects(launchStillRunning)).toThrow('complete cascade deletion');
 
     const unrelatedTiming = fixture();
     unrelatedTiming.workspaceDeletes[0]!.timingOperationId = 'delete-other';

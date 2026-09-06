@@ -12,6 +12,7 @@ import {
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
+  compareDaytonaSandboxBaseline,
   deriveFleetVerdict,
   executeFleetCommand,
   findExactSentinelMessage,
@@ -20,6 +21,7 @@ import {
   loadWorkspaceCredentialFile,
   matchesSandboxFileInspection,
   operationStatus,
+  ownedBoardNodes,
   redactFleetEvidence,
   sanitizeFleetArgv,
   summarizeFleetCampaign,
@@ -408,11 +410,48 @@ describe('complete Daytona Fleet board', () => {
       /actual spawned agent provider\/runtime/
     );
 
+    const swappedProvision = structuredClone(evidence);
+    swappedProvision.operations.find(({ id }) => id === 'initial-task-sentinel-a').derivedFrom =
+      'provision-node-b';
+    expect(() => validateFleetEvidence(swappedProvision, matrix)).toThrow(
+      /exact provision-node-a command execution/
+    );
+
     const nameOnlyRelease = structuredClone(evidence);
     nameOnlyRelease.operations.find(
       ({ id }) => id === 'fleet-release-reclaims-owned-sandbox'
     ).sandboxReleaseProof.sandboxAbsent = false;
     expect(() => validateFleetEvidence(nameOnlyRelease, matrix)).toThrow(/exact owned sandbox/);
+  });
+
+  it('inspects every owned board node even when scheduling has tainted one', () => {
+    const nodeA = { id: 'sandbox-a', nodeName: 'node-a' };
+    const nodeB = { id: 'sandbox-b', nodeName: 'node-b' };
+    expect(ownedBoardNodes([nodeA, nodeB])).toEqual([nodeA, nodeB]);
+    expect(ownedBoardNodes([nodeA, null, { id: '', nodeName: 'missing' }, nodeB])).toEqual([nodeA, nodeB]);
+  });
+
+  it('requires the complete final Daytona identity sets to equal the baseline', () => {
+    const baselineSandbox = { id: 'sandbox-before', name: 'ambient-before' };
+    const baseline = {
+      count: 1,
+      sandboxIdHashes: [createHash('sha256').update(baselineSandbox.id).digest('hex')],
+      sandboxNameHashes: [createHash('sha256').update(baselineSandbox.name).digest('hex')],
+    };
+    expect(compareDaytonaSandboxBaseline(baseline, [baselineSandbox])).toMatchObject({
+      restored: true,
+      countMatches: true,
+      unexpectedIdHashes: [],
+      unexpectedNameHashes: [],
+    });
+
+    const unexpected = { id: 'sandbox-created-with-unexpected-name', name: 'provider-generated' };
+    expect(compareDaytonaSandboxBaseline(baseline, [baselineSandbox, unexpected])).toMatchObject({
+      restored: false,
+      countMatches: false,
+      unexpectedIdHashes: [createHash('sha256').update(unexpected.id).digest('hex')],
+      unexpectedNameHashes: [createHash('sha256').update(unexpected.name).digest('hex')],
+    });
   });
 
   it('binds matrix argv contracts to the actual Fleet and direct-node argument builders', async () => {

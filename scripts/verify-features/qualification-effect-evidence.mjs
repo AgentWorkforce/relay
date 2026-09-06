@@ -185,7 +185,12 @@ function validateDelete(entry, expected) {
     }
     return value;
   };
-  const cloud = section('cloud', ['workspaceId', 'relayWorkspaceId', 'appWorkspaceRowsRemaining']);
+  const cloud = section('cloud', [
+    'workspaceId',
+    'relayWorkspaceId',
+    'appWorkspaceRowsRemaining',
+    'workflowLaunchesInProgress',
+  ]);
   const daytona = section('daytona', ['workspaceId', 'relayWorkspaceId', 'remaining']);
   const credentials = section('credentials', ['workspaceId', 'relayWorkspaceId', 'activeSessionsRemaining']);
   const relaycast = section('relaycast', [
@@ -206,6 +211,7 @@ function validateDelete(entry, expected) {
     !Number.isFinite(Date.parse(result.expiresAt ?? '')) ||
     !Number.isFinite(Date.parse(result.verifiedAt ?? '')) ||
     cloud.appWorkspaceRowsRemaining !== 0 ||
+    cloud.workflowLaunchesInProgress !== 0 ||
     daytona.remaining !== 0 ||
     credentials.activeSessionsRemaining !== 0 ||
     relaycast.deleted !== true ||

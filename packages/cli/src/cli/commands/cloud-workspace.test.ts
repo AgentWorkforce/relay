@@ -118,9 +118,14 @@ const tempDirs: string[] = [];
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-agent-relay-ephemeral-reconciliation': 'v1',
+    },
   });
 }
+
+const reconciliationAbsent = { error: 'Ephemeral workspace not found', code: 'workspace_not_found' };
 
 function harness() {
   const exit = vi.fn((code: number) => {
@@ -133,7 +138,7 @@ function harness() {
     ensureCloudSession: vi.fn(async () => ({ auth, client: {} as never })) as Deps['ensureCloudSession'],
     authorizedApiFetch: vi.fn(async (_auth, apiPath) => ({
       response: apiPath.includes('?ephemeral=true')
-        ? response({ error: 'not found' }, 404)
+        ? response(reconciliationAbsent, 404)
         : response(revealOnceResponse, 201),
       auth,
     })) as Deps['authorizedApiFetch'],
@@ -257,7 +262,7 @@ describe('cloud workspace lifecycle commands', () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
     vi.mocked(deps.authorizedApiFetch)
-      .mockResolvedValueOnce({ response: response({ error: 'not found' }, 404), auth })
+      .mockResolvedValueOnce({ response: response(reconciliationAbsent, 404), auth })
       .mockResolvedValueOnce({
         response: response(
           {
@@ -346,11 +351,128 @@ describe('cloud workspace lifecycle commands', () => {
     );
   });
 
+  it('never deletes a pre-existing workspace discovered by the ownership probe', async () => {
+    const { program, deps } = harness();
+    const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response(reconciliationResponse),
+      auth,
+    });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'workspace',
+        'create',
+        '--ephemeral',
+        '--name',
+        'Concurrent owner',
+        '--ttl',
+        '1h',
+        '--credential-file',
+        credentialFile,
+        '--relayfile-cloud-deployment',
+        RELAYFILE_CLOUD_DEPLOYMENT_ID,
+        '--idempotency-key',
+        IDEMPOTENCY_KEY,
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deps.error)).toHaveBeenCalledWith(
+      'An ephemeral workspace already exists for this idempotency key; refusing to delete a workspace this process did not create.'
+    );
+    expect(fs.existsSync(credentialFile)).toBe(false);
+  });
+
+  it('uses refreshed reconciliation auth for the create and persisted Cloud URL', async () => {
+    const { program, deps } = harness();
+    const credentialFile = tempCredentialPath();
+    const refreshedAuth = {
+      ...auth,
+      apiUrl: 'https://refreshed.cloud.test',
+      accessToken: 'refreshed-access-secret',
+    };
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({ response: response(reconciliationAbsent, 404), auth: refreshedAuth })
+      .mockResolvedValueOnce({ response: response(revealOnceResponse, 201), auth: refreshedAuth });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'workspace',
+      'create',
+      '--ephemeral',
+      '--name',
+      'Refreshed auth',
+      '--ttl',
+      '1h',
+      '--credential-file',
+      credentialFile,
+      '--relayfile-cloud-deployment',
+      RELAYFILE_CLOUD_DEPLOYMENT_ID,
+      '--idempotency-key',
+      IDEMPOTENCY_KEY,
+    ]);
+
+    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      refreshedAuth,
+      '/api/v1/workspaces',
+      expect.any(Object),
+      { interactive: false }
+    );
+    expect(readPrivateJsonFile(credentialFile)).toMatchObject({
+      cloud: { apiUrl: refreshedAuth.apiUrl },
+    });
+  });
+
+  it('rejects a bare 404 that does not advertise the reconciliation contract', async () => {
+    const { program, deps } = harness();
+    const credentialFile = tempCredentialPath();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: new Response(JSON.stringify(reconciliationAbsent), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      }),
+      auth,
+    });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'workspace',
+        'create',
+        '--ephemeral',
+        '--name',
+        'Unsupported Cloud route',
+        '--ttl',
+        '1h',
+        '--credential-file',
+        credentialFile,
+        '--relayfile-cloud-deployment',
+        RELAYFILE_CLOUD_DEPLOYMENT_ID,
+        '--idempotency-key',
+        IDEMPOTENCY_KEY,
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deps.error)).toHaveBeenCalledWith(
+      'Cloud does not advertise the ephemeral workspace reconciliation v1 contract.'
+    );
+  });
+
   it('removes the reserved file and never prints secrets from an invalid server response', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: response({ error: 'not found' }, 404),
+      response: response(reconciliationAbsent, 404),
       auth,
     });
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
@@ -380,15 +502,13 @@ describe('cloud workspace lifecycle commands', () => {
     expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toContain('server-leak-secret');
   });
 
-  it('reconciles and cascade-deletes a workspace after an ambiguous create transport failure', async () => {
+  it('reconciles but never deletes an unowned workspace after an ambiguous create failure', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
     vi.mocked(deps.authorizedApiFetch)
-      .mockResolvedValueOnce({ response: response({ error: 'not found' }, 404), auth })
+      .mockResolvedValueOnce({ response: response(reconciliationAbsent, 404), auth })
       .mockRejectedValueOnce(new Error('create transport closed'))
-      .mockResolvedValueOnce({ response: response(reconciliationResponse), auth })
-      .mockResolvedValueOnce({ response: response(cascadeResponse), auth })
-      .mockResolvedValueOnce({ response: response({ error: 'not found' }, 404), auth });
+      .mockResolvedValueOnce({ response: response(reconciliationResponse), auth });
 
     await expect(
       program.parseAsync([
@@ -418,32 +538,20 @@ describe('cloud workspace lifecycle commands', () => {
       { method: 'GET' },
       { interactive: false }
     );
-    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
-      4,
-      auth,
-      `/api/v1/workspaces/${WORKSPACE_ID}`,
-      {
-        method: 'DELETE',
-        body: JSON.stringify({ confirm: WORKSPACE_ID, verifyCascade: true }),
-      },
-      { interactive: false }
-    );
-    expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
-      5,
-      auth,
-      `/api/v1/workspaces/${WORKSPACE_ID}`,
-      { method: 'GET' },
-      { interactive: false }
-    );
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(3);
     expect(fs.existsSync(credentialFile)).toBe(false);
-    expect(vi.mocked(deps.error)).toHaveBeenCalledWith('create transport closed');
+    expect(vi.mocked(deps.error)).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /create transport closed.*was not deleted because this process cannot prove ownership/
+      )
+    );
   });
 
   it('rejects an insecure Relay credential endpoint', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: response({ error: 'not found' }, 404),
+      response: response(reconciliationAbsent, 404),
       auth,
     });
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
@@ -491,7 +599,7 @@ describe('cloud workspace lifecycle commands', () => {
       auth,
     });
     vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
-      response: response({ error: 'not found' }, 404),
+      response: response(reconciliationAbsent, 404),
       auth,
     });
 

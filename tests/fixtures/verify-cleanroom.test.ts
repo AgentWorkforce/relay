@@ -9,11 +9,13 @@ import { describe, expect, it } from 'vitest';
 import {
   aggregateMarkdown,
   aggregateRecords,
+  assertReviewUploadSource,
   captureBoundedOutput,
   cleanEnvironment,
   freshAttemptContext,
   loadCatalog,
   parseFeatureManifest,
+  putRecord,
   readBoundedResponseText,
   redactEvidence,
   routeInventory,
@@ -409,6 +411,37 @@ describe('clean-room verification catalog', () => {
     }
   });
 
+  it('bounds the complete newline-terminated local evidence object', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-storage-limit-'));
+    try {
+      // The pretty JSON is exactly 2 MiB; the required trailing newline must not cross the limit.
+      await expect(
+        putRecord({
+          nonce: NONCE,
+          kind: 'boundary-probe',
+          value: { payload: 'x'.repeat(2_097_133) },
+          source: 'files',
+          artifactRoot: root,
+        })
+      ).rejects.toThrow(/exceeds 2097152 bytes/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires write-once Cloud storage for full and soak review uploads', () => {
+    expect(assertReviewUploadSource('smoke', 'files', {})).toBe('files');
+    expect(() => assertReviewUploadSource('full', 'files', {})).toThrow(/write-once Cloud evidence/);
+    expect(() => assertReviewUploadSource('soak', 'auto', {})).toThrow(/write-once Cloud evidence/);
+    expect(
+      assertReviewUploadSource('full', 'auto', {
+        CLOUD_API_URL: 'https://cloud.example.test',
+        CLOUD_API_ACCESS_TOKEN: 'test-token',
+        RUN_ID: 'test-run',
+      })
+    ).toBe('cloud');
+  });
+
   it('confines evidence and inventory traffic to authenticated HTTPS origins', () => {
     expect(validateCloudApiBaseUrl('https://cloud.example.test/cloud').toString()).toBe(
       'https://cloud.example.test/cloud/'
@@ -480,6 +513,7 @@ describe('clean-room verification catalog', () => {
     expect(source).toContain('"sandboxId": "cloud-${sandboxEnvironmentReference} or local-${role}"');
     expect(runner).toContain('review.sandboxId !== provenance.sandboxId');
     expect(runner).toContain('kind: `review-provenance/${role}`');
+    expect(runner.match(/redirect: 'error'/g)?.length).toBeGreaterThanOrEqual(4);
     expect(source).toContain('agent.permissions = lanePermissions');
     expect(source).toContain("access: 'restricted' as const");
     expect(source).toContain('exec: [reviewProvenanceCommand(role)]');
@@ -492,6 +526,7 @@ describe('clean-room verification catalog', () => {
     expect(workflow).toContain('github.event.release.prerelease == false');
     expect(workflow).toContain('github.event.release.prerelease == true');
     expect(workflow).toContain('Verify the exact published Relay package closure');
+    expect(workflow).toContain('npm install --global npm@11.19.1');
     expect(workflow).toMatch(
       /relayWorkflowRef\s*!==\s*undefined\s*&&\s*relayWorkflowRef\s*!==\s*expectedRelayRef/
     );
