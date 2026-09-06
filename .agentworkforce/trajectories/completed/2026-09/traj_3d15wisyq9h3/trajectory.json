@@ -1,0 +1,57 @@
+{
+  "id": "traj_3d15wisyq9h3",
+  "version": 1,
+  "task": {
+    "title": "Fix Claude folder-trust auto-accept for both menu orderings",
+    "source": {
+      "system": "plain",
+      "id": "1654"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-06T15:21:15.557Z",
+  "completedAt": "2026-09-06T15:37:39.726Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T15:37:26.691Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ea22h99sksvx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T15:37:26.691Z",
+      "endedAt": "2026-09-06T15:37:39.726Z",
+      "events": [
+        {
+          "ts": 1788709046692,
+          "type": "decision",
+          "content": "Parse Claude's rendered trust menu and navigate by affirmative label identity: Parse Claude's rendered trust menu and navigate by affirmative label identity",
+          "raw": {
+            "question": "Parse Claude's rendered trust menu and navigate by affirmative label identity",
+            "chosen": "Parse Claude's rendered trust menu and navigate by affirmative label identity",
+            "alternatives": [],
+            "reasoning": "Claude ships both Yes-first and No-first layouts; requiring unique option rows plus one selection marker preserves fail-closed behavior and avoids confirming No"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made Claude folder-trust handling select the affirmative row by rendered menu state; added old/new/fail-closed regression coverage and a real-PTY worker-survival test",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b56e7b1f31bbebbd86fc22bd551ec7cec1e5a7b4",
+    "endRef": "b56e7b1f31bbebbd86fc22bd551ec7cec1e5a7b4"
+  }
+}

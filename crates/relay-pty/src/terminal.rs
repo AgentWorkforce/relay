@@ -137,12 +137,68 @@ pub fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
     (has_header, has_trust_option)
 }
 
-/// Detect Claude Code folder trust prompt in output.
-/// Returns (has_trust_ref, has_confirmation).
+/// Keystroke needed to select Claude Code's affirmative folder-trust option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeTrustPromptAction {
+    Enter,
+    Up,
+    Down,
+}
+
+/// Identify Claude Code's selected folder-trust row and the navigation needed
+/// to reach the affirmative option.
+///
+/// This deliberately fails closed unless the rendered menu has exactly one
+/// affirmative row, one exit row, and one selected row. Claude has shipped
+/// both option orderings, so the affirmative label's identity -- not a fixed
+/// row number -- determines the response.
+pub fn claude_trust_prompt_action(clean_output: &str) -> Option<ClaudeTrustPromptAction> {
+    let lines: Vec<_> = clean_output.lines().collect();
+    let affirmative: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            let lower = line.to_lowercase();
+            lower.contains("yes") && lower.contains("trust") && lower.contains("folder")
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let exit: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| {
+            let lower = line.to_lowercase();
+            lower.contains("no,") && lower.contains("exit")
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let selected: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains('❯'))
+        .map(|(index, _)| index)
+        .collect();
+
+    match (affirmative.as_slice(), exit.as_slice(), selected.as_slice()) {
+        ([yes], [_], [selected]) if selected == yes => Some(ClaudeTrustPromptAction::Enter),
+        ([yes], [no], [selected]) if selected == no && yes < no => {
+            Some(ClaudeTrustPromptAction::Up)
+        }
+        ([yes], [no], [selected]) if selected == no && yes > no => {
+            Some(ClaudeTrustPromptAction::Down)
+        }
+        _ => None,
+    }
+}
+
+/// Detect whether output contains both sides of Claude Code's folder-trust
+/// prompt. Callers that auto-respond must use [`claude_trust_prompt_action`]
+/// so they also prove which row is selected.
 pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     let lower = clean_output.to_lowercase();
     let has_trust_ref = lower.contains("trust") && lower.contains("folder");
-    let has_confirmation = (lower.contains("yes") && lower.contains("trust"))
+    let has_confirmation = lower.contains("yes")
+        && lower.contains("trust")
         && lower.contains("no,")
         && lower.contains("exit");
     (has_trust_ref, has_confirmation)
@@ -158,6 +214,32 @@ pub fn is_auto_suggestion(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_trust_old_layout_confirms_selected_yes() {
+        let screen =
+            "Do you trust the files in this folder?\n❯ Yes, I trust this folder\n  No, exit";
+        assert_eq!(
+            claude_trust_prompt_action(screen),
+            Some(ClaudeTrustPromptAction::Enter)
+        );
+    }
+
+    #[test]
+    fn claude_trust_new_layout_moves_down_from_selected_no() {
+        let screen =
+            "Do you trust the files in this folder?\n❯ No, exit\n  Yes, I trust this folder";
+        assert_eq!(
+            claude_trust_prompt_action(screen),
+            Some(ClaudeTrustPromptAction::Down)
+        );
+    }
+
+    #[test]
+    fn claude_trust_without_rendered_selection_fails_closed() {
+        let screen = "Yes, I trust this folder\nNo, exit";
+        assert_eq!(claude_trust_prompt_action(screen), None);
+    }
 
     #[test]
     fn codex_model_prompt_upgrade_with_options() {
