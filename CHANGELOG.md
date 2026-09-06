@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `DELETE /api/spawned/{name}` now releases an already-stopped worker's Relaycast identity and frees its workspace seat instead of failing with `Max retries exceeded`.
 
 ## [11.10.3] - 2026-09-05
 
