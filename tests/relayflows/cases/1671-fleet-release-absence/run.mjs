@@ -135,10 +135,17 @@ try {
     },
     { timeoutMs: 10_000, intervalMs: 100, label: 'artifact worker registered' }
   );
-  const descendantPid = Number((await readFile(descendantFile, 'utf8')).trim());
-  if (!Number.isInteger(descendantPid) || !pidAlive(descendantPid)) {
-    throw new Error(`release probe descendant did not stay alive: ${descendantPid}`);
-  }
+  const descendantPid = await waitFor(
+    async () => {
+      try {
+        const pid = Number((await readFile(descendantFile, 'utf8')).trim());
+        return Number.isInteger(pid) && pidAlive(pid) ? pid : null;
+      } catch {
+        return null;
+      }
+    },
+    { timeoutMs: 5_000, intervalMs: 50, label: 'artifact release probe descendant' }
+  );
 
   const releaseStarted = Date.now();
   const releaseResult = await brokerRequest(apiBase, `/api/spawned/${encodeURIComponent(targetName)}`, {
