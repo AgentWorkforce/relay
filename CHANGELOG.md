@@ -72,6 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay fleet spawn --sandbox` now waits through the mounted Daytona provisioning deadline instead of abandoning successful long-running requests without a sandbox ID for cleanup.
+- Fleet nodes now reconnect when the control-plane application stops acknowledging requests even if the WebSocket remains open.
+- Offline fleet node records now report the active-agent count as unknown instead of zero.
 
 ## [11.8.5] - 2026-08-27
 

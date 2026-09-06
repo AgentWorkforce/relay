@@ -1,0 +1,63 @@
+{
+  "id": "traj_l0imiqugdc9k",
+  "version": 1,
+  "task": {
+    "title": "Address PR 1610 ordered liveness probe review",
+    "source": {
+      "system": "plain",
+      "id": "PR-1610"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-26T00:34:00.303Z",
+  "completedAt": "2026-08-26T00:37:33.497Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-26T00:34:05.830Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_osj8m7sxxbfj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-26T00:34:05.830Z",
+      "endedAt": "2026-08-26T00:37:33.497Z",
+      "events": [
+        {
+          "ts": 1787704445834,
+          "type": "decision",
+          "content": "Track pending inventory probes in send order and drain only through the acknowledged probe: Track pending inventory probes in send order and drain only through the acknowledged probe",
+          "raw": {
+            "question": "Track pending inventory probes in send order and drain only through the acknowledged probe",
+            "chosen": "Track pending inventory probes in send order and drain only through the acknowledged probe",
+            "alternatives": [],
+            "reasoning": "Relaycast serializes node control work; acknowledging A proves older probes but not newer B, whose later rejection must still force reconnect."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Preserved newer inventory probes across older acknowledgements and added an A-acknowledged/B-rejected regression.",
+    "approach": "Tracked inventory probe IDs in send order and covered the ordered acknowledgement/rejection sequence with a focused regression test.",
+    "confidence": 0.95
+  },
+  "commits": [
+    "dbdea083a"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_l0imiqugdc9k/trajectory.json",
+    "crates/broker/src/node_control.rs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5971b921932d6a0f0baffafa0b1fdb9239bd3fc5",
+    "endRef": "dbdea083abe058d5f94574b893103191f59d6c8b",
+    "traceId": "f0436409-faf2-4c70-8a78-761f272534b1"
+  }
+}

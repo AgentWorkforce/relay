@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "id": "f0436409-faf2-4c70-8a78-761f272534b1",
+  "timestamp": "2026-08-26T00:37:34.286Z",
+  "trajectory": "traj_l0imiqugdc9k",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_l0imiqugdc9k/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 50,
+              "revision": "dbdea083abe058d5f94574b893103191f59d6c8b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/node_control.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1729,
+              "end_line": 1735,
+              "revision": "dbdea083abe058d5f94574b893103191f59d6c8b"
+            },
+            {
+              "start_line": 1738,
+              "end_line": 1779,
+              "revision": "dbdea083abe058d5f94574b893103191f59d6c8b"
+            },
+            {
+              "start_line": 3287,
+              "end_line": 3306,
+              "revision": "dbdea083abe058d5f94574b893103191f59d6c8b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
