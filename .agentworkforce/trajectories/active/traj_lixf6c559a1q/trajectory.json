@@ -1,0 +1,66 @@
+{
+  "id": "traj_lixf6c559a1q",
+  "version": 1,
+  "task": {
+    "title": "Fix fleet release intermittent internal server error for live remote agents (issue #1671)"
+  },
+  "status": "active",
+  "startedAt": "2026-09-06T02:05:24.901Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T02:22:28.242Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ped80em4sbu8",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T02:22:28.242Z",
+      "events": [
+        {
+          "ts": 1788661348242,
+          "type": "decision",
+          "content": "Preserved typed release failure correlation and moved worker teardown to a private process group: Preserved typed release failure correlation and moved worker teardown to a private process group",
+          "raw": {
+            "question": "Preserved typed release failure correlation and moved worker teardown to a private process group",
+            "chosen": "Preserved typed release failure correlation and moved worker teardown to a private process group",
+            "alternatives": [],
+            "reasoning": "The fleet action wire exposes only one error string, so a stable code plus worker/node/invocation labels preserves actionable downstream context across engine versions; signaling the worker session group closes the wrapper-descendant leak while retaining a direct-PID legacy fallback."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788661348610,
+          "type": "reflection",
+          "content": "Broker release now has deterministic process-group absence proof, idempotent unknown-worker success, and fail-closed roster deregistration; cloud two-arm RelayFlow is added for exact-head qualification.",
+          "raw": {
+            "focalPoints": [
+              "error-correlation",
+              "process-absence",
+              "roster-reconciliation"
+            ],
+            "confidence": 0.84
+          },
+          "significance": "high",
+          "tags": [
+            "focal:error-correlation",
+            "focal:process-absence",
+            "focal:roster-reconciliation",
+            "confidence:0.84"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bef0c2be900a51c4393ccca9063a136413a6fc92",
+    "endRef": "bef0c2be900a51c4393ccca9063a136413a6fc92"
+  }
+}

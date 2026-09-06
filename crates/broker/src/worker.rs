@@ -1247,6 +1247,22 @@ impl WorkerRegistry {
             command.current_dir(cwd);
         }
 
+        // Keep every harness child in a private process group. A worker is
+        // often a wrapper (`agent-relay pty`/`headless`) that launches the real
+        // CLI; killing only the wrapper leaves that child alive after a fleet
+        // release and the node heartbeat can continue advertising a ghost.
+        // `terminate_child` signals this group and then reaps the wrapper.
+        #[cfg(unix)]
+        unsafe {
+            command.pre_exec(|| {
+                if nix::libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+
         let mut child = command.spawn().context("failed to spawn worker")?;
         if direct_native_harness_sidecar {
             initial_harness_pid = child.id();

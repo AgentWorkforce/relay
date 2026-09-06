@@ -257,13 +257,13 @@ pub(super) async fn bind_http_registered_agent_to_node(
 
 /// Outcome of a local release request, so callers can report a faithful
 /// `action.result` to the node control plane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ReleaseOutcome {
     /// The worker was released, or was the broker self (ignored), or was already
     /// exited — all of which the caller should report as a successful release.
     Released,
     /// The release genuinely failed for an unknown/other reason.
-    Failed,
+    Failed { error: String },
 }
 
 /// Release a worker that the fleet/node control plane asked the broker to drop.
@@ -275,7 +275,8 @@ pub(super) enum ReleaseOutcome {
 ///
 /// Returns `ReleaseOutcome::Released` on success (including an already-exited
 /// worker, which is a no-op success) and `ReleaseOutcome::Failed` when the
-/// release genuinely failed.
+/// release genuinely failed; the error is retained so the action result can
+/// preserve the downstream cause instead of collapsing it to a generic 500.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn release_worker_locally(
     name: WorkerName,
@@ -378,7 +379,7 @@ pub(super) async fn release_worker_locally(
             } else {
                 tracing::error!(child = %name, error = %error, "failed to release worker via relaycast");
                 eprintln!("[agent-relay] failed to release '{}': {}", name, error);
-                ReleaseOutcome::Failed
+                ReleaseOutcome::Failed { error: message }
             }
         }
     };

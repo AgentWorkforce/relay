@@ -7,6 +7,12 @@ use tokio::{
     time::timeout,
 };
 
+#[cfg(unix)]
+use nix::{
+    sys::signal::{kill, Signal},
+    unistd::Pid,
+};
+
 use crate::cli::command_parse::parse_cli_command;
 use crate::types::CommitAttestation;
 
@@ -274,12 +280,6 @@ pub(crate) fn add_broker_hooks_path(env_vars: &mut Vec<(String, String)>, hooks_
     ));
 }
 
-#[cfg(unix)]
-use nix::{
-    sys::signal::{kill, Signal},
-    unistd::Pid,
-};
-
 #[derive(Debug)]
 struct ManagedChild {
     parent: Option<String>,
@@ -472,7 +472,11 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            // Worker wrappers are session leaders (see WorkerRegistry::spawn),
+            // so signal the whole process group. The direct signal is retained
+            // as a fallback for legacy children that predate session leaders or
+            // for platforms where the group lookup races process exit.
+            signal_process_group(pid, Signal::SIGTERM);
         }
     }
 
@@ -485,7 +489,7 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
         #[cfg(unix)]
         {
             if let Some(pid) = child.id() {
-                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                signal_process_group(pid, Signal::SIGKILL);
             }
         }
 
@@ -498,6 +502,15 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: Signal) {
+    // A negative PID addresses the process group whose id is `pid`. It is a
+    // no-op error for legacy children that are not group leaders; the direct
+    // signal below still handles those safely.
+    let _ = kill(Pid::from_raw(-(pid as i32)), signal);
+    let _ = kill(Pid::from_raw(pid as i32), signal);
 }
 
 pub fn spawn_env_vars(
@@ -567,7 +580,10 @@ mod tests {
     use std::{fs, path::Path, process::Command as StdCommand, time::Duration};
 
     #[cfg(unix)]
-    use nix::unistd::{getsid, Pid};
+    use nix::{
+        sys::signal::kill,
+        unistd::{getsid, Pid},
+    };
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::{tempdir, TempDir};
@@ -1233,6 +1249,36 @@ mod tests {
             .await
             .unwrap();
         assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn release_terminates_the_worker_process_group() {
+        // A broker worker is a wrapper that can own a real harness child. The
+        // wrapper must be a session leader so release cannot strand that child
+        // after killing only the wrapper PID.
+        let mut child = Command::new("sh");
+        child.args(["-c", "sleep 30 & wait"]);
+        unsafe {
+            child.pre_exec(|| {
+                if nix::libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = child.spawn().unwrap();
+        let pid = child.id().expect("worker has a pid");
+
+        terminate_child(&mut child, Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        assert!(kill(Pid::from_raw(pid as i32), None).is_err());
+        // The process-group probe is the important assertion: a direct PID
+        // kill would leave the background `sleep` alive in the worker group.
+        assert!(kill(Pid::from_raw(-(pid as i32)), None).is_err());
     }
 
     #[tokio::test]
