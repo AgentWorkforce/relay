@@ -390,13 +390,16 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       await waitFor(
         async () => {
           const agent = await getAgent(engine, workspaceKey, name);
-          return agent &&
-            (agent.status === 'offline' || agent.status === 'released') &&
-            !agent.location_node_id
-            ? agent
+          // Relaycast may retain a terminal tombstone, or may remove the
+          // identity completely when the public release requests deletion.
+          // Both are roster absence; only a live/located row is a failure.
+          return agent === null ||
+            ((agent.status === 'offline' || agent.status === 'released') &&
+              !agent.location_node_id)
+            ? agent ?? { name, status: 'released' }
             : null;
         },
-        { timeoutMs: 20_000, label: `${label}: engine roster terminal absence` }
+        { timeoutMs: 20_000, label: `${label}: engine roster absence` }
       );
       await waitFor(
         async () => {

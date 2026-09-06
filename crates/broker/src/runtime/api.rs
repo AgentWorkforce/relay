@@ -919,8 +919,12 @@ impl BrokerRuntime {
                             .release_agent_identity(&name, reason.as_deref())
                             .await
                         {
-                            Ok(()) => None,
+                            Ok(()) => {
+                                state.pending_identity_releases.remove(&name);
+                                None
+                            }
                             Err(error) => {
+                                state.pending_identity_releases.insert(name.clone());
                                 tracing::warn!(
                                     worker = %name,
                                     error = %error,
@@ -1041,18 +1045,37 @@ impl BrokerRuntime {
                             // itself rather than only forgetting the cached
                             // token, or a retry can never actually free the
                             // seat.
-                            let relaycast_release_error = match relaycast_http
-                                .release_agent_identity(&name, reason.as_deref())
-                                .await
-                            {
-                                Ok(()) => None,
-                                Err(error) => {
-                                    tracing::warn!(
-                                        worker = %name,
-                                        error = %error,
-                                        "failed to release already-exited worker identity in relaycast"
-                                    );
-                                    Some(error.to_string())
+                            // A missing local worker is normally a duplicate
+                            // of a completed Fleet release. Do not send
+                            // another name-based Relaycast release: a newer
+                            // same-name worker may have been registered
+                            // elsewhere, and the engine would otherwise
+                            // dispatch this retry to that live worker. The
+                            // first local HTTP release records its failed
+                            // identity cleanup in `pending_identity_releases`;
+                            // only that explicit pending marker is eligible
+                            // for a remote retry.
+                            let retry_identity = state.pending_identity_releases.contains(&name);
+                            let relaycast_release_error = if !retry_identity {
+                                tracing::debug!(
+                                    worker = %name,
+                                    "skipping duplicate Relaycast release without pending identity cleanup"
+                                );
+                                None
+                            } else {
+                                match relaycast_http
+                                    .release_agent_identity(&name, reason.as_deref())
+                                    .await
+                                {
+                                    Ok(()) => None,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "failed to release already-exited worker identity in relaycast"
+                                        );
+                                        Some(error.to_string())
+                                    }
                                 }
                             };
                             // Idempotent release is still terminal for any stale
@@ -1069,6 +1092,9 @@ impl BrokerRuntime {
                                 "terminal worker was released",
                             );
                             state.agents.remove(&name);
+                            if relaycast_release_error.is_none() {
+                                state.pending_identity_releases.remove(&name);
+                            }
                             if paths.persist {
                                 let _ = state.save(&paths.state);
                             }

@@ -1,4 +1,8 @@
-use std::{collections::HashMap, io::Write, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
+    path::Path,
+};
 
 use crate::{
     ids::{ChannelName, WorkerName},
@@ -28,6 +32,12 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct BrokerState {
     pub(crate) agents: HashMap<WorkerName, PersistedAgent>,
+    /// Identities whose local process has been released but whose Relaycast
+    /// terminal release still needs a retry. This is deliberately separate
+    /// from `agents`: a stale persisted worker entry is not evidence that a
+    /// name-based remote release is safe (the name may have been reused).
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub(crate) pending_identity_releases: HashSet<WorkerName>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +136,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
         let mut state = BrokerState::default();
+        state.pending_identity_releases.insert("pending".into());
         state.agents.insert(
             "w1".into(),
             PersistedAgent {
@@ -143,6 +154,7 @@ mod tests {
         let loaded = BrokerState::load(&path).unwrap();
         assert_eq!(loaded.agents.len(), 1);
         assert!(loaded.agents.contains_key("w1"));
+        assert!(loaded.pending_identity_releases.contains("pending"));
     }
 
     #[test]
