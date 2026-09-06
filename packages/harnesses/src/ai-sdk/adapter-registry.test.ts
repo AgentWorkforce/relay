@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { AiSdkAdapterRegistry, aiSdkAdapterRegistry } from './adapter-registry.js';
 
@@ -60,6 +61,19 @@ describe('AI SDK adapter registry', () => {
       expect(harness.harnessId).toBeTruthy();
     }
   }, 15_000);
+
+  it('pins a Pi adapter closure without the known vulnerable nested HTTP and glob releases', async () => {
+    const manifest = JSON.parse(await readFile('packages/harnesses/package.json', 'utf8'));
+    const lock = JSON.parse(await readFile('package-lock.json', 'utf8'));
+    expect(manifest.dependencies['@ai-sdk/harness-pi']).toBe('1.0.104');
+
+    const versions = (suffix: string) =>
+      Object.entries(lock.packages)
+        .filter(([location]) => location.includes('pi-coding-agent/') && location.endsWith(suffix))
+        .map(([, entry]) => (entry as { version?: string }).version);
+    expect(versions('/node_modules/brace-expansion')).toEqual(['5.0.9']);
+    expect(versions('/node_modules/undici')).toEqual(['8.9.0']);
+  });
 
   it('rejects duplicate aliases at construction', () => {
     const entry = aiSdkAdapterRegistry.require('codex');
