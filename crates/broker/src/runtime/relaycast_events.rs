@@ -1109,14 +1109,14 @@ mod tests {
         assert_eq!(outcome, ReleaseOutcome::Released);
         let released_receipt = model_receipts_by_request
             .get("release-model-request")
-            .expect("release should retain a terminal model receipt");
-        assert_eq!(released_receipt.status, "rejected");
-        assert!(!released_receipt.pending);
+            .expect("release should retain the correlated model receipt");
+        // Release must not manufacture provider rejection: a response for
+        // this generation may already be queued and will be drained by the
+        // runtime. Maintenance terminalizes an orphan only after that drain.
+        assert_eq!(released_receipt.status, "accepted_pending");
+        assert!(released_receipt.pending);
         assert!(!released_receipt.applied);
-        assert!(released_receipt
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("worker exited")));
+        assert!(released_receipt.error.is_none());
         // MUST FIRE: releasing the target through the same lifecycle function
         // used by the fleet action emits a final code and reason for its view.
         let terminal_messages: Vec<TerminalControlCommand> =

@@ -889,15 +889,17 @@ async fn queued_model_receipt_survives_worker_exit_before_bounded_drain() {
         })
         .await
         .unwrap();
-    fixture
+    let child = &mut fixture
         .runtime
         .workers
         .workers
         .get_mut("model-worker")
         .unwrap()
-        .child
-        .start_kill()
-        .unwrap();
+        .child;
+    child.start_kill().unwrap();
+    // Wait for the signal to be observed before the maintenance pass; a
+    // fire-and-forget kill races `reap_exited` and makes this regression flaky.
+    child.wait().await.unwrap();
 
     // The first maintenance pass drains only 32 unrelated frames, then reaps
     // the worker without terminalizing the still-queued model request.
