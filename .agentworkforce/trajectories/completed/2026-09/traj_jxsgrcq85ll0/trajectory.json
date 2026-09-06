@@ -8,8 +8,9 @@
       "id": "relay#1682"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-06T13:20:23.097Z",
+  "completedAt": "2026-09-06T13:24:33.863Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-06T13:20:23.730Z",
+      "endedAt": "2026-09-06T13:24:33.863Z",
       "events": [
         {
           "ts": 1788700823731,
@@ -73,12 +75,52 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Added a no-secret qualification request workflow and trusted default-branch workflow_run consumer with exact actor, ref, manifest, artifact, candidate, Fleet, and cleanup evidence gates.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [
+    "8da029154"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_jxsgrcq85ll0/trajectory.json",
+    ".github/workflows/relay-cleanroom-qualification-consumer.yml",
+    ".github/workflows/relay-cleanroom-qualification-request.yml",
+    ".gitignore",
+    "scripts/verify-features/fleet-cli-inventory.mjs",
+    "scripts/verify-features/fleet-daytona.mjs",
+    "scripts/verify-features/fleet-permissions.mjs",
+    "scripts/verify-features/qualification-capabilities.mjs",
+    "scripts/verify-features/qualification-effect-evidence.mjs",
+    "scripts/verify-features/qualification-manifest.mjs",
+    "scripts/verify-features/qualification-producer-artifacts.mjs",
+    "scripts/verify-features/relay-candidate-install.mjs",
+    "scripts/verify-features/relay-cleanroom-qualification-request.mjs",
+    "scripts/verify-features/relay-package-qualification.mjs",
+    "scripts/verify-features/safe-file.mjs",
+    "tests/fixtures/qualification-capabilities.test.ts",
+    "tests/fixtures/qualification-effect-evidence.test.ts",
+    "tests/fixtures/qualification-manifest.test.ts",
+    "tests/fixtures/qualification-producer-artifacts.test.ts",
+    "tests/fixtures/relay-candidate-install.test.ts",
+    "tests/fixtures/relay-cleanroom-qualification-request.test.ts",
+    "tests/fixtures/relay-package-qualification.test.ts",
+    "tests/fixtures/safe-file.test.ts",
+    "tests/fixtures/verify-fleet-daytona.test.ts",
+    "tests/relayflows/cases/1682-trusted-cleanroom-runner/case.json",
+    "tests/relayflows/cases/1682-trusted-cleanroom-runner/run.mjs",
+    "tests/relayflows/cleanroom/fleet-cli-inventory.json",
+    "tests/relayflows/cleanroom/fleet-daytona.matrix.json",
+    "tests/relayflows/cleanroom/relayfile-scope-marker.txt",
+    "tests/relayflows/relayfile-root-marker.txt",
+    "workflows/verify-fleet-daytona.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "c4f05f65cb974f16ce7bd10cf22a9d29a1619e34",
-    "endRef": "c4f05f65cb974f16ce7bd10cf22a9d29a1619e34"
+    "endRef": "8da0291546ea2c1098048cf669cf447da8fbe37c",
+    "traceId": "d1c1c027-1622-41ca-9eed-8a52f25a573a"
   }
 }

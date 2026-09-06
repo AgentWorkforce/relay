@@ -1,0 +1,535 @@
+{
+  "version": "1.0.0",
+  "id": "d1c1c027-1622-41ca-9eed-8a52f25a573a",
+  "timestamp": "2026-09-06T13:24:33.971Z",
+  "trajectory": "traj_jxsgrcq85ll0",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_jxsgrcq85ll0/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 84,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/relay-cleanroom-qualification-consumer.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 652,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/relay-cleanroom-qualification-request.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 69,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".gitignore",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 93,
+              "end_line": 99,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/fleet-cli-inventory.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 196,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/fleet-daytona.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 5670,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/fleet-permissions.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 127,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/qualification-capabilities.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 219,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/qualification-effect-evidence.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 588,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/qualification-manifest.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 496,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/qualification-producer-artifacts.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 519,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/relay-candidate-install.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1071,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/relay-cleanroom-qualification-request.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 329,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/relay-package-qualification.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 575,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/safe-file.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 101,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/qualification-capabilities.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 239,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/qualification-effect-evidence.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 407,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/qualification-manifest.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 581,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/qualification-producer-artifacts.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 468,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/relay-candidate-install.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 516,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/relay-cleanroom-qualification-request.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 345,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/relay-package-qualification.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 436,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/safe-file.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 73,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-fleet-daytona.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1775,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1682-trusted-cleanroom-runner/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 21,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1682-trusted-cleanroom-runner/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 266,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cleanroom/fleet-cli-inventory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 2887,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cleanroom/fleet-daytona.matrix.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 898,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cleanroom/relayfile-scope-marker.txt",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/relayfile-root-marker.txt",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/verify-fleet-daytona.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 528,
+              "revision": "8da0291546ea2c1098048cf669cf447da8fbe37c"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
