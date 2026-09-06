@@ -1,0 +1,78 @@
+{
+  "id": "traj_3p66udrdfua5",
+  "version": 1,
+  "task": {
+    "title": "Bootstrap default-branch Relay qualification workflow dispatch",
+    "source": {
+      "system": "plain",
+      "id": "relay#1665-fleet-qualification"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-06T05:06:23.109Z",
+  "completedAt": "2026-09-06T05:06:39.133Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T05:06:29.559Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_u5g11y0qpm51",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T05:06:29.559Z",
+      "endedAt": "2026-09-06T05:06:39.133Z",
+      "events": [
+        {
+          "ts": 1788671189560,
+          "type": "decision",
+          "content": "Land inert default-branch dispatch definitions instead of the full candidate verifier: Land inert default-branch dispatch definitions instead of the full candidate verifier",
+          "raw": {
+            "question": "Land inert default-branch dispatch definitions instead of the full candidate verifier",
+            "chosen": "Land inert default-branch dispatch definitions instead of the full candidate verifier",
+            "alternatives": [],
+            "reasoning": "GitHub requires workflow_dispatch files on default, but #1665 must remain unmerged until live qualification. Manual-only stubs with zero permissions and fail-closed jobs expose the exact input contract without importing product code or producing qualification evidence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788671189985,
+          "type": "reflection",
+          "content": "The three-file bootstrap closes only the GitHub discovery gap; the live denominator remains 0/376 until immutable cross-repo producers exist and two candidate dispatches pass.",
+          "raw": {
+            "focalPoints": [
+              "dispatchability",
+              "scope",
+              "qualification-boundary"
+            ],
+            "adjustments": "Keep all Fleet runtime and producer implementation on #1665; require exact branch workflow plus artifacts before any evidence claim",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:dispatchability",
+            "focal:scope",
+            "focal:qualification-boundary",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added fail-closed default-branch workflow_dispatch bootstraps for Relay package and cleanroom qualification, plus exact trigger/input/no-evidence contract tests.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bef0c2be900a51c4393ccca9063a136413a6fc92",
+    "endRef": "bef0c2be900a51c4393ccca9063a136413a6fc92"
+  }
+}
