@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  createPrivateOutputRoot,
   digestInstalledClosureTree,
   digestInstalledPackageTree,
   validateCandidateInstallAttestation,
@@ -63,6 +64,33 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
+  it.skipIf(process.platform === 'win32')('rejects pre-existing output roots and symlinks', async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-output-'));
+    try {
+      const existing = path.join(parent, 'existing');
+      const redirected = path.join(parent, 'redirected');
+      const link = path.join(parent, 'output-link');
+      await mkdir(existing);
+      await mkdir(redirected);
+      await symlink(redirected, link);
+      await expect(createPrivateOutputRoot(existing)).rejects.toThrow('must not already exist');
+      await expect(createPrivateOutputRoot(link)).rejects.toThrow('must not already exist');
+      const created = path.join(parent, 'new-output');
+      await expect(createPrivateOutputRoot(created)).resolves.toBe(path.resolve(created));
+      expect((await lstat(created)).isDirectory()).toBe(true);
+
+      const contended = path.join(parent, 'contended-output');
+      const attempts = await Promise.allSettled([
+        createPrivateOutputRoot(contended),
+        createPrivateOutputRoot(contended),
+      ]);
+      expect(attempts.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+      expect(attempts.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('accepts a complete source-bound runtime package closure', () => {
     const input = fixture();
     expect(

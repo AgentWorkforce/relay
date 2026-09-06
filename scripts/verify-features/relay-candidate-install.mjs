@@ -2,6 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import {
   chmod,
   copyFile,
@@ -49,6 +50,7 @@ const LOCKFILE_NAME = 'candidate-package-lock.json';
 const REQUIRED_NPM_VERSION = '10.9.7';
 const INSTALL_STRATEGY = 'omit-optional-with-direct-platform-broker';
 const NPM_INSTALL_POLICY_ARGS = ['--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'];
+let activePrivateRootHandle;
 
 function object(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -288,12 +290,44 @@ async function rejectBundledBrokerContamination() {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd,
+  const privateRoot = activePrivateRootHandle;
+  const childRoot = privateRoot
+    ? process.platform === 'linux'
+      ? `/proc/self/fd/3`
+      : privateRoot.root
+    : null;
+  const rewritePrivatePath = (value) => {
+    if (!privateRoot || !childRoot || typeof value !== 'string') return value;
+    for (const root of [privateRoot.root, privateRoot.ioRoot]) {
+      if (value === root) return childRoot;
+      if (value.startsWith(`${root}${path.sep}`)) {
+        return `${childRoot}${value.slice(root.length)}`;
+      }
+    }
+    return value;
+  };
+  let childArgs = args.map(rewritePrivatePath);
+  let childCwd = options.cwd;
+  if (privateRoot && typeof options.cwd === 'string') {
+    const privatePrefixes = [privateRoot.root, privateRoot.ioRoot];
+    const prefix = privatePrefixes.find(
+      (root) => options.cwd === root || options.cwd.startsWith(`${root}${path.sep}`)
+    );
+    if (prefix && command === 'npm') {
+      const suffix = options.cwd.slice(prefix.length);
+      childArgs = ['--prefix', `${childRoot}${suffix}`, ...childArgs];
+      childCwd = undefined;
+    }
+  }
+  const result = spawnSync(command, childArgs, {
+    cwd: rewritePrivatePath(childCwd),
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 300_000,
     maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, NO_COLOR: '1' },
+    ...(privateRoot && process.platform !== 'win32'
+      ? { stdio: ['ignore', 'pipe', 'pipe', privateRoot.handle.fd] }
+      : {}),
   });
   if (result.error || result.status !== 0) {
     const detail = String(result.stderr || result.stdout || result.error?.message || '').trim();
@@ -431,9 +465,6 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   const attestation = validateCandidateInstallAttestation(JSON.parse(bytes.toString('utf8')), {
     ...expected,
   });
-  if (run('npm', ['--version'], { timeoutMs: 30_000 }).trim() !== attestation.npmVersion) {
-    throw new Error('candidate verification npm version changed');
-  }
   if (expected.cliEntrypoint && path.resolve(expected.cliEntrypoint) !== expectedCli) {
     throw new Error('candidate install CLI entrypoint does not match');
   }
@@ -522,173 +553,231 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   if (sha256(cliBytes) !== attestation.cliSha256) {
     throw new Error('candidate install CLI digest changed');
   }
-  const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 });
-  if (!reportedVersion.includes(`v${attestation.packageVersion}`)) {
+  const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 }).trim();
+  if (reportedVersion !== `agent-relay v${attestation.packageVersion}`) {
     throw new Error('clean-installed candidate CLI reported a different version');
   }
   return { attestation, attestationSha256: sha256(bytes) };
 }
 
-async function prepare(outputRoot) {
+function descriptorRoot(handle, fallback) {
+  if (process.platform === 'linux') return `/proc/self/fd/${handle.fd}`;
+  return fallback;
+}
+
+async function createPrivateOutputRootHandle(outputRoot) {
   const root = path.resolve(outputRoot);
-  const tarballDir = path.join(root, 'tarballs');
-  const installDir = path.join(root, 'install');
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  await Promise.all([mkdir(tarballDir, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
-
-  const [rootPackage, sourceSha, sourceStatus] = await Promise.all([
-    readFile('package.json', 'utf8').then(JSON.parse),
-    Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
-    Promise.resolve(run('git', ['status', '--porcelain']).trim()),
-  ]);
-  if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
-  if (sourceStatus) throw new Error('candidate clean install requires a clean source tree');
-  await rejectBundledBrokerContamination();
-  const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
-
-  const packageDirectories = [...PACKAGE_DIRS, platformPackage()];
-  const packed = [];
-  for (const directory of packageDirectories) {
-    const packageJson = JSON.parse(await readFile(path.join('packages', directory, 'package.json'), 'utf8'));
-    if (packageJson.version !== packageVersion) {
-      throw new Error(`${packageJson.name} version does not match the root candidate version`);
-    }
-    const output = run('npm', [
-      'pack',
-      '--ignore-scripts',
-      '--json',
-      '--pack-destination',
-      tarballDir,
-      path.resolve('packages', directory),
-    ]);
-    const record = JSON.parse(output)[0];
-    const tarballPath = path.join(tarballDir, requiredString(record.filename, `${directory} tarball`));
-    const { bytes } = await readRegularFileNoFollow(tarballPath, {
-      label: `packed candidate tarball ${directory}`,
-    });
-    packed.push({
-      name: requiredString(packageJson.name, `${directory} package name`),
-      version: packageJson.version,
-      tarballPath,
-      tarballFile: path.basename(tarballPath),
-      tarballSha256: sha256(bytes),
-    });
-  }
-
-  await writeFile(path.join(installDir, 'package.json'), candidateInstallManifestBytes(packed), {
-    mode: 0o600,
-    flag: 'wx',
-  });
-  const npmVersion = run('npm', ['--version'], { timeoutMs: 30_000 }).trim();
-  if (npmVersion !== REQUIRED_NPM_VERSION) {
-    throw new Error(`candidate packing requires npm ${REQUIRED_NPM_VERSION}`);
-  }
-  run('npm', ['install', '--package-lock-only', ...NPM_INSTALL_POLICY_ARGS], {
-    cwd: installDir,
-    timeoutMs: 900_000,
-  });
-  const producedLockfile = path.join(installDir, 'package-lock.json');
-  const { bytes: lockfileBytes } = await readRegularFileNoFollow(producedLockfile, {
-    label: 'produced candidate lockfile',
-  });
-  validateCandidateLockfile(JSON.parse(lockfileBytes.toString('utf8')), packed);
-  const portableLockfile = path.join(root, LOCKFILE_NAME);
-  await copyFile(producedLockfile, portableLockfile);
-  await chmod(portableLockfile, 0o600);
-  run('npm', ['ci', ...NPM_INSTALL_POLICY_ARGS], {
-    cwd: installDir,
-    timeoutMs: 900_000,
-  });
-  const { bytes: installedLockfileBytes } = await readRegularFileNoFollow(producedLockfile, {
-    label: 'installed candidate lockfile',
-  });
-  if (!installedLockfileBytes.equals(lockfileBytes)) {
-    throw new Error('npm ci changed the candidate package lockfile');
-  }
-  const installedBrokerPackages = (await readdir(path.join(installDir, 'node_modules', '@agent-relay')))
-    .filter((name) => name.startsWith('broker-'))
-    .sort();
-  if (installedBrokerPackages.join('\0') !== [platformPackage()].join('\0')) {
-    throw new Error('candidate install materialized the wrong platform broker closure');
-  }
-
-  const packages = [];
-  for (const entry of packed) {
-    const installedRoot = packageRoot(installDir, entry.name);
-    const [installedBytes, installedTree] = await Promise.all([
-      readRegularFileNoFollow(packagePath(installDir, entry.name), {
-        label: `installed package manifest ${entry.name}`,
-      }).then((result) => result.bytes),
-      digestInstalledPackageTree(installedRoot),
-    ]);
-    const installed = JSON.parse(installedBytes.toString('utf8'));
-    if (installed.name !== entry.name || installed.version !== entry.version) {
-      throw new Error(`clean install did not resolve ${entry.name} from the candidate closure`);
-    }
-    packages.push({
-      name: entry.name,
-      version: entry.version,
-      tarballFile: entry.tarballFile,
-      tarballSha256: entry.tarballSha256,
-      installedPackageJsonSha256: sha256(installedBytes),
-      installedTreeSha256: installedTree.sha256,
-      installedTreeFileCount: installedTree.fileCount,
-      installedTreeBytes: installedTree.bytes,
-    });
-  }
-  const cliEntrypoint = path.join(installDir, ...CLI_RELATIVE_PATH.split('/'));
-  const { bytes: cliBytes } = await readRegularFileNoFollow(cliEntrypoint, {
-    label: 'clean-installed candidate CLI entrypoint',
-  });
-  const reportedVersion = run(process.execPath, [cliEntrypoint, 'version'], { timeoutMs: 30_000 });
-  if (!reportedVersion.includes(`v${packageVersion}`)) {
-    throw new Error('clean-installed candidate CLI reported a different version');
-  }
-  const brokerPath = path.join(installDir, ...brokerRelativePath().split('/'));
-  const { bytes: brokerBytes, mode: brokerMode } = await readRegularFileNoFollow(brokerPath, {
-    label: 'clean-installed candidate broker',
-  });
-  if (process.platform !== 'win32' && brokerMode !== 0o755) {
-    throw new Error('clean-installed candidate broker mode is not exactly 0755');
-  }
-  const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
-  if (brokerVersion !== `agent-relay-broker ${packageVersion}`) {
-    throw new Error('clean-installed candidate broker reported a different version');
-  }
-  const closureTree = await digestInstalledClosureTree(path.join(installDir, 'node_modules'));
-  const attestation = validateCandidateInstallAttestation({
-    version: 4,
-    kind: 'relay-candidate-clean-install',
-    sourceSha,
-    sourceDirty: false,
-    packageVersion,
-    platform: process.platform,
-    arch: process.arch,
-    cliRelativePath: CLI_RELATIVE_PATH,
-    cliSha256: sha256(cliBytes),
-    brokerRelativePath: brokerRelativePath(),
-    brokerSha256: sha256(brokerBytes),
-    brokerBytes: brokerBytes.length,
-    brokerMode: '755',
-    npmVersion,
-    installStrategy: INSTALL_STRATEGY,
-    lockfileFile: LOCKFILE_NAME,
-    lockfileSha256: sha256(lockfileBytes),
-    lockfileBytes: lockfileBytes.length,
-    closureTreeSha256: closureTree.sha256,
-    closureEntryCount: closureTree.entryCount,
-    closureBytes: closureTree.bytes,
-    packages,
-  });
-  const target = path.join(root, 'candidate-install-attestation.json');
-  const handle = await open(target, 'wx', 0o600);
+  await mkdir(path.dirname(root), { recursive: true, mode: 0o700 });
   try {
-    await handle.writeFile(`${JSON.stringify(attestation, null, 2)}\n`);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    // mkdir is the existence check: its atomic EEXIST result avoids a
+    // check-then-create window where another process could replace the path.
+    await mkdir(root, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error('candidate output root must not already exist', { cause: error });
+    }
+    throw error;
   }
-  process.stdout.write(`RELAY_CANDIDATE_INSTALL_READY cli=${cliEntrypoint}\n`);
+  if (process.platform === 'win32') {
+    // Node cannot open directory handles on Windows. mkdir above is still an
+    // atomic must-not-exist boundary; subsequent I/O uses the created path.
+    return { root, ioRoot: root, handle: null };
+  }
+  const openFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  const handle = await open(root, openFlags);
+  const info = await handle.stat();
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    await handle.close();
+    throw new Error('candidate output root must be a newly created directory');
+  }
+  return { root, ioRoot: descriptorRoot(handle, root), handle };
+}
+
+export async function createPrivateOutputRoot(outputRoot) {
+  const created = await createPrivateOutputRootHandle(outputRoot);
+  await created.handle?.close();
+  return path.resolve(outputRoot);
+}
+
+async function prepare(outputRoot) {
+  const rootHandle = await createPrivateOutputRootHandle(outputRoot);
+  const root = rootHandle.ioRoot;
+  activePrivateRootHandle = rootHandle;
+  return (async () => {
+    const tarballDir = path.join(root, 'tarballs');
+    const installDir = path.join(root, 'install');
+    await Promise.all([mkdir(tarballDir, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
+
+    const [rootPackage, sourceSha, sourceStatus] = await Promise.all([
+      readFile('package.json', 'utf8').then(JSON.parse),
+      Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
+      Promise.resolve(run('git', ['status', '--porcelain']).trim()),
+    ]);
+    if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
+    if (sourceStatus) throw new Error('candidate clean install requires a clean source tree');
+    const npmVersion = run('npm', ['--version'], { timeoutMs: 30_000 }).trim();
+    if (npmVersion !== REQUIRED_NPM_VERSION) {
+      throw new Error(`candidate packing requires npm ${REQUIRED_NPM_VERSION}`);
+    }
+    run('npm', ['run', 'build:core'], { timeoutMs: 1_800_000 });
+    if (
+      run('git', ['rev-parse', 'HEAD']).trim() !== sourceSha ||
+      run('git', ['status', '--porcelain']).trim()
+    ) {
+      throw new Error('candidate source changed while its build outputs were produced');
+    }
+    await rejectBundledBrokerContamination();
+    const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
+
+    const packageDirectories = [...PACKAGE_DIRS, platformPackage()];
+    const packed = [];
+    for (const directory of packageDirectories) {
+      const packageJson = JSON.parse(
+        await readFile(path.join('packages', directory, 'package.json'), 'utf8')
+      );
+      if (packageJson.version !== packageVersion) {
+        throw new Error(`${packageJson.name} version does not match the root candidate version`);
+      }
+      const output = run('npm', [
+        'pack',
+        '--ignore-scripts',
+        '--json',
+        '--pack-destination',
+        tarballDir,
+        path.resolve('packages', directory),
+      ]);
+      const record = JSON.parse(output)[0];
+      const tarballPath = path.join(tarballDir, requiredString(record.filename, `${directory} tarball`));
+      const { bytes } = await readRegularFileNoFollow(tarballPath, {
+        label: `packed candidate tarball ${directory}`,
+      });
+      packed.push({
+        name: requiredString(packageJson.name, `${directory} package name`),
+        version: packageJson.version,
+        tarballPath,
+        tarballFile: path.basename(tarballPath),
+        tarballSha256: sha256(bytes),
+      });
+    }
+
+    await writeFile(path.join(installDir, 'package.json'), candidateInstallManifestBytes(packed), {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    run('npm', ['install', '--package-lock-only', ...NPM_INSTALL_POLICY_ARGS], {
+      cwd: installDir,
+      timeoutMs: 900_000,
+    });
+    const producedLockfile = path.join(installDir, 'package-lock.json');
+    const { bytes: lockfileBytes } = await readRegularFileNoFollow(producedLockfile, {
+      label: 'produced candidate lockfile',
+    });
+    validateCandidateLockfile(JSON.parse(lockfileBytes.toString('utf8')), packed);
+    const portableLockfile = path.join(root, LOCKFILE_NAME);
+    await copyFile(producedLockfile, portableLockfile);
+    await chmod(portableLockfile, 0o600);
+    run('npm', ['ci', ...NPM_INSTALL_POLICY_ARGS], {
+      cwd: installDir,
+      timeoutMs: 900_000,
+    });
+    const { bytes: installedLockfileBytes } = await readRegularFileNoFollow(producedLockfile, {
+      label: 'installed candidate lockfile',
+    });
+    if (!installedLockfileBytes.equals(lockfileBytes)) {
+      throw new Error('npm ci changed the candidate package lockfile');
+    }
+    const installedBrokerPackages = (await readdir(path.join(installDir, 'node_modules', '@agent-relay')))
+      .filter((name) => name.startsWith('broker-'))
+      .sort();
+    if (installedBrokerPackages.join('\0') !== [platformPackage()].join('\0')) {
+      throw new Error('candidate install materialized the wrong platform broker closure');
+    }
+
+    const packages = [];
+    for (const entry of packed) {
+      const installedRoot = packageRoot(installDir, entry.name);
+      const [installedBytes, installedTree] = await Promise.all([
+        readRegularFileNoFollow(packagePath(installDir, entry.name), {
+          label: `installed package manifest ${entry.name}`,
+        }).then((result) => result.bytes),
+        digestInstalledPackageTree(installedRoot),
+      ]);
+      const installed = JSON.parse(installedBytes.toString('utf8'));
+      if (installed.name !== entry.name || installed.version !== entry.version) {
+        throw new Error(`clean install did not resolve ${entry.name} from the candidate closure`);
+      }
+      packages.push({
+        name: entry.name,
+        version: entry.version,
+        tarballFile: entry.tarballFile,
+        tarballSha256: entry.tarballSha256,
+        installedPackageJsonSha256: sha256(installedBytes),
+        installedTreeSha256: installedTree.sha256,
+        installedTreeFileCount: installedTree.fileCount,
+        installedTreeBytes: installedTree.bytes,
+      });
+    }
+    const cliEntrypoint = path.join(installDir, ...CLI_RELATIVE_PATH.split('/'));
+    const { bytes: cliBytes } = await readRegularFileNoFollow(cliEntrypoint, {
+      label: 'clean-installed candidate CLI entrypoint',
+    });
+    const reportedVersion = run(process.execPath, [cliEntrypoint, 'version'], {
+      timeoutMs: 30_000,
+    }).trim();
+    if (reportedVersion !== `agent-relay v${packageVersion}`) {
+      throw new Error('clean-installed candidate CLI reported a different version');
+    }
+    const brokerPath = path.join(installDir, ...brokerRelativePath().split('/'));
+    const { bytes: brokerBytes, mode: brokerMode } = await readRegularFileNoFollow(brokerPath, {
+      label: 'clean-installed candidate broker',
+    });
+    if (process.platform !== 'win32' && brokerMode !== 0o755) {
+      throw new Error('clean-installed candidate broker mode is not exactly 0755');
+    }
+    const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
+    if (brokerVersion !== `agent-relay-broker ${packageVersion}`) {
+      throw new Error('clean-installed candidate broker reported a different version');
+    }
+    const closureTree = await digestInstalledClosureTree(path.join(installDir, 'node_modules'));
+    const attestation = validateCandidateInstallAttestation({
+      version: 4,
+      kind: 'relay-candidate-clean-install',
+      sourceSha,
+      sourceDirty: false,
+      packageVersion,
+      platform: process.platform,
+      arch: process.arch,
+      cliRelativePath: CLI_RELATIVE_PATH,
+      cliSha256: sha256(cliBytes),
+      brokerRelativePath: brokerRelativePath(),
+      brokerSha256: sha256(brokerBytes),
+      brokerBytes: brokerBytes.length,
+      brokerMode: '755',
+      npmVersion,
+      installStrategy: INSTALL_STRATEGY,
+      lockfileFile: LOCKFILE_NAME,
+      lockfileSha256: sha256(lockfileBytes),
+      lockfileBytes: lockfileBytes.length,
+      closureTreeSha256: closureTree.sha256,
+      closureEntryCount: closureTree.entryCount,
+      closureBytes: closureTree.bytes,
+      packages,
+    });
+    const target = path.join(root, 'candidate-install-attestation.json');
+    const handle = await open(target, 'wx', 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(attestation, null, 2)}\n`);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    process.stdout.write(
+      `RELAY_CANDIDATE_INSTALL_READY cli=${path.join(rootHandle.root, 'install', ...CLI_RELATIVE_PATH.split('/'))}\n`
+    );
+  })().finally(async () => {
+    if (activePrivateRootHandle === rootHandle) activePrivateRootHandle = undefined;
+    await rootHandle.handle?.close();
+  });
 }
 
 async function hydrate(attestationPath, tarballDirectory, outputRoot) {
@@ -729,41 +818,51 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
   }
   validateCandidateLockfile(JSON.parse(lockfileBytes.toString('utf8')), candidate.packages);
 
-  const root = path.resolve(outputRoot);
-  const tarballRoot = path.join(root, 'tarballs');
-  const installDir = path.join(root, 'install');
-  await mkdir(root, { mode: 0o700 });
-  await Promise.all([mkdir(tarballRoot, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
-  for (const entry of candidate.packages) {
-    const source = path.join(path.resolve(tarballDirectory), entry.tarballFile);
-    const { bytes } = await readRegularFileNoFollow(source, {
-      label: `portable candidate tarball ${entry.name}`,
-    });
-    if (sha256(bytes) !== entry.tarballSha256) {
-      throw new Error(`portable candidate tarball digest changed for ${entry.name}`);
+  const rootHandle = await createPrivateOutputRootHandle(outputRoot);
+  const root = rootHandle.ioRoot;
+  activePrivateRootHandle = rootHandle;
+  return (async () => {
+    const tarballRoot = path.join(root, 'tarballs');
+    const installDir = path.join(root, 'install');
+    await Promise.all([mkdir(tarballRoot, { mode: 0o700 }), mkdir(installDir, { mode: 0o700 })]);
+    for (const entry of candidate.packages) {
+      const source = path.join(path.resolve(tarballDirectory), entry.tarballFile);
+      const { bytes } = await readRegularFileNoFollow(source, {
+        label: `portable candidate tarball ${entry.name}`,
+      });
+      if (sha256(bytes) !== entry.tarballSha256) {
+        throw new Error(`portable candidate tarball digest changed for ${entry.name}`);
+      }
+      const target = path.join(tarballRoot, entry.tarballFile);
+      await copyFile(source, target);
     }
-    const target = path.join(tarballRoot, entry.tarballFile);
-    await copyFile(source, target);
-  }
-  const targetAttestation = path.join(root, 'candidate-install-attestation.json');
-  await copyFile(sourceAttestation, targetAttestation);
-  await chmod(targetAttestation, 0o600);
-  const targetPortableLockfile = path.join(root, candidate.lockfileFile);
-  await copyFile(sourceLockfile, targetPortableLockfile);
-  await chmod(targetPortableLockfile, 0o600);
-  await writeFile(path.join(installDir, 'package.json'), candidateInstallManifestBytes(candidate.packages), {
-    mode: 0o600,
-    flag: 'wx',
+    const targetAttestation = path.join(root, 'candidate-install-attestation.json');
+    await copyFile(sourceAttestation, targetAttestation);
+    await chmod(targetAttestation, 0o600);
+    const targetPortableLockfile = path.join(root, candidate.lockfileFile);
+    await copyFile(sourceLockfile, targetPortableLockfile);
+    await chmod(targetPortableLockfile, 0o600);
+    await writeFile(
+      path.join(installDir, 'package.json'),
+      candidateInstallManifestBytes(candidate.packages),
+      {
+        mode: 0o600,
+        flag: 'wx',
+      }
+    );
+    await copyFile(sourceLockfile, path.join(installDir, 'package-lock.json'));
+    run('npm', ['ci', ...NPM_INSTALL_POLICY_ARGS], {
+      cwd: installDir,
+      timeoutMs: 900_000,
+    });
+    await verifyCandidateInstall(targetAttestation, { sourceSha, packageVersion });
+    process.stdout.write(
+      `RELAY_CANDIDATE_INSTALL_HYDRATED cli=${path.join(rootHandle.root, 'install', ...CLI_RELATIVE_PATH.split('/'))}\n`
+    );
+  })().finally(async () => {
+    if (activePrivateRootHandle === rootHandle) activePrivateRootHandle = undefined;
+    await rootHandle.handle?.close();
   });
-  await copyFile(sourceLockfile, path.join(installDir, 'package-lock.json'));
-  run('npm', ['ci', ...NPM_INSTALL_POLICY_ARGS], {
-    cwd: installDir,
-    timeoutMs: 900_000,
-  });
-  await verifyCandidateInstall(targetAttestation, { sourceSha, packageVersion });
-  process.stdout.write(
-    `RELAY_CANDIDATE_INSTALL_HYDRATED cli=${path.join(installDir, ...CLI_RELATIVE_PATH.split('/'))}\n`
-  );
 }
 
 async function main() {

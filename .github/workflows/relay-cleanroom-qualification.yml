@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   diagnosis:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnosis')
+    if: github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnosis')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -108,6 +108,32 @@ jobs:
           codex --version | grep -F 0.153.3
           test "$(opencode --version | tail -1)" = 1.18.25
 
+      - name: Verify the exact published Relay package closure
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "v${version}" = "${RELEASE_TAG}"
+          install_root="$(mktemp -d)"
+          trap 'rm -rf "${install_root}"' EXIT
+          npm --prefix "${install_root}" init -y >/dev/null
+          for attempt in $(seq 1 12); do
+            if test "$(npm view "agent-relay@${version}" version 2>/dev/null)" = "${version}"; then
+              break
+            fi
+            if test "${attempt}" = 12; then
+              echo "agent-relay@${version} did not become readable from npm" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          npm --prefix "${install_root}" install --save-exact "agent-relay@${version}"
+          test "$("${install_root}/node_modules/.bin/agent-relay" version)" = "agent-relay v${version}"
+          "${install_root}/node_modules/.bin/agent-relay" node --help >/dev/null
+          npm --prefix "${install_root}" ls --all >/dev/null
+
       - name: Run sealed cross-repository diagnosis Relayflow
         id: diagnosis
         continue-on-error: true
@@ -142,7 +168,7 @@ jobs:
           node -e "if (process.env.DIAGNOSIS_OUTCOME !== 'success') throw new Error('diagnosis Relayflow did not complete')"
 
   qualification:
-    if: github.event_name == 'release' || github.event_name == 'repository_dispatch' || (github.event_name == 'schedule' && vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON != '') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'qualification')
+    if: (github.event_name == 'release' && github.event.release.prerelease == true) || github.event_name == 'repository_dispatch' || (github.event_name == 'schedule' && vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON != '') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'qualification')
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     environment: snapshot-qualification
@@ -288,7 +314,10 @@ jobs:
           const relayArtifacts = JSON.parse(fs.readFileSync('qualification/relay-package-artifacts.json')).artifacts;
           const relayWorkflowPath = String(relayRun.path ?? '').split('@')[0];
           const relayWorkflowRef = String(relayRun.path ?? '').split('@')[1];
-          if (relayRun.id !== Number(process.env.RELAY_PACKAGE_RUN_ID) || relayRun.run_attempt !== Number(process.env.RELAY_PACKAGE_RUN_ATTEMPT) || relayRun.head_sha !== process.env.RELAY_SHA || relayRun.status !== 'completed' || relayRun.conclusion !== 'success' || relayRun.name !== 'Relay package qualification' || relayWorkflowPath !== '.github/workflows/relay-package-qualification.yml' || (relayWorkflowRef !== undefined && relayWorkflowRef !== 'refs/heads/main') || relayRun.event !== 'workflow_dispatch' || relayRun.head_branch !== 'main') throw new Error('Relay package producer is not the exact successful manual main prerelease run');
+          const qualificationBranch = /^qualification\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
+          const expectedRelayRef = `refs/heads/${relayRun.head_branch}`;
+          const safeBranchSegments = String(relayRun.head_branch ?? '').split('/').every((segment) => segment !== '.' && segment !== '..');
+          if (relayRun.id !== Number(process.env.RELAY_PACKAGE_RUN_ID) || relayRun.run_attempt !== Number(process.env.RELAY_PACKAGE_RUN_ATTEMPT) || relayRun.head_sha !== process.env.RELAY_SHA || relayRun.status !== 'completed' || relayRun.conclusion !== 'success' || relayRun.name !== 'Relay package qualification' || relayWorkflowPath !== '.github/workflows/relay-package-qualification.yml' || (relayWorkflowRef !== undefined && relayWorkflowRef !== expectedRelayRef) || relayRun.event !== 'workflow_dispatch' || !qualificationBranch.test(relayRun.head_branch ?? '') || expectedRelayRef.includes('//') || !safeBranchSegments) throw new Error('Relay package producer is not the exact successful manual qualification-branch prerelease run');
           for (const [name, digest] of [
             ['relay-package-qualification', process.env.RELAY_PACKAGE_PAYLOAD_ARTIFACT_DIGEST],
             ['relay-package-qualification-attestation', process.env.RELAY_PACKAGE_ATTESTATION_ARTIFACT_DIGEST],
@@ -447,7 +476,7 @@ jobs:
             --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
             --credential-file "$RUNNER_TEMP/relay-workspace-a.json" \
             --json > "$RUNNER_TEMP/workspace-create-a.json"
-          WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-a.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f-]{36}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
+          WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-a.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
 
       - name: Create isolated ephemeral Cloud workspace B
         id: workspace_b
@@ -465,7 +494,7 @@ jobs:
             --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
             --credential-file "$RUNNER_TEMP/relay-workspace-b.json" \
             --json > "$RUNNER_TEMP/workspace-create-b.json"
-          WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-b.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f-]{36}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
+          WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-b.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
 
       - name: Run exact candidate Fleet Relayflow
         id: fleet
@@ -505,7 +534,7 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
-          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
           function fromFile(file) {
             try {
               const value = JSON.parse(fs.readFileSync(file, 'utf8'));

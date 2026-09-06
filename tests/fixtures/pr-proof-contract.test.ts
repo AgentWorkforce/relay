@@ -48,6 +48,7 @@ import {
   createPreparedRunProgressParser,
   createCliApiKeyEnvironment,
   preparedRunIdFromOutput,
+  terminalStatusDiagnostic,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
@@ -1663,7 +1664,7 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
     expect(source).toContain('--source cloud');
     expect(source).toContain("result.status !== 'completed'");
-    expect(source).toContain('.timeout(2_700_000)');
+    expect(source).toContain('.timeout(3_300_000)');
     expect(source).not.toContain('.timeout(3_600_000)');
   });
 
@@ -1715,6 +1716,46 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
+  });
+
+  it('retains bounded terminal lifecycle evidence while redacting credentials', () => {
+    const declaredSecret = 'cloud-proof-api-key-secret';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: 'run-1',
+        status: 'failed',
+        sandboxId: null,
+        workflow: 'must not be copied',
+        error: `bootstrap failed with ${declaredSecret}`,
+        failure: {
+          phase: 'launch',
+          code: 'sandbox_provision_failed',
+          message: 'provider rejected br_supersecretcredential',
+          causeChain: ['first cause', 'second cause'],
+          dispatchType: 'sandbox',
+          sandboxId: null,
+          occurredAt: '2026-09-05T23:06:20.000Z',
+          ignored: 'must not be copied',
+        },
+      },
+      [declaredSecret]
+    );
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'run-1',
+      status: 'failed',
+      error: 'bootstrap failed with [REDACTED_DECLARED_SECRET]',
+      failure: {
+        phase: 'launch',
+        code: 'sandbox_provision_failed',
+        message: 'provider rejected br_\u2026tial',
+        causeChain: ['first cause', 'second cause'],
+        dispatchType: 'sandbox',
+        occurredAt: '2026-09-05T23:06:20.000Z',
+      },
+    });
+    expect(diagnostic).not.toContain('cloud-proof-api-key-secret');
+    expect(diagnostic).not.toContain('must not be copied');
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {

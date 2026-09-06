@@ -551,6 +551,111 @@
             "reasoning": "Qualification evidence must never use an lstat-then-open fallback because it leaves a symlink swap race; the Fleet/cleanroom acceptance environment is Linux and supported macOS hosts expose O_NOFOLLOW."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788637217664,
+          "type": "decision",
+          "content": "Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt: Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt",
+          "raw": {
+            "question": "Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt",
+            "chosen": "Hardened Fleet release gate to require 95 operations plus five lifecycle trials per attempt",
+            "alternatives": [],
+            "reasoning": "A catalog-only pass cannot prove targeted placement, agent responsiveness, release absence, same-name reuse, or exact candidate binaries under repeated clean Daytona execution."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788637218228,
+          "type": "reflection",
+          "content": "Fleet proof code and deterministic gates are integrated and locally green; live candidate campaign remains gated by Cloud candidate-bound ephemeral workspaces, Relaycast crash-idempotency, and Relayfile 258 MiB acceptance.",
+          "raw": {
+            "focalPoints": [
+              "fleet-live-proof",
+              "cross-repo-gates",
+              "immutable-candidate"
+            ],
+            "adjustments": "Parallelize the independent cross-repo fixes while validating PR proof and Cloud implementation; do not claim Fleet green before exact clean candidate evidence.",
+            "confidence": 0.93
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet-live-proof",
+            "focal:cross-repo-gates",
+            "focal:immutable-candidate",
+            "confidence:0.93"
+          ]
+        },
+        {
+          "ts": 1788639178504,
+          "type": "reflection",
+          "content": "Fleet qualification normal CI is green, but immutable PR proof exposed Cloud sandbox_router_no_provider before allocation. Hardened verifier against 30+ review findings, preserved strict clean-workspace baseline, and added pre-spawn absence checks for reused lifecycle identities. Cloud, Relaycast, Relayfile, and set-model repairs are proceeding on isolated branches; live candidate proof remains intentionally RED until those land in a prerelease snapshot.",
+          "raw": {
+            "focalPoints": [
+              "fleet",
+              "cleanroom",
+              "cloud-router",
+              "relayfile",
+              "set-model"
+            ],
+            "adjustments": "Use exact-head Cloud dev deployment, require baseline/candidate Daytona evidence, and rerun all 95 commands plus five repeated lifecycle trials twice only after candidate contracts are integrated.",
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "focal:fleet",
+            "focal:cleanroom",
+            "focal:cloud-router",
+            "focal:relayfile",
+            "focal:set-model",
+            "confidence:0.88"
+          ]
+        },
+        {
+          "ts": 1788642304334,
+          "type": "decision",
+          "content": "Fail closed on qualification provenance inputs and constrain preflight egress: Fail closed on qualification provenance inputs and constrain preflight egress",
+          "raw": {
+            "question": "Fail closed on qualification provenance inputs and constrain preflight egress",
+            "chosen": "Fail closed on qualification provenance inputs and constrain preflight egress",
+            "alternatives": [],
+            "reasoning": "Fresh PR review found exploitable symlink/path/ref boundary gaps and unrestricted model preflight networking. The qualification must reject ambiguous provenance instead of weakening its clean-room gate."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788643900639,
+          "type": "decision",
+          "content": "Reviewed required repo and workflow skills; using a dedicated worktree and feature branch: Reviewed required repo and workflow skills; using a dedicated worktree and feature branch",
+          "raw": {
+            "question": "Reviewed required repo and workflow skills; using a dedicated worktree and feature branch",
+            "chosen": "Reviewed required repo and workflow skills; using a dedicated worktree and feature branch",
+            "alternatives": [],
+            "reasoning": "Resident root contains unrelated dirty trajectory/tool files and must remain untouched; PR review requires isolated edits and tracked trajectory evidence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788644599221,
+          "type": "reflection",
+          "content": "Fresh PR #1665 review findings are repaired in an isolated feature worktree: descriptor-pinned candidate output, complete symlink provenance, structural policy and wiring regressions, per-lane Cloud agents, reviewer-owned sandbox provenance, and prerelease-only release trigger. Focused and full Vitest/typecheck/format checks are green; hosted E2E and Cloud proof failures were external runtime availability failures.",
+          "raw": {
+            "focalPoints": [
+              "review-findings",
+              "provenance",
+              "validation",
+              "external-ci"
+            ],
+            "adjustments": "Keep hosted failures as blockers/evidence and request fresh Codex review after push",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:review-findings",
+            "focal:provenance",
+            "focal:validation",
+            "focal:external-ci",
+            "confidence:0.9"
+          ]
         }
       ]
     }

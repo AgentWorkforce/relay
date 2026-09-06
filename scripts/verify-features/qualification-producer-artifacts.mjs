@@ -62,6 +62,19 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const ARTIFACT_SHA256 = /^sha256:[a-f0-9]{64}$/;
 const DAYTONA_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function safeRelativePath(value) {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value !== '.' &&
+    !value.endsWith('/') &&
+    !path.posix.isAbsolute(value) &&
+    !value.includes('\\') &&
+    path.posix.normalize(value) === value &&
+    !value.split('/').includes('..')
+  );
+}
+
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -282,8 +295,7 @@ function validateAcceptanceRecord(record, evidence, label) {
     record.payloadBytes !== SCALE_BYTES ||
     record.mountEntrypoint !== 'agent-relay fleet spawn --sandbox' ||
     record.mountMode !== 'fleet-auto-mount' ||
-    typeof record.markerRelativePath !== 'string' ||
-    !record.markerRelativePath ||
+    !safeRelativePath(record.markerRelativePath) ||
     !SHA256.test(record.markerSha256 ?? '') ||
     record.observedMarkerSha256 !== record.markerSha256 ||
     !Number.isSafeInteger(record.markerBytes) ||
@@ -322,7 +334,8 @@ function validateAcceptanceRecord(record, evidence, label) {
     !record.cleanup ||
     record.cleanup.sandboxId !== record.sandboxId ||
     record.cleanup.state !== 'absent' ||
-    !Number.isFinite(Date.parse(record.cleanup.verifiedAt ?? ''))
+    !Number.isFinite(Date.parse(record.cleanup.verifiedAt ?? '')) ||
+    Date.parse(record.cleanup.verifiedAt) < finishedAt
   ) {
     throw new Error(`${label} candidate acceptance record is invalid`);
   }
@@ -410,8 +423,7 @@ export function validateCloudSnapshotAcceptanceEvidence(value, expected) {
     value.additionalLargeFile?.bytes !== SCALE_BYTES ||
     typeof value.additionalLargeFile?.path !== 'string' ||
     !value.additionalLargeFile.path ||
-    typeof value.additionalLargeFile?.relativeFile !== 'string' ||
-    !value.additionalLargeFile.relativeFile ||
+    !safeRelativePath(value.additionalLargeFile?.relativeFile) ||
     !SHA256.test(value.additionalLargeFile?.sha256 ?? '') ||
     !Number.isFinite(Date.parse(value.acceptedAt ?? '')) ||
     !Array.isArray(value.concurrent) ||

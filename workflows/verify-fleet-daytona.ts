@@ -18,6 +18,8 @@ import { mkdir, open } from 'node:fs/promises';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
 const EXPECTED_CLI_INVENTORY = 'tests/relayflows/cleanroom/fleet-cli-inventory.json';
@@ -29,7 +31,9 @@ const STEP_TIMEOUT = 14_400_000;
 const CANDIDATE_INSTALL_ROOT = `.workflow-artifacts/verify-fleet-daytona/${NONCE}/candidate-install`;
 const CONFIGURED_CANDIDATE_CLI = process.env.VERIFY_FLEET_CLI?.trim();
 const CONFIGURED_CANDIDATE_ATTESTATION = process.env.VERIFY_FLEET_CANDIDATE_ATTESTATION?.trim();
+const FLEET_CODEX_MODEL = process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || 'gpt-5.6-luna';
 const SAFE_WORKFLOW_PATH = /^[A-Za-z0-9_./-]+$/;
+const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
 if (Boolean(CONFIGURED_CANDIDATE_CLI) !== Boolean(CONFIGURED_CANDIDATE_ATTESTATION)) {
   throw new Error('VERIFY_FLEET_CLI and VERIFY_FLEET_CANDIDATE_ATTESTATION must be configured together');
@@ -39,6 +43,9 @@ for (const [label, value] of [
   ['VERIFY_FLEET_CANDIDATE_ATTESTATION', CONFIGURED_CANDIDATE_ATTESTATION],
 ] as const) {
   if (value && !SAFE_WORKFLOW_PATH.test(value)) throw new Error(`${label} is not a safe path`);
+}
+if (!SAFE_MODEL.test(FLEET_CODEX_MODEL)) {
+  throw new Error('VERIFY_FLEET_CODEX_MODEL is not a safe model identifier');
 }
 
 const CANDIDATE_CLI =
@@ -58,7 +65,7 @@ function command(action: string, extra = '', nonce = NONCE): string {
 }
 
 function candidateCommand(action: string, extra = '', nonce = NONCE): string {
-  return `env VERIFY_FLEET_CLI=${CANDIDATE_CLI} VERIFY_FLEET_CANDIDATE_ATTESTATION=${CANDIDATE_ATTESTATION} ${command(action, extra, nonce)}`;
+  return `env VERIFY_FLEET_CLI=${CANDIDATE_CLI} VERIFY_FLEET_CANDIDATE_ATTESTATION=${CANDIDATE_ATTESTATION} VERIFY_FLEET_CODEX_MODEL=${FLEET_CODEX_MODEL} ${command(action, extra, nonce)}`;
 }
 
 function reviewTask(role: string, kind: 'supervisor' | 'fix' | 'review', priorRoles: string[]): string {
@@ -217,7 +224,7 @@ async function main() {
     .channel(`relay-fleet-daytona-${NONCE.slice(0, 8)}`)
     .maxConcurrency(3)
     .onError('continue')
-    .timeout(18_000_000)
+    .timeout(43_200_000)
     .idleNudge({ nudgeAfterMs: 300_000, escalateAfterMs: 300_000, maxNudges: 2 });
 
   wf.agent('cheap-supervisor', {
@@ -262,7 +269,7 @@ async function main() {
   });
   wf.agent('preflight-codex', {
     cli: 'codex',
-    model: CodexModels.GPT_5_1_CODEX_MINI,
+    model: FLEET_CODEX_MODEL,
     preset: 'reviewer',
     role: 'Prove the pinned Codex harness and mini model are reachable before Daytona allocation.',
     interactive: false,
@@ -463,7 +470,9 @@ async function main() {
   // Keep permissions attached to the finalized config object so the dry-run can
   // audit the exact runtime policy before allowing this workflow to run live.
   for (const agent of wf.toConfig().agents) {
-    agent.permissions = reviewerPermissions(agent.name);
+    agent.permissions = agent.name.startsWith('preflight-')
+      ? preflightPermissions(agent.name)
+      : reviewerPermissions(agent.name);
   }
 
   const relayEnv =

@@ -37,6 +37,11 @@ import {
 } from '../../scripts/verify-features/fleet-daytona.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  MODEL_TRANSPORT_HOSTS,
+  preflightPermissions,
+} from '../../scripts/verify-features/fleet-permissions.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
   collectFleetCliInventory,
   compareFleetCliInventory,
   inventorySha256,
@@ -152,6 +157,7 @@ function completeEvidence(matrix: {
       monotonicStartNs: String(index * 1_000),
       monotonicEndNs: String(index * 1_000 + 1_000),
       durationMs: 0.001,
+      preSpawnAgentAbsent: true,
       spawned: true,
       placementConfirmed: true,
       initialSentinelObserved: true,
@@ -237,6 +243,25 @@ describe('complete Daytona Fleet board', () => {
         '\n[done] {"level":"debug"}'
     );
     expect(receipt).toMatchObject({ status: 'applied', requestId: 'request-1' });
+  });
+
+  it('restricts each model preflight to its provider transport', async () => {
+    for (const [provider, host] of [
+      ['opencode', 'api.opencode.ai:443'],
+      ['codex', 'api.openai.com:443'],
+      ['claude', 'api.anthropic.com:443'],
+    ]) {
+      const policy = preflightPermissions(`preflight-${provider}`);
+      expect(policy.network).toEqual({ allow: expect.arrayContaining([host]), deny: ['*'] });
+      expect(policy.files).toEqual({ read: [], write: [], deny: ['**'] });
+      expect(policy.inherit).toBe(false);
+      expect(policy.network.allow).not.toContain('*');
+      for (const [otherProvider, otherHosts] of Object.entries(MODEL_TRANSPORT_HOSTS)) {
+        if (otherProvider === provider) continue;
+        expect(policy.network.allow).not.toEqual(expect.arrayContaining(otherHosts));
+        for (const otherHost of otherHosts) expect(policy.network.allow).not.toContain(otherHost);
+      }
+    }
   });
 
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
@@ -782,6 +807,10 @@ describe('complete Daytona Fleet board', () => {
     forgedAck.criticalLifecycle.trials[0].initialAckAgentName = 'different-agent';
     expect(() => validateFleetEvidence(forgedAck, matrix)).toThrow(/status is inconsistent/);
 
+    const staleIdentity = structuredClone(evidence);
+    staleIdentity.criticalLifecycle.trials[2].preSpawnAgentAbsent = false;
+    expect(() => validateFleetEvidence(staleIdentity, matrix)).toThrow(/status is inconsistent/);
+
     const wrongCommand = structuredClone(evidence);
     const fleetNodes = wrongCommand.operations.find(({ id }) => id === 'fleet-nodes-name');
     fleetNodes.argv = ['agent-relay', 'fleet', 'status', '--name'];
@@ -1146,11 +1175,10 @@ describe('complete Daytona Fleet board', () => {
         ])
       ).resolves.toBeDefined();
 
-      const mutated = completeEvidence(matrix);
-      await writeFile(
-        path.join(matrix.artifactRoot, attemptNonces[0], 'evidence.json'),
-        `${JSON.stringify(mutated, null, 2)}\n`
-      );
+      const attemptPath = path.join(matrix.artifactRoot, attemptNonces[0], 'evidence.json');
+      const mutated = JSON.parse(await readFile(attemptPath, 'utf8'));
+      mutated.finishedAt = '2026-09-04T00:00:02.000Z';
+      await writeFile(attemptPath, `${JSON.stringify(mutated, null, 2)}\n`);
       await expect(
         execFileAsync(process.execPath, [
           'scripts/verify-features/fleet-daytona.mjs',
@@ -1160,7 +1188,7 @@ describe('complete Daytona Fleet board', () => {
           '--nonce',
           'campaign-test',
         ])
-      ).rejects.toThrow();
+      ).rejects.toThrow(/sealed evidenceSha256 no longer matches/);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

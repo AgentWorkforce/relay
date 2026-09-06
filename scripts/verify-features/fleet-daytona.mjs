@@ -1343,6 +1343,7 @@ export function validateCriticalLifecycleEvidence(value, matrix, boardNodes, non
     const expectedAgent = `critical-lifecycle-${index % 2 === 0 ? 'a' : 'b'}-${nonce.slice(0, 16)}`;
     if (
       trial.agentName !== expectedAgent ||
+      typeof trial.preSpawnAgentAbsent !== 'boolean' ||
       typeof trial.monotonicStartNs !== 'string' ||
       !/^\d+$/.test(trial.monotonicStartNs) ||
       typeof trial.monotonicEndNs !== 'string' ||
@@ -1376,6 +1377,7 @@ export function validateCriticalLifecycleEvidence(value, matrix, boardNodes, non
       trial.postReadyAckChannelName === 'general' &&
       trial.initialAckMessageIdHash !== trial.postReadyAckMessageIdHash;
     const expectedStatus =
+      trial.preSpawnAgentAbsent === true &&
       trial.spawned === true &&
       trial.placementConfirmed === true &&
       trial.initialSentinelObserved === true &&
@@ -1928,7 +1930,6 @@ class FleetBoard {
   }
 
   async creationIntent(type, name) {
-    if (this.evidence.ownershipIntents.some((intent) => intent.type === type && intent.name === name)) return;
     if (type === 'daytona-sandbox' && this.baselineSandboxNames.has(name)) {
       throw new Error(`Refusing to provision over baseline Daytona sandbox name ${name}`);
     }
@@ -1938,6 +1939,7 @@ class FleetBoard {
     if (type === 'relay-agent' && (await this.exactAgentExists(name))) {
       throw new Error(`Refusing to spawn over existing Relay agent name ${name}`);
     }
+    if (this.evidence.ownershipIntents.some((intent) => intent.type === type && intent.name === name)) return;
     this.evidence.ownershipIntents.push({
       type,
       name,
@@ -3233,7 +3235,6 @@ class FleetBoard {
       const agentName = `critical-lifecycle-${slot}-${this.short}`;
       const initialSentinel = `CRITICAL_LIFECYCLE_${index}_${this.short.toUpperCase()}_INITIAL`;
       const postReadySentinel = `CRITICAL_LIFECYCLE_${index}_${this.short.toUpperCase()}_INJECTED`;
-      await this.creationIntent('relay-agent', agentName);
       const monotonicStartNs = process.hrtime.bigint();
       let spawn;
       let placement = { pass: false };
@@ -3243,7 +3244,13 @@ class FleetBoard {
       let postReady = { observed: false };
       let postReadyReaderConfirmed = false;
       let releasedAndAbsent = false;
+      let preSpawnAgentAbsent = false;
       try {
+        // Re-check even when this nonce already checkpointed an intent for the
+        // reused name. A prior failed release must make this trial red rather
+        // than allowing the next spawn to attach to stale identity state.
+        await this.creationIntent('relay-agent', agentName);
+        preSpawnAgentAbsent = true;
         spawn = await execute(
           this.cliArgv(
             ...buildFleetSpawnArgs({
@@ -3309,6 +3316,7 @@ class FleetBoard {
         postReady.channelName === 'general' &&
         initial.messageIdHash !== postReady.messageIdHash;
       const status =
+        preSpawnAgentAbsent &&
         spawned &&
         placement.pass === true &&
         initial.observed === true &&
@@ -3328,6 +3336,7 @@ class FleetBoard {
         monotonicStartNs: monotonicStartNs.toString(),
         monotonicEndNs: monotonicEndNs.toString(),
         durationMs: Number(monotonicEndNs - monotonicStartNs) / 1_000_000,
+        preSpawnAgentAbsent,
         spawned,
         placementConfirmed: placement.pass === true,
         initialSentinelObserved: initial.observed === true,
