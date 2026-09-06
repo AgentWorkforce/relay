@@ -87,22 +87,27 @@ function truncateUtf8(value, maxBytes = 1_024) {
   return `${bytes.subarray(0, end).toString('utf8')}…`;
 }
 
-function diagnosticString(value) {
-  return typeof value === 'string' && value.trim() ? truncateUtf8(value.trim()) : undefined;
+function diagnosticString(value, declaredSecrets = []) {
+  return typeof value === 'string' && value.trim()
+    ? truncateUtf8(redactTerminalDiagnostic(value.trim(), declaredSecrets))
+    : undefined;
 }
 
 function redactTerminalDiagnostic(value, declaredSecrets) {
   // Credential-shaped values must be collapsed before arbitrary declared
-  // substrings. Reversing this order can split a token and leave its tail in
-  // diagnostic output.
+  // substrings. Preserve a credential-shaped prefix when it is only the start
+  // of a declared value containing characters outside LIVE_CREDENTIAL so the
+  // exact second pass can remove that complete declared value.
   let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body) =>
     declaredSecrets.some(
       (secret) => secret === match || (secret.startsWith(prefix) && match.startsWith(secret))
     )
       ? '[REDACTED_DECLARED_SECRET]'
-      : body.length <= 8
-        ? `${prefix}\u2026`
-        : `${prefix}\u2026${body.slice(-4)}`
+      : declaredSecrets.some((secret) => secret.startsWith(match))
+        ? match
+        : body.length <= 8
+          ? `${prefix}\u2026`
+          : `${prefix}\u2026${body.slice(-4)}`
   );
   for (const secret of declaredSecrets) {
     redacted = redacted.split(secret).join('[REDACTED_DECLARED_SECRET]');
@@ -118,6 +123,9 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
  */
 export function terminalStatusDiagnostic(payload, secrets = []) {
   const statusPayload = statusPayloadFrom(payload);
+  const declaredSecrets = [...new Set(secrets.filter((secret) => typeof secret === 'string' && secret))].sort(
+    (left, right) => right.length - left.length
+  );
   const failure =
     statusPayload.failure &&
     typeof statusPayload.failure === 'object' &&
@@ -125,45 +133,41 @@ export function terminalStatusDiagnostic(payload, secrets = []) {
       ? statusPayload.failure
       : null;
   const causeChain = Array.isArray(failure?.causeChain)
-    ? failure.causeChain.map(diagnosticString).filter(Boolean).slice(0, 20)
+    ? failure.causeChain
+        .map((value) => diagnosticString(value, declaredSecrets))
+        .filter(Boolean)
+        .slice(0, 20)
     : undefined;
   const evidence = {
-    runId: diagnosticString(statusPayload.runId ?? payload.runId),
-    status: diagnosticString(statusPayload.status),
-    sandboxId: diagnosticString(statusPayload.sandboxId),
-    error: diagnosticString(statusPayload.error),
+    runId: diagnosticString(statusPayload.runId ?? payload.runId, declaredSecrets),
+    status: diagnosticString(statusPayload.status, declaredSecrets),
+    sandboxId: diagnosticString(statusPayload.sandboxId, declaredSecrets),
+    error: diagnosticString(statusPayload.error, declaredSecrets),
     ...(failure
       ? {
           failure: {
-            phase: diagnosticString(failure.phase),
-            code: diagnosticString(failure.code),
-            message: diagnosticString(failure.message),
+            phase: diagnosticString(failure.phase, declaredSecrets),
+            code: diagnosticString(failure.code, declaredSecrets),
+            message: diagnosticString(failure.message, declaredSecrets),
             causeChain,
-            dispatchType: diagnosticString(failure.dispatchType),
-            sandboxId: diagnosticString(failure.sandboxId),
-            occurredAt: diagnosticString(failure.occurredAt),
+            dispatchType: diagnosticString(failure.dispatchType, declaredSecrets),
+            sandboxId: diagnosticString(failure.sandboxId, declaredSecrets),
+            occurredAt: diagnosticString(failure.occurredAt, declaredSecrets),
           },
         }
       : {}),
   };
 
-  let diagnostic = JSON.stringify(evidence, null, 2);
-  const declaredSecrets = [...new Set(secrets.filter((secret) => typeof secret === 'string' && secret))].sort(
-    (left, right) => right.length - left.length
-  );
-  diagnostic = redactTerminalDiagnostic(diagnostic, declaredSecrets);
+  const diagnostic = JSON.stringify(evidence, null, 2);
   if (Buffer.byteLength(diagnostic, 'utf8') <= MAX_TERMINAL_DIAGNOSTIC_BYTES) return diagnostic;
-  const fallback = redactTerminalDiagnostic(
-    JSON.stringify(
-      {
-        runId: evidence.runId,
-        status: evidence.status,
-        error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
-      },
-      null,
-      2
-    ),
-    declaredSecrets
+  const fallback = JSON.stringify(
+    {
+      runId: evidence.runId,
+      status: evidence.status,
+      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+    },
+    null,
+    2
   );
   if (Buffer.byteLength(fallback, 'utf8') <= MAX_TERMINAL_DIAGNOSTIC_BYTES) return fallback;
   return JSON.stringify({

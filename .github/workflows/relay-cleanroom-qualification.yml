@@ -475,6 +475,7 @@ jobs:
             --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a" \
             --ttl 24h \
             --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
+            --idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:a" \
             --credential-file "$RUNNER_TEMP/relay-workspace-a.json" \
             --json > "$RUNNER_TEMP/workspace-create-a.json"
           WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-a.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
@@ -493,6 +494,7 @@ jobs:
             --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b" \
             --ttl 24h \
             --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
+            --idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:b" \
             --credential-file "$RUNNER_TEMP/relay-workspace-b.json" \
             --json > "$RUNNER_TEMP/workspace-create-b.json"
           WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-b.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"

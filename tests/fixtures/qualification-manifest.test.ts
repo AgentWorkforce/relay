@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
 import {
   relayfileCloudEndpointIdentitySha256,
@@ -296,6 +297,27 @@ const digests = {
 };
 
 describe('qualification manifest', () => {
+  it('uses run- and lane-specific idempotency keys for disposable qualification workspaces', async () => {
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const workflow = parse(source) as {
+      jobs?: { qualification?: { steps?: Array<Record<string, unknown>> } };
+    };
+    const steps = workflow.jobs?.qualification?.steps ?? [];
+    const createCommand = (name: string) => {
+      const step = steps.find((candidate) => candidate.name === name);
+      expect(step).toBeDefined();
+      expect(typeof step?.run).toBe('string');
+      return String(step?.run);
+    };
+
+    expect(createCommand('Create isolated ephemeral Cloud workspace A')).toContain(
+      '--idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:a"'
+    );
+    expect(createCommand('Create isolated ephemeral Cloud workspace B')).toContain(
+      '--idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:b"'
+    );
+  });
+
   it('uses a Node runtime that satisfies the locked dependency engine floor', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
     const versions = [...workflow.matchAll(/node-version:\s*["']?([0-9.]+)/g)].map((match) => match[1]);
