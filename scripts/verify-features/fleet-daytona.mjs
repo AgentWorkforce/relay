@@ -219,6 +219,48 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
   ];
 }
 
+// Parse a receipt from CLI output that may include logs and pretty-printed JSON.
+// The scan is string-aware so braces inside quoted error text do not terminate a
+// candidate prematurely; the receipt fields distinguish it from log objects.
+export function parseCliJson(output) {
+  const text = String(output ?? '');
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Ignore unrelated or malformed log objects and inspect the next one.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error('set-model did not emit a complete JSON receipt: ' + text.slice(-500));
+}
+
 function buildNodeAppServerModelProofScript() {
   return String.raw`(async () => {
 const fs = require('node:fs');
@@ -293,23 +335,41 @@ const jsonResponse = async (response, label) => {
   try { return text ? JSON.parse(text) : {}; } catch (error) { throw new Error(label + ' was not JSON: ' + error.message); }
 };
 const parseCliJson = (output) => {
-  const lines = String(output).split(/\r?\n/).reverse();
-  for (const line of lines) {
-    const candidate = line.trim();
-    if (!candidate.startsWith('{') || !candidate.endsWith('}')) continue;
-    try {
-      const parsed = JSON.parse(candidate);
-      if (
-        parsed &&
-        typeof parsed === 'object' &&
-        typeof parsed.status === 'string' &&
-        (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
-      ) {
-        return parsed;
+  const text = String(output);
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
       }
-    } catch {
-      // Continue searching for a complete receipt line. Logs are untrusted
-      // and may contain braces that are not a JSON receipt.
+      if (character === '"') {
+        inString = true;
+      } else if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Logs are untrusted; try the next candidate object.
+        }
+        break;
+      }
     }
   }
   throw new Error(

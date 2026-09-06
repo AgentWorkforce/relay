@@ -20,6 +20,7 @@ import {
   loadWorkspaceCredentialFile,
   matchesSandboxFileInspection,
   operationStatus,
+  parseCliJson,
   redactFleetEvidence,
   sanitizeFleetArgv,
   summarizeFleetCampaign,
@@ -220,6 +221,24 @@ function completeEvidence(matrix: {
 }
 
 describe('complete Daytona Fleet board', () => {
+  it('parses the pretty-printed CLI receipt amid unrelated JSON logs', () => {
+    const receipt = parseCliJson(
+      '[info] {"level":"debug"}\n' +
+        JSON.stringify(
+          {
+            name: 'worker',
+            status: 'applied',
+            requestId: 'request-1',
+            effectiveModel: 'openai/gpt-5.4',
+          },
+          null,
+          2
+        ) +
+        '\n[done] {"level":"debug"}'
+    );
+    expect(receipt).toMatchObject({ status: 'applied', requestId: 'request-1' });
+  });
+
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
     const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
     const prepare = source.indexOf("wf.step('prepare-clean-installed-candidate'");
