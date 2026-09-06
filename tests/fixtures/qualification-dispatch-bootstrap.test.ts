@@ -28,31 +28,49 @@ function requireObject(value: unknown, label: string): Record<string, unknown> {
 
 describe('qualification workflow dispatch bootstrap', () => {
   it.each([
-    ['relay-package-qualification.yml', 'Relay package qualification'],
-    ['relay-cleanroom-qualification.yml', 'Relay orchestration cleanroom qualification'],
-  ])('exposes only a manual default-branch dispatch contract for %s', async (file, name) => {
-    const { source, value } = await workflow(file);
-    expect(value.name).toBe(name);
-    expect(Object.keys(requireObject(value.on, `${file} triggers`))).toEqual(['workflow_dispatch']);
-    expect(value.permissions).toEqual({});
+    [
+      'relay-package-qualification.yml',
+      'Relay package qualification',
+      'Refuse to claim package qualification from the bootstrap',
+      'Select a qualification/<nonce> ref containing the complete candidate producer.',
+    ],
+    [
+      'relay-cleanroom-qualification.yml',
+      'Relay orchestration cleanroom qualification',
+      'Refuse to claim cleanroom qualification from the bootstrap',
+      'Select a qualification/<nonce> ref containing the complete cleanroom verifier.',
+    ],
+  ])(
+    'exposes only a manual default-branch dispatch contract for %s',
+    async (file, name, stepName, diagnostic) => {
+      const { source, value } = await workflow(file);
+      expect(value.name).toBe(name);
+      expect(Object.keys(requireObject(value.on, `${file} triggers`))).toEqual(['workflow_dispatch']);
+      expect(value.permissions).toEqual({});
 
-    const jobs = requireObject(value.jobs, `${file} jobs`);
-    expect(Object.keys(jobs)).toEqual(['dispatch-bootstrap-only']);
-    const job = requireObject(jobs['dispatch-bootstrap-only'], `${file} bootstrap job`);
-    expect(job).not.toHaveProperty('environment');
-    expect(job).not.toHaveProperty('permissions');
-    expect(job['timeout-minutes']).toBe(1);
+      const jobs = requireObject(value.jobs, `${file} jobs`);
+      expect(Object.keys(jobs)).toEqual(['dispatch-bootstrap-only']);
+      const job = requireObject(jobs['dispatch-bootstrap-only'], `${file} bootstrap job`);
+      expect(job).toEqual({
+        'runs-on': 'ubuntu-24.04',
+        'timeout-minutes': 1,
+        steps: [
+          {
+            name: stepName,
+            run: `echo "::error title=Dispatch bootstrap only::${diagnostic}"\nexit 1\n`,
+          },
+        ],
+      });
 
-    expect(source).not.toContain('secrets.');
-    expect(source).not.toContain('actions/checkout');
-    expect(source).not.toContain('actions/upload-artifact');
-    expect(source).not.toContain('schedule:');
-    expect(source).not.toContain('release:');
-    expect(source).not.toContain('repository_dispatch:');
-    expect(source).not.toContain('environment: snapshot-qualification');
-    expect(source).toContain('exit 1');
-    expect(source).toContain('Dispatch bootstrap only');
-  });
+      expect(source).not.toContain('secrets.');
+      expect(source).not.toContain('actions/checkout');
+      expect(source).not.toContain('actions/upload-artifact');
+      expect(source).not.toContain('schedule:');
+      expect(source).not.toContain('release:');
+      expect(source).not.toContain('repository_dispatch:');
+      expect(source).not.toContain('environment: snapshot-qualification');
+    }
+  );
 
   it('keeps the cleanroom dispatch inputs compatible with the candidate workflow', async () => {
     const { value } = await workflow('relay-cleanroom-qualification.yml');
