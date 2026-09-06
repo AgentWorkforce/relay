@@ -31,6 +31,13 @@ export const RELAY_PACKAGE_POLICY = Object.freeze({
   attestationFile: 'relay-package-qualification-attestation.json',
 });
 
+export const RELAY_CLOUD_DISPATCH = Object.freeze({
+  repository: 'AgentWorkforce/cloud',
+  eventType: 'relay_package_qualification_ready',
+  schemaVersion: 1,
+  kind: 'relayPackageQualificationReady',
+});
+
 const PACKAGE_NAMES = Object.freeze([
   'agent-relay',
   '@agent-relay/agent',
@@ -134,6 +141,39 @@ function exactKeys(value, keys, label) {
   if (actual.join('\0') !== expected.join('\0')) {
     throw new Error(`${label} must contain exactly: ${expected.join(', ')}`);
   }
+}
+
+function positiveSafeInteger(value, label) {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || String(parsed) !== String(value)) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+  return parsed;
+}
+
+export function createRelayPackageCloudDispatch({
+  sourceGitSha,
+  runId,
+  runAttempt,
+  attestationArtifactDigest,
+}) {
+  if (!GIT_SHA.test(sourceGitSha ?? '')) throw new Error('Cloud dispatch sourceGitSha must be 40 hex');
+  if (!ARTIFACT_DIGEST.test(attestationArtifactDigest ?? '')) {
+    throw new Error('Cloud dispatch attestationArtifactDigest is invalid');
+  }
+  return {
+    event_type: RELAY_CLOUD_DISPATCH.eventType,
+    client_payload: {
+      schemaVersion: RELAY_CLOUD_DISPATCH.schemaVersion,
+      kind: RELAY_CLOUD_DISPATCH.kind,
+      relay: {
+        runId: positiveSafeInteger(runId, 'Cloud dispatch runId'),
+        runAttempt: positiveSafeInteger(runAttempt, 'Cloud dispatch runAttempt'),
+        sourceGitSha,
+        attestationArtifactDigest,
+      },
+    },
+  };
 }
 
 function requireExactVersions(packages, names, label) {
@@ -475,6 +515,24 @@ async function createEnvelope() {
   await writeJson(path.resolve(output), envelope);
 }
 
+async function createCloudDispatch() {
+  const output = readFlag('--output');
+  const sourceGitSha = readFlag('--source-sha');
+  const runId = readFlag('--run-id');
+  const runAttempt = readFlag('--run-attempt');
+  const attestationArtifactDigest = readFlag('--attestation-artifact-digest');
+  if (!output) throw new Error('--output is required');
+  await writeJson(
+    path.resolve(output),
+    createRelayPackageCloudDispatch({
+      sourceGitSha,
+      runId,
+      runAttempt,
+      attestationArtifactDigest,
+    })
+  );
+}
+
 async function validateFile() {
   const target = readFlag('--file');
   const kind = readFlag('--kind');
@@ -500,6 +558,7 @@ async function main() {
   const action = process.argv[2];
   if (action === 'create-payload') return createPayload();
   if (action === 'create-envelope') return createEnvelope();
+  if (action === 'create-cloud-dispatch') return createCloudDispatch();
   if (action === 'validate') return validateFile();
   if (action === 'verify-files') return verifyFiles();
   if (action === 'verify-candidate-unpublished') return verifyCandidateUnpublished();
