@@ -84,7 +84,16 @@ try {
   );
   broker.stderr?.on('data', () => {});
   await waitForLine(broker, '[agent-relay] API listening on ');
-  const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+  const connection = await waitFor(
+    async () => {
+      try {
+        return JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+      } catch {
+        return null;
+      }
+    },
+    { timeoutMs: 5_000, intervalMs: 50, label: 'artifact broker connection record' }
+  );
   const apiBase = connection.url;
   const headers = { authorization: `Bearer ${connection.api_key}`, 'content-type': 'application/json' };
 
