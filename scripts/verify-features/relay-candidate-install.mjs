@@ -590,9 +590,34 @@ function descriptorRoot(handle, fallback) {
   return fallback;
 }
 
+export function assertSupportedCandidateOutputPlatform(platform = process.platform) {
+  if (platform === 'win32') {
+    throw new Error(
+      'candidate prepare/hydrate is unsupported on Windows because Node cannot bind directory I/O to a verified handle'
+    );
+  }
+}
+
+async function verifyPrivateOutputParent(parent) {
+  const info = await lstat(parent);
+  const mode = info.mode & 0o777;
+  const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    (currentUid !== null && info.uid !== currentUid) ||
+    mode !== 0o700
+  ) {
+    throw new Error('candidate output root requires an existing current-user-owned 0700 parent directory');
+  }
+}
+
 async function createPrivateOutputRootHandle(outputRoot) {
+  assertSupportedCandidateOutputPlatform();
   const root = path.resolve(outputRoot);
-  await mkdir(path.dirname(root), { recursive: true, mode: 0o700 });
+  const parent = path.dirname(root);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  await verifyPrivateOutputParent(parent);
   try {
     // mkdir is the existence check: its atomic EEXIST result avoids a
     // check-then-create window where another process could replace the path.
@@ -602,11 +627,6 @@ async function createPrivateOutputRootHandle(outputRoot) {
       throw new Error('candidate output root must not already exist', { cause: error });
     }
     throw error;
-  }
-  if (process.platform === 'win32') {
-    // Node cannot open directory handles on Windows. mkdir above is still an
-    // atomic must-not-exist boundary; subsequent I/O uses the created path.
-    return { root, ioRoot: root, handle: null };
   }
   const openFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
   const handle = await open(root, openFlags);

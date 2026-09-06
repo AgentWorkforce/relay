@@ -530,7 +530,7 @@ export async function putRecord({
     try {
       // The destination uses a fixed artifact root, validated nonce/kind segments, and O_EXCL.
       // codeql[js/http-to-file-access]
-      await writeFile(destination, encoded, { flag: 'wx', mode: 0o600 });
+      await writePrivateGeneratedArtifact(destination, encoded, `local evidence ${kind}`);
     } catch (error) {
       if (error?.code === 'EEXIST') {
         throw new Error(`evidence storage already contains ${kind}`);
@@ -554,6 +554,7 @@ export async function putRecord({
   // codeql[js/file-access-to-http]
   const response = await fetch(url, {
     method: 'PUT',
+    redirect: 'error',
     signal: requestSignal(),
     headers: {
       authorization: `Bearer ${token}`,
@@ -571,6 +572,7 @@ export async function putRecord({
       `Cloud evidence upload failed (${response.status}): ${await readBoundedResponseText(response, 'Cloud evidence upload error')}`
     );
   const confirmation = await fetch(url, {
+    redirect: 'error',
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
@@ -635,6 +637,7 @@ async function getRecord({ nonce, kind, source = 'auto', artifactRoot = DEFAULT_
   // The URL is confined to Cloud; its key consists only of validated run/nonce/kind data.
   // codeql[js/file-access-to-http]
   const response = await fetch(url, {
+    redirect: 'error',
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
@@ -854,6 +857,7 @@ async function fetchGithubPages(
         // Every initial and Link-derived URL is revalidated against the fixed GitHub HTTPS origin.
         // codeql[js/file-access-to-http]
         response = await fetch(next, {
+          redirect: 'error',
           signal: requestSignal(),
           headers: {
             accept: 'application/vnd.github+json',
@@ -2164,6 +2168,14 @@ export function validateReviewProvenance(provenance, { nonce, product, profile, 
   return provenance;
 }
 
+export function assertReviewUploadSource(profile, source = 'auto', env = process.env) {
+  const mode = sourceMode(source, env);
+  if (profile !== 'smoke' && mode !== 'cloud') {
+    throw new Error('full/soak review upload requires write-once Cloud evidence storage');
+  }
+  return mode;
+}
+
 export function validateReviewDraftPath(file, artifactRoot, nonce, role) {
   const resolvedFile = path.resolve(file);
   const expectedFile = path.join(path.resolve(artifactRoot), nonce, `draft-${role}.json`);
@@ -2682,6 +2694,7 @@ async function main() {
     return;
   }
   if (command === 'review-upload') {
+    assertReviewUploadSource(profile, source);
     const role = assertSafeId(requiredOption(options, 'role'), 'role');
     const reviewKind = requiredOption(options, 'review-kind');
     const file = validateReviewDraftPath(requiredOption(options, 'file'), artifactRoot, nonce, role);

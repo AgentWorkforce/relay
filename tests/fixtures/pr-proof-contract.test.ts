@@ -1714,6 +1714,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('captureLaunchProgressError(() => launchProgress.write(text))');
     expect(source).toContain("['cloud', 'cancel', runId, '--json']");
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
+    expect(source).toContain("from '@agent-relay/cloud/redact'");
+    expect(source).toContain('[auth.cliEnv.CLOUD_API_KEY]');
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
   });
@@ -1756,6 +1758,62 @@ describe('trusted dispatcher source contract', () => {
     });
     expect(diagnostic).not.toContain('cloud-proof-api-key-secret');
     expect(diagnostic).not.toContain('must not be copied');
+  });
+
+  it('extracts nested terminal payloads and redacts every declared and GitHub credential shape', () => {
+    const prefixes = [
+      'ghp_',
+      'gho_',
+      'ghu_',
+      'ghs_',
+      'ghr_',
+      'github_pat_',
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ];
+    const credentials = prefixes.flatMap((prefix) => [
+      `${prefix}0123456789abcdefghijklmnop`,
+      `${prefix}short`,
+    ]);
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        workflowRun: {
+          runId: 'run-nested',
+          status: 'failed',
+          error: `no ${credentials.join(' ')} short=abc`,
+          failure: { message: 'nested failure abc' },
+        },
+      },
+      ['abc']
+    );
+    const parsed = JSON.parse(diagnostic);
+    expect(parsed).toMatchObject({
+      runId: 'run-nested',
+      status: 'failed',
+      failure: { message: 'nested failure [REDACTED_DECLARED_SECRET]' },
+    });
+    expect(diagnostic).not.toContain('short=abc');
+    for (const credential of credentials) expect(diagnostic).not.toContain(credential);
+  });
+
+  it('always returns valid UTF-8 JSON inside the terminal diagnostic byte limit', () => {
+    const diagnostic = terminalStatusDiagnostic({
+      run: {
+        runId: 'run-large',
+        status: 'failed',
+        error: '💥'.repeat(30_000),
+        failure: { causeChain: Array.from({ length: 20 }, () => 'é'.repeat(4_000)) },
+      },
+    });
+    expect(() => JSON.parse(diagnostic)).not.toThrow();
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {
