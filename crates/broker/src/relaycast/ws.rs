@@ -943,7 +943,13 @@ impl RelaycastHttpClient {
             let request = ReleaseAgentRequest {
                 name: agent_name.to_string(),
                 reason: Some(attributed_reason),
-                delete_agent: None,
+                // The broker has already terminated its local process before
+                // asking Relaycast to release the identity.  Requesting the
+                // terminal/tombstone form is important for retries: when a
+                // prior release left an offline row with no live host, the
+                // engine can complete this idempotently instead of returning
+                // `agent_host_unavailable` for the non-delete form.
+                delete_agent: Some(true),
             };
             // Invalidate the cached token before the call so an ambiguous
             // response (e.g. a timeout after Relaycast committed the release)
@@ -1800,7 +1806,8 @@ mod tests {
                 .header("authorization", "Bearer rk_live_test")
                 .json_body(json!({
                     "name": "worker-a",
-                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)",
+                    "delete_agent": true
                 }));
             then.status(200).json_body(json!({
                 "ok": true,
