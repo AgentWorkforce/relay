@@ -461,8 +461,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       },
       body: JSON.stringify({ reason: 'idempotent node-control retry' }),
     });
-    expect(repeatedRelease.status).toBe(200);
-    expect(await repeatedRelease.json()).toMatchObject({ success: true, name });
+    const repeatedReleaseBody = await repeatedRelease.json();
+    expect(repeatedRelease.status, JSON.stringify(repeatedReleaseBody)).toBe(200);
+    expect(repeatedReleaseBody).toMatchObject({ success: true, name });
     await assertReleaseAbsence(secondDescendantPid, 'idempotent repeated release');
   }, 90_000);
 
