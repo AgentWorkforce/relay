@@ -762,14 +762,14 @@ jobs:
           for (const suffix of ['a', 'b']) {
             const id = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
             if (!id) {
-              evidence[suffix] = { allocated: false };
+              evidence[suffix] = { createStepOwnedIdRecorded: false };
               continue;
             }
             const result = JSON.parse(fs.readFileSync(`qualification-cleanup/delete-${suffix}.json`, 'utf8'));
             if (result.workspaceId !== id || result.absence?.workspaceId !== id || result.absence?.status !== 404) {
               throw new Error(`workspace ${suffix} lacks exact cascade absence evidence`);
             }
-            evidence[suffix] = { allocated: true, workspaceId: id, operationId: result.operationId, absence: result.absence };
+            evidence[suffix] = { createStepOwnedIdRecorded: true, workspaceId: id, operationId: result.operationId, absence: result.absence };
           }
           fs.writeFileSync(
             'qualification-cleanup/absence.json',

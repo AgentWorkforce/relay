@@ -559,7 +559,9 @@ describe('clean-room verification catalog', () => {
     expect(fullTimeout).toBeGreaterThan(7_200_000);
     expect(soakTimeout).toBeGreaterThan(fullTimeout);
     expect(source).toContain('timeoutMs: laneTimeouts[lane]');
-    expect(source).toContain('.timeout(workflowTimeout)');
+    expect(source).toContain('const timeoutPlan = wf.toConfig()');
+    expect(source).toContain('Number(step.timeoutMs) * (retries + 1)');
+    expect(source).toContain('wf.timeout(workflowTimeout)');
     expect(source).not.toContain('const STEP_TIMEOUT = 7_200_000');
   });
 
@@ -869,7 +871,7 @@ describe('clean-room verification catalog', () => {
     );
   });
 
-  it('runs exact-name workspace reconciliation in an independent post-qualification job', async () => {
+  it('runs exact-ID workspace reconciliation in an independent post-qualification job', async () => {
     const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
     const parsed = parse(source);
     const cleanup = parsed.jobs.qualification_cleanup;
