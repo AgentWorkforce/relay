@@ -180,6 +180,8 @@ Relayfile Cloud candidate-deployment attestation. The job checks the GitHub run
 attempts and artifact digests, exact acceptance sandbox cleanup, then checks the downloaded Relay package payload
 and envelope, `qualification.json`, full snapshot manifest, baked Relay producer
 closure and SDK version, Relayfile source SHA, and data-plane deployment identity.
+The three scale mounts must carry three distinct hashed request correlations so
+one aggregate Relayfile Cloud counter cannot be reused as per-sandbox evidence.
 Each board attempt receives a separate ephemeral Cloud workspace. The command
 availability preflight is explicitly non-qualifying; only observed candidate
 selection, two reveal-once 0600 workspace credentials, exact data-plane binding,
