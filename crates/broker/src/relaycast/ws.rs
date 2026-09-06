@@ -956,6 +956,18 @@ impl RelaycastHttpClient {
                 Ok(_) => {
                     tracing::info!(agent = %agent_name, "released agent identity");
                 }
+                Err(error)
+                    if error.code() == Some("agent_not_found") || error.status() == Some(404) =>
+                {
+                    // Release is a terminal operation. A retry after the
+                    // engine has already tombstoned the identity is a
+                    // successful no-op, not a broker failure.
+                    tracing::info!(
+                        agent = %agent_name,
+                        error = %error,
+                        "agent identity was already released"
+                    );
+                }
                 Err(error) => {
                     tracing::warn!(agent = %agent_name, error = %error, "failed to release agent identity");
                     return Err(anyhow::anyhow!(
@@ -1815,6 +1827,31 @@ mod tests {
             .release_agent_identity("worker-a", None)
             .await
             .expect("explicit release should succeed");
+
+        release.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn repeated_agent_release_treats_not_found_as_success() {
+        let server = MockServer::start();
+        let release = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(404).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "agent_not_found",
+                    "message": "Agent \"worker-a\" not found"
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .release_agent_identity("worker-a", Some("idempotent retry"))
+            .await
+            .expect("a retry after terminal release should be a successful no-op");
 
         release.assert_hits(1);
     }
