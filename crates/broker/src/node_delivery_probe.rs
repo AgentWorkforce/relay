@@ -58,6 +58,10 @@ const UNPARSED_TYPE_CAPACITY: usize = 16;
 /// Cap on a retained serde error string.
 const ERROR_EXCERPT_LIMIT: usize = 300;
 
+/// Cap on per-agent rows. A broker hosts tens of agents; this bounds the map
+/// against a peer inventing names.
+const AGENT_STATS_CAPACITY: usize = 256;
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -173,6 +177,68 @@ pub(crate) struct AgentCursorView {
     pub(crate) has_sequenced_position: bool,
 }
 
+/// Per-agent delivery tally.
+///
+/// The global counters answer "is this broker receiving anything". They cannot
+/// answer "is *this* agent deaf", which is the question an operator actually
+/// has — see relay#1593, where sends kept reporting `recipientMatched: true`
+/// and `pending_messages` stayed 0 on the affected agents while unaffected
+/// agents on the same broker delivered normally. Global counters look healthy
+/// throughout that failure, and the recent-frame ring is FIFO, so on a busy
+/// broker the relevant frames are evicted long before anyone looks.
+///
+/// These rows persist per agent, so the diagnosis is a single read:
+/// `delivers_seen` not advancing for the agent means the frame never reached
+/// this broker (look upstream); advancing while `injected` does not means the
+/// delivery book discarded it, and the decision counts say which way.
+/// `last_injected_at_ms` is the per-route last-confirmed-delivery asked for in
+/// relay#1593 — it separates a deaf agent from a merely quiet one.
+#[derive(Debug, Default, Clone)]
+struct AgentStats {
+    agent_id: String,
+    delivers_seen: u64,
+    decision_deliver: u64,
+    decision_duplicate: u64,
+    decision_stale: u64,
+    decision_gap: u64,
+    decision_identity_reject: u64,
+    injected: u64,
+    surfaced_and_acked: u64,
+    held_for_manual_flush: u64,
+    surface_failed: u64,
+    acked_without_surfacing: u64,
+    rejected_identity: u64,
+    last_deliver_at_ms: u64,
+    last_injected_at_ms: u64,
+}
+
+impl AgentStats {
+    fn to_json(&self, name: &str) -> Value {
+        json!({
+            "agent": name,
+            "agent_id": self.agent_id,
+            "delivers_seen": self.delivers_seen,
+            "decisions": {
+                "deliver": self.decision_deliver,
+                "duplicate": self.decision_duplicate,
+                "stale": self.decision_stale,
+                "gap": self.decision_gap,
+                "identity_reject": self.decision_identity_reject,
+            },
+            "dispositions": {
+                "injected": self.injected,
+                "surfaced_and_acked": self.surfaced_and_acked,
+                "held_for_manual_flush": self.held_for_manual_flush,
+                "surface_failed": self.surface_failed,
+                "acked_without_surfacing": self.acked_without_surfacing,
+                "rejected_identity": self.rejected_identity,
+            },
+            "last_deliver_at_ms": non_zero(self.last_deliver_at_ms),
+            "last_injected_at_ms": non_zero(self.last_injected_at_ms),
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 struct Counters {
     text_frames: AtomicU64,
@@ -203,6 +269,7 @@ struct Counters {
 #[derive(Debug, Default)]
 struct Retained {
     recent: std::collections::VecDeque<RecentDeliver>,
+    agents: BTreeMap<String, AgentStats>,
     last_parse_failure: Option<ParseFailure>,
     unparsed_frame_types: BTreeMap<String, u64>,
     cursors: CursorSnapshot,
@@ -251,9 +318,7 @@ impl NodeDeliveryProbe {
                 .map(|found| found.to_string())
         });
         let mut error = error.to_string();
-        if error.len() > ERROR_EXCERPT_LIMIT {
-            error.truncate(ERROR_EXCERPT_LIMIT);
-        }
+        truncate_on_char_boundary(&mut error, ERROR_EXCERPT_LIMIT);
         let Ok(mut retained) = self.retained.lock() else {
             return;
         };
@@ -309,8 +374,9 @@ impl NodeDeliveryProbe {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        let now = now_ms();
         let entry = RecentDeliver {
-            at_ms: now_ms(),
+            at_ms: now,
             agent: deliver.agent.clone(),
             agent_id: deliver.agent_id.clone(),
             delivery_id: deliver.delivery_id.clone(),
@@ -327,6 +393,21 @@ impl NodeDeliveryProbe {
             retained.recent.pop_front();
         }
         retained.recent.push_back(entry);
+
+        // Per-agent row: survives the ring's FIFO eviction, which is what makes
+        // a single deaf agent diagnosable on a busy broker. See `AgentStats`.
+        if let Some(stats) = agent_row(&mut retained.agents, &deliver.agent) {
+            stats.agent_id.clone_from(&deliver.agent_id);
+            stats.delivers_seen += 1;
+            stats.last_deliver_at_ms = now;
+            match decision {
+                DeliveryDecision::Deliver { .. } => stats.decision_deliver += 1,
+                DeliveryDecision::Duplicate { .. } => stats.decision_duplicate += 1,
+                DeliveryDecision::Stale { .. } => stats.decision_stale += 1,
+                DeliveryDecision::Gap { .. } => stats.decision_gap += 1,
+                DeliveryDecision::IdentityReject => stats.decision_identity_reject += 1,
+            }
+        }
     }
 
     /// Called once `handle_fleet_deliver` knows where the frame ended up. The
@@ -353,6 +434,21 @@ impl NodeDeliveryProbe {
             .find(|entry| entry.delivery_id == deliver.delivery_id)
         {
             entry.disposition = Some(disposition.as_str());
+        }
+        if let Some(stats) = agent_row(&mut retained.agents, &deliver.agent) {
+            match disposition {
+                DeliverDisposition::Injected => {
+                    stats.injected += 1;
+                    // The per-route "last confirmed delivery" relay#1593 asked
+                    // for: it separates a deaf agent from a merely quiet one.
+                    stats.last_injected_at_ms = now_ms();
+                }
+                DeliverDisposition::SurfacedAndAcked => stats.surfaced_and_acked += 1,
+                DeliverDisposition::HeldForManualFlush => stats.held_for_manual_flush += 1,
+                DeliverDisposition::SurfaceFailed => stats.surface_failed += 1,
+                DeliverDisposition::AckedWithoutSurfacing => stats.acked_without_surfacing += 1,
+                DeliverDisposition::RejectedIdentity => stats.rejected_identity += 1,
+            }
         }
     }
 
@@ -382,7 +478,7 @@ impl NodeDeliveryProbe {
     fn snapshot(&self, connected: bool, token_present: bool) -> Value {
         let c = &self.counters;
         let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
-        let (recent, parse_failure, unparsed, cursors) = match self.retained.lock() {
+        let (recent, parse_failure, unparsed, cursors, agents) = match self.retained.lock() {
             Ok(retained) => (
                 retained
                     .recent
@@ -392,10 +488,21 @@ impl NodeDeliveryProbe {
                 retained.last_parse_failure.clone(),
                 retained.unparsed_frame_types.clone(),
                 retained.cursors.clone(),
+                retained
+                    .agents
+                    .iter()
+                    .map(|(name, stats)| stats.to_json(name))
+                    .collect::<Vec<_>>(),
             ),
             // A poisoned lock must not take the diagnostic offline; the
             // counters are still meaningful on their own.
-            Err(_) => (Vec::new(), None, BTreeMap::new(), CursorSnapshot::default()),
+            Err(_) => (
+                Vec::new(),
+                None,
+                BTreeMap::new(),
+                CursorSnapshot::default(),
+                Vec::new(),
+            ),
         };
 
         json!({
@@ -433,6 +540,7 @@ impl NodeDeliveryProbe {
                 "rejected_identity": load(&c.rejected_identity),
                 "rejected_sequence_gap": load(&c.rejected_sequence_gap),
             },
+            "agents": agents,
             "recent_delivers": recent,
             "unparsed_frame_types": unparsed,
             "last_parse_failure": parse_failure.map(|failure| json!({
@@ -451,6 +559,40 @@ impl NodeDeliveryProbe {
             })).collect::<Vec<_>>(),
         })
     }
+}
+
+/// Fetch (or create) an agent's row, refusing to grow past
+/// [`AGENT_STATS_CAPACITY`]. Returns `None` once full so an invented name
+/// cannot displace the rows an operator is watching.
+fn agent_row<'a>(
+    agents: &'a mut BTreeMap<String, AgentStats>,
+    agent: &str,
+) -> Option<&'a mut AgentStats> {
+    if !agents.contains_key(agent) && agents.len() >= AGENT_STATS_CAPACITY {
+        return None;
+    }
+    Some(agents.entry(agent.to_string()).or_default())
+}
+
+/// Shorten `value` to at most `limit` BYTES without splitting a character.
+///
+/// `String::truncate` panics when the index is not a UTF-8 boundary. The string
+/// this bounds is a serde error, and serde quotes the offending input into its
+/// message — so a frame carrying a long non-ASCII discriminator can put a
+/// multi-byte character across the limit. That panic would unwind the sole
+/// spawned node-control client task and take realtime delivery down with it:
+/// a malformed frame would make the broker deaf, through the very code added
+/// to diagnose deafness. Walking back to a boundary keeps the byte bound
+/// (unlike taking N `chars`, which can still admit 4x the bytes).
+fn truncate_on_char_boundary(value: &mut String, limit: usize) {
+    if value.len() <= limit {
+        return;
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
 }
 
 /// Render a never-set timestamp as `null` rather than `0`, so a reader cannot
@@ -617,6 +759,132 @@ mod tests {
 
     /// A never-set timestamp renders as null, so "no frame has ever arrived"
     /// cannot be misread as "a frame arrived at the unix epoch".
+    /// relay#1680 review (P1). `record_parse_failure` runs inside the sole
+    /// spawned node-control client task. serde quotes the offending input into
+    /// its error text, so a frame with a long non-ASCII discriminator puts a
+    /// multi-byte character across the 300-byte limit; `String::truncate` then
+    /// panics, unwinds that task, and takes realtime delivery with it. A
+    /// malformed frame would make the broker deaf through the very code added
+    /// to diagnose deafness.
+    #[test]
+    fn oversized_non_ascii_parse_error_does_not_panic() {
+        let probe = NodeDeliveryProbe::new();
+        // One ASCII byte then 2-byte chars, so every subsequent boundary is at
+        // an odd offset and the even 300-byte limit lands mid-character.
+        let long_error = format!("a{}", "é".repeat(400));
+        assert!(long_error.len() > ERROR_EXCERPT_LIMIT);
+        assert!(!long_error.is_char_boundary(ERROR_EXCERPT_LIMIT));
+
+        probe.record_parse_failure(&long_error, r#"{"type":"deliver"}"#);
+
+        let snapshot = probe.snapshot_with_token(true);
+        let recorded = snapshot["last_parse_failure"]["error"]
+            .as_str()
+            .expect("the failure must still be recorded");
+        // Truncated on a boundary, and still bounded in BYTES — taking N chars
+        // instead would admit up to 4x the limit.
+        assert!(recorded.len() <= ERROR_EXCERPT_LIMIT);
+        assert!(long_error.starts_with(recorded));
+        assert_eq!(snapshot["socket"]["parse_failures"], 1);
+    }
+
+    #[test]
+    fn truncation_keeps_whole_characters_and_the_byte_bound() {
+        let mut value = format!("a{}", "é".repeat(400));
+        assert!(!value.is_char_boundary(ERROR_EXCERPT_LIMIT));
+        truncate_on_char_boundary(&mut value, ERROR_EXCERPT_LIMIT);
+        assert!(value.len() <= ERROR_EXCERPT_LIMIT);
+        // `String::truncate` would have panicked on that index; this stops one
+        // byte short of it, on the boundary.
+        assert_eq!(value.len(), ERROR_EXCERPT_LIMIT - 1);
+        assert!(value.starts_with('a'));
+        assert!(value.chars().skip(1).all(|c| c == 'é'));
+
+        let mut short = "ascii".to_string();
+        truncate_on_char_boundary(&mut short, ERROR_EXCERPT_LIMIT);
+        assert_eq!(short, "ascii");
+    }
+
+    /// relay#1593: sends kept reporting `recipientMatched: true` while
+    /// `pending_messages` stayed 0 on the affected agents and unaffected
+    /// agents on the same broker delivered normally. Global counters look
+    /// healthy right through that, so the per-agent rows are what make a
+    /// single deaf agent diagnosable.
+    #[test]
+    fn per_agent_rows_localize_a_single_deaf_agent() {
+        let probe = NodeDeliveryProbe::new();
+
+        // A healthy agent: frame arrives and is injected.
+        let healthy = deliver("healthy-agent", "ag_ok", "del_ok", 1);
+        probe.record_decision(&healthy, &DeliveryDecision::Deliver { up_to_seq: 1 });
+        probe.record_disposition(&healthy, DeliverDisposition::Injected);
+
+        // A deaf agent: the frame reaches the broker but the delivery book
+        // rejects it on identity, so it never enters the pending queue —
+        // which is exactly why `pending_messages` reads 0 in relay#1593.
+        let deaf = deliver("deaf-agent", "ag_stale", "del_stale", 7);
+        probe.record_decision(&deaf, &DeliveryDecision::IdentityReject);
+        probe.record_disposition(&deaf, DeliverDisposition::RejectedIdentity);
+
+        let snapshot = probe.snapshot_with_token(true);
+        let rows = snapshot["agents"].as_array().expect("agents array");
+        let row = |name: &str| {
+            rows.iter()
+                .find(|row| row["agent"] == name)
+                .unwrap_or_else(|| panic!("missing row for {name}"))
+                .clone()
+        };
+
+        let healthy_row = row("healthy-agent");
+        assert_eq!(healthy_row["delivers_seen"], 1);
+        assert_eq!(healthy_row["dispositions"]["injected"], 1);
+        assert!(healthy_row["last_injected_at_ms"].is_u64());
+
+        let deaf_row = row("deaf-agent");
+        // The frame DID arrive — so this is not an upstream problem...
+        assert_eq!(deaf_row["delivers_seen"], 1);
+        assert_eq!(deaf_row["decisions"]["identity_reject"], 1);
+        // ...but it was never injected, and the per-route last-confirmed
+        // delivery relay#1593 asked for is null, separating deaf from quiet.
+        assert_eq!(deaf_row["dispositions"]["injected"], 0);
+        assert_eq!(deaf_row["last_injected_at_ms"], Value::Null);
+        assert!(deaf_row["last_deliver_at_ms"].is_u64());
+    }
+
+    /// An agent that is merely quiet has no row at all, which is a different
+    /// answer from "frames arrived and went nowhere" and must not be confused
+    /// with it.
+    #[test]
+    fn an_agent_with_no_frames_has_no_row() {
+        let probe = NodeDeliveryProbe::new();
+        let frame = deliver("busy-agent", "ag_1", "del_1", 1);
+        probe.record_decision(&frame, &DeliveryDecision::Deliver { up_to_seq: 1 });
+
+        let snapshot = probe.snapshot_with_token(true);
+        let rows = snapshot["agents"].as_array().expect("agents array");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["agent"], "busy-agent");
+    }
+
+    #[test]
+    fn agent_rows_are_bounded() {
+        let probe = NodeDeliveryProbe::new();
+        for index in 0..(AGENT_STATS_CAPACITY + 20) {
+            let frame = deliver(&format!("agent-{index}"), "ag", &format!("del_{index}"), 1);
+            probe.record_decision(&frame, &DeliveryDecision::Deliver { up_to_seq: 1 });
+        }
+        let snapshot = probe.snapshot_with_token(true);
+        assert_eq!(
+            snapshot["agents"].as_array().expect("agents").len(),
+            AGENT_STATS_CAPACITY
+        );
+        // Every frame is still counted globally even when its row is refused.
+        assert_eq!(
+            snapshot["decisions"]["deliver"],
+            (AGENT_STATS_CAPACITY + 20) as u64
+        );
+    }
+
     #[test]
     fn absent_timestamps_render_as_null() {
         let snapshot = NodeDeliveryProbe::new().snapshot_with_token(false);

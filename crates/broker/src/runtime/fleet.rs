@@ -816,7 +816,6 @@ impl BrokerRuntime {
             FleetControlEvent::Connected => {
                 self.node_delivery_token_present = true;
                 self.node_delivery_connected = true;
-                self.node_delivery_probe.record_connected();
                 // Node delivery is live: message delivery flows solely over
                 // /v1/node/ws. The workspace firehose delivery path was removed,
                 // so there is no firehose injection to suppress here.
@@ -827,7 +826,6 @@ impl BrokerRuntime {
             }
             FleetControlEvent::Disconnected => {
                 self.node_delivery_connected = false;
-                self.node_delivery_probe.record_disconnected();
                 tracing::warn!(
                     target = "relay_broker::fleet",
                     "fleet node control disconnected"
@@ -878,14 +876,12 @@ impl BrokerRuntime {
                     self.node_delivery_probe
                         .record_disposition(&deliver, DeliverDisposition::Injected);
                     self.fleet_delivery_book.commit_received(&deliver);
-                    self.publish_fleet_delivery_cursors();
                     return;
                 }
                 Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush) => {
                     self.node_delivery_probe
                         .record_disposition(&deliver, DeliverDisposition::HeldForManualFlush);
                     self.fleet_delivery_book.commit_received(&deliver);
-                    self.publish_fleet_delivery_cursors();
                     return;
                 }
                 Err(error) => {
@@ -939,7 +935,6 @@ impl BrokerRuntime {
                 return;
             }
         };
-        self.publish_fleet_delivery_cursors();
         let _ = self
             .fleet_control_tx
             .send(FleetControlCommand::Send(delivery_ack(
@@ -949,13 +944,22 @@ impl BrokerRuntime {
             .await;
     }
 
-    /// Republish the delivery book's cursors into the shared probe so
-    /// `GET /api/node-delivery` can report them without posting a request to
-    /// this event loop. A stale `cursors_published_at_ms` next to a climbing
-    /// frame counter is itself the signal that this loop has wedged.
-    fn publish_fleet_delivery_cursors(&self) {
-        self.node_delivery_probe
-            .publish_cursors(self.fleet_delivery_book.cursor_views());
+    /// Republish the delivery book's cursors into the shared probe when the
+    /// book moved, so `GET /api/node-delivery` can report them without posting
+    /// a request to this event loop. A stale `cursors_published_at_ms` next to
+    /// a climbing frame counter is itself the signal that this loop has wedged.
+    ///
+    /// Driven by the book's dirty flag from one place in the event loop —
+    /// alongside `flush_persisted_stores` — rather than from the deliver path.
+    /// Publishing only on delivery meant a worker confirmation, manual flush,
+    /// registration, identity rebind, or release could advance the book and
+    /// leave the endpoint serving the previous acknowledgement indefinitely,
+    /// until some later frame happened to arrive.
+    pub(super) fn publish_fleet_delivery_cursors_if_dirty(&mut self) {
+        if self.fleet_delivery_book.take_cursor_dirty() {
+            self.node_delivery_probe
+                .publish_cursors(self.fleet_delivery_book.cursor_views());
+        }
     }
 
     /// Surface a node `deliver` frame by branching on its payload `type`:

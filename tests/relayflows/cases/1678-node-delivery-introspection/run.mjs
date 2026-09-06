@@ -31,11 +31,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { ensureEngine, startEngine } from './relaycast-engine.mjs';
+import { ensureEngine, startEngine } from '../../shared/relaycast-engine.mjs';
 
 const CASE_ID = '1678-node-delivery-introspection';
 const AGENT = 'deliver-probe-agent';
 const BROKER_API_KEY = 'rk_proof_broker_api_key';
+/** A readiness probe either answers immediately or the peer is not ready. */
+const READINESS_TIMEOUT_MS = 2_000;
+/** Normal API calls: generous, but never unbounded. */
+const REQUEST_TIMEOUT_MS = 15_000;
+const ENGINE_READY_TIMEOUT_MS = 60_000;
 
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
@@ -71,15 +76,14 @@ let broker;
 
 try {
   const serveBin = await ensureEngine(engineDir, log);
-  const enginePort = await freePort();
-  const engineUrl = `http://127.0.0.1:${enginePort}`;
-  engine = await startEngine(serveBin, engineDir, enginePort, log);
+  // `freePort` reserves an ephemeral port and closes it again, so the engine
+  // re-binds a port that was briefly free — another process on a busy CI box
+  // can take it in between and the engine dies on bind. The engine's serve
+  // binary takes an explicit --port, so it cannot be handed 0 the way the
+  // broker is; instead treat a bind failure as retryable and try a fresh port.
+  const { child: startedEngine, url: engineUrl } = await startEngineOnFreePort(serveBin);
+  engine = startedEngine;
   const eng = engineClient(engineUrl);
-  await waitFor(async () => {
-    if (engine.exitCode !== null) throw new Error(`engine exited with code ${engine.exitCode}`);
-    await fetch(engineUrl);
-    return true;
-  }, 'the Relaycast engine to accept connections');
 
   const ws = await eng('POST', '/v1/workspaces', { name: 'relayflow-1678' });
   const workspaceKey = ws.body?.data?.api_key;
@@ -268,6 +272,53 @@ try {
   await rm(workDir, { recursive: true, force: true });
 }
 
+/**
+ * Start the engine, retrying on a fresh port if it fails to come up.
+ *
+ * Distinguishes "this port was taken" (retry) from "the engine is broken"
+ * (fail loudly) by requiring the process to both stay alive and answer HTTP.
+ */
+async function startEngineOnFreePort(serveBin, attempts = 5) {
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const port = await freePort();
+    const url = `http://127.0.0.1:${port}`;
+    const child = await startEngine(serveBin, engineDir, port, log);
+    try {
+      await waitFor(
+        async () => {
+          if (child.exitCode !== null) {
+            throw new Error(`engine exited with code ${child.exitCode}`);
+          }
+          await fetchBounded(url, {}, READINESS_TIMEOUT_MS);
+          return true;
+        },
+        `the Relaycast engine to accept connections on ${port}`,
+        ENGINE_READY_TIMEOUT_MS
+      );
+      return { child, url };
+    } catch (error) {
+      last = error;
+      log(`engine did not come up on ${port} (attempt ${attempt}/${attempts}): ${error.message}`);
+      await stop(child);
+    }
+  }
+  throw new Error(`The Relaycast engine never came up: ${last?.message ?? 'unknown failure'}.`);
+}
+
+/**
+ * `fetch` with an explicit deadline.
+ *
+ * Node's fetch has no default timeout, so a peer that completes the TCP
+ * handshake and then never responds leaves the promise pending forever. The
+ * enclosing `waitFor` cannot rescue that — it awaits this call — so the case
+ * would hang to the dispatcher's 900s cap and report an infrastructure failure
+ * instead of a result.
+ */
+async function fetchBounded(url, init, timeoutMs) {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 function requiredValue(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable ${name}.`);
@@ -293,11 +344,15 @@ function freePort() {
 }
 function engineClient(baseUrl) {
   return async (method, route, body, headers = {}) => {
-    const res = await fetch(`${baseUrl}${route}`, {
-      method,
-      headers: { 'content-type': 'application/json', ...headers },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const res = await fetchBounded(
+      `${baseUrl}${route}`,
+      {
+        method,
+        headers: { 'content-type': 'application/json', ...headers },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+      REQUEST_TIMEOUT_MS
+    );
     const text = await res.text();
     let parsed = {};
     try {
@@ -310,14 +365,18 @@ function engineClient(baseUrl) {
 }
 function brokerClient(baseUrl) {
   return async (method, route, body) => {
-    const res = await fetch(`${baseUrl}${route}`, {
-      method,
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${BROKER_API_KEY}`,
+    const res = await fetchBounded(
+      `${baseUrl}${route}`,
+      {
+        method,
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${BROKER_API_KEY}`,
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+      REQUEST_TIMEOUT_MS
+    );
     const text = await res.text();
     if (!res.ok) throw new Error(`${method} ${route} -> ${res.status} ${text.slice(0, 300)}`);
     return text ? JSON.parse(text) : {};

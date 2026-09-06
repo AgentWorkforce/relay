@@ -686,8 +686,26 @@ struct ActiveAgentBinding {
     authoritative: bool,
 }
 
+/// Bookkeeping flag that never participates in equality.
+///
+/// The book derives `PartialEq` and tests assert things like "identity
+/// rejection must not mutate state" by comparing a book against a snapshot.
+/// Whether a cursor publish is still pending is not part of the book's
+/// identity, so it must not make those assertions pass or fail.
+#[derive(Debug, Default, Clone, Eq)]
+pub(crate) struct CursorDirtyFlag(bool);
+
+impl PartialEq for CursorDirtyFlag {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FleetDeliveryBook {
+    /// Set by every mutator, cleared by the runtime once it has republished
+    /// the cursor snapshot. See [`FleetDeliveryBook::take_cursor_dirty`].
+    dirty: CursorDirtyFlag,
     agents: HashMap<String, AgentDeliveryCursor>,
     active_agent_bindings_by_name: HashMap<String, ActiveAgentBinding>,
     active_agent_names_by_id: HashMap<String, String>,
@@ -699,6 +717,7 @@ impl FleetDeliveryBook {
     const RETIRED_AGENT_ID_CAPACITY: usize = 512;
 
     fn forget_retired_identity(&mut self, agent_id: &str) {
+        self.mark_cursors_dirty();
         if self.retired_agent_names_by_id.remove(agent_id).is_some() {
             self.retired_agent_id_order
                 .retain(|retired_id| retired_id != agent_id);
@@ -706,6 +725,7 @@ impl FleetDeliveryBook {
     }
 
     fn retire_identity(&mut self, agent_id: String, agent_name: String) {
+        self.mark_cursors_dirty();
         self.forget_retired_identity(&agent_id);
         while self.retired_agent_id_order.len() >= Self::RETIRED_AGENT_ID_CAPACITY {
             if let Some(evicted) = self.retired_agent_id_order.pop_front() {
@@ -729,6 +749,7 @@ impl FleetDeliveryBook {
     }
 
     fn bind_identity(&mut self, agent: &str, agent_id: &str, authoritative: bool) -> bool {
+        self.mark_cursors_dirty();
         if !authoritative && self.nonauthoritative_binding_conflicts(agent, agent_id) {
             return false;
         }
@@ -787,6 +808,7 @@ impl FleetDeliveryBook {
         agent: impl Into<String>,
         agent_id: impl Into<String>,
     ) {
+        self.mark_cursors_dirty();
         let agent = agent.into();
         let agent_id = agent_id.into();
         self.bind_identity(&agent, &agent_id, true);
@@ -815,6 +837,7 @@ impl FleetDeliveryBook {
         agent_id: impl Into<String>,
         up_to_seq: u64,
     ) {
+        self.mark_cursors_dirty();
         let agent = agent.into();
         let agent_id = agent_id.into();
         debug_assert!(self
@@ -848,6 +871,7 @@ impl FleetDeliveryBook {
         deliveries: &[&Deliver],
         ack_floor: Option<u64>,
     ) {
+        self.mark_cursors_dirty();
         let mut sequenced = deliveries
             .iter()
             .copied()
@@ -1009,6 +1033,24 @@ impl FleetDeliveryBook {
     /// a silent agent could not be told apart from one whose cursor had been
     /// retired underneath it. Ordered by name to keep the endpoint's output
     /// stable between reads.
+    /// Mark the cursor snapshot stale. Called by every mutator; the runtime
+    /// drains this once per event-loop turn.
+    fn mark_cursors_dirty(&mut self) {
+        self.dirty.0 = true;
+    }
+
+    /// Consume the pending-publish flag.
+    ///
+    /// Mirrors the `take_dirty()` used by the persisted stores so cursor
+    /// publication happens in exactly one place in the event loop rather than
+    /// at each mutation site. Publishing only from the deliver path left the
+    /// endpoint reporting obsolete acknowledgements and retired agents
+    /// whenever a worker confirmation, manual flush, registration, identity
+    /// rebind, or release moved the book without a later frame arriving.
+    pub(crate) fn take_cursor_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty.0)
+    }
+
     pub(crate) fn cursor_views(&self) -> Vec<crate::node_delivery_probe::AgentCursorView> {
         let mut views: Vec<_> = self
             .agents
@@ -1032,6 +1074,7 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn commit_received(&mut self, deliver: &Deliver) -> u64 {
+        self.mark_cursors_dirty();
         if !self.bind_identity(&deliver.agent, &deliver.agent_id, false) {
             return self.active_up_to_seq(&deliver.agent);
         }
@@ -1072,6 +1115,7 @@ impl FleetDeliveryBook {
         &mut self,
         receipt: &RelaycastDeliveryReceipt,
     ) -> Option<u64> {
+        self.mark_cursors_dirty();
         let cursor = self.agents.get_mut(receipt.agent_id.as_str())?;
         cursor.agent_name = receipt.agent.to_string();
         if receipt.seq == 0 {
@@ -1093,6 +1137,7 @@ impl FleetDeliveryBook {
     /// out-of-order confirmation stays held on this agent's cursor until every
     /// lower received sequence has also confirmed.
     pub(crate) fn commit_confirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
+        self.mark_cursors_dirty();
         self.commit_received(deliver);
         let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
         if deliver.seq == 0 {
@@ -1193,6 +1238,7 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
+        self.mark_cursors_dirty();
         self.commit_received(deliver);
         let receipt = RelaycastDeliveryReceipt {
             agent: deliver.agent.clone().into(),
@@ -1226,6 +1272,7 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn remove_agent(&mut self, agent: &str) {
+        self.mark_cursors_dirty();
         if let Some(binding) = self.active_agent_bindings_by_name.remove(agent) {
             self.active_agent_names_by_id.remove(&binding.agent_id);
             self.agents.remove(&binding.agent_id);
@@ -1820,6 +1867,40 @@ fn connect_error_is_unauthorized(error: &tokio_tungstenite::tungstenite::Error) 
     )
 }
 
+/// Records a node-control session's connect on creation and its matching
+/// disconnect on drop.
+///
+/// `run_connected_once` has twenty-odd `return ControlRunResult::*` paths —
+/// send failures, read failures, idle timeout, shutdown, unauthorized. Asking
+/// each of them to remember a `record_disconnected` guarantees one eventually
+/// will not. More importantly this state must be owned by the socket task, not
+/// the runtime: reporting it from `handle_fleet_control_event` means a wedged
+/// event loop never processes `Disconnected`, so the endpoint keeps claiming
+/// `connected: true` for a dead socket — the exact failure it exists to
+/// diagnose. Drop runs on every exit path, including a panic unwind.
+struct ProbeSessionGuard<'a> {
+    probe: Option<&'a std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
+}
+
+impl<'a> ProbeSessionGuard<'a> {
+    fn enter(
+        probe: Option<&'a std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
+    ) -> Self {
+        if let Some(probe) = probe {
+            probe.record_connected();
+        }
+        Self { probe }
+    }
+}
+
+impl Drop for ProbeSessionGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(probe) = self.probe {
+            probe.record_disconnected();
+        }
+    }
+}
+
 async fn run_connected_once(
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
@@ -1890,6 +1971,8 @@ async fn run_connected_once(
             return ControlRunResult::Disconnected;
         }
     };
+    // Socket-owned connectivity: armed here, released by Drop on every exit.
+    let _probe_session = ProbeSessionGuard::enter(config.probe.as_ref());
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
@@ -3952,6 +4035,228 @@ mod tests {
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
+    /// Poll the probe until `ready` holds, so tests observe state transitions
+    /// without sleeping on a machine whose load they do not control.
+    async fn wait_for_probe(
+        probe: &std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+        ready: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        for _ in 0..1_000 {
+            if ready(&probe.snapshot_with_token(true)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "probe never reached the expected state: {}",
+            probe.snapshot_with_token(true)
+        );
+    }
+
+    /// relay#1680 review (P2), raised independently by three reviewers.
+    ///
+    /// Connectivity must be owned by the socket task, not by the runtime. When
+    /// it was recorded from `handle_fleet_control_event`, a wedged event loop
+    /// never processed `Disconnected`, so the endpoint kept reporting
+    /// `connected: true` for a dead socket — the exact failure it exists to
+    /// diagnose. The receiver is DROPPED here to stand in for a runtime that
+    /// will never consume another event; the probe must still track the
+    /// session, and must show disconnected once the session ends.
+    #[tokio::test]
+    async fn socket_owns_connectivity_when_the_runtime_never_consumes_events() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        // A runtime that is gone/wedged: nothing will ever read these.
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let probe = std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+        let observed = probe.clone();
+
+        // The server holds the connection open and never closes it. Letting the
+        // peer close would race the client's own timer branches: a periodic
+        // write to an already-closed socket returns `Disconnected` before the
+        // read branch has drained anything. The test ends the session itself,
+        // via `Shutdown`, so the exit path is chosen rather than raced.
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            // The session is established; the guard must have armed by now.
+            let _ = next_node_to_server(&mut ws).await;
+            assert_eq!(
+                observed.snapshot_with_token(true)["connected"],
+                serde_json::json!(true),
+                "connect must be recorded by the socket task, not the runtime"
+            );
+            // Park until the client hangs up, without closing from this side.
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: Some(probe.clone()),
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            // Far beyond the test's lifetime: the periodic refresh must never
+            // fire here, or it becomes another way to exit the session.
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["connects"] == 1).await;
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .expect("shutdown should be accepted");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("mock node-control session should finish");
+        // Exiting via Shutdown rather than a peer close also proves the guard
+        // releases on a non-`Disconnected` return.
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
+
+        let snapshot = probe.snapshot_with_token(true);
+        // Exactly one connect, exactly one matching disconnect, released by the
+        // guard's Drop on whichever return path fired.
+        assert_eq!(snapshot["socket"]["connects"], 1);
+        assert_eq!(snapshot["socket"]["disconnects"], 1);
+        assert_eq!(
+            snapshot["connected"],
+            serde_json::json!(false),
+            "a closed socket must not keep reading as connected"
+        );
+    }
+
+    /// relay#1680 review (P2). Publishing cursors only from the deliver path
+    /// left the endpoint serving an obsolete ACK indefinitely: the deferred
+    /// (echo-confirmed) and manual-flush ACKs advance `acked_up_to_seq` well
+    /// after the frame was handled. Every mutator must mark the snapshot
+    /// stale so the event loop republishes it.
+    #[test]
+    fn every_delivery_book_mutation_marks_the_cursor_snapshot_stale() {
+        fn deliver_frame(agent: &str, agent_id: &str, seq: u64) -> Deliver {
+            Deliver {
+                v: crate::fleet_wire::FleetWireVersion,
+                agent: agent.to_string(),
+                agent_id: agent_id.to_string(),
+                delivery_id: format!("del_{seq}"),
+                msg_id: format!("msg_{seq}"),
+                seq,
+                mode: DeliveryMode::Wait,
+                payload: serde_json::json!({ "type": "dm.received" }),
+            }
+        }
+
+        // Each case: (name, mutation). All must leave the flag set.
+        type Mutation = (&'static str, Box<dyn Fn(&mut FleetDeliveryBook)>);
+        let cases: Vec<Mutation> = vec![
+            (
+                "commit_received",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_received(&deliver_frame("a", "ag_a", 1));
+                }),
+            ),
+            (
+                "commit_delivered",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_delivered(&deliver_frame("a", "ag_a", 2));
+                }),
+            ),
+            (
+                // relay#1680: the deferred-ACK path that previously never
+                // republished, so a confirmed delivery left a stale cursor.
+                "commit_confirmed_delivery",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_confirmed_delivery(&deliver_frame("a", "ag_a", 3));
+                }),
+            ),
+            (
+                "commit_acked_receipt",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_acked_receipt(&RelaycastDeliveryReceipt {
+                        agent: crate::ids::WorkerName::from("a"),
+                        agent_id: crate::ids::AgentId::from("ag_a"),
+                        delivery_id: crate::ids::DeliveryId::from("del_9"),
+                        msg_id: crate::ids::EventId::from("msg_9"),
+                        seq: 9,
+                    });
+                }),
+            ),
+            (
+                "bind_authoritative_identity",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.bind_authoritative_identity("a", "ag_a");
+                }),
+            ),
+            (
+                // `seed_cursor` asserts the name is already bound, so bind
+                // first and re-clear the flag to isolate the seed itself.
+                "seed_cursor",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.bind_authoritative_identity("a", "ag_a");
+                    book.take_cursor_dirty();
+                    book.seed_cursor("a", "ag_a", 4);
+                }),
+            ),
+            (
+                "restore_pending_agent",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    let frame = deliver_frame("a", "ag_a", 5);
+                    book.restore_pending_agent(&[&frame], Some(4));
+                }),
+            ),
+            (
+                "remove_agent",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.remove_agent("a");
+                }),
+            ),
+        ];
+
+        for (name, mutate) in cases {
+            let mut book = FleetDeliveryBook::default();
+            // Clear whatever setup left behind, then mutate.
+            book.take_cursor_dirty();
+            mutate(&mut book);
+            assert!(
+                book.take_cursor_dirty(),
+                "{name} must mark the cursor snapshot stale so the event loop republishes it"
+            );
+            // Draining is one-shot: a second take must report clean.
+            assert!(!book.take_cursor_dirty(), "{name} left the flag set twice");
+        }
+    }
+
     /// The instrument's headline claim: a `deliver` frame the broker cannot
     /// deserialize is still reported as having ARRIVED. That property lives in
     /// the ORDER of two statements in `handle_server_message` — count, then
@@ -3961,7 +4266,7 @@ mod tests {
     async fn probe_counts_an_unparseable_deliver_as_arrived() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
-        let (_command_tx, mut command_rx) = mpsc::channel(4);
+        let (command_tx, mut command_rx) = mpsc::channel(4);
         let (event_tx, mut event_rx) = mpsc::channel(8);
         let mut registration = Some(build_node_register(
             &test_manifest(),
@@ -4013,35 +4318,47 @@ mod tests {
             .await
             .unwrap();
 
-            ws.close(None).await.unwrap();
+            // Park without closing: a peer close races the client's timer
+            // branches, which can exit the session before the frames above are
+            // drained. The test ends it deterministically via `Shutdown`.
+            while ws.next().await.is_some() {}
         });
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            run_connected_once(
-                &FleetControlConfig {
-                    ws_url,
-                    node_token: Some("nt_test".to_string()),
-                    node_id: "node-test".to_string(),
-                    node_name: "host-test".to_string(),
-                    broker_version: "broker/test".to_string(),
-                    token_minter: None,
-                    session_token: None,
-                    read_idle_timeout: None,
-                    probe: Some(probe.clone()),
-                },
-                &mut command_rx,
-                &event_tx,
-                &mut registration,
-                &mut inventory,
-                &mut load,
-                Duration::from_millis(500),
-            ),
-        )
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: Some(probe.clone()),
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            // Both frames counted -> the client has drained the read side.
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["text_frames"] == 2).await;
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .expect("shutdown should be accepted");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(session, driver)
+        })
         .await
         .expect("mock node-control session should finish");
-        assert_eq!(result, ControlRunResult::Disconnected);
-        server.await.unwrap();
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
 
         let snapshot = probe.snapshot_with_token(true);
         // BOTH frames are counted as arrived, including the one that could not

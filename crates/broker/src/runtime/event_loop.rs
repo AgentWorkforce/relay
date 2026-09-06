@@ -394,6 +394,7 @@ impl BrokerRuntime {
             }
 
             self.flush_persisted_stores();
+            self.publish_fleet_delivery_cursors_if_dirty();
         }
 
         self.shutdown_runtime().await

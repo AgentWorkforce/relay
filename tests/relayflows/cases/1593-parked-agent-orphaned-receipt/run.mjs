@@ -32,7 +32,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { ensureEngine, startEngine } from './relaycast-engine.mjs';
+import { ensureEngine, startEngine } from '../../shared/relaycast-engine.mjs';
 
 const CASE_ID = '1593-parked-agent-orphaned-receipt';
 const AGENT = 'orphan-probe';
