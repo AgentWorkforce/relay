@@ -1,0 +1,37 @@
+name: Relay orchestration cleanroom qualification
+
+# GitHub only exposes workflow_dispatch for workflow files present on the
+# default branch. This deliberately inert definition publishes the input
+# contract. A qualification/<nonce> ref must replace this file with the full
+# verifier before any cleanroom or Fleet evidence can be created.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Run the read-only diagnosis or an immutable candidate qualification
+        type: choice
+        required: true
+        default: diagnosis
+        options:
+          - diagnosis
+          - qualification
+      relayfile_candidate_ref:
+        description: Immutable Relayfile candidate SHA for diagnosis (defaults to main)
+        type: string
+        required: false
+      qualification_manifest_json:
+        description: Manual qualification manifest JSON; releases use relay-qualification.json
+        type: string
+        required: false
+
+permissions: {}
+
+jobs:
+  dispatch-bootstrap-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Refuse to claim cleanroom qualification from the bootstrap
+        run: |
+          echo "::error title=Dispatch bootstrap only::Select a qualification/<nonce> ref containing the complete cleanroom verifier."
+          exit 1

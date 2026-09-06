@@ -1,0 +1,20 @@
+name: Relay package qualification
+
+# GitHub only exposes workflow_dispatch for workflow files present on the
+# default branch. This deliberately inert definition makes the candidate
+# workflow discoverable. A qualification/<nonce> ref must replace this file
+# with the complete, source-bound producer before it can create evidence.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch-bootstrap-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Refuse to claim package qualification from the bootstrap
+        run: |
+          echo "::error title=Dispatch bootstrap only::Select a qualification/<nonce> ref containing the complete candidate producer."
+          exit 1
