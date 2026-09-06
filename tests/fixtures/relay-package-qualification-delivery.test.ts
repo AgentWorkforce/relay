@@ -80,12 +80,30 @@ describe('trusted Relay package qualification delivery', () => {
     });
   });
 
+  it('accepts the Actions API path form with a ref suffix while keeping the path exact', () => {
+    expect(
+      validateWorkflowRunEvent(
+        workflowRunEvent({
+          path: `${CONTEXT.workflowPath}@${CONTEXT.sourceBranch}`,
+        })
+      )
+    ).toEqual(CONTEXT);
+  });
+
   it.each([
     ['main', { head_branch: 'main' }],
     ['an attacker-controlled nested qualification ref', { head_branch: 'qualification/attacker/payload' }],
     ['a traversal-shaped qualification ref', { head_branch: 'qualification/../main' }],
     ['a fork producer', { head_repository: { full_name: 'attacker/relay' } }],
     ['the wrong workflow path', { path: '.github/workflows/attacker.yml' }],
+    [
+      'the wrong workflow path with a trusted-looking ref suffix',
+      { path: '.github/workflows/attacker.yml@qualification/candidate' },
+    ],
+    [
+      'a workflow path with multiple ref suffixes',
+      { path: `${CONTEXT.workflowPath}@main@qualification/candidate` },
+    ],
     ['a non-manual event', { event: 'push' }],
     ['an incomplete run', { status: 'in_progress' }],
     ['a failed run', { conclusion: 'failure' }],

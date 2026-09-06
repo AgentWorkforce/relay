@@ -40,6 +40,13 @@ function boundedString(value, pattern, label) {
   return value;
 }
 
+function workflowPathWithoutRef(value) {
+  assert(typeof value === 'string', 'workflow_run.path must be a string');
+  const parts = value.split('@');
+  assert(parts.length <= 2, 'workflow_run.path must contain at most one ref suffix');
+  return parts[0];
+}
+
 export function validateWorkflowRunEvent(value) {
   const event = object(value, 'event');
   const repository = object(event.repository, 'event.repository');
@@ -47,7 +54,7 @@ export function validateWorkflowRunEvent(value) {
 
   const run = object(event.workflow_run, 'event.workflow_run');
   exactString(run.name, PRODUCER_WORKFLOW_NAME, 'workflow_run.name');
-  exactString(run.path, PRODUCER_WORKFLOW_PATH, 'workflow_run.path');
+  exactString(workflowPathWithoutRef(run.path), PRODUCER_WORKFLOW_PATH, 'workflow_run.path');
   exactString(run.event, 'workflow_dispatch', 'workflow_run.event');
   exactString(run.status, 'completed', 'workflow_run.status');
   exactString(run.conclusion, 'success', 'workflow_run.conclusion');
