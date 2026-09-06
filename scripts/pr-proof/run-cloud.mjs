@@ -95,8 +95,12 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
   // Credential-shaped values must be collapsed before arbitrary declared
   // substrings. Reversing this order can split a token and leave its tail in
   // diagnostic output.
-  let redacted = value.replace(LIVE_CREDENTIAL, (_match, prefix, body) =>
-    body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
+  let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body) =>
+    declaredSecrets.includes(match)
+      ? '[REDACTED_DECLARED_SECRET]'
+      : body.length <= 8
+        ? `${prefix}\u2026`
+        : `${prefix}\u2026${body.slice(-4)}`
   );
   for (const secret of declaredSecrets) {
     redacted = redacted.split(secret).join('[REDACTED_DECLARED_SECRET]');

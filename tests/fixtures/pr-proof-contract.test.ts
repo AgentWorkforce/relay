@@ -1836,6 +1836,26 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('short');
   });
 
+  it('fully redacts a declared secret that is itself credential-shaped', () => {
+    const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: declaredCredential,
+        status: 'failed',
+        failure: { message: `provider rejected ${declaredCredential}` },
+      },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: '[REDACTED_DECLARED_SECRET]',
+      status: 'failed',
+      failure: { message: 'provider rejected [REDACTED_DECLARED_SECRET]' },
+    });
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('mnop');
+  });
+
   it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
     const secret = 'overflow-run-id-secret';
     const diagnostic = terminalStatusDiagnostic(
