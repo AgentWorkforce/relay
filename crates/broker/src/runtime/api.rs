@@ -668,6 +668,9 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        let relaycast_agent_id = fleet_registration
+                            .as_ref()
+                            .map(|(token, _, _)| token.agent_id.clone());
                         if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
                         {
                             super::fleet::record_fleet_inventory_agent(
@@ -716,10 +719,7 @@ impl BrokerRuntime {
                                 || effective_spec.shadow_mode.is_some(),
                         });
                         let pid = workers.harness_pid(&name);
-                        let generation = workers
-                            .workers
-                            .get(&name)
-                            .map(|handle| handle.generation.to_string());
+                        let generation = workers.workers.get(&name).map(|handle| handle.generation);
                         state.agents.insert(
                             name.clone(),
                             broker::PersistedAgent {
@@ -736,6 +736,8 @@ impl BrokerRuntime {
                                 spec: Some(effective_spec.clone()),
                                 restart_policy: None,
                                 initial_task: effective_task,
+                                relaycast_agent_id,
+                                generation,
                             },
                         );
                         if paths.persist {
@@ -890,10 +892,36 @@ impl BrokerRuntime {
             ListenApiRequest::Release {
                 name,
                 reason,
+                expected_generation,
                 reply,
             } => {
                 if let Some(ref r) = reason {
                     tracing::info!(worker = %name, reason = %r, "releasing agent via HTTP API");
+                }
+                let current_generation = workers.workers.get(&name).map(|worker| worker.generation);
+                if let Some(expected) = expected_generation {
+                    let observed = current_generation.or_else(|| {
+                        state
+                            .pending_identity_releases
+                            .get(&name)
+                            .map(|pending| pending.generation)
+                    });
+                    if observed.is_some_and(|generation| generation != expected) {
+                        let _ = reply.send(Err(format!(
+                            "stale release generation for '{name}': expected {expected}, current generation is {}",
+                            observed.expect("checked as some")
+                        )));
+                        return;
+                    }
+                }
+                let fallback_agent_id = fleet_delivery_book
+                    .active_agent_id(name.as_str())
+                    .map(str::to_string);
+                let mut exact_identity = current_generation.and_then(|generation| {
+                    state.defer_identity_release(&name, generation, fallback_agent_id.as_deref())
+                });
+                if exact_identity.is_none() {
+                    exact_identity = state.pending_identity_releases.get(&name).cloned();
                 }
                 // Unregister from supervisor before release to prevent
                 // auto-restart of intentionally released agents.
@@ -915,23 +943,40 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        let relaycast_release_error = match relaycast_http
-                            .release_agent_identity(&name, reason.as_deref())
-                            .await
-                        {
-                            Ok(()) => {
-                                state.pending_identity_releases.remove(&name);
-                                None
-                            }
-                            Err(error) => {
-                                state.pending_identity_releases.insert(name.clone());
-                                tracing::warn!(
-                                    worker = %name,
-                                    error = %error,
-                                    "failed to release worker identity in relaycast"
-                                );
-                                Some(error.to_string())
-                            }
+                        let relaycast_release_error = match exact_identity.as_ref() {
+                            Some(identity) => match relaycast_http
+                                .release_agent_identity_exact(
+                                    &name,
+                                    &identity.agent_id,
+                                    reason.as_deref(),
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    state.clear_pending_identity_release(&name, identity);
+                                    None
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        worker = %name,
+                                        agent_id = %identity.agent_id,
+                                        generation = %identity.generation,
+                                        error = %error,
+                                        "failed to release exact worker identity in relaycast"
+                                    );
+                                    Some(error.to_string())
+                                }
+                            },
+                            // A broker with no Relaycast client has no remote
+                            // identity to clean up. Preserve the historical
+                            // local-only release behavior in that mode. When a
+                            // client exists, missing identity authority must
+                            // fail closed rather than reverting to a dangerous
+                            // name-only release.
+                            None if relaycast_http.relay_client().is_none() => None,
+                            None => Some(format!(
+                                "no immutable Relaycast identity was recorded for worker generation '{name}'; refusing unsafe name-only release"
+                            )),
                         };
                         let dropped = take_pending_for_worker(pending_deliveries, &name);
                         if !dropped.is_empty() {
@@ -1051,20 +1096,26 @@ impl BrokerRuntime {
                             // same-name worker may have been registered
                             // elsewhere, and the engine would otherwise
                             // dispatch this retry to that live worker. The
-                            // first local HTTP release records its failed
-                            // identity cleanup in `pending_identity_releases`;
-                            // only that explicit pending marker is eligible
-                            // for a remote retry.
-                            let retry_identity = state.pending_identity_releases.contains(&name);
-                            let relaycast_release_error = if !retry_identity {
-                                tracing::debug!(
-                                    worker = %name,
-                                    "skipping duplicate Relaycast release without pending identity cleanup"
-                                );
-                                None
-                            } else {
-                                match relaycast_http
-                                    .release_agent_identity(&name, reason.as_deref())
+                            // spawn/reap lifecycle records its immutable id and
+                            // process generation in
+                            // `pending_identity_releases`; only that exact
+                            // marker is eligible for a remote retry.
+                            let retry_identity =
+                                state.pending_identity_releases.get(&name).cloned();
+                            let relaycast_release_error = match retry_identity.as_ref() {
+                                None => {
+                                    tracing::debug!(
+                                        worker = %name,
+                                        "skipping duplicate Relaycast release without pending identity cleanup"
+                                    );
+                                    None
+                                }
+                                Some(identity) => match relaycast_http
+                                    .release_agent_identity_exact(
+                                        &name,
+                                        &identity.agent_id,
+                                        reason.as_deref(),
+                                    )
                                     .await
                                 {
                                     Ok(()) => None,
@@ -1076,7 +1127,7 @@ impl BrokerRuntime {
                                         );
                                         Some(error.to_string())
                                     }
-                                }
+                                },
                             };
                             // Idempotent release is still terminal for any stale
                             // attach state left behind after the process exited.
@@ -1092,8 +1143,10 @@ impl BrokerRuntime {
                                 "terminal worker was released",
                             );
                             state.agents.remove(&name);
-                            if relaycast_release_error.is_none() {
-                                state.pending_identity_releases.remove(&name);
+                            if let (None, Some(identity)) =
+                                (&relaycast_release_error, retry_identity.as_ref())
+                            {
+                                state.clear_pending_identity_release(&name, identity);
                             }
                             if paths.persist {
                                 let _ = state.save(&paths.state);
@@ -2894,6 +2947,8 @@ fn persist_agent_channels(
             spec: Some(spec.clone()),
             restart_policy: None,
             initial_task: None,
+            relaycast_agent_id: None,
+            generation: None,
         });
     agent.runtime = runtime;
     agent.parent = parent;

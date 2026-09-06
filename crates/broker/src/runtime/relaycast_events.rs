@@ -769,6 +769,9 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            let relaycast_agent_id = fleet_registration
+                .as_ref()
+                .map(|(token, _, _)| token.agent_id.clone());
             if let Some((token, invocation_id, session_ref)) = fleet_registration.take() {
                 super::fleet::record_fleet_inventory_agent(
                     fleet_control_tx,
@@ -808,6 +811,7 @@ pub(super) async fn spawn_worker_from_request(
                 is_shadow: false,
             });
             let pid = workers.harness_pid(&name);
+            let generation = workers.workers.get(&name).map(|handle| handle.generation);
             state.agents.insert(
                 name.clone(),
                 broker::PersistedAgent {
@@ -824,6 +828,8 @@ pub(super) async fn spawn_worker_from_request(
                     spec: Some(effective_spec.clone()),
                     restart_policy: None,
                     initial_task: effective_task,
+                    relaycast_agent_id,
+                    generation,
                 },
             );
             if paths.persist {

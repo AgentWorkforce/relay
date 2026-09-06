@@ -154,7 +154,10 @@ try {
     {
       method: 'DELETE',
       headers,
-      body: JSON.stringify({ reason: 'sealed relayflow release proof' }),
+      body: JSON.stringify({
+        reason: 'sealed relayflow release proof',
+        generation: spawnResult.body.generation,
+      }),
     },
     29_000
   );
@@ -218,7 +221,10 @@ try {
     const repeatedRelease = await brokerRequest(apiBase, `/api/spawned/${encodeURIComponent(targetName)}`, {
       method: 'DELETE',
       headers,
-      body: JSON.stringify({ reason: 'sealed idempotency retry' }),
+      body: JSON.stringify({
+        reason: 'sealed idempotency retry',
+        generation: spawnResult.body.generation,
+      }),
     });
     if (repeatedRelease.status >= 300 || repeatedRelease.body.success === false) {
       throw new Error(`idempotent release retry failed: ${JSON.stringify(repeatedRelease)}`);
@@ -248,7 +254,22 @@ try {
 }
 
 async function startProofEngine(target) {
-  const agents = new Map([[target, { id: `agent-${target}`, token: `at_live_${target}` }]]);
+  const agents = new Map([
+    [
+      target,
+      {
+        id: `agent-${target}`,
+        workspace_id: 'ws_proof',
+        name: target,
+        type: 'agent',
+        token: `at_live_${target}`,
+        status: 'online',
+        persona: null,
+        metadata: {},
+        channels: [],
+      },
+    ],
+  ]);
   const server = createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -266,7 +287,11 @@ async function startProofEngine(target) {
         workspace_id: 'ws_proof',
         name,
         token: `at_live_${name}`,
+        type: 'agent',
         status: 'online',
+        persona: null,
+        metadata: {},
+        channels: [],
         created_at: new Date().toISOString(),
       };
       agents.set(name, agent);
@@ -310,7 +335,10 @@ async function startProofEngine(target) {
       const agent = agents.get(decodeURIComponent(pathName.slice(agentPrefix.length)));
       return agent
         ? sendJson(response, 200, { ok: true, data: agent })
-        : sendJson(response, 404, { ok: false, error: { code: 'not_found', message: 'agent not found' } });
+        : sendJson(response, 404, {
+            ok: false,
+            error: { code: 'agent_not_found', message: 'agent not found' },
+          });
     }
     if (pathName === '/v1/channels' || pathName.startsWith('/v1/channels/')) {
       return sendJson(response, 200, { ok: true, data: [] });

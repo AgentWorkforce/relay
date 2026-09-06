@@ -364,6 +364,29 @@ impl BrokerRuntime {
                 lifetime_seconds: 0,
             });
 
+            // Preserve release authority as soon as this exact generation is
+            // observed gone, before deciding whether supervision will restart
+            // it. A human can release during the restart cooldown, and that
+            // first request must still clean up the offline Relaycast identity.
+            let fallback_agent_id = fleet_delivery_book
+                .active_agent_id(name.as_str())
+                .map(str::to_string);
+            if state
+                .defer_identity_release(name, *generation, fallback_agent_id.as_deref())
+                .is_some()
+                && paths.persist
+            {
+                if let Err(error) = state.save(&paths.state) {
+                    tracing::warn!(
+                        path = %paths.state.display(),
+                        worker = %name,
+                        generation = %generation,
+                        error = %error,
+                        "failed to persist exited worker identity cleanup"
+                    );
+                }
+            }
+
             // Check supervisor for restart decision
             use crate::supervisor::RestartDecision;
             match workers.supervisor.on_exit(name, *code, signal.as_deref()) {
@@ -643,6 +666,7 @@ impl BrokerRuntime {
                             workers.initial_tasks.insert(name.clone(), task);
                         }
                         let pid = workers.worker_pid(&name);
+                        let generation = workers.workers.get(&name).map(|worker| worker.generation);
                         let restart_policy = state
                             .agents
                             .get(&name)
@@ -660,6 +684,7 @@ impl BrokerRuntime {
                                 agent.spec = Some(effective_spec.clone());
                                 agent.restart_policy = restart_policy.clone();
                                 agent.initial_task = initial_task.clone();
+                                agent.generation = generation;
                             })
                             .or_insert_with(|| broker::PersistedAgent {
                                 runtime: effective_spec.runtime.clone(),
@@ -670,6 +695,8 @@ impl BrokerRuntime {
                                 spec: Some(effective_spec.clone()),
                                 restart_policy,
                                 initial_task,
+                                relaycast_agent_id: None,
+                                generation,
                             });
                         if paths.persist {
                             if let Err(error) = state.save(&paths.state) {

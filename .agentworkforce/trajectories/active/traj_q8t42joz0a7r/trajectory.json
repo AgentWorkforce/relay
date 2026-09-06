@@ -57,6 +57,39 @@
             "focal:remote CI",
             "confidence:0.82"
           ]
+        },
+        {
+          "ts": 1788674047393,
+          "type": "decision",
+          "content": "Bind deferred Relaycast cleanup to persisted immutable agent id plus local worker generation: Bind deferred Relaycast cleanup to persisted immutable agent id plus local worker generation",
+          "raw": {
+            "question": "Bind deferred Relaycast cleanup to persisted immutable agent id plus local worker generation",
+            "chosen": "Bind deferred Relaycast cleanup to persisted immutable agent id plus local worker generation",
+            "alternatives": [],
+            "reasoning": "A name-only tombstone can target a replacement. Persist the remote id and process generation at spawn, move that lease to pending before exited state is removed, reject a mismatched live generation, and probe the current remote id before any name-based release call."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788675687253,
+          "type": "reflection",
+          "content": "Cubic's two P1 release races are addressed by persisting an exact Relaycast agent id plus broker UUID generation before exited workers leave active state, carrying that generation through spawned-agent release handles, and verifying the current remote id before any name-addressed release. Focused Rust, full broker (1058/4 ignored), clippy, harness (93), proof-contract (88/6 skipped), and local sealed RelayFlow proof are green; hosted dispatcher failure remains the unrelated Relayfile SIGUSR1 flush timeout.",
+          "raw": {
+            "focalPoints": [
+              "identity-generation",
+              "durable-cleanup",
+              "relayflow-proof"
+            ],
+            "adjustments": "Persist exit cleanup before supervisor cooldown; discard unsafe legacy name-only markers; fail closed on identity mismatch; preserve local-only release semantics.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:identity-generation",
+            "focal:durable-cleanup",
+            "focal:relayflow-proof",
+            "confidence:0.9"
+          ]
         }
       ]
     }

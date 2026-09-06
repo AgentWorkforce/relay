@@ -272,7 +272,9 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
 
   /** Release the agent via the broker. */
   release(reason?: string): Promise<{ name: string }> {
-    return this.client.release(this.name, reason);
+    return this.generation === undefined
+      ? this.client.release(this.name, reason)
+      : this.client.release(this.name, reason, this.generation);
   }
 
   private isCurrentGeneration(event: BrokerEvent): boolean {

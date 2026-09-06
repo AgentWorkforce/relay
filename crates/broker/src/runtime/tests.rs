@@ -197,6 +197,45 @@ async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
     }
 }
 
+#[tokio::test]
+async fn stale_generation_release_does_not_stop_same_name_replacement() {
+    let name = WorkerName::from("generation-bound-release");
+    let workers = make_worker_registry_with_worker(name.as_str()).await;
+    let replacement_generation = workers.workers[&name].generation;
+    let stale_generation = Uuid::new_v4();
+    assert_ne!(replacement_generation, stale_generation);
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.state.pending_identity_releases.insert(
+        name.clone(),
+        crate::broker::PendingIdentityRelease {
+            agent_id: "agent-stale".into(),
+            generation: stale_generation,
+        },
+    );
+    let (reply, response) = tokio::sync::oneshot::channel();
+
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::Release {
+            name: name.clone(),
+            reason: Some("stale handle retry".into()),
+            expected_generation: Some(stale_generation),
+            reply,
+        })
+        .await;
+
+    let error = response
+        .await
+        .expect("release response")
+        .expect_err("stale generation must fail closed");
+    assert!(error.contains("stale release generation"), "{error}");
+    assert_eq!(
+        fixture.runtime.workers.workers[&name].generation, replacement_generation,
+        "the replacement process must remain registered"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,

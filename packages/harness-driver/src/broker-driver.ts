@@ -101,7 +101,11 @@ export class BrokerDriver implements AgentDriver {
       release: async (reason?: string) => {
         await Promise.allSettled([...observers].map((dispose) => dispose()));
         observers.clear();
-        await client.release(result.name, reason);
+        if (result.generation === undefined) {
+          await client.release(result.name, reason);
+        } else {
+          await client.release(result.name, reason, result.generation);
+        }
       },
     };
     runtime.observeBrokerEvents = async (listener, onError) => {
