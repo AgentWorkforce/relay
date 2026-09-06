@@ -1694,6 +1694,14 @@ export function validateFleetEvidence(evidence, matrix) {
   if (!['pass', 'fail'].includes(evidence.cleanup?.status)) {
     throw new Error('evidence cleanup status is invalid');
   }
+  const failedReleaseAttempt = (evidence.cleanup?.attempts ?? []).find(
+    ({ type, exitCode }) => typeof type === 'string' && type.includes('release') && exitCode !== 0
+  );
+  if (evidence.cleanup?.status === 'pass' && failedReleaseAttempt) {
+    throw new Error(
+      `cleanup cannot pass after release failure for ${failedReleaseAttempt.target ?? 'unknown target'}`
+    );
+  }
   const mutationOperations = evidence.operations.filter(({ id }) =>
     ['fleet-enable', 'fleet-disable', 'fleet-inherit'].includes(id)
   );

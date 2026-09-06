@@ -912,6 +912,15 @@ describe('complete Daytona Fleet board', () => {
     leaked.resources[1].nodeId = 'different';
     leaked.operations[0].argv = ['agent-relay', '--token', 'at_live_secretvalue'];
     expect(() => validateFleetEvidence(leaked, matrix)).toThrow(/unredacted credential argument/);
+
+    const hiddenReleaseFailure = structuredClone(base);
+    hiddenReleaseFailure.resources[1].nodeId = 'different';
+    hiddenReleaseFailure.cleanup.attempts = [
+      { type: 'fleet-release-support', target: 'worker-a', exitCode: 1 },
+    ];
+    expect(() => validateFleetEvidence(hiddenReleaseFailure, matrix)).toThrow(
+      /cleanup cannot pass after release failure/
+    );
   });
 
   it('keeps product defects red and safety-gated shared mutations yellow', () => {
