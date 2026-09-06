@@ -20,6 +20,7 @@ use crate::protocol::{
 use crate::telemetry::TelemetryClient;
 use crate::worker::{
     spawn_worker_writer, AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry,
+    WorkerWriteCommand,
 };
 use crate::{
     broker::injection_format::format_injection,
@@ -129,13 +130,22 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     registry
 }
 
-/// A worker whose command channel accepts frames but never completes them —
-/// no writer task ever drains `command_rx`, so `deliver()` hangs forever.
-/// Models a handoff that outlives `retry_interval` deterministically (no
-/// timing race): the receiver stays alive (a dropped one would fail the
-/// send instead of hanging it), so the send always succeeds and the
-/// subsequent completion wait never returns on its own.
-async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry {
+/// Shared construction for the deterministic delivery fixtures. Spawns the
+/// `cat` stand-in, registers a `WorkerHandle` for it, and hands the command
+/// receiver back to the caller. No writer task is ever spawned, so what the
+/// caller does with that receiver is the ONLY axis of behaviour — and nothing
+/// else is duplicated, so a future `WorkerHandle` field cannot drift.
+///
+/// - **Keep it bound** for a stalled handoff: the receiver stays alive, so the
+///   send always succeeds and the completion wait never returns on its own,
+///   modelling a handoff that outlives `retry_interval` with no timing race.
+///   The binding must live as long as the test body — releasing it early turns
+///   a hang into a failure, which is the opposite fixture.
+/// - **Drop it** for an unwritable worker: see
+///   [`make_worker_registry_with_unwritable_worker`].
+async fn make_worker_registry_with_fixture_worker(
+    name: &str,
+) -> (WorkerRegistry, mpsc::Receiver<WorkerWriteCommand>) {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
     let mut registry = WorkerRegistry::new(
         tx,
@@ -147,13 +157,17 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        // Dropping a tokio `Child` does NOT kill the process. These fixtures
+        // leave the child running, so an assertion that panics before
+        // `cleanup_worker_registry` would otherwise strand a live `cat` for
+        // the rest of the run. Same idiom as spawner.rs and codex_session.rs.
+        .kill_on_drop(true)
         .spawn()
         .expect("test worker process should spawn");
     let generation = Uuid::new_v4();
+    // No writer task is ever spawned for these fixtures: the caller decides
+    // whether a send hangs (receiver kept alive) or fails closed (dropped).
     let (command_tx, command_rx) = mpsc::channel(128);
-    // Deliberately leaked, not spawned as a writer: keeps the receiver alive
-    // (so sends succeed) without anything ever draining it.
-    std::mem::forget(command_rx);
     registry.workers.insert(
         WorkerName::from(name),
         WorkerHandle {
@@ -187,6 +201,31 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
             exit_reason: None,
         },
     );
+    (registry, command_rx)
+}
+
+/// A worker that is present in the registry but whose sole stdin writer is
+/// already gone: `command_rx` is dropped, so `send_to_worker`'s queue send
+/// fails immediately and `deliver()` surfaces the same
+/// `failed writing frame to worker '<name>'` error a live writer reports on a
+/// write fault. Deterministic on every attempt, every platform, every profile.
+///
+/// This replaces "SIGKILL a real `cat` child and hope the next write to its
+/// stdin returns EPIPE" (relay#980). That fixture raced: on macOS release
+/// builds under parallel load the writes to the dead child's pipe can keep
+/// SUCCEEDING. Because the retry cap gates on consecutive `failed_attempts`
+/// — reset to 0 by every successful write — while `attempts` only ever
+/// increments, a run where the writes succeed marches `attempts` straight
+/// past the cap and trips the test's own bound.
+///
+/// The child is left alive deliberately. Its liveness is irrelevant to the
+/// path under test: the write fails at the command channel, before any file
+/// descriptor is touched. `cleanup_worker_registry` reaps it.
+async fn make_worker_registry_with_unwritable_worker(name: &str) -> WorkerRegistry {
+    let (registry, command_rx) = make_worker_registry_with_fixture_worker(name).await;
+    // The whole point: dropped rather than leaked, so every send fails closed
+    // instead of hanging or succeeding.
+    drop(command_rx);
     registry
 }
 
@@ -1655,7 +1694,12 @@ fn withheld_ack_for(delivery_id: &str) -> Deliver {
 // a later successful retry's echo would then have had nothing to resolve.
 #[tokio::test]
 async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
-    let mut registry = make_worker_registry_with_stalled_worker("worker-a").await;
+    // The receiver must stay bound for the whole test body: holding it is what
+    // makes the handoff hang instead of fail. The fixture previously retained
+    // it by leaking, which kept the queued frame and its completion channel
+    // alive for the life of the process.
+    let (mut registry, _stalled_command_rx) =
+        make_worker_registry_with_fixture_worker("worker-a").await;
     let deliver = fleet_deliver(1);
     let msg = held_fleet_message(&deliver);
     let mut pending_deliveries = HashMap::new();
@@ -2635,15 +2679,7 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
 #[tokio::test]
 async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     let worker_name = "worker-blip";
-    let mut workers = make_worker_registry_with_worker(worker_name).await;
-    {
-        let handle = workers
-            .workers
-            .get_mut(worker_name)
-            .expect("present worker handle");
-        let _ = handle.child.start_kill();
-        let _ = handle.child.wait().await;
-    }
+    let mut workers = make_worker_registry_with_unwritable_worker(worker_name).await;
     assert!(
         workers.has_worker(worker_name),
         "transient-blip regression must keep the recipient present"
@@ -2690,23 +2726,21 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                     unreachable!();
                 };
                 assert_eq!(pending.attempts, MAX_DELIVERY_RETRIES);
-                // Some platforms can accept a final pipe write after the child exits,
-                // so terminal failure may arrive on the immediate post-cap check.
-                assert!(
-                    retry_index >= MAX_DELIVERY_RETRIES,
-                    "delivery should not fail before the retry cap is exhausted"
+                // Every attempt now fails, so the terminal failure lands on
+                // exactly the capped attempt: never early, and never deferred
+                // to the post-cap check the old pipe race allowed for.
+                assert_eq!(
+                    retry_index, MAX_DELIVERY_RETRIES,
+                    "delivery must fail on exactly the capped attempt"
                 );
                 final_outcome = Some(outcome);
                 break;
             }
             Ok(DeliveryAttemptOutcome::Attempted { attempts, .. }) => {
-                assert!(
-                    attempts <= MAX_DELIVERY_RETRIES,
-                    "retry attempts must stay within the retry cap"
-                );
-                assert!(
-                    retry_index <= MAX_DELIVERY_RETRIES,
-                    "the retry after the cap should return a terminal failure"
+                panic!(
+                    "a worker with no stdin writer must never accept a delivery, \
+                     but retry {retry_index} reported success at {attempts} \
+                     attempts (cap {MAX_DELIVERY_RETRIES})"
                 );
             }
             Ok(DeliveryAttemptOutcome::Noop) => {
@@ -2762,9 +2796,10 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         Some(u64::from(MAX_DELIVERY_RETRIES))
     );
     let last_error = frame.payload["lastError"].as_str().unwrap_or_default();
-    assert!(
-        last_error.contains("failed writing frame to worker 'worker-blip'")
-            || last_error.contains("max delivery retries exceeded")
+    assert_eq!(
+        last_error, "failed writing frame to worker 'worker-blip'",
+        "the terminal event must carry the real write error verbatim, not a \
+         wrapped or substituted one"
     );
     assert!(
         frame.payload.get("last_error").is_none(),
@@ -2785,6 +2820,8 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     let entry = dead_letters.get("del_blip").expect("dead letter by id");
     assert_eq!(entry.delivery.body, "transient auth blip");
     assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
+
+    cleanup_worker_registry(workers).await;
 }
 
 #[tokio::test]
