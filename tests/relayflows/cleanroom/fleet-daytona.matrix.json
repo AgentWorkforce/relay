@@ -144,9 +144,12 @@
         "candidateSurface": "operator-candidate",
         "executionScope": "cross-daytona-node",
         "effectAssertions": [
-          "The public Fleet leaf returns parseable state containing the exact owned nodes or agents requested by its filter."
+          "The public Fleet leaf returns parseable state containing the exact owned nodes or agents requested by its filter.",
+          "A targeted --node --pretty read is reconciled against the same node's heartbeat live-name metadata, activeAgents count, unfiltered Fleet placement, direct node process inventory, and workspace roster."
         ],
-        "negativeAssertions": ["An empty, malformed, truncated, degraded, or wrong-node result cannot pass."],
+        "negativeAssertions": [
+          "An empty, malformed, truncated, degraded, wrong-node, or cross-view contradictory result cannot pass."
+        ],
         "lifecycleAssertion": "The read is monotonic-timed and bounded.",
         "teardownAssertion": "Read-only; owned resources are covered by campaign cleanup.",
         "retryAssertion": "Any internal command retry must still return one complete authoritative result."
@@ -242,7 +245,8 @@
         "candidateSurface": "operator-and-daytona-candidate",
         "executionScope": "owned-daytona-node",
         "effectAssertions": [
-          "Release stops the exact worker process and preserves or deletes its identity according to the selected flag."
+          "Release stops the exact worker process and preserves or deletes its identity according to the selected flag.",
+          "The same nonce-owned identity is reconciled across targeted Fleet output, node heartbeat metadata/counts, unfiltered placement, the direct node process list, and the roster before release and after each requested transition."
         ],
         "negativeAssertions": [
           "Acknowledgement without process absence, incorrect identity semantics, or node contamination fails."
@@ -547,7 +551,12 @@
       "expect": "success",
       "argvMustContain": ["--pretty"]
     },
-    { "id": "fleet-agent-list-node", "group": "fleet", "expect": "success", "argvMustContain": ["--node"] },
+    {
+      "id": "fleet-agent-list-node",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--node", "--pretty"]
+    },
     { "id": "fleet-agent-list-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
     { "id": "fleet-spawn-node", "group": "fleet-spawn", "expect": "sentinel", "argvMustContain": ["--node"] },
     {

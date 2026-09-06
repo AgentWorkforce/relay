@@ -14,6 +14,7 @@ import {
   buildFleetSpawnArgs,
   compareDaytonaSandboxBaseline,
   deriveFleetVerdict,
+  evaluateFleetIdentityReconciliation,
   executeFleetCommand,
   findExactSentinelMessage,
   findFleetAgentNode,
@@ -27,6 +28,7 @@ import {
   summarizeFleetCampaign,
   tryParseJson,
   validateFleetEvidence,
+  validateFleetIdentityReconciliation,
   validateFleetCommandCoverage,
   validateFleetAcceptance,
   validateFleetMatrix,
@@ -52,6 +54,76 @@ import {
 
 const NONCE = 'a'.repeat(32);
 const execFileAsync = promisify(execFile);
+
+function fleetIdentityProof(
+  phase: 'live' | 'roster-only' | 'absent',
+  nodeName: string,
+  agentName: string,
+  peerName?: string
+) {
+  const liveNames = [...(peerName ? [peerName] : []), ...(phase === 'live' ? [agentName] : [])].sort();
+  const unplacedNames = phase === 'roster-only' ? [agentName] : [];
+  return evaluateFleetIdentityReconciliation({
+    phase,
+    nodeName,
+    agentName,
+    nodesPayload: {
+      nodes: [
+        {
+          name: nodeName,
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          activeAgents: liveNames.length,
+          capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: liveNames } }],
+        },
+      ],
+    },
+    targetedPayload: { perNode: liveNames.map((name) => ({ name, node: nodeName })), errors: [] },
+    allPayload: {
+      perNode: liveNames.map((name) => ({ name, node: nodeName })),
+      unplacedRoster: unplacedNames.map((name) => ({ name })),
+      errors: [],
+    },
+    directAgents: liveNames.map((name) => ({ name })),
+    rosterPresent: phase !== 'absent',
+    commandErrors: [],
+  });
+}
+
+function rebindFleetIdentityProofs(
+  operations: Array<{ id: string; fleetIdentityReconciliation?: Record<string, unknown> }>,
+  nonce: string
+) {
+  const short = nonce.slice(0, 16);
+  const targeted = operations.find(({ id }) => id === 'fleet-agent-list-node');
+  if (targeted) {
+    targeted.fleetIdentityReconciliation = {
+      live: fleetIdentityProof('live', `relay-fleetboard-a-${short}`, `relay-fleetboard-a-initial-${short}`),
+    };
+  }
+  const release = operations.find(({ id }) => id === 'fleet-release');
+  if (release) {
+    const nodeName = `relay-fleetboard-a-${short}`;
+    const agentName = `fleet-spawn-node-${short}`;
+    const peerName = `relay-fleetboard-a-initial-${short}`;
+    release.fleetIdentityReconciliation = {
+      live: fleetIdentityProof('live', nodeName, agentName, peerName),
+      postRelease: fleetIdentityProof('roster-only', nodeName, agentName, peerName),
+      postDelete: fleetIdentityProof('absent', nodeName, agentName, peerName),
+    };
+  }
+  const deleteRelease = operations.find(({ id }) => id === 'fleet-release-delete-agent');
+  if (deleteRelease) {
+    const nodeName = `relay-fleetboard-b-${short}`;
+    const agentName = `fleet-spawn-target-node-alias-${short}`;
+    const peerName = `relay-fleetboard-b-initial-${short}`;
+    deleteRelease.fleetIdentityReconciliation = {
+      live: fleetIdentityProof('live', nodeName, agentName, peerName),
+      postRelease: fleetIdentityProof('absent', nodeName, agentName, peerName),
+    };
+  }
+}
 
 function operationRecord(operation: {
   id: string;
@@ -148,6 +220,59 @@ function operationRecord(operation: {
             workerProcessAbsent: true,
             workerIdentityAbsent: true,
             sandboxAbsent: true,
+          },
+        }
+      : {}),
+    ...(operation.id === 'fleet-agent-list-node'
+      ? {
+          fleetIdentityReconciliation: {
+            live: fleetIdentityProof(
+              'live',
+              `relay-fleetboard-a-${NONCE.slice(0, 16)}`,
+              `relay-fleetboard-a-initial-${NONCE.slice(0, 16)}`
+            ),
+          },
+        }
+      : {}),
+    ...(operation.id === 'fleet-release'
+      ? {
+          fleetIdentityReconciliation: {
+            live: fleetIdentityProof(
+              'live',
+              `relay-fleetboard-a-${NONCE.slice(0, 16)}`,
+              `fleet-spawn-node-${NONCE.slice(0, 16)}`,
+              `relay-fleetboard-a-initial-${NONCE.slice(0, 16)}`
+            ),
+            postRelease: fleetIdentityProof(
+              'roster-only',
+              `relay-fleetboard-a-${NONCE.slice(0, 16)}`,
+              `fleet-spawn-node-${NONCE.slice(0, 16)}`,
+              `relay-fleetboard-a-initial-${NONCE.slice(0, 16)}`
+            ),
+            postDelete: fleetIdentityProof(
+              'absent',
+              `relay-fleetboard-a-${NONCE.slice(0, 16)}`,
+              `fleet-spawn-node-${NONCE.slice(0, 16)}`,
+              `relay-fleetboard-a-initial-${NONCE.slice(0, 16)}`
+            ),
+          },
+        }
+      : {}),
+    ...(operation.id === 'fleet-release-delete-agent'
+      ? {
+          fleetIdentityReconciliation: {
+            live: fleetIdentityProof(
+              'live',
+              `relay-fleetboard-b-${NONCE.slice(0, 16)}`,
+              `fleet-spawn-target-node-alias-${NONCE.slice(0, 16)}`,
+              `relay-fleetboard-b-initial-${NONCE.slice(0, 16)}`
+            ),
+            postRelease: fleetIdentityProof(
+              'absent',
+              `relay-fleetboard-b-${NONCE.slice(0, 16)}`,
+              `fleet-spawn-target-node-alias-${NONCE.slice(0, 16)}`,
+              `relay-fleetboard-b-initial-${NONCE.slice(0, 16)}`
+            ),
           },
         }
       : {}),
@@ -460,6 +585,23 @@ describe('complete Daytona Fleet board', () => {
       'provision-node-b';
     expect(() => validateFleetEvidence(swappedProvision, matrix)).toThrow(
       /exact provision-node-a command execution/
+    );
+
+    const targetedContradiction = structuredClone(evidence);
+    targetedContradiction.operations.find(
+      ({ id }) => id === 'fleet-agent-list-node'
+    ).fleetIdentityReconciliation.live.targetedNames = [];
+    expect(() => validateFleetEvidence(targetedContradiction, matrix)).toThrow(
+      /Fleet identity reconciliation did not prove/
+    );
+
+    const releaseStillPlaced = structuredClone(evidence);
+    const releaseProof = releaseStillPlaced.operations.find(({ id }) => id === 'fleet-release')
+      .fleetIdentityReconciliation.postRelease;
+    releaseProof.heartbeatNames.push(`fleet-spawn-node-${NONCE.slice(0, 16)}`);
+    releaseProof.heartbeatNames.sort();
+    expect(() => validateFleetEvidence(releaseStillPlaced, matrix)).toThrow(
+      /Fleet identity reconciliation did not prove/
     );
 
     const nameOnlyRelease = structuredClone(evidence);
@@ -823,6 +965,53 @@ describe('complete Daytona Fleet board', () => {
     expect(
       findFleetAgentNode({ perNode: [{ name: 'worker-copy', node: 'sandbox-node-b' }] }, 'worker')
     ).toBeUndefined();
+  });
+
+  it('fails Fleet identity reconciliation when a targeted read contradicts live node metadata', () => {
+    const nodeName = `relay-fleetboard-a-${NONCE.slice(0, 16)}`;
+    const agentName = `relay-fleetboard-a-initial-${NONCE.slice(0, 16)}`;
+    const valid = fleetIdentityProof('live', nodeName, agentName);
+    expect(valid.pass).toBe(true);
+    expect(validateFleetIdentityReconciliation(valid, { phase: 'live', nodeName, agentName })).toBe(valid);
+
+    const targetedEmpty = evaluateFleetIdentityReconciliation({
+      phase: 'live',
+      nodeName,
+      agentName,
+      nodesPayload: {
+        nodes: [
+          {
+            name: nodeName,
+            status: 'online',
+            live: true,
+            handlersLive: true,
+            activeAgents: 1,
+            capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: [agentName] } }],
+          },
+        ],
+      },
+      targetedPayload: { perNode: [], errors: [] },
+      allPayload: {
+        perNode: [{ name: agentName, node: nodeName }],
+        unplacedRoster: [],
+        errors: [],
+      },
+      directAgents: [{ name: agentName }],
+      rosterPresent: true,
+      commandErrors: [],
+    });
+    expect(targetedEmpty).toMatchObject({
+      pass: false,
+      activeAgents: 1,
+      heartbeatNames: [agentName],
+      targetedNames: [],
+      allNodeNames: [agentName],
+      directNames: [agentName],
+      rosterPresent: true,
+    });
+    expect(() =>
+      validateFleetIdentityReconciliation(targetedEmpty, { phase: 'live', nodeName, agentName })
+    ).toThrow(/did not prove/);
   });
 
   it('loads workspace credentials only from a private bounded file and binds the expected workspace', async () => {
@@ -1190,6 +1379,7 @@ describe('complete Daytona Fleet board', () => {
         }
       }
     );
+    rebindFleetIdentityProofs(second.operations, second.nonce);
     second.resources[0].id = '33333333-3333-4333-8333-333333333333';
     second.resources[0].nodeId = 'node_c';
     second.resources[1].id = '44444444-4444-4444-8444-444444444444';
@@ -1371,6 +1561,7 @@ describe('complete Daytona Fleet board', () => {
             }
           }
         );
+        rebindFleetIdentityProofs(evidence.operations, nonce);
         const campaignWorker = evidence.resources.find(
           (resource: { type: string }) => resource.type === 'relay-agent'
         );
