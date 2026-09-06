@@ -23,7 +23,7 @@ Runtime selection is final before the session starts. Relay does not switch a ru
 | Claude Code     | `@ai-sdk/harness-claude-code@1.0.35` | yes | PTY; native is explicit and experimental |
 | Codex           | `@ai-sdk/harness-codex@1.0.40`       | yes | PTY; native is explicit and experimental |
 | OpenCode        | `@ai-sdk/harness-opencode@1.0.35`    | yes | PTY; native is explicit and experimental |
-| Pi              | `@ai-sdk/harness-pi@1.0.34`          | no  | explicit experimental native             |
+| Pi              | `@ai-sdk/harness-pi@1.0.104`         | no  | explicit experimental native             |
 | Deep Agents     | `@ai-sdk/harness-deepagents@1.0.33`  | no  | explicit experimental native             |
 | Other built-ins | none                                 | yes | PTY                                      |
 
@@ -71,4 +71,4 @@ The AI SDK local-host provider is a process and filesystem lifecycle boundary, n
 
 The local-host AI SDK runtime currently supports macOS and Linux. On Windows, use the PTY runtime; an explicit native selection fails with a typed platform error instead of attempting POSIX adapter bootstrap commands. Preflight checks the platform, Node.js 22, `pnpm`, workspace access, cache access, and loopback port allocation. If startup fails, verify those commands and permissions first. Bootstrap work is cached by stable adapter identity under the runtime cache; deleting unrelated workspace files is never part of cleanup.
 
-Adapter upgrades must keep the `@ai-sdk/harness@1.0.34` family coherent and pass the registry, lifecycle, agent-event replay, observability, real-CLI, and 100-cycle soak contracts before changing an adapter's rollout state.
+Adapter upgrades must keep their exact `@ai-sdk/harness` contracts coherent and pass the registry, lifecycle, agent-event replay, observability, real-CLI, and 100-cycle soak contracts before changing an adapter's rollout state.

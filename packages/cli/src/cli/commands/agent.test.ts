@@ -80,6 +80,90 @@ describe('agent-scoped identity commands', () => {
 });
 
 describe('agent identity lifecycle commands', () => {
+  it('gets one exact agent as JSON without listing the workspace roster', async () => {
+    const { program, workspaceRelay, createWorkspaceRelay, log } = createHarness();
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'get',
+      'chief',
+      '--workspace-key',
+      'rk_live_test',
+      '--base-url',
+      'https://cast.agentrelay.test',
+    ]);
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: undefined,
+      baseUrl: 'https://cast.agentrelay.test',
+    });
+    expect(workspaceRelay.agents.get).toHaveBeenCalledWith('chief');
+    expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+      id: 'agent_existing',
+      name: 'chief',
+      status: 'online',
+    });
+  });
+
+  it('reports only a confirmed 404 as a missing exact agent', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce(
+      Object.assign(new Error('upstream agent lookup failed'), { statusCode: 404 })
+    );
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'agent', 'get', 'ghost', '--workspace-key', 'rk_live_test'])
+    ).rejects.toThrow('exit:1');
+
+    expect(error.mock.calls.flat().join('\n')).toContain('Agent "ghost" was not found.');
+  });
+
+  it.each([
+    ['authentication', Object.assign(new Error('Workspace key is invalid'), { statusCode: 401 })],
+    ['network', new Error('upstream connection reset')],
+  ])('preserves %s failures instead of claiming absence', async (_kind, failure) => {
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce(failure);
+
+    await expect(
+      program.parseAsync(['node', 'agent-relay', 'agent', 'get', 'chief', '--workspace-key', 'rk_live_test'])
+    ).rejects.toThrow('exit:1');
+
+    const rendered = error.mock.calls.flat().join('\n');
+    expect(rendered).toContain(failure.message);
+    expect(rendered).not.toContain('was not found');
+  });
+
+  it('bounds an exact lookup so a hung request cannot block qualification', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    workspaceRelay.agents.get.mockReturnValueOnce(new Promise(() => {}));
+
+    vi.useFakeTimers();
+    try {
+      const run = program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'get',
+        'chief',
+        '--workspace-key',
+        'rk_live_test',
+      ]);
+      const assertion = expect(run).rejects.toThrow('exit:1');
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(error.mock.calls.flat().join('\n')).toContain(
+      'Looking up agent "chief" did not complete within 15000ms.'
+    );
+  });
+
   it('register adopts an existing name by rotating its token', async () => {
     const { program, workspaceRelay, log } = createHarness();
 

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1665-immutable-fleet-snapshot",
+  "kind": "feature",
+  "title": "Bind fleet sandbox spawning to an immutable Daytona snapshot manifest",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 1500,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "immutable_fleet_snapshot_selector_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "immutable_fleet_snapshot_bound_and_fail_closed"
+    }
+  }
+}

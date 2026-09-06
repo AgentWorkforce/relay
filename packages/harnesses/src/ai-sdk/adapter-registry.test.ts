@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AiSdkAdapterRegistry, aiSdkAdapterRegistry } from './adapter-registry.js';
 
@@ -60,6 +62,34 @@ describe('AI SDK adapter registry', () => {
       expect(harness.harnessId).toBeTruthy();
     }
   }, 15_000);
+
+  it('pins a Pi adapter closure without the known vulnerable nested HTTP and glob releases', async () => {
+    const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+    const lock = JSON.parse(
+      await readFile(new URL('../../../../package-lock.json', import.meta.url), 'utf8')
+    );
+    expect(manifest.dependencies['@ai-sdk/harness-pi']).toBe('1.0.104');
+
+    const effectivePackage = (from: string, name: string) => {
+      for (let current = from; current !== '.'; current = path.posix.dirname(current)) {
+        if (path.posix.basename(current) === 'node_modules') continue;
+        const location = path.posix.join(current, 'node_modules', name);
+        if (lock.packages[location]) return { location, ...lock.packages[location] };
+      }
+      const rootLocation = path.posix.join('node_modules', name);
+      if (lock.packages[rootLocation]) return { location: rootLocation, ...lock.packages[rootLocation] };
+      throw new Error(`lockfile cannot resolve ${name} from ${from}`);
+    };
+    const pi = effectivePackage('packages/harnesses', '@earendil-works/pi-coding-agent');
+    const minimatch = effectivePackage(pi.location, 'minimatch');
+    const braceExpansion = effectivePackage(minimatch.location, 'brace-expansion');
+    const undici = effectivePackage(pi.location, 'undici');
+
+    expect(pi.version).toBe('0.84.4');
+    expect(minimatch.version).toBe('10.2.5');
+    expect(braceExpansion.version).toBe('5.0.9');
+    expect(undici.version).toBe('8.9.0');
+  });
 
   it('rejects duplicate aliases at construction', () => {
     const entry = aiSdkAdapterRegistry.require('codex');

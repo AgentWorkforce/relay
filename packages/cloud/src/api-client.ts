@@ -38,8 +38,26 @@ function withTrailingSlash(p: string): string {
   return p.endsWith('/') ? p : `${p}/`;
 }
 
+export function validateCloudApiUrl(apiUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error('Cloud API URL must be absolute');
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('Cloud API URL must use HTTPS and contain no credentials, query, or fragment');
+  }
+  return parsed;
+}
+
 export function buildApiUrl(apiUrl: string, p: string): URL {
-  return new URL(trimLeadingSlash(p), withTrailingSlash(apiUrl));
+  const base = validateCloudApiUrl(apiUrl);
+  const resolved = new URL(trimLeadingSlash(p), withTrailingSlash(base.toString()));
+  if (resolved.origin !== base.origin) {
+    throw new Error('Cloud API request path must remain on the configured HTTPS origin');
+  }
+  return resolved;
 }
 
 function bearerHeaders(headers: HeaderInput | undefined, accessToken: string, defaultJson: boolean): Headers {
@@ -66,7 +84,7 @@ export class WorkflowApiKeyClient {
     if (!apiKey) return null;
 
     try {
-      new URL(apiUrl);
+      validateCloudApiUrl(apiUrl);
     } catch (error) {
       throw new CloudAuthError(
         'AUTH_ENV_REPROVISION_REQUIRED',
@@ -83,6 +101,7 @@ export class WorkflowApiKeyClient {
   fetch(p: string, init: RequestInit = {}): Promise<Response> {
     return fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      redirect: 'error',
       headers: bearerHeaders(init.headers, this.apiKey, true),
     });
   }
@@ -97,6 +116,7 @@ export class CloudApiClient {
   private refreshPromise: Promise<void> | null = null;
 
   constructor(private readonly options: CloudApiClientOptions) {
+    validateCloudApiUrl(options.apiUrl);
     this.apiUrl = options.apiUrl;
     this.accessToken = options.accessToken;
     this.refreshToken = options.refreshToken;
@@ -139,6 +159,7 @@ export class CloudApiClient {
 
     const response = await fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      redirect: 'error',
       headers: this.buildHeaders(init.headers),
     });
 
@@ -150,6 +171,7 @@ export class CloudApiClient {
 
     return fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      redirect: 'error',
       headers: this.buildHeaders(init.headers),
     });
   }
@@ -157,6 +179,7 @@ export class CloudApiClient {
   async revoke(): Promise<void> {
     const response = await fetch(buildApiUrl(this.apiUrl, '/api/v1/auth/token/revoke'), {
       method: 'POST',
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
       },
@@ -223,6 +246,7 @@ export class CloudApiClient {
     try {
       response = await fetch(buildApiUrl(this.apiUrl, '/api/v1/auth/token/refresh'), {
         method: 'POST',
+        redirect: 'error',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -280,6 +304,7 @@ export class CloudApiClient {
   }
 
   private applySnapshot(snapshot: CloudApiClientSnapshot): void {
+    validateCloudApiUrl(snapshot.apiUrl);
     this.apiUrl = snapshot.apiUrl;
     this.accessToken = snapshot.accessToken;
     this.accessTokenExpiresAt = snapshot.accessTokenExpiresAt;
