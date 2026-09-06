@@ -19,7 +19,7 @@ import { mkdir, open } from 'node:fs/promises';
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
+import { fleetReviewerNetwork, preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
 const EXPECTED_CLI_INVENTORY = 'tests/relayflows/cleanroom/fleet-cli-inventory.json';
@@ -153,7 +153,7 @@ function reviewerPermissions(role: string) {
       write: [`${artifactDir}/draft-${role}.json`],
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
     },
-    network: false,
+    network: fleetReviewerNetwork(role),
     exec: [],
   };
 }

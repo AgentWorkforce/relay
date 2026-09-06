@@ -20,6 +20,8 @@ import path from 'node:path';
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 
+import { diagnosisAgentNetwork } from '../scripts/verify-features/fleet-permissions.mjs';
+
 const RUN_ID = process.env.RELAY_RELIABILITY_RUN_ID ?? `local-diagnosis-${randomBytes(8).toString('hex')}`;
 const DISABLE_RELAYCAST = process.env.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1';
 if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(RUN_ID)) {
@@ -231,7 +233,7 @@ function diagnosisPermissions(agentName: string) {
         '**/.workflow-artifacts/**/draft-*',
       ],
     },
-    network: false,
+    network: diagnosisAgentNetwork(agentName),
     exec: ['rg', 'git', 'node', 'npm', 'npx', 'go'],
   };
 }
