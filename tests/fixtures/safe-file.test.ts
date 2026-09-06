@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 import {
+  hardenPrivateRegularFileNoFollow,
   overwriteRegularFileNoFollow,
   readRegularFileNoFollow,
 } from '../../scripts/verify-features/safe-file.mjs';
@@ -13,6 +14,39 @@ import {
 const execFileAsync = promisify(execFile);
 
 describe('safe qualification file access', () => {
+  it('hardens downloaded metadata through one no-follow descriptor', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-safe-mode-'));
+    const target = path.join(root, 'downloaded.json');
+    try {
+      await writeFile(target, '{"ok":true}\n', { mode: 0o644 });
+      await hardenPrivateRegularFileNoFollow(target, {
+        label: 'downloaded candidate metadata',
+      });
+      expect((await lstat(target)).mode & 0o777).toBe(0o600);
+      expect(await readFile(target, 'utf8')).toBe('{"ok":true}\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('will not harden a symlink or non-regular artifact entry', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-safe-mode-reject-'));
+    const target = path.join(root, 'source.json');
+    const link = path.join(root, 'link.json');
+    try {
+      await writeFile(target, '{}\n', { mode: 0o644 });
+      await symlink(target, link);
+      await expect(hardenPrivateRegularFileNoFollow(link, { label: 'artifact link' })).rejects.toThrow(
+        /symbolic link/
+      );
+      await expect(hardenPrivateRegularFileNoFollow(root, { label: 'artifact directory' })).rejects.toThrow(
+        /regular file/
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads and overwrites the opened inode while refusing symlinks and unsafe metadata', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-safe-file-'));
     try {

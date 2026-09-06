@@ -272,6 +272,18 @@ jobs:
             --relay-package-attestation qualification/relay-packages/attestation/relay-package-qualification-attestation.json \
             --output qualification/normalized.json
 
+      - name: Harden downloaded candidate metadata for private hydration
+        run: |
+          node --input-type=module <<'NODE'
+          import { hardenPrivateRegularFileNoFollow } from './relay-verifier/scripts/verify-features/safe-file.mjs';
+          for (const file of [
+            'qualification/relay-packages/payload/candidate-install-attestation.json',
+            'qualification/relay-packages/payload/candidate-package-lock.json',
+          ]) {
+            await hardenPrivateRegularFileNoFollow(file, { label: file });
+          }
+          NODE
+
       - name: Install exact Relay verifier and workflow source
         working-directory: relay-verifier
         run: |

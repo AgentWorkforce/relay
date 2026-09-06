@@ -78,6 +78,35 @@ export async function readRegularFileNoFollow(
   }
 }
 
+/** Set an existing current-user-owned regular file to one exact mode. */
+export async function hardenPrivateRegularFileNoFollow(
+  target,
+  { label = 'file', mode = 0o600, currentUserOwned = true } = {}
+) {
+  const handle = await openNoFollow(target, fsConstants.O_RDONLY, label);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) throw new Error(`${label} must be a regular file`);
+    if (currentUserOwned && typeof process.getuid === 'function' && Number(before.uid) !== process.getuid()) {
+      throw new Error(`${label} must be owned by the current user`);
+    }
+    await handle.chmod(mode);
+    const after = await handle.stat({ bigint: true });
+    if (
+      !after.isFile() ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      Number(after.mode & 0o777n) !== mode
+    ) {
+      throw new Error(`${label} changed while its mode was hardened`);
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Overwrite an existing regular file through one no-follow descriptor. */
 export async function overwriteRegularFileNoFollow(
   target,

@@ -212,6 +212,22 @@ if (present.every((value) => !value)) {
   ) {
     throw new Error('Fallback cleanup is not bound to the trusted default-branch CLI.');
   }
+  const hardenIndex = qualification.steps.findIndex(
+    (step) => step.name === 'Harden downloaded candidate metadata for private hydration'
+  );
+  const hydrateIndex = qualification.steps.findIndex((step) =>
+    String(step.run ?? '').includes('relay-candidate-install.mjs hydrate')
+  );
+  const hardenSource = String(qualification.steps[hardenIndex]?.run ?? '');
+  if (
+    hardenIndex < 0 ||
+    hydrateIndex <= hardenIndex ||
+    !hardenSource.includes('hardenPrivateRegularFileNoFollow') ||
+    !hardenSource.includes('candidate-install-attestation.json') ||
+    !hardenSource.includes('candidate-package-lock.json')
+  ) {
+    throw new Error('Downloaded candidate metadata is not hardened before private hydration.');
+  }
   if (
     consumerSource.includes('ref: ${{ github.sha }}') ||
     /ref:\s*\$\{\{ steps\.manifest/.test(consumerSource)
