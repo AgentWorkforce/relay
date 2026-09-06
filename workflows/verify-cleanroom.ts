@@ -58,7 +58,7 @@ function reviewProvenanceCommand(role: string): string {
 }
 
 function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRoles: string[]): string {
-  const artifact = `.workflow-artifacts/verify-cleanroom/${NONCE}/draft-${role}.json`;
+  const artifact = `.workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${role}/draft.json`;
   const input = `.workflow-artifacts/verify-cleanroom/${NONCE}/review-input-${role}.json`;
   const sandboxEnvironmentReference = '${SANDBOX_ID}';
   const laneInputs = lanes.map(
@@ -119,6 +119,7 @@ function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRo
 
 function reviewPermissions(role: string) {
   const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
+  const provenancePath = `${artifactDir}/review-provenance/${role}/capture.json`;
   const cloudApiUrl = process.env.CLOUD_API_URL?.trim();
   let cloudHost: string | undefined;
   if (cloudApiUrl) {
@@ -131,6 +132,10 @@ function reviewPermissions(role: string) {
     why: 'Evidence reviewers must not alter Relay source, tests, the matrix, runner, or collected evidence.',
     access: 'restricted' as const,
     inherit: false,
+    // The write anchor makes the role-specific directory writable with the
+    // released RelayFlow compiler; the raw scopes still constrain the
+    // write-once future provenance record to its exact path.
+    scopes: [`relayfile:fs:read:/${provenancePath}`, `relayfile:fs:write:/${provenancePath}`],
     files: {
       read: [
         RUNNER,
@@ -140,7 +145,11 @@ function reviewPermissions(role: string) {
         `${artifactDir}/review-input-${role}.json`,
         ...lanes.map((lane) => `${artifactDir}/review-input-${role}-lane-${lane}.json`),
       ],
-      write: [`${artifactDir}/draft-${role}.json`, `${artifactDir}/review-provenance/${role}.json`],
+      write: [
+        `${artifactDir}/review-drafts/${role}/draft.json`,
+        `${artifactDir}/review-provenance/${role}/.mount-write-anchor`,
+        provenancePath,
+      ],
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
     },
     network: cleanroomReviewNetwork(role, cloudHost),
@@ -154,9 +163,10 @@ function lanePermissions(lane: string) {
     why: 'Lane agents may execute the deterministic runner but must not edit product source or test inputs.',
     access: 'restricted' as const,
     inherit: false,
-    // The evidence file is intentionally write-once and therefore absent at
-    // compile time. Exact custom scopes keep that future path writable without
-    // broadening the lane to sibling campaign evidence.
+    // The evidence file is intentionally write-once and absent at compile
+    // time. An existing anchor makes only this lane directory mount-writable
+    // with released compilers; custom scopes constrain the token to the exact
+    // future evidence path, which current compilers also preserve directly.
     scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
     files: {
       read: ['**'],
@@ -171,9 +181,37 @@ function lanePermissions(lane: string) {
 async function ensureReviewPlaceholders(roles: string[]) {
   const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  await Promise.all(
+    [
+      ...lanes.map((lane) => `lanes/${lane}`),
+      ...roles.flatMap((role) => [`review-drafts/${role}`, `review-provenance/${role}`]),
+    ].map((directory) => mkdir(`${artifactDir}/${directory}`, { recursive: true, mode: 0o700 }))
+  );
+  for (const lane of lanes) {
+    const target = `${artifactDir}/lanes/${lane}/.mount-write-anchor`;
+    try {
+      const handle = await open(target, 'wx', 0o600);
+      try {
+        await handle.writeFile(
+          `${JSON.stringify({
+            version: 1,
+            kind: 'cleanroom-lane-mount-write-anchor',
+            nonce: NONCE,
+            lane,
+          })}\n`
+        );
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
   for (const role of roles) {
     for (const target of [
-      `${artifactDir}/draft-${role}.json`,
+      `${artifactDir}/review-drafts/${role}/draft.json`,
+      `${artifactDir}/review-provenance/${role}/.mount-write-anchor`,
       `${artifactDir}/review-input-${role}.json`,
       ...lanes.map((lane) => `${artifactDir}/review-input-${role}-lane-${lane}.json`),
     ]) {
@@ -390,7 +428,7 @@ async function main() {
     dependsOn: ['supervise'],
     command: command(
       'review-upload',
-      ` --role supervisor --review-kind supervisor --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-supervisor.json`
+      ` --role supervisor --review-kind supervisor --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/supervisor/draft.json`
     ),
     captureOutput: true,
     failOnError: true,
@@ -430,7 +468,7 @@ async function main() {
         dependsOn: [reviewStep],
         command: command(
           'review-upload',
-          ` --role ${reviewer} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-${reviewer}.json`
+          ` --role ${reviewer} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${reviewer}/draft.json`
         ),
         captureOutput: true,
         failOnError: true,
@@ -458,7 +496,7 @@ async function main() {
         dependsOn: [fixStep],
         command: command(
           'review-upload',
-          ` --role ${fixer} --review-kind fix --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-${fixer}.json`
+          ` --role ${fixer} --review-kind fix --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${fixer}/draft.json`
         ),
         captureOutput: true,
         failOnError: true,
@@ -492,7 +530,7 @@ async function main() {
       dependsOn: [`run-${role}`],
       command: command(
         'review-upload',
-        ` --role ${role} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-${role}.json`
+        ` --role ${role} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${role}/draft.json`
       ),
       captureOutput: true,
       failOnError: true,

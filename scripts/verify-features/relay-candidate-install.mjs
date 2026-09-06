@@ -356,22 +356,18 @@ export function privateNpmInvocation(
   platform = process.platform,
   parentDescriptorRoot = childRoot
 ) {
-  if (platform === 'linux') {
-    return {
-      args,
-      cwd: `${parentDescriptorRoot}${suffix}`,
-    };
+  if (platform !== 'linux') {
+    throw new Error('descriptor-bound candidate npm execution is supported only on Linux');
   }
-  return { args: ['--prefix', `${childRoot}${suffix}`, ...args], cwd: undefined };
+  return {
+    args,
+    cwd: `${parentDescriptorRoot}${suffix}`,
+  };
 }
 
 function run(command, args, options = {}) {
   const privateRoot = activePrivateRootHandle;
-  const childRoot = privateRoot
-    ? process.platform === 'linux'
-      ? `/proc/self/fd/3`
-      : privateRoot.root
-    : null;
+  const childRoot = privateRoot ? `/proc/self/fd/3` : null;
   const rewritePrivatePath = (value) => {
     if (!privateRoot || !childRoot || typeof value !== 'string') return value;
     for (const root of [privateRoot.root, privateRoot.ioRoot]) {
@@ -391,8 +387,7 @@ function run(command, args, options = {}) {
     );
     if (prefix && command === 'npm') {
       const suffix = options.cwd.slice(prefix.length);
-      const parentDescriptorRoot =
-        process.platform === 'linux' ? `/proc/${process.pid}/fd/${privateRoot.handle.fd}` : childRoot;
+      const parentDescriptorRoot = `/proc/${process.pid}/fd/${privateRoot.handle.fd}`;
       const invocation = privateNpmInvocation(
         childArgs,
         childRoot,
@@ -410,9 +405,7 @@ function run(command, args, options = {}) {
     timeout: options.timeoutMs ?? 300_000,
     maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, ...options.env, NO_COLOR: '1' },
-    ...(privateRoot && process.platform !== 'win32'
-      ? { stdio: ['ignore', 'pipe', 'pipe', privateRoot.handle.fd] }
-      : {}),
+    ...(privateRoot ? { stdio: ['ignore', 'pipe', 'pipe', privateRoot.handle.fd] } : {}),
   });
   if (result.error || result.status !== 0) {
     const detail = String(result.stderr || result.stdout || result.error?.message || '').trim();
@@ -698,15 +691,14 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   return { attestation, attestationSha256: sha256(bytes) };
 }
 
-function descriptorRoot(handle, fallback) {
-  if (process.platform === 'linux') return `/proc/self/fd/${handle.fd}`;
-  return fallback;
+function descriptorRoot(handle) {
+  return `/proc/self/fd/${handle.fd}`;
 }
 
 export function assertSupportedCandidateOutputPlatform(platform = process.platform) {
-  if (platform === 'win32') {
+  if (platform !== 'linux') {
     throw new Error(
-      'candidate prepare/hydrate is unsupported on Windows because Node cannot bind directory I/O to a verified handle'
+      'candidate prepare/hydrate is supported only on Linux because other Node platforms cannot bind directory I/O to a verified handle'
     );
   }
 }
@@ -748,7 +740,7 @@ async function createPrivateOutputRootHandle(outputRoot) {
     await handle.close();
     throw new Error('candidate output root must be a newly created directory');
   }
-  return { root, ioRoot: descriptorRoot(handle, root), handle };
+  return { root, ioRoot: descriptorRoot(handle), handle };
 }
 
 export async function createPrivateOutputRoot(outputRoot) {

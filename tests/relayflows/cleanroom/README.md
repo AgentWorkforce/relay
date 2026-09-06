@@ -93,8 +93,9 @@ npm run verify:fleet-daytona:dry-run
 npm run verify:fleet-daytona
 ```
 
-Run the live command only from an operator host that is already authenticated to
-Relay Cloud and Daytona. The runner never prints or places credentials in child
+Run the live command only from a Linux operator host that is already authenticated
+to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
+on platforms without descriptor-bound directory I/O. The runner never prints or places credentials in child
 argv, stores redacted bounded output, checkpoints after every operation, and
 deletes only exact sandbox IDs/names it recorded as owned. If interrupted, rerun
 exact cleanup with the nonce printed by the workflow:

@@ -59,6 +59,14 @@ function assertNonce(value) {
   return value;
 }
 
+function laneEvidenceKind(lane) {
+  return `lanes/${assertSafeId(lane, 'lane')}/evidence`;
+}
+
+function reviewProvenanceKind(role) {
+  return `review-provenance/${assertSafeId(role, 'role')}/capture`;
+}
+
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -1513,7 +1521,7 @@ async function runLane({ catalog, laneId, profile, nonce, source, artifactRoot }
         : statuses.includes('blocked')
           ? 'blocked'
           : 'pass';
-    await putRecord({ nonce, kind: `lanes/${laneId}`, value: record, source, artifactRoot });
+    await putRecord({ nonce, kind: laneEvidenceKind(laneId), value: record, source, artifactRoot });
   }
   return record;
 }
@@ -2044,7 +2052,7 @@ export function aggregateRecords({ matrix, categories, scope, laneRecords, profi
       sandboxId: record.sandboxId,
       commit: record.commit,
       cleanup: record.cleanup,
-      evidenceKind: `lanes/${record.lane}`,
+      evidenceKind: laneEvidenceKind(record.lane),
     })),
     scenarios: scenarioResults,
     features,
@@ -2178,7 +2186,13 @@ export function assertReviewUploadSource(profile, source = 'auto', env = process
 
 export function validateReviewDraftPath(file, artifactRoot, nonce, role) {
   const resolvedFile = path.resolve(file);
-  const expectedFile = path.join(path.resolve(artifactRoot), nonce, `draft-${role}.json`);
+  const expectedFile = path.join(
+    path.resolve(artifactRoot),
+    nonce,
+    'review-drafts',
+    assertSafeId(role, 'role'),
+    'draft.json'
+  );
   if (resolvedFile !== expectedFile) {
     throw new Error(`review input must be the role's exact draft path: ${expectedFile}`);
   }
@@ -2218,7 +2232,7 @@ async function exportReviewInput({
   });
   const laneFiles = [];
   for (const lane of catalog.matrix.profiles[profile].lanes) {
-    const record = await getRecord({ nonce, kind: `lanes/${lane}`, source, artifactRoot });
+    const record = await getRecord({ nonce, kind: laneEvidenceKind(lane), source, artifactRoot });
     const target = reviewExportPath(artifactRoot, nonce, role, lane);
     await writePrivateReviewExport(target, record);
     laneFiles.push({
@@ -2262,7 +2276,7 @@ async function aggregateFromStorage({ catalog, profile, nonce, source, artifactR
   const laneRecords = [];
   for (const laneId of catalog.matrix.profiles[profile].lanes) {
     try {
-      laneRecords.push(await getRecord({ nonce, kind: `lanes/${laneId}`, source, artifactRoot }));
+      laneRecords.push(await getRecord({ nonce, kind: laneEvidenceKind(laneId), source, artifactRoot }));
     } catch {
       // Missing evidence is represented explicitly by aggregateRecords.
     }
@@ -2561,7 +2575,7 @@ async function main() {
   }
   if (command === 'gate-lane') {
     const lane = assertSafeId(requiredOption(options, 'lane'), 'lane');
-    const record = await getRecord({ nonce, kind: `lanes/${lane}`, source, artifactRoot });
+    const record = await getRecord({ nonce, kind: laneEvidenceKind(lane), source, artifactRoot });
     if (
       record.version !== CONTRACT_VERSION ||
       record.nonce !== nonce ||
@@ -2671,7 +2685,7 @@ async function main() {
     try {
       await putRecord({
         nonce,
-        kind: `review-provenance/${role}`,
+        kind: reviewProvenanceKind(role),
         value: provenance,
         source,
         artifactRoot,
@@ -2682,7 +2696,7 @@ async function main() {
       }
       const stored = await getRecord({
         nonce,
-        kind: `review-provenance/${role}`,
+        kind: reviewProvenanceKind(role),
         source,
         artifactRoot,
       });
@@ -2713,7 +2727,7 @@ async function main() {
     const provenance = validateReviewProvenance(
       await getRecord({
         nonce,
-        kind: `review-provenance/${role}`,
+        kind: reviewProvenanceKind(role),
         source,
         artifactRoot,
       }),

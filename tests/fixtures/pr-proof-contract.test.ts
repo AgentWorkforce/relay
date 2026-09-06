@@ -59,6 +59,8 @@ import {
   verifyProtectedBrokerExecutable,
 } from '../../scripts/pr-proof/run-arm.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
+import { signalProcessTree } from '../../scripts/pr-proof/process-runner.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   resolveBrokerArtifact,
   resolveBrokerArtifactPair,
@@ -1227,6 +1229,47 @@ describe('exact broker artifact handoff', () => {
 });
 
 describe('process timeout contract', () => {
+  it('falls back to the live child handle when its process group is unowned', () => {
+    const signals: string[] = [];
+    const staleGroupError = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    signalProcessTree(
+      {
+        pid: 12345,
+        exitCode: null,
+        signalCode: null,
+        kill: (signal: string) => {
+          signals.push(signal);
+          return true;
+        },
+      },
+      'SIGKILL',
+      () => {
+        throw staleGroupError;
+      }
+    );
+    expect(signals).toEqual(['SIGKILL']);
+  });
+
+  it('does not signal an exited child again when its former process group is unowned', () => {
+    const staleGroupError = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    expect(() =>
+      signalProcessTree(
+        {
+          pid: 12345,
+          exitCode: 0,
+          signalCode: null,
+          kill: () => {
+            throw new Error('exited child must not be signaled again');
+          },
+        },
+        'SIGKILL',
+        () => {
+          throw staleGroupError;
+        }
+      )
+    ).not.toThrow();
+  });
+
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
     const result = await runProcess(
       process.execPath,

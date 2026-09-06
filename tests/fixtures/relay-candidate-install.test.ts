@@ -114,10 +114,13 @@ describe('Relay candidate clean-install attestation', () => {
     ).toThrow(/apt-get/);
   });
 
-  it('fails closed on Windows where directory-handle-bound I/O is unavailable', () => {
-    expect(() => assertSupportedCandidateOutputPlatform('win32')).toThrow(/unsupported on Windows/);
+  it('fails closed outside Linux where directory-handle-bound I/O is unavailable', () => {
+    expect(() => assertSupportedCandidateOutputPlatform('win32')).toThrow(/supported only on Linux/);
+    expect(() => assertSupportedCandidateOutputPlatform('darwin')).toThrow(/supported only on Linux/);
     expect(() => assertSupportedCandidateOutputPlatform('linux')).not.toThrow();
-    expect(() => assertSupportedCandidateOutputPlatform('darwin')).not.toThrow();
+    expect(() => privateNpmInvocation([], '/dev/fd/3', '/install', 'darwin')).toThrow(
+      /supported only on Linux/
+    );
   });
 
   it('makes the candidate output parent private in producer and hydration workflows', async () => {
@@ -199,7 +202,7 @@ describe('Relay candidate clean-install attestation', () => {
     }
   );
 
-  it.skipIf(process.platform === 'win32')('rejects pre-existing output roots and symlinks', async () => {
+  it.skipIf(process.platform !== 'linux')('rejects pre-existing output roots and symlinks', async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-output-'));
     try {
       const existing = path.join(parent, 'existing');
@@ -226,7 +229,7 @@ describe('Relay candidate clean-install attestation', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('rejects an output root whose parent is not private', async () => {
+  it.skipIf(process.platform !== 'linux')('rejects an output root whose parent is not private', async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-public-parent-'));
     try {
       await chmod(parent, 0o755);
