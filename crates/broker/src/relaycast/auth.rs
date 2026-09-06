@@ -232,6 +232,7 @@ pub fn is_agent_token_invalid(err: &RelayError) -> bool {
             code,
             status,
             message,
+            ..
         } => {
             is_agent_token_invalid_code(code)
                 || (*status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE)
@@ -901,6 +902,7 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
             status,
             message,
             code,
+            ..
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
@@ -1051,6 +1053,8 @@ async fn admit_agent_registration(
                          credentials (set RELAY_AGENT_IDENTITY_KEY to the original work unit's \
                          identity to reclaim it after a crash)"
                     ),
+                    request_id: None,
+                    attempts: 1,
                 }));
             }
 
@@ -1129,6 +1133,7 @@ async fn admit_agent_registration(
             code,
             status,
             message,
+            ..
         }) if is_agent_token_invalid_code(&code)
             || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
         {
@@ -1139,6 +1144,8 @@ async fn admit_agent_registration(
                 code: AGENT_TOKEN_INVALID_CODE.to_string(),
                 status,
                 message,
+                request_id: None,
+                attempts: 1,
             }))
         }
         Err(error) => Err(relay_error_to_anyhow(error)),
@@ -1314,6 +1321,7 @@ fn is_workspace_name_conflict(error: &RelayError) -> bool {
             code,
             message,
             status,
+            ..
         } => {
             *status == 409
                 || is_conflict_code(code)
@@ -1391,6 +1399,8 @@ mod tests {
             code: "  agent_token_invalid  ".to_string(),
             status: 401,
             message: "Invalid agent token".to_string(),
+            request_id: None,
+            attempts: 1,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
     }
@@ -1401,6 +1411,8 @@ mod tests {
             code: AGENT_TOKEN_INVALID_CODE.to_string(),
             status: 401,
             message: "anything".to_string(),
+            request_id: None,
+            attempts: 1,
         };
         assert!(is_agent_token_invalid(&typed));
 
@@ -1408,6 +1420,8 @@ mod tests {
             code: "unauthorized".to_string(),
             status: 401,
             message: "Invalid agent token".to_string(),
+            request_id: None,
+            attempts: 1,
         };
         assert!(is_agent_token_invalid(&legacy));
 
@@ -1415,6 +1429,8 @@ mod tests {
             code: "unauthorized".to_string(),
             status: 401,
             message: "bad workspace key".to_string(),
+            request_id: None,
+            attempts: 1,
         };
         assert!(!is_agent_token_invalid(&unrelated));
     }
@@ -1425,6 +1441,8 @@ mod tests {
             code: AGENT_TOKEN_INVALID_CODE.to_string(),
             status: 401,
             message: "Invalid agent token".to_string(),
+            request_id: None,
+            attempts: 1,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
 
@@ -1432,6 +1450,8 @@ mod tests {
             code: String::new(),
             status: 401,
             message: "Invalid agent token".to_string(),
+            request_id: None,
+            attempts: 1,
         });
         assert!(is_agent_token_invalid_anyhow(&legacy));
 
@@ -1439,6 +1459,8 @@ mod tests {
             code: "agent_already_exists".to_string(),
             status: 409,
             message: "name taken".to_string(),
+            request_id: None,
+            attempts: 1,
         });
         assert!(!is_agent_token_invalid_anyhow(&unrelated));
     }
