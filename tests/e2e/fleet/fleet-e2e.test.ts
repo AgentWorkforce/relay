@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -36,6 +37,11 @@ import {
   type EngineHandle,
   type NodeRosterEntry,
 } from './harness.js';
+
+const require = createRequire(import.meta.url);
+const { RELEASE_PROBE_PID_FILE } = require('./nodes/release-probe-constants.cjs') as {
+  RELEASE_PROBE_PID_FILE: string;
+};
 
 /**
  * Two-node fleet E2E (Phase 6). Boots a REAL stack — a relaycast engine (node
@@ -347,7 +353,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     );
     expect(spawnDone.status).toBe('completed');
 
-    const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', 'release-1671-descendant.pid');
+    const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
     const readDescendantPid = async () => {
       const pid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
       expect(Number.isInteger(pid)).toBe(true);

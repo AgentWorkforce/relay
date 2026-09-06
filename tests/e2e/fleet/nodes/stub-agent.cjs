@@ -8,6 +8,7 @@
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const { RELEASE_PROBE_PID_FILE } = require('./release-probe-constants.cjs');
 
 const readyDelayMs = Number.parseInt(process.env.RELAY_E2E_STUB_READY_DELAY_MS ?? '0', 10) || 0;
 let ready = false;
@@ -26,7 +27,7 @@ let releaseProbeChild;
 if (process.env.RELAY_E2E_SPAWN_DESCENDANT === '1') {
   const projectDir = process.env.AGENT_RELAY_PROJECT;
   if (!projectDir) throw new Error('release probe requires AGENT_RELAY_PROJECT');
-  const pidPath = path.join(projectDir, '.agentworkforce', 'relay', 'release-1671-descendant.pid');
+  const pidPath = path.join(projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
   mkdirSync(path.dirname(pidPath), { recursive: true });
   releaseProbeChild = spawn('sleep', ['300'], { stdio: 'ignore' });
   releaseProbeChild.once('error', (error) => {
