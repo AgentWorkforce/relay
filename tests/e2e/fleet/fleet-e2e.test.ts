@@ -30,6 +30,7 @@ import {
   preflight,
   registerAgent,
   releaseAgent,
+  REPO_ROOT,
   sendDm,
   startCloudEnrollmentEndpoint,
   startEngine,
