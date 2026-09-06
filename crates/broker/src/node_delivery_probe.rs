@@ -244,14 +244,12 @@ impl NodeDeliveryProbe {
     /// never retained.
     pub(crate) fn record_parse_failure(&self, error: &str, raw: &str) {
         self.counters.parse_failures.fetch_add(1, Ordering::Relaxed);
-        let frame_type = serde_json::from_str::<Value>(raw)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .map(|found| found.to_string())
-            });
+        let frame_type = serde_json::from_str::<Value>(raw).ok().and_then(|value| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(|found| found.to_string())
+        });
         let mut error = error.to_string();
         if error.len() > ERROR_EXCERPT_LIMIT {
             error.truncate(ERROR_EXCERPT_LIMIT);
@@ -334,11 +332,7 @@ impl NodeDeliveryProbe {
     /// Called once `handle_fleet_deliver` knows where the frame ended up. The
     /// disposition is stamped onto the matching recent entry so a reader sees
     /// decision and outcome together rather than having to infer the join.
-    pub(crate) fn record_disposition(
-        &self,
-        deliver: &Deliver,
-        disposition: DeliverDisposition,
-    ) {
+    pub(crate) fn record_disposition(&self, deliver: &Deliver, disposition: DeliverDisposition) {
         let counter = match disposition {
             DeliverDisposition::Injected => &self.counters.injected,
             DeliverDisposition::SurfacedAndAcked => &self.counters.surfaced_and_acked,
@@ -473,7 +467,7 @@ mod tests {
 
     fn deliver(agent: &str, agent_id: &str, delivery_id: &str, seq: u64) -> Deliver {
         Deliver {
-            v: FleetWireVersion::default(),
+            v: FleetWireVersion,
             agent: agent.to_string(),
             agent_id: agent_id.to_string(),
             delivery_id: delivery_id.to_string(),
@@ -591,7 +585,10 @@ mod tests {
             format!("del_{}", RECENT_CAPACITY + 9)
         );
         // The counter still reflects every frame, not just the retained ones.
-        assert_eq!(snapshot["decisions"]["deliver"], RECENT_CAPACITY as u64 + 10);
+        assert_eq!(
+            snapshot["decisions"]["deliver"],
+            RECENT_CAPACITY as u64 + 10
+        );
     }
 
     /// A peer emitting endless distinct `type` values must not grow this map

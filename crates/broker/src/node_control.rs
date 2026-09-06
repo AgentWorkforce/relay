@@ -3999,7 +3999,7 @@ mod tests {
             // "counted everything" from "counted nothing but the failure".
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::Deliver(Deliver {
-                    v: crate::fleet_wire::FleetWireVersion::default(),
+                    v: crate::fleet_wire::FleetWireVersion,
                     agent: "worker-a".to_string(),
                     agent_id: "ag_1".to_string(),
                     delivery_id: "del_1".to_string(),
@@ -4008,8 +4008,7 @@ mod tests {
                     mode: DeliveryMode::Wait,
                     payload: serde_json::json!({ "type": "dm.received" }),
                 }))
-                .unwrap()
-                .into(),
+                .unwrap(),
             ))
             .await
             .unwrap();

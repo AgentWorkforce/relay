@@ -542,10 +542,7 @@ fn listen_api_router_with_auth(
             "/api/crash-insights",
             routing::get(listen_api_crash_insights),
         )
-        .route(
-            "/api/node-delivery",
-            routing::get(listen_api_node_delivery),
-        )
+        .route("/api/node-delivery", routing::get(listen_api_node_delivery))
         .route("/api/dead-letters", routing::get(listen_api_dead_letters))
         .route(
             "/api/dead-letters/redeliver",
@@ -3925,7 +3922,7 @@ mod auth_tests {
         probe.record_connected();
         probe.record_text_frame();
         let deliver = crate::fleet_wire::Deliver {
-            v: crate::fleet_wire::FleetWireVersion::default(),
+            v: crate::fleet_wire::FleetWireVersion,
             agent: "worker-a".to_string(),
             agent_id: "ag_1".to_string(),
             delivery_id: "del_1".to_string(),

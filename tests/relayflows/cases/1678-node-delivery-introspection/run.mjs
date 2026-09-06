@@ -174,7 +174,9 @@ try {
     }
     const status = await api('GET', '/api/status');
     if (typeof status.agent_count !== 'number') {
-      throw new Error(`Control failed: /api/status did not answer normally: ${JSON.stringify(status).slice(0, 200)}`);
+      throw new Error(
+        `Control failed: /api/status did not answer normally: ${JSON.stringify(status).slice(0, 200)}`
+      );
     }
     // And the base broker really is mute, which is why nothing else can answer.
     outcome = 'absent';
@@ -229,9 +231,7 @@ try {
       throw new Error(`Recorded delivery names ${entry.agent}, expected ${AGENT}.`);
     }
     if (!entry.disposition) {
-      throw new Error(
-        `The frame was counted but its outcome was not recorded: ${JSON.stringify(entry)}.`
-      );
+      throw new Error(`The frame was counted but its outcome was not recorded: ${JSON.stringify(entry)}.`);
     }
     if (after.socket.text_frames <= before.socket.text_frames) {
       throw new Error(

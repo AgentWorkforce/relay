@@ -850,7 +850,8 @@ impl BrokerRuntime {
         // Record the book's verdict before acting on it, so a frame that is
         // about to be dropped without an ack is still visible over
         // `GET /api/node-delivery`. See `crate::node_delivery_probe`.
-        self.node_delivery_probe.record_decision(&deliver, &decision);
+        self.node_delivery_probe
+            .record_decision(&deliver, &decision);
         let up_to_seq = match plan_fleet_delivery(decision) {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
