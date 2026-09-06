@@ -1399,7 +1399,7 @@ const REQUIRED_ACCEPTANCE = [
   'full-cleanroom',
   'independent-review',
   'full-root-scale',
-  'fleet-95-operations',
+  'fleet-96-operations',
   'flush-fatal-deployment',
 ];
 const DIAGNOSIS_SEAL_FILES = [
@@ -1472,8 +1472,15 @@ async function validateCoverage(artifactDir, ledger) {
     }
   }
   const coverageIds = new Set(coverageRows.map((row) => row.id));
-  if (coverageIds.size !== 143 || coverageRows.length !== 143) {
-    throw new Error(`coverage contract must contain exactly 143 unique rows, got ${coverageRows.length}`);
+  // The expected row count is derived from the same inventories asserted
+  // above (transitions + faults + acceptance + matrix operations) so the gate
+  // cannot drift out of sync with the Fleet matrix again.
+  const expectedCoverageRows =
+    REQUIRED_TRANSITIONS.length + REQUIRED_FAULTS.length + REQUIRED_ACCEPTANCE.length + matrix.operations.length;
+  if (coverageIds.size !== expectedCoverageRows || coverageRows.length !== expectedCoverageRows) {
+    throw new Error(
+      `coverage contract must contain exactly ${expectedCoverageRows} unique rows, got ${coverageRows.length}`
+    );
   }
   for (const unknown of ledger.unknowns) {
     for (const gateId of unknown.gateIds ?? []) {
