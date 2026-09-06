@@ -97,9 +97,7 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
   // diagnostic output.
   let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body) =>
     declaredSecrets.some(
-      (secret) =>
-        secret === match ||
-        (secret.startsWith(prefix) && secret.length > prefix.length + 8 && match.startsWith(secret))
+      (secret) => secret === match || (secret.startsWith(prefix) && match.startsWith(secret))
     )
       ? '[REDACTED_DECLARED_SECRET]'
       : body.length <= 8
