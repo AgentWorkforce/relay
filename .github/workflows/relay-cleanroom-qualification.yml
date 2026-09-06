@@ -171,6 +171,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     environment: snapshot-qualification
+    outputs:
+      owned_workspace_a: ${{ steps.workspace_a.outputs.cloud_workspace_id }}
+      owned_workspace_b: ${{ steps.workspace_b.outputs.cloud_workspace_id }}
     env:
       CLOUD_API_URL: https://agentrelay.com/cloud
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -659,3 +662,127 @@ jobs:
           FLEET_OUTCOME: ${{ steps.fleet.outcome }}
         run: |
           node -e "if (process.env.FLEET_OUTCOME !== 'success') throw new Error('candidate Fleet qualification did not complete')"
+
+  qualification_cleanup:
+    name: Reconcile qualification workspaces
+    needs: qualification
+    if: ${{ always() && needs.qualification.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: snapshot-qualification
+    steps:
+      - name: Check out exact cleanup CLI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: relay-cleanup
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+
+      - name: Build exact cleanup CLI without Cloud credentials
+        working-directory: relay-cleanup
+        run: |
+          npm install --global npm@10.9.7
+          test "$(npm --version)" = "10.9.7"
+          npm ci
+          npm run build:core
+          mkdir -p qualification-cleanup
+
+      - name: Bind only create-step-owned qualification workspace IDs
+        id: resolve
+        working-directory: relay-cleanup
+        env:
+          WORKSPACE_A: ${{ needs.qualification.outputs.owned_workspace_a }}
+          WORKSPACE_B: ${{ needs.qualification.outputs.owned_workspace_b }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const resolved = {};
+          for (const suffix of ['a', 'b']) {
+            const id = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
+            if (!id) continue;
+            if (!uuid.test(id)) throw new Error(`create-step-owned workspace ${suffix} has an invalid id`);
+            resolved[suffix] = id;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${id}\n`);
+          }
+          fs.writeFileSync(
+            'qualification-cleanup/resolved.json',
+            `${JSON.stringify({ version: 1, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, resolved }, null, 2)}\n`,
+            { mode: 0o600, flag: 'wx' }
+          );
+          NODE
+
+      - name: Delete exact fallback workspace B and verify cascade
+        if: steps.resolve.outputs.workspace_b != ''
+        working-directory: relay-cleanup
+        env:
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          WORKSPACE_ID: ${{ steps.resolve.outputs.workspace_b }}
+        run: |
+          node packages/cli/dist/cli/index.js cloud workspace delete "$WORKSPACE_ID" \
+            --confirm "$WORKSPACE_ID" \
+            --verify-cascade \
+            --json > qualification-cleanup/delete-b.json
+
+      - name: Delete exact fallback workspace A and verify cascade
+        if: steps.resolve.outputs.workspace_a != ''
+        working-directory: relay-cleanup
+        env:
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          WORKSPACE_ID: ${{ steps.resolve.outputs.workspace_a }}
+        run: |
+          node packages/cli/dist/cli/index.js cloud workspace delete "$WORKSPACE_ID" \
+            --confirm "$WORKSPACE_ID" \
+            --verify-cascade \
+            --json > qualification-cleanup/delete-a.json
+
+      - name: Prove every create-step-owned ID has cascade absence evidence
+        if: always()
+        working-directory: relay-cleanup
+        env:
+          WORKSPACE_A: ${{ steps.resolve.outputs.workspace_a }}
+          WORKSPACE_B: ${{ steps.resolve.outputs.workspace_b }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const evidence = {};
+          for (const suffix of ['a', 'b']) {
+            const id = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
+            if (!id) {
+              evidence[suffix] = { allocated: false };
+              continue;
+            }
+            const result = JSON.parse(fs.readFileSync(`qualification-cleanup/delete-${suffix}.json`, 'utf8'));
+            if (result.workspaceId !== id || result.absence?.workspaceId !== id || result.absence?.status !== 404) {
+              throw new Error(`workspace ${suffix} lacks exact cascade absence evidence`);
+            }
+            evidence[suffix] = { allocated: true, workspaceId: id, operationId: result.operationId, absence: result.absence };
+          }
+          fs.writeFileSync(
+            'qualification-cleanup/absence.json',
+            `${JSON.stringify({ version: 1, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, evidence }, null, 2)}\n`,
+            { mode: 0o600, flag: 'wx' }
+          );
+          NODE
+
+      - name: Upload independent cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relay-qualification-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: relay-cleanup/qualification-cleanup/
+          if-no-files-found: error
+          retention-days: 90

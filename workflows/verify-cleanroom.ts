@@ -14,11 +14,13 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { cleanroomLaneTimeoutMs } from '../scripts/verify-features/cleanroom.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   cleanroomLaneEvidenceScopes,
@@ -33,7 +35,6 @@ const PROFILE = process.env.VERIFY_CLEANROOM_PROFILE ?? 'full';
 const REVIEW_ROUNDS = Number(process.env.VERIFY_CLEANROOM_REVIEW_ROUNDS ?? '2');
 const NONCE = randomBytes(16).toString('hex');
 const SOURCE = 'auto';
-const STEP_TIMEOUT = 7_200_000;
 
 if (!['smoke', 'full', 'soak'].includes(PROFILE)) {
   throw new Error('VERIFY_CLEANROOM_PROFILE must be smoke, full, or soak');
@@ -44,10 +45,42 @@ if (!Number.isSafeInteger(REVIEW_ROUNDS) || REVIEW_ROUNDS < 1 || REVIEW_ROUNDS >
 
 const matrix = JSON.parse(readFileSync(MATRIX, 'utf8')) as {
   product: string;
-  profiles: Record<string, { lanes: string[] }>;
+  profiles: Record<string, { lanes: string[]; defaultRepeats: number }>;
+  commonSetup: Array<{ timeoutSeconds: number; profiles?: string[] }>;
+  lanes: Array<{
+    id: string;
+    setup: Array<{ timeoutSeconds: number; profiles?: string[] }>;
+    scenarios: Array<{
+      kind?: 'command' | 'coverage-gap' | 'relayflow-corpus';
+      timeoutSeconds: number;
+      profiles?: string[];
+      repeats?: Record<string, number>;
+    }>;
+  }>;
 };
 const lanes = matrix.profiles[PROFILE]?.lanes;
 if (!lanes?.length) throw new Error(`Matrix has no lanes for profile ${PROFILE}`);
+const corpusCaseTimeoutSeconds = readdirSync('tests/relayflows/cases', { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => {
+    const manifest = JSON.parse(readFileSync(`tests/relayflows/cases/${entry.name}/case.json`, 'utf8')) as {
+      timeoutSeconds?: number;
+    };
+    if (!Number.isSafeInteger(manifest.timeoutSeconds) || Number(manifest.timeoutSeconds) < 1) {
+      throw new Error(`Corpus case ${entry.name} has no positive timeoutSeconds`);
+    }
+    return Number(manifest.timeoutSeconds);
+  });
+const laneTimeouts = Object.fromEntries(
+  lanes.map((lane) => [lane, cleanroomLaneTimeoutMs(matrix, PROFILE, lane, corpusCaseTimeoutSeconds)])
+) as Record<string, number>;
+// The lane agents can run concurrently, but summing their exact upper bounds
+// remains safe if sandbox scheduling serializes them. The remaining allowance
+// covers every deterministic gate and every configured review/fix round.
+const reviewAndGateTimeout =
+  660_000 + lanes.length * 120_000 + 1_560_000 + REVIEW_ROUNDS * 2 * 2_280_000 + 2_880_000 + 420_000;
+const workflowTimeout =
+  Object.values(laneTimeouts).reduce((total, timeout) => total + timeout, 0) + reviewAndGateTimeout;
 
 function command(action: string, extra = ''): string {
   return `node ${RUNNER} ${action} --matrix ${MATRIX} --profile ${PROFILE} --nonce ${NONCE} --source ${SOURCE}${extra}`;
@@ -261,7 +294,7 @@ async function main() {
     .channel(`relay-cleanroom-${NONCE.slice(0, 8)}`)
     .maxConcurrency(8)
     .onError('continue')
-    .timeout(28_800_000)
+    .timeout(workflowTimeout)
     .idleNudge({ nudgeAfterMs: 180_000, escalateAfterMs: 180_000, maxNudges: 2 });
 
   wf.agent('campaign-supervisor', {
@@ -379,7 +412,7 @@ async function main() {
         `Report the command output, including CLEANROOM_LANE_COMPLETE lane=${lane}.`,
       ].join('\n'),
       verification: { type: 'output_contains', value: `CLEANROOM_LANE_COMPLETE lane=${lane}` },
-      timeoutMs: STEP_TIMEOUT,
+      timeoutMs: laneTimeouts[lane],
     });
     wf.step(gateStep, {
       type: 'deterministic',

@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 import { compileAgentPermissions } from '@agent-relay/cloud';
+import { parse } from 'yaml';
 
 // Dependency-free ESM is shared with the Cloud lane sandboxes.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -13,12 +14,14 @@ import {
   assertReviewUploadSource,
   captureBoundedOutput,
   cleanEnvironment,
+  cleanroomLaneTimeoutMs,
   freshAttemptContext,
   loadCatalog,
   parseFeatureManifest,
   putRecord,
   readBoundedResponseText,
   redactEvidence,
+  runProcess,
   routeInventory,
   validateCloudApiBaseUrl,
   validateCleanroomSeal,
@@ -536,6 +539,30 @@ describe('clean-room verification catalog', () => {
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
   });
 
+  it('derives full and soak lane timeouts from every configured repetition and corpus case', async () => {
+    const { matrix } = await loadCatalog('tests/relayflows/cleanroom/relay.matrix.json');
+    const corpusEntries = await readdir('tests/relayflows/cases', { withFileTypes: true });
+    const corpusTimeouts = await Promise.all(
+      corpusEntries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          const manifest = JSON.parse(
+            await readFile(path.join('tests/relayflows/cases', entry.name, 'case.json'), 'utf8')
+          );
+          return manifest.timeoutSeconds;
+        })
+    );
+    const fullTimeout = cleanroomLaneTimeoutMs(matrix, 'full', 'regression-corpus', corpusTimeouts);
+    const soakTimeout = cleanroomLaneTimeoutMs(matrix, 'soak', 'regression-corpus', corpusTimeouts);
+    const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
+
+    expect(fullTimeout).toBeGreaterThan(7_200_000);
+    expect(soakTimeout).toBeGreaterThan(fullTimeout);
+    expect(source).toContain('timeoutMs: laneTimeouts[lane]');
+    expect(source).toContain('.timeout(workflowTimeout)');
+    expect(source).not.toContain('const STEP_TIMEOUT = 7_200_000');
+  });
+
   it('grants each cleanroom agent only its exact output and required model transport', () => {
     const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
     const evidenceScopes = cleanroomLaneEvidenceScopes(NONCE, 'polyglot-plugins');
@@ -643,27 +670,56 @@ describe('clean-room verification catalog', () => {
     }
   });
 
-  it('rejects future writes inside skipped state directories and through dangling symlinks', async () => {
-    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-future-write-deny-'));
-    try {
-      const deniedTargets = [
-        '.git/future.json',
-        'nested/.relay/future.json',
-        'packages/fixture/node_modules/future.json',
-        'packages/fixture/NODE_MODULES/future.json',
-      ];
-      const danglingTarget = 'safe/dangling.json';
-      const allowedTarget = 'safe/future.json';
-      for (const directory of [
-        '.git',
-        'nested/.relay',
-        'packages/fixture/node_modules',
-        'packages/fixture/NODE_MODULES',
-        'safe',
-      ]) {
-        await mkdir(path.join(projectDir, directory), { recursive: true });
+  it.skipIf(process.platform === 'win32')(
+    'rejects future writes inside skipped state directories and through dangling symlinks',
+    async () => {
+      const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-future-write-deny-'));
+      try {
+        const deniedTargets = [
+          '.git/future.json',
+          'nested/.relay/future.json',
+          'packages/fixture/node_modules/future.json',
+          'packages/fixture/NODE_MODULES/future.json',
+        ];
+        const danglingTarget = 'safe/dangling.json';
+        const allowedTarget = 'safe/future.json';
+        for (const directory of [
+          '.git',
+          'nested/.relay',
+          'packages/fixture/node_modules',
+          'packages/fixture/NODE_MODULES',
+          'safe',
+        ]) {
+          await mkdir(path.join(projectDir, directory), { recursive: true });
+        }
+        await symlink('missing.json', path.join(projectDir, danglingTarget));
+
+        const compiled = compileAgentPermissions({
+          agentName: 'future-writer',
+          workspace: 'cleanroom-test',
+          projectDir,
+          permissions: {
+            access: 'restricted',
+            inherit: false,
+            files: { write: [...deniedTargets, danglingTarget, allowedTarget] },
+          },
+        });
+
+        expect(compiled.readwritePaths).toEqual([allowedTarget]);
+        for (const deniedTarget of [...deniedTargets, danglingTarget]) {
+          expect(compiled.readwritePaths).not.toContain(deniedTarget);
+          expect(compiled.scopes).not.toContain(`relayfile:fs:write:/${deniedTarget}`);
+        }
+      } finally {
+        await rm(projectDir, { recursive: true, force: true });
       }
-      await symlink('missing.json', path.join(projectDir, danglingTarget));
+    }
+  );
+
+  it('rejects an exact future write below an existing regular file without aborting compilation', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-future-write-file-parent-'));
+    try {
+      await writeFile(path.join(projectDir, 'regular-file'), 'not a directory\n');
 
       const compiled = compileAgentPermissions({
         agentName: 'future-writer',
@@ -672,19 +728,56 @@ describe('clean-room verification catalog', () => {
         permissions: {
           access: 'restricted',
           inherit: false,
-          files: { write: [...deniedTargets, danglingTarget, allowedTarget] },
+          files: { write: ['regular-file/future.json'] },
         },
       });
 
-      expect(compiled.readwritePaths).toEqual([allowedTarget]);
-      for (const deniedTarget of [...deniedTargets, danglingTarget]) {
-        expect(compiled.readwritePaths).not.toContain(deniedTarget);
-        expect(compiled.scopes).not.toContain(`relayfile:fs:write:/${deniedTarget}`);
-      }
+      expect(compiled.readwritePaths).not.toContain('regular-file/future.json');
+      expect(compiled.scopes).not.toContain('relayfile:fs:write:/regular-file/future.json');
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'settles a timed-out cleanroom command when an escaped descendant retains its output pipes',
+    async () => {
+      const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-timeout-'));
+      const pidFile = path.join(projectDir, 'escaped.pid');
+      let escapedPid = 0;
+      const startedAt = Date.now();
+      try {
+        const script = [
+          "const { spawn } = require('node:child_process');",
+          "const fs = require('node:fs');",
+          `const child = spawn(${JSON.stringify(process.execPath)}, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: ['ignore', 1, 2] });`,
+          `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+          'child.unref();',
+          'setTimeout(() => {}, 30000);',
+        ].join('\n');
+        const result = await runProcess([process.execPath, '-e', script], {
+          cwd: projectDir,
+          env: process.env,
+          timeoutSeconds: 0.5,
+        });
+        escapedPid = Number(await readFile(pidFile, 'utf8'));
+
+        expect(result.timedOut).toBe(true);
+        expect(Date.now() - startedAt).toBeLessThan(3_000);
+        expect(Number.isSafeInteger(escapedPid)).toBe(true);
+        expect(escapedPid).toBeGreaterThan(0);
+      } finally {
+        if (escapedPid > 0) {
+          try {
+            process.kill(escapedPid, 'SIGKILL');
+          } catch (error: any) {
+            if (error?.code !== 'ESRCH') throw error;
+          }
+        }
+        await rm(projectDir, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('isolates each reviewer mount from lane evidence and other reviewer outputs', async () => {
     const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-review-permissions-'));
@@ -774,5 +867,26 @@ describe('clean-room verification catalog', () => {
     expect(workflow).toMatch(
       /relayWorkflowRef\s*!==\s*undefined\s*&&\s*relayWorkflowRef\s*!==\s*expectedRelayRef/
     );
+  });
+
+  it('runs exact-name workspace reconciliation in an independent post-qualification job', async () => {
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const parsed = parse(source);
+    const cleanup = parsed.jobs.qualification_cleanup;
+
+    expect(cleanup.needs).toBe('qualification');
+    expect(cleanup.if).toContain('always()');
+    expect(cleanup['runs-on']).toBe('ubuntu-24.04');
+    expect(cleanup['timeout-minutes']).toBe(60);
+    expect(cleanup.environment).toBe('snapshot-qualification');
+    expect(cleanup.steps.filter((step: any) => step.run?.includes('cloud workspace delete'))).toHaveLength(2);
+    expect(cleanup.steps.some((step: any) => step.run?.includes('cloud workspaces --json'))).toBe(false);
+    expect(parsed.jobs.qualification.outputs).toEqual({
+      owned_workspace_a: '${{ steps.workspace_a.outputs.cloud_workspace_id }}',
+      owned_workspace_b: '${{ steps.workspace_b.outputs.cloud_workspace_id }}',
+    });
+    expect(source).toContain('WORKSPACE_A: ${{ needs.qualification.outputs.owned_workspace_a }}');
+    expect(source).toContain('WORKSPACE_B: ${{ needs.qualification.outputs.owned_workspace_b }}');
+    expect(source).toContain('result.absence?.workspaceId !== id || result.absence?.status !== 404');
   });
 });

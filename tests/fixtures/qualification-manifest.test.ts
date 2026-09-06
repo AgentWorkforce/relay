@@ -337,7 +337,7 @@ describe('qualification manifest', () => {
       >;
     };
     const jobs = workflow.jobs ?? {};
-    for (const job of Object.values(jobs)) expect(job.env).not.toHaveProperty('GH_TOKEN');
+    for (const job of Object.values(jobs)) expect(job.env ?? {}).not.toHaveProperty('GH_TOKEN');
 
     const steps = Object.values(jobs).flatMap((job) => job.steps ?? []);
     const tokenSteps = steps.filter((step) => step.env?.GH_TOKEN !== undefined);
