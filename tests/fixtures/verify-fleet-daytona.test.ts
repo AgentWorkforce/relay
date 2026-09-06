@@ -551,21 +551,25 @@ describe('complete Daytona Fleet board', () => {
     const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
     const steps = workflowStepDeclarations(source);
     const build = steps.get('build-current-cli');
+    const installNpm = steps.get('install-candidate-npm');
     const stageBroker = steps.get('stage-current-platform-broker');
     const prepare = steps.get('prepare-clean-installed-candidate');
     const inventory = steps.get('verify-candidate-cli-inventory');
     const attemptA = steps.get('run-daytona-board-attempt-a');
     expect(build).toBeDefined();
+    expect(installNpm).toBeDefined();
     expect(stageBroker).toBeDefined();
     expect(prepare).toBeDefined();
     expect(inventory).toBeDefined();
     expect(attemptA).toBeDefined();
-    expect(stageBroker!.offset).toBeGreaterThan(build!.offset);
+    expect(installNpm!.offset).toBeGreaterThan(build!.offset);
+    expect(stageBroker!.offset).toBeGreaterThan(installNpm!.offset);
     expect(prepare!.offset).toBeGreaterThan(stageBroker!.offset);
     expect(inventory!.offset).toBeGreaterThan(prepare!.offset);
     expect(attemptA!.offset).toBeGreaterThan(inventory!.offset);
     expect(build!.dependsOn).toEqual(['validate-catalog']);
-    expect(stageBroker!.dependsOn).toEqual(['build-current-cli']);
+    expect(installNpm!.dependsOn).toEqual(['build-current-cli']);
+    expect(stageBroker!.dependsOn).toEqual(['install-candidate-npm']);
     expect(prepare!.dependsOn).toEqual(['candidatePreparationDependency']);
     expect(inventory!.dependsOn).toEqual(['prepare-clean-installed-candidate']);
     expect(attemptA!.dependsOn).toEqual([
@@ -574,6 +578,8 @@ describe('complete Daytona Fleet board', () => {
       'preflight-claude-model',
     ]);
     expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
+    expect(source).toContain('npm install --global npm@${REQUIRED_NPM_VERSION}');
+    expect(source).toContain('test "$(npm --version)" = "${REQUIRED_NPM_VERSION}"');
     expect(source).toMatch(/candidatePreparationDependency\s*=\s*["']stage-current-platform-broker["']/);
     expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');

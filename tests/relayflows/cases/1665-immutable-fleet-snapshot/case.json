@@ -7,7 +7,7 @@
     "command": ["node", "tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs"]
   },
   "requirements": [],
-  "timeoutSeconds": 1300,
+  "timeoutSeconds": 1500,
   "expected": {
     "base": {
       "outcome": "absent",

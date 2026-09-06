@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -159,6 +159,7 @@ describe('Relay candidate clean-install attestation', () => {
 
   it.skipIf(process.platform !== 'linux')(
     'keeps npm lockfile identity canonical through the inherited Linux descriptor',
+    { timeout: 320_000 },
     async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-procfd-'));
       const install = path.join(root, 'install');
@@ -177,11 +178,19 @@ describe('Relay candidate clean-install attestation', () => {
           'linux',
           `/proc/${process.pid}/fd/${descriptor.fd}`
         );
-        const result = spawnSync('npm', invocation.args, {
-          cwd: invocation.cwd,
-          encoding: 'utf8',
-          timeout: 300_000,
-          stdio: ['ignore', 'pipe', 'pipe', descriptor.fd],
+        const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+          const child = spawn('npm', invocation.args, {
+            cwd: invocation.cwd,
+            timeout: 300_000,
+            stdio: ['ignore', 'ignore', 'pipe', descriptor.fd],
+          });
+          let stderr = '';
+          child.stderr.setEncoding('utf8');
+          child.stderr.on('data', (chunk: string) => {
+            stderr += chunk;
+          });
+          child.once('error', reject);
+          child.once('close', (status) => resolve({ status, stderr }));
         });
         expect(result.status, result.stderr).toBe(0);
 

@@ -40,7 +40,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
@@ -173,7 +172,6 @@ jobs:
     timeout-minutes: 360
     environment: snapshot-qualification
     env:
-      GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
       CLOUD_API_URL: https://agentrelay.com/cloud
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -192,6 +190,7 @@ jobs:
 
       - name: Obtain immutable qualification manifest
         env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           MANUAL_MANIFEST: ${{ github.event.client_payload.qualification_manifest_json || inputs.qualification_manifest_json || vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON }}
@@ -224,6 +223,7 @@ jobs:
       - name: Bind the release tag ref to the exact Relay candidate commit
         if: github.event_name == 'release'
         env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
           RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
           RELAY_SHA: ${{ steps.manifest.outputs.relay_sha }}
         run: |
@@ -246,6 +246,7 @@ jobs:
 
       - name: Download exact Relay, Cloud, and Relayfile Cloud qualification artifacts
         env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
           RELAY_PACKAGE_RUN_ID: ${{ steps.manifest.outputs.relay_package_run_id }}
           CLOUD_RUN_ID: ${{ steps.manifest.outputs.cloud_qualification_run_id }}
           CLOUD_ARTIFACT_NAME: ${{ steps.manifest.outputs.cloud_qualification_artifact_name }}
@@ -278,6 +279,7 @@ jobs:
 
       - name: Verify source runs and GitHub artifact digests
         env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
           RELAY_PACKAGE_RUN_ID: ${{ steps.manifest.outputs.relay_package_run_id }}
           RELAY_PACKAGE_RUN_ATTEMPT: ${{ steps.manifest.outputs.relay_package_run_attempt }}
           RELAY_SHA: ${{ steps.manifest.outputs.relay_sha }}
