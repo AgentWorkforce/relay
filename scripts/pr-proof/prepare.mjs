@@ -182,9 +182,10 @@ export async function main() {
   // Fetch the diff BEFORE classifying: whether a proof is required is decided
   // by what changed, not by how the title was worded.
   //
-  // classifyPullRequest documents a title-only fallback for an unknown diff;
-  // without this catch the await threw first and the fallback was unreachable,
-  // blocking every PR whenever the files endpoint was down.
+  // A read failure is caught rather than thrown so classification can report
+  // it as a contract error naming the unreadable diff. It is NOT a fallback to
+  // a laxer rule: classifyPullRequest treats an unknown diff as proof-required,
+  // so an unreachable files endpoint blocks the PR instead of skipping it.
   let changedFiles = null;
   try {
     changedFiles = await pullRequestFiles(apiUrl, repository, number, token);
@@ -192,7 +193,7 @@ export async function main() {
     if (error?.ambiguousScope) throw error;
     process.stderr.write(
       `Could not read the changed-file list (${error?.message ?? error}); ` +
-        'falling back to title-only classification.\n'
+        'the proof gate fails closed and this PR cannot be classified as exempt.\n'
     );
   }
   const classification = classifyPullRequest({
@@ -217,13 +218,14 @@ export async function main() {
     return;
   }
   // Past this point the changed-file list is load-bearing: it is what confirms
-  // the declared case is actually touched. The title-only fallback above can
-  // legitimately reach here with `null`, and `changedFiles.some(...)` below
-  // would throw an opaque TypeError instead of saying what went wrong.
+  // the declared case is actually touched. An unreadable diff reaches here with
+  // `null` — that is the fail-closed path, not an exemption — and
+  // `changedFiles.some(...)` below would throw an opaque TypeError instead of
+  // saying what went wrong.
   if (changedFiles === null) {
     throw new PrProofContractError('A required proof cannot be validated without the changed-file list', [
       'the GitHub pull request files endpoint could not be read',
-      'classification fell back to the PR title, which cannot confirm the declared RelayFlow case',
+      'without it the declared RelayFlow case cannot be confirmed as touched by this PR',
     ]);
   }
   if (headRepository !== repository) {

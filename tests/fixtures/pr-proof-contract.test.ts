@@ -148,7 +148,13 @@ describe('RelayFlow PR proof classification', () => {
   });
 
   it('requires explicit classification even without a conventional title', () => {
-    const result = classifyPullRequest({ title: 'Update reconnect documentation', body: '' });
+    // A read diff that touches nothing shippable: the exemption has to come
+    // from the files, so the assertion below is about the missing metadata.
+    const result = classifyPullRequest({
+      title: 'Update reconnect documentation',
+      body: '',
+      changedFiles: ['docs/reconnect.md'],
+    });
     expect(result.required).toBe(false);
     expect(result.errors).toContainEqual(
       expect.stringContaining('must declare a RelayFlow Proof change type')
@@ -168,14 +174,16 @@ describe('RelayFlow PR proof classification', () => {
     const result = classifyPullRequest({
       title: 'docs: explain reconnect behavior',
       body: proofBody('non-functional', 'n/a'),
+      changedFiles: ['docs/reconnect.md'],
     });
     expect(result).toMatchObject({ required: false, caseId: null, errors: [] });
   });
 
-  it('rejects attempts to mark a fix title non-functional', () => {
+  it('rejects attempts to mark a runtime fix non-functional', () => {
     const result = classifyPullRequest({
       title: 'fix(broker): reconnect dead links',
       body: proofBody('non-functional', 'n/a'),
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
     });
     expect(result.errors).toContainEqual(expect.stringContaining('cannot be non-functional'));
   });
@@ -1861,14 +1869,78 @@ describe('classification reads the diff, not the title', () => {
     expect(result.errors.join(' ')).toContain('cannot be non-functional');
   });
 
-  it('falls back to title-only behaviour when the diff is unavailable', () => {
-    // changedFiles omitted: preserve the previous contract rather than
-    // silently exempting a change nobody inspected.
+  /**
+   * The false green this closes. When the GitHub files API is unreadable,
+   * `prepare.mjs` classifies with `changedFiles: null`. Classification then
+   * fell back to the title, and a PR whose title carried no conventional
+   * `feat(`/`fix(` prefix returned `required: false` — so a transient API
+   * failure published a green "proof not required" skip on the one check that
+   * gates the merge. An unread diff exempts nothing.
+   */
+  it('requires a proof for a chore( non-functional PR when the diff is unreadable', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: nonFunctional(),
+      changedFiles: null,
+    });
+    expect(result.required).toBe(true);
+    expect(result.reason).toBe('changed-file list unavailable');
+    expect(result.errors.join(' ')).toContain('changed-file list could not be read');
+    // The declared `n/a` case is consistent with the declared change type, so
+    // the unreadable diff must not be reported as a case-selector mistake.
+    expect(result.errors.join(' ')).not.toContain('RelayFlow case id');
+  });
+
+  it('requires a proof when the diff is unreadable and the title is conventional', () => {
     const result = classifyPullRequest({
       title: 'fix(broker): reconnect dead links',
       body: nonFunctional(),
+      changedFiles: null,
     });
-    expect(result.errors.join(' ')).toContain('cannot be non-functional');
+    expect(result.required).toBe(true);
+    expect(result.errors.join(' ')).toContain('changed-file list could not be read');
+  });
+
+  it('requires a proof for an unreadable diff with no proof metadata at all', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: '',
+      changedFiles: null,
+    });
+    expect(result.required).toBe(true);
+  });
+
+  /**
+   * The fail-closed rule must not swallow a legitimate exemption: a diff that
+   * WAS read and touches nothing shippable still classifies as exempt.
+   */
+  it('still exempts a declared non-functional PR whose diff was read', () => {
+    const result = classifyPullRequest({
+      title: 'chore(docs): clarify attach modes',
+      body: nonFunctional(),
+      changedFiles: ['docs/attach.md'],
+    });
+    expect(result.required).toBe(false);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('keeps a declared bug-fix case selectable when the diff is unreadable', () => {
+    // Still required, still the declared case: the fail-closed path adds no
+    // spurious errors to a PR that already declares a proof.
+    const result = classifyPullRequest({
+      title: 'fix(broker): reconnect dead links',
+      body: [
+        '- Change type: `bugfix` <!-- relay-pr-proof:type -->',
+        '- RelayFlow case: `1593-parked-agent-orphaned-receipt` <!-- relay-pr-proof:case -->',
+      ].join('\n'),
+      changedFiles: null,
+    });
+    expect(result).toMatchObject({
+      required: true,
+      kind: 'bugfix',
+      caseId: '1593-parked-agent-orphaned-receipt',
+      errors: [],
+    });
   });
 });
 

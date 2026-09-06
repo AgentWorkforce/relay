@@ -152,9 +152,19 @@ export function classifyPullRequest({ title = '', body = '', changedFiles = null
   const metadata = parsePrProofMetadata(body);
   const conventionalKind = REQUIRED_TITLE_RE.exec(title)?.[1]?.toLowerCase() ?? null;
   const titleKind = conventionalKind === 'feat' ? 'feature' : conventionalKind === 'fix' ? 'bugfix' : null;
-  // `null` means the caller could not determine the diff; fall back to the old
-  // title-only behaviour rather than silently exempting an unknown change.
+  // `null` means the diff is unknown: the caller could not read it, or never
+  // had one. Unknown is NOT "nothing to prove". The title-only fallback that
+  // used to run here turned a transient GitHub files-API failure into a green
+  // skip for every PR whose title and body both read as non-functional -- a
+  // `chore(`-titled runtime change declaring `non-functional` classified as
+  // `required: false`, and the proof was never dispatched.
+  //
+  // Unknown now fails closed, so every use of `touchesRuntime` below has to
+  // distinguish `false` (a diff was read and nothing in it ships) from `null`.
   const touchesRuntime = changedFiles === null ? null : runtimeSurfaceChanged(changedFiles);
+  // A `non-functional` declaration is a claim ABOUT the diff. With no diff to
+  // check it against, the claim is unverifiable, not accepted.
+  const unverifiableNonFunctional = touchesRuntime === null && metadata.changeType === 'non-functional';
   const errors = [];
 
   if (metadata.changeTypeCount === 0) {
@@ -172,8 +182,8 @@ export function classifyPullRequest({ title = '', body = '', changedFiles = null
 
   if (!metadata.changeType) {
     return {
-      required: Boolean(titleKind) || touchesRuntime === true,
-      kind: titleKind ?? (touchesRuntime === true ? 'bugfix' : null),
+      required: Boolean(titleKind) || touchesRuntime !== false,
+      kind: titleKind ?? (touchesRuntime !== false ? 'bugfix' : null),
       caseId: null,
       metadata,
       errors,
@@ -198,32 +208,43 @@ export function classifyPullRequest({ title = '', body = '', changedFiles = null
   // have that contradiction silently coerced into `bugfix` further down.
   if (metadata.changeType === 'non-functional' && touchesRuntime === true) {
     errors.push('This PR changes runtime files, so the change type cannot be non-functional');
-  } else if (titleKind && metadata.changeType === 'non-functional' && touchesRuntime === null) {
-    errors.push(`PR title declares a ${titleKind}, so the change type cannot be non-functional`);
+  } else if (unverifiableNonFunctional) {
+    // Raised for ANY unreadable diff, not just a conventionally-titled PR.
+    // Gating this on `titleKind` was the false green: a `chore(`-titled PR
+    // declaring non-functional matched no branch at all and sailed through.
+    errors.push(
+      'The changed-file list could not be read, so a non-functional declaration cannot be verified'
+    );
   }
   if (titleKind && metadataKind && titleKind !== metadataKind) {
     errors.push(`PR title declares ${titleKind}, but the PR body declares ${metadataKind}`);
   }
 
-  // Decided by the diff wherever the diff is known:
+  // Decided by the diff:
   //   runtime touched            -> a proof is required, whatever the title says
   //   nothing runtime + declared -> non-functional is legitimate, even for `fix(`
-  //   diff unknown               -> previous title-only behaviour
+  //   diff unknown               -> required; an unread diff exempts nothing
   const required =
-    touchesRuntime === true
+    touchesRuntime !== false
       ? true
-      : touchesRuntime === false && metadata.changeType === 'non-functional'
+      : metadata.changeType === 'non-functional'
         ? false
         : Boolean(metadataKind || titleKind);
   const kind = required ? (metadataKind ?? titleKind ?? 'bugfix') : null;
-  if (required) {
-    if (!metadata.caseId || metadata.caseId === 'n/a') {
-      errors.push('Feature and bug-fix PRs must declare exactly one RelayFlow case id');
-    } else if (!CASE_ID_RE.test(metadata.caseId)) {
-      errors.push(`Invalid RelayFlow case id: ${metadata.caseId}`);
+  // A PR held open only by an unreadable diff declared `n/a` consistently with
+  // its own change type. Demanding a case id from it would bury the one error
+  // that matters — the unreadable diff, already reported above — under a
+  // selector complaint the author cannot act on.
+  if (!unverifiableNonFunctional) {
+    if (required) {
+      if (!metadata.caseId || metadata.caseId === 'n/a') {
+        errors.push('Feature and bug-fix PRs must declare exactly one RelayFlow case id');
+      } else if (!CASE_ID_RE.test(metadata.caseId)) {
+        errors.push(`Invalid RelayFlow case id: ${metadata.caseId}`);
+      }
+    } else if (metadata.caseId !== 'n/a') {
+      errors.push('Non-functional PRs must declare the RelayFlow case as n/a');
     }
-  } else if (metadata.caseId !== 'n/a') {
-    errors.push('Non-functional PRs must declare the RelayFlow case as n/a');
   }
 
   return {
@@ -232,7 +253,11 @@ export function classifyPullRequest({ title = '', body = '', changedFiles = null
     caseId: required && metadata.caseId !== 'n/a' ? metadata.caseId : null,
     metadata,
     errors,
-    reason: required ? `declared ${kind}` : 'declared non-functional',
+    reason: !required
+      ? 'declared non-functional'
+      : touchesRuntime === null
+        ? 'changed-file list unavailable'
+        : `declared ${kind}`,
   };
 }
 
