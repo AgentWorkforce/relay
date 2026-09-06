@@ -1724,10 +1724,29 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('captureLaunchProgressError(() => launchProgress.write(text))');
     expect(source).toContain("['cloud', 'cancel', runId, '--json']");
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
-    expect(source).toContain("from '@agent-relay/cloud/redact'");
+    expect(source).not.toContain("from '@agent-relay/cloud/redact'");
     expect(source).toContain('[auth.cliEnv.CLOUD_API_KEY]');
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
+  });
+
+  it('keeps the pre-install Cloud runner importable without workspace packages', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-cloud-import-'));
+    try {
+      await copyFile('scripts/pr-proof/run-cloud.mjs', path.join(root, 'run-cloud.mjs'));
+      await copyFile('scripts/pr-proof/process-runner.mjs', path.join(root, 'process-runner.mjs'));
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `await import(${JSON.stringify(pathToFileURL(path.join(root, 'run-cloud.mjs')).href)})`,
+        ],
+        { cwd: root, stdio: 'pipe' }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('retains bounded terminal lifecycle evidence while redacting credentials', () => {
@@ -1792,16 +1811,17 @@ describe('trusted dispatcher source contract', () => {
       `${prefix}0123456789abcdefghijklmnop`,
       `${prefix}short`,
     ]);
+    const declaredSecret = 'declared-cloud-proof-secret';
     const diagnostic = terminalStatusDiagnostic(
       {
         workflowRun: {
           runId: 'run-nested',
           status: 'failed',
-          error: `no ${credentials.join(' ')} short=abc`,
-          failure: { message: 'nested failure abc' },
+          error: `no ${credentials.join(' ')} declared=${declaredSecret}`,
+          failure: { message: `nested failure ${declaredSecret}` },
         },
       },
-      ['abc']
+      [declaredSecret]
     );
     const parsed = JSON.parse(diagnostic);
     expect(parsed).toMatchObject({
@@ -1809,8 +1829,32 @@ describe('trusted dispatcher source contract', () => {
       status: 'failed',
       failure: { message: 'nested failure [REDACTED_DECLARED_SECRET]' },
     });
-    expect(diagnostic).not.toContain('short=abc');
+    expect(diagnostic).not.toContain(declaredSecret);
     for (const credential of credentials) expect(diagnostic).not.toContain(credential);
+    expect(diagnostic).not.toContain('0123456789abcdefghijklmnop');
+    expect(diagnostic).not.toContain('defghijklmnop');
+    expect(diagnostic).not.toContain('short');
+  });
+
+  it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
+    const secret = 'overflow-run-id-secret';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        run: {
+          runId: `run-${secret}`,
+          status: 'failed',
+          failure: { causeChain: Array.from({ length: 20 }, () => '"\\'.repeat(2_000)) },
+        },
+      },
+      [secret]
+    );
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'run-[REDACTED_DECLARED_SECRET]',
+      status: 'failed',
+      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+    });
+    expect(diagnostic).not.toContain(secret);
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
   it('always returns valid UTF-8 JSON inside the terminal diagnostic byte limit', () => {

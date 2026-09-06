@@ -5,8 +5,6 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
-import { redactCredentialValues } from '@agent-relay/cloud/redact';
-
 import { runBoundedProcess } from './process-runner.mjs';
 
 const TERMINAL_SUCCESS = new Set(['completed', 'succeeded', 'success']);
@@ -23,6 +21,11 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const MAX_TERMINAL_DIAGNOSTIC_BYTES = 32 * 1024;
+// This action-facing script runs before any repository dependency install.
+// Keep the credential matcher local and dependency-free so importing the
+// runner cannot depend on workspace package resolution.
+const LIVE_CREDENTIAL =
+  /(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_|rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
 
 function run(command, args, options = {}) {
   return runBoundedProcess(command, args, {
@@ -88,6 +91,19 @@ function diagnosticString(value) {
   return typeof value === 'string' && value.trim() ? truncateUtf8(value.trim()) : undefined;
 }
 
+function redactTerminalDiagnostic(value, declaredSecrets) {
+  // Credential-shaped values must be collapsed before arbitrary declared
+  // substrings. Reversing this order can split a token and leave its tail in
+  // diagnostic output.
+  let redacted = value.replace(LIVE_CREDENTIAL, (_match, prefix, body) =>
+    body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
+  );
+  for (const secret of declaredSecrets) {
+    redacted = redacted.split(secret).join('[REDACTED_DECLARED_SECRET]');
+  }
+  return redacted;
+}
+
 /**
  * Keep terminal Cloud failures useful even when the orchestrator never wrote
  * runner.log. The status route already removes its callback credential; this
@@ -129,19 +145,19 @@ export function terminalStatusDiagnostic(payload, secrets = []) {
   const declaredSecrets = [...new Set(secrets.filter((secret) => typeof secret === 'string' && secret))].sort(
     (left, right) => right.length - left.length
   );
-  for (const secret of declaredSecrets) {
-    diagnostic = diagnostic.split(secret).join('[REDACTED_DECLARED_SECRET]');
-  }
-  diagnostic = redactCredentialValues(diagnostic);
+  diagnostic = redactTerminalDiagnostic(diagnostic, declaredSecrets);
   if (Buffer.byteLength(diagnostic, 'utf8') <= MAX_TERMINAL_DIAGNOSTIC_BYTES) return diagnostic;
-  return JSON.stringify(
-    {
-      runId: evidence.runId,
-      status: evidence.status,
-      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
-    },
-    null,
-    2
+  return redactTerminalDiagnostic(
+    JSON.stringify(
+      {
+        runId: evidence.runId,
+        status: evidence.status,
+        error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+      },
+      null,
+      2
+    ),
+    declaredSecrets
   );
 }
 
