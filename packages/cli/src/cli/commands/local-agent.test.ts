@@ -879,6 +879,123 @@ describe('local agent subtree', () => {
     expect(client.release).toHaveBeenCalledWith('lead');
   });
 
+  it('spawn --runtime headless rejects --model before spawning', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--name',
+        'app-server-worker',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--model',
+        'openai/gpt-5.4',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('Headless AppServer workers keep the provider session model')
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('spawn --runtime headless rejects task-exit spawn mode', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--spawn-mode',
+        'task-exit',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('do not support --spawn-mode task-exit')
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('spawn --runtime headless rejects --exit-after-task', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--exit-after-task',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('do not support --exit-after-task')
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('new --runtime headless is rejected before spawning or attaching', async () => {
+    const { program, client, attach, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'new',
+        'opencode',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(client.spawnPty).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('`agent new` cannot attach to headless AppServer workers')
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('set-model forwards name and model to client.setModel', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });

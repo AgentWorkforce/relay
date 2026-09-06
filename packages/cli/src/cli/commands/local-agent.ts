@@ -623,6 +623,26 @@ function validateNativeOptions(
     attachMode?: AttachMode;
   }
 ): boolean {
+  if (options.runtime === 'headless') {
+    // Task-exit is signalled by appending an instruction to output `/exit`,
+    // but the AppServer wrapper only forwards text to the provider session:
+    // it never observes provider output or task completion, so the worker
+    // would stay registered forever while `new`/`spawn` report success.
+    if (options.spawnMode !== 'interactive') {
+      deps.error(
+        'Headless AppServer workers do not support --spawn-mode task-exit: the wrapper cannot observe provider task completion.'
+      );
+      deps.exit(1);
+      return false;
+    }
+    if (options.exitAfterTask) {
+      deps.error(
+        'Headless AppServer workers do not support --exit-after-task: the wrapper cannot observe provider task completion.'
+      );
+      deps.exit(1);
+      return false;
+    }
+  }
   if (options.runtime !== 'native') return true;
   if (options.attachMode === 'passthrough') {
     deps.error('Native harnesses do not support passthrough attach mode; use drive or view.');
@@ -784,6 +804,17 @@ export function registerLocalAgentCommands(
       if (!runtime || !spawnMode) return;
       const harnessConfig = appServerHarnessConfig(deps, runtime.requested, opts);
       if (runtime.requested === 'headless' && !harnessConfig) return;
+      if (runtime.requested === 'headless' && opts.model !== undefined) {
+        // The headless lane attaches to an existing provider session; a
+        // `--model` value would be advertised without ever being applied to
+        // that session. Model changes must go through `set-model`, which
+        // mutates the provider and reports the confirmed receipt.
+        deps.error(
+          'Headless AppServer workers keep the provider session model; --model is not applied. Use `agent set-model` for a provider-confirmed model change.'
+        );
+        deps.exit(1);
+        return;
+      }
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -847,6 +878,17 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, options.runtime);
       const spawnMode = parseSpawnModeOption(deps, options.spawnMode);
       if (!runtime || !spawnMode) return;
+      if (runtime.requested === 'headless') {
+        // `new` spawns and then attaches through a PTY session, but headless
+        // AppServer workers have no PTY: the attach would fail after the
+        // worker is already running and leave it registered. Spawn headless
+        // workers through `agent spawn` instead.
+        deps.error(
+          '`agent new` cannot attach to headless AppServer workers (no PTY session). Use `agent spawn --runtime headless` and `agent set-model` instead.'
+        );
+        deps.exit(1);
+        return;
+      }
       const harnessConfig = appServerHarnessConfig(deps, runtime.requested, options);
       if (runtime.requested === 'headless' && !harnessConfig) return;
       if (
