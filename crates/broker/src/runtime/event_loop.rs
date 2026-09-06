@@ -453,11 +453,6 @@ impl BrokerRuntime {
     pub(super) async fn run(mut self) -> Result<()> {
         while !self.shutdown {
             let event = tokio::select! {
-                // A worker response already queued before a maintenance tick
-                // must settle its request before the expiry sweep can remove
-                // the correlation. The response carries its own receive time,
-                // so prioritizing this lane avoids actor-scheduling races.
-                biased;
                 _ = tokio::signal::ctrl_c() => RuntimeEvent::CtrlC,
                 _ = self.lease_check.tick() => RuntimeEvent::LeaseTick,
                 _ = self.sigterm.recv() => RuntimeEvent::Sigterm,
@@ -470,7 +465,11 @@ impl BrokerRuntime {
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
-                _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
+                // Do not let a ready maintenance tick remove a request while
+                // a worker receipt is already queued. Keeping this branch
+                // disabled only while the queue is non-empty preserves the
+                // fair select ordering for all other runtime lanes.
+                _ = self.reap_tick.tick(), if self.worker_events_open && self.worker_event_rx.is_empty() => RuntimeEvent::MaintenanceTick,
             };
 
             match event {
