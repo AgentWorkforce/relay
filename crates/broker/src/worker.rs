@@ -1490,7 +1490,11 @@ impl WorkerRegistry {
             let _ = timeout(WORKER_WRITE_TIMEOUT, completion_rx).await;
         }
 
-        let result = terminate_child(&mut handle.child, release_grace).await;
+        let result = if worker_waits_for_shutdown_exit(&handle.spec) {
+            release_child_after_grace(&mut handle.child, release_grace).await
+        } else {
+            terminate_child(&mut handle.child, release_grace).await
+        };
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
             Err(error) => {
@@ -1748,6 +1752,32 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
         Some(ResolvedHarnessConfig::Native(_)) => APP_SERVER_RELEASE_GRACE,
         _ => DEFAULT_RELEASE_GRACE,
     }
+}
+
+/// An AppServer wrapper performs its provider cleanup (the session DELETE)
+/// asynchronously after it receives the shutdown frame. `terminate_child`
+/// sends SIGTERM immediately, which would abort that cleanup mid-flight while
+/// `release` still reports success — the provider session then outlives the
+/// worker. These workers get the entire grace period to exit on their own;
+/// only a wrapper that outlives the grace is signalled, then forced.
+fn worker_waits_for_shutdown_exit(spec: &AgentSpec) -> bool {
+    matches!(
+        spec.harness_config.as_ref(),
+        Some(ResolvedHarnessConfig::Headless(config))
+            if matches!(&config.driver, HeadlessHarnessDriver::AppServer)
+    )
+}
+
+/// Wait for a voluntary child exit for up to `grace` before escalating to the
+/// normal SIGTERM/SIGKILL path.
+async fn release_child_after_grace(child: &mut Child, grace: Duration) -> Result<()> {
+    if child.id().is_none() {
+        return Ok(());
+    }
+    if timeout(grace, child.wait()).await.is_ok() {
+        return Ok(());
+    }
+    terminate_child(child, DEFAULT_RELEASE_GRACE).await
 }
 
 fn validate_app_server_config(config: &HeadlessHarnessConfig) -> Result<()> {
@@ -3356,6 +3386,75 @@ sleep 30
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
+    }
+
+    #[test]
+    fn app_server_release_waits_for_voluntary_exit_before_signalling() {
+        let mut spec = AgentSpec {
+            name: WorkerName::from("opencode-app"),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: Some("ses_123".to_string()),
+            harness_config: Some(ResolvedHarnessConfig::Headless(make_app_server_config())),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        assert!(worker_waits_for_shutdown_exit(&spec));
+
+        spec.harness_config = None;
+        assert!(!worker_waits_for_shutdown_exit(&spec));
+
+        spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+            command: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            cwd: None,
+            env: None,
+            session_id: "session-native".to_string(),
+            metadata: None,
+        }));
+        assert!(!worker_waits_for_shutdown_exit(&spec));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_child_after_grace_returns_after_voluntary_exit() {
+        let mut child = Command::new("sleep")
+            .arg("0.05")
+            .spawn()
+            .expect("short-lived child should spawn");
+        let started = Instant::now();
+        release_child_after_grace(&mut child, Duration::from_secs(30))
+            .await
+            .expect("voluntary exit should release cleanly");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let status = child.wait().await.expect("reaped child status");
+        // A signalled exit would carry SIGTERM; a voluntary exit exits 0.
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_child_after_grace_escalates_after_grace_expires() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleeping child should spawn");
+        let started = Instant::now();
+        release_child_after_grace(&mut child, Duration::from_millis(150))
+            .await
+            .expect("escalated release should still succeed");
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(150));
+        assert!(elapsed < Duration::from_secs(10));
+        let status = child.wait().await.expect("reaped child status");
+        assert!(!status.success());
     }
 
     #[test]
