@@ -388,6 +388,7 @@ impl ModelReceipt {
             "receipt_id": self.request_id,
             "generation": self.generation.to_string(),
             "revision": self.revision,
+            "effective_revision": self.effective_revision,
             "success": self.success,
             "accepted": self.accepted,
             "pending": self.pending,
@@ -457,7 +458,7 @@ impl BrokerRuntime {
     /// disabling maintenance indefinitely under a continuously busy worker
     /// channel. The returned flag tells the expiry sweep whether the queue is
     /// empty; model requests stay pending while more events await dispatch.
-    async fn drain_worker_events_before_maintenance(&mut self) -> bool {
+    pub(super) async fn drain_worker_events_before_maintenance(&mut self) -> bool {
         for _ in 0..MAX_WORKER_EVENTS_BEFORE_MAINTENANCE {
             match self.worker_event_rx.try_recv() {
                 Ok(event) => self.handle_worker_event(event).await,

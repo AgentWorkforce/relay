@@ -224,6 +224,7 @@ async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
 
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
+    worker_event_tx: mpsc::Sender<WorkerEvent>,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
     _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
     _temp_dir: tempfile::TempDir,
@@ -258,7 +259,7 @@ fn worker_event_runtime_fixture(
     let (terminal_control_tx, _terminal_control_rx) = mpsc::channel(4);
     let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
     let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
-    let (_worker_event_tx, worker_event_rx) = mpsc::channel(4);
+    let (worker_event_tx, worker_event_rx) = mpsc::channel(64);
     let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
     let mut reap_tick = tokio::time::interval(Duration::from_secs(60));
     reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -341,6 +342,7 @@ fn worker_event_runtime_fixture(
 
     WorkerEventRuntimeFixture {
         runtime,
+        worker_event_tx,
         fleet_control_rx,
         _sdk_out_rx: sdk_out_rx,
         _temp_dir: temp_dir,
@@ -784,18 +786,36 @@ async fn maintenance_defers_only_model_expiry_while_worker_events_remain_queued(
         .unwrap()
         .deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
 
-    // A maintenance tick must still run its other work, but cannot reject a
-    // response that is waiting in the bounded worker-event drain.
+    // Queue enough real worker frames to force the bounded drain to stop with
+    // work remaining. Maintenance must still run its other work, but cannot
+    // reject a response that is waiting in that drain.
+    let generation = fixture.runtime.workers.workers["model-worker"].generation;
+    for _ in 0..33 {
+        fixture
+            .worker_event_tx
+            .send(WorkerEvent::Message {
+                name: WorkerName::new("model-worker"),
+                generation,
+                received_at: Instant::now(),
+                value: json!({ "type": "worker_stream", "payload": { "chunk": "" } }),
+            })
+            .await
+            .unwrap();
+    }
+    let worker_event_queue_empty = fixture.runtime.drain_worker_events_before_maintenance().await;
+    assert!(!worker_event_queue_empty);
     fixture
         .runtime
-        .handle_maintenance_tick_with_worker_queue_state(false)
+        .handle_maintenance_tick_with_worker_queue_state(worker_event_queue_empty)
         .await;
     assert!(fixture
         .runtime
         .pending_model_requests
         .contains_key(&request_id));
 
-    // Once the queue is empty, the normal expiry path remains active.
+    // Once the remaining queued frame is drained, the normal expiry path
+    // remains active.
+    assert!(fixture.runtime.drain_worker_events_before_maintenance().await);
     fixture
         .runtime
         .handle_maintenance_tick_with_worker_queue_state(true)
@@ -914,6 +934,7 @@ fn model_receipt_retention_is_bounded_to_terminal_history() {
         error: None,
         updated_at: now,
     };
+    assert_eq!(receipt.json()["effective_revision"], 0);
     assert!(retain_model_receipt(&receipt, now));
     receipt.updated_at = now - super::MODEL_RECEIPT_RETENTION - Duration::from_secs(1);
     assert!(!retain_model_receipt(&receipt, now));
