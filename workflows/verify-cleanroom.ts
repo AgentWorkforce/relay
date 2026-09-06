@@ -21,6 +21,7 @@ import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  cleanroomLaneEvidenceScopes,
   cleanroomLaneNetwork,
   cleanroomLaneWritePaths,
   cleanroomReviewNetwork,
@@ -153,6 +154,10 @@ function lanePermissions(lane: string) {
     why: 'Lane agents may execute the deterministic runner but must not edit product source or test inputs.',
     access: 'restricted' as const,
     inherit: false,
+    // The evidence file is intentionally write-once and therefore absent at
+    // compile time. Exact custom scopes keep that future path writable without
+    // broadening the lane to sibling campaign evidence.
+    scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
     files: {
       read: ['**'],
       write: cleanroomLaneWritePaths(NONCE, lane),

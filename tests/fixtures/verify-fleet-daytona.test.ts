@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import * as ts from 'typescript';
 
 // Dependency-free ESM is also used by the local Relayflow runner.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -54,6 +55,50 @@ import {
 
 const NONCE = 'a'.repeat(32);
 const execFileAsync = promisify(execFile);
+
+type WorkflowStepDeclaration = {
+  dependsOn: string[];
+  offset: number;
+};
+
+function workflowStepDeclarations(source: string): Map<string, WorkflowStepDeclaration> {
+  const sourceFile = ts.createSourceFile(
+    'workflow.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const steps = new Map<string, WorkflowStepDeclaration>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.expression.getText(sourceFile) === 'wf' &&
+      node.expression.name.text === 'step' &&
+      ts.isStringLiteralLike(node.arguments[0]) &&
+      ts.isObjectLiteralExpression(node.arguments[1])
+    ) {
+      const dependsOnProperty = node.arguments[1].properties.find(
+        (property): property is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(property) &&
+          (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)) &&
+          property.name.text === 'dependsOn'
+      );
+      const initializer = dependsOnProperty?.initializer;
+      const dependsOn =
+        initializer && ts.isArrayLiteralExpression(initializer)
+          ? initializer.elements.map((element) =>
+              ts.isStringLiteralLike(element) ? element.text : element.getText(sourceFile)
+            )
+          : [];
+      steps.set(node.arguments[0].text, { dependsOn, offset: node.getStart(sourceFile) });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return steps;
+}
 
 function fleetIdentityProof(
   phase: 'live' | 'roster-only' | 'absent',
@@ -504,19 +549,33 @@ describe('complete Daytona Fleet board', () => {
 
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
     const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
-    const build = source.indexOf("wf.step('build-current-cli'");
-    const stageBroker = source.indexOf("wf.step('stage-current-platform-broker'");
-    const prepare = source.indexOf("wf.step('prepare-clean-installed-candidate'");
-    const attemptA = source.indexOf("wf.step('run-daytona-board-attempt-a'");
-    expect(build).toBeGreaterThan(-1);
-    expect(stageBroker).toBeGreaterThan(build);
-    expect(prepare).toBeGreaterThan(stageBroker);
-    expect(prepare).toBeLessThan(attemptA);
+    const steps = workflowStepDeclarations(source);
+    const build = steps.get('build-current-cli');
+    const stageBroker = steps.get('stage-current-platform-broker');
+    const prepare = steps.get('prepare-clean-installed-candidate');
+    const inventory = steps.get('verify-candidate-cli-inventory');
+    const attemptA = steps.get('run-daytona-board-attempt-a');
+    expect(build).toBeDefined();
+    expect(stageBroker).toBeDefined();
+    expect(prepare).toBeDefined();
+    expect(inventory).toBeDefined();
+    expect(attemptA).toBeDefined();
+    expect(stageBroker!.offset).toBeGreaterThan(build!.offset);
+    expect(prepare!.offset).toBeGreaterThan(stageBroker!.offset);
+    expect(inventory!.offset).toBeGreaterThan(prepare!.offset);
+    expect(attemptA!.offset).toBeGreaterThan(inventory!.offset);
+    expect(build!.dependsOn).toEqual(['validate-catalog']);
+    expect(stageBroker!.dependsOn).toEqual(['build-current-cli']);
+    expect(prepare!.dependsOn).toEqual(['candidatePreparationDependency']);
+    expect(inventory!.dependsOn).toEqual(['prepare-clean-installed-candidate']);
+    expect(attemptA!.dependsOn).toEqual([
+      'preflight-opencode-model',
+      'preflight-codex-model',
+      'preflight-claude-model',
+    ]);
     expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
-    expect(source).toContain("candidatePreparationDependency = 'stage-current-platform-broker'");
-    expect(source).toContain('dependsOn: [candidatePreparationDependency]');
-    expect(source).toContain('relay-candidate-install.mjs stage-source-broker');
-    expect(source).toContain("dependsOn: ['prepare-clean-installed-candidate']");
+    expect(source).toMatch(/candidatePreparationDependency\s*=\s*["']stage-current-platform-broker["']/);
+    expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
     expect(source).toContain('VERIFY_FLEET_CLI=');
   });

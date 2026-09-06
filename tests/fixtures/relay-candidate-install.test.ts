@@ -11,6 +11,7 @@ import {
   digestInstalledClosureTree,
   digestInstalledPackageTree,
   privateNpmInvocation,
+  sourceBrokerBuildPlan,
   validateCandidateInstallAttestation,
   validateCandidateLockfile,
   verifyCandidateInstall,
@@ -67,6 +68,28 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
+  it('stages portable static musl brokers for Linux source qualification', () => {
+    expect(sourceBrokerBuildPlan('linux', 'x64')).toEqual({
+      cargoArgs: [
+        'build',
+        '--locked',
+        '--release',
+        '--bin',
+        'agent-relay-broker',
+        '--target',
+        'x86_64-unknown-linux-musl',
+      ],
+      built: path.join('target', 'x86_64-unknown-linux-musl', 'release', 'agent-relay-broker'),
+      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
+      target: 'x86_64-unknown-linux-musl',
+    });
+    expect(sourceBrokerBuildPlan('linux', 'arm64')).toMatchObject({
+      cargoArgs: expect.arrayContaining(['--target', 'aarch64-unknown-linux-musl']),
+      built: path.join('target', 'aarch64-unknown-linux-musl', 'release', 'agent-relay-broker'),
+      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
+    });
+  });
+
   it('fails closed on Windows where directory-handle-bound I/O is unavailable', () => {
     expect(() => assertSupportedCandidateOutputPlatform('win32')).toThrow(/unsupported on Windows/);
     expect(() => assertSupportedCandidateOutputPlatform('linux')).not.toThrow();

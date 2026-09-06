@@ -1250,7 +1250,7 @@ describe('process timeout contract', () => {
   });
 
   it.skipIf(process.platform === 'win32' || !PS_PATH)(
-    'force-kills same-group descendants even when they do not inherit output pipes',
+    'force-kills same-group descendants after a synchronized abort even when they do not inherit output pipes',
     async () => {
       const script = [
         "const { spawn } = require('node:child_process');",
@@ -1259,13 +1259,27 @@ describe('process timeout contract', () => {
         "process.on('SIGTERM', () => process.exit(0));",
         'setInterval(() => {}, 1000);',
       ].join('');
+      const abort = new AbortController();
+      let descendantPid = 0;
+      let output = '';
       const result = await runProcess(process.execPath, ['-e', script], {
         echo: false,
-        timeoutMs: 100,
+        // Safety net only. The actual termination begins after stdout proves
+        // the descendant exists, avoiding a scheduler race during child boot.
+        timeoutMs: 10_000,
         terminationGraceMs: 100,
+        signal: abort.signal,
+        onStdout: (chunk: string) => {
+          output += chunk;
+          const parsed = Number(output.trim());
+          if (Number.isSafeInteger(parsed) && parsed > 0) {
+            descendantPid = parsed;
+            abort.abort();
+          }
+        },
       });
-      const descendantPid = Number(result.stdout.trim());
-      expect(result.timedOut).toBe(true);
+      expect(result.aborted).toBe(true);
+      expect(result.timedOut).toBe(false);
       expect(descendantPid).toBeGreaterThan(0);
       const deadline = Date.now() + 2_000;
       let running = true;
@@ -1854,6 +1868,22 @@ describe('trusted dispatcher source contract', () => {
     });
     expect(diagnostic).not.toContain('ghp_');
     expect(diagnostic).not.toContain('mnop');
+  });
+
+  it('fully redacts a declared credential followed by another credential-compatible character', () => {
+    const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        status: 'failed',
+        error: `provider rejected ${declaredCredential}X`,
+      },
+      [declaredCredential]
+    );
+
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain(declaredCredential);
+    expect(diagnostic).not.toContain(`${declaredCredential.slice(-4)}X`);
+    expect(diagnostic).not.toContain('ghp_');
   });
 
   it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {

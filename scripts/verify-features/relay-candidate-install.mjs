@@ -274,6 +274,30 @@ function brokerRelativePath(platform = process.platform, arch = process.arch) {
   return path.posix.join('node_modules', '@agent-relay', packageDirectory, 'bin', binary);
 }
 
+export function sourceBrokerBuildPlan(platform = process.platform, arch = process.arch) {
+  // Validate the same platform/architecture pair that selects the destination
+  // package before deriving a build target.
+  platformPackage(platform, arch);
+  const binary = platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
+  if (platform === 'linux') {
+    const target =
+      arch === 'x64' ? 'x86_64-unknown-linux-musl' : arch === 'arm64' ? 'aarch64-unknown-linux-musl' : null;
+    if (!target) throw new Error(`unsupported portable Linux broker architecture ${arch}`);
+    return {
+      cargoArgs: ['build', '--locked', '--release', '--bin', 'agent-relay-broker', '--target', target],
+      built: path.join('target', target, 'release', binary),
+      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
+      target,
+    };
+  }
+  return {
+    cargoArgs: ['build', '--locked', '--release', '--bin', 'agent-relay-broker'],
+    built: path.join('target', 'release', binary),
+    env: {},
+    target: `${platform}-${arch}-native`,
+  };
+}
+
 async function rejectBundledBrokerContamination() {
   for (const directory of ['packages/sdk/bin', 'packages/harness-driver/bin']) {
     const names = await readdir(directory).catch((error) => {
@@ -370,15 +394,15 @@ async function stageSourceBroker() {
   if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
   if (sourceStatus) throw new Error('source broker staging requires a clean source tree');
   const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
-  run('cargo', ['build', '--locked', '--release', '--bin', 'agent-relay-broker'], {
+  const buildPlan = sourceBrokerBuildPlan();
+  run('cargo', buildPlan.cargoArgs, {
     timeoutMs: 1_800_000,
-    env: { AGENT_RELAY_VERSION: packageVersion },
+    env: { ...buildPlan.env, AGENT_RELAY_VERSION: packageVersion },
   });
   const binary = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
-  const built = path.join('target', 'release', binary);
   const destination = path.join('packages', platformPackage(), 'bin', binary);
   await mkdir(path.dirname(destination), { recursive: true });
-  await copyFile(built, destination);
+  await copyFile(buildPlan.built, destination);
   if (process.platform !== 'win32') await chmod(destination, 0o755);
   const { bytes, mode } = await readRegularFileNoFollow(destination, {
     label: 'staged source broker',
@@ -397,7 +421,9 @@ async function stageSourceBroker() {
   ) {
     throw new Error('source changed while the broker was staged');
   }
-  process.stdout.write(`RELAY_SOURCE_BROKER_STAGED package=${platformPackage()} bytes=${bytes.length}\n`);
+  process.stdout.write(
+    `RELAY_SOURCE_BROKER_STAGED package=${platformPackage()} target=${buildPlan.target} bytes=${bytes.length}\n`
+  );
 }
 
 function parseArgs(argv) {
