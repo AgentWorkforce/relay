@@ -58,6 +58,12 @@ and supplies the selected executable as `RELAY_PR_PROOF_BROKER_BINARY`. The
 runner should invoke that binary directly instead of rebuilding it in Cloud.
 Cases without this requirement receive no broker binary.
 
+The proof sandbox image also provides `/usr/bin/openssl` for case-local TLS
+fixtures. Runners that use it must invoke that absolute path with a narrow
+timeout, generate a fresh private key below their disposable case directory,
+and trust only the resulting case-local certificate. They must not disable TLS
+verification or relax the production URL policy to accommodate a test server.
+
 The broker producer deliberately performs a cold Rust build: it never restores
 or saves a Cargo build cache. Cargo and PR-authored build scripts run under a
 fresh dedicated OS user with no supplemental groups or capabilities, an empty
