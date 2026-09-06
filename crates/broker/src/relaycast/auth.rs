@@ -196,8 +196,7 @@ impl AuthSessionSet {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
+#[derive(Debug)]
 struct AuthHttpError {
     status: StatusCode,
     message: String,
@@ -205,7 +204,30 @@ struct AuthHttpError {
     /// upstream `RelayError::Api` carried one. Kept here so that downstream
     /// callers can distinguish a stale agent token from a generic 401.
     code: Option<String>,
+    /// Server correlation ID retained from Relaycast's terminal API error.
+    request_id: Option<String>,
+    /// Number of SDK HTTP attempts that led to the terminal API error.
+    attempts: u32,
 }
+
+impl std::fmt::Display for AuthHttpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} (status: {}; attempts: {}",
+            self.message, self.status, self.attempts
+        )?;
+        if let Some(code) = &self.code {
+            write!(formatter, "; code: {code}")?;
+        }
+        if let Some(request_id) = &self.request_id {
+            write!(formatter, "; request_id: {request_id}")?;
+        }
+        formatter.write_str(")")
+    }
+}
+
+impl std::error::Error for AuthHttpError {}
 
 /// Error code returned by Relaycast when a previously-issued agent token has
 /// been revoked or expired. Mirrors the contract in relaycast PR #137: any
@@ -902,7 +924,8 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
             status,
             message,
             code,
-            ..
+            request_id,
+            attempts,
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
@@ -914,6 +937,8 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
                     Some(trimmed.to_string())
                 }
             },
+            request_id: request_id.clone(),
+            attempts: *attempts,
         }),
         _ => anyhow::anyhow!("{error}"),
     }
@@ -1133,7 +1158,8 @@ async fn admit_agent_registration(
             code,
             status,
             message,
-            ..
+            request_id,
+            attempts,
         }) if is_agent_token_invalid_code(&code)
             || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
         {
@@ -1144,8 +1170,8 @@ async fn admit_agent_registration(
                 code: AGENT_TOKEN_INVALID_CODE.to_string(),
                 status,
                 message,
-                request_id: None,
-                attempts: 1,
+                request_id,
+                attempts,
             }))
         }
         Err(error) => Err(relay_error_to_anyhow(error)),
@@ -1295,6 +1321,8 @@ pub(crate) async fn reclaim_legacy_identity(
             status,
             message,
             code: server_error.map(|error| error.code),
+            request_id: None,
+            attempts: 1,
         }));
     }
     let updated = envelope
@@ -1342,13 +1370,15 @@ mod tests {
 
     use httpmock::Method::{GET, PATCH, POST};
     use httpmock::MockServer;
+    use reqwest::StatusCode;
     use serde_json::{json, Value};
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
         is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
         relay_request_with_timeout, resolve_relaycast_base_url, stable_node_identity_key,
-        AuthClient, CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        AuthClient, AuthHttpError, CredentialCache, AGENT_TOKEN_INVALID_CODE,
+        DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -1403,6 +1433,39 @@ mod tests {
             attempts: 1,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
+    }
+
+    #[test]
+    fn relay_error_to_anyhow_preserves_terminal_request_diagnostics() {
+        let err = relay_error_to_anyhow(RelayError::Api {
+            code: "registration_backend_overloaded".to_string(),
+            status: 503,
+            message: "deterministic registration failure".to_string(),
+            request_id: Some("auth-374-request".to_string()),
+            attempts: 3,
+        });
+
+        let auth_error = err
+            .downcast_ref::<AuthHttpError>()
+            .expect("Relaycast API errors must retain their HTTP wrapper");
+        assert_eq!(auth_error.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            auth_error.code.as_deref(),
+            Some("registration_backend_overloaded")
+        );
+        assert_eq!(auth_error.request_id.as_deref(), Some("auth-374-request"));
+        assert_eq!(auth_error.attempts, 3);
+
+        let displayed = err.to_string();
+        for marker in [
+            "deterministic registration failure",
+            "status: 503",
+            "code: registration_backend_overloaded",
+            "request_id: auth-374-request",
+            "attempts: 3",
+        ] {
+            assert!(displayed.contains(marker), "missing {marker}: {displayed}");
+        }
     }
 
     #[test]
