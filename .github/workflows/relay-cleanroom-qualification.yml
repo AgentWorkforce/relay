@@ -102,7 +102,7 @@ jobs:
           npm --prefix relay ci
           npm --prefix cloud ci
           npm --prefix relayfile-cloud ci
-          npm install --global npm@10.9.7
+          npm install --global npm@11.19.1
           npm install --global @anthropic-ai/claude-code@2.1.260 @openai/codex@0.153.3 opencode-ai@1.18.25
           claude --version | grep -F 2.1.260
           codex --version | grep -F 0.153.3
@@ -428,6 +428,7 @@ jobs:
       - name: Hydrate the exact producer-packed Relay candidate
         working-directory: relay
         run: |
+          chmod 700 "$RUNNER_TEMP"
           node scripts/verify-features/relay-candidate-install.mjs hydrate \
             --attestation ../qualification/relay-packages/payload/candidate-install-attestation.json \
             --tarballs ../qualification/relay-packages/payload/tarballs \

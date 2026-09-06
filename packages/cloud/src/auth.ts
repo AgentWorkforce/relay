@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { buildApiUrl } from './api-client.js';
+import { buildApiUrl, validateCloudApiUrl } from './api-client.js';
 import { CloudApiClient, type CloudApiClientOptions, type CloudApiClientSnapshot } from './api-client.js';
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import {
@@ -58,7 +58,7 @@ function readEnvAuth(env: NodeJS.ProcessEnv = process.env): StoredAuth | null {
   }
 
   try {
-    new URL(apiUrl);
+    validateCloudApiUrl(apiUrl);
   } catch {
     return null;
   }
@@ -98,15 +98,21 @@ function isValidStoredAuth(value: unknown): value is StoredAuth {
   }
 
   const auth = value as Partial<StoredAuth>;
-  return (
+  const structurallyValid =
     typeof auth.accessToken === 'string' &&
     typeof auth.refreshToken === 'string' &&
     typeof auth.accessTokenExpiresAt === 'string' &&
     typeof auth.apiUrl === 'string' &&
     (auth.refreshTokenExpiresAt === undefined || typeof auth.refreshTokenExpiresAt === 'string') &&
     !Number.isNaN(Date.parse(auth.accessTokenExpiresAt)) &&
-    (auth.refreshTokenExpiresAt === undefined || !Number.isNaN(Date.parse(auth.refreshTokenExpiresAt)))
-  );
+    (auth.refreshTokenExpiresAt === undefined || !Number.isNaN(Date.parse(auth.refreshTokenExpiresAt)));
+  if (!structurallyValid) return false;
+  try {
+    validateCloudApiUrl(auth.apiUrl!);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isNodeErrorWithCode(error: unknown, code: string): boolean {
@@ -138,6 +144,7 @@ export async function readStoredAuth(env: NodeJS.ProcessEnv = process.env): Prom
 }
 
 export async function writeStoredAuth(auth: StoredAuth): Promise<void> {
+  validateCloudApiUrl(auth.apiUrl);
   await fs.mkdir(AUTH_DIR_PATH, {
     recursive: true,
     mode: 0o700,
@@ -402,6 +409,7 @@ async function fetchWithRefreshTimeout(
   try {
     return await fetch(url, {
       ...init,
+      redirect: 'error',
       signal: controller.signal,
     });
   } catch (error) {
@@ -624,6 +632,8 @@ async function requestStoredAuthRefresh(
     ...(nextRefreshTokenExpiresAt ? { refreshTokenExpiresAt: nextRefreshTokenExpiresAt } : {}),
   };
 
+  validateCloudApiUrl(nextAuth.apiUrl);
+
   return nextAuth;
 }
 
@@ -634,6 +644,7 @@ async function requestStoredAuthRefresh(
  * regardless of how the machine logged in.
  */
 async function completeLogin(auth: StoredAuth): Promise<StoredAuth> {
+  validateCloudApiUrl(auth.apiUrl);
   await writeStoredAuth(auth);
   // Record who just logged in so subsequent CLI/broker runs can attribute
   // telemetry to this user and org. Never blocks the login from succeeding.
@@ -702,6 +713,7 @@ export async function ensureAuthenticated(
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
   const env = options.env ?? process.env;
   const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  validateCloudApiUrl(apiUrl);
   const force = options.force === true;
   const interactive = options.interactive !== false;
   const refreshTimeoutMs = options.refreshTimeoutMs;
@@ -798,6 +810,7 @@ function apiFetch(
 
   return fetch(buildApiUrl(apiUrl, requestPath), {
     ...init,
+    redirect: 'error',
     headers,
   });
 }

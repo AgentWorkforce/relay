@@ -67,6 +67,7 @@ jobs:
 
       - name: Pack and clean-install the complete Linux candidate closure
         run: |
+          chmod 700 "$RUNNER_TEMP"
           node scripts/verify-features/relay-candidate-install.mjs prepare \
             --output "${RUNNER_TEMP}/relay-candidate-install"
           node scripts/verify-features/relay-candidate-install.mjs verify \

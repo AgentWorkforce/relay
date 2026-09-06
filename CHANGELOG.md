@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay cloud workspace create` creates candidate-bound, time-limited disposable workspaces with durable retry reconciliation and saves the returned credential for later Fleet qualification.
+- `agent-relay cloud workspace create` creates candidate-bound, time-limited disposable workspaces and saves their credential for later Fleet qualification.
 - `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
 - `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.

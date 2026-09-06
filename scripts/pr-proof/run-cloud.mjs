@@ -5,6 +5,8 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
+import { redactCredentialValues } from '@agent-relay/cloud/redact';
+
 import { runBoundedProcess } from './process-runner.mjs';
 
 const TERMINAL_SUCCESS = new Set(['completed', 'succeeded', 'success']);
@@ -21,8 +23,6 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const MAX_TERMINAL_DIAGNOSTIC_BYTES = 32 * 1024;
-const LIVE_CREDENTIAL =
-  /(rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
 
 function run(command, args, options = {}) {
   return runBoundedProcess(command, args, {
@@ -57,15 +57,35 @@ function parseJsonOutput(output, label) {
   }
 }
 
-function statusFrom(payload) {
-  for (const candidate of [payload.status, payload.run?.status, payload.workflowRun?.status]) {
-    if (typeof candidate === 'string') return candidate.toLowerCase();
+function statusPayloadFrom(payload) {
+  for (const candidate of [payload, payload?.run, payload?.workflowRun]) {
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      !Array.isArray(candidate) &&
+      typeof candidate.status === 'string'
+    ) {
+      return candidate;
+    }
   }
   throw new Error('Cloud status response did not contain a status');
 }
 
+function statusFrom(payload) {
+  return statusPayloadFrom(payload).status.toLowerCase();
+}
+
+function truncateUtf8(value, maxBytes = 1_024) {
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.length <= maxBytes) return value;
+  const contentLimit = Math.max(0, maxBytes - Buffer.byteLength('…'));
+  let end = contentLimit;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return `${bytes.subarray(0, end).toString('utf8')}…`;
+}
+
 function diagnosticString(value) {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  return typeof value === 'string' && value.trim() ? truncateUtf8(value.trim()) : undefined;
 }
 
 /**
@@ -75,18 +95,21 @@ function diagnosticString(value) {
  * both the dispatcher's exact credential and known Relay credential shapes.
  */
 export function terminalStatusDiagnostic(payload, secrets = []) {
+  const statusPayload = statusPayloadFrom(payload);
   const failure =
-    payload.failure && typeof payload.failure === 'object' && !Array.isArray(payload.failure)
-      ? payload.failure
+    statusPayload.failure &&
+    typeof statusPayload.failure === 'object' &&
+    !Array.isArray(statusPayload.failure)
+      ? statusPayload.failure
       : null;
   const causeChain = Array.isArray(failure?.causeChain)
     ? failure.causeChain.map(diagnosticString).filter(Boolean).slice(0, 20)
     : undefined;
   const evidence = {
-    runId: diagnosticString(payload.runId),
-    status: diagnosticString(payload.status),
-    sandboxId: diagnosticString(payload.sandboxId),
-    error: diagnosticString(payload.error),
+    runId: diagnosticString(statusPayload.runId ?? payload.runId),
+    status: diagnosticString(statusPayload.status),
+    sandboxId: diagnosticString(statusPayload.sandboxId),
+    error: diagnosticString(statusPayload.error),
     ...(failure
       ? {
           failure: {
@@ -103,15 +126,23 @@ export function terminalStatusDiagnostic(payload, secrets = []) {
   };
 
   let diagnostic = JSON.stringify(evidence, null, 2);
-  for (const secret of secrets) {
-    if (typeof secret === 'string' && secret.length >= 8) {
-      diagnostic = diagnostic.split(secret).join('[REDACTED_DECLARED_SECRET]');
-    }
-  }
-  diagnostic = diagnostic.replace(LIVE_CREDENTIAL, (_match, prefix, body) =>
-    body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
+  const declaredSecrets = [...new Set(secrets.filter((secret) => typeof secret === 'string' && secret))].sort(
+    (left, right) => right.length - left.length
   );
-  return diagnostic.slice(0, MAX_TERMINAL_DIAGNOSTIC_BYTES);
+  for (const secret of declaredSecrets) {
+    diagnostic = diagnostic.split(secret).join('[REDACTED_DECLARED_SECRET]');
+  }
+  diagnostic = redactCredentialValues(diagnostic);
+  if (Buffer.byteLength(diagnostic, 'utf8') <= MAX_TERMINAL_DIAGNOSTIC_BYTES) return diagnostic;
+  return JSON.stringify(
+    {
+      runId: evidence.runId,
+      status: evidence.status,
+      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+    },
+    null,
+    2
+  );
 }
 
 function requiredCredential(env, name) {
@@ -335,7 +366,7 @@ export async function main() {
       timeoutMs: commandTimeoutMs,
     });
     const terminalDiagnostic = terminalPayload
-      ? `\nCloud terminal status:\n${terminalStatusDiagnostic(terminalPayload, [process.env.CLOUD_API_KEY])}\n`
+      ? `\nCloud terminal status:\n${terminalStatusDiagnostic(terminalPayload, [auth.cliEnv.CLOUD_API_KEY])}\n`
       : '';
     await writeFile(logsPath, logs.stdout + logs.stderr + terminalDiagnostic);
     if (logs.stdout) process.stdout.write(logs.stdout);

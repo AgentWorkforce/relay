@@ -6,6 +6,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertSupportedCandidateOutputPlatform,
   createPrivateOutputRoot,
   digestInstalledClosureTree,
   digestInstalledPackageTree,
@@ -66,6 +67,25 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
+  it('fails closed on Windows where directory-handle-bound I/O is unavailable', () => {
+    expect(() => assertSupportedCandidateOutputPlatform('win32')).toThrow(/unsupported on Windows/);
+    expect(() => assertSupportedCandidateOutputPlatform('linux')).not.toThrow();
+    expect(() => assertSupportedCandidateOutputPlatform('darwin')).not.toThrow();
+  });
+
+  it('makes the candidate output parent private in producer and hydration workflows', async () => {
+    const [producer, hydration] = await Promise.all([
+      readFile('.github/workflows/relay-package-qualification.yml', 'utf8'),
+      readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8'),
+    ]);
+    for (const workflow of [producer, hydration]) {
+      expect(workflow).toContain('chmod 700 "$RUNNER_TEMP"');
+      expect(workflow.indexOf('chmod 700 "$RUNNER_TEMP"')).toBeLessThan(
+        workflow.indexOf('relay-candidate-install.mjs')
+      );
+    }
+  });
+
   it('runs npm from the parent descriptor on Linux without using --prefix', () => {
     const invocation = privateNpmInvocation(
       ['install', '--package-lock-only'],
@@ -149,6 +169,18 @@ describe('Relay candidate clean-install attestation', () => {
       ]);
       expect(attempts.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
       expect(attempts.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects an output root whose parent is not private', async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-public-parent-'));
+    try {
+      await chmod(parent, 0o755);
+      await expect(createPrivateOutputRoot(path.join(parent, 'candidate'))).rejects.toThrow(
+        /current-user-owned 0700 parent/
+      );
     } finally {
       await rm(parent, { recursive: true, force: true });
     }

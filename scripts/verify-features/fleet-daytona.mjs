@@ -181,6 +181,49 @@ export function buildDirectNodeSpawnPlan(provider, agentName, sentinel, extra = 
   };
 }
 
+export function ownedBoardNodes(nodes) {
+  return nodes.filter((node) => node?.id && node?.nodeName);
+}
+
+export function compareDaytonaSandboxBaseline(baseline, finalSandboxes) {
+  const baselineIdHashes = [...(baseline?.sandboxIdHashes ?? [])].sort();
+  const baselineNameHashes = [...(baseline?.sandboxNameHashes ?? [])].sort();
+  const finalIdHashes = [
+    ...new Set(
+      finalSandboxes
+        .map(({ id }) => id)
+        .filter((id) => typeof id === 'string' && id.length > 0)
+        .map(sha256)
+    ),
+  ].sort();
+  const finalNameHashes = [
+    ...new Set(
+      finalSandboxes
+        .map(({ name }) => name)
+        .filter((name) => typeof name === 'string' && name.length > 0)
+        .map(sha256)
+    ),
+  ].sort();
+  const missingIdHashes = baselineIdHashes.filter((hash) => !finalIdHashes.includes(hash));
+  const missingNameHashes = baselineNameHashes.filter((hash) => !finalNameHashes.includes(hash));
+  const unexpectedIdHashes = finalIdHashes.filter((hash) => !baselineIdHashes.includes(hash));
+  const unexpectedNameHashes = finalNameHashes.filter((hash) => !baselineNameHashes.includes(hash));
+  const countMatches = Number.isSafeInteger(baseline?.count) && finalSandboxes.length === baseline.count;
+  return {
+    restored:
+      countMatches &&
+      missingIdHashes.length === 0 &&
+      missingNameHashes.length === 0 &&
+      unexpectedIdHashes.length === 0 &&
+      unexpectedNameHashes.length === 0,
+    countMatches,
+    missingIdHashes,
+    missingNameHashes,
+    unexpectedIdHashes,
+    unexpectedNameHashes,
+  };
+}
+
 export function buildFleetSpawnArgs(options, qualification = {}) {
   return [
     'fleet',
@@ -1310,14 +1353,14 @@ export function validateFleetEvidence(evidence, matrix) {
       throw new Error(`operation ${operation.id} contains an unredacted token`);
     }
     if (operation.id.startsWith('initial-task-sentinel-')) {
+      const expectedProvision = operation.id.replace('initial-task-sentinel-', 'provision-node-');
       if (
         operation.derivedObservation !== true ||
         operation.executionKind !== 'derived-observation' ||
-        typeof operation.derivedFrom !== 'string' ||
-        !operation.derivedFrom.startsWith('provision-node-')
+        operation.derivedFrom !== expectedProvision
       ) {
         throw new Error(
-          `operation ${operation.id} must be marked as a derived observation, not a command execution`
+          `operation ${operation.id} must be derived from its exact ${expectedProvision} command execution`
         );
       }
     }
@@ -2212,7 +2255,7 @@ class FleetBoard {
       this.listDaytona(),
     ]);
     const workerProcesses = [];
-    for (const node of this.availableBoardNodes()) {
+    for (const node of this.allBoardNodes()) {
       const agents = await this.listNodeAgents(node);
       workerProcesses.push({
         nodeId: node.nodeId,
@@ -2314,9 +2357,11 @@ class FleetBoard {
   }
 
   availableBoardNodes() {
-    return [this.nodeA, this.nodeB].filter(
-      (node) => node?.id && node?.nodeName && !this.taintedNodeIds.has(node.id)
-    );
+    return this.allBoardNodes().filter((node) => !this.taintedNodeIds.has(node.id));
+  }
+
+  allBoardNodes() {
+    return ownedBoardNodes([this.nodeA, this.nodeB]);
   }
 
   async waitForSentinel(sentinel, timeoutMs = 90_000, from) {
@@ -4531,29 +4576,19 @@ class FleetBoard {
           typeof name === 'string' && name.includes(this.short) && name.startsWith('relay-fleetboard-')
       )
       .map(({ id, name }) => ({ id, name }));
-    const finalSandboxIdHashes = new Set(finalSandboxes.map(({ id }) => sha256(id)));
-    const finalSandboxNameHashes = new Set(finalSandboxes.map(({ name }) => sha256(name)));
+    const sandboxBaseline = compareDaytonaSandboxBaseline(this.baseline, finalSandboxes);
     const finalAgentNames = await this.listAllWorkspaceAgentNames().catch(() => null);
     const finalAgentNameHashes = finalAgentNames
       ? new Set([...finalAgentNames].map((name) => sha256(name)))
       : null;
-    const missingBaselineSandboxIdHashes = (this.baseline?.sandboxIdHashes ?? []).filter(
-      (hash) => !finalSandboxIdHashes.has(hash)
-    );
-    const missingBaselineSandboxNameHashes = (this.baseline?.sandboxNameHashes ?? []).filter(
-      (hash) => !finalSandboxNameHashes.has(hash)
-    );
     const missingBaselineAgentNameHashes = finalAgentNameHashes
       ? (this.baseline?.agentNameHashes ?? []).filter((hash) => !finalAgentNameHashes.has(hash))
       : ['agent-list-reconciliation-failed'];
-    const baselinePreserved =
-      missingBaselineSandboxIdHashes.length === 0 &&
-      missingBaselineSandboxNameHashes.length === 0 &&
-      missingBaselineAgentNameHashes.length === 0;
+    const baselinePreserved = sandboxBaseline.restored && missingBaselineAgentNameHashes.length === 0;
     await this.derived('daytona-baseline-restored', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
       exitCode: exactPrefixLeaks.length === 0 && baselinePreserved ? 0 : 1,
-      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(missingBaselineSandboxIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(missingBaselineSandboxNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
+      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
     });
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&
