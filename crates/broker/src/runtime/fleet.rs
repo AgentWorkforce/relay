@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     fleet_wire::{
         ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
-        AgentDeregister, AgentRegister, AgentRegistrationMetadata, BrokerToRelaycast, Deliver,
-        DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
+        AgentDeregister, AgentRegister, AgentRegistrationMetadata, BrokerToRelaycast, ContextTopic,
+        ContextUpdate, Deliver, DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
@@ -34,6 +34,31 @@ pub(super) struct FleetInventoryRetry {
     generation: Uuid,
     retry_after: Instant,
 }
+
+/// First non-blank string among `keys` in an ephemeral `context.update`
+/// payload. The engine's per-event payloads are open JSON objects, so callers
+/// name the keys they understand in preference order.
+fn context_update_string(data: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| data.get(*key))
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// A `context.update` this broker has no use for. Debug, never warn: the frame
+/// is legitimate and unacked, and the engine fans these out continuously.
+fn debug_ignored_context_update(update: &ContextUpdate, why: &str) {
+    tracing::debug!(
+        target = "relay_broker::fleet",
+        topic = ?update.topic,
+        event = %update.event,
+        reason = why,
+        "ignoring relaycast context.update"
+    );
+}
+
 pub(super) fn try_send_terminal(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     message: TerminalToCloud,
@@ -819,9 +844,179 @@ impl BrokerRuntime {
             FleetControlEvent::Message(RelaycastToBroker::ActionInvoke(invoke)) => {
                 self.handle_fleet_action_invoke(invoke).await;
             }
+            FleetControlEvent::Message(RelaycastToBroker::ContextUpdate(update)) => {
+                self.handle_fleet_context_update(update).await;
+            }
             FleetControlEvent::Message(RelaycastToBroker::Ping(_))
             | FleetControlEvent::Message(RelaycastToBroker::Reply(_))
             | FleetControlEvent::Message(RelaycastToBroker::Error(_)) => {}
+        }
+    }
+
+    /// Ephemeral engine fan-out (`context.update`). These frames are
+    /// best-effort and never acked, so an event this broker has no use for is
+    /// dropped at debug — it is a legitimate frame and must never be logged as
+    /// invalid (relay#1615).
+    ///
+    /// Only terminal outcomes reach the sending agent as events:
+    /// `delivery.failed` is surfaced, while `delivery.deferred` (still queued
+    /// for a later `available_at` retry) is logged only, so a sender is never
+    /// prompted to resend a message the engine still intends to deliver.
+    async fn handle_fleet_context_update(&mut self, update: ContextUpdate) {
+        match (update.topic, update.event.as_str()) {
+            (ContextTopic::Agent, "delivery.failed") => {
+                let Some(workers) = self.resolve_context_update_workers(&update) else {
+                    return;
+                };
+                self.surface_fleet_delivery_problem(&update, &workers).await;
+            }
+            (ContextTopic::Agent, "delivery.deferred") => {
+                let Some(workers) = self.resolve_context_update_workers(&update) else {
+                    return;
+                };
+                self.log_fleet_delivery_deferral(&update, &workers);
+            }
+            (ContextTopic::Agent, "agent.identity_taken_over") => {
+                let Some(workers) = self.resolve_context_update_workers(&update) else {
+                    return;
+                };
+                self.handle_fleet_identity_taken_over(&update, &workers);
+            }
+            _ => debug_ignored_context_update(&update, "event not actionable on this broker"),
+        }
+    }
+
+    /// Resolve the workers an actionable `context.update` applies to, logging
+    /// the debug drop shared by every actionable arm when this broker hosts
+    /// none of the addressed agents. Returns `None` when there is nothing to
+    /// act on, so callers can simply bail.
+    fn resolve_context_update_workers(&self, update: &ContextUpdate) -> Option<Vec<WorkerName>> {
+        let workers = self.fleet_context_update_workers(update);
+        if workers.is_empty() {
+            debug_ignored_context_update(update, "no matching worker");
+            return None;
+        }
+        Some(workers)
+    }
+
+    /// Resolve `agent_ids` to workers this broker actually hosts. The engine
+    /// addresses ephemeral events by immutable agent id only, so this walks the
+    /// same authoritative binding `agent.register` established.
+    pub(super) fn fleet_context_update_workers(&self, update: &ContextUpdate) -> Vec<WorkerName> {
+        let mut workers: Vec<WorkerName> = Vec::new();
+        for agent_id in update.agent_ids.iter().flatten() {
+            let Some(name) = self.fleet_delivery_book.active_agent_name(agent_id) else {
+                continue;
+            };
+            let name = WorkerName::from(name);
+            if self.workers.workers.contains_key(&name) && !workers.contains(&name) {
+                workers.push(name);
+            }
+        }
+        workers
+    }
+
+    /// Tell the SENDING agent (and operators) that Relaycast gave up on a
+    /// message it sent — the recipient was offline or its node was gone.
+    /// Without this a broker-hosted agent that DMs an unreachable agent never
+    /// learns (relay#1615). Reuses the same `message_delivery_failed` event the
+    /// broker's own dead-letter path emits, so existing SDK/dashboard consumers
+    /// surface it with no client change.
+    ///
+    /// Terminal outcomes only (`delivery.failed`): a deferred delivery is still
+    /// queued and must not be reported as a failure — see
+    /// [`Self::log_fleet_delivery_deferral`].
+    async fn surface_fleet_delivery_problem(&self, update: &ContextUpdate, workers: &[WorkerName]) {
+        let reason = context_update_string(&update.data, &["reason", "error"])
+            .unwrap_or_else(|| "unspecified".to_string());
+        let last_error = format!("relaycast {}: {reason}", update.event);
+        let target = context_update_string(&update.data, &["target_agent_name", "target_agent_id"])
+            .unwrap_or_else(|| "unknown".to_string());
+        let delivery_id =
+            context_update_string(&update.data, &["delivery_id"]).map(DeliveryId::from);
+        let message_id = context_update_string(&update.data, &["message_id"]).map(EventId::from);
+
+        for name in workers {
+            tracing::info!(
+                target = "relay_broker::fleet",
+                worker = %name,
+                event = %update.event,
+                target_agent = %target,
+                reason = %reason,
+                delivery_id = delivery_id.as_deref().unwrap_or(""),
+                message_id = message_id.as_deref().unwrap_or(""),
+                "relaycast could not deliver a message this broker's agent sent"
+            );
+            // Best-effort: a closed SDK channel must not abort the remaining
+            // notifications, and this frame is never acked back to the engine.
+            let _ = send_broker_event(
+                &self.sdk_out_tx,
+                BrokerEvent::MessageDeliveryFailed {
+                    name: name.clone(),
+                    delivery_id: delivery_id.clone(),
+                    event_id: message_id.clone(),
+                    from: name.to_string(),
+                    to: MessageTarget::from(target.as_str()),
+                    attempts: 1,
+                    last_error: last_error.clone(),
+                },
+            )
+            .await;
+        }
+    }
+
+    /// Record that Relaycast has postponed — not abandoned — a message one of
+    /// this broker's agents sent. A deferred delivery stays queued for a later
+    /// `available_at` retry, so it deliberately emits no `BrokerEvent`: telling
+    /// the sender it "failed" would invite a resend and duplicate the message
+    /// the engine is still holding.
+    fn log_fleet_delivery_deferral(&self, update: &ContextUpdate, workers: &[WorkerName]) {
+        let reason = context_update_string(&update.data, &["reason", "error"])
+            .unwrap_or_else(|| "unspecified".to_string());
+        let target = context_update_string(&update.data, &["target_agent_name", "target_agent_id"])
+            .unwrap_or_else(|| "unknown".to_string());
+        let available_at =
+            context_update_string(&update.data, &["available_at"]).unwrap_or_default();
+        let delivery_id = context_update_string(&update.data, &["delivery_id"]).unwrap_or_default();
+        let message_id = context_update_string(&update.data, &["message_id"]).unwrap_or_default();
+
+        for name in workers {
+            tracing::info!(
+                target = "relay_broker::fleet",
+                worker = %name,
+                event = %update.event,
+                target_agent = %target,
+                available_at = %available_at,
+                reason = %reason,
+                delivery_id = %delivery_id,
+                message_id = %message_id,
+                "relaycast deferred a message this broker's agent sent; it stays queued for retry"
+            );
+        }
+    }
+
+    /// Another node reclaimed one of this broker's agent identities. Drop the
+    /// cached registration so the next operation re-registers (which routes
+    /// through the audited takeover path in `relaycast::ws`) instead of first
+    /// spending a round trip on a 401 with the now-revoked token.
+    fn handle_fleet_identity_taken_over(&self, update: &ContextUpdate, workers: &[WorkerName]) {
+        let actor = context_update_string(&update.data, &["actor"])
+            .unwrap_or_else(|| "unknown".to_string());
+        let reason = context_update_string(&update.data, &["reason"])
+            .unwrap_or_else(|| "unspecified".to_string());
+        let node_id = context_update_string(&update.data, &["node_id"]).unwrap_or_default();
+
+        for name in workers {
+            self.relaycast_http.forget_agent_registration(name);
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                worker = %name,
+                actor = %actor,
+                reason = %reason,
+                node_id = %node_id,
+                "relaycast reported this agent identity was taken over; dropped the cached \
+                 registration so the next operation re-registers"
+            );
         }
     }
 

@@ -798,6 +798,19 @@ impl FleetDeliveryBook {
             .map(|binding| binding.agent_id.as_str())
     }
 
+    /// Return the agent name currently bound to an immutable identity.
+    ///
+    /// The inverse of [`Self::active_agent_id`]. Ephemeral `context.update`
+    /// frames address agents by id only, so routing one back to a worker on
+    /// this broker needs this direction of the same authoritative binding.
+    pub(crate) fn active_agent_name(&self, agent_id: &str) -> Option<&str> {
+        let agent = self.active_agent_names_by_id.get(agent_id)?;
+        self.active_agent_bindings_by_name
+            .get(agent)
+            .filter(|binding| binding.authoritative && binding.agent_id == agent_id)
+            .map(|_| agent.as_str())
+    }
+
     /// Seed Relaycast's cumulative cursor after identity authority is bound.
     ///
     /// The immutable `agent_id` is the key: a later agent reusing the same name
@@ -2283,6 +2296,58 @@ mod tests {
             mode: DeliveryMode::Wait,
             payload: json!({"type": "message.created", "text": "test"}),
         }
+    }
+
+    /// Ephemeral `context.update` frames must reach the runtime on the same
+    /// channel `deliver`/`action.invoke` use. Before relay#1615 they fell
+    /// through to the `Err` branch and were logged as an invalid frame.
+    #[tokio::test]
+    async fn context_update_reaches_the_runtime_instead_of_the_invalid_frame_path() {
+        let (event_tx, mut event_rx) = mpsc::channel(4);
+        let mut pending_agent_registrations = HashMap::new();
+        let mut sink = futures_util::sink::drain::<Message>();
+
+        let raw = include_str!("../tests/fixtures/fleet-wire/context.update.json");
+        assert!(
+            handle_server_message(
+                Message::Text(raw.to_string()),
+                &event_tx,
+                &mut pending_agent_registrations,
+                &mut sink,
+            )
+            .await,
+            "a context.update must never close the node-control socket"
+        );
+
+        match event_rx
+            .try_recv()
+            .expect("context.update must be forwarded")
+        {
+            FleetControlEvent::Message(RelaycastToBroker::ContextUpdate(update)) => {
+                assert_eq!(update.event, "agent.status.active");
+                assert_eq!(
+                    update.agent_ids.as_deref(),
+                    Some(["agt_01J7FLEET000000000000101".to_string()].as_slice())
+                );
+            }
+            other => panic!("expected a forwarded context.update, got {other:?}"),
+        }
+    }
+
+    /// `active_agent_name` is the id -> name direction ephemeral
+    /// `context.update` routing depends on: it must resolve only authoritative
+    /// live bindings, and must stop resolving once the agent is removed.
+    #[test]
+    fn delivery_book_resolves_a_worker_name_from_an_authoritative_agent_id() {
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+
+        assert_eq!(book.active_agent_name("agent-a-id"), Some("agent-a"));
+        assert_eq!(book.active_agent_name("unknown-id"), None);
+
+        // A retired identity must not keep resolving to the live worker.
+        book.remove_agent("agent-a");
+        assert_eq!(book.active_agent_name("agent-a-id"), None);
     }
 
     #[test]
