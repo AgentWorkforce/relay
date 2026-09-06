@@ -242,15 +242,19 @@ describe('Relay package qualification producer', () => {
     expect(workflow).not.toContain('GH_TOKEN:');
     expect(workflow).not.toContain('repos/AgentWorkforce/cloud/dispatches');
     expect(workflow).not.toContain('secrets.');
-    expect(workflow.indexOf('- name: Upload immutable package attestation')).toBeLessThan(
-      workflow.indexOf('- name: Create the bounded Cloud qualification request')
-    );
-    expect(workflow.indexOf('- name: Create the bounded Cloud qualification request')).toBeLessThan(
-      workflow.indexOf('- name: Upload the bounded Cloud qualification request')
-    );
-    expect(workflow.indexOf('- name: Set up exact Node.js')).toBeLessThan(
-      workflow.indexOf('- name: Require prerelease package version')
-    );
+    const uploadAttestation = workflow.indexOf('- name: Upload immutable package attestation');
+    const createCloudRequest = workflow.indexOf('- name: Create the bounded Cloud qualification request');
+    const uploadCloudRequest = workflow.indexOf('- name: Upload the bounded Cloud qualification request');
+    const setupNode = workflow.indexOf('- name: Set up exact Node.js');
+    const requirePrerelease = workflow.indexOf('- name: Require prerelease package version');
+    expect(uploadAttestation).toBeGreaterThan(-1);
+    expect(createCloudRequest).toBeGreaterThan(-1);
+    expect(uploadCloudRequest).toBeGreaterThan(-1);
+    expect(setupNode).toBeGreaterThan(-1);
+    expect(requirePrerelease).toBeGreaterThan(-1);
+    expect(uploadAttestation).toBeLessThan(createCloudRequest);
+    expect(createCloudRequest).toBeLessThan(uploadCloudRequest);
+    expect(setupNode).toBeLessThan(requirePrerelease);
     expect(RELAY_PACKAGE_PRODUCER).toMatchObject({
       event: 'workflow_dispatch',
       ref: 'refs/heads/qualification/',
