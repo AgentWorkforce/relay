@@ -236,6 +236,97 @@ async fn stale_generation_release_does_not_stop_same_name_replacement() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
+#[tokio::test]
+async fn first_release_after_worker_exit_releases_persisted_exact_identity() {
+    use httpmock::{Method::GET, Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let name = WorkerName::from("exited-before-release");
+    let agent_id = "agent-exited-generation";
+    let generation = Uuid::new_v4();
+    let current = server.mock(|when, then| {
+        when.method(GET).path("/v1/agents/exited-before-release");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "id": agent_id,
+                "workspace_id": "ws_demo",
+                "name": name.as_str(),
+                "type": "agent",
+                "status": "offline",
+                "persona": null,
+                "metadata": {},
+                "channels": []
+            }
+        }));
+    });
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(
+                json!({
+                    "name": name.as_str(),
+                    "delete_agent": true,
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "invocation_id": "inv-release-exited",
+                "action_name": "release",
+                "handler_agent_id": null,
+                "handler_node_id": null,
+                "dispatched_node_id": null,
+                "input": {},
+                "status": "completed",
+                "created_at": "2026-09-06T00:00:00Z"
+            }
+        }));
+    });
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
+    let workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    fixture.runtime.state.pending_identity_releases.insert(
+        name.clone(),
+        crate::broker::PendingIdentityRelease {
+            agent_id: agent_id.into(),
+            generation,
+        },
+    );
+    let (reply, response) = tokio::sync::oneshot::channel();
+
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::Release {
+            name: name.clone(),
+            reason: Some("cleanup after observed exit".into()),
+            expected_generation: Some(generation),
+            reply,
+        })
+        .await;
+
+    let result = response
+        .await
+        .expect("release response")
+        .expect("first release after exit should finish exact cleanup");
+    assert_eq!(result["success"], true);
+    assert!(!fixture
+        .runtime
+        .state
+        .pending_identity_releases
+        .contains_key(&name));
+    current.assert_hits(1);
+    release.assert_hits(1);
+}
+
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
