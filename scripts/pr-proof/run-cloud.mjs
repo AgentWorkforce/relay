@@ -96,7 +96,11 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
   // substrings. Reversing this order can split a token and leave its tail in
   // diagnostic output.
   let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body) =>
-    declaredSecrets.includes(match)
+    declaredSecrets.some(
+      (secret) =>
+        secret === match ||
+        (secret.startsWith(prefix) && secret.length > prefix.length + 8 && match.startsWith(secret))
+    )
       ? '[REDACTED_DECLARED_SECRET]'
       : body.length <= 8
         ? `${prefix}\u2026`

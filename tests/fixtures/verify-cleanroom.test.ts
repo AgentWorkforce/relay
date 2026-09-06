@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { compileAgentPermissions } from '@agent-relay/cloud';
 
 // Dependency-free ESM is shared with the Cloud lane sandboxes.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -29,6 +30,7 @@ import {
 } from '../../scripts/verify-features/cleanroom.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  cleanroomLaneEvidenceScopes,
   cleanroomLaneNetwork,
   cleanroomLaneWritePaths,
   cleanroomReviewNetwork,
@@ -532,9 +534,14 @@ describe('clean-room verification catalog', () => {
 
   it('grants each cleanroom agent only its exact output and required model transport', () => {
     const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
+    const evidenceScopes = cleanroomLaneEvidenceScopes(NONCE, 'polyglot-plugins');
     expect(writes).toContain('packages/sdk-swift/.build/**');
     expect(writes).toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`);
     expect(writes).not.toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/**`);
+    expect(evidenceScopes).toEqual([
+      `relayfile:fs:read:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`,
+      `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins.json`,
+    ]);
     expect(() => cleanroomLaneWritePaths('../escape', 'polyglot-plugins')).toThrow(/identity/);
 
     const laneNetwork = cleanroomLaneNetwork();
@@ -560,6 +567,35 @@ describe('clean-room verification catalog', () => {
       expect(withCloud.allow).toContain('cloud.example.test:443');
     }
     expect(() => cleanroomReviewNetwork('unknown-role')).toThrow(/unknown cleanroom reviewer/);
+  });
+
+  it('compiles an exact writable scope for a write-once lane artifact that does not exist yet', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-permissions-'));
+    try {
+      const lane = 'polyglot-plugins';
+      const target = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}.json`;
+      const compiled = compileAgentPermissions({
+        agentName: `lane-${lane}`,
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
+          files: { read: ['**'], write: cleanroomLaneWritePaths(NONCE, lane) },
+        },
+      });
+
+      expect(compiled.readwritePaths).not.toContain(target);
+      expect(compiled.scopes).toEqual(
+        expect.arrayContaining([`relayfile:fs:read:/${target}`, `relayfile:fs:write:/${target}`])
+      );
+      expect(compiled.scopes).not.toContain(
+        `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/**`
+      );
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
   });
 
   it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {
