@@ -45,14 +45,14 @@ use super::{
     extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
     http_api_relaycast_send_timeout, is_relaycast_self_control_target,
     is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
-    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token,
-    normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    pending_message_counts, persist_dead_letters_on_shutdown, persist_pending_on_shutdown,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
-    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retain_model_receipt,
-    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
-    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    maintenance_tick_is_selectable, mark_delivery_read_ack, mark_delivery_read_ack_with_timeout,
+    mint_or_recover_observer_token, normalize_channel, normalize_initial_task, normalize_sender,
+    parse_sort_key_from_raw_timestamp, pending_message_counts, persist_dead_letters_on_shutdown,
+    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
+    retain_model_receipt, retry_pending_delivery, save_dead_letters, seed_supplied_agent_token,
+    send_broker_event, sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     synthetic_delivery_read_ack_reason, take_pending_for_worker, try_inject_pending_relay_message,
     AgentRuntime, BrokerRuntime, DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome,
     InboundContext, InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome,
@@ -367,6 +367,14 @@ fn delivery_lifecycle_worker_event(
             },
         }),
     }
+}
+
+#[test]
+fn maintenance_remains_selectable_after_worker_event_channel_closes() {
+    assert!(!maintenance_tick_is_selectable(true, false));
+    assert!(maintenance_tick_is_selectable(true, true));
+    // A closed worker channel must not disable maintenance forever.
+    assert!(maintenance_tick_is_selectable(false, false));
 }
 
 #[tokio::test]

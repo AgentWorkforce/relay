@@ -449,6 +449,16 @@ pub(super) fn terminalize_model_requests_for_worker(
     model_receipts.remove(worker_name);
 }
 
+/// Maintenance remains selectable after the worker event channel closes, but
+/// yields to an event that is already queued so its correlated receipt cannot
+/// be expired first.
+pub(super) fn maintenance_tick_is_selectable(
+    worker_events_open: bool,
+    worker_event_queue_empty: bool,
+) -> bool {
+    !worker_events_open || worker_event_queue_empty
+}
+
 impl BrokerRuntime {
     pub(super) async fn run(mut self) -> Result<()> {
         while !self.shutdown {
@@ -469,7 +479,7 @@ impl BrokerRuntime {
                 // a worker receipt is already queued. Keeping this branch
                 // disabled only while the queue is non-empty preserves the
                 // fair select ordering for all other runtime lanes.
-                _ = self.reap_tick.tick(), if self.worker_events_open && self.worker_event_rx.is_empty() => RuntimeEvent::MaintenanceTick,
+                _ = self.reap_tick.tick(), if maintenance_tick_is_selectable(self.worker_events_open, self.worker_event_rx.is_empty()) => RuntimeEvent::MaintenanceTick,
             };
 
             match event {
