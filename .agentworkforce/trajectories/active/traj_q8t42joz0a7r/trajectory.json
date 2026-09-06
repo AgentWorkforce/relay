@@ -90,6 +90,30 @@
             "focal:relayflow-proof",
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1788696677446,
+          "type": "decision",
+          "content": "Continue the existing PR 1672 trajectory; prioritize authoritative binding and mutation-tested restart guards: Continue the existing PR 1672 trajectory; prioritize authoritative binding and mutation-tested restart guards",
+          "raw": {
+            "question": "Continue the existing PR 1672 trajectory; prioritize authoritative binding and mutation-tested restart guards",
+            "chosen": "Continue the existing PR 1672 trajectory; prioritize authoritative binding and mutation-tested restart guards",
+            "alternatives": [],
+            "reasoning": "This worktree already contains the same active release qualification task; preserve its existing history."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788697561491,
+          "type": "decision",
+          "content": "Keep remote takeover P1 open; no safe client-only atomic release guard exists: Keep remote takeover P1 open; no safe client-only atomic release guard exists",
+          "raw": {
+            "question": "Keep remote takeover P1 open; no safe client-only atomic release guard exists",
+            "chosen": "Keep remote takeover P1 open; no safe client-only atomic release guard exists",
+            "alternatives": [],
+            "reasoning": "Pinned SDK 7.0.0 and Relaycast main 8e36b742 expose only name/reason/delete_agent. The same-ID takeover reproduction dispatches an unsafe release. Preserve the blocker rather than invent a condition the server strips."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -1955,13 +1955,17 @@ mod tests {
         });
 
         let client = seeded_http_client(&server.base_url());
-        client
+        let result = client
             .release_agent_identity_exact("worker-a", "agent-old-generation", Some("stale retry"))
-            .await
-            .expect("a missing old identity is an idempotent release success");
+            .await;
 
         current.assert_hits(1);
-        release.assert_hits(0);
+        assert_eq!(
+            release.hits(),
+            0,
+            "a stale cleanup must never dispatch a release to the replacement"
+        );
+        result.expect("a missing old identity is an idempotent release success");
     }
 
     #[tokio::test]

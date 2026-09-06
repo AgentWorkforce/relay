@@ -38,6 +38,9 @@ pub(crate) struct BrokerState {
         skip_serializing_if = "HashMap::is_empty"
     )]
     pub(crate) pending_identity_releases: HashMap<WorkerName, PendingIdentityRelease>,
+    /// Older generations remain retryable when a same-name worker exits again.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) superseded_identity_releases: HashMap<WorkerName, Vec<PendingIdentityRelease>>,
 }
 
 fn deserialize_pending_identity_releases<'de, D>(
@@ -122,19 +125,30 @@ impl BrokerState {
         {
             return None;
         }
-        let agent_id = persisted
-            .and_then(|agent| agent.relaycast_agent_id.as_deref())
-            .or(fallback_agent_id)?
-            .trim();
-        if agent_id.is_empty() {
-            return None;
-        }
+        let agent_id = fallback_agent_id
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .or_else(|| {
+                persisted
+                    .and_then(|agent| agent.relaycast_agent_id.as_deref())
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+            })?;
         let pending = PendingIdentityRelease {
             agent_id: agent_id.to_string(),
             generation,
         };
-        self.pending_identity_releases
-            .insert(name.clone(), pending.clone());
+        if let Some(previous) = self
+            .pending_identity_releases
+            .insert(name.clone(), pending.clone())
+        {
+            if previous != pending {
+                self.superseded_identity_releases
+                    .entry(name.clone())
+                    .or_default()
+                    .push(previous);
+            }
+        }
         Some(pending)
     }
 
@@ -145,6 +159,14 @@ impl BrokerState {
     ) {
         if self.pending_identity_releases.get(name) == Some(released) {
             self.pending_identity_releases.remove(name);
+            if let Some(older) = self.superseded_identity_releases.get_mut(name) {
+                if let Some(next) = older.pop() {
+                    self.pending_identity_releases.insert(name.clone(), next);
+                }
+                if older.is_empty() {
+                    self.superseded_identity_releases.remove(name);
+                }
+            }
         }
     }
 
@@ -235,6 +257,66 @@ impl BrokerState {
 mod tests {
     use super::*;
     use crate::protocol::AgentRuntime;
+
+    fn persisted_identity(id: &str, generation: uuid::Uuid) -> PersistedAgent {
+        serde_json::from_value(serde_json::json!({
+            "runtime": "pty", "parent": null, "channels": [],
+            "relaycast_agent_id": id, "generation": generation
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn defer_identity_release_prefers_valid_authoritative_binding() {
+        for (fallback, expected) in [
+            (Some(" agent-rebound "), "agent-rebound"),
+            (Some("  "), "agent-persisted"),
+            (None, "agent-persisted"),
+        ] {
+            let generation = uuid::Uuid::new_v4();
+            let mut state = BrokerState::default();
+            let name = WorkerName::from("rebound");
+            state.agents.insert(
+                name.clone(),
+                persisted_identity("agent-persisted", generation),
+            );
+            let pending = state
+                .defer_identity_release(&name, generation, fallback)
+                .unwrap();
+            assert_eq!(pending.agent_id, expected);
+        }
+    }
+
+    #[test]
+    fn pending_releases_preserve_both_generations_across_restart() {
+        let mut state = BrokerState::default();
+        let name = WorkerName::from("replacement");
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        state
+            .agents
+            .insert(name.clone(), persisted_identity("agent-old", first));
+        let old = state.defer_identity_release(&name, first, None).unwrap();
+        state
+            .agents
+            .insert(name.clone(), persisted_identity("agent-new", second));
+        let new = state.defer_identity_release(&name, second, None).unwrap();
+        // Repeated deferral must not duplicate one generation.
+        state.defer_identity_release(&name, second, None);
+        let mut restored: BrokerState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(
+            restored.superseded_identity_releases[&name],
+            vec![old.clone()]
+        );
+        restored.clear_pending_identity_release(&name, &old);
+        assert_eq!(restored.pending_identity_releases[&name], new);
+        restored.clear_pending_identity_release(&name, &new);
+        assert_eq!(restored.pending_identity_releases[&name], old);
+        restored.clear_pending_identity_release(&name, &old);
+        assert!(restored.pending_identity_releases.is_empty());
+        assert!(restored.superseded_identity_releases.is_empty());
+    }
 
     #[test]
     fn broker_state_default_is_empty() {

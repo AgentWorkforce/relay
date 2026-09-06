@@ -233,7 +233,207 @@ async fn stale_generation_release_does_not_stop_same_name_replacement() {
         fixture.runtime.workers.workers[&name].generation, replacement_generation,
         "the replacement process must remain registered"
     );
+    assert!(
+        fixture.runtime.workers.is_worker_live(name.as_str()),
+        "the replacement process must remain alive"
+    );
     cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn stale_generation_release_after_restart_preserves_persisted_replacement() {
+    let server = httpmock::MockServer::start();
+    let remote = server.mock(|when, then| {
+        when.any_request();
+        then.status(404).json_body(
+            json!({"ok": false, "error": {"code": "agent_not_found", "message": "absent"}}),
+        );
+    });
+    let name = WorkerName::from("persisted-replacement");
+    let (tx, _rx) = mpsc::channel(4);
+    let workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+    let stale = Uuid::new_v4();
+    let replacement = Uuid::new_v4();
+    fixture.runtime.state.agents.insert(
+        name.clone(),
+        serde_json::from_value(json!({
+            "runtime": "pty", "parent": null, "channels": [],
+            "relaycast_agent_id": "agent-replacement", "generation": replacement
+        }))
+        .unwrap(),
+    );
+    fixture.runtime.state.pending_identity_releases.insert(
+        name.clone(),
+        crate::broker::PendingIdentityRelease {
+            agent_id: "agent-stale".into(),
+            generation: stale,
+        },
+    );
+    let (reply, response) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(stale),
+            reply,
+        })
+        .await;
+    let error = response
+        .await
+        .unwrap()
+        .expect_err("stale handle must fail before touching persisted replacement");
+    assert!(error.contains("stale release generation"), "{error}");
+    assert_eq!(
+        fixture.runtime.state.agents[&name].generation,
+        Some(replacement)
+    );
+    assert_eq!(
+        fixture.runtime.state.pending_identity_releases[&name].generation,
+        stale
+    );
+    remote.assert_hits(0);
+}
+
+#[tokio::test]
+async fn http_spawn_retains_identity_when_node_binding_warns() {
+    use httpmock::{Method::GET, Method::POST, MockServer};
+    let server = MockServer::start();
+    let identity = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/agent")
+            .header("authorization", "Bearer at_live_worker");
+        then.status(200).json_body(json!({"ok": true, "data": {
+            "id": "agent-http", "name": "http-worker", "workspace_id": "ws_demo",
+            "type": "agent", "status": "active", "persona": null, "metadata": {}, "channels": []
+        }}));
+    });
+    let bind = server.mock(|when, then| {
+        when.method(POST).path("/v1/nodes/test-node/agents");
+        then.status(503).json_body(json!({"ok": false, "error": {"code": "node_unavailable", "message": "node unavailable"}}));
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    client.seed_agent_token("http-worker", "at_live_worker");
+    let (tx, _rx) = mpsc::channel(4);
+    let workers = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.relaycast_http = client;
+    fixture.runtime.fleet_node_name = "test-node".into();
+    // Force the real HTTP fallback instead of directly calling its helper.
+    drop(fixture.fleet_control_rx);
+    let (reply, response) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::Spawn {
+            name: "http-worker".into(),
+            cli: "sleep".into(),
+            transport: None,
+            model: None,
+            args: vec![],
+            task: None,
+            registration_metadata: Default::default(),
+            channels: vec![],
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            continue_from: None,
+            idle_threshold_secs: None,
+            exit_after_task: false,
+            skip_relay_prompt: true,
+            restart_policy: Box::new(None),
+            harness_config: Some(crate::protocol::ResolvedHarnessConfig::Native(
+                crate::protocol::NativeHarnessConfig {
+                    command: "sleep".into(),
+                    args: vec!["60".into()],
+                    cwd: None,
+                    env: None,
+                    session_id: "http-spawn-test-session".into(),
+                    metadata: None,
+                },
+            )),
+            agent_token: None,
+            agent_result_schema: None,
+            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+            reply,
+        })
+        .await;
+    let result = response.await.unwrap();
+    let persisted_id = fixture
+        .runtime
+        .state
+        .agents
+        .get("http-worker")
+        .and_then(|agent| agent.relaycast_agent_id.clone());
+    cleanup_worker_registry(fixture.runtime.workers).await;
+    let result = result.expect("binding warning must not discard the registered identity");
+    assert!(result["warning"].is_string(), "{result}");
+    assert_eq!(persisted_id.as_deref(), Some("agent-http"));
+    assert_eq!(
+        fixture
+            .runtime
+            .fleet_delivery_book
+            .active_agent_id("http-worker"),
+        Some("agent-http")
+    );
+    identity.assert_hits(1);
+    bind.assert_hits(3); // The SDK exhausts its bounded retry policy.
+}
+
+#[tokio::test]
+async fn http_spawn_refuses_unresolved_identity_before_node_binding() {
+    use httpmock::{Method::GET, Method::POST, MockServer};
+    let server = MockServer::start();
+    let identity = server.mock(|when, then| {
+        when.method(GET).path("/v1/agent");
+        then.status(503).json_body(
+            json!({"ok": false, "error": {"code": "unavailable", "message": "lookup unavailable"}}),
+        );
+    });
+    let bind = server.mock(|when, then| {
+        when.method(POST).path("/v1/nodes/test-node/agents");
+        then.status(200);
+    });
+    let client =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    client.seed_agent_token("http-worker", "at_live_worker");
+    let error = super::api::prepare_http_spawn_registration(
+        &client,
+        &mut FleetDeliveryBook::default(),
+        "test-node",
+        &WorkerName::from("http-worker"),
+        "at_live_worker",
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error.contains("retry spawn with the cached credential"),
+        "{error}"
+    );
+    assert_eq!(
+        crate::relaycast::retry_agent_registration(&client, "http-worker", None)
+            .await
+            .unwrap(),
+        "at_live_worker",
+        "a failed lookup must retain the registered credential for retry"
+    );
+    identity.assert_hits(3); // The SDK exhausts its bounded retry policy.
+    bind.assert_hits(0);
 }
 
 #[tokio::test]
@@ -329,6 +529,13 @@ async fn first_release_after_worker_exit_releases_persisted_exact_identity() {
 
 #[tokio::test]
 async fn release_after_broker_restart_refuses_unowned_live_persisted_process() {
+    let server = httpmock::MockServer::start();
+    let remote = server.mock(|when, then| {
+        when.any_request();
+        then.status(404).json_body(
+            json!({"ok": false, "error": {"code": "agent_not_found", "message": "absent"}}),
+        );
+    });
     let name = WorkerName::from("persisted-live-worker");
     let generation = Uuid::new_v4();
     let (worker_event_tx, _worker_event_rx) = mpsc::channel::<WorkerEvent>(4);
@@ -339,6 +546,9 @@ async fn release_after_broker_restart_refuses_unowned_live_persisted_process() {
         Instant::now(),
     );
     let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
     fixture.runtime.state.agents.insert(
         name.clone(),
         crate::broker::PersistedAgent {
@@ -376,16 +586,46 @@ async fn release_after_broker_restart_refuses_unowned_live_persisted_process() {
         "the exact persisted identity must remain retryable"
     );
     assert!(fixture.runtime.state.pending_identity_releases.is_empty());
+    remote.assert_hits(0);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn release_after_broker_restart_recovers_dead_persisted_exact_identity() {
+    assert_release_dead_persisted_identity(false, false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn release_after_broker_restart_uses_rebound_identity() {
+    assert_release_dead_persisted_identity(true, false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn release_after_broker_restart_drains_both_pending_generations() {
+    assert_release_dead_persisted_identity(false, true).await;
+}
+
+#[cfg(unix)]
+async fn assert_release_dead_persisted_identity(rebound: bool, superseded: bool) {
     use httpmock::{Method::GET, Method::POST, MockServer};
 
     let server = MockServer::start();
     let name = WorkerName::from("persisted-dead-worker");
     let agent_id = "agent-persisted-dead";
     let generation = Uuid::new_v4();
+    let mut child = tokio::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let dead_pid = child.id().unwrap();
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
+    assert!(
+        !crate::broker::is_pid_alive(dead_pid),
+        "the persisted PID must be observably dead"
+    );
     let current = server.mock(|when, then| {
         when.method(GET).path("/v1/agents/persisted-dead-worker");
         then.status(200).json_body(json!({
@@ -436,18 +676,40 @@ async fn release_after_broker_restart_recovers_dead_persisted_exact_identity() {
     let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
     fixture.runtime.relaycast_http =
         RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    if rebound {
+        fixture
+            .runtime
+            .fleet_delivery_book
+            .bind_authoritative_identity(name.to_string(), agent_id.to_string());
+    }
+    if superseded {
+        fixture.runtime.state.pending_identity_releases.insert(
+            name.clone(),
+            crate::broker::PendingIdentityRelease {
+                agent_id: "agent-older-pending".into(),
+                generation: Uuid::new_v4(),
+            },
+        );
+    }
     fixture.runtime.state.agents.insert(
         name.clone(),
         crate::broker::PersistedAgent {
             runtime: AgentRuntime::Pty,
             parent: None,
             channels: vec![],
-            pid: None,
+            pid: Some(dead_pid),
             started_at: None,
             spec: None,
             restart_policy: None,
             initial_task: None,
-            relaycast_agent_id: Some(agent_id.into()),
+            relaycast_agent_id: Some(
+                if rebound {
+                    "agent-stale-persisted"
+                } else {
+                    agent_id
+                }
+                .into(),
+            ),
             generation: Some(generation),
         },
     );
@@ -474,8 +736,21 @@ async fn release_after_broker_restart_recovers_dead_persisted_exact_identity() {
         .state
         .pending_identity_releases
         .contains_key(&name));
-    current.assert_hits(1);
-    release.assert_hits(1);
+    assert!(fixture
+        .runtime
+        .state
+        .superseded_identity_releases
+        .is_empty());
+    assert_eq!(
+        current.hits(),
+        if superseded { 2 } else { 1 },
+        "every pending identity must be checked"
+    );
+    assert_eq!(
+        release.hits(),
+        1,
+        "the current remote identity must actually be released"
+    );
 }
 
 struct WorkerEventRuntimeFixture {
