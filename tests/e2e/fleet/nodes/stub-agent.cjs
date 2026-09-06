@@ -29,7 +29,13 @@ if (process.env.RELAY_E2E_SPAWN_DESCENDANT === '1') {
   const pidPath = path.join(projectDir, '.agentworkforce', 'relay', 'release-1671-descendant.pid');
   mkdirSync(path.dirname(pidPath), { recursive: true });
   releaseProbeChild = spawn('sleep', ['300'], { stdio: 'ignore' });
-  writeFileSync(pidPath, `${releaseProbeChild.pid}\n`);
+  releaseProbeChild.once('error', (error) => {
+    process.stderr.write(`release probe descendant failed to spawn: ${error.message}\n`);
+    process.exitCode = 1;
+  });
+  // Child.pid is not guaranteed until the spawn event. Writing only after that
+  // event removes the PID-file race used by the release absence assertion.
+  releaseProbeChild.once('spawn', () => writeFileSync(pidPath, `${releaseProbeChild.pid}\n`));
 }
 
 function recordBriefNonce(nonce) {

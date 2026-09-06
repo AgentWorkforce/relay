@@ -192,7 +192,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       // capacity for that harness, so every shadow the node defines (spawn:claude,
       // spawn:pool) needs matching broker capacity — otherwise the delegation has
       // nothing to run.
-      capacityHarnesses: 'claude,pool',
+      capacityHarnesses: 'claude,pool,release-probe',
     });
     nodeB = new FleetNode({
       name: 'node-b',
@@ -348,49 +348,64 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(spawnDone.status).toBe('completed');
 
     const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', 'release-1671-descendant.pid');
-    const descendantPid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
-    expect(Number.isInteger(descendantPid)).toBe(true);
+    const readDescendantPid = async () => {
+      const pid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
+      expect(Number.isInteger(pid)).toBe(true);
+      return pid;
+    };
+    const descendantPid = await waitFor(readDescendantPid, {
+      timeoutMs: 10_000,
+      label: 'release probe descendant pid',
+    });
 
     const cli = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
     const released = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
     expect(released.status).toBe(0);
     expect(released.stdout).toContain(name);
 
-    await waitFor(
-      async () => {
-        try {
-          process.kill(descendantPid, 0);
-          return false;
-        } catch (error) {
-          return error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH'
-            ? true
-            : null;
-        }
-      },
-      { timeoutMs: 12_000, intervalMs: 200, label: 'release probe descendant absent' }
-    );
+    const assertReleaseAbsence = async (pid: number, label: string) => {
+      await waitFor(
+        async () => {
+          try {
+            process.kill(pid, 0);
+            return false;
+          } catch (error) {
+            return error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH'
+              ? true
+              : null;
+          }
+        },
+        { timeoutMs: 12_000, intervalMs: 200, label: `${label}: descendant absent` }
+      );
 
-    await waitFor(
-      async () => {
-        const agent = await getAgent(engine, workspaceKey, name);
-        return agent && (agent.status === 'offline' || agent.status === 'released') && !agent.location_node_id
-          ? agent
-          : null;
-      },
-      { timeoutMs: 20_000, label: 'engine roster marks released worker offline and unlocated' }
-    );
-    await waitFor(
-      async () => {
-        const nodeEntry = (await getNodes(engine, workspaceKey, { name: 'node-a' }))[0];
-        const live = nodeEntry?.capabilities.find((capability) => capability.name === 'relay:live-agents:v1');
-        const names =
-          live?.metadata && typeof live.metadata === 'object' && Array.isArray(live.metadata.names)
-            ? live.metadata.names
-            : [];
-        return !names.includes(name) ? nodeEntry : null;
-      },
-      { timeoutMs: 20_000, label: 'node heartbeat removes released worker' }
-    );
+      await waitFor(
+        async () => {
+          const agent = await getAgent(engine, workspaceKey, name);
+          return agent &&
+            (agent.status === 'offline' || agent.status === 'released') &&
+            !agent.location_node_id
+            ? agent
+            : null;
+        },
+        { timeoutMs: 20_000, label: `${label}: engine roster terminal absence` }
+      );
+      await waitFor(
+        async () => {
+          const nodeEntry = (await getNodes(engine, workspaceKey, { name: 'node-a' }))[0];
+          const live = nodeEntry?.capabilities.find(
+            (capability) => capability.name === 'relay:live-agents:v1'
+          );
+          const names =
+            live?.metadata && typeof live.metadata === 'object' && Array.isArray(live.metadata.names)
+              ? live.metadata.names
+              : [];
+          return !names.includes(name) ? nodeEntry : null;
+        },
+        { timeoutMs: 20_000, label: `${label}: node heartbeat absence` }
+      );
+    };
+
+    await assertReleaseAbsence(descendantPid, 'first release');
 
     // A release is idempotent and frees the name: spawn the same name again,
     // then release it through the same public CLI path and prove the second
@@ -409,8 +424,15 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       { timeoutMs: 30_000, label: 'same-name respawn settled' }
     );
     expect(respawnDone.status).toBe('completed');
+    const secondDescendantPid = await waitFor(readDescendantPid, {
+      timeoutMs: 10_000,
+      label: 'same-name respawn descendant pid',
+    });
+    expect(secondDescendantPid).not.toBe(descendantPid);
     const releasedAgain = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
     expect(releasedAgain.status).toBe(0);
+    expect(releasedAgain.stdout).toContain(name);
+    await assertReleaseAbsence(secondDescendantPid, 'second release');
   }, 90_000);
 
   it('cross-node dispatch: a node-native action runs on its owning node and acks the result', async () => {

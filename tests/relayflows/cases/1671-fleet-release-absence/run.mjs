@@ -8,17 +8,15 @@
  * contract. No production credentials, shared broker, or mutable external
  * roster are involved.
  *
- * This is intentionally a two-arm cleanroom lane rather than a mock Relaycast
- * server. Relaycast completion owns the roster mutation; the broker contract
- * that makes a successful completion truthful is locally deterministic:
- * preserve the cause/correlation, terminate the entire worker group, and only
- * emit success after fleet deregistration has been queued/pruned. The actual
- * live two-node invocation is covered by the public fleet E2E lane below and
- * the Cloud/Finn qualification run.
+ * This is a two-arm cleanroom lane with a controlled local Relaycast-compatible
+ * HTTP engine. It drives the public broker spawn/release API against the exact
+ * verified artifact, then checks both the process and engine roster. The live
+ * two-node invocation remains covered by the public fleet E2E and Cloud/Finn.
  */
-import { execFileSync, spawnSync } from 'node:child_process';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
+import { createServer } from 'node:http';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -46,72 +44,295 @@ if (!isWithin(harnessDir, fileURLToPath(import.meta.url))) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-// The artifact is opened and protected by run-arm.mjs. Running --help binds
-// this observation to the same verified executable rather than merely proving
-// that source text exists in the checkout.
-const help = spawnSync(binaryPath, ['--help'], {
-  cwd: targetDir,
-  encoding: 'utf8',
-  timeout: 30_000,
-  maxBuffer: 4 * 1024 * 1024,
-});
-if (help.error || help.status !== 0 || !`${help.stdout ?? ''}${help.stderr ?? ''}`.includes('agent-relay')) {
-  throw new Error(`verified broker artifact did not execute --help: ${help.error?.message ?? help.stderr}`);
+const targetName = `release-proof-${arm}`;
+const stateDir = path.join(path.dirname(resultPath), `${CASE_ID}-${arm}-state`);
+const descendantFile = path.join(stateDir, 'descendant.pid');
+const proofEngine = await startProofEngine(targetName);
+let broker;
+try {
+  await mkdir(stateDir, { recursive: true });
+  broker = spawn(
+    binaryPath,
+    [
+      'init',
+      '--instance-name',
+      `proof-node-${arm}`,
+      '--workspace-key',
+      'rk_live_proof',
+      '--api-port',
+      '0',
+      '--api-bind',
+      '127.0.0.1',
+      '--state-dir',
+      stateDir,
+    ],
+    {
+      cwd: targetDir,
+      env: {
+        ...process.env,
+        HOME: stateDir,
+        RELAYCAST_BASE_URL: proofEngine.baseUrl,
+        RELAYCAST_WS_URL: proofEngine.baseUrl,
+        RELAY_WORKSPACES_JSON: JSON.stringify([{ workspace_id: 'ws_proof', api_key: 'rk_live_proof' }]),
+        RELAY_BROKER_API_KEY: 'br_proof',
+        AGENT_RELAY_HANDSHAKE_ATTEMPTS: '1',
+        AGENT_RELAY_HANDSHAKE_TIMEOUT_MS: '5000',
+        RUST_LOG: 'error',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
+  broker.stderr?.on('data', () => {});
+  await waitForLine(broker, '[agent-relay] API listening on ');
+  const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+  const apiBase = connection.url;
+  const headers = { authorization: `Bearer ${connection.api_key}`, 'content-type': 'application/json' };
+
+  const spawnResult = await waitFor(
+    async () => {
+      const result = await brokerRequest(apiBase, '/api/spawn', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: targetName,
+          cli: '/bin/sh',
+          transport: 'headless',
+          agent_token: `at_live_${targetName}`,
+          skip_relay_prompt: true,
+          harnessConfig: {
+            runtime: 'native',
+            command: '/bin/sh',
+            args: [
+              '-c',
+              `sh -c "trap '' TERM HUP; while :; do sleep 1; done" & echo $! > ${descendantFile}; wait`,
+            ],
+            sessionId: `proof-session-${arm}`,
+          },
+        }),
+      });
+      return result.status === 503 ? null : result;
+    },
+    { timeoutMs: 10_000, intervalMs: 100, label: 'artifact broker ready for spawn' }
+  );
+  if (spawnResult.status >= 300 || spawnResult.body.success === false) {
+    throw new Error(`artifact spawn failed: ${JSON.stringify(spawnResult)}`);
+  }
+  const worker = await waitFor(
+    async () => {
+      const result = await brokerRequest(apiBase, '/api/spawned', { headers });
+      const agents = Array.isArray(result.body.agents) ? result.body.agents : [];
+      return agents.find((agent) => agent.name === targetName) ?? null;
+    },
+    { timeoutMs: 10_000, intervalMs: 100, label: 'artifact worker registered' }
+  );
+  const descendantPid = Number((await readFile(descendantFile, 'utf8')).trim());
+  if (!Number.isInteger(descendantPid) || !pidAlive(descendantPid)) {
+    throw new Error(`release probe descendant did not stay alive: ${descendantPid}`);
+  }
+
+  const releaseStarted = Date.now();
+  const releaseResult = await brokerRequest(apiBase, `/api/spawned/${encodeURIComponent(targetName)}`, {
+    method: 'DELETE',
+    headers,
+    body: JSON.stringify({ reason: 'sealed relayflow release proof' }),
+  });
+  const releaseElapsedMs = Date.now() - releaseStarted;
+  if (releaseResult.status >= 300 || releaseResult.body.success === false) {
+    throw new Error(`artifact release failed: ${JSON.stringify(releaseResult)}`);
+  }
+  await waitFor(
+    async () => {
+      const result = await brokerRequest(apiBase, '/api/spawned', { headers });
+      return !result.body.agents?.some((agent) => agent.name === targetName);
+    },
+    { timeoutMs: 10_000, intervalMs: 100, label: 'artifact broker roster absence' }
+  );
+  const engineRosterAbsent = !proofEngine.agents.has(targetName);
+  const processAbsent = await waitFor(async () => !pidAlive(descendantPid), {
+    timeoutMs: 5_000,
+    intervalMs: 100,
+    label: 'artifact descendant absence',
+  }).catch(() => false);
+
+  if (arm === 'base') {
+    // The bug is the ghost process, not the roster mutation: base already
+    // removes its broker/engine entry while leaving the descendant alive.
+    if (processAbsent) {
+      throw new Error(
+        `base did not reproduce ghost release: ${JSON.stringify({ processAbsent, engineRosterAbsent, workerPid: worker.workerPid, descendantPid })}`
+      );
+    }
+    await observe(
+      'fleet_release_can_drop_cause_and_strand_descendants',
+      'bug',
+      `Exact base broker accepted public DELETE /api/spawned/${targetName} in ${releaseElapsedMs}ms and removed the broker/engine name, but descendant PID ${descendantPid} remained alive.`
+    );
+  } else {
+    if (!processAbsent || !engineRosterAbsent) {
+      throw new Error(
+        `head did not prove release absence: ${JSON.stringify({ processAbsent, engineRosterAbsent, workerPid: worker.workerPid, descendantPid })}`
+      );
+    }
+    await observe(
+      'fleet_release_reports_cause_and_proves_absence',
+      'fixed',
+      `Exact head broker drove public DELETE /api/spawned/${targetName} in ${releaseElapsedMs}ms; broker roster, controlled Relaycast roster, and descendant PID ${descendantPid} were all absent.`
+    );
+  }
+} finally {
+  if (broker && !broker.killed) broker.kill('SIGKILL');
+  await proofEngine.close();
+  await rm(stateDir, { recursive: true, force: true });
 }
 
-const fleet = await readFile(path.join(targetDir, 'crates/broker/src/runtime/fleet.rs'), 'utf8');
-const events = await readFile(path.join(targetDir, 'crates/broker/src/runtime/relaycast_events.rs'), 'utf8');
-const spawner = await readFile(path.join(targetDir, 'crates/broker/src/spawner.rs'), 'utf8');
-const worker = await readFile(path.join(targetDir, 'crates/broker/src/worker.rs'), 'utf8');
+async function startProofEngine(target) {
+  const agents = new Map([[target, { id: `agent-${target}`, token: `at_live_${target}` }]]);
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    let body = {};
+    try {
+      body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+    } catch {
+      body = {};
+    }
+    const pathName = request.url?.split('?')[0] ?? '/';
+    if (request.method === 'POST' && pathName === '/v1/agents') {
+      const name = body.name ?? 'proof-agent';
+      const agent = {
+        id: `agent-${name}`,
+        workspace_id: 'ws_proof',
+        name,
+        token: `at_live_${name}`,
+        status: 'online',
+        created_at: new Date().toISOString(),
+      };
+      agents.set(name, agent);
+      return sendJson(response, 200, { ok: true, data: agent });
+    }
+    if (request.method === 'GET' && pathName === '/v1/agent') {
+      const token = request.headers.authorization?.replace(/^Bearer\s+/i, '');
+      const agent = [...agents.values()].find((candidate) => candidate.token === token) ?? {
+        id: 'agent-proof',
+        workspace_id: 'ws_proof',
+        name: target,
+        token,
+        status: 'online',
+        created_at: new Date().toISOString(),
+      };
+      agents.set(agent.name, agent);
+      return sendJson(response, 200, { ok: true, data: agent });
+    }
+    if (request.method === 'POST' && pathName === '/v1/agents/release') {
+      agents.delete(body.name);
+      return sendJson(response, 200, {
+        ok: true,
+        data: {
+          invocation_id: 'proof-release',
+          action_name: 'release',
+          handler_agent_id: null,
+          handler_node_id: null,
+          dispatched_node_id: null,
+          input: {},
+          status: 'completed',
+          created_at: new Date().toISOString(),
+        },
+      });
+    }
+    const agentPrefix = '/v1/agents/';
+    if (
+      request.method === 'GET' &&
+      pathName.startsWith(agentPrefix) &&
+      !pathName.slice(agentPrefix.length).includes('/')
+    ) {
+      const agent = agents.get(decodeURIComponent(pathName.slice(agentPrefix.length)));
+      return agent
+        ? sendJson(response, 200, { ok: true, data: agent })
+        : sendJson(response, 404, { ok: false, error: { code: 'not_found', message: 'agent not found' } });
+    }
+    if (pathName === '/v1/channels' || pathName.startsWith('/v1/channels/')) {
+      return sendJson(response, 200, { ok: true, data: [] });
+    }
+    return sendJson(response, 200, { ok: true, data: {} });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    agents,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
 
-const hasAll = (source, markers) => markers.every((marker) => source.includes(marker));
-const typedFailure =
-  hasAll(fleet, ['ReleaseOutcome::Failed { error', 'release_action_failure', 'invocation_id']) &&
-  hasAll(events, ['ReleaseOutcome::Failed { error: message']);
-const processGroupTeardown =
-  hasAll(spawner, [
-    'fn signal_process_group(',
-    'signal_process_group(pid, Signal::SIGTERM)',
-    'signal_process_group(pid, Signal::SIGKILL)',
-  ]) && hasAll(worker, ['command.pre_exec(', 'setsid()']);
-const rosterReconcile = hasAll(fleet, [
-  'deregister_fleet_agent(',
-  'prune_fleet_agent_state(',
-  'release_action_failure(',
-  'release_deregistration_failed',
-]);
+function sendJson(response, status, body) {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(body));
+}
 
-if (arm === 'base') {
-  if (typedFailure || processGroupTeardown || rosterReconcile) {
-    throw new Error(
-      `base unexpectedly contains the release fix: ${JSON.stringify({
-        typedFailure,
-        processGroupTeardown,
-        rosterReconcile,
-      })}`
-    );
+async function brokerRequest(baseUrl, pathname, init = {}) {
+  const response = await fetch(`${baseUrl}${pathname}`, init);
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
   }
-  await observe(
-    'fleet_release_can_drop_cause_and_strand_descendants',
-    'bug',
-    'The base action wire collapses release failures to bare release_failed and worker teardown has no private process-group guarantee.'
-  );
-} else {
-  if (!typedFailure || !processGroupTeardown || !rosterReconcile) {
-    throw new Error(
-      `head is missing a release absence guarantee: ${JSON.stringify({
-        typedFailure,
-        processGroupTeardown,
-        rosterReconcile,
-      })}`
-    );
-  }
+  return { status: response.status, body };
+}
 
-  await observe(
-    'fleet_release_reports_cause_and_proves_absence',
-    'fixed',
-    'The verified head broker artifact is bound and executable; its release path correlates failure code, worker, node, and invocation, tears down the complete process group, and reports success only after fleet deregistration/pruning. The public two-node process/roster proof runs in tests/e2e/fleet and Cloud/Finn.'
-  );
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error && typeof error === 'object' && error.code === 'ESRCH');
+  }
+}
+
+function waitForLine(child, prefix) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(
+      () => reject(new Error(`timed out waiting for broker line ${prefix}; output=${output}`)),
+      20_000
+    );
+    child.stdout?.on('data', (chunk) => {
+      output += chunk.toString();
+      const line = output.split(/\r?\n/).find((candidate) => candidate.includes(prefix));
+      if (line) {
+        clearTimeout(timer);
+        resolve(line);
+      }
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      if (!output.includes(prefix)) {
+        clearTimeout(timer);
+        reject(
+          new Error(`broker exited before API startup: code=${code} signal=${signal}; output=${output}`)
+        );
+      }
+    });
+  });
+}
+
+async function waitFor(fn, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const intervalMs = opts.intervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await fn();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`timed out waiting for ${opts.label ?? 'condition'}`);
 }
 
 async function observe(signature, outcome, details) {

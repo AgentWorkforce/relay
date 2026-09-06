@@ -68,7 +68,10 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// How long to wait for a SIGKILLed orphan wrapper to be reaped before giving
 /// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
 /// maintenance tick, which also drives delivery retries.
-const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+// Failure/orphan cleanup is deliberately short. Explicit user release uses
+// the configured 25s worker grace; maintenance must not block its event loop
+// for seconds while a dead harness is being removed.
+const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_millis(100);
 const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
 /// A full command queue means the worker is already backpressured. Do not
 /// retain another normal request indefinitely waiting for capacity.
@@ -186,6 +189,8 @@ pub(crate) struct WorkerHandle {
     pub(crate) parent: Option<String>,
     pub(crate) workspace_id: Option<crate::ids::WorkspaceId>,
     pub(crate) child: Child,
+    #[cfg(windows)]
+    pub(crate) process_tree: crate::spawner::ProcessTreeOwner,
     pub(crate) command_tx: mpsc::Sender<WorkerWriteCommand>,
     pub(crate) harness_pid: Option<u32>,
     pub(crate) spawned_at: Instant,
@@ -1267,6 +1272,14 @@ impl WorkerRegistry {
         }
 
         let mut child = command.spawn().context("failed to spawn worker")?;
+        #[cfg(windows)]
+        let process_tree = match crate::spawner::attach_process_tree(&child) {
+            Ok(owner) => owner,
+            Err(error) => {
+                let _ = child.start_kill();
+                return Err(error).context("failed to establish worker process-tree ownership");
+            }
+        };
         if direct_native_harness_sidecar {
             initial_harness_pid = child.id();
         }
@@ -1309,6 +1322,8 @@ impl WorkerRegistry {
             spec: spec.clone(),
             parent,
             workspace_id,
+            #[cfg(windows)]
+            process_tree,
             child,
             command_tx,
             harness_pid: initial_harness_pid,
@@ -2901,6 +2916,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -2954,6 +2971,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -3015,6 +3034,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
@@ -3075,6 +3096,8 @@ sleep 30
                 spec: spec_for_test(name),
                 parent: None,
                 workspace_id: None,
+                #[cfg(windows)]
+                process_tree: crate::spawner::attach_process_tree(&child).unwrap(),
                 child,
                 command_tx,
                 harness_pid: None,
