@@ -48,7 +48,7 @@ const REQUIRED_PACKAGE_NAMES = new Set([
 const PLATFORM_PACKAGE_NAME = /^@agent-relay\/broker-(?:darwin|linux|win32)-(?:arm64|x64)$/;
 const CLI_RELATIVE_PATH = 'node_modules/agent-relay/dist/cli/index.js';
 const LOCKFILE_NAME = 'candidate-package-lock.json';
-const REQUIRED_NPM_VERSION = '10.9.7';
+export const REQUIRED_NPM_VERSION = '10.9.7';
 const INSTALL_STRATEGY = 'omit-optional-with-direct-platform-broker';
 const NPM_INSTALL_POLICY_ARGS = ['--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'];
 let activePrivateRootHandle;

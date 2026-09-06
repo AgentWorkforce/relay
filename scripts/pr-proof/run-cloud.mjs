@@ -98,17 +98,26 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
   // substrings. Preserve a credential-shaped prefix when it is only the start
   // of a declared value containing characters outside LIVE_CREDENTIAL so the
   // exact second pass can remove that complete declared value.
-  let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body) =>
-    declaredSecrets.some(
-      (secret) => secret === match || (secret.startsWith(prefix) && match.startsWith(secret))
-    )
-      ? '[REDACTED_DECLARED_SECRET]'
-      : declaredSecrets.some((secret) => secret.startsWith(match))
-        ? match
-        : body.length <= 8
-          ? `${prefix}\u2026`
-          : `${prefix}\u2026${body.slice(-4)}`
-  );
+  let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body, offset, source) => {
+    if (
+      declaredSecrets.some(
+        (secret) => secret === match || (secret.startsWith(prefix) && match.startsWith(secret))
+      )
+    ) {
+      return '[REDACTED_DECLARED_SECRET]';
+    }
+    // Preserve a credential-shaped prefix only when the complete declared
+    // secret begins at this exact occurrence. The exact-value pass below can
+    // then redact characters that LIVE_CREDENTIAL intentionally does not
+    // match. A diagnostic containing only a declared secret's prefix must
+    // still receive the ordinary credential mask.
+    if (
+      declaredSecrets.some((secret) => secret.startsWith(match) && source.startsWith(secret, Number(offset)))
+    ) {
+      return match;
+    }
+    return body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`;
+  });
   for (const secret of declaredSecrets) {
     redacted = redacted.split(secret).join('[REDACTED_DECLARED_SECRET]');
   }

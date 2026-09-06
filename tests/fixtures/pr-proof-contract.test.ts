@@ -1971,6 +1971,16 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('secret');
   });
 
+  it('masks a credential-shaped diagnostic that is only a prefix of a declared secret', () => {
+    const declaredCredential = 'ghp_abc"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'provider returned ghp_abc' }, [
+      declaredCredential,
+    ]);
+
+    expect(JSON.parse(diagnostic).error).toBe('provider returned ghp_\u2026');
+    expect(diagnostic).not.toContain('ghp_abc');
+  });
+
   it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
     const secret = 'overflow-run-id-secret';
     const diagnostic = terminalStatusDiagnostic(

@@ -19,6 +19,8 @@ import { mkdir, open } from 'node:fs/promises';
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
+import { REQUIRED_NPM_VERSION } from '../scripts/verify-features/relay-candidate-install.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
 import { fleetReviewerNetwork, preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
@@ -299,11 +301,19 @@ async function main() {
     failOnError: true,
     timeoutMs: 1_800_000,
   });
-  let candidatePreparationDependency = 'build-current-cli';
+  wf.step('install-candidate-npm', {
+    type: 'deterministic',
+    dependsOn: ['build-current-cli'],
+    command: `npm install --global npm@${REQUIRED_NPM_VERSION} && test "$(npm --version)" = "${REQUIRED_NPM_VERSION}"`,
+    captureOutput: true,
+    failOnError: true,
+    timeoutMs: 600_000,
+  });
+  let candidatePreparationDependency = 'install-candidate-npm';
   if (!CONFIGURED_CANDIDATE_CLI) {
     wf.step('stage-current-platform-broker', {
       type: 'deterministic',
-      dependsOn: ['build-current-cli'],
+      dependsOn: ['install-candidate-npm'],
       command: 'node scripts/verify-features/relay-candidate-install.mjs stage-source-broker',
       captureOutput: true,
       failOnError: true,

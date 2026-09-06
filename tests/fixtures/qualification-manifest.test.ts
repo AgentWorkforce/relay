@@ -325,6 +325,40 @@ describe('qualification manifest', () => {
     expect(versions.every((version) => version === '22.22.0')).toBe(true);
   });
 
+  it('exposes the GitHub API token only to qualification steps that invoke gh', async () => {
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const workflow = parse(source) as {
+      jobs?: Record<
+        string,
+        {
+          env?: Record<string, unknown>;
+          steps?: Array<{ name?: string; run?: string; env?: Record<string, unknown> }>;
+        }
+      >;
+    };
+    const jobs = workflow.jobs ?? {};
+    for (const job of Object.values(jobs)) expect(job.env).not.toHaveProperty('GH_TOKEN');
+
+    const steps = Object.values(jobs).flatMap((job) => job.steps ?? []);
+    const tokenSteps = steps.filter((step) => step.env?.GH_TOKEN !== undefined);
+    const expectedTokenSteps = [
+      'Obtain immutable qualification manifest',
+      'Bind the release tag ref to the exact Relay candidate commit',
+      'Download exact Relay, Cloud, and Relayfile Cloud qualification artifacts',
+      'Verify source runs and GitHub artifact digests',
+    ];
+    expect(tokenSteps.map((step) => step.name)).toEqual(expectedTokenSteps);
+    expect(
+      steps
+        .filter((step) => /\bgh\s+(?:release|run|api)\b|execFileSync\('gh'/.test(step.run ?? ''))
+        .map((step) => step.name)
+    ).toEqual(expectedTokenSteps);
+    for (const step of tokenSteps) {
+      expect(step.env?.GH_TOKEN).toBe('${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}');
+      expect(step.run).toMatch(/\bgh\s+(?:release|run|api)\b|execFileSync\('gh'/);
+    }
+  });
+
   it('binds four repositories, package/rebuild/acceptance producers, and the non-promoting snapshot', () => {
     expect(validateQualificationManifest(valid, { releaseId: 42, releaseTag: valid.releaseTag })).toEqual(
       valid
