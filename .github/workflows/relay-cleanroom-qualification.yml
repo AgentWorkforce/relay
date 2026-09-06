@@ -734,7 +734,7 @@ jobs:
             --json > qualification-cleanup/delete-b.json
 
       - name: Delete exact fallback workspace A and verify cascade
-        if: steps.resolve.outputs.workspace_a != ''
+        if: always() && steps.resolve.outputs.workspace_a != ''
         working-directory: relay-cleanup
         env:
           CLOUD_API_URL: https://agentrelay.com/cloud

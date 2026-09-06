@@ -393,7 +393,7 @@ export async function loadCatalog(matrixPath = DEFAULT_MATRIX) {
  * and repetition budgets. Corpus cases have individual manifests, so callers
  * supply their declared timeouts rather than relying on a stale case count.
  */
-export function cleanroomLaneTimeoutMs(matrix, profileId, laneId, corpusCaseTimeoutSeconds = []) {
+export function cleanroomLaneTimeoutMs(matrix, profileId, laneId, corpusCaseTimeoutSeconds) {
   const profile = matrix?.profiles?.[profileId];
   const lane = matrix?.lanes?.find(({ id }) => id === laneId);
   if (!profile || !lane || !profile.lanes.includes(laneId)) {

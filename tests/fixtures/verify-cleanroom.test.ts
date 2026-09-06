@@ -565,6 +565,14 @@ describe('clean-room verification catalog', () => {
     expect(source).not.toContain('const STEP_TIMEOUT = 7_200_000');
   });
 
+  it('rejects an omitted corpus-case timeout budget', async () => {
+    const { matrix } = await loadCatalog('tests/relayflows/cleanroom/relay.matrix.json');
+
+    expect(() => cleanroomLaneTimeoutMs(matrix, 'full', 'regression-corpus')).toThrow(
+      /corpus case timeouts must be positive safe integers/
+    );
+  });
+
   it('grants each cleanroom agent only its exact output and required model transport', () => {
     const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
     const evidenceScopes = cleanroomLaneEvidenceScopes(NONCE, 'polyglot-plugins');
@@ -884,6 +892,10 @@ describe('clean-room verification catalog', () => {
     expect(cleanup['timeout-minutes']).toBe(60);
     expect(cleanup.environment).toBe('snapshot-qualification');
     expect(cleanup.steps.filter((step: any) => step.run?.includes('cloud workspace delete'))).toHaveLength(2);
+    const cleanupA = cleanup.steps.find(
+      (step: any) => step.name === 'Delete exact fallback workspace A and verify cascade'
+    );
+    expect(cleanupA.if).toContain('always()');
     expect(cleanup.steps.some((step: any) => step.run?.includes('cloud workspaces --json'))).toBe(false);
     expect(parsed.jobs.qualification.outputs).toEqual({
       owned_workspace_a: '${{ steps.workspace_a.outputs.cloud_workspace_id }}',

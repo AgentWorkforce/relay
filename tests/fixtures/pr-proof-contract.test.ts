@@ -1932,6 +1932,18 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('ghp_');
   });
 
+  it('redacts the whole credential when a declared secret is only its recognized prefix', () => {
+    const declaredPrefix = 'ghp_abc';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `provider rejected ${declaredPrefix}defghijklmnopqrstuvwxyz` },
+      [declaredPrefix]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('provider rejected [REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('defghijklmnopqrstuvwxyz');
+  });
+
   it('redacts an eight-character declared credential body with a compatible suffix', () => {
     const declaredCredential = 'ghp_12345678';
     const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: `${declaredCredential}X` }, [
