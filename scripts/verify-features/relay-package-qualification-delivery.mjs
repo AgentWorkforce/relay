@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { appendFile, lstat, readFile, readdir, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { appendFile, open, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -169,6 +170,28 @@ export function validateCloudDispatchRequest(requestValue, context, selection) {
   return expected;
 }
 
+export async function readBoundedRequestFile(requestPath, openFile = open) {
+  assert(Number.isInteger(fsConstants.O_NOFOLLOW), 'trusted request validation requires O_NOFOLLOW support');
+  const handle = await openFile(requestPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const metadata = await handle.stat();
+    assert(metadata.isFile(), 'request artifact must be a regular file');
+    assert(
+      metadata.size > 0 && metadata.size <= REQUEST_SIZE_LIMIT,
+      'request artifact file exceeds its size bound'
+    );
+
+    const source = await handle.readFile('utf8');
+    assert(
+      Buffer.byteLength(source, 'utf8') <= REQUEST_SIZE_LIMIT,
+      'request artifact content exceeds its size bound'
+    );
+    return source;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function validateRequestArtifactDirectory(directory, context, selection) {
   const entries = await readdir(directory, { withFileTypes: true });
   assert.equal(entries.length, 1, 'request artifact must contain exactly one entry');
@@ -176,18 +199,7 @@ export async function validateRequestArtifactDirectory(directory, context, selec
   assert(entries[0].isFile(), 'request artifact entry must be a regular file');
 
   const requestPath = path.join(directory, REQUEST_FILE_NAME);
-  const metadata = await lstat(requestPath);
-  assert(metadata.isFile() && !metadata.isSymbolicLink(), 'request artifact must not be a symlink');
-  assert(
-    metadata.size > 0 && metadata.size <= REQUEST_SIZE_LIMIT,
-    'request artifact file exceeds its size bound'
-  );
-
-  const source = await readFile(requestPath, 'utf8');
-  assert(
-    Buffer.byteLength(source, 'utf8') <= REQUEST_SIZE_LIMIT,
-    'request artifact content exceeds its size bound'
-  );
+  const source = await readBoundedRequestFile(requestPath);
   return validateCloudDispatchRequest(JSON.parse(source), context, selection);
 }
 

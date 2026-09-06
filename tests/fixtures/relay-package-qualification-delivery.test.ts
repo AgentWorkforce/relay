@@ -10,6 +10,7 @@ import {
   REQUEST_ARTIFACT_NAME,
   REQUEST_FILE_NAME,
   expectedCloudDispatch,
+  readBoundedRequestFile,
   selectQualificationArtifacts,
   validateCloudDispatchRequest,
   validateRequestArtifactDirectory,
@@ -184,6 +185,42 @@ describe('trusted Relay package qualification delivery', () => {
     await expect(validateRequestArtifactDirectory(symlinkDirectory, CONTEXT, selection)).rejects.toThrow(
       /regular file/
     );
+    await expect(readBoundedRequestFile(path.join(symlinkDirectory, REQUEST_FILE_NAME))).rejects.toThrow();
+  });
+
+  it('closes the no-follow request handle after a successful read', async () => {
+    let closed = false;
+    const handle = {
+      stat: async () => ({ isFile: () => true, size: 3 }),
+      readFile: async () => '{}\n',
+      close: async () => {
+        closed = true;
+      },
+    };
+
+    await expect(readBoundedRequestFile('/not-opened', async () => handle)).resolves.toBe('{}\n');
+    expect(closed).toBe(true);
+  });
+
+  it.each(['stat', 'readFile'])('closes the no-follow request handle after a %s failure', async (failure) => {
+    let closed = false;
+    const handle = {
+      stat: async () => {
+        if (failure === 'stat') throw new Error('stat failed');
+        return { isFile: () => true, size: 10 };
+      },
+      readFile: async () => {
+        throw new Error('read failed');
+      },
+      close: async () => {
+        closed = true;
+      },
+    };
+
+    await expect(readBoundedRequestFile('/not-opened', async () => handle)).rejects.toThrow(
+      new RegExp(`${failure === 'stat' ? 'stat' : 'read'} failed`)
+    );
+    expect(closed).toBe(true);
   });
 
   it('keeps Cloud credentials and dispatch code in a no-checkout trusted second job', async () => {
