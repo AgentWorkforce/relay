@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
 - `fleet release` now terminates the complete worker process group and keeps app-server teardown within Relaycast's 30-second action deadline.
-- `fleet release` failures now preserve typed node, invocation, and cause details when remote cleanup fails.
+- Failed `fleet release` cleanup now preserves the `release_failed` or `release_deregistration_failed` code, worker, node, invocation, and cause details.
 - Broker releases now retain the exact Relaycast identity after an early worker exit and reject stale spawned-agent handles instead of releasing a same-name replacement.
 
 ## [11.10.3] - 2026-09-05
