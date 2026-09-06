@@ -218,6 +218,20 @@ try {
     }
   }
 } finally {
+  let probePid = null;
+  try {
+    const candidate = Number((await readFile(descendantFile, 'utf8')).trim());
+    probePid = Number.isInteger(candidate) ? candidate : null;
+  } catch {
+    // Spawn may fail before the probe can publish its PID.
+  }
+  if (probePid && pidAlive(probePid)) {
+    try {
+      process.kill(probePid, 'SIGKILL');
+    } catch {
+      // The release path may already have reaped it.
+    }
+  }
   if (broker && !broker.killed) broker.kill('SIGKILL');
   await proofEngine.close();
   await rm(stateDir, { recursive: true, force: true });

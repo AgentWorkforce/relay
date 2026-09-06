@@ -32,7 +32,7 @@ if (process.env.RELAY_E2E_SPAWN_DESCENDANT === '1') {
   releaseProbeChild = spawn('sleep', ['300'], { stdio: 'ignore' });
   releaseProbeChild.once('error', (error) => {
     process.stderr.write(`release probe descendant failed to spawn: ${error.message}\n`);
-    process.exitCode = 1;
+    process.exit(1);
   });
   // Child.pid is not guaranteed until the spawn event. Writing only after that
   // event removes the PID-file race used by the release absence assertion.

@@ -128,12 +128,11 @@ pub(crate) fn attach_process_tree(child: &Child) -> Result<ProcessTreeOwner> {
         return Err(std::io::Error::last_os_error())
             .context("SetInformationJobObject(KILL_ON_JOB_CLOSE) failed");
     }
-    let assigned = unsafe {
-        AssignProcessToJobObject(
-            owner.as_raw_handle() as Handle,
-            child.as_raw_handle() as Handle,
-        )
-    };
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no process handle"))?;
+    let assigned =
+        unsafe { AssignProcessToJobObject(owner.as_raw_handle() as Handle, process as Handle) };
     if assigned == 0 {
         return Err(std::io::Error::last_os_error()).context("AssignProcessToJobObject failed");
     }
@@ -778,6 +777,7 @@ mod tests {
 
     #[cfg(unix)]
     use nix::{
+        errno::Errno,
         sys::signal::kill,
         unistd::{getsid, Pid},
     };
@@ -1478,10 +1478,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(kill(Pid::from_raw(pid as i32), None).is_err());
+        assert!(child.try_wait().unwrap().is_some());
         // The process-group probe is the important assertion: a direct PID
         // kill would leave the background `sleep` alive in the worker group.
-        assert!(kill(Pid::from_raw(-(pid as i32)), None).is_err());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            if matches!(kill(Pid::from_raw(-(pid as i32)), None), Err(Errno::ESRCH)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(matches!(
+            kill(Pid::from_raw(-(pid as i32)), None),
+            Err(Errno::ESRCH)
+        ));
     }
 
     #[tokio::test]

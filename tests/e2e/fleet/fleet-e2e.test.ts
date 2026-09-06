@@ -354,10 +354,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(spawnDone.status).toBe('completed');
 
     const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
-    const readDescendantPid = async () => {
+    const readDescendantPid = async (previousPid?: number) => {
       const pid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
       expect(Number.isInteger(pid)).toBe(true);
-      return pid;
+      return previousPid === undefined || pid !== previousPid ? pid : null;
     };
     const descendantPid = await waitFor(readDescendantPid, {
       timeoutMs: 10_000,
@@ -430,7 +430,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       { timeoutMs: 30_000, label: 'same-name respawn settled' }
     );
     expect(respawnDone.status).toBe('completed');
-    const secondDescendantPid = await waitFor(readDescendantPid, {
+    const secondDescendantPid = await waitFor(() => readDescendantPid(descendantPid), {
       timeoutMs: 10_000,
       label: 'same-name respawn descendant pid',
     });

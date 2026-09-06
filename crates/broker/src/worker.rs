@@ -3461,7 +3461,12 @@ sleep 30
         // The engine's ACTION_DISPATCH_TIMEOUT_MS is 30s. A previous 35s
         // broker grace exceeded it and allowed a duplicate release dispatch
         // before the original node could report completion.
-        assert!(APP_SERVER_RELEASE_GRACE < Duration::from_secs(30));
+        let reap_bound = APP_SERVER_RELEASE_GRACE.min(Duration::from_secs(2));
+        assert!(
+            WORKER_RELEASE_WRITE_TIMEOUT + APP_SERVER_RELEASE_GRACE + reap_bound
+                < Duration::from_secs(30),
+            "release budget exceeds fleet action deadline"
+        );
     }
 
     #[test]

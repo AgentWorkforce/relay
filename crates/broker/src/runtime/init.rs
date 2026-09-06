@@ -506,7 +506,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // harnesses use it for their local state and observable artifacts. Keep
     // it available to the worker instead of silently dropping it here.
     if let Ok(project) = std::env::var("AGENT_RELAY_PROJECT") {
-        worker_env.push(("AGENT_RELAY_PROJECT".to_string(), project));
+        let project = project.trim();
+        if !project.is_empty() {
+            worker_env.push(("AGENT_RELAY_PROJECT".to_string(), project.to_string()));
+        }
     }
     // Pass RELAY_BASE_URL to workers only when an override is configured; when
     // unset, workers inherit the SDK default.
