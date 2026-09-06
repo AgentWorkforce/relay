@@ -20,6 +20,7 @@ use crate::protocol::{
 use crate::telemetry::TelemetryClient;
 use crate::worker::{
     spawn_worker_writer, AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry,
+    WorkerWriteCommand,
 };
 use crate::{
     broker::injection_format::format_injection,
@@ -129,13 +130,14 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     registry
 }
 
-/// A worker whose command channel accepts frames but never completes them —
-/// no writer task ever drains `command_rx`, so `deliver()` hangs forever.
-/// Models a handoff that outlives `retry_interval` deterministically (no
-/// timing race): the receiver stays alive (a dropped one would fail the
-/// send instead of hanging it), so the send always succeeds and the
-/// subsequent completion wait never returns on its own.
-async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry {
+/// Shared construction for the two deterministic delivery fixtures below.
+/// Spawns the `cat` stand-in, registers a `WorkerHandle` for it, and hands the
+/// command receiver back to the caller. What happens to that receiver is the
+/// ONLY axis on which those fixtures differ, so nothing else is duplicated and
+/// a future `WorkerHandle` field cannot drift between them.
+async fn make_worker_registry_with_fixture_worker(
+    name: &str,
+) -> (WorkerRegistry, mpsc::Receiver<WorkerWriteCommand>) {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
     let mut registry = WorkerRegistry::new(
         tx,
@@ -150,10 +152,9 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
         .spawn()
         .expect("test worker process should spawn");
     let generation = Uuid::new_v4();
+    // No writer task is ever spawned for these fixtures: the caller decides
+    // whether a send hangs (receiver kept alive) or fails closed (dropped).
     let (command_tx, command_rx) = mpsc::channel(128);
-    // Deliberately leaked, not spawned as a writer: keeps the receiver alive
-    // (so sends succeed) without anything ever draining it.
-    std::mem::forget(command_rx);
     registry.workers.insert(
         WorkerName::from(name),
         WorkerHandle {
@@ -187,6 +188,20 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
             exit_reason: None,
         },
     );
+    (registry, command_rx)
+}
+
+/// A worker whose command channel accepts frames but never completes them —
+/// no writer task ever drains `command_rx`, so `deliver()` hangs forever.
+/// Models a handoff that outlives `retry_interval` deterministically (no
+/// timing race): the receiver stays alive (a dropped one would fail the
+/// send instead of hanging it), so the send always succeeds and the
+/// subsequent completion wait never returns on its own.
+async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry {
+    let (registry, command_rx) = make_worker_registry_with_fixture_worker(name).await;
+    // Deliberately leaked rather than dropped: keeps the receiver alive so
+    // sends succeed, with nothing ever draining it.
+    std::mem::forget(command_rx);
     registry
 }
 
@@ -204,61 +219,14 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
 /// increments, a run where the writes succeed marches `attempts` straight
 /// past the cap and trips the test's own bound.
 ///
-/// The child here is left alive deliberately. Its liveness is irrelevant to
-/// the path under test: the write fails at the command channel, before any
-/// file descriptor is touched. `cleanup_worker_registry` reaps it.
+/// The child is left alive deliberately. Its liveness is irrelevant to the
+/// path under test: the write fails at the command channel, before any file
+/// descriptor is touched. `cleanup_worker_registry` reaps it.
 async fn make_worker_registry_with_unwritable_worker(name: &str) -> WorkerRegistry {
-    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
-    let mut registry = WorkerRegistry::new(
-        tx,
-        Vec::new(),
-        PathBuf::from("/tmp/agent-relay-broker-tests"),
-        Instant::now(),
-    );
-    let child = tokio::process::Command::new("cat")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("test worker process should spawn");
-    let generation = Uuid::new_v4();
-    let (command_tx, command_rx) = mpsc::channel(128);
-    // The whole point: no writer task, and the receiver is dropped rather than
-    // leaked, so every send fails closed instead of hanging or succeeding.
+    let (registry, command_rx) = make_worker_registry_with_fixture_worker(name).await;
+    // The whole point: dropped rather than leaked, so every send fails closed
+    // instead of hanging or succeeding.
     drop(command_rx);
-    registry.workers.insert(
-        WorkerName::from(name),
-        WorkerHandle {
-            generation,
-            spec: AgentSpec {
-                name: WorkerName::from(name),
-                runtime: AgentRuntime::Pty,
-                provider: None,
-                cli: Some("cat".to_string()),
-                session_id: None,
-                harness_config: None,
-                model: None,
-                cwd: None,
-                team: None,
-                shadow_of: None,
-                shadow_mode: None,
-                args: Vec::new(),
-                channels: Vec::new(),
-                restart_policy: None,
-            },
-            parent: None,
-            workspace_id: Some(WorkspaceId::new("ws_demo")),
-            child,
-            command_tx,
-            harness_pid: None,
-            spawned_at: Instant::now(),
-            ready_at: Some(Instant::now()),
-            last_activity_at: Instant::now(),
-            context_budget_pct: None,
-            state: AgentWorkState::Working,
-            exit_reason: None,
-        },
-    );
     registry
 }
 
@@ -2824,9 +2792,10 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         Some(u64::from(MAX_DELIVERY_RETRIES))
     );
     let last_error = frame.payload["lastError"].as_str().unwrap_or_default();
-    assert!(
-        last_error.contains("failed writing frame to worker 'worker-blip'"),
-        "the terminal event must carry the real write error, not a placeholder: {last_error}"
+    assert_eq!(
+        last_error, "failed writing frame to worker 'worker-blip'",
+        "the terminal event must carry the real write error verbatim, not a \
+         wrapped or substituted one"
     );
     assert!(
         frame.payload.get("last_error").is_none(),
