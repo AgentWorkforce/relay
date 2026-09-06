@@ -964,6 +964,233 @@ export function findFleetAgentNode(payload, agentName) {
   return row && typeof row.node === 'string' ? row.node : undefined;
 }
 
+function sortedUniqueNames(values) {
+  if (!Array.isArray(values)) return null;
+  const names = values.map((value) => value?.name);
+  if (names.some((name) => typeof name !== 'string' || !name) || new Set(names).size !== names.length) {
+    return null;
+  }
+  return names.sort();
+}
+
+function nodeHeartbeatAgentNames(node) {
+  if (!Array.isArray(node?.capabilities)) return null;
+  let supported = false;
+  const names = [];
+  const seen = new Set();
+  for (const capability of node.capabilities) {
+    if (capability?.name !== 'relay:live-agents:v1') continue;
+    supported = true;
+    if (!Array.isArray(capability.metadata?.names)) return null;
+    for (const name of capability.metadata.names) {
+      if (typeof name !== 'string' || !name || seen.has(name)) return null;
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return supported ? names.sort() : null;
+}
+
+function sameNames(left, right) {
+  return (
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    left.length === right.length &&
+    left.every((name, index) => name === right[index])
+  );
+}
+
+/**
+ * Bind one nonce-owned worker to every independently readable Fleet identity
+ * surface. The compact result is stored in qualification evidence so a
+ * targeted empty response cannot pass while node metadata or the direct
+ * broker still reports live workers.
+ */
+export function evaluateFleetIdentityReconciliation({
+  phase,
+  nodeName,
+  agentName,
+  nodesPayload,
+  targetedPayload,
+  allPayload,
+  directAgents,
+  rosterPresent,
+  commandErrors = [],
+}) {
+  const nodes = Array.isArray(nodesPayload?.nodes) ? nodesPayload.nodes : null;
+  const matchingNodes = nodes?.filter((node) => node?.name === nodeName) ?? [];
+  const node = matchingNodes.length === 1 ? matchingNodes[0] : undefined;
+  const heartbeatNames = nodeHeartbeatAgentNames(node);
+  const targetedNames = sortedUniqueNames(
+    Array.isArray(targetedPayload?.perNode)
+      ? targetedPayload.perNode.filter((row) => row?.node === nodeName)
+      : null
+  );
+  const allNodeNames = sortedUniqueNames(
+    Array.isArray(allPayload?.perNode) ? allPayload.perNode.filter((row) => row?.node === nodeName) : null
+  );
+  const directNames = sortedUniqueNames(directAgents);
+  const allUnplacedNames = sortedUniqueNames(allPayload?.unplacedRoster);
+  const targetedErrorCount = Array.isArray(targetedPayload?.errors) ? targetedPayload.errors.length : null;
+  const allErrorCount = Array.isArray(allPayload?.errors) ? allPayload.errors.length : null;
+  const activeAgents = node?.activeAgents;
+  const viewsAgree =
+    commandErrors.length === 0 &&
+    matchingNodes.length === 1 &&
+    node?.status === 'online' &&
+    node?.live === true &&
+    node?.handlersLive === true &&
+    Number.isSafeInteger(activeAgents) &&
+    activeAgents >= 0 &&
+    heartbeatNames !== null &&
+    targetedNames !== null &&
+    allNodeNames !== null &&
+    directNames !== null &&
+    allUnplacedNames !== null &&
+    targetedErrorCount === 0 &&
+    allErrorCount === 0 &&
+    sameNames(heartbeatNames, targetedNames) &&
+    sameNames(heartbeatNames, allNodeNames) &&
+    sameNames(heartbeatNames, directNames) &&
+    activeAgents === heartbeatNames.length;
+
+  const targetCounts = {
+    heartbeat: heartbeatNames?.filter((name) => name === agentName).length ?? null,
+    targeted: targetedNames?.filter((name) => name === agentName).length ?? null,
+    allPlaced: allNodeNames?.filter((name) => name === agentName).length ?? null,
+    direct: directNames?.filter((name) => name === agentName).length ?? null,
+    allUnplaced: allUnplacedNames?.filter((name) => name === agentName).length ?? null,
+  };
+  const placedCounts = [
+    targetCounts.heartbeat,
+    targetCounts.targeted,
+    targetCounts.allPlaced,
+    targetCounts.direct,
+  ];
+  const targetLive = placedCounts.every((count) => count === 1);
+  const targetAbsent = placedCounts.every((count) => count === 0);
+  const phasePass =
+    phase === 'live'
+      ? targetLive && targetCounts.allUnplaced === 0 && rosterPresent === true
+      : phase === 'roster-only'
+        ? targetAbsent && targetCounts.allUnplaced === 1 && rosterPresent === true
+        : phase === 'absent'
+          ? targetAbsent && targetCounts.allUnplaced === 0 && rosterPresent === false
+          : false;
+
+  return {
+    phase,
+    nodeName,
+    agentName,
+    nodeRecordCount: matchingNodes.length,
+    nodeStatus: node?.status ?? null,
+    nodeLive: node?.live ?? null,
+    handlersLive: node?.handlersLive ?? null,
+    activeAgents: Number.isSafeInteger(activeAgents) ? activeAgents : null,
+    heartbeatNames,
+    targetedNames,
+    allNodeNames,
+    directNames,
+    allUnplacedNames,
+    targetedErrorCount,
+    allErrorCount,
+    rosterPresent,
+    targetCounts,
+    commandErrors,
+    pass: viewsAgree && phasePass,
+  };
+}
+
+export function validateFleetIdentityReconciliation(proof, expected) {
+  if (!proof || typeof proof !== 'object') throw new Error('Fleet identity reconciliation is missing');
+  if (proof.nodeRecordCount !== 1) {
+    throw new Error('Fleet identity reconciliation must contain exactly one node metadata record');
+  }
+  if (proof.targetedErrorCount !== 0 || proof.allErrorCount !== 0) {
+    throw new Error('Fleet identity reconciliation contains a degraded Fleet read');
+  }
+  for (const key of [
+    'heartbeatNames',
+    'targetedNames',
+    'allNodeNames',
+    'directNames',
+    'allUnplacedNames',
+    'commandErrors',
+  ]) {
+    if (
+      !Array.isArray(proof[key]) ||
+      proof[key].length > 128 ||
+      proof[key].some((value) => typeof value !== 'string') ||
+      (key !== 'commandErrors' && !sameNames(proof[key], [...new Set(proof[key])].sort()))
+    ) {
+      throw new Error(`Fleet identity reconciliation ${key} is invalid`);
+    }
+  }
+  const recomputed = evaluateFleetIdentityReconciliation({
+    phase: proof.phase,
+    nodeName: proof.nodeName,
+    agentName: proof.agentName,
+    nodesPayload: {
+      nodes: [
+        {
+          name: proof.nodeName,
+          status: proof.nodeStatus,
+          live: proof.nodeLive,
+          handlersLive: proof.handlersLive,
+          activeAgents: proof.activeAgents,
+          capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: proof.heartbeatNames } }],
+        },
+      ],
+    },
+    targetedPayload: {
+      perNode: proof.targetedNames?.map((name) => ({ name, node: proof.nodeName })),
+      errors: [],
+    },
+    allPayload: {
+      perNode: proof.allNodeNames?.map((name) => ({ name, node: proof.nodeName })),
+      unplacedRoster: proof.allUnplacedNames?.map((name) => ({ name })),
+      errors: [],
+    },
+    directAgents: proof.directNames?.map((name) => ({ name })),
+    rosterPresent: proof.rosterPresent,
+    commandErrors: proof.commandErrors,
+  });
+  const fields = [
+    'phase',
+    'nodeName',
+    'agentName',
+    'nodeRecordCount',
+    'nodeStatus',
+    'nodeLive',
+    'handlersLive',
+    'activeAgents',
+    'heartbeatNames',
+    'targetedNames',
+    'allNodeNames',
+    'directNames',
+    'allUnplacedNames',
+    'targetedErrorCount',
+    'allErrorCount',
+    'rosterPresent',
+    'targetCounts',
+    'commandErrors',
+    'pass',
+  ];
+  if (
+    proof.phase !== expected.phase ||
+    proof.nodeName !== expected.nodeName ||
+    proof.agentName !== expected.agentName ||
+    proof.pass !== true ||
+    recomputed.pass !== true ||
+    fields.some((field) => JSON.stringify(proof[field]) !== JSON.stringify(recomputed[field]))
+  ) {
+    throw new Error(
+      `Fleet identity reconciliation did not prove ${expected.agentName} ${expected.phase} on ${expected.nodeName}`
+    );
+  }
+  return proof;
+}
+
 export function findExactSentinelMessage(payload, sentinel, from) {
   if (!Array.isArray(payload)) return undefined;
   return payload.find(
@@ -1098,6 +1325,63 @@ export function deriveFleetVerdict(operations, cleanup, criticalLifecycle) {
     return 'YELLOW';
   }
   return 'GREEN';
+}
+
+function validateFleetOperationIdentityReconciliation(operation, matrix, nonce) {
+  if (operation.status !== 'pass') return;
+  const proof = operation.fleetIdentityReconciliation;
+  const short = nonce.slice(0, 16);
+  const allowedNames = expectedOwnedAgentNames(matrix, nonce);
+  for (const phase of [proof?.live, proof?.postRelease, proof?.postDelete].filter(Boolean)) {
+    for (const name of [
+      ...(phase.heartbeatNames ?? []),
+      ...(phase.targetedNames ?? []),
+      ...(phase.allNodeNames ?? []),
+      ...(phase.directNames ?? []),
+      ...(phase.allUnplacedNames ?? []),
+    ]) {
+      if (!allowedNames.has(name)) {
+        throw new Error(`Fleet identity reconciliation contains non-owned agent ${name}`);
+      }
+    }
+  }
+  if (operation.id === 'fleet-agent-list-node') {
+    const live = proof?.live;
+    const match = live?.nodeName?.match(new RegExp(`^relay-fleetboard-([ab])-${short}$`));
+    if (!match || live.agentName !== `relay-fleetboard-${match[1]}-initial-${short}`) {
+      throw new Error('fleet-agent-list-node is not bound to the exact owned initial worker');
+    }
+    validateFleetIdentityReconciliation(live, {
+      phase: 'live',
+      nodeName: live.nodeName,
+      agentName: live.agentName,
+    });
+    return;
+  }
+  if (operation.id === 'fleet-release') {
+    const agentName = `fleet-spawn-node-${short}`;
+    const nodeName = proof?.live?.nodeName;
+    if (!new RegExp(`^relay-fleetboard-[ab]-${short}$`).test(nodeName ?? '')) {
+      throw new Error('fleet-release is not bound to an exact owned board node');
+    }
+    validateFleetIdentityReconciliation(proof.live, { phase: 'live', nodeName, agentName });
+    validateFleetIdentityReconciliation(proof.postRelease, {
+      phase: 'roster-only',
+      nodeName,
+      agentName,
+    });
+    validateFleetIdentityReconciliation(proof.postDelete, { phase: 'absent', nodeName, agentName });
+    return;
+  }
+  if (operation.id === 'fleet-release-delete-agent') {
+    const agentName = `fleet-spawn-target-node-alias-${short}`;
+    const nodeName = proof?.live?.nodeName;
+    if (!new RegExp(`^relay-fleetboard-[ab]-${short}$`).test(nodeName ?? '')) {
+      throw new Error('fleet-release-delete-agent is not bound to an exact owned board node');
+    }
+    validateFleetIdentityReconciliation(proof.live, { phase: 'live', nodeName, agentName });
+    validateFleetIdentityReconciliation(proof.postRelease, { phase: 'absent', nodeName, agentName });
+  }
 }
 
 export function validateCriticalLifecycleEvidence(value, matrix, boardNodes, nonce) {
@@ -1309,6 +1593,9 @@ export function validateFleetEvidence(evidence, matrix) {
       throw new Error(`operation ${operation.id} status is inconsistent with its evidence`);
     }
     validateOperationArgvContract(operation, definition, matrix);
+    if (['fleet-agent-list-node', 'fleet-release', 'fleet-release-delete-agent'].includes(operation.id)) {
+      validateFleetOperationIdentityReconciliation(operation, matrix, evidence.nonce);
+    }
     const argvText = operation.argv.join(' ');
     if (/--(?:api-key|join-ticket|token|wk|workspace-key)(?:=|\s+)(?!\[REDACTED\])\S+/i.test(argvText)) {
       throw new Error(`operation ${operation.id} contains an unredacted credential argument`);
@@ -2055,6 +2342,9 @@ class FleetBoard {
       ...(result.sandboxReleaseProof !== undefined
         ? { sandboxReleaseProof: result.sandboxReleaseProof }
         : {}),
+      ...(result.fleetIdentityReconciliation !== undefined
+        ? { fleetIdentityReconciliation: result.fleetIdentityReconciliation }
+        : {}),
       ...(result.blockedReason ? { blockedReason: redactFleetEvidence(result.blockedReason) } : {}),
       ...(result.safetyReason ? { safetyReason: redactFleetEvidence(result.safetyReason) } : {}),
     };
@@ -2197,6 +2487,69 @@ class FleetBoard {
     const agents = Array.isArray(payload) ? payload : Array.isArray(payload?.agents) ? payload.agents : null;
     if (!agents) throw new Error('node agent list returned invalid JSON');
     return agents;
+  }
+
+  async captureFleetIdentityReconciliation(node, agentName, phase) {
+    const settled = await Promise.allSettled([
+      this.listAllFleetNodes(),
+      execute(this.cliArgv('fleet', 'agent', 'list', '--node', node.nodeName, '--json'), {
+        timeoutMs: 30_000,
+        maxCaptureBytes: 16 * 1024 * 1024,
+      }),
+      execute(this.cliArgv('fleet', 'agent', 'list', '--all', '--json'), {
+        timeoutMs: 60_000,
+        maxCaptureBytes: 16 * 1024 * 1024,
+      }),
+      this.listNodeAgents(node),
+      this.exactAgentExists(agentName),
+    ]);
+    const commandErrors = [];
+    const value = (index, label) => {
+      const result = settled[index];
+      if (result.status === 'fulfilled') return result.value;
+      commandErrors.push(label);
+      return undefined;
+    };
+    const nodes = value(0, 'fleet-nodes-all');
+    const targeted = value(1, 'fleet-agent-list-node');
+    const all = value(2, 'fleet-agent-list-all');
+    const directAgents = value(3, 'node-agent-list');
+    const rosterPresent = value(4, 'agent-get');
+    for (const [label, result] of [
+      ['fleet-agent-list-node', targeted],
+      ['fleet-agent-list-all', all],
+    ]) {
+      if (
+        !result ||
+        result.exitCode !== 0 ||
+        result.stdoutCaptureTruncated ||
+        result.stderrCaptureTruncated
+      ) {
+        if (!commandErrors.includes(label)) commandErrors.push(label);
+      }
+    }
+    return evaluateFleetIdentityReconciliation({
+      phase,
+      nodeName: node.nodeName,
+      agentName,
+      nodesPayload: nodes ? { nodes } : undefined,
+      targetedPayload: targeted?.exitCode === 0 ? tryParseJson(targeted._rawStdout) : undefined,
+      allPayload: all?.exitCode === 0 ? tryParseJson(all._rawStdout) : undefined,
+      directAgents,
+      rosterPresent,
+      commandErrors,
+    });
+  }
+
+  async waitForFleetIdentityReconciliation(node, agentName, phase, timeoutMs = 60_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last;
+    while (Date.now() < deadline) {
+      last = await this.captureFleetIdentityReconciliation(node, agentName, phase);
+      if (last.pass) return last;
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    return last;
   }
 
   async waitForFleetAgentIdentity(node, name, expectedProvider, expectedRuntime = 'pty', expectedModel) {
@@ -2891,22 +3244,23 @@ class FleetBoard {
       }),
       { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
     );
-    await this.assertedCommand(
-      'fleet-agent-list-node',
-      this.cliArgv('fleet', 'agent', 'list', '--node', primary?.nodeName ?? 'missing'),
-      (result) => {
-        const payload = tryParseJson(result._rawStdout);
-        const rows = Array.isArray(payload?.perNode) ? payload.perNode : null;
-        return {
-          pass:
-            Array.isArray(rows) &&
-            rows.some(({ name }) => name === primary?.agentName) &&
-            rows.every(({ node }) => node === primary?.nodeName),
-          summary: `rowCount=${rows?.length ?? 'invalid'}`,
-        };
-      },
-      { timeoutMs: 60_000, maxCaptureBytes: 4 * 1024 * 1024 }
-    );
+    await this.record('fleet-agent-list-node', async () => {
+      const result = await execute(
+        this.cliArgv('fleet', 'agent', 'list', '--node', primary?.nodeName ?? 'missing', '--pretty'),
+        { timeoutMs: 60_000, maxCaptureBytes: 4 * 1024 * 1024 }
+      );
+      const live = primary
+        ? await this.waitForFleetIdentityReconciliation(primary, primary.agentName, 'live', 60_000)
+        : undefined;
+      const prettyContainsExactAgent =
+        result.exitCode === 0 && Boolean(primary?.agentName) && result._rawStdout.includes(primary.agentName);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: prettyContainsExactAgent && live?.pass ? 0 : 1,
+        summary: `prettyContainsExactAgent=${prettyContainsExactAgent} crossViewLive=${live?.pass === true}`,
+        fleetIdentityReconciliation: { live },
+      };
+    });
     await this.assertedCommand(
       'fleet-agent-list-all',
       this.cliArgv('fleet', 'agent', 'list', '--all'),
@@ -2980,28 +3334,34 @@ class FleetBoard {
       });
       if (id === 'fleet-spawn-node') {
         await this.record('fleet-release', async () => {
+          const live = await this.waitForFleetIdentityReconciliation(node, agentName, 'live', 60_000);
           const release = await execute(
             this.cliArgv('fleet', 'release', agentName, '--reason', `fleet board ${this.short} lifecycle`),
             { timeoutMs: 45_000 }
           );
-          const absent =
-            release.exitCode === 0 && (await this.waitForNodeAgentAbsent(node, agentName, 60_000));
-          const identityPreserved = (await this.exactAgentExists(agentName).catch(() => null)) === true;
+          const postRelease = await this.waitForFleetIdentityReconciliation(
+            node,
+            agentName,
+            'roster-only',
+            60_000
+          );
           await this.removeIdentity(agentName);
-          const identityCleaned = await this.waitForAgentAbsent(agentName, 45_000);
+          const postDelete = await this.waitForFleetIdentityReconciliation(node, agentName, 'absent', 60_000);
           const resource = this.evidence.resources.find(
             (entry) => entry.type === 'relay-agent' && entry.id === agentName
           );
-          if (resource && absent && identityCleaned) resource.cleanupState = 'absent';
-          if (!absent || !identityCleaned) this.taintedNodeIds.add(node.id);
+          if (resource && postRelease.pass && postDelete.pass) resource.cleanupState = 'absent';
+          if (!postRelease.pass || !postDelete.pass) this.taintedNodeIds.add(node.id);
           return {
             ...stripPrivateExecution(release),
-            exitCode: absent && identityPreserved ? 0 : 1,
-            summary: `confirmedProcessAbsent=${absent} identityPreservedWithoutDelete=${identityPreserved} cleanupIdentityAbsent=${identityCleaned}`,
+            exitCode: release.exitCode === 0 && live.pass && postRelease.pass && postDelete.pass ? 0 : 1,
+            summary: `crossViewLive=${live.pass} crossViewRosterOnly=${postRelease.pass} crossViewAbsent=${postDelete.pass}`,
+            fleetIdentityReconciliation: { live, postRelease, postDelete },
           };
         });
       } else if (id === 'fleet-spawn-target-node-alias') {
         await this.record('fleet-release-delete-agent', async () => {
+          const live = await this.waitForFleetIdentityReconciliation(node, agentName, 'live', 60_000);
           const release = await execute(
             this.cliArgv(
               'fleet',
@@ -3013,21 +3373,27 @@ class FleetBoard {
             ),
             { timeoutMs: 45_000 }
           );
-          const processAbsent =
-            release.exitCode === 0 && (await this.waitForNodeAgentAbsent(node, agentName, 60_000));
-          const identityAbsent = processAbsent && (await this.waitForAgentAbsent(agentName, 60_000));
-          if (!identityAbsent) {
+          const postRelease = await this.waitForFleetIdentityReconciliation(
+            node,
+            agentName,
+            'absent',
+            60_000
+          );
+          let supportCleanup;
+          if (!postRelease.pass) {
             await this.removeIdentity(agentName);
-            if (!(await this.waitForAgentAbsent(agentName, 45_000))) this.taintedNodeIds.add(node.id);
+            supportCleanup = await this.waitForFleetIdentityReconciliation(node, agentName, 'absent', 60_000);
+            if (!supportCleanup.pass) this.taintedNodeIds.add(node.id);
           }
           const resource = this.evidence.resources.find(
             (entry) => entry.type === 'relay-agent' && entry.id === agentName
           );
-          if (resource && processAbsent && identityAbsent) resource.cleanupState = 'absent';
+          if (resource && postRelease.pass) resource.cleanupState = 'absent';
           return {
             ...stripPrivateExecution(release),
-            exitCode: processAbsent && identityAbsent ? 0 : 1,
-            summary: `confirmedProcessAbsent=${processAbsent} confirmedIdentityAbsent=${identityAbsent}`,
+            exitCode: release.exitCode === 0 && live.pass && postRelease.pass ? 0 : 1,
+            summary: `crossViewLive=${live.pass} crossViewAbsent=${postRelease.pass}`,
+            fleetIdentityReconciliation: { live, postRelease, supportCleanup },
           };
         });
       } else {

@@ -26,7 +26,12 @@ Two distinct candidate Fleet nodes must be live. Targeted Fleet spawns are
 verified through the independent live Fleet inventory, not through echoed input.
 The sender-bound initial and post-ready MCP sentinels must arrive, reader receipts
 must name the exact worker, and every release must converge to process/identity
-absence. In addition to the 94-operation board, every attempt repeats the
+absence. The targeted Fleet read and both process-release variants also fail
+closed unless the same nonce-owned identity agrees across `fleet nodes --all`
+heartbeat names/counts, `fleet agent list --node ... --pretty`, unfiltered Fleet
+placement, direct `node agent list`, and the workspace roster before and after
+release; this guards the contradiction tracked in #1531. In addition to the
+94-operation board, every attempt repeats the
 targeted spawn → placement → initial MCP response → post-ready injection/read
 receipt → release/absence lifecycle five times, alternating nodes and reusing
 the same two names. Any mixed trial makes the attempt RED.

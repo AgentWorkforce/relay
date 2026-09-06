@@ -75,6 +75,9 @@ every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
 post-ready injection, remote attach, Relayfile root/scoped/no-mount behavior,
 workflow execution, release, identity reconciliation, and exact sandbox cleanup.
+Targeted Fleet presence is cross-checked against heartbeat live-name metadata and
+`activeAgents`, unfiltered placement, direct node inventory, and the roster both
+before and after release, so contradictory views cannot be reported as absence.
 Every attempt also runs five critical targeted lifecycle trials across both nodes,
 including independent placement lookup, sender-bound initial and post-ready MCP
 acknowledgements, exact injection reader receipts, same-name reuse, and verified
