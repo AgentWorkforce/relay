@@ -3908,6 +3908,25 @@ mod auth_tests {
         )
     }
 
+    /// The report names every agent on the broker and their delivery cursors.
+    /// That is operational detail, not public data, so the route must sit
+    /// behind the same API-key gate as the rest of `/api/*` — only `/health`
+    /// and `/api/agent-result` are unauthenticated.
+    #[tokio::test]
+    async fn node_delivery_route_requires_the_api_key_when_auth_is_enabled() {
+        let (router, _rx, _probe) = test_router_with_probe(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
     /// The endpoint must report what the probe recorded, and — critically —
     /// must do so WITHOUT posting a request to the runtime. A wedged runtime
     /// event loop is one of the conditions that makes an agent go deaf, so a

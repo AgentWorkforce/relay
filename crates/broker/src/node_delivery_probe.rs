@@ -264,6 +264,14 @@ struct Counters {
     rejected_sequence_gap: AtomicU64,
     connects: AtomicU64,
     disconnects: AtomicU64,
+    /// Whether a node-control session is currently established.
+    ///
+    /// Kept separately from the two tallies rather than derived from them:
+    /// reading `connects` and `disconnects` as two Relaxed loads can observe
+    /// a stale `connects` beside a fresh `disconnects` and briefly report a
+    /// live session as dead. The tallies stay because reconnect churn is
+    /// itself diagnostic, but the flag is what `connected` reports.
+    session_live: std::sync::atomic::AtomicBool,
     last_deliver_at_ms: AtomicU64,
     last_frame_at_ms: AtomicU64,
 }
@@ -293,10 +301,12 @@ impl NodeDeliveryProbe {
 
     pub(crate) fn record_connected(&self) {
         self.counters.connects.fetch_add(1, Ordering::Relaxed);
+        self.counters.session_live.store(true, Ordering::Relaxed);
     }
 
     pub(crate) fn record_disconnected(&self) {
         self.counters.disconnects.fetch_add(1, Ordering::Relaxed);
+        self.counters.session_live.store(false, Ordering::Relaxed);
     }
 
     /// Called for every inbound WS text frame, before any deserialization.
@@ -473,8 +483,7 @@ impl NodeDeliveryProbe {
     /// rather than read from the runtime, so the endpoint needs nothing from
     /// the event loop to answer.
     pub(crate) fn snapshot_with_token(&self, token_present: bool) -> Value {
-        let connected = self.counters.connects.load(Ordering::Relaxed)
-            > self.counters.disconnects.load(Ordering::Relaxed);
+        let connected = self.counters.session_live.load(Ordering::Relaxed);
         self.snapshot(connected, token_present)
     }
 
@@ -564,15 +573,24 @@ impl NodeDeliveryProbe {
     }
 }
 
-/// Fetch (or create) an agent's row, refusing to grow past
-/// [`AGENT_STATS_CAPACITY`]. Returns `None` once full so an invented name
-/// cannot displace the rows an operator is watching.
+/// Fetch (or create) an agent's row, evicting the least recently delivered-to
+/// agent when full.
+///
+/// Agent names arrive from the engine, so a first-wins bound would let a
+/// buggy peer occupy every slot with names that never deliver again and
+/// starve the agents an operator is actually watching — which defeats the
+/// point of these rows. Evicting by `last_deliver_at_ms` keeps the most
+/// recently active agents, which are the ones a diagnosis is about.
 fn agent_row<'a>(
     agents: &'a mut BTreeMap<String, AgentStats>,
     agent: &str,
 ) -> Option<&'a mut AgentStats> {
     if !agents.contains_key(agent) && agents.len() >= AGENT_STATS_CAPACITY {
-        return None;
+        let stalest = agents
+            .iter()
+            .min_by_key(|(name, stats)| (stats.last_deliver_at_ms, (*name).clone()))
+            .map(|(name, _)| name.clone())?;
+        agents.remove(&stalest);
     }
     Some(agents.entry(agent.to_string()).or_default())
 }
@@ -898,23 +916,56 @@ mod tests {
         assert_eq!(rows[0]["agent"], "busy-agent");
     }
 
+    /// Bounded, and bounded the right way round: the rows that survive are the
+    /// most recently delivered-to. A first-wins bound would let a peer that
+    /// invents names starve the agents an operator is actually watching.
     #[test]
-    fn agent_rows_are_bounded() {
+    fn agent_rows_are_bounded_and_evict_the_stalest_first() {
         let probe = NodeDeliveryProbe::new();
         for index in 0..(AGENT_STATS_CAPACITY + 20) {
-            let frame = deliver(&format!("agent-{index}"), "ag", &format!("del_{index}"), 1);
+            let frame = deliver(
+                &format!("agent-{index:04}"),
+                "ag",
+                &format!("del_{index}"),
+                1,
+            );
             probe.record_decision(&frame, &DeliveryDecision::Deliver { up_to_seq: 1 });
         }
         let snapshot = probe.snapshot_with_token(true);
-        assert_eq!(
-            snapshot["agents"].as_array().expect("agents").len(),
-            AGENT_STATS_CAPACITY
+        let rows = snapshot["agents"].as_array().expect("agents");
+        assert_eq!(rows.len(), AGENT_STATS_CAPACITY);
+
+        let present = |name: &str| rows.iter().any(|row| row["agent"] == name);
+        // The newest arrival kept its row...
+        assert!(
+            present(&format!("agent-{:04}", AGENT_STATS_CAPACITY + 19)),
+            "the most recent agent must not be the one refused"
         );
-        // Every frame is still counted globally even when its row is refused.
+        // ...and an early one was evicted to make room.
+        assert!(!present("agent-0000"), "the stalest row should be evicted");
+
+        // Every frame is still counted globally regardless of eviction.
         assert_eq!(
             snapshot["decisions"]["deliver"],
             (AGENT_STATS_CAPACITY + 20) as u64
         );
+    }
+
+    /// `connected` must come from one flag, not from comparing two counters
+    /// that can be read skewed.
+    #[test]
+    fn connectivity_survives_reconnect_churn() {
+        let probe = NodeDeliveryProbe::new();
+        for _ in 0..5 {
+            probe.record_connected();
+            assert_eq!(probe.snapshot_with_token(true)["connected"], true);
+            probe.record_disconnected();
+            assert_eq!(probe.snapshot_with_token(true)["connected"], false);
+        }
+        let snapshot = probe.snapshot_with_token(true);
+        // The tallies are retained because reconnect churn is itself a signal.
+        assert_eq!(snapshot["socket"]["connects"], 5);
+        assert_eq!(snapshot["socket"]["disconnects"], 5);
     }
 
     #[test]
