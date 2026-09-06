@@ -208,6 +208,7 @@ struct AgentStats {
     surface_failed: u64,
     acked_without_surfacing: u64,
     rejected_identity: u64,
+    rejected_sequence_gap: u64,
     last_deliver_at_ms: u64,
     last_injected_at_ms: u64,
 }
@@ -232,6 +233,7 @@ impl AgentStats {
                 "surface_failed": self.surface_failed,
                 "acked_without_surfacing": self.acked_without_surfacing,
                 "rejected_identity": self.rejected_identity,
+                "rejected_sequence_gap": self.rejected_sequence_gap,
             },
             "last_deliver_at_ms": non_zero(self.last_deliver_at_ms),
             "last_injected_at_ms": non_zero(self.last_injected_at_ms),
@@ -448,6 +450,7 @@ impl NodeDeliveryProbe {
                 DeliverDisposition::SurfaceFailed => stats.surface_failed += 1,
                 DeliverDisposition::AckedWithoutSurfacing => stats.acked_without_surfacing += 1,
                 DeliverDisposition::RejectedIdentity => stats.rejected_identity += 1,
+                DeliverDisposition::RejectedSequenceGap => stats.rejected_sequence_gap += 1,
             }
         }
     }
@@ -854,6 +857,35 @@ mod tests {
     /// An agent that is merely quiet has no row at all, which is a different
     /// answer from "frames arrived and went nowhere" and must not be confused
     /// with it.
+    /// `Gap` and `IdentityReject` both reject without acking, but they are
+    /// different diagnoses — a gap means the book could not place a frame the
+    /// agent never saw, an identity reject means the frame was addressed to a
+    /// retired incarnation. Collapsing them would point an operator at the
+    /// wrong half of the system.
+    #[test]
+    fn a_sequence_gap_is_not_reported_as_an_identity_reject() {
+        let probe = NodeDeliveryProbe::new();
+        let gapped = deliver("agent-a", "ag_a", "del_gap", 9);
+        probe.record_decision(&gapped, &DeliveryDecision::Gap { up_to_seq: 4 });
+        probe.record_disposition(&gapped, DeliverDisposition::RejectedSequenceGap);
+
+        let snapshot = probe.snapshot_with_token(true);
+        assert_eq!(snapshot["dispositions"]["rejected_sequence_gap"], 1);
+        assert_eq!(snapshot["dispositions"]["rejected_identity"], 0);
+        assert_eq!(snapshot["decisions"]["gap"], 1);
+        assert_eq!(snapshot["recent_delivers"][0]["decision"], "gap");
+        assert_eq!(
+            snapshot["recent_delivers"][0]["disposition"],
+            "rejected_sequence_gap"
+        );
+        let row = &snapshot["agents"][0];
+        assert_eq!(row["dispositions"]["rejected_sequence_gap"], 1);
+        assert_eq!(row["dispositions"]["rejected_identity"], 0);
+        // Arrived, never delivered: the pair that localizes the failure.
+        assert_eq!(row["delivers_seen"], 1);
+        assert_eq!(row["last_injected_at_ms"], Value::Null);
+    }
+
     #[test]
     fn an_agent_with_no_frames_has_no_row() {
         let probe = NodeDeliveryProbe::new();
