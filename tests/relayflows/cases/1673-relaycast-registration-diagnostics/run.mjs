@@ -7,8 +7,16 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1673-relaycast-registration-diagnostics';
+const RESPONSE_STATUS = 503;
 const RETRY_AFTER_SECONDS = 5;
-const NO_TERMINAL_SLEEP_MAX_MS = 4_000;
+const RETRY_AFTER_MILLISECONDS = RETRY_AFTER_SECONDS * 1_000;
+// Measure after the 503 was written, not from process start. This leaves room
+// for a slow sandbox to start the broker while still proving it did not honor
+// the terminal five-second Retry-After delay.
+const NO_TERMINAL_SLEEP_MAX_MS = RETRY_AFTER_MILLISECONDS / 2;
+const ERROR_CODE = 'registration_backend_overloaded';
+const ERROR_MESSAGE = 'relayflow deterministic registration failure';
+const REQUEST_ID = 'relayflow-1673-request';
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
@@ -39,10 +47,11 @@ const serverPath = path.join(probeDir, 'registration-503.mjs');
 const serverSource = String.raw`import http from 'node:http';
 
 let requestCount = 0;
+let lastResponseAtMs = null;
 const server = http.createServer((request, response) => {
   if (request.method === 'GET' && request.url === '/observations') {
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ requestCount }));
+    response.end(JSON.stringify({ requestCount, lastResponseAtMs }));
     return;
   }
   if (request.method !== 'POST' || request.url !== '/v1/agents') {
@@ -52,16 +61,17 @@ const server = http.createServer((request, response) => {
   requestCount += 1;
   request.resume();
   request.once('end', () => {
-    response.writeHead(503, {
+    response.writeHead(${RESPONSE_STATUS}, {
       'content-type': 'application/json',
       'retry-after': '${RETRY_AFTER_SECONDS}',
-      'x-request-id': 'relayflow-1673-request',
+      'x-request-id': '${REQUEST_ID}',
     });
+    lastResponseAtMs = Date.now();
     response.end(JSON.stringify({
       ok: false,
       error: {
-        code: 'registration_backend_overloaded',
-        message: 'relayflow deterministic registration failure',
+        code: '${ERROR_CODE}',
+        message: '${ERROR_MESSAGE}',
       },
     }));
   });
@@ -115,8 +125,10 @@ try {
       env: commandEnv,
     }
   );
-  const elapsedMs = Date.now() - startedAt;
+  const completedAtMs = Date.now();
+  const elapsedMs = completedAtMs - startedAt;
   const observations = await readObservations(port);
+  const terminalReturnMs = completedAtMs - observations.lastResponseAtMs;
   const commandStderr = completed.stderr ?? '';
 
   if (completed.error) {
@@ -127,17 +139,17 @@ try {
     completed.status !== 0 &&
     observations.requestCount >= 2 &&
     commandStderr.includes('Max retries exceeded') &&
-    !commandStderr.includes('registration_backend_overloaded') &&
-    !commandStderr.includes('request_id: relayflow-1673-request');
+    !commandStderr.includes(ERROR_CODE) &&
+    !commandStderr.includes(`request_id: ${REQUEST_ID}`);
   const headObserved =
     completed.status !== 0 &&
     observations.requestCount === 1 &&
-    elapsedMs < NO_TERMINAL_SLEEP_MAX_MS &&
+    terminalReturnMs < NO_TERMINAL_SLEEP_MAX_MS &&
     [
-      '(503)',
-      'registration_backend_overloaded',
-      'relayflow deterministic registration failure',
-      'request_id: relayflow-1673-request',
+      `(${RESPONSE_STATUS})`,
+      ERROR_CODE,
+      ERROR_MESSAGE,
+      `request_id: ${REQUEST_ID}`,
       'attempts: 1',
     ].every((marker) => commandStderr.includes(marker));
 
@@ -151,7 +163,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'registration_503_diagnostic_preserved_without_replay';
-    details = `The head broker sent one unsafe registration POST and returned the terminal 503 code, message, request ID, and attempts in ${elapsedMs}ms without sleeping for Retry-After: ${RETRY_AFTER_SECONDS}.`;
+    details = `The head broker sent one unsafe registration POST and returned the terminal ${RESPONSE_STATUS} code, message, request ID, and attempts ${terminalReturnMs}ms after the response, without sleeping for Retry-After: ${RETRY_AFTER_SECONDS}.`;
   } else {
     throw new Error(
       `Unexpected compiled registration observation: ${JSON.stringify({
@@ -159,6 +171,7 @@ try {
         status: completed.status,
         signal: completed.signal,
         elapsedMs,
+        terminalReturnMs,
         requestCount: observations.requestCount,
         stdout: (completed.stdout ?? '').slice(-2_000),
         stderr: `${serverStderr}${commandStderr}`.slice(-2_000),
@@ -218,7 +231,12 @@ async function readObservations(port) {
   });
   if (!response.ok) throw new Error(`registration probe observation endpoint returned ${response.status}`);
   const observation = await response.json();
-  if (!Number.isInteger(observation?.requestCount) || observation.requestCount < 0) {
+  if (
+    !Number.isInteger(observation?.requestCount) ||
+    observation.requestCount < 0 ||
+    !Number.isInteger(observation?.lastResponseAtMs) ||
+    observation.lastResponseAtMs <= 0
+  ) {
     throw new Error(`registration probe returned invalid request count ${JSON.stringify(observation)}`);
   }
   return observation;
