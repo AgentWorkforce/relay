@@ -889,8 +889,8 @@ export function registerLocalAgentCommands(
         deps.exit(1);
         return;
       }
-      const harnessConfig = appServerHarnessConfig(deps, runtime.requested, options);
-      if (runtime.requested === 'headless' && !harnessConfig) return;
+      // `runtime.requested` cannot be 'headless' here: the guard above already
+      // rejected it for `new`, so no AppServer harness config applies.
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -918,7 +918,6 @@ export function registerLocalAgentCommands(
           spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
-          harnessConfig,
         });
         const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(
