@@ -1,0 +1,84 @@
+{
+  "id": "traj_jxsgrcq85ll0",
+  "version": 1,
+  "task": {
+    "title": "Move cleanroom qualification into a trusted default-branch consumer",
+    "source": {
+      "system": "plain",
+      "id": "relay#1682"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-09-06T13:20:23.097Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T13:20:23.730Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3jj75d88g7o6",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T13:20:23.730Z",
+      "events": [
+        {
+          "ts": 1788700823731,
+          "type": "decision",
+          "content": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha: Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
+          "raw": {
+            "question": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
+            "chosen": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
+            "alternatives": [],
+            "reasoning": "Candidate refs must remain immutable data inputs; only default-branch verifier and Fleet workflow code may receive qualification secrets."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788700824271,
+          "type": "decision",
+          "content": "Validate candidate CLI inventory independently from the trusted verifier checkout: Validate candidate CLI inventory independently from the trusted verifier checkout",
+          "raw": {
+            "question": "Validate candidate CLI inventory independently from the trusted verifier checkout",
+            "chosen": "Validate candidate CLI inventory independently from the trusted verifier checkout",
+            "alternatives": [],
+            "reasoning": "The trusted prerequisite lands before candidate-only CLI options; the live board still compares the hydrated candidate to the immutable inventory before any operation earns credit."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788701062801,
+          "type": "reflection",
+          "content": "Trusted request and default-branch consumer are implemented with actor/ref/artifact binding, provider secrets scoped to the Fleet step, trusted fallback cleanup, and local red/green proof; full unit and type gates pass.",
+          "raw": {
+            "focalPoints": [
+              "workflow trust",
+              "artifact provenance",
+              "least privilege",
+              "cleanup"
+            ],
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "focal:workflow trust",
+            "focal:artifact provenance",
+            "focal:least privilege",
+            "focal:cleanup",
+            "confidence:0.86"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "c4f05f65cb974f16ce7bd10cf22a9d29a1619e34",
+    "endRef": "c4f05f65cb974f16ce7bd10cf22a9d29a1619e34"
+  }
+}
