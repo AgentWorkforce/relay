@@ -30,6 +30,16 @@ const delayedReadyStub = definePtyHarness({
     RELAY_INJECT_RATE_MS: '0',
   },
 });
+const releaseProbeStub = definePtyHarness({
+  runtime: 'pty',
+  command: process.execPath,
+  args: [stubPath],
+  env: {
+    RELAY_E2E_NODE_NAME: 'node-a',
+    RELAY_E2E_SPAWN_DESCENDANT: '1',
+    RELAY_INJECT_RATE_MS: '0',
+  },
+});
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default defineNode({
@@ -38,6 +48,7 @@ export default defineNode({
   capabilities: {
     'spawn:claude': spawn(delayedReadyStub),
     'spawn:pool': spawn(stub),
+    'spawn:release-probe': spawn(releaseProbeStub),
     echo: action(
       {
         input: z.looseObject({

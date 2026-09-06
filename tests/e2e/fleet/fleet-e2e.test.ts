@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -260,6 +261,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       'release',
       'spawn:claude',
       'spawn:pool',
+      'spawn:release-probe',
       'work',
     ]);
     expect(b.capabilities.map((c) => c.name).sort()).toEqual([
@@ -327,6 +329,87 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       (await getNodes(engine, workspaceKey, { capability: 'spawn:pool' })).map((n) => n.name).sort()
     ).toEqual(['node-a', 'node-b']);
   });
+
+  it('public fleet release proves process, node heartbeat, and engine roster absence', async () => {
+    const name = `release-1671-${Date.now().toString(36)}`;
+    const spawned = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'release-probe',
+      name,
+      target_node: 'node-a',
+    });
+    expect(spawned.status).toBe(201);
+    const spawnDone = await waitFor(
+      async () => {
+        const invocation = await getInvocation(engine, driverToken, 'spawn', spawned.invocationId!);
+        return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
+      },
+      { timeoutMs: 30_000, label: 'release probe spawn settled' }
+    );
+    expect(spawnDone.status).toBe('completed');
+
+    const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', 'release-1671-descendant.pid');
+    const descendantPid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
+    expect(Number.isInteger(descendantPid)).toBe(true);
+
+    const cli = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
+    const released = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
+    expect(released.status).toBe(0);
+    expect(released.stdout).toContain(name);
+
+    await waitFor(
+      async () => {
+        try {
+          process.kill(descendantPid, 0);
+          return false;
+        } catch (error) {
+          return error?.code === 'ESRCH' ? true : null;
+        }
+      },
+      { timeoutMs: 12_000, intervalMs: 200, label: 'release probe descendant absent' }
+    );
+
+    await waitFor(
+      async () => {
+        const agent = await getAgent(engine, workspaceKey, name);
+        return agent && (agent.status === 'offline' || agent.status === 'released') &&
+          !agent.location_node_id
+          ? agent
+          : null;
+      },
+      { timeoutMs: 20_000, label: 'engine roster marks released worker offline and unlocated' }
+    );
+    await waitFor(
+      async () => {
+        const nodeEntry = (await getNodes(engine, workspaceKey, { name: 'node-a' }))[0];
+        const live = nodeEntry?.capabilities.find((capability) => capability.name === 'relay:live-agents:v1');
+        const names = live?.metadata && typeof live.metadata === 'object' && Array.isArray(live.metadata.names)
+          ? live.metadata.names
+          : [];
+        return !names.includes(name) ? nodeEntry : null;
+      },
+      { timeoutMs: 20_000, label: 'node heartbeat removes released worker' }
+    );
+
+    // A release is idempotent and frees the name: spawn the same name again,
+    // then release it through the same public CLI path and prove the second
+    // terminal state too.
+    const respawned = await invokeAction(engine, driverToken, 'spawn', {
+      cli: 'release-probe',
+      name,
+      target_node: 'node-a',
+    });
+    expect(respawned.status).toBe(201);
+    const respawnDone = await waitFor(
+      async () => {
+        const invocation = await getInvocation(engine, driverToken, 'spawn', respawned.invocationId!);
+        return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
+      },
+      { timeoutMs: 30_000, label: 'same-name respawn settled' }
+    );
+    expect(respawnDone.status).toBe('completed');
+    const releasedAgain = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
+    expect(releasedAgain.status).toBe(0);
+  }, 90_000);
 
   it('cross-node dispatch: a node-native action runs on its owning node and acks the result', async () => {
     // Fleet-provider actions are node-scoped, so they are invoked on their owning node.
@@ -779,6 +862,34 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     }
   }, 70_000);
 });
+
+function runFleetRelease(
+  cli: string,
+  name: string,
+  workspaceKey: string,
+  baseUrl: string
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [cli, 'fleet', 'release', name, '--workspace-key', workspaceKey, '--base-url', baseUrl],
+      {
+        env: { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.once('error', reject);
+    child.once('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
 
 /**
  * Bounded durable mailbox (§8) — TTL dead-letter + overflow. These exercise the

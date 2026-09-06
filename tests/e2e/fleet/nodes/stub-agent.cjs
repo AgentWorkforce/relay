@@ -6,6 +6,7 @@
 // brief reaches it. Before that boundary it deliberately discards input, which
 // models a TUI consuming startup keystrokes before its prompt is ready.
 const { mkdirSync, writeFileSync } = require('node:fs');
+const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const readyDelayMs = Number.parseInt(process.env.RELAY_E2E_STUB_READY_DELAY_MS ?? '0', 10) || 0;
@@ -15,6 +16,21 @@ const recordedNonces = new Set();
 const nonceMarker = 'RELAY_E2E_BRIEF_NONCE=';
 const maxNonceLength = 256;
 const noncePattern = new RegExp(`${nonceMarker}([A-Za-z0-9_-]{1,${maxNonceLength}})(?=[^A-Za-z0-9_-])`, 'g');
+
+// The release regression harness deliberately creates a grandchild that the
+// wrapper does not clean up on SIGTERM. Base brokers signal only this process;
+// fixed brokers signal the private worker process group. The PID is written
+// under the node's isolated project directory so the test can prove absence
+// without relying on a process-name scan.
+let releaseProbeChild;
+if (process.env.RELAY_E2E_SPAWN_DESCENDANT === '1') {
+  const projectDir = process.env.AGENT_RELAY_PROJECT;
+  if (!projectDir) throw new Error('release probe requires AGENT_RELAY_PROJECT');
+  const pidPath = path.join(projectDir, '.agentworkforce', 'relay', 'release-1671-descendant.pid');
+  mkdirSync(path.dirname(pidPath), { recursive: true });
+  releaseProbeChild = spawn('sleep', ['300'], { stdio: 'ignore' });
+  writeFileSync(pidPath, `${releaseProbeChild.pid}\n`);
+}
 
 function recordBriefNonce(nonce) {
   if (recordedNonces.has(nonce)) return;

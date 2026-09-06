@@ -45,7 +45,10 @@ const APP_SERVER_AUTH_ENV_KEYS: [&str; 4] = [
     "AGENT_RELAY_APP_SERVER_AUTH_PASSWORD",
 ];
 const DEFAULT_RELEASE_GRACE: Duration = Duration::from_secs(2);
-const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(35);
+// Relaycast's action dispatch deadline is 30s. Keep app-server shutdown
+// inside that window so the engine does not retry the still-running release on
+// another node while this broker is waiting for the provider to exit.
+const APP_SERVER_RELEASE_GRACE: Duration = Duration::from_secs(25);
 
 /// How long a worker may go without reporting `worker_ready` before the broker
 /// treats its harness as failed-to-start.
@@ -3437,6 +3440,14 @@ sleep 30
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
+    }
+
+    #[test]
+    fn app_server_release_grace_stays_inside_fleet_action_deadline() {
+        // The engine's ACTION_DISPATCH_TIMEOUT_MS is 30s. A previous 35s
+        // broker grace exceeded it and allowed a duplicate release dispatch
+        // before the original node could report completion.
+        assert!(APP_SERVER_RELEASE_GRACE < Duration::from_secs(30));
     }
 
     #[test]
