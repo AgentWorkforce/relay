@@ -523,10 +523,13 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
-function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): HarnessRuntime | undefined {
+type CliSpawnRuntime = HarnessRuntime | 'headless';
+
+function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): CliSpawnRuntime | undefined {
   const runtime = (value ?? 'auto') as string;
-  if (runtime === 'auto' || runtime === 'native' || runtime === 'pty') return runtime;
-  deps.error(`Unknown runtime "${runtime}". Expected one of: auto, native, pty.`);
+  if (runtime === 'auto' || runtime === 'native' || runtime === 'pty' || runtime === 'headless')
+    return runtime;
+  deps.error(`Unknown runtime "${runtime}". Expected one of: auto, native, pty, headless.`);
   deps.exit(1);
   return undefined;
 }
@@ -535,9 +538,12 @@ function resolveRuntimeOption(
   deps: LocalAgentDependencies,
   provider: string,
   value: unknown
-): { requested: HarnessRuntime; selected: ReturnType<typeof resolvedSpawnRuntime> } | undefined {
+):
+  | { requested: CliSpawnRuntime; selected: ReturnType<typeof resolvedSpawnRuntime> | 'headless' }
+  | undefined {
   const requested = parseRuntimeOption(deps, value);
   if (!requested) return undefined;
+  if (requested === 'headless') return { requested, selected: 'headless' };
   try {
     return { requested, selected: resolvedSpawnRuntime({ cli: provider, runtime: requested }) };
   } catch (error) {
@@ -545,6 +551,55 @@ function resolveRuntimeOption(
     deps.exit(1);
     return undefined;
   }
+}
+
+function appServerHarnessConfig(
+  deps: LocalAgentDependencies,
+  runtime: CliSpawnRuntime,
+  options: Record<string, unknown>
+):
+  | {
+      runtime: 'headless';
+      driver: 'app_server';
+      protocol: string;
+      endpoint: string;
+      sessionId: string;
+      release: 'abort' | 'detach' | 'delete';
+    }
+  | undefined {
+  const values = {
+    protocol: options.protocol as string | undefined,
+    endpoint: options.endpoint as string | undefined,
+    sessionId: options.sessionId as string | undefined,
+    release: options.release as string | undefined,
+  };
+  const hasConfig = Object.values(values).some((value) => value !== undefined);
+  if (runtime !== 'headless') {
+    if (hasConfig) {
+      deps.error('AppServer options require --runtime headless.');
+      deps.exit(1);
+    }
+    return undefined;
+  }
+  if (!values.protocol || !values.endpoint || !values.sessionId) {
+    deps.error('Headless runtime requires --protocol, --endpoint, and --session-id.');
+    deps.exit(1);
+    return undefined;
+  }
+  const release = values.release ?? 'delete';
+  if (release !== 'abort' && release !== 'detach' && release !== 'delete') {
+    deps.error(`Unknown AppServer release policy "${release}". Expected one of: abort, detach, delete.`);
+    deps.exit(1);
+    return undefined;
+  }
+  return {
+    runtime: 'headless',
+    driver: 'app_server',
+    protocol: values.protocol,
+    endpoint: values.endpoint,
+    sessionId: values.sessionId,
+    release,
+  };
 }
 
 function parseSpawnModeOption(
@@ -562,7 +617,7 @@ function parseSpawnModeOption(
 function validateNativeOptions(
   deps: LocalAgentDependencies,
   options: {
-    runtime: ReturnType<typeof resolvedSpawnRuntime>;
+    runtime: ReturnType<typeof resolvedSpawnRuntime> | 'headless';
     spawnMode: 'interactive' | 'task_exit';
     exitAfterTask: boolean;
     attachMode?: AttachMode;
@@ -715,7 +770,11 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
+    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty | headless', 'auto')
+    .option('--protocol <protocol>', 'Attached headless AppServer protocol (with --runtime headless)')
+    .option('--endpoint <url>', 'Attached headless AppServer endpoint (with --runtime headless)')
+    .option('--session-id <id>', 'Attached headless AppServer session (with --runtime headless)')
+    .option('--release <policy>', 'AppServer release policy: abort | detach | delete')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
@@ -723,6 +782,8 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, opts.runtime);
       const spawnMode = parseSpawnModeOption(deps, opts.spawnMode);
       if (!runtime || !spawnMode) return;
+      const harnessConfig = appServerHarnessConfig(deps, runtime.requested, opts);
+      if (runtime.requested === 'headless' && !harnessConfig) return;
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -749,6 +810,7 @@ export function registerLocalAgentCommands(
           spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
+          harnessConfig,
         });
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
@@ -767,7 +829,11 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
+    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty | headless', 'auto')
+    .option('--protocol <protocol>', 'Attached headless AppServer protocol (with --runtime headless)')
+    .option('--endpoint <url>', 'Attached headless AppServer endpoint (with --runtime headless)')
+    .option('--session-id <id>', 'Attached headless AppServer session (with --runtime headless)')
+    .option('--release <policy>', 'AppServer release policy: abort | detach | delete')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
@@ -781,6 +847,8 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, options.runtime);
       const spawnMode = parseSpawnModeOption(deps, options.spawnMode);
       if (!runtime || !spawnMode) return;
+      const harnessConfig = appServerHarnessConfig(deps, runtime.requested, options);
+      if (runtime.requested === 'headless' && !harnessConfig) return;
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -808,6 +876,7 @@ export function registerLocalAgentCommands(
           spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
+          harnessConfig,
         });
         const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(

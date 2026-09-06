@@ -406,8 +406,10 @@ describe('complete Daytona Fleet board', () => {
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining(['node-agent-set-model-app-server-a', 'node-agent-set-model-app-server-b'])
     );
-    expect(runner).toContain("runtime: 'headless'");
-    expect(runner).toContain("protocol: 'opencode'");
+    expect(runner).toContain("'--runtime',");
+    expect(runner).toContain("'headless',");
+    expect(runner).toContain("'--protocol',");
+    expect(runner).toContain("'opencode',");
     expect(runner).toContain("'node', 'agent', 'set-model'");
     expect(runner).toContain('OpenCode session confirmation');
     expect(runner).toContain('cleanupErrors');

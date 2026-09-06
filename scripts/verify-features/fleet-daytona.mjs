@@ -413,19 +413,42 @@ try {
   sessionId = session.id;
   if (typeof sessionId !== 'string' || !sessionId) throw new Error('OpenCode session omitted id');
   providerSessionUrl = providerEndpoint + '/session/' + encodeURIComponent(sessionId);
-  const headers = { 'content-type': 'application/json', 'x-api-key': connection.api_key };
-  await jsonResponse(await fetch(connection.url + '/api/spawn', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      name: workerName,
-      cli: 'opencode',
-      runtime: 'headless',
-      harness_config: { runtime: 'headless', protocol: 'opencode', endpoint: providerEndpoint, sessionId, release: 'delete' },
-    }),
-    signal: AbortSignal.timeout(10_000),
-  }), 'headless AppServer worker registration');
+  const spawnArgv = [
+      'node',
+      'agent',
+      'spawn',
+      'opencode',
+      '--name',
+      workerName,
+      '--runtime',
+      'headless',
+      '--protocol',
+      'opencode',
+      '--endpoint',
+      providerEndpoint,
+      '--session-id',
+      sessionId,
+      '--release',
+      'delete',
+  ];
+  const spawnWorker = spawnSync(
+    'agent-relay',
+    spawnArgv,
+    {
+      cwd: tempDir,
+      env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+    }
+  );
+  if (spawnWorker.error || spawnWorker.status !== 0) {
+    throw new Error(
+      'public headless AppServer spawn failed: ' + (spawnWorker.stderr || spawnWorker.stdout).slice(-1000)
+    );
+  }
   workerCreated = true;
+  result.spawnArgv = ['agent-relay', ...spawnArgv];
   const cliEnv = { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key };
   const setModel = spawnSync('agent-relay', ['node', 'agent', 'set-model', workerName, requestedModel, '--json'], {
     cwd: tempDir,
@@ -3979,6 +4002,7 @@ class FleetBoard {
           'openai/gpt-5.4',
           '--json',
         ];
+        const publicSpawnArgv = payload?.spawnArgv;
         const pass =
           payload?.worker === workerName &&
           payload?.requestedModel === 'openai/gpt-5.4' &&
@@ -3991,13 +4015,21 @@ class FleetBoard {
           receipt?.effectiveModel === 'openai/gpt-5.4' &&
           receipt?.pending === false &&
           typeof receipt?.requestId === 'string' &&
-          receipt.requestId.length > 0;
+          receipt.requestId.length > 0 &&
+          Array.isArray(publicSpawnArgv) &&
+          publicSpawnArgv[0] === 'agent-relay' &&
+          publicSpawnArgv.includes('spawn') &&
+          publicSpawnArgv.includes('--runtime') &&
+          publicSpawnArgv.includes('headless') &&
+          publicSpawnArgv.includes('--protocol') &&
+          publicSpawnArgv.includes('opencode') &&
+          publicSpawnArgv.includes('--session-id');
         return {
           pass,
           // The operation is a Daytona wrapper, but this nested argv is the
           // exact public command executed by the helper and is part of the
           // sanitized evidence contract.
-          argv: [...(result.argv ?? []), ...nestedArgv],
+          argv: [...(result.argv ?? []), ...(publicSpawnArgv ?? []), ...nestedArgv],
           summary: `issue=1658 runtime=headless-app-server requestedModel=${payload?.requestedModel ?? 'missing'} providerModel=${payload?.providerModel ?? 'missing'} status=${receipt?.status ?? 'missing'} effectiveModel=${receipt?.effectiveModel ?? 'missing'} applied=${receipt?.applied} cleanup=${payload?.cleanup}`,
         };
       },

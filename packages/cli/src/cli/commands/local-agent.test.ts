@@ -834,6 +834,45 @@ describe('local agent subtree', () => {
     );
   });
 
+  it('spawn --runtime headless forwards typed AppServer configuration', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--name',
+        'app-server-worker',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--release',
+        'delete',
+      ],
+      { from: 'user' }
+    );
+    expect(client.spawnHeadless).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'app-server-worker',
+        cli: 'opencode',
+        harnessConfig: {
+          runtime: 'headless',
+          driver: 'app_server',
+          protocol: 'opencode',
+          endpoint: 'http://127.0.0.1:4096',
+          sessionId: 'session-1',
+          release: 'delete',
+        },
+      })
+    );
+  });
+
   it('release calls client.release', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'release', 'lead'], { from: 'user' });
