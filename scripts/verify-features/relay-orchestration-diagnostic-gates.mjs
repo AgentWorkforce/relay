@@ -1472,8 +1472,8 @@ async function validateCoverage(artifactDir, ledger) {
     }
   }
   const coverageIds = new Set(coverageRows.map((row) => row.id));
-  if (coverageIds.size !== 143 || coverageRows.length !== 143) {
-    throw new Error(`coverage contract must contain exactly 143 unique rows, got ${coverageRows.length}`);
+  if (coverageIds.size !== 142 || coverageRows.length !== 142) {
+    throw new Error(`coverage contract must contain exactly 142 unique rows, got ${coverageRows.length}`);
   }
   for (const unknown of ledger.unknowns) {
     for (const gateId of unknown.gateIds ?? []) {

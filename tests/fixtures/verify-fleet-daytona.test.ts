@@ -59,6 +59,18 @@ function operationRecord(operation: {
   const commandLeaf = Object.entries(fixtureMatrix.commandSurface).find(([, ids]) =>
     (ids as string[]).includes(operation.id)
   )?.[0];
+  const fleetProvider = operation.id.match(
+    /^fleet-spawn-provider-(claude|codex|gemini|aider|goose|grok|opencode)$/
+  )?.[1];
+  const nodeProvider = operation.id.match(
+    /^node-agent-spawn-provider-(claude|codex|gemini|aider|goose|grok|opencode|droid|cursor|pi|deepagents)(?:-native)?$/
+  )?.[1];
+  const fleetPlacement = operation.id.startsWith('fleet-spawn-') && !operation.id.includes('reject');
+  const identityLane =
+    fleetPlacement ||
+    nodeProvider !== undefined ||
+    (operation.group === 'node-agent-spawn' && operation.expect !== 'sentinel-and-exit');
+  const derivedObservation = /^initial-task-sentinel-[ab]$/.test(operation.id);
   return {
     ...operation,
     acceptanceProfile: fixtureMatrix.acceptance.operationProfiles[operation.id],
@@ -83,6 +95,58 @@ function operationRecord(operation: {
       : {}),
     ...(operation.expect === 'sentinel-and-exit' ? { observedExit: true } : {}),
     ...(operation.expect === 'stream' ? { observedStream: true } : {}),
+    executionKind: derivedObservation ? 'derived-observation' : 'command',
+    ...(derivedObservation
+      ? { derivedObservation: true, derivedFrom: `provision-node-${operation.id.slice(-1)}` }
+      : {}),
+    ...(identityLane
+      ? {
+          observedAgentName: `${operation.id}-${NONCE.slice(0, 16)}`,
+          observedProvider: fleetProvider ?? nodeProvider ?? 'codex',
+          observedRuntime:
+            (operation.group === 'node-agent-provider' || operation.group === 'node-agent-spawn') &&
+            operation.id.endsWith('-native')
+              ? 'native'
+              : 'pty',
+          observedIdentitySource: 'node-agent-list',
+        }
+      : {}),
+    ...(operation.id === 'fleet-spawn-reject-droid'
+      ? {
+          partialCreationProof: {
+            targetName: `fleet-spawn-provider-droid-${NONCE.slice(0, 16)}`,
+            before: {
+              agentNames: [],
+              fleetNodeKeys: [],
+              sandboxIds: [],
+              sandboxKeys: [],
+              workerProcesses: [],
+            },
+            after: {
+              agentNames: [],
+              fleetNodeKeys: [],
+              sandboxIds: [],
+              sandboxKeys: [],
+              workerProcesses: [],
+            },
+          },
+        }
+      : {}),
+    ...(operation.id === 'fleet-release-reclaims-owned-sandbox'
+      ? {
+          sandboxReleaseProof: {
+            sandboxId: '11111111-1111-4111-8111-111111111111',
+            sandboxName: `relay-fleetboard-a-${NONCE.slice(0, 16)}`,
+            nodeId: 'node_a',
+            workerName: `fleet-spawn-sandbox-scoped-mount-${NONCE.slice(0, 16)}`,
+            ownership: 'created-by-run',
+            ownershipNonce: NONCE,
+            workerProcessAbsent: true,
+            workerIdentityAbsent: true,
+            sandboxAbsent: true,
+          },
+        }
+      : {}),
   };
 }
 
@@ -141,9 +205,21 @@ function completeEvidence(matrix: {
       ownership: 'created-by-run',
       cleanupState: 'absent',
     },
+    {
+      type: 'relay-agent',
+      id: `fleet-spawn-sandbox-scoped-mount-${NONCE.slice(0, 16)}`,
+      role: 'worker',
+      nodeName: '',
+      ownership: 'created-by-run',
+      cleanupState: 'absent',
+      sandboxId: '11111111-1111-4111-8111-111111111111',
+      sandboxNodeId: 'node_a',
+      sandboxNodeName: `relay-fleetboard-a-${NONCE.slice(0, 16)}`,
+    },
   ];
+  const boardResources = resources.filter(({ type }) => type === 'daytona-sandbox');
   const criticalTrials = Array.from({ length: matrix.minimumCriticalLifecycleTrials }, (_, offset) => {
-    const node = resources[offset % resources.length];
+    const node = boardResources[offset % boardResources.length];
     const index = offset + 1;
     const slot = offset % 2 === 0 ? 'a' : 'b';
     const agentName = `critical-lifecycle-${slot}-${NONCE.slice(0, 16)}`;
@@ -219,7 +295,16 @@ function completeEvidence(matrix: {
     operations: matrix.operations.map(operationRecord),
     criticalLifecycle: { status: 'pass', trials: criticalTrials },
     resources,
-    ownershipIntents: resources.map(({ type, nodeName }) => ({ type, name: nodeName })),
+    ownershipIntents: [
+      ...resources
+        .filter(({ type }) => type === 'daytona-sandbox')
+        .map(({ type, nodeName }) => ({ type, name: nodeName, nonce: NONCE })),
+      {
+        type: 'relay-agent',
+        name: `fleet-spawn-sandbox-scoped-mount-${NONCE.slice(0, 16)}`,
+        nonce: NONCE,
+      },
+    ],
     cleanup: { status: 'pass' },
     verdict: 'GREEN',
   };
@@ -259,9 +344,9 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations).toHaveLength(95);
+    expect(matrix.operations).toHaveLength(94);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(95);
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(94);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -302,7 +387,32 @@ describe('complete Daytona Fleet board', () => {
 
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
-    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 95/);
+    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 94/);
+  });
+
+  it('fails closed when Fleet qualification evidence loses creation, identity, or release binding', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+
+    const partialCreation = structuredClone(evidence);
+    partialCreation.operations
+      .find(({ id }) => id === 'fleet-spawn-reject-droid')
+      .partialCreationProof.after.agentNames.push('fleet-spawn-provider-droid-aaaaaaaaaaaaaaaa');
+    expect(() => validateFleetEvidence(partialCreation, matrix)).toThrow(/no agent, worker process/);
+
+    const forgedIdentity = structuredClone(evidence);
+    forgedIdentity.operations.find(({ id }) => id === 'fleet-spawn-provider-claude').observedProvider =
+      'codex';
+    expect(() => validateFleetEvidence(forgedIdentity, matrix)).toThrow(
+      /actual spawned agent provider\/runtime/
+    );
+
+    const nameOnlyRelease = structuredClone(evidence);
+    nameOnlyRelease.operations.find(
+      ({ id }) => id === 'fleet-release-reclaims-owned-sandbox'
+    ).sandboxReleaseProof.sandboxAbsent = false;
+    expect(() => validateFleetEvidence(nameOnlyRelease, matrix)).toThrow(/exact owned sandbox/);
   });
 
   it('binds matrix argv contracts to the actual Fleet and direct-node argument builders', async () => {
@@ -432,6 +542,11 @@ describe('complete Daytona Fleet board', () => {
     expect(compareFleetCliInventory(actual, expected)).toBe(actual);
     expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
     expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
+    const missingDeferredDeclaration = structuredClone(matrix);
+    missingDeferredDeclaration.deferredCommandSurface = [];
+    expect(() => validateFleetCommandCoverage(missingDeferredDeclaration, actual)).toThrow(
+      /commandSurface must exactly cover every candidate/
+    );
     expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
       hidden: true,
       leaf: true,
@@ -461,14 +576,14 @@ describe('complete Daytona Fleet board', () => {
 
     const wrongCount = structuredClone(matrix);
     wrongCount.operations.pop();
-    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 95/);
+    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 94/);
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 95 operations/);
+    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 94 operations/);
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -824,6 +939,13 @@ describe('complete Daytona Fleet board', () => {
         },
       });
     });
+    const releaseProof = evidence.operations.find(
+      ({ id }) => id === 'fleet-release-reclaims-owned-sandbox'
+    ).sandboxReleaseProof;
+    Object.assign(releaseProof, {
+      cloudWorkspaceId: evidence.resources[0].cloudWorkspaceId,
+      relayWorkspaceId: evidence.resources[0].relayWorkspaceId,
+    });
 
     expect(validateFleetEvidence(evidence, matrix)).toBe(evidence);
 
@@ -921,7 +1043,7 @@ describe('complete Daytona Fleet board', () => {
       verdict: 'COMPREHENSIVELY_SATISFIED',
       whyPassed: 'All matrix operations and cleanup evidence were inspected.',
       endToEndWiringVerified: 'The sealed evidence connects the board to exact resources.',
-      deterministicEvidence: ['95 exact operation records'],
+      deterministicEvidence: ['94 exact operation records'],
       remainingRisks: ['Product RED is permitted as truthful evidence.'],
       findings: [],
     };
@@ -960,15 +1082,56 @@ describe('complete Daytona Fleet board', () => {
     second.resources.forEach((resource: { nodeName: string }) => {
       resource.nodeName = resource.nodeName.replace(NONCE.slice(0, 16), second.nonce.slice(0, 16));
     });
-    second.ownershipIntents.forEach((intent: { name: string }) => {
-      intent.name = intent.name.replace(NONCE.slice(0, 16), second.nonce.slice(0, 16));
+    second.ownershipIntents.forEach((intent: { type: string; name: string }) => {
+      intent.nonce = second.nonce;
+      if (intent.type === 'relay-agent') {
+        intent.name = `fleet-spawn-sandbox-scoped-mount-${second.nonce.slice(0, 16)}`;
+      } else {
+        intent.name = intent.name.replace(NONCE.slice(0, 16), second.nonce.slice(0, 16));
+      }
     });
+    second.operations.forEach(
+      (operation: { observedAgentName?: string; partialCreationProof?: { targetName?: string } }) => {
+        if (operation.observedAgentName) {
+          operation.observedAgentName = operation.observedAgentName.replace(
+            NONCE.slice(0, 16),
+            second.nonce.slice(0, 16)
+          );
+        }
+        if (operation.partialCreationProof?.targetName) {
+          operation.partialCreationProof.targetName = operation.partialCreationProof.targetName.replace(
+            NONCE.slice(0, 16),
+            second.nonce.slice(0, 16)
+          );
+        }
+      }
+    );
     second.resources[0].id = '33333333-3333-4333-8333-333333333333';
     second.resources[0].nodeId = 'node_c';
     second.resources[1].id = '44444444-4444-4444-8444-444444444444';
     second.resources[1].nodeId = 'node_d';
+    const secondWorker = second.resources.find(
+      (resource: { type: string }) => resource.type === 'relay-agent'
+    );
+    secondWorker.id = `fleet-spawn-sandbox-scoped-mount-${second.nonce.slice(0, 16)}`;
+    Object.assign(secondWorker, {
+      sandboxId: second.resources[0].id,
+      sandboxNodeId: second.resources[0].nodeId,
+      sandboxNodeName: second.resources[0].nodeName,
+    });
+    Object.assign(
+      second.operations.find(({ id }: { id: string }) => id === 'fleet-release-reclaims-owned-sandbox')
+        .sandboxReleaseProof,
+      {
+        sandboxId: second.resources[0].id,
+        sandboxName: second.resources[0].nodeName,
+        nodeId: second.resources[0].nodeId,
+        workerName: secondWorker.id,
+        ownershipNonce: second.nonce,
+      }
+    );
     second.criticalLifecycle.trials.forEach((trial: Record<string, unknown>, offset: number) => {
-      const resource = second.resources[offset % second.resources.length];
+      const resource = second.resources.filter(({ type }) => type === 'daytona-sandbox')[offset % 2];
       trial.nodeName = resource.nodeName;
       trial.nodeId = resource.nodeId;
       trial.agentName = `critical-lifecycle-${offset % 2 === 0 ? 'a' : 'b'}-${second.nonce.slice(0, 16)}`;
@@ -985,6 +1148,12 @@ describe('complete Daytona Fleet board', () => {
       matrix
     );
     expect(green.verdict).toBe('GREEN');
+    expect(green.operationTotals).toEqual({
+      matrixOperationCount: 94,
+      independentCommandExecutionCount: 92,
+      derivedObservationCount: 2,
+      derivedObservationIds: ['initial-task-sentinel-a', 'initial-task-sentinel-b'],
+    });
     expect(
       green.operations.every(
         ({ classification }: { classification: string }) => classification === 'stable-pass'
@@ -1046,6 +1215,16 @@ describe('complete Daytona Fleet board', () => {
     ).toThrow(/workspace .* was reused/);
 
     second.resources[0].id = first.resources[0].id;
+    const reusedWorker = second.resources.find(({ type }) => type === 'relay-agent');
+    reusedWorker.sandboxId = second.resources[0].id;
+    reusedWorker.sandboxNodeId = second.resources[0].nodeId;
+    reusedWorker.sandboxNodeName = second.resources[0].nodeName;
+    const reusedReleaseProof = second.operations.find(
+      ({ id }) => id === 'fleet-release-reclaims-owned-sandbox'
+    ).sandboxReleaseProof;
+    reusedReleaseProof.sandboxId = second.resources[0].id;
+    reusedReleaseProof.sandboxName = second.resources[0].nodeName;
+    reusedReleaseProof.nodeId = second.resources[0].nodeId;
     expect(() =>
       summarizeFleetCampaign(
         [
@@ -1079,15 +1258,64 @@ describe('complete Daytona Fleet board', () => {
         evidence.provenance.resolvedWorkspaceId = `workspace_fixture_${index}`;
         evidence.environment.expectedWorkspaceId = `workspace_fixture_${index}`;
         evidence.provenance.matrixSha256 = matrixDigest;
-        evidence.resources.forEach((resource: { id: string; nodeName: string }, resourceIndex: number) => {
-          resource.id = `${index + 1}${resourceIndex + 1}111111-1111-4111-8111-111111111111`;
-          resource.nodeName = resource.nodeName.replace(NONCE.slice(0, 16), nonce.slice(0, 16));
+        evidence.resources.forEach(
+          (resource: { id: string; nodeName: string; type: string }, resourceIndex: number) => {
+            resource.id =
+              resource.type === 'daytona-sandbox'
+                ? `${index + 1}${resourceIndex + 1}111111-1111-4111-8111-111111111111`
+                : `fleet-spawn-sandbox-scoped-mount-${nonce.slice(0, 16)}`;
+            resource.nodeName = resource.nodeName.replace(NONCE.slice(0, 16), nonce.slice(0, 16));
+          }
+        );
+        evidence.operations.forEach(
+          (operation: {
+            id: string;
+            observedAgentName?: string;
+            partialCreationProof?: { targetName?: string };
+          }) => {
+            if (operation.observedAgentName) {
+              operation.observedAgentName = operation.observedAgentName.replace(
+                NONCE.slice(0, 16),
+                nonce.slice(0, 16)
+              );
+            }
+            if (operation.partialCreationProof?.targetName) {
+              operation.partialCreationProof.targetName = operation.partialCreationProof.targetName.replace(
+                NONCE.slice(0, 16),
+                nonce.slice(0, 16)
+              );
+            }
+          }
+        );
+        const campaignWorker = evidence.resources.find(
+          (resource: { type: string }) => resource.type === 'relay-agent'
+        );
+        Object.assign(campaignWorker, {
+          sandboxId: evidence.resources[0].id,
+          sandboxNodeId: evidence.resources[0].nodeId,
+          sandboxNodeName: evidence.resources[0].nodeName,
         });
-        evidence.ownershipIntents.forEach((intent: { name: string }) => {
-          intent.name = intent.name.replace(NONCE.slice(0, 16), nonce.slice(0, 16));
+        const releaseProof = evidence.operations.find(
+          (operation: { id: string }) => operation.id === 'fleet-release-reclaims-owned-sandbox'
+        ).sandboxReleaseProof;
+        Object.assign(releaseProof, {
+          sandboxId: evidence.resources[0].id,
+          sandboxName: evidence.resources[0].nodeName,
+          nodeId: evidence.resources[0].nodeId,
+          workerName: campaignWorker.id,
+          ownershipNonce: nonce,
+        });
+        evidence.ownershipIntents.forEach((intent: { type: string; name: string }) => {
+          intent.nonce = nonce;
+          intent.name =
+            intent.type === 'relay-agent'
+              ? campaignWorker.id
+              : intent.name.replace(NONCE.slice(0, 16), nonce.slice(0, 16));
         });
         evidence.criticalLifecycle.trials.forEach((trial: Record<string, unknown>, trialIndex: number) => {
-          const resource = evidence.resources[trialIndex % evidence.resources.length];
+          const resource = evidence.resources.filter(({ type }) => type === 'daytona-sandbox')[
+            trialIndex % 2
+          ];
           trial.nodeName = resource.nodeName;
           trial.nodeId = resource.nodeId;
           trial.agentName = `critical-lifecycle-${trialIndex % 2 === 0 ? 'a' : 'b'}-${nonce.slice(0, 16)}`;
