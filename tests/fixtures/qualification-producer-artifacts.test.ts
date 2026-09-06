@@ -296,6 +296,18 @@ describe('fixed cross-repository qualification producers', () => {
         })
       ).rejects.toThrow('concurrent[0]');
 
+      const reusedCorrelation = structuredClone(evidence);
+      reusedCorrelation.concurrent[0]!.resources.request.correlationIdSha256 =
+        reusedCorrelation.cold.resources.request.correlationIdSha256;
+      const reusedCorrelationBytes = `${JSON.stringify(reusedCorrelation)}\n`;
+      await writeFile(path.join(root, 'candidate-acceptance.json'), reusedCorrelationBytes);
+      await expect(
+        verifyCloudSnapshotAcceptanceArtifact(root, {
+          ...acceptanceExpected,
+          evidenceSha256: sha256(reusedCorrelationBytes),
+        })
+      ).rejects.toThrow('reused a request correlation');
+
       const sequential = structuredClone(evidence);
       sequential.concurrent[0]!.startedAt = '2026-09-05T12:00:20.000Z';
       sequential.concurrent[0]!.finishedAt = '2026-09-05T12:00:21.000Z';
