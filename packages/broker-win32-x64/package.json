@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-win32-x64",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260906.1665.1",
   "engines": {
     "node": ">=22.0.0"
   },
