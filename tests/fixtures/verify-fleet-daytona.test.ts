@@ -939,6 +939,34 @@ describe('complete Daytona Fleet board', () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024);
   });
 
+  it('returns a timeout result when an escaped descendant retains the output pipes', async () => {
+    let escapedPid: number | undefined;
+    const startedAt = Date.now();
+    try {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        `const child = spawn(${JSON.stringify(process.execPath)}, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: ['ignore', 1, 2] });`,
+        "process.stdout.write(String(child.pid) + '\\n');",
+        'child.unref();',
+      ].join('\n');
+      const result = await executeFleetCommand([process.execPath, '-e', script], { timeoutMs: 100 });
+      escapedPid = Number(result._rawStdout.trim());
+
+      expect(result.timedOut).toBe(true);
+      expect(result.durationMs).toBeLessThan(3_000);
+      expect(Number.isSafeInteger(escapedPid)).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    } finally {
+      if (escapedPid && Number.isSafeInteger(escapedPid)) {
+        try {
+          process.kill(escapedPid, 'SIGKILL');
+        } catch (error: any) {
+          if (error?.code !== 'ESRCH') throw error;
+        }
+      }
+    }
+  });
+
   it('delivers staged stdin bytes so interactive mode semantics can be proven', async () => {
     const result = await executeFleetCommand([process.execPath, '-e', 'process.stdin.pipe(process.stdout)'], {
       stdin: [
