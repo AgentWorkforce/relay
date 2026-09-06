@@ -1,23 +1,15 @@
-const TRUST_MARKER = /\bTRUST_(ACCEPTED|EXITED)\s+layout=(legacy|modern)\b/;
-const MAX_OBSERVATION_BYTES = 8_192;
+const TRUST_MARKER = /^TRUST_(ACCEPTED|EXITED) layout=(legacy|modern)$/;
 
-// Accumulate worker-stream chunks until the deterministic Claude model reports
-// which trust option was confirmed. PTY frames are transport chunks, not line
-// or marker boundaries, so a marker can straddle two frames.
-export function createTrustObserver() {
-  let output = '';
-
-  return {
-    observe(frame) {
-      if (frame?.type !== 'worker_stream' || typeof frame.payload?.chunk !== 'string') {
-        return undefined;
-      }
-
-      output = `${output}${frame.payload.chunk}`.slice(-MAX_OBSERVATION_BYTES);
-      const match = TRUST_MARKER.exec(output);
-      if (!match) return undefined;
-
-      return { outcome: match[1], layout: match[2], output };
-    },
-  };
+// The deterministic Claude model records its decision as a single line in a
+// file, and the runner reads it from disk rather than from the worker frame
+// stream. That matters: the broker's startup readiness gate rejects an
+// onboarding menu, so no `worker_ready` arrives until *after* the trust dialog
+// has been answered. An observation keyed on readiness would time out on both
+// arms and report an infrastructure failure instead of the behaviour under
+// test.
+export function parseTrustDecision(contents) {
+  if (typeof contents !== 'string') return undefined;
+  const match = TRUST_MARKER.exec(contents.trim());
+  if (!match) return undefined;
+  return { outcome: match[1], layout: match[2] };
 }

@@ -1,44 +1,31 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTrustObserver } from './trust-observation.mjs';
+import { parseTrustDecision } from './trust-observation.mjs';
 
-function streamFrame(chunk) {
-  return { type: 'worker_stream', payload: { chunk } };
-}
-
-test('reports the accepted outcome and layout', () => {
-  const observer = createTrustObserver();
-  assert.equal(observer.observe(streamFrame('❯No,exit\r\n')), undefined);
-  const observation = observer.observe(streamFrame('\r\nTRUST_ACCEPTED layout=modern\r\n'));
-  assert.equal(observation?.outcome, 'ACCEPTED');
-  assert.equal(observation?.layout, 'modern');
+test('parses an accepted decision', () => {
+  const decision = parseTrustDecision('TRUST_ACCEPTED layout=modern\n');
+  assert.equal(decision?.outcome, 'ACCEPTED');
+  assert.equal(decision?.layout, 'modern');
 });
 
-test('reports the exited outcome', () => {
-  const observer = createTrustObserver();
-  const observation = observer.observe(streamFrame('\r\nTRUST_EXITED layout=modern\r\n'));
-  assert.equal(observation?.outcome, 'EXITED');
+test('parses an exited decision', () => {
+  assert.equal(parseTrustDecision('TRUST_EXITED layout=modern\n')?.outcome, 'EXITED');
 });
 
-test('joins a marker split across PTY frames', () => {
-  // PTY frames are transport chunks, so a marker can straddle two reads. A
-  // per-frame regex would miss this and the proof would time out instead of
-  // reporting the outcome it actually observed.
-  const observer = createTrustObserver();
-  assert.equal(observer.observe(streamFrame('\r\nTRUST_ACC')), undefined);
-  const observation = observer.observe(streamFrame('EPTED layout=legacy\r\n'));
-  assert.equal(observation?.outcome, 'ACCEPTED');
-  assert.equal(observation?.layout, 'legacy');
+test('parses the legacy layout', () => {
+  assert.equal(parseTrustDecision('TRUST_ACCEPTED layout=legacy')?.layout, 'legacy');
 });
 
-test('ignores frames that are not worker output', () => {
-  const observer = createTrustObserver();
-  assert.equal(observer.observe({ type: 'worker_ready', payload: {} }), undefined);
-  assert.equal(observer.observe({ type: 'worker_stream', payload: {} }), undefined);
+test('rejects a partially written file', () => {
+  // A truncated read must never be mistaken for a decision — that would report
+  // an outcome the broker never produced.
+  assert.equal(parseTrustDecision('TRUST_ACC'), undefined);
+  assert.equal(parseTrustDecision('TRUST_ACCEPTED layout='), undefined);
 });
 
-test('does not match an unrelated marker', () => {
-  const observer = createTrustObserver();
-  assert.equal(observer.observe(streamFrame('TRUST_PENDING layout=modern\r\n')), undefined);
+test('rejects unrelated content', () => {
+  assert.equal(parseTrustDecision(''), undefined);
+  assert.equal(parseTrustDecision('TRUST_PENDING layout=modern'), undefined);
+  assert.equal(parseTrustDecision(undefined), undefined);
 });
