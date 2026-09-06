@@ -66,14 +66,17 @@ const server = http.createServer((request, response) => {
       'retry-after': '${RETRY_AFTER_SECONDS}',
       'x-request-id': '${REQUEST_ID}',
     });
-    lastResponseAtMs = Date.now();
     response.end(JSON.stringify({
       ok: false,
       error: {
         code: '${ERROR_CODE}',
         message: '${ERROR_MESSAGE}',
       },
-    }));
+    }), () => {
+      // Timestamp the completed response, not the start of response emission,
+      // so terminalReturnMs excludes server-side flush time.
+      lastResponseAtMs = Date.now();
+    });
   });
 });
 
