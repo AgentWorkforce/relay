@@ -293,10 +293,28 @@ const jsonResponse = async (response, label) => {
   try { return text ? JSON.parse(text) : {}; } catch (error) { throw new Error(label + ' was not JSON: ' + error.message); }
 };
 const parseCliJson = (output) => {
-  const first = output.indexOf('{');
-  const last = output.lastIndexOf('}');
-  if (first < 0 || last <= first) throw new Error('set-model did not emit JSON: ' + output.slice(-500));
-  return JSON.parse(output.slice(first, last + 1));
+  const lines = String(output).split(/\r?\n/).reverse();
+  for (const line of lines) {
+    const candidate = line.trim();
+    if (!candidate.startsWith('{') || !candidate.endsWith('}')) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof parsed.status === 'string' &&
+        (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+      ) {
+        return parsed;
+      }
+    } catch {
+      // Continue searching for a complete receipt line. Logs are untrusted
+      // and may contain braces that are not a JSON receipt.
+    }
+  }
+  throw new Error(
+    'set-model did not emit a complete JSON receipt: ' + String(output).slice(-500)
+  );
 };
 
 let opencode;
