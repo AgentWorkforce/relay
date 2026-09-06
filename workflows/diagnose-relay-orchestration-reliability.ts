@@ -37,6 +37,11 @@ const CLOUD = path.resolve(ROOT, process.env.RELAY_CLOUD_REPO ?? '../cloud');
 const RELAYFILE = path.resolve(ROOT, process.env.RELAYFILE_REPO ?? '../relayfile');
 const RELAYFILE_CLOUD = path.resolve(ROOT, process.env.RELAYFILE_CLOUD_REPO ?? '../relayfile-cloud');
 
+function peerPrefix(repository: string): string {
+  const relative = path.relative(ROOT, repository).replaceAll('\\', '/');
+  return relative === '' ? '' : `${relative}/`;
+}
+
 function gate(action: string): string {
   return `node ${GATE} ${action} --artifact ${ART} --run-id ${RUN_ID}`;
 }
@@ -202,9 +207,9 @@ function diagnosisPermissions(agentName: string) {
     files: {
       read: [
         ...repoReads(''),
-        ...repoReads('../cloud/'),
-        ...repoReads('../relayfile/'),
-        ...repoReads('../relayfile-cloud/'),
+        ...repoReads(peerPrefix(CLOUD)),
+        ...repoReads(peerPrefix(RELAYFILE)),
+        ...repoReads(peerPrefix(RELAYFILE_CLOUD)),
         `${ART}/*`,
       ],
       write: writesByAgent[agentName] ?? [],

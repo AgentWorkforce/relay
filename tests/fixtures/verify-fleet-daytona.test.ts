@@ -578,12 +578,27 @@ describe('complete Daytona Fleet board', () => {
       'preflight-claude-model',
     ]);
     expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
+    expect(source).toContain("let candidatePreparationDependency = 'build-current-cli'");
+    expect(source.indexOf("wf.step('install-candidate-npm'")).toBeGreaterThan(
+      source.indexOf('if (!CONFIGURED_CANDIDATE_CLI)')
+    );
     expect(source).toContain('npm install --global npm@${REQUIRED_NPM_VERSION}');
     expect(source).toContain('test "$(npm --version)" = "${REQUIRED_NPM_VERSION}"');
     expect(source).toMatch(/candidatePreparationDependency\s*=\s*["']stage-current-platform-broker["']/);
     expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
     expect(source).toContain('VERIFY_FLEET_CLI=');
+  });
+
+  it('uses the exact effective Codex model for preflight and both reviewers', async () => {
+    const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
+
+    expect(source).toContain(
+      'process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || CodexModels.GPT_5_1_CODEX_MINI'
+    );
+    for (const role of ['analysis-repair', 'final-codex-review', 'preflight-codex']) {
+      expect(source).toMatch(new RegExp(`wf\\.agent\\('${role}'[\\s\\S]*?model: FLEET_CODEX_MODEL`));
+    }
   });
 
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
