@@ -565,6 +565,32 @@ describe('clean-room verification catalog', () => {
     expect(source).not.toContain('const STEP_TIMEOUT = 7_200_000');
   });
 
+  it('derives diagnosis peer reads from the configured repository paths', async () => {
+    const source = await readFile('workflows/diagnose-relay-orchestration-reliability.ts', 'utf8');
+
+    expect(source).toContain('function peerPrefix(repository: string)');
+    for (const repository of ['CLOUD', 'RELAYFILE', 'RELAYFILE_CLOUD']) {
+      expect(source).toContain(`...repoReads(peerPrefix(${repository}))`);
+    }
+    expect(source).not.toContain("...repoReads('../cloud/')");
+    expect(source).not.toContain("...repoReads('../relayfile/')");
+    expect(source).not.toContain("...repoReads('../relayfile-cloud/')");
+  });
+
+  it('keeps credential-named test source readable while denying credential artifacts', async () => {
+    const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
+    const matrix = await readFile('tests/relayflows/cleanroom/relay.matrix.json', 'utf8');
+    const lanePermissionSource = source.slice(
+      source.indexOf('function lanePermissions'),
+      source.indexOf('async function ensureReviewPlaceholders')
+    );
+
+    expect(lanePermissionSource).toContain("read: ['**']");
+    expect(lanePermissionSource).not.toContain("'**/*credential*'");
+    expect(lanePermissionSource).toContain("'**/*-credentials.json'");
+    expect(matrix).toContain('packages/cli/src/cli/plugin-credential-safety.test.ts');
+  });
+
   it('rejects an omitted corpus-case timeout budget', async () => {
     const { matrix } = await loadCatalog('tests/relayflows/cleanroom/relay.matrix.json');
 
