@@ -299,9 +299,21 @@ async function main() {
     failOnError: true,
     timeoutMs: 1_800_000,
   });
+  let candidatePreparationDependency = 'build-current-cli';
+  if (!CONFIGURED_CANDIDATE_CLI) {
+    wf.step('stage-current-platform-broker', {
+      type: 'deterministic',
+      dependsOn: ['build-current-cli'],
+      command: 'node scripts/verify-features/relay-candidate-install.mjs stage-source-broker',
+      captureOutput: true,
+      failOnError: true,
+      timeoutMs: 1_800_000,
+    });
+    candidatePreparationDependency = 'stage-current-platform-broker';
+  }
   wf.step('prepare-clean-installed-candidate', {
     type: 'deterministic',
-    dependsOn: ['build-current-cli'],
+    dependsOn: [candidatePreparationDependency],
     command: CANDIDATE_PREPARE_COMMAND,
     captureOutput: true,
     failOnError: true,

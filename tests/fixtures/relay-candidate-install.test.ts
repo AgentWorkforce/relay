@@ -102,6 +102,11 @@ describe('Relay candidate clean-install attestation', () => {
     expect(invocation.args).not.toContain('--prefix');
   });
 
+  it('rewrites descriptor-bound executable paths before spawning them', async () => {
+    const source = await readFile('scripts/verify-features/relay-candidate-install.mjs', 'utf8');
+    expect(source).toContain('spawnSync(rewritePrivatePath(command), childArgs');
+  });
+
   it.skipIf(process.platform !== 'linux')(
     'keeps npm lockfile identity canonical through the inherited Linux descriptor',
     async () => {

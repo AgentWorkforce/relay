@@ -504,10 +504,18 @@ describe('complete Daytona Fleet board', () => {
 
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
     const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
+    const build = source.indexOf("wf.step('build-current-cli'");
+    const stageBroker = source.indexOf("wf.step('stage-current-platform-broker'");
     const prepare = source.indexOf("wf.step('prepare-clean-installed-candidate'");
     const attemptA = source.indexOf("wf.step('run-daytona-board-attempt-a'");
-    expect(prepare).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(-1);
+    expect(stageBroker).toBeGreaterThan(build);
+    expect(prepare).toBeGreaterThan(stageBroker);
     expect(prepare).toBeLessThan(attemptA);
+    expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
+    expect(source).toContain("candidatePreparationDependency = 'stage-current-platform-broker'");
+    expect(source).toContain('dependsOn: [candidatePreparationDependency]');
+    expect(source).toContain('relay-candidate-install.mjs stage-source-broker');
     expect(source).toContain("dependsOn: ['prepare-clean-installed-candidate']");
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
     expect(source).toContain('VERIFY_FLEET_CLI=');

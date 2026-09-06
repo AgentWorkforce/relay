@@ -19,6 +19,12 @@ import { mkdir, open } from 'node:fs/promises';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  cleanroomLaneNetwork,
+  cleanroomLaneWritePaths,
+  cleanroomReviewNetwork,
+} from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const RUNNER = 'scripts/verify-features/cleanroom.mjs';
@@ -113,17 +119,11 @@ function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRo
 function reviewPermissions(role: string) {
   const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
   const cloudApiUrl = process.env.CLOUD_API_URL?.trim();
-  const providerHosts =
-    role.startsWith('claude') || role === 'final-claude-signoff'
-      ? ['api.anthropic.com:443']
-      : role.startsWith('codex') || role === 'final-codex-signoff'
-        ? ['api.openai.com:443', 'chatgpt.com:443', 'auth.openai.com:443']
-        : ['api.opencode.ai:443', 'opencode.ai:443', 'api.openrouter.ai:443', 'openrouter.ai:443'];
-  let network: false | { allow: string[]; deny: string[] } = false;
+  let cloudHost: string | undefined;
   if (cloudApiUrl) {
     const parsed = new URL(cloudApiUrl);
     const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
-    network = { allow: [`${parsed.hostname}:${port}`, ...providerHosts], deny: ['*'] };
+    cloudHost = `${parsed.hostname}:${port}`;
   }
   return {
     description: `Constrain ${role} to sealed clean-room evidence and its own draft.`,
@@ -142,13 +142,12 @@ function reviewPermissions(role: string) {
       write: [`${artifactDir}/draft-${role}.json`, `${artifactDir}/review-provenance/${role}.json`],
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
     },
-    network,
+    network: cleanroomReviewNetwork(role, cloudHost),
     exec: [reviewProvenanceCommand(role)],
   };
 }
 
 function lanePermissions(lane: string) {
-  const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
   return {
     description: `Constrain lane-${lane} to immutable source plus generated build/evidence outputs.`,
     why: 'Lane agents may execute the deterministic runner but must not edit product source or test inputs.',
@@ -156,37 +155,10 @@ function lanePermissions(lane: string) {
     inherit: false,
     files: {
       read: ['**'],
-      write: [
-        'node_modules/**',
-        'target/**',
-        'packages/*/dist/**',
-        'packages/*/node_modules/**',
-        'plugins/*/dist/**',
-        'plugins/*/node_modules/**',
-        'tests/integration/broker/dist/**',
-        '.agentworkforce/trajectories/**',
-        `${artifactDir}/**`,
-      ],
+      write: cleanroomLaneWritePaths(NONCE, lane),
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*', '**/.git/**'],
     },
-    network: {
-      allow: [
-        'agentrelay.com:443',
-        'api.github.com:443',
-        'github.com:443',
-        'codeload.github.com:443',
-        'registry.npmjs.org:443',
-        'crates.io:443',
-        'index.crates.io:443',
-        'static.crates.io:443',
-        'pypi.org:443',
-        'files.pythonhosted.org:443',
-        'localhost:*',
-        '127.0.0.1:*',
-        '[::1]:*',
-      ],
-      deny: ['*'],
-    },
+    network: cleanroomLaneNetwork(),
     exec: [command('lane', ` --lane ${lane}`)],
   };
 }
