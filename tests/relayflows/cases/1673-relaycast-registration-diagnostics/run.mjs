@@ -145,13 +145,9 @@ try {
     completed.status !== 0 &&
     observations.requestCount === 1 &&
     terminalReturnMs < NO_TERMINAL_SLEEP_MAX_MS &&
-    [
-      `(${RESPONSE_STATUS})`,
-      ERROR_CODE,
-      ERROR_MESSAGE,
-      `request_id: ${REQUEST_ID}`,
-      'attempts: 1',
-    ].every((marker) => commandStderr.includes(marker));
+    [`(${RESPONSE_STATUS})`, ERROR_CODE, ERROR_MESSAGE, `request_id: ${REQUEST_ID}`, 'attempts: 1'].every(
+      (marker) => commandStderr.includes(marker)
+    );
 
   let outcome;
   let signature;
