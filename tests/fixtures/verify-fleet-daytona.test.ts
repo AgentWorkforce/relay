@@ -941,6 +941,7 @@ describe('complete Daytona Fleet board', () => {
 
   it('returns a timeout result when an escaped descendant retains the output pipes', async () => {
     let escapedPid: number | undefined;
+    let cleanupError: unknown;
     const startedAt = Date.now();
     try {
       const script = [
@@ -961,10 +962,11 @@ describe('complete Daytona Fleet board', () => {
         try {
           process.kill(escapedPid, 'SIGKILL');
         } catch (error: any) {
-          if (error?.code !== 'ESRCH') throw error;
+          if (error?.code !== 'ESRCH') cleanupError = error;
         }
       }
     }
+    expect(cleanupError).toBeUndefined();
   });
 
   it('delivers staged stdin bytes so interactive mode semantics can be proven', async () => {

@@ -1974,6 +1974,19 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('secret');
   });
 
+  it('redacts a complete declared secret that contains a credential-shaped substring', () => {
+    const declaredCredential = 'wrapper-ghp_0123456789abcdefghijklmnop-tail';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('wrapper');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('tail');
+  });
+
   it('masks a credential-shaped diagnostic that is only a prefix of a declared secret', () => {
     const declaredCredential = 'ghp_abc"\\line\nsecret';
     const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'provider returned ghp_abc' }, [

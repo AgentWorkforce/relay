@@ -26,6 +26,8 @@ const MAX_TERMINAL_DIAGNOSTIC_BYTES = 32 * 1024;
 // runner cannot depend on workspace package resolution.
 const LIVE_CREDENTIAL =
   /(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_|rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
+const LIVE_CREDENTIAL_PREFIX =
+  /^(?:github_pat_|ghp_|gho_|ghu_|ghs_|ghr_|rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)/;
 
 function run(command, args, options = {}) {
   return runBoundedProcess(command, args, {
@@ -94,34 +96,36 @@ function diagnosticString(value, declaredSecrets = []) {
 }
 
 function redactTerminalDiagnostic(value, declaredSecrets) {
-  // Credential-shaped values must be collapsed before arbitrary declared
-  // substrings. Preserve a credential-shaped prefix when it is only the start
-  // of a declared value containing characters outside LIVE_CREDENTIAL so the
-  // exact second pass can remove that complete declared value.
-  let redacted = value.replace(LIVE_CREDENTIAL, (match, prefix, body, offset, source) => {
-    if (
-      declaredSecrets.some(
-        (secret) => secret === match || (secret.startsWith(prefix) && match.startsWith(secret))
-      )
-    ) {
-      return '[REDACTED_DECLARED_SECRET]';
-    }
-    // Preserve a credential-shaped prefix only when the complete declared
-    // secret begins at this exact occurrence. The exact-value pass below can
-    // then redact characters that LIVE_CREDENTIAL intentionally does not
-    // match. A diagnostic containing only a declared secret's prefix must
-    // still receive the ordinary credential mask.
-    if (
-      declaredSecrets.some((secret) => secret.startsWith(match) && source.startsWith(secret, Number(offset)))
-    ) {
-      return match;
-    }
-    return body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`;
-  });
+  // Remove complete declared values before credential matching. Otherwise a
+  // credential-looking substring can be replaced first and leave the wrapper
+  // around it exposed. Incidental short substrings inside a larger credential
+  // stay intact for whole-credential masking; a declaration that begins at
+  // the credential boundary is authoritative only when it names a known
+  // credential prefix.
+  let redacted = value;
   for (const secret of declaredSecrets) {
-    redacted = redacted.split(secret).join('[REDACTED_DECLARED_SECRET]');
+    const credentialRanges = [...redacted.matchAll(LIVE_CREDENTIAL)].map((match) => ({
+      start: match.index,
+      end: Number(match.index) + match[0].length,
+    }));
+    redacted = redacted.replaceAll(secret, (match, offset) => {
+      const start = Number(offset);
+      const end = start + match.length;
+      const containingCredential = credentialRanges.find(
+        (range) => start >= Number(range.start) && end <= range.end
+      );
+      if (
+        containingCredential &&
+        (start !== Number(containingCredential.start) || !LIVE_CREDENTIAL_PREFIX.test(secret))
+      ) {
+        return match;
+      }
+      return '[REDACTED_DECLARED_SECRET]';
+    });
   }
-  return redacted;
+  return redacted.replace(LIVE_CREDENTIAL, (_match, prefix, body) =>
+    body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
+  );
 }
 
 /**
