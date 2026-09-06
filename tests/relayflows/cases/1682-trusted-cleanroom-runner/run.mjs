@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { parse } from 'yaml';
+import { parseStrictWorkflowYaml } from './strict-yaml-subset.mjs';
 
 const CASE_ID = '1682-trusted-cleanroom-runner';
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -135,8 +135,8 @@ if (present.every((value) => !value)) {
 
   const requestSource = await readFile(requestWorkflowPath, 'utf8');
   const consumerSource = await readFile(consumerWorkflowPath, 'utf8');
-  const requestWorkflow = parse(requestSource);
-  const consumer = parse(consumerSource);
+  const requestWorkflow = parseStrictWorkflowYaml(requestSource);
+  const consumer = parseStrictWorkflowYaml(consumerSource);
   assertDeepEqual(
     Object.keys(requestWorkflow.on),
     ['repository_dispatch', 'workflow_dispatch'],

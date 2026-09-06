@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -22,8 +22,13 @@ describe('safe qualification file access', () => {
       await hardenPrivateRegularFileNoFollow(target, {
         label: 'downloaded candidate metadata',
       });
-      expect((await lstat(target)).mode & 0o777).toBe(0o600);
-      expect(await readFile(target, 'utf8')).toBe('{"ok":true}\n');
+      const hardened = await readRegularFileNoFollow(target, {
+        label: 'downloaded candidate metadata',
+        privateMode: true,
+        currentUserOwned: true,
+      });
+      expect(hardened.mode).toBe(0o600);
+      expect(hardened.bytes.toString('utf8')).toBe('{"ok":true}\n');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -80,8 +85,13 @@ describe('safe qualification file access', () => {
         label: 'evidence',
         currentUserOwned: true,
       });
-      expect(await readFile(target, 'utf8')).toBe('{"version":2}\n');
-      expect((await lstat(target)).mode & 0o777).toBe(0o600);
+      const overwritten = await readRegularFileNoFollow(target, {
+        label: 'evidence',
+        privateMode: true,
+        currentUserOwned: true,
+      });
+      expect(overwritten.bytes.toString('utf8')).toBe('{"version":2}\n');
+      expect(overwritten.mode).toBe(0o600);
       await expect(overwriteRegularFileNoFollow(link, 'unsafe')).rejects.toThrow(/symbolic link|ELOOP/i);
     } finally {
       await rm(root, { recursive: true, force: true });
