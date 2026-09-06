@@ -35,6 +35,10 @@ type CompileInputWithWorkdir = CompileInput & {
 
 const SKIPPED_DIRS = new Set(['.git', '.relay', 'node_modules']);
 
+function isSkippedDirectory(name: string): boolean {
+  return SKIPPED_DIRS.has(name.toLowerCase());
+}
+
 function cleanPatterns(content: string): string[] {
   return content
     .split(/\r?\n/u)
@@ -157,13 +161,16 @@ function exactFutureWritePath(projectDir: string, pattern: string): string | und
   ) {
     return undefined;
   }
+  if (relativePath.split('/').some(isSkippedDirectory)) {
+    return undefined;
+  }
 
   const target = path.resolve(projectDir, ...relativePath.split('/'));
   const relativeTarget = path.relative(projectDir, target);
   if (relativeTarget === '' || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`)) {
     return undefined;
   }
-  if (existsSync(target)) {
+  if (lstatSync(target, { throwIfNoEntry: false })) {
     return undefined;
   }
 
@@ -187,7 +194,10 @@ function walkProjectFiles(projectDir: string, currentDir = projectDir, files: st
   );
 
   for (const entry of entries) {
-    if (entry.isDirectory() && SKIPPED_DIRS.has(entry.name)) {
+    if (entry.isDirectory() && isSkippedDirectory(entry.name)) {
+      continue;
+    }
+    if (entry.isSymbolicLink()) {
       continue;
     }
 

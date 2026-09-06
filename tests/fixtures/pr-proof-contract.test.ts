@@ -1250,25 +1250,28 @@ describe('process timeout contract', () => {
     expect(signals).toEqual(['SIGKILL']);
   });
 
-  it('does not signal an exited child again when its former process group is unowned', () => {
-    const staleGroupError = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
-    expect(() =>
-      signalProcessTree(
-        {
-          pid: 12345,
-          exitCode: 0,
-          signalCode: null,
-          kill: () => {
-            throw new Error('exited child must not be signaled again');
+  it.skipIf(process.platform === 'win32')(
+    'does not signal an exited child again when its former process group is unowned',
+    () => {
+      const staleGroupError = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      expect(() =>
+        signalProcessTree(
+          {
+            pid: 12345,
+            exitCode: 0,
+            signalCode: null,
+            kill: () => {
+              throw new Error('exited child must not be signaled again');
+            },
           },
-        },
-        'SIGKILL',
-        () => {
-          throw staleGroupError;
-        }
-      )
-    ).not.toThrow();
-  });
+          'SIGKILL',
+          () => {
+            throw staleGroupError;
+          }
+        )
+      ).not.toThrow();
+    }
+  );
 
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
     const result = await runProcess(

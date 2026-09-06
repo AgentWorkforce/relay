@@ -793,7 +793,19 @@ async function execute(argv, options = {}) {
 
   await new Promise((resolve) => {
     let child;
+    let timer;
     let killTimer;
+    let settled = false;
+    const settle = (code, closeSignal) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      for (const stdinTimer of stdinTimers) clearTimeout(stdinTimer);
+      exitCode = code;
+      signal = closeSignal;
+      resolve();
+    };
     try {
       child = spawn(argv[0], argv.slice(1), {
         cwd: options.cwd ?? process.cwd(),
@@ -821,12 +833,14 @@ async function execute(argv, options = {}) {
       }
     }
     child.stdout.on('data', (chunk) => {
+      if (settled) return;
       stdoutBytes += Buffer.byteLength(chunk);
       stdoutTruncated ||= stdoutBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stdoutCaptureTruncated ||= stdoutBytes > captureLimit;
       stdout = boundedAppend(stdout, chunk, captureLimit);
     });
     child.stderr.on('data', (chunk) => {
+      if (settled) return;
       stderrBytes += Buffer.byteLength(chunk);
       stderrTruncated ||= stderrBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stderrCaptureTruncated ||= stderrBytes > captureLimit;
@@ -835,7 +849,7 @@ async function execute(argv, options = {}) {
     child.on('error', (error) => {
       spawnError = error;
     });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
       try {
         if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
@@ -850,16 +864,15 @@ async function execute(argv, options = {}) {
         } catch {
           // Already gone.
         }
+        child.stdin?.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(child.exitCode, child.signalCode);
       }, 1_500).unref();
     }, timeoutMs);
     timer.unref();
     child.on('close', (code, closeSignal) => {
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      for (const stdinTimer of stdinTimers) clearTimeout(stdinTimer);
-      exitCode = code;
-      signal = closeSignal;
-      resolve();
+      settle(code, closeSignal);
     });
   });
 

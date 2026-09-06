@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
 - `agent-relay node status` bounds optional broker-detail reads so an unresponsive session endpoint cannot hang a liveness probe.
 - `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
-- `@agent-relay/cloud` permission compilation preserves exact future-file writes in Relayfile mount plans when the parent directory already exists.
+- Relayflow agents can create permitted new files inside an existing Relayfile mount without a permission failure.
 
 ### Security
 

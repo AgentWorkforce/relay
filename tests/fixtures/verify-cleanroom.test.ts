@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -638,6 +638,49 @@ describe('clean-room verification catalog', () => {
         afterOtherLaneWrites.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging`]
       ).toEqual(['read']);
       await writeFile(path.join(projectDir, target), '{"created":true}\n', { flag: 'wx' });
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects future writes inside skipped state directories and through dangling symlinks', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-future-write-deny-'));
+    try {
+      const deniedTargets = [
+        '.git/future.json',
+        'nested/.relay/future.json',
+        'packages/fixture/node_modules/future.json',
+        'packages/fixture/NODE_MODULES/future.json',
+      ];
+      const danglingTarget = 'safe/dangling.json';
+      const allowedTarget = 'safe/future.json';
+      for (const directory of [
+        '.git',
+        'nested/.relay',
+        'packages/fixture/node_modules',
+        'packages/fixture/NODE_MODULES',
+        'safe',
+      ]) {
+        await mkdir(path.join(projectDir, directory), { recursive: true });
+      }
+      await symlink('missing.json', path.join(projectDir, danglingTarget));
+
+      const compiled = compileAgentPermissions({
+        agentName: 'future-writer',
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          files: { write: [...deniedTargets, danglingTarget, allowedTarget] },
+        },
+      });
+
+      expect(compiled.readwritePaths).toEqual([allowedTarget]);
+      for (const deniedTarget of [...deniedTargets, danglingTarget]) {
+        expect(compiled.readwritePaths).not.toContain(deniedTarget);
+        expect(compiled.scopes).not.toContain(`relayfile:fs:write:/${deniedTarget}`);
+      }
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
