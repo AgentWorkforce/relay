@@ -355,15 +355,17 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(spawnDone.status).toBe('completed');
 
     const pidPath = path.join(nodeA.projectDir, '.agentworkforce', 'relay', RELEASE_PROBE_PID_FILE);
-    const readDescendantPid = async (previousPid?: number) => {
-      const pid = Number.parseInt(readFileSync(pidPath, 'utf8').trim(), 10);
-      expect(Number.isInteger(pid)).toBe(true);
-      return previousPid === undefined || pid !== previousPid ? pid : null;
+    const readDescendant = async (previousToken?: string) => {
+      const probe = JSON.parse(readFileSync(pidPath, 'utf8')) as { pid?: number; token?: string };
+      expect(Number.isInteger(probe.pid)).toBe(true);
+      expect(typeof probe.token).toBe('string');
+      return previousToken === undefined || probe.token !== previousToken ? probe : null;
     };
-    const descendantPid = await waitFor(readDescendantPid, {
+    const descendant = await waitFor(readDescendant, {
       timeoutMs: 10_000,
       label: 'release probe descendant pid',
     });
+    const descendantPid = descendant.pid!;
 
     const cli = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
     const released = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
@@ -431,11 +433,12 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       { timeoutMs: 30_000, label: 'same-name respawn settled' }
     );
     expect(respawnDone.status).toBe('completed');
-    const secondDescendantPid = await waitFor(() => readDescendantPid(descendantPid), {
+    const secondDescendant = await waitFor(() => readDescendant(descendant.token), {
       timeoutMs: 10_000,
       label: 'same-name respawn descendant pid',
     });
-    expect(secondDescendantPid).not.toBe(descendantPid);
+    const secondDescendantPid = secondDescendant.pid!;
+    expect(secondDescendant.token).not.toBe(descendant.token);
     const releasedAgain = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
     expect(releasedAgain.status).toBe(0);
     expect(releasedAgain.stdout).toContain(name);

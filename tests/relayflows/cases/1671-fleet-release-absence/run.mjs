@@ -148,11 +148,16 @@ try {
   );
 
   const releaseStarted = Date.now();
-  const releaseResult = await brokerRequest(apiBase, `/api/spawned/${encodeURIComponent(targetName)}`, {
-    method: 'DELETE',
-    headers,
-    body: JSON.stringify({ reason: 'sealed relayflow release proof' }),
-  });
+  const releaseResult = await brokerRequest(
+    apiBase,
+    `/api/spawned/${encodeURIComponent(targetName)}`,
+    {
+      method: 'DELETE',
+      headers,
+      body: JSON.stringify({ reason: 'sealed relayflow release proof' }),
+    },
+    29_000
+  );
   const releaseElapsedMs = Date.now() - releaseStarted;
   if (releaseElapsedMs >= ENGINE_ACTION_DEADLINE_MS) {
     throw new Error(
@@ -165,7 +170,11 @@ try {
   await waitFor(
     async () => {
       const result = await brokerRequest(apiBase, '/api/spawned', { headers });
-      return !result.body.agents?.some((agent) => agent.name === targetName);
+      return (
+        result.status < 300 &&
+        Array.isArray(result.body.agents) &&
+        !result.body.agents.some((agent) => agent.name === targetName)
+      );
     },
     { timeoutMs: 10_000, intervalMs: 100, label: 'artifact broker roster absence' }
   );
@@ -324,8 +333,19 @@ function sendJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-async function brokerRequest(baseUrl, pathname, init = {}) {
-  const response = await fetch(`${baseUrl}${pathname}`, init);
+async function brokerRequest(baseUrl, pathname, init = {}, timeoutMs = 5_000) {
+  const requestUrl = new URL(pathname, baseUrl);
+  if (
+    requestUrl.protocol !== 'http:' ||
+    requestUrl.hostname !== '127.0.0.1' ||
+    !requestUrl.pathname.startsWith('/')
+  ) {
+    throw new Error(`proof broker URL must be loopback HTTP: ${requestUrl.origin}`);
+  }
+  const response = await fetch(requestUrl, {
+    ...init,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   const text = await response.text();
   let body = {};
   try {

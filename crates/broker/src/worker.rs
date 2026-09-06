@@ -1281,7 +1281,10 @@ impl WorkerRegistry {
         let process_tree = match crate::spawner::attach_process_tree(&child) {
             Ok(owner) => owner,
             Err(error) => {
-                let _ = child.start_kill();
+                if let Some(pid) = child.id() {
+                    crate::spawner::terminate_process_tree(pid).await;
+                }
+                let _ = timeout(Duration::from_secs(1), child.wait()).await;
                 return Err(error).context("failed to establish worker process-tree ownership");
             }
         };

@@ -7,6 +7,7 @@
 // models a TUI consuming startup keystrokes before its prompt is ready.
 const { mkdirSync, writeFileSync } = require('node:fs');
 const { spawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { RELEASE_PROBE_PID_FILE } = require('./release-probe-constants.cjs');
 
@@ -36,7 +37,9 @@ if (process.env.RELAY_E2E_SPAWN_DESCENDANT === '1') {
   });
   // Child.pid is not guaranteed until the spawn event. Writing only after that
   // event removes the PID-file race used by the release absence assertion.
-  releaseProbeChild.once('spawn', () => writeFileSync(pidPath, `${releaseProbeChild.pid}\n`));
+  releaseProbeChild.once('spawn', () =>
+    writeFileSync(pidPath, JSON.stringify({ pid: releaseProbeChild.pid, token: randomUUID() }) + '\n')
+  );
 }
 
 function recordBriefNonce(nonce) {

@@ -534,7 +534,14 @@ impl Spawner {
             Ok(owner) => owner,
             Err(error) => {
                 let mut child = child;
-                let _ = child.start_kill();
+                // Assignment can fail after the wrapper has started its own
+                // children. Use the OS tree operation before dropping the
+                // wrapper so those pre-assignment descendants are not left
+                // behind by the failed spawn.
+                if let Some(pid) = child.id() {
+                    terminate_process_tree(pid).await;
+                }
+                let _ = timeout(Duration::from_secs(1), child.wait()).await;
                 return Err(error).context("failed to establish wrap process-tree ownership");
             }
         };
@@ -698,7 +705,7 @@ pub(crate) fn request_child_termination(child: &mut Child) {
 }
 
 #[cfg(windows)]
-async fn terminate_process_tree(pid: u32) {
+pub(crate) async fn terminate_process_tree(pid: u32) {
     let taskkill = std::env::var_os("SystemRoot")
         .map(|root| {
             std::path::PathBuf::from(root)
