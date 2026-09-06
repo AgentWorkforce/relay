@@ -38,6 +38,8 @@ import {
 } from '../../scripts/verify-features/fleet-daytona.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  diagnosisAgentNetwork,
+  fleetReviewerNetwork,
   MODEL_TRANSPORT_HOSTS,
   preflightPermissions,
 } from '../../scripts/verify-features/fleet-permissions.mjs';
@@ -313,6 +315,49 @@ function completeEvidence(matrix: {
 }
 
 describe('complete Daytona Fleet board', () => {
+  it('restricts every Fleet reviewer and diagnosis agent to its model provider transport', () => {
+    const expectedProviders = {
+      opencode: [
+        ['fleet', 'cheap-supervisor'],
+        ['diagnosis', 'cloud-specialist'],
+        ['diagnosis', 'relayfile-specialist'],
+        ['diagnosis', 'data-plane-specialist'],
+      ],
+      codex: [
+        ['fleet', 'analysis-repair'],
+        ['fleet', 'final-codex-review'],
+        ['diagnosis', 'codex-reviewer'],
+        ['diagnosis', 'codex-fixer'],
+        ['diagnosis', 'fresh-codex-signoff'],
+      ],
+      claude: [
+        ['fleet', 'final-claude-review'],
+        ['diagnosis', 'lead'],
+        ['diagnosis', 'claude-reviewer'],
+        ['diagnosis', 'claude-fixer'],
+        ['diagnosis', 'fresh-claude-signoff'],
+      ],
+    } as const;
+
+    for (const [provider, agents] of Object.entries(expectedProviders)) {
+      for (const [workflow, agent] of agents) {
+        const network = workflow === 'fleet' ? fleetReviewerNetwork(agent) : diagnosisAgentNetwork(agent);
+        expect(network).toEqual({
+          allow: MODEL_TRANSPORT_HOSTS[provider],
+          deny: ['*'],
+        });
+        expect(network.allow).not.toContain('*');
+        for (const [otherProvider, otherHosts] of Object.entries(MODEL_TRANSPORT_HOSTS)) {
+          if (otherProvider === provider) continue;
+          for (const otherHost of otherHosts) expect(network.allow).not.toContain(otherHost);
+        }
+      }
+    }
+
+    expect(() => fleetReviewerNetwork('unknown-reviewer')).toThrow(/unknown Fleet reviewer/);
+    expect(() => diagnosisAgentNetwork('unknown-diagnosis-agent')).toThrow(/unknown diagnosis agent/);
+  });
+
   it('restricts each model preflight to its provider transport', async () => {
     for (const [provider, host] of [
       ['opencode', 'api.opencode.ai:443'],
