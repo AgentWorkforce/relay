@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
-- Broker no longer ACKs a fleet delivery it never surfaced to the agent: an unplaceable sequence is now rejected without an ACK so Relaycast can redeliver it, and the rejection is logged with its reason and sequence instead of failing silently.
+- A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
+- Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
 
 ## [11.10.3] - 2026-09-05
 

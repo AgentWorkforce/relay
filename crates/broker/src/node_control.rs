@@ -936,9 +936,10 @@ impl FleetDeliveryBook {
         // and a respawn rebinds the same agent record, whose engine-side
         // sequence keeps counting from where it left off (the engine reuses
         // agent ids, and only seeds a cursor when it negotiates
-        // `relay:delivery-cursor-v1`). Treating that as a gap acks the message
-        // without surfacing it — see `plan_fleet_delivery` — which destroys it
-        // and stops the engine retrying, leaving the agent permanently deaf.
+        // `relay:delivery-cursor-v1`). Treating that as a gap withholds the ack
+        // and surfaces nothing — see `plan_fleet_delivery` — leaving the broker
+        // waiting for a predecessor frame that was never sent, so this identity
+        // would gap every subsequent delivery and the agent would stay deaf.
         // Adopt this delivery as the starting position; `commit_received` seeds
         // the cursor to match. A provisional binding gets no such benefit of the
         // doubt: a second, unconfirmed identity claiming a live name must not be
