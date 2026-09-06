@@ -12,9 +12,10 @@ struct AppServerAuthConfig {
 enum OpenCodeModelOutcome {
     Applied(String),
     /// The mutation was accepted, but confirmation could not be observed.
-    /// Keep the broker receipt pending until a subsequent response or its
-    /// deadline; an unavailable GET is not proof that the provider rejected
-    /// the change.
+    /// Keep the broker receipt pending until a subsequent provider response
+    /// (if one arrives) or its deadline; an unavailable GET is not proof that
+    /// the provider rejected the change, and this worker does not claim that
+    /// it will retry confirmation on its own.
     Pending(String),
     Rejected(String),
 }

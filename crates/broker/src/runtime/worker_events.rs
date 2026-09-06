@@ -1165,7 +1165,9 @@ impl BrokerRuntime {
                                 // A successful provider mutation followed by an
                                 // unavailable confirmation read is uncertainty,
                                 // not rejection. Retain the correlation until a
-                                // subsequent response or the provider deadline.
+                                // subsequent response (if one arrives) or the
+                                // provider deadline; this path does not retry
+                                // provider confirmation on its own.
                                 if let Some(receipt) =
                                     model_receipts.get_mut(&name).filter(|receipt| {
                                         receipt.request_id == request_id
