@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +9,7 @@ import {
   createPrivateOutputRoot,
   digestInstalledClosureTree,
   digestInstalledPackageTree,
+  privateNpmInvocation,
   validateCandidateInstallAttestation,
   validateCandidateLockfile,
   verifyCandidateInstall,
@@ -64,6 +66,71 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
+  it('enters the inherited Linux descriptor before running npm', () => {
+    const invocation = privateNpmInvocation(
+      ['install', '--package-lock-only'],
+      '/proc/self/fd/3',
+      '/install',
+      'linux'
+    );
+
+    expect(invocation).toEqual({
+      command: '/bin/sh',
+      args: [
+        '-c',
+        'cd -- "$1" && shift && exec "$@"',
+        'relay-private-cwd',
+        '/proc/self/fd/3/install',
+        'npm',
+        'install',
+        '--package-lock-only',
+      ],
+    });
+    expect(invocation.args).not.toContain('--prefix');
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'keeps npm lockfile identity canonical through the inherited Linux descriptor',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-procfd-'));
+      const install = path.join(root, 'install');
+      let descriptor;
+      try {
+        await mkdir(install);
+        await writeFile(
+          path.join(install, 'package.json'),
+          `${JSON.stringify({ name: 'relay-candidate-clean-install', private: true, version: '0.0.0' })}\n`
+        );
+        descriptor = await open(root, 'r');
+        const invocation = privateNpmInvocation(
+          ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
+          '/proc/self/fd/3',
+          '/install',
+          'linux'
+        );
+        const result = spawnSync(invocation.command, invocation.args, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe', descriptor.fd],
+        });
+        expect(result.status, result.stderr).toBe(0);
+
+        const lockfile = JSON.parse(await readFile(path.join(install, 'package-lock.json'), 'utf8'));
+        expect(lockfile).toMatchObject({
+          name: 'relay-candidate-clean-install',
+          version: '0.0.0',
+          lockfileVersion: 3,
+          requires: true,
+          packages: {
+            '': { name: 'relay-candidate-clean-install', version: '0.0.0' },
+          },
+        });
+      } finally {
+        await descriptor?.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
   it.skipIf(process.platform === 'win32')('rejects pre-existing output roots and symlinks', async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-output-'));
     try {
