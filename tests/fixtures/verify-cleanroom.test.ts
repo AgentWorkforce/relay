@@ -747,6 +747,7 @@ describe('clean-room verification catalog', () => {
       const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-timeout-'));
       const pidFile = path.join(projectDir, 'escaped.pid');
       let escapedPid = 0;
+      let cleanupError: unknown;
       const startedAt = Date.now();
       try {
         const script = [
@@ -773,11 +774,12 @@ describe('clean-room verification catalog', () => {
           try {
             process.kill(escapedPid, 'SIGKILL');
           } catch (error: any) {
-            if (error?.code !== 'ESRCH') throw error;
+            if (error?.code !== 'ESRCH') cleanupError = error;
           }
         }
         await rm(projectDir, { recursive: true, force: true });
       }
+      expect(cleanupError).toBeUndefined();
     }
   );
 
