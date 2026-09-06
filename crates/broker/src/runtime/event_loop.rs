@@ -370,6 +370,14 @@ pub(super) struct ModelReceipt {
 /// permanent per-worker history.
 pub(super) const MODEL_RECEIPT_RETENTION: Duration = Duration::from_secs(5 * 60);
 
+/// How long a busy worker-event channel may defer model-request expiry (and
+/// orphaned-request terminalization) past the request's own deadline. While
+/// events remain queued or in flight the deferral protects a timely provider
+/// receipt from actor scheduling; past this bound the request expires anyway
+/// so one continuously busy worker cannot block every later model change on
+/// the same worker (the broker admits one mutation per worker at a time).
+pub(super) const MODEL_EXPIRY_DEFERRAL_BOUND: Duration = Duration::from_secs(30);
+
 pub(super) fn retain_model_receipt(receipt: &ModelReceipt, now: Instant) -> bool {
     receipt.pending || now.duration_since(receipt.updated_at) < MODEL_RECEIPT_RETENTION
 }
@@ -411,10 +419,6 @@ pub(super) fn terminalize_model_requests_for_worker(
     model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
     now: Instant,
 ) {
-    let effective_model = model_receipts
-        .get(worker_name)
-        .filter(|receipt| receipt.generation == generation)
-        .and_then(|receipt| receipt.effective_model.clone());
     let request_ids: Vec<String> = pending_model_requests
         .iter()
         .filter_map(|(request_id, pending)| {
@@ -424,20 +428,29 @@ pub(super) fn terminalize_model_requests_for_worker(
         .collect();
     for request_id in request_ids {
         if let Some(pending) = pending_model_requests.remove(&request_id) {
+            // The name-keyed receipt is the primary source for the last
+            // provider-confirmed model/revision, but an explicit release
+            // removes it before this terminalization runs. Fall back to the
+            // request's own receipt — the admission-time snapshot retains the
+            // previously confirmed effective model — so terminalizing a later
+            // pending request cannot erase the last confirmed state that
+            // correlated pollers are entitled to see.
+            let confirmed = model_receipts
+                .get(worker_name)
+                .filter(|receipt| receipt.generation == generation)
+                .or_else(|| model_receipts_by_request.get(&request_id));
+            let effective_model = confirmed.and_then(|receipt| receipt.effective_model.clone());
+            let effective_revision = confirmed.map(|receipt| receipt.effective_revision);
             let receipt = ModelReceipt {
                 name: worker_name.clone(),
                 requested_model: pending.requested_model,
-                effective_model: effective_model.clone(),
+                effective_model,
                 applied: false,
                 status: "rejected".into(),
                 request_id: request_id.clone(),
                 generation,
                 revision: pending.revision,
-                effective_revision: model_receipts
-                    .get(worker_name)
-                    .filter(|receipt| receipt.generation == generation)
-                    .map(|receipt| receipt.effective_revision)
-                    .unwrap_or_default(),
+                effective_revision: effective_revision.unwrap_or_default(),
                 accepted: true,
                 pending: false,
                 success: false,

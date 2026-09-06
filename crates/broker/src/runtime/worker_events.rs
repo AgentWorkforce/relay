@@ -1100,13 +1100,15 @@ impl BrokerRuntime {
                             );
                             return;
                         }
-                        // The provider window starts when this handler sends
-                        // the start acknowledgement. The event timestamp is
-                        // authoritative only for a response already received
-                        // from the worker; using it here could spend the
-                        // provider window while this actor was delayed.
-                        request.provider_deadline = Some(Instant::now() + request.provider_timeout);
-                        if let Err(error) = workers
+                        // The provider window starts only after the start
+                        // acknowledgement is actually delivered to the worker.
+                        // The event timestamp is authoritative only for a
+                        // response already received from the worker; using it
+                        // here could spend the provider window while this
+                        // actor was delayed, and arming the deadline before
+                        // the send would let writer backpressure consume the
+                        // window before the worker even sees the ack.
+                        let ack_sent = workers
                             .send_to_worker(
                                 &name,
                                 "set_model_started_ack",
@@ -1114,12 +1116,15 @@ impl BrokerRuntime {
                                 json!({}),
                             )
                             .await
-                        {
+                            .is_ok();
+                        if ack_sent {
+                            request.provider_deadline =
+                                Some(Instant::now() + request.provider_timeout);
+                        } else {
                             tracing::debug!(
                                 worker = %name,
                                 request_id,
-                                error = %error,
-                                "failed to acknowledge model-start event"
+                                "failed to acknowledge model-start event; provider window not armed"
                             );
                         }
                     } else if msg_type.ends_with("_response") {

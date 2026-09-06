@@ -938,6 +938,212 @@ async fn queued_model_receipt_survives_worker_exit_before_bounded_drain() {
 }
 
 #[tokio::test]
+async fn model_expiry_waits_for_a_receipt_that_is_stamped_but_not_yet_sent() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+
+    // The channel is empty, but a worker reader holds a frame that was already
+    // timestamped before its channel send (log I/O or backpressure). An
+    // empty-channel observation alone must not expire the request.
+    fixture.runtime.workers.set_receipts_in_flight_for_test(1);
+    assert!(
+        fixture
+            .runtime
+            .drain_worker_events_before_maintenance()
+            .await
+    );
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(true)
+        .await;
+    assert!(
+        fixture
+            .runtime
+            .pending_model_requests
+            .contains_key(&request_id),
+        "in-flight receipt must defer model expiry even with an empty channel"
+    );
+
+    // Once the reader completes its send the request can expire normally.
+    fixture.runtime.workers.set_receipts_in_flight_for_test(0);
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(true)
+        .await;
+    assert!(!fixture
+        .runtime
+        .pending_model_requests
+        .contains_key(&request_id));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn model_expiry_deferral_is_bounded_under_a_continuously_busy_channel() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+    // The deadline passed by more than MODEL_EXPIRY_DEFERRAL_BOUND, so the
+    // deferral that protects queued receipts cannot hold the request forever:
+    // a permanently busy worker channel must not block every later model
+    // change on the same worker.
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .deadline = Instant::now()
+        .checked_sub(super::MODEL_EXPIRY_DEFERRAL_BOUND + Duration::from_secs(1))
+        .unwrap();
+
+    let generation = fixture.runtime.workers.workers["model-worker"].generation;
+    for _ in 0..33 {
+        fixture
+            .worker_event_tx
+            .send(WorkerEvent::Message {
+                name: WorkerName::new("model-worker"),
+                generation,
+                received_at: Instant::now(),
+                value: json!({ "type": "worker_stream", "payload": { "chunk": "" } }),
+            })
+            .await
+            .unwrap();
+    }
+    let queue_empty = fixture
+        .runtime
+        .drain_worker_events_before_maintenance()
+        .await;
+    assert!(!queue_empty);
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(queue_empty)
+        .await;
+    assert!(
+        !fixture
+            .runtime
+            .pending_model_requests
+            .contains_key(&request_id),
+        "expiry must proceed past the deferral bound even while events remain queued"
+    );
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some(request_id),
+            reply: get_tx,
+        })
+        .await;
+    let receipt = get_rx.await.unwrap().unwrap();
+    assert_eq!(receipt["status"], "rejected");
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[test]
+fn terminalization_preserves_confirmed_model_from_the_request_receipt() {
+    use super::terminalize_model_requests_for_worker;
+    use super::{ModelReceipt, PendingModelRequest};
+
+    let worker = WorkerName::new("model-worker");
+    let generation = Uuid::new_v4();
+    let mut pending_model_requests = HashMap::new();
+    pending_model_requests.insert(
+        "request-b".to_string(),
+        PendingModelRequest {
+            worker_name: worker.clone(),
+            generation,
+            requested_model: "sonnet".into(),
+            revision: 2,
+            deadline: Instant::now() + Duration::from_secs(60),
+            provider_deadline: None,
+            provider_timeout: Duration::from_secs(60),
+        },
+    );
+    let mut model_receipts = HashMap::new();
+    // The name-keyed receipt is already gone (an explicit release removed it),
+    // but the request's own admission-time receipt retains the earlier
+    // provider-confirmed effective model and revision.
+    let mut model_receipts_by_request = HashMap::new();
+    model_receipts_by_request.insert(
+        "request-b".to_string(),
+        ModelReceipt {
+            name: worker.clone(),
+            requested_model: "sonnet".into(),
+            effective_model: Some("gpt-5.4".into()),
+            applied: false,
+            status: "accepted_pending".into(),
+            request_id: "request-b".to_string(),
+            generation,
+            revision: 2,
+            effective_revision: 1,
+            accepted: true,
+            pending: true,
+            success: false,
+            error: None,
+            updated_at: Instant::now(),
+        },
+    );
+
+    terminalize_model_requests_for_worker(
+        &worker,
+        generation,
+        &mut pending_model_requests,
+        &mut model_receipts,
+        &mut model_receipts_by_request,
+        Instant::now(),
+    );
+
+    let receipt = &model_receipts_by_request["request-b"];
+    assert_eq!(receipt.status, "rejected");
+    assert_eq!(receipt.effective_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(receipt.effective_revision, 1);
+    assert!(
+        !pending_model_requests.contains_key("request-b"),
+        "terminalization must remove the pending request"
+    );
+}
+
+#[tokio::test]
 async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
     let registry = make_app_server_registry_with_worker(
         "model-worker",

@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -261,6 +262,53 @@ pub(crate) struct WorkerRegistry {
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+    /// Protocol frames that a worker reader has stamped but not yet handed to
+    /// the runtime channel. The model-receipt expiry sweep reads this so a
+    /// receipt that is timestamped before its deadline but descheduled before
+    /// its channel send cannot be expired by an "empty channel" observation.
+    receipts_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl WorkerRegistry {
+    /// Number of worker frames currently between their receive timestamp and
+    /// their channel send. Zero means every received frame has been queued.
+    pub(crate) fn receipts_in_flight(&self) -> usize {
+        self.receipts_in_flight
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Test hook: pretend a reader holds `value` stamped-but-unsent frames.
+    #[cfg(test)]
+    pub(crate) fn set_receipts_in_flight_for_test(&self, value: usize) {
+        self.receipts_in_flight
+            .store(value, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// RAII marker for one stamped-but-not-yet-sent worker frame. Entering
+/// increments the registry-wide in-flight counter before the frame is
+/// timestamped; dropping it decrements after the send settles. The expiry
+/// sweep treats a nonzero counter as "a timely receipt may still be in
+/// flight", so a deschedule between stamp and send cannot turn an in-window
+/// provider response into a false rejection.
+struct InFlightFrame {
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl InFlightFrame {
+    fn enter(counter: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Release);
+        Self {
+            counter: counter.clone(),
+        }
+    }
+}
+
+impl Drop for InFlightFrame {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
 }
 
 fn encode_worker_frame(
@@ -366,6 +414,7 @@ impl WorkerRegistry {
             initial_tasks: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+            receipts_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -1271,6 +1320,7 @@ impl WorkerRegistry {
             stdout,
             true,
             log_file.clone(),
+            Some(self.receipts_in_flight.clone()),
         );
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -1280,6 +1330,7 @@ impl WorkerRegistry {
             stderr,
             false,
             log_file,
+            None,
         );
         let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
         spawn_worker_writer(
@@ -2349,6 +2400,7 @@ fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
     name: WorkerName,
@@ -2357,6 +2409,7 @@ fn spawn_worker_reader<R>(
     reader: R,
     parse_json: bool,
     log_file_path: Option<PathBuf>,
+    in_flight: Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -2431,6 +2484,12 @@ fn spawn_worker_reader<R>(
 
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            // Mark the frame in flight before stamping it: the runtime's
+            // model-receipt expiry sweep treats a nonzero in-flight counter as
+            // proof that a timely receipt may still be pending, so log I/O or
+            // channel backpressure between the stamp and the send can no
+            // longer let an empty-looking channel expire the request first.
+            let _in_flight = in_flight.as_ref().map(InFlightFrame::enter);
             // Capture arrival before log I/O or channel backpressure can delay
             // construction of the runtime event.
             let received_at = Instant::now();

@@ -5,7 +5,13 @@ use crate::terminal_control::TerminalToCloud;
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick_with_worker_queue_state(
         &mut self,
-        worker_event_queue_empty: bool,
+        // Kept for call-site compatibility; the sweep no longer trusts this
+        // drain-time snapshot. Model-receipt expiry and orphaned-request
+        // terminalization re-evaluate the live channel and in-flight state at
+        // decision time (`model_receipts_settled`) because a receipt can be
+        // stamped by a reader but not yet sent, and more frames can arrive
+        // after the bounded drain.
+        _worker_event_queue_empty: bool,
     ) {
         let paths = &self.paths;
         let state = &mut self.state;
@@ -44,6 +50,17 @@ impl BrokerRuntime {
         let default_workspace = &self.default_workspace;
 
         let now = Instant::now();
+        // Model-receipt expiry and orphaned-request terminalization must
+        // decide against the CURRENT channel and producer state, not the
+        // drain-time snapshot: a receipt can be stamped by a worker reader but
+        // still await its channel send (log I/O or backpressure), and more
+        // frames can have arrived since the bounded drain. `is_empty()` plus
+        // the registry's in-flight counter close both windows. The check is
+        // deliberately evaluated after `now` is captured: a producer entering
+        // the window after this load stamps its frame after `now`, so with a
+        // deadline at or before `now` that receipt would be late anyway.
+        let model_receipts_settled =
+            self.worker_event_rx.is_empty() && workers.receipts_in_flight() == 0;
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
         // terminal-only RPCs so their sessions cannot remain live forever.
@@ -155,34 +172,26 @@ impl BrokerRuntime {
             );
         }
         // A bounded worker-event drain runs immediately before this sweep.
-        // If more events remain queued, defer only model expiry so an
-        // already-received provider response cannot be rejected by actor
-        // scheduling; all other maintenance still proceeds this tick.
-        if worker_event_queue_empty {
-            let expired_model_requests: Vec<String> = pending_model_requests
-                .iter()
-                .filter_map(|(request_id, pending)| {
-                    let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
-                    (deadline <= now).then_some(request_id.clone())
-                })
-                .collect();
-            for request_id in expired_model_requests {
-                if let Some(pending) = pending_model_requests.remove(&request_id) {
-                    if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
-                        if receipt.request_id == request_id
-                            && receipt.generation == pending.generation
-                        {
-                            receipt.status = "rejected".into();
-                            receipt.applied = false;
-                            receipt.pending = false;
-                            receipt.success = false;
-                            receipt.error = Some(
-                                "worker did not return a model receipt before the deadline".into(),
-                            );
-                            receipt.updated_at = now;
-                        }
-                    }
-                    if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
+        // Model requests only expire when the worker channel is empty AND no
+        // reader holds a stamped-but-unsent frame, so an already-received (or
+        // in-flight) provider response cannot be rejected by actor
+        // scheduling. To keep a continuously busy worker channel from
+        // deferring expiry forever, a request whose deadline passed by more
+        // than MODEL_EXPIRY_DEFERRAL_BOUND expires regardless of queue state.
+        let expired_model_requests: Vec<String> = pending_model_requests
+            .iter()
+            .filter_map(|(request_id, pending)| {
+                let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
+                let expired = deadline <= now
+                    && (model_receipts_settled || now >= deadline + MODEL_EXPIRY_DEFERRAL_BOUND);
+                expired.then_some(request_id.clone())
+            })
+            .collect();
+        for request_id in expired_model_requests {
+            if let Some(pending) = pending_model_requests.remove(&request_id) {
+                if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
+                    if receipt.request_id == request_id && receipt.generation == pending.generation
+                    {
                         receipt.status = "rejected".into();
                         receipt.applied = false;
                         receipt.pending = false;
@@ -192,6 +201,15 @@ impl BrokerRuntime {
                         );
                         receipt.updated_at = now;
                     }
+                }
+                if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
+                    receipt.status = "rejected".into();
+                    receipt.applied = false;
+                    receipt.pending = false;
+                    receipt.success = false;
+                    receipt.error =
+                        Some("worker did not return a model receipt before the deadline".into());
+                    receipt.updated_at = now;
                 }
             }
         }
@@ -326,30 +344,36 @@ impl BrokerRuntime {
             }
         };
         // Release/reap can race a provider response already queued in the
-        // worker channel. The bounded drain above processes those frames while
-        // the generation is still admissible; only once the queue is empty is
-        // it safe to terminalize any remaining orphaned request.
-        if worker_event_queue_empty {
-            let orphaned_generations: HashSet<(WorkerName, Uuid)> = pending_model_requests
-                .values()
-                .filter(|pending| {
-                    workers
-                        .workers
-                        .get(&pending.worker_name)
-                        .is_none_or(|handle| handle.generation != pending.generation)
-                })
-                .map(|pending| (pending.worker_name.clone(), pending.generation))
-                .collect();
-            for (name, generation) in orphaned_generations {
-                terminalize_model_requests_for_worker(
-                    &name,
-                    generation,
-                    pending_model_requests,
-                    model_receipts,
-                    model_receipts_by_request,
-                    now,
-                );
-            }
+        // worker channel or still in flight from a reader. The bounded drain
+        // above processes queued frames while the generation is still
+        // admissible; terminalization waits until the channel is empty AND no
+        // reader holds a stamped-but-unsent frame. A continuously busy worker
+        // channel cannot defer terminalization forever: requests whose
+        // deadline passed by more than MODEL_EXPIRY_DEFERRAL_BOUND are
+        // terminalized regardless, so later model changes on the same worker
+        // cannot be blocked indefinitely.
+        let orphaned_generations: HashSet<(WorkerName, Uuid)> = pending_model_requests
+            .values()
+            .filter(|pending| {
+                let orphaned = workers
+                    .workers
+                    .get(&pending.worker_name)
+                    .is_none_or(|handle| handle.generation != pending.generation);
+                let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
+                let past_deferral_bound = now >= deadline + MODEL_EXPIRY_DEFERRAL_BOUND;
+                orphaned && (model_receipts_settled || past_deferral_bound)
+            })
+            .map(|pending| (pending.worker_name.clone(), pending.generation))
+            .collect();
+        for (name, generation) in orphaned_generations {
+            terminalize_model_requests_for_worker(
+                &name,
+                generation,
+                pending_model_requests,
+                model_receipts,
+                model_receipts_by_request,
+                now,
+            );
         }
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
