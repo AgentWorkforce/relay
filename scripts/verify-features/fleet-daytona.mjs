@@ -1177,87 +1177,137 @@ export function tryParseJson(text) {
           const opening = stack.pop();
           if ((opening === '{' && character !== '}') || (opening === '[' && character !== ']')) break;
           if (stack.length === 0) {
-let cleanupState = 'idle';
-const runCleanup = async () => {
-  if (cleanupState !== 'idle') return;
-  cleanupState = 'running';
-  const cleanupErrors = [];
-  if (connection && workerCreated) {
-    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
-      cwd: tempDir || process.cwd(),
-      env: {
-        ...process.env,
-        AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
-        RELAY_BROKER_URL: connection.url,
-        RELAY_BROKER_API_KEY: connection.api_key,
-      },
-      encoding: 'utf8', timeout: 30_000,
-    });
-    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
-    try {
-      await wait(async () => {
-        const response = await fetch(connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model', {
-          headers: { 'x-api-key': connection.api_key }, signal: AbortSignal.timeout(2_000),
-        });
-        return response.status === 404;
-      }, 'released AppServer worker to disappear', 10_000);
-    } catch (error) { cleanupErrors.push(error.message); }
-  }
-  if (connection && sessionId) {
-    try {
-      const response = await fetch(providerSessionUrl, { method: 'DELETE', signal: AbortSignal.timeout(2_000) });
-      if (![200, 204, 404].includes(response.status)) cleanupErrors.push('OpenCode session delete failed');
-      await wait(async () => {
-        const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
-        return check.status === 404;
-      }, 'deleted OpenCode session to disappear', 10_000);
-    } catch (error) { cleanupErrors.push(error.message); }
-  }
-  if (opencode && opencode.pid) {
-    try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
-    try {
-      await wait(async () => {
-        if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
-        try { process.kill(opencode.pid, 0); return false; } catch { return true; }
-      }, 'OpenCode process to terminate', 10_000);
-    } catch (error) { cleanupErrors.push(error.message); }
-    if (providerEndpoint) {
-      try {
-        await wait(async () => {
-          try {
-            await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(1_000) });
-            return false;
-          } catch (error) {
-            // A refused connection proves the listener is gone. An HTTP
-            // response or request timeout still means the port is reachable.
-            return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
-          }
-        }, 'OpenCode provider port to close', 10_000);
-      } catch (error) { cleanupErrors.push(error.message); }
-    }
-  }
-  if (tempDir) {
-    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error.message); }
-    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
-  }
-  cleanupState = 'done';
-  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
-  result.cleanup = true;
-};
-// Daytona's outer --timeout can SIGTERM this helper before it reaches its
-// finally block; without an explicit handler the detached OpenCode provider
-// would survive the wrapper's death until the sandbox itself is torn down.
-// Terminations run the same idempotent cleanup so the provider session,
-// process, and temporary directory are recovered on the wrapper's way out.
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.on(signal, () => {
-    if (cleanupState !== 'idle') return;
-    runCleanup()
-      .catch(() => {})
-      .finally(() => process.exit(1));
-  });
-}
-try {
+            let cleanupState = 'idle';
+            const runCleanup = async () => {
+              if (cleanupState !== 'idle') return;
+              cleanupState = 'running';
+              const cleanupErrors = [];
+              if (connection && workerCreated) {
+                const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
+                  cwd: tempDir || process.cwd(),
+                  env: {
+                    ...process.env,
+                    AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
+                    RELAY_BROKER_URL: connection.url,
+                    RELAY_BROKER_API_KEY: connection.api_key,
+                  },
+                  encoding: 'utf8',
+                  timeout: 30_000,
+                });
+                if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
+                try {
+                  await wait(
+                    async () => {
+                      const response = await fetch(
+                        connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model',
+                        {
+                          headers: { 'x-api-key': connection.api_key },
+                          signal: AbortSignal.timeout(2_000),
+                        }
+                      );
+                      return response.status === 404;
+                    },
+                    'released AppServer worker to disappear',
+                    10_000
+                  );
+                } catch (error) {
+                  cleanupErrors.push(error.message);
+                }
+              }
+              if (connection && sessionId) {
+                try {
+                  const response = await fetch(providerSessionUrl, {
+                    method: 'DELETE',
+                    signal: AbortSignal.timeout(2_000),
+                  });
+                  if (![200, 204, 404].includes(response.status))
+                    cleanupErrors.push('OpenCode session delete failed');
+                  await wait(
+                    async () => {
+                      const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
+                      return check.status === 404;
+                    },
+                    'deleted OpenCode session to disappear',
+                    10_000
+                  );
+                } catch (error) {
+                  cleanupErrors.push(error.message);
+                }
+              }
+              if (opencode && opencode.pid) {
+                try {
+                  process.kill(-opencode.pid, 'SIGTERM');
+                } catch {
+                  try {
+                    opencode.kill('SIGTERM');
+                  } catch {}
+                }
+                try {
+                  await wait(
+                    async () => {
+                      if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
+                      try {
+                        process.kill(opencode.pid, 0);
+                        return false;
+                      } catch {
+                        return true;
+                      }
+                    },
+                    'OpenCode process to terminate',
+                    10_000
+                  );
+                } catch (error) {
+                  cleanupErrors.push(error.message);
+                }
+                if (providerEndpoint) {
+                  try {
+                    await wait(
+                      async () => {
+                        try {
+                          await fetch(providerEndpoint + '/global/health', {
+                            signal: AbortSignal.timeout(1_000),
+                          });
+                          return false;
+                        } catch (error) {
+                          // A refused connection proves the listener is gone. An HTTP
+                          // response or request timeout still means the port is reachable.
+                          return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
+                        }
+                      },
+                      'OpenCode provider port to close',
+                      10_000
+                    );
+                  } catch (error) {
+                    cleanupErrors.push(error.message);
+                  }
+                }
+              }
+              if (tempDir) {
+                try {
+                  fs.rmSync(tempDir, { recursive: true, force: true });
+                } catch (error) {
+                  cleanupErrors.push(error.message);
+                }
+                if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
+              }
+              cleanupState = 'done';
+              if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
+              result.cleanup = true;
+            };
+            // Daytona's outer --timeout can SIGTERM this helper before it reaches its
+            // finally block; without an explicit handler the detached OpenCode provider
+            // would survive the wrapper's death until the sandbox itself is torn down.
+            // Terminations run the same idempotent cleanup so the provider session,
+            // process, and temporary directory are recovered on the wrapper's way out.
+            for (const signal of ['SIGTERM', 'SIGINT']) {
+              process.on(signal, () => {
+                if (cleanupState !== 'idle') return;
+                runCleanup()
+                  .catch(() => {})
+                  .finally(() => process.exit(1));
+              });
+            }
+            try {
               return JSON.parse(trimmed.slice(index, cursor + 1));
             } catch {
               break;

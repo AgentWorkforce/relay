@@ -427,18 +427,22 @@ try {
           if (![200, 204, 404].includes(deleted.status)) {
             throw new Error(`OpenCode session deletion failed: ${deleted.status}`);
           }
-          await waitFor(async () => {
-            try {
-              const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
-              return response.status === 404;
-            } catch {
-              // Server refused/closed its listener: the session is gone,
-              // cleanup succeeded. Treating the error as "not yet deleted"
-              // would poll for the full module-wide timeout and then fail an
-              // otherwise fully successful proof.
-              return true;
-            }
-          }, 'deleted OpenCode session to disappear', 5_000);
+          await waitFor(
+            async () => {
+              try {
+                const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
+                return response.status === 404;
+              } catch {
+                // Server refused/closed its listener: the session is gone,
+                // cleanup succeeded. Treating the error as "not yet deleted"
+                // would poll for the full module-wide timeout and then fail an
+                // otherwise fully successful proof.
+                return true;
+              }
+            },
+            'deleted OpenCode session to disappear',
+            5_000
+          );
         } catch (error) {
           cleanupErrors.push(error.message);
         }

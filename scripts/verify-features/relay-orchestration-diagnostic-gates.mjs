@@ -1476,7 +1476,10 @@ async function validateCoverage(artifactDir, ledger) {
   // above (transitions + faults + acceptance + matrix operations) so the gate
   // cannot drift out of sync with the Fleet matrix again.
   const expectedCoverageRows =
-    REQUIRED_TRANSITIONS.length + REQUIRED_FAULTS.length + REQUIRED_ACCEPTANCE.length + matrix.operations.length;
+    REQUIRED_TRANSITIONS.length +
+    REQUIRED_FAULTS.length +
+    REQUIRED_ACCEPTANCE.length +
+    matrix.operations.length;
   if (coverageIds.size !== expectedCoverageRows || coverageRows.length !== expectedCoverageRows) {
     throw new Error(
       `coverage contract must contain exactly ${expectedCoverageRows} unique rows, got ${coverageRows.length}`
