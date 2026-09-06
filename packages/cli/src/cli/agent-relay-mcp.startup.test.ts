@@ -594,20 +594,24 @@ describe('createAgentRelayMcpServer', () => {
     expect(spawnResult.structuredContent.invocation).toEqual({
       invocationId: 'inv_1',
       actionName: 'spawn',
-      input: {
-        name: 'FleetWorker',
-        cli: 'codex',
-        task: 'Implement a fix',
-        worker_cwd: '/workspace/relay',
-        target_node: 'node-a',
-        channels: ['general'],
-        organization: 'Agent Workforce',
-        project: 'Relay',
-        workstream: 'fleet-metadata',
-        role: 'implementer',
-        objective: 'Implement a fix',
-      },
+      status: 'completed',
+      output: { spawned: true, ready: true },
     });
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'FleetWorker',
+      cli: 'codex',
+      verify_ready: true,
+      task: 'Implement a fix',
+      worker_cwd: '/workspace/relay',
+      target_node: 'node-a',
+      channels: ['general'],
+      organization: 'Agent Workforce',
+      project: 'Relay',
+      workstream: 'fleet-metadata',
+      role: 'implementer',
+      objective: 'Implement a fix',
+    });
+    expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenCalledWith('spawn', 'inv_1');
 
     const personaSpawnResult = await server.tools.get('spawn')?.handler({
       name: 'IntegrationExpert',
@@ -947,7 +951,7 @@ describe('createAgentRelayMcpServer', () => {
       await vi.advanceTimersByTimeAsync(130_001);
 
       await expect(outcome).resolves.toBe(
-        'Persona spawn timed out before broker registration and harness readiness.'
+        'Spawn timed out before broker registration and harness readiness.'
       );
     } finally {
       vi.useRealTimers();
@@ -1016,6 +1020,87 @@ describe('createAgentRelayMcpServer', () => {
       target_node: 'node-a',
     });
     expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenNthCalledWith(2, 'spawn', 'inv_nested');
+  });
+
+  it.each([
+    { contract: 'readiness', output: { spawned: true } },
+    { contract: 'spawn confirmation', output: { ready: true } },
+    { contract: 'positive spawn confirmation', output: { spawned: false, ready: true } },
+  ])('does not report a raw CLI spawn without $contract proof', async ({ output }) => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_fleet',
+      agentName: 'orchestrator',
+    });
+    const server = mocks.serverInstances[0];
+    mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
+      invocationId: 'inv_1',
+      actionName: 'spawn',
+      status: 'completed',
+      output,
+    });
+
+    await expect(
+      server.tools.get('spawn')?.handler({
+        name: 'RawWorker',
+        cli: 'codex',
+        target_node: 'node-a',
+      })
+    ).rejects.toThrow('Spawn completed without broker registration and harness readiness proof.');
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+      name: 'RawWorker',
+      cli: 'codex',
+      verify_ready: true,
+      target_node: 'node-a',
+    });
+  });
+
+  it('surfaces a raw CLI early-exit failure instead of the invocation acknowledgement', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_fleet',
+      agentName: 'orchestrator',
+    });
+    const server = mocks.serverInstances[0];
+    mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
+      invocationId: 'inv_1',
+      actionName: 'spawn',
+      status: 'failed',
+      error: 'spawn_harness_not_ready',
+    });
+
+    await expect(
+      server.tools.get('spawn')?.handler({
+        name: 'RawWorker',
+        cli: 'codex',
+      })
+    ).rejects.toThrow('spawn_harness_not_ready');
+  });
+
+  it('surfaces a denied raw CLI spawn without waiting for the readiness deadline', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_fleet',
+      agentName: 'orchestrator',
+    });
+    const server = mocks.serverInstances[0];
+    mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
+      invocationId: 'inv_1',
+      actionName: 'spawn',
+      status: 'denied',
+      error: 'spawn_policy_denied',
+    });
+
+    await expect(
+      server.tools.get('spawn')?.handler({
+        name: 'RawWorker',
+        cli: 'codex',
+      })
+    ).rejects.toThrow('spawn_policy_denied');
+    expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a blank workspace name before provisioning a remote workspace', async () => {

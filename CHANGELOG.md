@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay fleet spawn --sandbox` now waits through the mounted Daytona provisioning deadline instead of abandoning successful long-running requests without a sandbox ID for cleanup.
+- Raw CLI spawns through the Agent Relay MCP now return only after the broker observes worker readiness, and surface early exits or missing readiness proof instead of reporting the placement acknowledgement as success.
 
 ## [11.8.5] - 2026-08-27
 

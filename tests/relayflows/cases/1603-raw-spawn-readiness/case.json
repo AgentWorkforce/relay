@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1603-raw-spawn-readiness",
+  "kind": "bugfix",
+  "title": "Wait for raw CLI spawn readiness",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1603-raw-spawn-readiness/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "raw_cli_spawn_returns_dispatch_ack_without_readiness"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "raw_cli_spawn_waits_for_verified_readiness"
+    }
+  }
+}
