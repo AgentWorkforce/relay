@@ -13,16 +13,36 @@ enum OpenCodeModelOutcome {
     Applied(String),
     /// The mutation was accepted, but confirmation could not be observed.
     /// Keep the broker receipt pending until a subsequent provider response
-    /// (if one arrives) or its deadline; an unavailable GET is not proof that
-    /// the provider rejected the change, and this worker does not claim that
-    /// it will retry confirmation on its own.
+    /// (this worker retries the confirmation read on
+    /// `CONFIRMATION_RETRY_INTERVAL` and emits that subsequent response when
+    /// a retry resolves it) or the broker's deadline; an unavailable GET is
+    /// not proof that the provider rejected the change.
     Pending(String),
     Rejected(String),
 }
 
 const APP_SERVER_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How often a parked `accepted_pending` model request retries its provider
+/// confirmation read while the worker waits for further frames.
+const CONFIRMATION_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
 pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand) -> Result<()> {
+    run_app_server_worker_with_io(cmd, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+/// IO-injected core of the headless AppServer worker so the frame loop —
+/// including the parked-confirmation retry — is testable against duplex
+/// streams instead of the process's real stdin/stdout.
+async fn run_app_server_worker_with_io<R, W>(
+    cmd: HeadlessAppServerCommand,
+    read: R,
+    write: W,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let protocol = cmd.protocol.trim().to_ascii_lowercase();
     let endpoint = cmd.endpoint.trim().trim_end_matches('/').to_string();
     let session_id = cmd.session_id.clone();
@@ -36,7 +56,7 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
 
     let (out_tx, mut out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(512);
     let writer_task = tokio::spawn(async move {
-        let mut stdout = tokio::io::stdout();
+        let mut stdout = write;
         while let Some(frame) = out_rx.recv().await {
             if let Ok(mut line) = serde_json::to_string(&frame) {
                 line.push('\n');
@@ -48,7 +68,7 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
         }
     });
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut lines = BufReader::new(read).lines();
     // A start acknowledgement is an internal handshake. Frames for other
     // operations may already be queued behind set_model; retain them while
     // waiting so the handshake cannot silently lose ordered work.
@@ -59,14 +79,83 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
         .unwrap_or_else(|| format!("app-server-{protocol}"));
     let mut final_exit_code: Option<i32> = None;
     let final_exit_signal: Option<String> = None;
+    // A successful provider mutation whose confirmation read was unavailable
+    // stays parked here so the worker keeps retrying the confirmation read
+    // while it waits for further frames. Each terminal retry outcome is
+    // emitted as the documented subsequent `set_model_response`, letting the
+    // broker resolve the retained `accepted_pending` receipt instead of
+    // waiting for its deadline to convert uncertainty into a false rejection.
+    let mut pending_confirmation: Option<(Option<RequestId>, String)> = None;
+    let mut confirmation_retry = tokio::time::interval(CONFIRMATION_RETRY_INTERVAL);
+    confirmation_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    confirmation_retry.reset();
 
     loop {
         let frame: ProtocolEnvelope<Value> = if let Some(frame) = deferred_frames.pop_front() {
             frame
         } else {
-            let line = match lines.next_line().await {
-                Ok(Some(line)) => line,
-                Ok(None) | Err(_) => break,
+            let line = if pending_confirmation.is_some() {
+                tokio::select! {
+                    line = lines.next_line() => match line {
+                        Ok(Some(line)) => line,
+                        Ok(None) | Err(_) => break,
+                    },
+                    _ = confirmation_retry.tick() => {
+                        if let Some((request_id, requested_model)) = pending_confirmation.take() {
+                            let outcome = confirm_opencode_model(
+                                &http,
+                                &endpoint,
+                                &session_id,
+                                &requested_model,
+                                auth.as_ref(),
+                            )
+                            .await;
+                            let resolved = match outcome {
+                                Ok(OpenCodeModelOutcome::Applied(effective_model)) => {
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "set_model_response",
+                                        request_id.clone(),
+                                        json!({
+                                            "status": "applied",
+                                            "applied": true,
+                                            "effective_model": effective_model,
+                                        }),
+                                    )
+                                    .await;
+                                    true
+                                }
+                                Ok(OpenCodeModelOutcome::Rejected(error)) => {
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "set_model_response",
+                                        request_id.clone(),
+                                        json!({
+                                            "status": "rejected",
+                                            "applied": false,
+                                            "effective_model": null,
+                                            "error": error,
+                                        }),
+                                    )
+                                    .await;
+                                    true
+                                }
+                                // Confirmation is still unavailable; keep the
+                                // request parked for the next retry tick.
+                                Ok(OpenCodeModelOutcome::Pending(_)) | Err(_) => false,
+                            };
+                            if !resolved {
+                                pending_confirmation = Some((request_id, requested_model));
+                            }
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                match lines.next_line().await {
+                    Ok(Some(line)) => line,
+                    Ok(None) | Err(_) => break,
+                }
             };
             match serde_json::from_str(&line) {
                 Ok(frame) => frame,
@@ -293,6 +382,11 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                     .await;
                     continue;
                 }
+                // A new model request supersedes any parked confirmation
+                // retry; the broker admits one mutation per worker, but a
+                // defensive clear keeps the retry from resolving a stale
+                // request.
+                pending_confirmation = None;
                 let result = match protocol.as_str() {
                     "opencode" => {
                         set_opencode_model(
@@ -308,6 +402,17 @@ pub(crate) async fn run_headless_app_server_worker(cmd: HeadlessAppServerCommand
                         "app-server protocol '{other}' does not expose typed model mutation"
                     )),
                 };
+                // Park the confirmation retry before the response is emitted:
+                // `accepted_pending` from an OpenCode mutation means the
+                // provider accepted the request but its confirmation read was
+                // unavailable, so the worker owes the broker a subsequent
+                // response once a retry read resolves it.
+                if matches!(result, Ok(OpenCodeModelOutcome::Pending(_)))
+                    && protocol.as_str() == "opencode"
+                {
+                    pending_confirmation =
+                        Some((frame.request_id.clone(), requested_model.to_string()));
+                }
                 let response = match result {
                     Ok(OpenCodeModelOutcome::Applied(effective_model)) => json!({
                         "status": "applied",
@@ -478,9 +583,9 @@ async fn send_opencode_prompt(
 /// OpenCode's V2 server API is the one built-in provider contract that can
 /// actually switch a live session's model. The 204 mutation is followed by a
 /// session read; returning `applied` is only valid when that read reports the
-/// exact requested provider/model reference. If confirmation is unavailable,
-/// return a pending outcome so the broker retains uncertainty until its
-/// deadline.
+/// exact requested provider/model reference. Any outcome that does not prove
+/// the provider rejected or applied the request is uncertainty and returns
+/// `Pending` so the broker retains it until its deadline.
 async fn set_opencode_model(
     http: &reqwest::Client,
     endpoint: &str,
@@ -499,8 +604,40 @@ async fn set_opencode_model(
             "id": model_id,
         }
     }));
-    send_app_server_request(apply_app_server_auth(request, auth)).await?;
+    // A transport failure on the mutation POST is uncertainty, not proof of
+    // rejection: the provider may have applied the model even though the
+    // response was lost. Only an explicit non-2xx status returned by the
+    // provider is treated as a refusal.
+    let response = match apply_app_server_auth(request, auth).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(OpenCodeModelOutcome::Pending(format!(
+                "OpenCode model mutation request failed: {error}"
+            )))
+        }
+    };
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Ok(OpenCodeModelOutcome::Rejected(format!(
+            "OpenCode model mutation failed with status {status}: {body}"
+        )));
+    }
+    confirm_opencode_model(http, endpoint, session_id, requested_model, auth).await
+}
 
+/// Read the OpenCode session document and report whether the requested model
+/// is the session's effective model. An unavailable, unreadable, or incomplete
+/// session document is uncertainty (`Pending`): it does not prove the provider
+/// rejected the mutation. Only a readable document that names a different
+/// effective model rejects the request.
+async fn confirm_opencode_model(
+    http: &reqwest::Client,
+    endpoint: &str,
+    session_id: &str,
+    requested_model: &str,
+    auth: Option<&AppServerAuthConfig>,
+) -> Result<OpenCodeModelOutcome> {
     let session_url = opencode_v2_session_url(endpoint, session_id, "");
     let session = match apply_app_server_auth(http.get(session_url), auth)
         .send()
@@ -537,11 +674,15 @@ async fn set_opencode_model(
         .get("model")
         .and_then(|model| model.get("id").or_else(|| model.get("modelID")))
         .and_then(Value::as_str);
-    let effective_model = format!(
-        "{}/{}",
-        confirmed_provider.unwrap_or_default(),
-        confirmed_id.unwrap_or_default()
-    );
+    // A successful-but-incomplete session document does not name the effective
+    // model; treating the missing fields as an empty model would fabricate a
+    // rejection out of missing evidence.
+    let (Some(confirmed_provider), Some(confirmed_id)) = (confirmed_provider, confirmed_id) else {
+        return Ok(OpenCodeModelOutcome::Pending(
+            "OpenCode session confirmation did not report an effective model".into(),
+        ));
+    };
+    let effective_model = format!("{confirmed_provider}/{confirmed_id}");
     if effective_model != requested_model {
         return Ok(OpenCodeModelOutcome::Rejected(format!(
             "OpenCode confirmed effective model '{effective_model}', not requested '{requested_model}'"
@@ -700,6 +841,188 @@ mod tests {
                 .await
                 .unwrap();
         assert!(matches!(outcome, OpenCodeModelOutcome::Pending(error) if error.contains("503")));
+    }
+
+    #[tokio::test]
+    async fn opencode_model_mutation_post_transport_failure_is_pending() {
+        // Port 9 (discard) has no listener: the POST cannot reach a provider,
+        // which is uncertainty — the provider may have applied the model even
+        // though the response was lost — never a terminal rejection.
+        let http = reqwest::Client::new();
+        let outcome =
+            set_opencode_model(&http, "http://127.0.0.1:9", "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert!(matches!(
+            outcome,
+            OpenCodeModelOutcome::Pending(error) if error.contains("mutation request failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn opencode_model_mutation_post_refusal_is_rejected() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/session/ses-1/model");
+            then.status(422).body("unknown model");
+        });
+        let http = reqwest::Client::new();
+        let outcome =
+            set_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert!(matches!(
+            outcome,
+            OpenCodeModelOutcome::Rejected(error) if error.contains("422")
+        ));
+    }
+
+    #[tokio::test]
+    async fn opencode_confirmation_without_model_fields_is_pending() {
+        // A successful-but-incomplete session document does not prove the
+        // provider rejected the mutation; missing model fields must stay
+        // pending instead of fabricating a "/" effective model rejection.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(200).json_body(json!({
+                "data": { "title": "session without a model yet" }
+            }));
+        });
+        let http = reqwest::Client::new();
+        let outcome =
+            confirm_opencode_model(&http, &server.base_url(), "ses-1", "openai/gpt-5.4", None)
+                .await
+                .unwrap();
+        assert!(matches!(
+            outcome,
+            OpenCodeModelOutcome::Pending(error) if error.contains("did not report an effective model")
+        ));
+    }
+
+    #[tokio::test]
+    async fn app_server_worker_retries_parked_confirmation_until_it_resolves() {
+        use tokio::io::{duplex, AsyncWriteExt};
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/api/session/ses-1/model");
+            then.status(204);
+        });
+        // The confirmation read is initially unavailable (503); once the
+        // pending response is observed, the mock is replaced with a readable
+        // session document so the parked retry can resolve the receipt.
+        let mut confirm_unavailable = server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(503).body("provider warming up");
+        });
+        let (mut stdin_tx, stdin_rx) = duplex(64);
+        let (stdout_tx, stdout_rx) = duplex(4096);
+        let cmd = HeadlessAppServerCommand {
+            protocol: "opencode".into(),
+            endpoint: server.base_url(),
+            session_id: "ses-1".into(),
+            host_pid: None,
+            release: "detach".into(),
+            agent_name: Some("proof-worker".into()),
+        };
+        let worker = tokio::spawn(run_app_server_worker_with_io(cmd, stdin_rx, stdout_tx));
+
+        let set_model = json!({
+            "v": 1,
+            "type": "set_model",
+            "request_id": "model-1",
+            "payload": { "model": "openai/gpt-5.4", "provider_timeout_ms": 10_000 },
+        });
+        stdin_tx
+            .write_all(format!("{}\n", serde_json::to_string(&set_model).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        let mut stdout = tokio::io::BufReader::new(stdout_rx);
+        let mut line = String::new();
+        // 1. The worker announces the model start and waits for the ack.
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_line(&mut line))
+            .await
+            .expect("started frame")
+            .unwrap();
+        let started: ProtocolEnvelope<Value> = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(started.msg_type, "set_model_started");
+        line.clear();
+        let ack = json!({
+            "v": 1,
+            "type": "set_model_started_ack",
+            "request_id": "model-1",
+            "payload": {},
+        });
+        stdin_tx
+            .write_all(format!("{}\n", serde_json::to_string(&ack).unwrap()).as_bytes())
+            .await
+            .unwrap();
+        // 2. The mutation succeeds but the confirmation read is unavailable:
+        //    one accepted_pending response, and the request stays parked.
+        tokio::time::timeout(Duration::from_secs(5), stdout.read_line(&mut line))
+            .await
+            .expect("pending frame")
+            .unwrap();
+        let pending: ProtocolEnvelope<Value> = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(pending.msg_type, "set_model_response");
+        assert_eq!(pending.payload["status"], "accepted_pending");
+        line.clear();
+        // 3. The provider recovers; the parked retry resolves the receipt with
+        //    the documented subsequent provider response.
+        confirm_unavailable.delete();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/session/ses-1");
+            then.status(200).json_body(json!({
+                "data": { "model": { "providerID": "openai", "id": "gpt-5.4" } }
+            }));
+        });
+        let mut resolved = false;
+        for _ in 0..30 {
+            match tokio::time::timeout(Duration::from_secs(2), stdout.read_line(&mut line)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(_)) => {
+                    let frame: ProtocolEnvelope<Value> = match serde_json::from_str(line.trim()) {
+                        Ok(frame) => frame,
+                        Err(_) => {
+                            line.clear();
+                            continue;
+                        }
+                    };
+                    line.clear();
+                    if frame.msg_type == "set_model_response"
+                        && frame.payload["status"] == "applied"
+                        && frame.payload["effective_model"] == "openai/gpt-5.4"
+                    {
+                        resolved = true;
+                        break;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => continue,
+            }
+        }
+        assert!(
+            resolved,
+            "parked confirmation retry never emitted the subsequent applied response"
+        );
+
+        // Shutdown cleanly so the spawned worker task can finish.
+        let shutdown = json!({
+            "v": 1,
+            "type": "shutdown_worker",
+            "payload": {},
+        });
+        stdin_tx
+            .write_all(format!("{}\n", serde_json::to_string(&shutdown).unwrap()).as_bytes())
+            .await
+            .unwrap();
+        drop(stdin_tx);
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .expect("worker exits after shutdown")
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
