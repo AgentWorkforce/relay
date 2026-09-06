@@ -8,8 +8,9 @@
       "id": "relay#1671"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-06T02:49:09.708Z",
+  "completedAt": "2026-09-06T02:53:06.233Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-06T02:49:14.298Z",
+      "endedAt": "2026-09-06T02:53:06.233Z",
       "events": [
         {
           "ts": 1788662954298,
@@ -47,16 +49,53 @@
             "reasoning": "The sealed broker-artifact lane has no Relaycast engine or CLI dependencies; claiming static source checks as live proof would be misleading, so exact live qualification remains Cloud/Finn gated."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788663185798,
+          "type": "reflection",
+          "content": "PR review gaps are addressed in code: every worker teardown path uses bounded group-aware release, and the stubborn descendant test proves wrapper wait cannot strand a child. The artifact-only sealed lane remains honest about its boundary; live public process and roster absence is asserted by the two-node E2E and awaits Cloud/Finn.",
+          "raw": {
+            "focalPoints": [
+              "teardown",
+              "qualification",
+              "evidence"
+            ],
+            "adjustments": "Keep exact-candidate live run as the final gate",
+            "confidence": 0.88
+          },
+          "significance": "high",
+          "tags": [
+            "focal:teardown",
+            "focal:qualification",
+            "focal:evidence",
+            "confidence:0.88"
+          ]
         }
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Routed writer-failure and orphan cleanup through terminate_child, added early-wrapper-exit stubborn descendant coverage, bounded liveness polling and Windows tree kill, and kept the sealed artifact runner Cargo-free with live roster proof in the two-node E2E lane.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [
+    "eab176578"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_4prask91v3be/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/runtime/worker_events.rs",
+    "crates/broker/src/spawner.rs",
+    "crates/broker/src/worker.rs",
+    "tests/e2e/fleet/fleet-e2e.test.ts",
+    "tests/relayflows/cases/1671-fleet-release-absence/run.mjs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "ed408f5ca0501e91fc011a02014c0b705a0b86cb",
-    "endRef": "ed408f5ca0501e91fc011a02014c0b705a0b86cb"
+    "endRef": "eab176578c1a344e257a10fd037725c9f3b060a6",
+    "traceId": "bf5ab2b8-a274-4fe2-8345-d862feb92228"
   }
 }
