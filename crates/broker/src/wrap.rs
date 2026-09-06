@@ -40,10 +40,10 @@ use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
     ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
-        detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+        claude_trust_prompt_action, detect_bypass_permissions_prompt, detect_codex_model_prompt,
         detect_codex_trust_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
         detect_gemini_untrusted_banner, detect_opencode_permission_prompt, is_auto_suggestion,
-        is_bypass_selection_menu, is_in_editor_mode,
+        is_bypass_selection_menu, is_in_editor_mode, ClaudeTrustPromptAction,
     },
 };
 use crate::worker::detection::ActivityDetector;
@@ -588,9 +588,8 @@ impl PtyAutoState {
         }
     }
 
-    /// Detect and auto-accept Claude Code folder trust prompts.
-    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
-    /// so we just press Enter to confirm.
+    /// Detect and auto-accept Claude Code folder trust prompts by identifying
+    /// the selected row and navigating to the affirmative option when needed.
     pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
         if self.interactive_hold {
             return;
@@ -598,12 +597,25 @@ impl PtyAutoState {
         if !self.claude_trust_handled {
             Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
             let clean = strip_ansi(&self.claude_trust_buffer);
-            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
-            if has_trust_ref && has_confirmation {
+            // Claude redraws this TUI with cursor movement. Prefer the rendered
+            // grid, while retaining the stripped stream for simpler layouts.
+            let visible_screen = pty.screen_text();
+            let action = claude_trust_prompt_action(&visible_screen)
+                .or_else(|| claude_trust_prompt_action(&clean));
+            if let Some(action) = action {
                 tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
-                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "claude_trust");
+                if action == ClaudeTrustPromptAction::SelectNextAndConfirm {
+                    warn_on_auto_response_write(
+                        pty.submit_write(b"\x1b[B".to_vec()),
+                        "claude_trust_down",
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                warn_on_auto_response_write(
+                    pty.submit_write(b"\r".to_vec()),
+                    "claude_trust_confirm",
+                );
                 self.claude_trust_buffer.clear();
                 self.claude_trust_handled = true;
             }
@@ -814,6 +826,55 @@ mod hold_tests {
             "auto-enter must resume once the hold is released"
         );
 
+        let _ = pty.shutdown();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod claude_trust_tests {
+    use super::*;
+
+    /// Exercise the auto-responder through a real PTY. The shim exits unless
+    /// it receives Down followed by Enter, mirroring Claude 2.1.259's layout;
+    /// after the correct selection it remains alive and therefore attachable.
+    #[tokio::test]
+    async fn new_layout_keeps_worker_live_and_attachable() {
+        let prompt = "Claude Code can read files in this folder.\n\
+                      ❯ No, exit\n\
+                        Yes, I trust this folder\n\
+                      Enter to confirm · Esc to cancel";
+        let script = r#"
+printf 'Claude Code can read files in this folder.\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n'
+IFS= read -r -s -n 3 navigation
+IFS= read -r confirmation
+if [ "$navigation" != $'\033[B' ]; then exit 42; fi
+printf 'WORKER_READY\n'
+sleep 30
+"#;
+        let (pty, mut rx) = PtySession::spawn("bash", &["-c".into(), script.into()], 24, 80)
+            .expect("spawn trust-prompt shim");
+        let mut state = PtyAutoState::new();
+
+        state.handle_claude_trust(prompt, &pty).await;
+
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(chunk) = rx.recv().await {
+                output.extend_from_slice(&chunk);
+                if String::from_utf8_lossy(&output).contains("WORKER_READY") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("worker should become ready after trust acceptance");
+
+        assert!(
+            String::from_utf8_lossy(&output).contains("WORKER_READY"),
+            "new-layout prompt should select trust, got: {}",
+            String::from_utf8_lossy(&output)
+        );
+        assert!(!pty.has_exited(), "trusted worker should remain attachable");
         let _ = pty.shutdown();
     }
 }

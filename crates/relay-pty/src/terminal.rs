@@ -137,6 +137,15 @@ pub fn detect_gemini_trust_prompt(clean_output: &str) -> (bool, bool) {
     (has_header, has_trust_option)
 }
 
+/// Keystrokes needed to select Claude Code's affirmative folder-trust option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeTrustPromptAction {
+    /// The affirmative option is already selected.
+    Confirm,
+    /// The exit option is selected and the affirmative option is the next row.
+    SelectNextAndConfirm,
+}
+
 /// Detect Claude Code folder trust prompt in output.
 /// Returns (has_trust_ref, has_confirmation).
 pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
@@ -146,6 +155,37 @@ pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
         && lower.contains("no,")
         && lower.contains("exit");
     (has_trust_ref, has_confirmation)
+}
+
+/// Determine how to select the affirmative option from a complete Claude Code
+/// folder-trust prompt's rendered menu state.
+///
+/// Returns `None` unless both expected option labels and exactly one selected
+/// row are visible. This deliberately fails closed for partial or ambiguous
+/// output instead of confirming whichever row happens to be selected.
+pub fn claude_trust_prompt_action(clean_output: &str) -> Option<ClaudeTrustPromptAction> {
+    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(clean_output);
+    if !has_trust_ref || !has_confirmation {
+        return None;
+    }
+
+    let lower = clean_output.to_lowercase();
+    let selected_rows: Vec<_> = lower
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix('❯'))
+        .collect();
+    if selected_rows.len() != 1 {
+        return None;
+    }
+
+    let selected = selected_rows[0];
+    if selected.contains("yes") && selected.contains("trust") && selected.contains("folder") {
+        Some(ClaudeTrustPromptAction::Confirm)
+    } else if selected.contains("no,") && selected.contains("exit") {
+        Some(ClaudeTrustPromptAction::SelectNextAndConfirm)
+    } else {
+        None
+    }
 }
 
 /// Detect Claude Code auto-suggestion ghost text.
