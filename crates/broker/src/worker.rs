@@ -1276,30 +1276,25 @@ impl WorkerRegistry {
             });
         }
 
+        #[cfg(windows)]
+        command.creation_flags(crate::spawner::CREATE_SUSPENDED);
+
         let mut child = command.spawn().context("failed to spawn worker")?;
         #[cfg(windows)]
         let process_tree = match crate::spawner::attach_process_tree(&child) {
             Ok(owner) => owner,
             Err(error) => {
-                let wrapper_live = child
-                    .try_wait()
-                    .map(|status| status.is_none())
-                    .unwrap_or(false);
-                if wrapper_live {
-                    if let Some(pid) = child.id() {
-                        if !crate::spawner::terminate_process_tree(pid).await {
-                            let _ = child.start_kill();
-                        }
-                    } else {
-                        let _ = child.start_kill();
-                    }
-                } else {
-                    let _ = child.start_kill();
-                }
-                let _ = timeout(Duration::from_secs(1), child.wait()).await;
+                crate::spawner::cleanup_attach_failure(&mut child).await;
                 return Err(error).context("failed to establish worker process-tree ownership");
             }
         };
+        #[cfg(windows)]
+        if let Err(error) = crate::spawner::resume_process(&child) {
+            let _ = process_tree.terminate();
+            let _ = child.start_kill();
+            let _ = timeout(Duration::from_secs(1), child.wait()).await;
+            return Err(error).context("failed to resume worker");
+        }
         if direct_native_harness_sidecar {
             initial_harness_pid = child.id();
         }
@@ -1584,6 +1579,15 @@ impl WorkerRegistry {
         handle.exit_reason = Some("worker_write_failed".into());
         if handle.child.id().is_none() {
             return Ok(());
+        }
+        #[cfg(windows)]
+        if let Err(error) = handle.process_tree.terminate() {
+            tracing::warn!(
+                target = "relay_broker::worker",
+                worker = %name,
+                error = %error,
+                "failed to terminate worker process tree after command writer failure"
+            );
         }
         crate::spawner::request_child_termination(&mut handle.child);
         Ok(())

@@ -956,9 +956,7 @@ impl RelaycastHttpClient {
                 Ok(_) => {
                     tracing::info!(agent = %agent_name, "released agent identity");
                 }
-                Err(error)
-                    if error.code() == Some("agent_not_found") || error.status() == Some(404) =>
-                {
+                Err(error) if error.code() == Some("agent_not_found") => {
                     // Release is a terminal operation. A retry after the
                     // engine has already tombstoned the identity is a
                     // successful no-op, not a broker failure.

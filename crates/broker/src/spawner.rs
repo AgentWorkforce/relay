@@ -10,6 +10,9 @@ use tokio::{
     time::{sleep, timeout},
 };
 
+#[cfg(windows)]
+pub(crate) const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
 #[cfg(unix)]
 use nix::{
     errno::Errno,
@@ -36,10 +39,33 @@ pub(crate) const RELAY_ATTEST_SESSION_ID: &str = "RELAY_ATTEST_SESSION_ID";
 pub(crate) struct ProcessTreeOwner(OwnedHandle);
 
 #[cfg(windows)]
+impl ProcessTreeOwner {
+    /// Immediately terminate every process currently assigned to this job.
+    /// This is used for asynchronous writer failures where waiting for the
+    /// normal reap path would leave descendants alive in the meantime.
+    pub(crate) fn terminate(&self) -> Result<()> {
+        use std::ffi::c_void;
+
+        type Handle = *mut c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+        }
+
+        let terminated = unsafe { TerminateJobObject(self.0.as_raw_handle() as Handle, 1) };
+        if terminated == 0 {
+            return Err(std::io::Error::last_os_error()).context("TerminateJobObject failed");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn attach_process_tree(child: &Child) -> Result<ProcessTreeOwner> {
     use std::{ffi::c_void, mem::size_of, ptr::null};
 
     type Handle = *mut c_void;
+    #[link(name = "kernel32")]
     unsafe extern "system" {
         fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> Handle;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
@@ -137,6 +163,31 @@ pub(crate) fn attach_process_tree(child: &Child) -> Result<ProcessTreeOwner> {
         return Err(std::io::Error::last_os_error()).context("AssignProcessToJobObject failed");
     }
     Ok(ProcessTreeOwner(owner))
+}
+
+#[cfg(windows)]
+pub(crate) fn resume_process(child: &Child) -> Result<()> {
+    use std::ffi::c_void;
+
+    type Handle = *mut c_void;
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        // NtResumeProcess resumes the primary process thread created with
+        // CREATE_SUSPENDED. The Job Object is assigned before this call, so a
+        // wrapper cannot create an unowned descendant during attachment.
+        fn NtResumeProcess(process: Handle) -> i32;
+    }
+
+    let process = child
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("spawned child has no process handle"))?;
+    let status = unsafe { NtResumeProcess(process as Handle) };
+    if status != 0 {
+        return Err(anyhow::anyhow!(
+            "NtResumeProcess failed with status 0x{status:08x}"
+        ));
+    }
+    Ok(())
 }
 const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
@@ -527,6 +578,9 @@ impl Spawner {
             });
         }
 
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_SUSPENDED);
+
         let child = cmd.spawn().context("failed to spawn wrap-mode child")?;
         let pid = child.id().context("spawned child missing pid")?;
         #[cfg(windows)]
@@ -534,30 +588,18 @@ impl Spawner {
             Ok(owner) => owner,
             Err(error) => {
                 let mut child = child;
-                // Assignment can fail after the wrapper has started its own
-                // children. Use the OS tree operation only while Child proves
-                // that the wrapper is still live; after wait resolves, a raw
-                // PID may have been reused. Child::start_kill remains safe
-                // through the owned process handle in either case.
-                let wrapper_live = child
-                    .try_wait()
-                    .map(|status| status.is_none())
-                    .unwrap_or(false);
-                if wrapper_live {
-                    if let Some(pid) = child.id() {
-                        if !terminate_process_tree(pid).await {
-                            let _ = child.start_kill();
-                        }
-                    } else {
-                        let _ = child.start_kill();
-                    }
-                } else {
-                    let _ = child.start_kill();
-                }
-                let _ = timeout(Duration::from_secs(1), child.wait()).await;
+                cleanup_attach_failure(&mut child).await;
                 return Err(error).context("failed to establish wrap process-tree ownership");
             }
         };
+        #[cfg(windows)]
+        if let Err(error) = resume_process(&child) {
+            let _ = process_tree.terminate();
+            let mut child = child;
+            let _ = child.start_kill();
+            let _ = timeout(Duration::from_secs(1), child.wait()).await;
+            return Err(error).context("failed to resume wrap-mode child");
+        }
 
         self.children.insert(
             child_name.to_string(),
@@ -735,11 +777,38 @@ pub(crate) async fn terminate_process_tree(pid: u32) -> bool {
         Duration::from_secs(1),
         tokio::process::Command::new(taskkill)
             .args(["/PID", &pid.to_string(), "/T", "/F"])
+            // If the one-second bound fires, terminate taskkill itself before
+            // its PID-only command can outlive this ownership decision.
+            .kill_on_drop(true)
             .status(),
         )
         .await,
         Ok(Ok(status)) if status.success()
     )
+}
+
+#[cfg(windows)]
+pub(crate) async fn cleanup_attach_failure(child: &mut Child) {
+    // Assignment can fail after the wrapper has started its own children. Use
+    // the OS tree operation only while Child proves that the wrapper is still
+    // live; after wait resolves, a raw PID may have been reused. Child's
+    // process handle remains safe for the wrapper itself in either case.
+    let wrapper_live = child
+        .try_wait()
+        .map(|status| status.is_none())
+        .unwrap_or(false);
+    if wrapper_live {
+        if let Some(pid) = child.id() {
+            if !terminate_process_tree(pid).await {
+                let _ = child.start_kill();
+            }
+        } else {
+            let _ = child.start_kill();
+        }
+    } else {
+        let _ = child.start_kill();
+    }
+    let _ = timeout(Duration::from_secs(1), child.wait()).await;
 }
 
 #[cfg(unix)]
