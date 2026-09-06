@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 const CASE_ID = '1665-immutable-fleet-snapshot';
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CLI_TIMEOUT_MS = 60_000;
+const TLS_CERTIFICATE_TIMEOUT_MS = 30_000;
+const OPENSSL_PATH = '/usr/bin/openssl';
 const SNAPSHOT_ID = 'snap_immutable_candidate_1665';
 const MANIFEST_SHA256 = 'a'.repeat(64);
 const WRONG_MANIFEST_SHA256 = 'b'.repeat(64);
@@ -247,7 +249,7 @@ try {
     { encoding: 'utf8', mode: 0o600, flag: 'wx' }
   );
   run(
-    'openssl',
+    OPENSSL_PATH,
     [
       'req',
       '-x509',
@@ -266,7 +268,8 @@ try {
     ],
     probeDir,
     'ephemeral TLS certificate generation',
-    buildEnvironment()
+    buildEnvironment(),
+    TLS_CERTIFICATE_TIMEOUT_MS
   );
 
   run('npm', ['ci', '--ignore-scripts'], targetDir, 'workspace dependency installation', buildEnvironment());
@@ -494,12 +497,12 @@ function buildEnvironment() {
   return env;
 }
 
-function run(command, args, cwd, label, env) {
+function run(command, args, cwd, label, env, timeoutMs = COMMAND_TIMEOUT_MS) {
   const completed = spawnSync(command, args, {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: COMMAND_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
   if (completed.status !== 0) {
