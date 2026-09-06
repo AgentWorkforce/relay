@@ -5,7 +5,8 @@ Boots a **real** stack and drives the fleet control wire end-to-end:
 - a relaycast engine (node adapter, `relaycast-engine` serve bin),
 - two `agent-relay node up` nodes — each its own **Rust broker + TS sidecar**,
   with distinct + shared capability sets (`node-a`: `spawn:claude`, `spawn:pool`,
-  `echo`, `work`; `node-b`: `spawn:codex`, `spawn:pool`, `ping`, `work`).
+  `spawn:release-probe`, `echo`, `work`; `node-b`: `spawn:codex`, `spawn:pool`,
+  `ping`, `work`).
 
 Unlike the unit suites (in-process adapter / fake broker WS), this exercises the
 actual broker `node_control` connection, including the `Authorization: Bearer`
@@ -23,6 +24,7 @@ omitted/null heartbeat-load compatibility added in relaycast#307.
 | cross-node dispatch     | `echo`→node-a, `ping`→node-b each dispatch over the owning node's control connection and ack                                                                                                                                          |
 | declarative trigger     | a `#general` `/deploy/` message fires the action exactly once; the action-generated reply does **not** re-trigger — asserted by counting the `echo:` **prefix** (a broken guard cascades to `echo:echo:…`, growing the total)         |
 | spawn completes E2E     | five consecutive targeted spawns across both nodes mint+inject agent tokens, bind via-node, wait for proven harness prompts, and cause each PTY child to record its unique brief nonce — registration alone is insufficient           |
+| public release absence  | `release-probe` creates a real descendant; public CLI release proves the descendant, node heartbeat, and engine roster are absent, then repeats the same-name release with a fresh PID                                                |
 | capability-routed spawn | with no target, placement picks the only node advertising the capability                                                                                                                                                              |
 | scheduled spawn         | a shared-capability spawn routes to the least-loaded node (pre-loaded node is skipped)                                                                                                                                                |
 | resume                  | a resumable spawn carries `session_ref`; after release, the resume re-targets the **origin** node                                                                                                                                     |
