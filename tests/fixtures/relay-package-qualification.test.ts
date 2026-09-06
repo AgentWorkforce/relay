@@ -231,6 +231,10 @@ describe('Relay package qualification producer', () => {
     expect(workflow).toContain('refs/heads/qualification/*');
     expect(workflow).toContain('test "${GITHUB_REPOSITORY}" = "AgentWorkforce/relay"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"');
+    expect(workflow).toContain('--artifact-digest "sha256:${PAYLOAD_ARTIFACT_DIGEST}"');
+    expect(workflow).toContain(
+      'attestationArtifactDigest: `sha256:${process.env.ATTESTATION_ARTIFACT_DIGEST}`'
+    );
     expect(workflow.indexOf('- name: Set up exact Node.js')).toBeLessThan(
       workflow.indexOf('- name: Require prerelease package version')
     );

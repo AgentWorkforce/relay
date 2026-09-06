@@ -124,7 +124,7 @@ jobs:
         run: |
           node scripts/verify-features/relay-package-qualification.mjs create-envelope \
             --payload .qualification/payload/relay-package-attestation.json \
-            --artifact-digest "${PAYLOAD_ARTIFACT_DIGEST}" \
+            --artifact-digest "sha256:${PAYLOAD_ARTIFACT_DIGEST}" \
             --output .qualification/attestation/relay-package-qualification-attestation.json
           node scripts/verify-features/relay-package-qualification.mjs validate \
             --kind envelope \
@@ -147,7 +147,7 @@ jobs:
           const request = {
             runId: process.env.GITHUB_RUN_ID,
             runAttempt: process.env.GITHUB_RUN_ATTEMPT,
-            attestationArtifactDigest: process.env.ATTESTATION_ARTIFACT_DIGEST,
+            attestationArtifactDigest: `sha256:${process.env.ATTESTATION_ARTIFACT_DIGEST}`,
           };
           console.log('## Cloud Relay producer request\n');
           console.log('```json');
