@@ -105,23 +105,34 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
   let redacted = value;
   for (const secret of declaredSecrets) {
     const credentialRanges = [...redacted.matchAll(LIVE_CREDENTIAL)].map((match) => ({
-      start: match.index,
+      start: Number(match.index),
       end: Number(match.index) + match[0].length,
     }));
-    redacted = redacted.replaceAll(secret, (match, offset) => {
-      const start = Number(offset);
-      const end = start + match.length;
-      const containingCredential = credentialRanges.find(
-        (range) => start >= Number(range.start) && end <= range.end
-      );
+    const replacementRanges = [];
+    let searchFrom = 0;
+    while (searchFrom <= redacted.length - secret.length) {
+      const start = redacted.indexOf(secret, searchFrom);
+      if (start < 0) break;
+      const end = start + secret.length;
+      const containingCredential = credentialRanges.find((range) => start >= range.start && end <= range.end);
       if (
         containingCredential &&
-        (start !== Number(containingCredential.start) || !LIVE_CREDENTIAL_PREFIX.test(secret))
+        (start !== containingCredential.start || !LIVE_CREDENTIAL_PREFIX.test(secret))
       ) {
-        return match;
+        searchFrom = end;
+        continue;
       }
-      return '[REDACTED_DECLARED_SECRET]';
-    });
+      replacementRanges.push(containingCredential ?? { start, end });
+      searchFrom = end;
+    }
+    let cursor = 0;
+    let replacement = '';
+    for (const range of replacementRanges.sort((left, right) => left.start - right.start)) {
+      if (range.start < cursor) continue;
+      replacement += `${redacted.slice(cursor, range.start)}[REDACTED_DECLARED_SECRET]`;
+      cursor = range.end;
+    }
+    if (replacementRanges.length > 0) redacted = replacement + redacted.slice(cursor);
   }
   return redacted.replace(LIVE_CREDENTIAL, (_match, prefix, body) =>
     body.length <= 8 ? `${prefix}\u2026` : `${prefix}\u2026${body.slice(-4)}`
