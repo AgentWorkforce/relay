@@ -242,8 +242,13 @@ describe('trusted Relay package qualification delivery', () => {
     expect(verify.if).toBe("${{ github.event.workflow_run.conclusion == 'success' }}");
     expect(verify.permissions).toEqual({ actions: 'read', contents: 'read' });
     expect(JSON.stringify(verify)).not.toContain('secrets.');
-    expect(JSON.stringify(verify)).toContain('${{ github.workflow_sha }}');
-    expect(JSON.stringify(verify)).toContain('persist-credentials');
+    const checkout = verify.steps.find(
+      (step: any) => step.uses === 'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'
+    );
+    expect(checkout?.with).toEqual({
+      ref: '${{ github.workflow_sha }}',
+      'persist-credentials': false,
+    });
     expect(JSON.stringify(verify)).toContain('request_artifact_id');
 
     const deliver = workflow.jobs['deliver-request'];
