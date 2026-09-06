@@ -1,0 +1,125 @@
+name: Relay package qualification Cloud delivery
+
+on:
+  workflow_run:
+    workflows:
+      - Relay package qualification
+    types:
+      - completed
+
+permissions: {}
+
+jobs:
+  verify-request:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_id: ${{ steps.artifacts.outputs.run_id }}
+      run_attempt: ${{ steps.artifacts.outputs.run_attempt }}
+      source_git_sha: ${{ steps.artifacts.outputs.source_git_sha }}
+      attestation_artifact_digest: ${{ steps.artifacts.outputs.attestation_artifact_digest }}
+    steps:
+      - name: Check out only the trusted dispatcher source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Set up exact Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+
+      - name: Validate the completed producer identity
+        id: producer
+        run: |
+          set -euo pipefail
+          node scripts/verify-features/relay-package-qualification-delivery.mjs validate-event \
+            --event "${GITHUB_EVENT_PATH}" \
+            --output "${RUNNER_TEMP}/producer-context.json" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Select the exact bounded request and attestation artifacts
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.producer.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp \
+            "repos/AgentWorkforce/relay/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            > "${RUNNER_TEMP}/artifact-pages.json"
+          node scripts/verify-features/relay-package-qualification-delivery.mjs select-artifacts \
+            --context "${RUNNER_TEMP}/producer-context.json" \
+            --artifact-pages "${RUNNER_TEMP}/artifact-pages.json" \
+            --output "${RUNNER_TEMP}/artifact-selection.json" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Download only the selected request artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.artifacts.outputs.request_artifact_id }}
+          github-token: ${{ github.token }}
+          repository: AgentWorkforce/relay
+          run-id: ${{ steps.artifacts.outputs.run_id }}
+          path: ${{ runner.temp }}/relay-package-cloud-request
+          merge-multiple: true
+
+      - name: Validate the exact request payload and archive shape
+        run: |
+          set -euo pipefail
+          node scripts/verify-features/relay-package-qualification-delivery.mjs validate-request \
+            --context "${RUNNER_TEMP}/producer-context.json" \
+            --selection "${RUNNER_TEMP}/artifact-selection.json" \
+            --directory "${RUNNER_TEMP}/relay-package-cloud-request"
+
+  deliver-request:
+    needs: verify-request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    environment: snapshot-qualification
+    steps:
+      - name: Mint a Cloud-only token from the trusted dispatcher
+        id: cloud-token
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.1
+        with:
+          app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+          owner: AgentWorkforce
+          repositories: cloud
+          permission-contents: write
+
+      - name: Deliver the verified immutable pointer
+        env:
+          GH_TOKEN: ${{ steps.cloud-token.outputs.token }}
+          RUN_ID: ${{ needs.verify-request.outputs.run_id }}
+          RUN_ATTEMPT: ${{ needs.verify-request.outputs.run_attempt }}
+          SOURCE_GIT_SHA: ${{ needs.verify-request.outputs.source_git_sha }}
+          ATTESTATION_ARTIFACT_DIGEST: ${{ needs.verify-request.outputs.attestation_artifact_digest }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --argjson runId "${RUN_ID}" \
+            --argjson runAttempt "${RUN_ATTEMPT}" \
+            --arg sourceGitSha "${SOURCE_GIT_SHA}" \
+            --arg attestationArtifactDigest "${ATTESTATION_ARTIFACT_DIGEST}" \
+            '{
+              event_type: "relay_package_qualification_ready",
+              client_payload: {
+                schemaVersion: 1,
+                kind: "relayPackageQualificationReady",
+                relay: {
+                  runId: $runId,
+                  runAttempt: $runAttempt,
+                  sourceGitSha: $sourceGitSha,
+                  attestationArtifactDigest: $attestationArtifactDigest
+                }
+              }
+            }' > "${RUNNER_TEMP}/cloud-request.json"
+          gh api --method POST repos/AgentWorkforce/cloud/dispatches \
+            --input "${RUNNER_TEMP}/cloud-request.json"
