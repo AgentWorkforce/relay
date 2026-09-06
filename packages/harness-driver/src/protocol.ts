@@ -281,6 +281,96 @@ export interface BrokerStatus {
   auth?: BrokerAuthStatus;
 }
 
+/**
+ * One `deliver` frame the broker observed on `/v1/node/ws`, reduced to
+ * identifiers. Message bodies are deliberately absent: this report is meant to
+ * be safe to paste into an issue.
+ */
+export interface NodeDeliveryRecord {
+  at_ms: number;
+  agent: string;
+  agent_id: string;
+  delivery_id: string;
+  msg_id: string;
+  seq: number;
+  /** The `type` on the frame's payload, e.g. `dm.received`, `message.created`. */
+  payload_type: string;
+  /** The delivery book's verdict on the frame. */
+  decision: 'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject';
+  /** Where the frame ended up. `null` while still in flight. */
+  disposition:
+    | 'injected'
+    | 'surfaced_and_acked'
+    | 'held_for_manual_flush'
+    | 'surface_failed'
+    | 'acked_without_surfacing'
+    | 'rejected_identity'
+    | null;
+}
+
+/**
+ * `GET /api/node-delivery` — whether node-control `deliver` frames are reaching
+ * the broker and what becomes of them.
+ *
+ * `socket.text_frames` counts inbound frames *before* deserialization, so a
+ * `deliver` the broker cannot parse still shows up as having arrived; compare
+ * it against `frames.deliver` and `socket.parse_failures` to tell "nothing
+ * arrived" apart from "it arrived and was discarded".
+ *
+ * The report is served from shared state rather than the broker's runtime event
+ * loop. When that loop wedges, the socket counters keep climbing while
+ * `cursors_published_at_ms` stops advancing.
+ */
+export interface NodeDeliveryReport {
+  connected: boolean;
+  token_present: boolean;
+  now_ms: number;
+  socket: {
+    connects: number;
+    disconnects: number;
+    /** Inbound WS text frames, counted before deserialization. */
+    text_frames: number;
+    parse_failures: number;
+    last_frame_at_ms: number | null;
+  };
+  frames: {
+    deliver: number;
+    action_invoke: number;
+    ping: number;
+    reply: number;
+    error: number;
+    last_deliver_at_ms: number | null;
+  };
+  decisions: Record<'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject', number>;
+  dispositions: Record<
+    | 'injected'
+    | 'surfaced_and_acked'
+    | 'held_for_manual_flush'
+    | 'surface_failed'
+    | 'acked_without_surfacing'
+    | 'rejected_identity',
+    number
+  >;
+  recent_delivers: NodeDeliveryRecord[];
+  /** Frame `type` values the broker could not deserialize, and how often. */
+  unparsed_frame_types: Record<string, number>;
+  last_parse_failure: {
+    at_ms: number;
+    error: string;
+    frame_type: string | null;
+    frame_len: number;
+  } | null;
+  /** When the runtime last republished `cursors`; stale means a stalled loop. */
+  cursors_published_at_ms: number | null;
+  cursors: Array<{
+    agent_id: string;
+    agent_name: string;
+    acked_up_to_seq: number;
+    received_up_to_seq: number;
+    has_sequenced_position: boolean;
+  }>;
+}
+
 /** A terminally-failed delivery retained in the broker's dead-letter queue. */
 export interface DeadLetterInfo {
   delivery_id: string;

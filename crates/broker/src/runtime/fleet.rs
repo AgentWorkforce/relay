@@ -7,6 +7,7 @@ use crate::{
     },
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
+    node_delivery_probe::DeliverDisposition,
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
         TerminalToCloud, TERMINAL_CLOSE_RESERVE,
@@ -815,6 +816,7 @@ impl BrokerRuntime {
             FleetControlEvent::Connected => {
                 self.node_delivery_token_present = true;
                 self.node_delivery_connected = true;
+                self.node_delivery_probe.record_connected();
                 // Node delivery is live: message delivery flows solely over
                 // /v1/node/ws. The workspace firehose delivery path was removed,
                 // so there is no firehose injection to suppress here.
@@ -825,6 +827,7 @@ impl BrokerRuntime {
             }
             FleetControlEvent::Disconnected => {
                 self.node_delivery_connected = false;
+                self.node_delivery_probe.record_disconnected();
                 tracing::warn!(
                     target = "relay_broker::fleet",
                     "fleet node control disconnected"
@@ -844,9 +847,15 @@ impl BrokerRuntime {
 
     async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
         let decision = self.fleet_delivery_book.observe(&deliver);
+        // Record the book's verdict before acting on it, so a frame that is
+        // about to be dropped without an ack is still visible over
+        // `GET /api/node-delivery`. See `crate::node_delivery_probe`.
+        self.node_delivery_probe.record_decision(&deliver, &decision);
         let up_to_seq = match plan_fleet_delivery(decision) {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::SurfacedAndAcked);
                     self.fleet_delivery_book.commit_delivered(&deliver)
                 }
                 Ok(FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho) => {
@@ -865,14 +874,22 @@ impl BrokerRuntime {
                     // `try_inject_pending_relay_message` /
                     // `insert_and_attempt_delivery`), so there is nothing left
                     // to record here — see relay#1543.
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::Injected);
                     self.fleet_delivery_book.commit_received(&deliver);
+                    self.publish_fleet_delivery_cursors();
                     return;
                 }
                 Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush) => {
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::HeldForManualFlush);
                     self.fleet_delivery_book.commit_received(&deliver);
+                    self.publish_fleet_delivery_cursors();
                     return;
                 }
                 Err(error) => {
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::SurfaceFailed);
                     tracing::warn!(
                         target = "relay_broker::fleet",
                         agent = %deliver.agent,
@@ -884,12 +901,30 @@ impl BrokerRuntime {
                     return;
                 }
             },
-            FleetDeliveryPlan::Acknowledge(up_to_seq) => up_to_seq,
+            FleetDeliveryPlan::Acknowledge(up_to_seq) => {
+                self.node_delivery_probe
+                    .record_disposition(&deliver, DeliverDisposition::AckedWithoutSurfacing);
+                up_to_seq
+            }
             FleetDeliveryPlan::RejectWithoutAck => {
-                let reason = match decision {
-                    DeliveryDecision::Gap { .. } => "sequence gap; frame not placeable",
-                    _ => "conflicting agent identity",
+                // `Gap` and `IdentityReject` share this arm but are different
+                // diagnoses, so the endpoint must not collapse them: a gap
+                // means the book could not place a frame the agent never saw,
+                // an identity reject means the frame was addressed to a
+                // retired incarnation. Keep the disposition aligned with the
+                // reason logged below.
+                let (reason, disposition) = match decision {
+                    DeliveryDecision::Gap { .. } => (
+                        "sequence gap; frame not placeable",
+                        DeliverDisposition::RejectedSequenceGap,
+                    ),
+                    _ => (
+                        "conflicting agent identity",
+                        DeliverDisposition::RejectedIdentity,
+                    ),
                 };
+                self.node_delivery_probe
+                    .record_disposition(&deliver, disposition);
                 tracing::warn!(
                     target = "relay_broker::fleet",
                     agent = %deliver.agent,
@@ -903,6 +938,7 @@ impl BrokerRuntime {
                 return;
             }
         };
+        self.publish_fleet_delivery_cursors();
         let _ = self
             .fleet_control_tx
             .send(FleetControlCommand::Send(delivery_ack(
@@ -910,6 +946,15 @@ impl BrokerRuntime {
                 up_to_seq,
             )))
             .await;
+    }
+
+    /// Republish the delivery book's cursors into the shared probe so
+    /// `GET /api/node-delivery` can report them without posting a request to
+    /// this event loop. A stale `cursors_published_at_ms` next to a climbing
+    /// frame counter is itself the signal that this loop has wedged.
+    fn publish_fleet_delivery_cursors(&self) {
+        self.node_delivery_probe
+            .publish_cursors(self.fleet_delivery_book.cursor_views());
     }
 
     /// Surface a node `deliver` frame by branching on its payload `type`:

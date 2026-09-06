@@ -268,6 +268,9 @@ fn worker_event_runtime_fixture(
         fleet_control_tx,
         fleet_node_name: "test-node".to_string(),
         node_delivery_token_present: true,
+        node_delivery_probe: std::sync::Arc::new(
+            crate::node_delivery_probe::NodeDeliveryProbe::new(),
+        ),
         node_delivery_connected: true,
         fleet_event_rx,
         fleet_control_open: true,

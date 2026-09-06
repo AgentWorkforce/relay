@@ -386,6 +386,10 @@ struct ListenApiState {
     node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Whether the broker is in persist mode
     persist: bool,
+    /// Node-control inbound introspection. Held directly (rather than reached
+    /// through `tx`) so `GET /api/node-delivery` answers even when the runtime
+    /// event loop is wedged — the case the endpoint exists to diagnose.
+    node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     /// When the broker started
     started_at: std::time::Instant,
     input_serializers: PtyInputSerializers,
@@ -421,6 +425,9 @@ pub struct ListenApiConfig {
     pub node_name: String,
     pub node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     pub persist: bool,
+    /// Node-control inbound introspection, read directly by
+    /// `GET /api/node-delivery`. See [`crate::node_delivery_probe`].
+    pub node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
 }
 
 pub fn listen_api_router(config: ListenApiConfig) -> axum::Router {
@@ -462,6 +469,7 @@ fn listen_api_router_with_auth(
         node_name: config.node_name,
         node_token: config.node_token,
         persist: config.persist,
+        node_delivery_probe: config.node_delivery_probe,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
@@ -533,6 +541,10 @@ fn listen_api_router_with_auth(
         .route(
             "/api/crash-insights",
             routing::get(listen_api_crash_insights),
+        )
+        .route(
+            "/api/node-delivery",
+            routing::get(listen_api_node_delivery),
         )
         .route("/api/dead-letters", routing::get(listen_api_dead_letters))
         .route(
@@ -2689,6 +2701,30 @@ async fn listen_api_crash_insights(
     }
 }
 
+/// `GET /api/node-delivery` — introspection for the node-control inbound path.
+///
+/// Deliberately answered straight from the shared probe rather than by posting
+/// a [`ListenApiRequest`] to the runtime. Every other route here round-trips
+/// through the event loop, but a wedged event loop is one of the conditions
+/// that makes an agent go silent, and a diagnostic that hangs in exactly the
+/// case it was built for is worthless. When the loop is stuck, the frame
+/// counters keep climbing while `cursors_published_at_ms` stops advancing.
+async fn listen_api_node_delivery(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let token_present = state
+        .node_token
+        .read()
+        .map(|token| token.is_some())
+        .unwrap_or(false);
+    // `connected` is reported by the probe's own connect/disconnect counters
+    // rather than the runtime's flag, for the same no-round-trip reason.
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(state.node_delivery_probe.snapshot_with_token(token_present)),
+    )
+}
+
 async fn listen_api_dead_letters(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
@@ -3834,9 +3870,24 @@ mod auth_tests {
     fn test_router(
         broker_api_key: Option<&str>,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        let (router, rx, _probe) = test_router_with_probe(broker_api_key);
+        (router, rx)
+    }
+
+    /// Like [`test_router`], but also hands back the probe the router reads, so
+    /// a test can record frames into it and assert the endpoint reflects them.
+    fn test_router_with_probe(
+        broker_api_key: Option<&str>,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
+        let node_delivery_probe =
+            std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
         (
             listen_api_router_with_auth(
                 ListenApiConfig {
@@ -3851,11 +3902,72 @@ mod auth_tests {
                     node_name: "test-node".to_string(),
                     node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     persist: false,
+                    node_delivery_probe: node_delivery_probe.clone(),
                 },
                 broker_api_key.map(ToString::to_string),
             ),
             rx,
+            node_delivery_probe,
         )
+    }
+
+    /// The endpoint must report what the probe recorded, and — critically —
+    /// must do so WITHOUT posting a request to the runtime. A wedged runtime
+    /// event loop is one of the conditions that makes an agent go deaf, so a
+    /// diagnostic that round-trips through it would hang in exactly the case
+    /// it exists to diagnose. `rx` is left undrained here on purpose: it
+    /// stands in for a runtime that is not answering.
+    #[tokio::test]
+    async fn node_delivery_route_answers_without_the_runtime() {
+        use crate::node_delivery_probe::DeliverDisposition;
+
+        let (router, mut rx, probe) = test_router_with_probe(None);
+        probe.record_connected();
+        probe.record_text_frame();
+        let deliver = crate::fleet_wire::Deliver {
+            v: crate::fleet_wire::FleetWireVersion::default(),
+            agent: "worker-a".to_string(),
+            agent_id: "ag_1".to_string(),
+            delivery_id: "del_1".to_string(),
+            msg_id: "msg_1".to_string(),
+            seq: 7,
+            mode: crate::fleet_wire::DeliveryMode::Wait,
+            payload: json!({ "type": "dm.received" }),
+        };
+        probe.record_frame(&crate::fleet_wire::RelaycastToBroker::Deliver(
+            deliver.clone(),
+        ));
+        probe.record_decision(
+            &deliver,
+            &crate::node_control::DeliveryDecision::Deliver { up_to_seq: 7 },
+        );
+        probe.record_disposition(&deliver, DeliverDisposition::Injected);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+
+        assert_eq!(body["connected"], true);
+        assert_eq!(body["frames"]["deliver"], 1);
+        assert_eq!(body["socket"]["text_frames"], 1);
+        assert_eq!(body["recent_delivers"][0]["agent"], "worker-a");
+        assert_eq!(body["recent_delivers"][0]["seq"], 7);
+        assert_eq!(body["recent_delivers"][0]["decision"], "deliver");
+        assert_eq!(body["recent_delivers"][0]["disposition"], "injected");
+
+        // Nothing was asked of the runtime.
+        assert!(
+            rx.try_recv().is_err(),
+            "the introspection route must not depend on the runtime event loop"
+        );
     }
 
     async fn response_json(response: axum::response::Response) -> Value {

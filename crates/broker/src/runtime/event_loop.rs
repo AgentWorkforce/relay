@@ -214,6 +214,10 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_node_name: String,
     pub(super) node_delivery_token_present: bool,
     pub(super) node_delivery_connected: bool,
+    /// `RUST_LOG`-independent introspection for the node-control inbound path,
+    /// shared with the node-control client task and the HTTP API. See
+    /// [`crate::node_delivery_probe`].
+    pub(super) node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
     /// Independent outbound terminal lane. It never shares the node-control
