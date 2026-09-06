@@ -172,6 +172,7 @@ try {
       const result = await brokerRequest(apiBase, '/api/spawned', { headers });
       return (
         result.status < 300 &&
+        result.body.success !== false &&
         Array.isArray(result.body.agents) &&
         !result.body.agents.some((agent) => agent.name === targetName)
       );

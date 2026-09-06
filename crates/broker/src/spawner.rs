@@ -535,11 +535,24 @@ impl Spawner {
             Err(error) => {
                 let mut child = child;
                 // Assignment can fail after the wrapper has started its own
-                // children. Use the OS tree operation before dropping the
-                // wrapper so those pre-assignment descendants are not left
-                // behind by the failed spawn.
-                if let Some(pid) = child.id() {
-                    terminate_process_tree(pid).await;
+                // children. Use the OS tree operation only while Child proves
+                // that the wrapper is still live; after wait resolves, a raw
+                // PID may have been reused. Child::start_kill remains safe
+                // through the owned process handle in either case.
+                let wrapper_live = child
+                    .try_wait()
+                    .map(|status| status.is_none())
+                    .unwrap_or(false);
+                if wrapper_live {
+                    if let Some(pid) = child.id() {
+                        if !terminate_process_tree(pid).await {
+                            let _ = child.start_kill();
+                        }
+                    } else {
+                        let _ = child.start_kill();
+                    }
+                } else {
+                    let _ = child.start_kill();
                 }
                 let _ = timeout(Duration::from_secs(1), child.wait()).await;
                 return Err(error).context("failed to establish wrap process-tree ownership");
@@ -664,7 +677,11 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
         // after wait resolves, the raw PID may have been reused. In that case
         // dropping ProcessTreeOwner below terminates the complete tree.
         if child.try_wait()?.is_none() {
-            terminate_process_tree(pid).await;
+            if !terminate_process_tree(pid).await {
+                child
+                    .start_kill()
+                    .context("failed to kill worker wrapper after taskkill failure")?;
+            }
         }
     }
 
@@ -705,7 +722,7 @@ pub(crate) fn request_child_termination(child: &mut Child) {
 }
 
 #[cfg(windows)]
-pub(crate) async fn terminate_process_tree(pid: u32) {
+pub(crate) async fn terminate_process_tree(pid: u32) -> bool {
     let taskkill = std::env::var_os("SystemRoot")
         .map(|root| {
             std::path::PathBuf::from(root)
@@ -713,13 +730,16 @@ pub(crate) async fn terminate_process_tree(pid: u32) {
                 .join("taskkill.exe")
         })
         .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
-    let _ = timeout(
+    matches!(
+        timeout(
         Duration::from_secs(1),
         tokio::process::Command::new(taskkill)
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .status(),
+        )
+        .await,
+        Ok(Ok(status)) if status.success()
     )
-    .await;
 }
 
 #[cfg(unix)]
