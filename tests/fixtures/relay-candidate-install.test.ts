@@ -149,9 +149,13 @@ describe('Relay candidate clean-install attestation', () => {
 
   it('makes the candidate output parent private before trusted hydration', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
+    const verifyBundle = workflow.indexOf('qualification-manifest.mjs verify-bundle');
     const harden = workflow.indexOf('Harden downloaded candidate metadata for private hydration');
     const hydrate = workflow.indexOf('relay-candidate-install.mjs hydrate');
-    expect(harden).toBeGreaterThan(workflow.indexOf('qualification-manifest.mjs verify-bundle'));
+    expect(verifyBundle).toBeGreaterThan(-1);
+    expect(harden).toBeGreaterThan(-1);
+    expect(hydrate).toBeGreaterThan(-1);
+    expect(harden).toBeGreaterThan(verifyBundle);
     expect(hydrate).toBeGreaterThan(harden);
     expect(workflow).toContain('hardenPrivateRegularFileNoFollow');
     expect(workflow).toContain('candidate-install-attestation.json');
