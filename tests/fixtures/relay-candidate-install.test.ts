@@ -12,6 +12,7 @@ import {
   digestInstalledPackageTree,
   privateNpmInvocation,
   sourceBrokerBuildPlan,
+  sourceBrokerToolchainPlan,
   validateCandidateInstallAttestation,
   validateCandidateLockfile,
   verifyCandidateInstall,
@@ -69,7 +70,8 @@ function fixture() {
 
 describe('Relay candidate clean-install attestation', () => {
   it('stages portable static musl brokers for Linux source qualification', () => {
-    expect(sourceBrokerBuildPlan('linux', 'x64')).toEqual({
+    const linuxPlan = sourceBrokerBuildPlan('linux', 'x64');
+    expect(linuxPlan).toEqual({
       cargoArgs: [
         'build',
         '--locked',
@@ -88,6 +90,28 @@ describe('Relay candidate clean-install attestation', () => {
       built: path.join('target', 'aarch64-unknown-linux-musl', 'release', 'agent-relay-broker'),
       env: { RUSTFLAGS: '-C target-feature=+crt-static' },
     });
+    expect(
+      sourceBrokerToolchainPlan(linuxPlan, {
+        muslGccAvailable: false,
+        aptGetAvailable: true,
+        sudoAvailable: true,
+      })
+    ).toEqual([
+      { command: 'rustup', args: ['target', 'add', 'x86_64-unknown-linux-musl'] },
+      { command: 'sudo', args: ['apt-get', 'update'] },
+      { command: 'sudo', args: ['apt-get', 'install', '-y', 'musl-tools'] },
+    ]);
+    expect(
+      sourceBrokerToolchainPlan(sourceBrokerBuildPlan('darwin', 'arm64'), {
+        muslGccAvailable: false,
+      })
+    ).toEqual([]);
+    expect(() =>
+      sourceBrokerToolchainPlan(linuxPlan, {
+        muslGccAvailable: false,
+        aptGetAvailable: false,
+      })
+    ).toThrow(/apt-get/);
   });
 
   it('fails closed on Windows where directory-handle-bound I/O is unavailable', () => {

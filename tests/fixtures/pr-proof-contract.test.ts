@@ -1886,6 +1886,24 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('ghp_');
   });
 
+  it('redacts an eight-character declared credential body with a compatible suffix', () => {
+    const declaredCredential = 'ghp_12345678';
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: `${declaredCredential}X` }, [
+      declaredCredential,
+    ]);
+
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('5678X');
+  });
+
+  it('does not classify an arbitrary one-character declaration as a credential containment match', () => {
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'ghp_xxxxxxxxxxxx1234' }, ['x']);
+
+    expect(diagnostic).toContain('ghp_…1234');
+    expect(diagnostic).not.toContain('[REDACTED_DECLARED_SECRET]');
+  });
+
   it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
     const secret = 'overflow-run-id-secret';
     const diagnostic = terminalStatusDiagnostic(

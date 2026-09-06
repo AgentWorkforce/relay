@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -572,6 +572,8 @@ describe('clean-room verification catalog', () => {
   it('compiles an exact writable scope for a write-once lane artifact that does not exist yet', async () => {
     const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-permissions-'));
     try {
+      await mkdir(path.join(projectDir, 'packages', 'fixture', 'dist'), { recursive: true });
+      await writeFile(path.join(projectDir, 'packages', 'fixture', 'dist', 'placeholder'), 'fixture\n');
       const lane = 'polyglot-plugins';
       const target = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}.json`;
       const compiled = compileAgentPermissions({
@@ -586,6 +588,7 @@ describe('clean-room verification catalog', () => {
         },
       });
 
+      expect(compiled.readwritePaths).toEqual(['packages/fixture/dist/placeholder']);
       expect(compiled.readwritePaths).not.toContain(target);
       expect(compiled.scopes).toEqual(
         expect.arrayContaining([`relayfile:fs:read:/${target}`, `relayfile:fs:write:/${target}`])

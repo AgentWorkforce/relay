@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import {
+  access,
   chmod,
   copyFile,
   lstat,
@@ -298,6 +299,41 @@ export function sourceBrokerBuildPlan(platform = process.platform, arch = proces
   };
 }
 
+export function sourceBrokerToolchainPlan(
+  buildPlan,
+  { muslGccAvailable = false, aptGetAvailable = false, sudoAvailable = false, isRoot = false } = {}
+) {
+  if (!String(buildPlan?.target ?? '').endsWith('-unknown-linux-musl')) return [];
+  const commands = [{ command: 'rustup', args: ['target', 'add', buildPlan.target] }];
+  if (muslGccAvailable) return commands;
+  if (!aptGetAvailable) {
+    throw new Error('portable Linux broker staging requires apt-get to provision musl-tools');
+  }
+  const aptCommand = isRoot ? 'apt-get' : sudoAvailable ? 'sudo' : null;
+  if (!aptCommand) {
+    throw new Error('portable Linux broker staging requires root or sudo to provision musl-tools');
+  }
+  const aptPrefix = isRoot ? [] : ['apt-get'];
+  commands.push(
+    { command: aptCommand, args: [...aptPrefix, 'update'] },
+    { command: aptCommand, args: [...aptPrefix, 'install', '-y', 'musl-tools'] }
+  );
+  return commands;
+}
+
+async function executableOnPath(command) {
+  for (const directory of String(process.env.PATH ?? '').split(path.delimiter)) {
+    if (!directory) continue;
+    try {
+      await access(path.join(directory, command), fsConstants.X_OK);
+      return true;
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+  return false;
+}
+
 async function rejectBundledBrokerContamination() {
   for (const directory of ['packages/sdk/bin', 'packages/harness-driver/bin']) {
     const names = await readdir(directory).catch((error) => {
@@ -395,6 +431,18 @@ async function stageSourceBroker() {
   if (sourceStatus) throw new Error('source broker staging requires a clean source tree');
   const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
   const buildPlan = sourceBrokerBuildPlan();
+  const toolchainCommands = sourceBrokerToolchainPlan(buildPlan, {
+    muslGccAvailable: await executableOnPath('musl-gcc'),
+    aptGetAvailable: await executableOnPath('apt-get'),
+    sudoAvailable: await executableOnPath('sudo'),
+    isRoot: typeof process.getuid === 'function' && process.getuid() === 0,
+  });
+  for (const { command, args } of toolchainCommands) {
+    run(command, args, { timeoutMs: 900_000 });
+  }
+  if (process.platform === 'linux' && !(await executableOnPath('musl-gcc'))) {
+    throw new Error('portable Linux broker staging could not provision musl-gcc');
+  }
   run('cargo', buildPlan.cargoArgs, {
     timeoutMs: 1_800_000,
     env: { ...buildPlan.env, AGENT_RELAY_VERSION: packageVersion },
