@@ -26,8 +26,9 @@ use crate::{
     util::{
         ansi::{floor_char_boundary, strip_ansi},
         terminal::{
-            detect_bypass_permissions_prompt, detect_claude_trust_prompt, is_auto_suggestion,
-            is_bypass_selection_menu, is_in_editor_mode,
+            claude_trust_prompt_action, detect_bypass_permissions_prompt,
+            detect_claude_trust_prompt, is_auto_suggestion, is_bypass_selection_menu,
+            is_in_editor_mode, ClaudeTrustPromptAction,
         },
     },
 };
@@ -4503,6 +4504,22 @@ fn claude_trust_prompt_full_match() {
     let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
     assert!(has_trust_ref);
     assert!(has_confirmation);
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::Confirm)
+    );
+}
+
+#[test]
+fn claude_trust_prompt_new_layout_moves_to_affirmative_row() {
+    let output = "take a moment to review what's in this folder first.\n\
+                       ❯ No, exit\n\
+                         Yes, I trust this folder\n\
+                       Enter to confirm · Esc to cancel";
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::MoveDownAndConfirm)
+    );
 }
 
 #[test]
@@ -4511,6 +4528,11 @@ fn claude_trust_prompt_stripped_spaces() {
     let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
     assert!(has_trust_ref);
     assert!(has_confirmation);
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        None,
+        "labels without rendered selection state must fail closed"
+    );
 }
 
 #[test]
@@ -4527,6 +4549,12 @@ fn claude_trust_prompt_partial_no_exit() {
     let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
     assert!(has_trust_ref);
     assert!(!has_confirmation, "should not match without exit option");
+}
+
+#[test]
+fn claude_trust_prompt_ambiguous_selection_fails_closed() {
+    let output = "❯ No, exit\n❯ Yes, I trust this folder";
+    assert_eq!(claude_trust_prompt_action(output), None);
 }
 
 #[test]

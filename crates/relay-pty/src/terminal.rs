@@ -148,6 +148,71 @@ pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     (has_trust_ref, has_confirmation)
 }
 
+/// Keystrokes needed to select Claude Code's affirmative folder-trust option.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaudeTrustPromptAction {
+    Confirm,
+    MoveUpAndConfirm,
+    MoveDownAndConfirm,
+}
+
+/// Identify the selected Claude folder-trust row and navigate to the affirmative row.
+///
+/// This deliberately returns `None` unless the complete two-option menu and exactly one
+/// selection marker are visible. Merely seeing both labels is not enough to press Enter.
+pub fn claude_trust_prompt_action(clean_output: &str) -> Option<ClaudeTrustPromptAction> {
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum OptionKind {
+        Trust,
+        Exit,
+    }
+
+    let mut options = Vec::new();
+    for line in clean_output.lines() {
+        let compact: String = line
+            .to_lowercase()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let kind = if compact.contains("yes,itrustthisfolder") {
+            Some(OptionKind::Trust)
+        } else if compact.contains("no,exit") {
+            Some(OptionKind::Exit)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            options.push((kind, line.contains('❯')));
+        }
+    }
+
+    if options.len() != 2
+        || options
+            .iter()
+            .filter(|(kind, _)| *kind == OptionKind::Trust)
+            .count()
+            != 1
+        || options
+            .iter()
+            .filter(|(kind, _)| *kind == OptionKind::Exit)
+            .count()
+            != 1
+        || options.iter().filter(|(_, selected)| *selected).count() != 1
+    {
+        return None;
+    }
+
+    let selected = options.iter().position(|(_, selected)| *selected)?;
+    let affirmative = options
+        .iter()
+        .position(|(kind, _)| *kind == OptionKind::Trust)?;
+    match affirmative.cmp(&selected) {
+        std::cmp::Ordering::Equal => Some(ClaudeTrustPromptAction::Confirm),
+        std::cmp::Ordering::Less => Some(ClaudeTrustPromptAction::MoveUpAndConfirm),
+        std::cmp::Ordering::Greater => Some(ClaudeTrustPromptAction::MoveDownAndConfirm),
+    }
+}
+
 /// Detect Claude Code auto-suggestion ghost text.
 pub fn is_auto_suggestion(output: &str) -> bool {
     let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
@@ -158,6 +223,36 @@ pub fn is_auto_suggestion(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_trust_action_confirms_selected_affirmative_row() {
+        let output = "❯ 1. Yes, I trust this folder\n  2. No, exit";
+        assert_eq!(
+            claude_trust_prompt_action(output),
+            Some(ClaudeTrustPromptAction::Confirm)
+        );
+    }
+
+    #[test]
+    fn claude_trust_action_moves_down_from_selected_exit_row() {
+        let output = "❯ No, exit\n  Yes, I trust this folder";
+        assert_eq!(
+            claude_trust_prompt_action(output),
+            Some(ClaudeTrustPromptAction::MoveDownAndConfirm)
+        );
+    }
+
+    #[test]
+    fn claude_trust_action_requires_unambiguous_selection_state() {
+        assert_eq!(
+            claude_trust_prompt_action("No, exit\nYes, I trust this folder"),
+            None
+        );
+        assert_eq!(
+            claude_trust_prompt_action("❯ No, exit\n❯ Yes, I trust this folder"),
+            None
+        );
+    }
 
     #[test]
     fn codex_model_prompt_upgrade_with_options() {

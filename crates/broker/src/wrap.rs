@@ -40,10 +40,10 @@ use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
     ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
-        detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+        claude_trust_prompt_action, detect_bypass_permissions_prompt, detect_codex_model_prompt,
         detect_codex_trust_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
         detect_gemini_untrusted_banner, detect_opencode_permission_prompt, is_auto_suggestion,
-        is_bypass_selection_menu, is_in_editor_mode,
+        is_bypass_selection_menu, is_in_editor_mode, ClaudeTrustPromptAction,
     },
 };
 use crate::worker::detection::ActivityDetector;
@@ -588,22 +588,26 @@ impl PtyAutoState {
         }
     }
 
-    /// Detect and auto-accept Claude Code folder trust prompts.
-    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
-    /// so we just press Enter to confirm.
+    /// Detect and auto-accept Claude Code folder trust prompts by selected-row identity.
     pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
         if self.interactive_hold {
             return;
         }
         if !self.claude_trust_handled {
             Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
-            let clean = strip_ansi(&self.claude_trust_buffer);
-            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
-            if has_trust_ref && has_confirmation {
+            // Inspect the current terminal grid rather than the raw output history: Claude
+            // redraws menus in place, so buffered escape-stripped chunks can contain stale
+            // selection markers from more than one rendered state.
+            let rendered = pty.screen_text();
+            if let Some(action) = claude_trust_prompt_action(&rendered) {
                 tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
-                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "claude_trust");
+                let input = match action {
+                    ClaudeTrustPromptAction::Confirm => b"\r".to_vec(),
+                    ClaudeTrustPromptAction::MoveUpAndConfirm => b"\x1b[A\r".to_vec(),
+                    ClaudeTrustPromptAction::MoveDownAndConfirm => b"\x1b[B\r".to_vec(),
+                };
+                warn_on_auto_response_write(pty.submit_write(input), "claude_trust");
                 self.claude_trust_buffer.clear();
                 self.claude_trust_handled = true;
             }
@@ -813,6 +817,54 @@ mod hold_tests {
             state.auto_enter_retry_count, 1,
             "auto-enter must resume once the hold is released"
         );
+
+        let _ = pty.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod claude_trust_tests {
+    use super::*;
+
+    /// Exercise the responder through a real PTY. The child exits unless it receives
+    /// Down followed by Enter, mirroring the Claude 2.1.259 menu; after the correct
+    /// selection it remains live and therefore available for attach/delivery.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn new_layout_selects_trust_and_keeps_worker_live() {
+        let script = "printf 'Review this folder before continuing.\\n❯ No, exit\\n  Yes, I trust this folder\\nEnter to confirm · Esc to cancel\\n'; \
+                      IFS= read -r answer; expected=$(printf '\\033[B'); \
+                      [ \"$answer\" = \"$expected\" ] || exit 42; \
+                      printf 'READY\\n'; sleep 30";
+        let (pty, _rx) = PtySession::spawn("sh", &["-c".into(), script.into()], 24, 80).unwrap();
+        let mut state = PtyAutoState::new();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !pty.screen_text().contains("Enter to confirm") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("test trust prompt should render");
+
+        state
+            .handle_claude_trust(
+                "take a moment to review what's in this folder first.\n\
+                 ❯ No, exit\n\
+                   Yes, I trust this folder\n\
+                 Enter to confirm · Esc to cancel",
+                &pty,
+            )
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("affirmative selection should reach the live worker prompt");
+        assert!(!pty.has_exited(), "worker must remain live and attachable");
 
         let _ = pty.shutdown();
     }

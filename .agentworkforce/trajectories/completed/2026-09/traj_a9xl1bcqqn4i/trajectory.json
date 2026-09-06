@@ -1,0 +1,53 @@
+{
+  "id": "traj_a9xl1bcqqn4i",
+  "version": 1,
+  "task": {
+    "title": "Fix Claude folder-trust menu ordering for issue 1654"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-06T07:04:01.779Z",
+  "completedAt": "2026-09-06T07:15:22.632Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T07:15:21.460Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_x84sfa9u92n2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T07:15:21.460Z",
+      "endedAt": "2026-09-06T07:15:22.632Z",
+      "events": [
+        {
+          "ts": 1788678921461,
+          "type": "decision",
+          "content": "Use rendered PTY selection state to choose Claude trust navigation: Use rendered PTY selection state to choose Claude trust navigation",
+          "raw": {
+            "question": "Use rendered PTY selection state to choose Claude trust navigation",
+            "chosen": "Use rendered PTY selection state to choose Claude trust navigation",
+            "alternatives": [],
+            "reasoning": "Claude changed both menu ordering and default selection; explicit marker-to-label navigation supports both layouts and fails closed when selection is absent or ambiguous"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added identity-based Claude folder-trust navigation, old/new layout regressions, PTY liveness coverage, and changelog entry",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6207d3dd642ad749bea0a0fcb5134f95e143a3d7",
+    "endRef": "6207d3dd642ad749bea0a0fcb5134f95e143a3d7"
+  }
+}
