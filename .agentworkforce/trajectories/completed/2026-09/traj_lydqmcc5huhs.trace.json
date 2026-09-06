@@ -1,0 +1,60 @@
+{
+  "version": "1.0.0",
+  "id": "517430f9-6379-4d0a-91ac-29dc7029992c",
+  "timestamp": "2026-09-06T02:56:23.797Z",
+  "trajectory": "traj_lydqmcc5huhs",
+  "files": [
+    {
+      "path": "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 22,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 47,
+              "end_line": 57,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 61,
+              "end_line": 77,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 125,
+              "end_line": 134,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 139,
+              "end_line": 155,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 163,
+              "end_line": 169,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 171,
+              "end_line": 177,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            },
+            {
+              "start_line": 231,
+              "end_line": 242,
+              "revision": "c4d268e733060b0f8da562f59e72beb65f5c835f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
