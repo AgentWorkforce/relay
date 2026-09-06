@@ -471,6 +471,10 @@ describe('complete Daytona Fleet board', () => {
     expect(claude.args.join(' ')).toContain('channel general');
   });
 
+  // Collecting the inventory imports the real built CLI bootstrap (the full
+  // commander program with every command module) inside the test process;
+  // that cold import alone exceeds the default 5s budget on a loaded machine,
+  // so this test carries its own scoped timeout.
   it('derives exact command, option, argument, and hidden-surface coverage from the built CLI', async () => {
     const [matrix, expected] = await Promise.all([
       loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
@@ -480,6 +484,14 @@ describe('complete Daytona Fleet board', () => {
     expect(compareFleetCliInventory(actual, expected)).toBe(actual);
     expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
     expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
+    // This board re-covers `node agent set-model` through its two AppServer
+    // operations, so nothing is deferred. The coverage probe instead drops
+    // a covered command leaf from the surface: exact coverage must fail.
+    const uncoveredCommand = structuredClone(matrix);
+    delete uncoveredCommand.commandSurface['node agent set-model'];
+    expect(() => validateFleetCommandCoverage(uncoveredCommand, actual)).toThrow(
+      /commandSurface must exactly cover every candidate/
+    );
     expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
       hidden: true,
       leaf: true,
@@ -499,7 +511,7 @@ describe('complete Daytona Fleet board', () => {
     const changedOption = structuredClone(expected);
     changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
     expect(() => compareFleetCliInventory(actual, changedOption)).toThrow('inventory changed');
-  });
+  }, 30_000);
 
   it('rejects duplicate operations and an incomplete provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
@@ -894,9 +906,13 @@ describe('complete Daytona Fleet board', () => {
     base.provenance.matrixSha256 = await import('node:crypto').then(({ createHash }) =>
       createHash('sha256').update(JSON.stringify(matrix)).digest('hex')
     );
-    base.resources[1].nodeId = 'same';
-    base.resources[0].nodeId = 'same';
-    expect(() => validateFleetEvidence(structuredClone(base), matrix)).toThrow(/node ids are not unique/);
+    // Mutate only a private clone for the uniqueness probe: later probes must
+    // keep node_a's real identity so the scoped-mount worker stays bound to
+    // its owned sandbox under the exact-identity validator.
+    const reused = structuredClone(base);
+    reused.resources[1].nodeId = 'same';
+    reused.resources[0].nodeId = 'same';
+    expect(() => validateFleetEvidence(reused, matrix)).toThrow(/node ids are not unique/);
 
     const dirty = structuredClone(base);
     dirty.resources[1].nodeId = 'different';
@@ -1042,6 +1058,15 @@ describe('complete Daytona Fleet board', () => {
       matrix
     );
     expect(green.verdict).toBe('GREEN');
+    // Derived from the matrix so the expectation cannot drift from the board
+    // again: the two initial-task sentinels are derived observations, every
+    // other operation is an independent command execution.
+    expect(green.operationTotals).toEqual({
+      matrixOperationCount: matrix.operations.length,
+      independentCommandExecutionCount: matrix.operations.length - 2,
+      derivedObservationCount: 2,
+      derivedObservationIds: ['initial-task-sentinel-a', 'initial-task-sentinel-b'],
+    });
     expect(
       green.operations.every(
         ({ classification }: { classification: string }) => classification === 'stable-pass'
@@ -1114,6 +1139,13 @@ describe('complete Daytona Fleet board', () => {
     ).toThrow(/reused across attempts/);
   });
 
+  // This test exercises the real gate CLI end-to-end: five `node
+  // scripts/verify-features/fleet-daytona.mjs` subprocess invocations (two
+  // attempt gates, aggregate, and two campaign-gate runs). The gates are
+  // deterministic file/hash validators with no internal waits, so the cost is
+  // subprocess startup, not an intentional delay — the default 5s test budget
+  // cannot cover five cold node processes. Keep the budget scoped to this
+  // test instead of inflating the global Vitest timeout.
   it('binds a campaign gate to both attempt seals and rejects later attempt mutation', async () => {
     const temporary = await mkdtemp(path.join(os.tmpdir(), 'relay-fleet-campaign-'));
     try {
@@ -1203,5 +1235,5 @@ describe('complete Daytona Fleet board', () => {
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 });
