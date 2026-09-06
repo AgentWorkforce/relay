@@ -3,7 +3,10 @@ use super::*;
 use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
-    pub(super) async fn handle_maintenance_tick(&mut self) {
+    pub(super) async fn handle_maintenance_tick_with_worker_queue_state(
+        &mut self,
+        worker_event_queue_empty: bool,
+    ) {
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -151,18 +154,35 @@ impl BrokerRuntime {
                 "worker request timed out before worker responded"
             );
         }
-        let expired_model_requests: Vec<String> = pending_model_requests
-            .iter()
-            .filter_map(|(request_id, pending)| {
-                let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
-                (deadline <= now).then_some(request_id.clone())
-            })
-            .collect();
-        for request_id in expired_model_requests {
-            if let Some(pending) = pending_model_requests.remove(&request_id) {
-                if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
-                    if receipt.request_id == request_id && receipt.generation == pending.generation
-                    {
+        // A bounded worker-event drain runs immediately before this sweep.
+        // If more events remain queued, defer only model expiry so an
+        // already-received provider response cannot be rejected by actor
+        // scheduling; all other maintenance still proceeds this tick.
+        if worker_event_queue_empty {
+            let expired_model_requests: Vec<String> = pending_model_requests
+                .iter()
+                .filter_map(|(request_id, pending)| {
+                    let deadline = pending.provider_deadline.unwrap_or(pending.deadline);
+                    (deadline <= now).then_some(request_id.clone())
+                })
+                .collect();
+            for request_id in expired_model_requests {
+                if let Some(pending) = pending_model_requests.remove(&request_id) {
+                    if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
+                        if receipt.request_id == request_id
+                            && receipt.generation == pending.generation
+                        {
+                            receipt.status = "rejected".into();
+                            receipt.applied = false;
+                            receipt.pending = false;
+                            receipt.success = false;
+                            receipt.error = Some(
+                                "worker did not return a model receipt before the deadline".into(),
+                            );
+                            receipt.updated_at = now;
+                        }
+                    }
+                    if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
                         receipt.status = "rejected".into();
                         receipt.applied = false;
                         receipt.pending = false;
@@ -172,15 +192,6 @@ impl BrokerRuntime {
                         );
                         receipt.updated_at = now;
                     }
-                }
-                if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
-                    receipt.status = "rejected".into();
-                    receipt.applied = false;
-                    receipt.pending = false;
-                    receipt.success = false;
-                    receipt.error =
-                        Some("worker did not return a model receipt before the deadline".into());
-                    receipt.updated_at = now;
                 }
             }
         }

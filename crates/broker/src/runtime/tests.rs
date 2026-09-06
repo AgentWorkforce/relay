@@ -45,14 +45,14 @@ use super::{
     extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
     http_api_relaycast_send_timeout, is_relaycast_self_control_target,
     is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
-    maintenance_tick_is_selectable, mark_delivery_read_ack, mark_delivery_read_ack_with_timeout,
-    mint_or_recover_observer_token, normalize_channel, normalize_initial_task, normalize_sender,
-    parse_sort_key_from_raw_timestamp, pending_message_counts, persist_dead_letters_on_shutdown,
-    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
-    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
-    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
-    retain_model_receipt, retry_pending_delivery, save_dead_letters, seed_supplied_agent_token,
-    send_broker_event, sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token,
+    normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
+    pending_message_counts, persist_dead_letters_on_shutdown, persist_pending_on_shutdown,
+    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
+    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
+    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retain_model_receipt,
+    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     synthetic_delivery_read_ack_reason, take_pending_for_worker, try_inject_pending_relay_message,
     AgentRuntime, BrokerRuntime, DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome,
     InboundContext, InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome,
@@ -367,14 +367,6 @@ fn delivery_lifecycle_worker_event(
             },
         }),
     }
-}
-
-#[test]
-fn maintenance_remains_selectable_after_worker_event_channel_closes() {
-    assert!(!maintenance_tick_is_selectable(true, false));
-    assert!(maintenance_tick_is_selectable(true, true));
-    // A closed worker channel must not disable maintenance forever.
-    assert!(maintenance_tick_is_selectable(false, false));
 }
 
 #[tokio::test]
@@ -764,6 +756,58 @@ async fn set_model_unavailable_provider_confirmation_stays_pending() {
 }
 
 #[tokio::test]
+async fn maintenance_defers_only_model_expiry_while_worker_events_remain_queued() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+
+    // A maintenance tick must still run its other work, but cannot reject a
+    // response that is waiting in the bounded worker-event drain.
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(false)
+        .await;
+    assert!(fixture
+        .runtime
+        .pending_model_requests
+        .contains_key(&request_id));
+
+    // Once the queue is empty, the normal expiry path remains active.
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(true)
+        .await;
+    assert!(!fixture
+        .runtime
+        .pending_model_requests
+        .contains_key(&request_id));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
     let registry = make_app_server_registry_with_worker(
         "model-worker",
@@ -797,7 +841,10 @@ async fn set_model_worker_exit_keeps_terminal_receipt_for_correlated_poll() {
         .start_kill()
         .expect("test worker should accept termination");
     for _ in 0..20 {
-        fixture.runtime.handle_maintenance_tick().await;
+        fixture
+            .runtime
+            .handle_maintenance_tick_with_worker_queue_state(true)
+            .await;
         if !fixture.runtime.workers.workers.contains_key("model-worker") {
             break;
         }

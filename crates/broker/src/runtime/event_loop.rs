@@ -452,14 +452,28 @@ pub(super) fn terminalize_model_requests_for_worker(
 /// Maintenance remains selectable after the worker event channel closes, but
 /// yields to an event that is already queued so its correlated receipt cannot
 /// be expired first.
-pub(super) fn maintenance_tick_is_selectable(
-    worker_events_open: bool,
-    worker_event_queue_empty: bool,
-) -> bool {
-    !worker_events_open || worker_event_queue_empty
-}
+const MAX_WORKER_EVENTS_BEFORE_MAINTENANCE: usize = 32;
 
 impl BrokerRuntime {
+    /// Settle a bounded batch of already-queued worker events before the
+    /// maintenance sweep. This protects a queued model receipt without
+    /// disabling maintenance indefinitely under a continuously busy worker
+    /// channel. The returned flag tells the expiry sweep whether the queue is
+    /// empty; model requests stay pending while more events await dispatch.
+    async fn drain_worker_events_before_maintenance(&mut self) -> bool {
+        for _ in 0..MAX_WORKER_EVENTS_BEFORE_MAINTENANCE {
+            match self.worker_event_rx.try_recv() {
+                Ok(event) => self.handle_worker_event(event).await,
+                Err(mpsc::error::TryRecvError::Empty) => return true,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.worker_events_open = false;
+                    return true;
+                }
+            }
+        }
+        self.worker_event_rx.is_empty()
+    }
+
     pub(super) async fn run(mut self) -> Result<()> {
         while !self.shutdown {
             let event = tokio::select! {
@@ -475,11 +489,7 @@ impl BrokerRuntime {
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
-                // Do not let a ready maintenance tick remove a request while
-                // a worker receipt is already queued. Keeping this branch
-                // disabled only while the queue is non-empty preserves the
-                // fair select ordering for all other runtime lanes.
-                _ = self.reap_tick.tick(), if maintenance_tick_is_selectable(self.worker_events_open, self.worker_event_rx.is_empty()) => RuntimeEvent::MaintenanceTick,
+                _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
 
             match event {
@@ -529,7 +539,10 @@ impl BrokerRuntime {
                     self.worker_events_open = false;
                 }
                 RuntimeEvent::MaintenanceTick => {
-                    self.handle_maintenance_tick().await;
+                    let worker_event_queue_empty =
+                        self.drain_worker_events_before_maintenance().await;
+                    self.handle_maintenance_tick_with_worker_queue_state(worker_event_queue_empty)
+                        .await;
                 }
             }
 
