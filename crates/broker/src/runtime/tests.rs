@@ -130,11 +130,19 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     registry
 }
 
-/// Shared construction for the two deterministic delivery fixtures below.
-/// Spawns the `cat` stand-in, registers a `WorkerHandle` for it, and hands the
-/// command receiver back to the caller. What happens to that receiver is the
-/// ONLY axis on which those fixtures differ, so nothing else is duplicated and
-/// a future `WorkerHandle` field cannot drift between them.
+/// Shared construction for the deterministic delivery fixtures. Spawns the
+/// `cat` stand-in, registers a `WorkerHandle` for it, and hands the command
+/// receiver back to the caller. No writer task is ever spawned, so what the
+/// caller does with that receiver is the ONLY axis of behaviour — and nothing
+/// else is duplicated, so a future `WorkerHandle` field cannot drift.
+///
+/// - **Keep it bound** for a stalled handoff: the receiver stays alive, so the
+///   send always succeeds and the completion wait never returns on its own,
+///   modelling a handoff that outlives `retry_interval` with no timing race.
+///   The binding must live as long as the test body — releasing it early turns
+///   a hang into a failure, which is the opposite fixture.
+/// - **Drop it** for an unwritable worker: see
+///   [`make_worker_registry_with_unwritable_worker`].
 async fn make_worker_registry_with_fixture_worker(
     name: &str,
 ) -> (WorkerRegistry, mpsc::Receiver<WorkerWriteCommand>) {
@@ -149,6 +157,11 @@ async fn make_worker_registry_with_fixture_worker(
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        // Dropping a tokio `Child` does NOT kill the process. These fixtures
+        // leave the child running, so an assertion that panics before
+        // `cleanup_worker_registry` would otherwise strand a live `cat` for
+        // the rest of the run. Same idiom as spawner.rs and codex_session.rs.
+        .kill_on_drop(true)
         .spawn()
         .expect("test worker process should spawn");
     let generation = Uuid::new_v4();
@@ -189,20 +202,6 @@ async fn make_worker_registry_with_fixture_worker(
         },
     );
     (registry, command_rx)
-}
-
-/// A worker whose command channel accepts frames but never completes them —
-/// no writer task ever drains `command_rx`, so `deliver()` hangs forever.
-/// Models a handoff that outlives `retry_interval` deterministically (no
-/// timing race): the receiver stays alive (a dropped one would fail the
-/// send instead of hanging it), so the send always succeeds and the
-/// subsequent completion wait never returns on its own.
-async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry {
-    let (registry, command_rx) = make_worker_registry_with_fixture_worker(name).await;
-    // Deliberately leaked rather than dropped: keeps the receiver alive so
-    // sends succeed, with nothing ever draining it.
-    std::mem::forget(command_rx);
-    registry
 }
 
 /// A worker that is present in the registry but whose sole stdin writer is
@@ -1695,7 +1694,12 @@ fn withheld_ack_for(delivery_id: &str) -> Deliver {
 // a later successful retry's echo would then have had nothing to resolve.
 #[tokio::test]
 async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
-    let mut registry = make_worker_registry_with_stalled_worker("worker-a").await;
+    // The receiver must stay bound for the whole test body: holding it is what
+    // makes the handoff hang instead of fail. The fixture previously retained
+    // it by leaking, which kept the queued frame and its completion channel
+    // alive for the life of the process.
+    let (mut registry, _stalled_command_rx) =
+        make_worker_registry_with_fixture_worker("worker-a").await;
     let deliver = fleet_deliver(1);
     let msg = held_fleet_message(&deliver);
     let mut pending_deliveries = HashMap::new();
