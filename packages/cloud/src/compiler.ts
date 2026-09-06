@@ -170,12 +170,15 @@ function exactFutureWritePath(projectDir: string, pattern: string): string | und
   if (relativeTarget === '' || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`)) {
     return undefined;
   }
-  if (lstatSync(target, { throwIfNoEntry: false })) {
-    return undefined;
-  }
 
   const parent = path.dirname(target);
   if (!existsSync(parent) || !lstatSync(parent).isDirectory()) {
+    return undefined;
+  }
+  // Validate the parent before inspecting the target. If an earlier path
+  // component is a regular file, lstatSync(target) throws ENOTDIR rather than
+  // returning the requested throwIfNoEntry sentinel.
+  if (lstatSync(target, { throwIfNoEntry: false })) {
     return undefined;
   }
   const realProjectDir = realpathSync(projectDir);

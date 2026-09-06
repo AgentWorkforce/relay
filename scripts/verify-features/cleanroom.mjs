@@ -388,6 +388,49 @@ export async function loadCatalog(matrixPath = DEFAULT_MATRIX) {
   return { matrix, categories, repoRoot, matrixPath: resolvedMatrix, manifestPath };
 }
 
+/**
+ * Return a fail-closed upper bound for one lane from the matrix's own command
+ * and repetition budgets. Corpus cases have individual manifests, so callers
+ * supply their declared timeouts rather than relying on a stale case count.
+ */
+export function cleanroomLaneTimeoutMs(matrix, profileId, laneId, corpusCaseTimeoutSeconds = []) {
+  const profile = matrix?.profiles?.[profileId];
+  const lane = matrix?.lanes?.find(({ id }) => id === laneId);
+  if (!profile || !lane || !profile.lanes.includes(laneId)) {
+    throw new Error(`cannot derive timeout for inactive cleanroom lane ${laneId}`);
+  }
+  if (
+    !Array.isArray(corpusCaseTimeoutSeconds) ||
+    corpusCaseTimeoutSeconds.some((seconds) => !Number.isSafeInteger(seconds) || seconds < 1)
+  ) {
+    throw new Error('corpus case timeouts must be positive safe integers');
+  }
+  const appliesToProfile = (spec) => !spec.profiles || spec.profiles.includes(profileId);
+  const setupSeconds = [...matrix.commonSetup, ...lane.setup]
+    .filter(appliesToProfile)
+    .reduce((total, spec) => total + spec.timeoutSeconds, 0);
+  const scenarioSeconds = lane.scenarios.filter(appliesToProfile).reduce((total, spec) => {
+    if ((spec.kind ?? 'command') === 'coverage-gap') return total;
+    const repeats = spec.repeats?.[profileId] ?? profile.defaultRepeats;
+    if (spec.kind === 'relayflow-corpus') {
+      return (
+        total +
+        repeats *
+          corpusCaseTimeoutSeconds.reduce(
+            (caseTotal, caseTimeout) => caseTotal + Math.min(caseTimeout, spec.timeoutSeconds),
+            0
+          )
+      );
+    }
+    return total + repeats * spec.timeoutSeconds;
+  }, 0);
+
+  // Process teardown, evidence serialization, and sandbox scheduling are not
+  // included in individual command limits. Preserve ten minutes of bounded
+  // lane-level headroom around the exact declared command budget.
+  return (setupSeconds + scenarioSeconds) * 1_000 + 600_000;
+}
+
 function sourceMode(requested = 'auto', env = process.env) {
   if (!['auto', 'cloud', 'files'].includes(requested))
     throw new Error('--source must be auto, cloud, or files');
@@ -794,7 +837,7 @@ async function killProcessGroup(child, signal = 'SIGKILL') {
   }
 }
 
-async function runProcess(argv, { cwd, env, timeoutSeconds, secrets = [] }) {
+export async function runProcess(argv, { cwd, env, timeoutSeconds, secrets = [] }) {
   const startedAt = new Date().toISOString();
   const stdoutCapture = outputCapture();
   const stderrCapture = outputCapture();
@@ -808,23 +851,43 @@ async function runProcess(argv, { cwd, env, timeoutSeconds, secrets = [] }) {
   });
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
-    stdoutCapture.append(chunk);
+  const closed = await new Promise((resolve) => {
+    let settled = false;
+    let killTimer;
+    const settle = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ code, signal });
+    };
+    child.stdout.on('data', (chunk) => {
+      if (!settled) stdoutCapture.append(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      if (!settled) stderrCapture.append(chunk);
+    });
+    child.on('error', (error) => {
+      spawnError = error;
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void killProcessGroup(child);
+      // A descendant can start a new session and retain these pipes after the
+      // original process group is gone. Do not let that strand the lane: after
+      // a bounded kill grace, close this runner's descriptors and settle the
+      // timeout result from the live child state.
+      killTimer = setTimeout(() => {
+        child.stdin?.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(child.exitCode, child.signalCode);
+      }, 1_500);
+      killTimer.unref();
+    }, timeoutSeconds * 1000);
+    timer.unref();
+    child.on('close', (code, signal) => settle(code, signal));
   });
-  child.stderr.on('data', (chunk) => {
-    stderrCapture.append(chunk);
-  });
-  child.on('error', (error) => {
-    spawnError = error;
-  });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    void killProcessGroup(child);
-  }, timeoutSeconds * 1000);
-  const closed = await new Promise((resolve) =>
-    child.on('close', (code, signal) => resolve({ code, signal }))
-  );
-  clearTimeout(timer);
   const leakedProcessGroup = await processGroupExists(child.pid);
   if (leakedProcessGroup) await killProcessGroup(child);
   const processGroupCleaned = await waitForProcessGroupExit(child.pid);
