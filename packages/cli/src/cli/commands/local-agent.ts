@@ -877,6 +877,7 @@ export function registerLocalAgentCommands(
                 receiptId: receipt.receipt_id ?? receipt.request_id ?? null,
                 generation: receipt.generation ?? null,
                 revision: receipt.revision ?? null,
+                effectiveRevision: receipt.effective_revision ?? null,
                 success: receipt.success === true,
                 accepted: receipt.accepted === true,
                 pending: receipt.pending === true,

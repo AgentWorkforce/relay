@@ -663,7 +663,7 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
     func testGetModelReturnsReceipt() async throws {
         let http = MockRelayHTTP()
         await http.setResponse(
-            #"{ "name": "Worker1", "requested_model": "opus", "effective_model": "opus", "applied": true, "status": "applied", "request_id": "model_1", "generation": "gen-1", "revision": 1, "success": true, "accepted": true, "pending": false }"#,
+            #"{ "name": "Worker1", "requested_model": "opus", "effective_model": "opus", "applied": true, "status": "applied", "request_id": "model_1", "generation": "gen-1", "revision": 1, "effective_revision": 1, "success": true, "accepted": true, "pending": false }"#,
             for: "/api/spawned/Worker1/model"
         )
         let core = BrokerCore(apiKey: "rk_test", transport: MockRelayTransport(), http: http)
@@ -672,6 +672,7 @@ final class AgentRelayBrokerSDKTests: XCTestCase {
 
         XCTAssertEqual(result.status, "applied")
         XCTAssertEqual(result.effectiveModel, "opus")
+        XCTAssertEqual(result.effectiveRevision, 1)
         let requests = await http.allRequests()
         XCTAssertEqual(requests.first?.method, "GET")
         XCTAssertEqual(requests.first?.path, "/api/spawned/Worker1/model")

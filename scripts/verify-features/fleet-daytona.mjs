@@ -433,13 +433,26 @@ try {
     encoding: 'utf8',
     // Leave the outer 180-second Daytona command enough headroom for the
     // worker/session/process cleanup in finally, even on the provider timeout.
-    timeout: 90_000,
+    timeout: 60_000,
     maxBuffer: 2 * 1024 * 1024,
   });
   if (setModel.error) throw setModel.error;
   if (setModel.status !== 0) throw new Error('public set-model failed: ' + (setModel.stderr || setModel.stdout).slice(-1000));
   const receipt = parseCliJson(setModel.stdout);
-  if (receipt.status !== 'applied' || receipt.applied !== true || receipt.effectiveModel !== requestedModel || receipt.pending !== false) {
+  if (
+    receipt.name !== workerName ||
+    receipt.requestedModel !== requestedModel ||
+    receipt.status !== 'applied' ||
+    receipt.applied !== true ||
+    receipt.accepted !== true ||
+    receipt.success !== true ||
+    receipt.effectiveModel !== requestedModel ||
+    receipt.pending !== false ||
+    typeof receipt.requestId !== 'string' ||
+    receipt.requestId.length === 0 ||
+    typeof receipt.generation !== 'string' ||
+    receipt.generation.length === 0
+  ) {
     throw new Error('public set-model returned invalid receipt: ' + JSON.stringify(receipt));
   }
   const confirmed = await jsonResponse(await fetch(providerEndpoint + '/api/session/' + encodeURIComponent(sessionId), {
@@ -455,7 +468,7 @@ try {
   if (connection && workerCreated) {
     const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
       cwd: tempDir || process.cwd(), env: { ...process.env, RELAY_BROKER_URL: connection.url, RELAY_BROKER_API_KEY: connection.api_key },
-      encoding: 'utf8', timeout: 60_000,
+      encoding: 'utf8', timeout: 30_000,
     });
     if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
     try {
@@ -464,7 +477,7 @@ try {
           headers: { 'x-api-key': connection.api_key }, signal: AbortSignal.timeout(2_000),
         });
         return response.status === 404;
-      }, 'released AppServer worker to disappear', 15_000);
+      }, 'released AppServer worker to disappear', 10_000);
     } catch (error) { cleanupErrors.push(error.message); }
   }
   if (connection && sessionId) {
@@ -474,7 +487,7 @@ try {
       await wait(async () => {
         const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
         return check.status === 404;
-      }, 'deleted OpenCode session to disappear', 15_000);
+      }, 'deleted OpenCode session to disappear', 10_000);
     } catch (error) { cleanupErrors.push(error.message); }
   }
   if (opencode && opencode.pid) {
@@ -483,7 +496,7 @@ try {
       await wait(async () => {
         if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
         try { process.kill(opencode.pid, 0); return false; } catch { return true; }
-      }, 'OpenCode process to terminate', 15_000);
+      }, 'OpenCode process to terminate', 10_000);
     } catch (error) { cleanupErrors.push(error.message); }
     if (providerEndpoint) {
       try {
@@ -496,7 +509,7 @@ try {
             // response or request timeout still means the port is reachable.
             return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
           }
-        }, 'OpenCode provider port to close', 15_000);
+        }, 'OpenCode provider port to close', 10_000);
       } catch (error) { cleanupErrors.push(error.message); }
     }
   }

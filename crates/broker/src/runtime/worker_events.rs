@@ -687,7 +687,24 @@ impl BrokerRuntime {
                 value,
             } => {
                 let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
-                if !worker_event_is_current(current_generation, generation) {
+                // A release/reap can remove the worker after the provider
+                // response entered this queue. Keep that correlated response
+                // admissible; teardown terminalization is deferred until the
+                // queue is drained, and this event may still prove `applied`.
+                let released_model_response = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|msg_type| msg_type == "set_model_response")
+                    && value
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .and_then(|request_id| pending_model_requests.get(request_id))
+                        .is_some_and(|request| {
+                            request.worker_name == name && request.generation == generation
+                        });
+                if !worker_event_is_current(current_generation, generation)
+                    && !released_model_response
+                {
                     tracing::debug!(
                         target = "agent_relay::broker",
                         worker = %name,

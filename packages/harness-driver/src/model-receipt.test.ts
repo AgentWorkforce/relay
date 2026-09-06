@@ -14,6 +14,7 @@ describe('model receipt correlation', () => {
             status: 'rejected',
             applied: false,
             request_id: '',
+            effective_revision: 3,
             accepted: true,
             pending: false,
             success: false,
@@ -23,7 +24,9 @@ describe('model receipt correlation', () => {
     ) as unknown as typeof globalThis.fetch;
     const client = new HarnessDriverClient({ baseUrl: 'http://broker', apiKey: 'key', fetch });
 
-    await client.getModel('worker', '');
+    const receipt = await client.getModel('worker', '');
+
+    expect(receipt.effective_revision).toBe(3);
 
     expect(fetch).toHaveBeenCalledWith(
       'http://broker/api/spawned/worker/model?request_id=',

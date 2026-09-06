@@ -802,7 +802,10 @@ async fn maintenance_defers_only_model_expiry_while_worker_events_remain_queued(
             .await
             .unwrap();
     }
-    let worker_event_queue_empty = fixture.runtime.drain_worker_events_before_maintenance().await;
+    let worker_event_queue_empty = fixture
+        .runtime
+        .drain_worker_events_before_maintenance()
+        .await;
     assert!(!worker_event_queue_empty);
     fixture
         .runtime
@@ -815,7 +818,12 @@ async fn maintenance_defers_only_model_expiry_while_worker_events_remain_queued(
 
     // Once the remaining queued frame is drained, the normal expiry path
     // remains active.
-    assert!(fixture.runtime.drain_worker_events_before_maintenance().await);
+    assert!(
+        fixture
+            .runtime
+            .drain_worker_events_before_maintenance()
+            .await
+    );
     fixture
         .runtime
         .handle_maintenance_tick_with_worker_queue_state(true)
@@ -824,6 +832,106 @@ async fn maintenance_defers_only_model_expiry_while_worker_events_remain_queued(
         .runtime
         .pending_model_requests
         .contains_key(&request_id));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn queued_model_receipt_survives_worker_exit_before_bounded_drain() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let generation = registry.workers["model-worker"].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SetModel {
+            name: WorkerName::new("model-worker"),
+            model: "sonnet".into(),
+            timeout_ms: Some(1_000),
+            reply: reply_tx,
+        })
+        .await;
+    let accepted = reply_rx.await.unwrap().unwrap();
+    let request_id = accepted["request_id"].as_str().unwrap().to_string();
+
+    for _ in 0..33 {
+        fixture
+            .worker_event_tx
+            .send(WorkerEvent::Message {
+                name: WorkerName::new("model-worker"),
+                generation,
+                received_at: Instant::now(),
+                value: json!({ "type": "worker_stream", "payload": { "chunk": "" } }),
+            })
+            .await
+            .unwrap();
+    }
+    fixture
+        .worker_event_tx
+        .send(WorkerEvent::Message {
+            name: WorkerName::new("model-worker"),
+            generation,
+            received_at: Instant::now(),
+            value: json!({
+                "type": "set_model_response",
+                "request_id": request_id,
+                "payload": {
+                    "status": "applied",
+                    "applied": true,
+                    "effective_model": "sonnet"
+                }
+            }),
+        })
+        .await
+        .unwrap();
+    fixture
+        .runtime
+        .workers
+        .workers
+        .get_mut("model-worker")
+        .unwrap()
+        .child
+        .start_kill()
+        .unwrap();
+
+    // The first maintenance pass drains only 32 unrelated frames, then reaps
+    // the worker without terminalizing the still-queued model request.
+    let queue_empty = fixture
+        .runtime
+        .drain_worker_events_before_maintenance()
+        .await;
+    assert!(!queue_empty);
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(queue_empty)
+        .await;
+    assert!(!fixture.runtime.workers.workers.contains_key("model-worker"));
+
+    // The response is still correlated after worker removal and must win over
+    // the deferred orphan terminalization.
+    assert!(
+        fixture
+            .runtime
+            .drain_worker_events_before_maintenance()
+            .await
+    );
+    let (get_tx, get_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: Some(request_id),
+            reply: get_tx,
+        })
+        .await;
+    let receipt = get_rx.await.unwrap().unwrap();
+    assert_eq!(receipt["status"], "applied");
+    assert_eq!(receipt["applied"], true);
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 

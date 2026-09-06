@@ -325,16 +325,34 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        // Release/reap can race a provider response already queued in the
+        // worker channel. The bounded drain above processes those frames while
+        // the generation is still admissible; only once the queue is empty is
+        // it safe to terminalize any remaining orphaned request.
+        if worker_event_queue_empty {
+            let orphaned_generations: HashSet<(WorkerName, Uuid)> = pending_model_requests
+                .values()
+                .filter(|pending| {
+                    workers
+                        .workers
+                        .get(&pending.worker_name)
+                        .is_none_or(|handle| handle.generation != pending.generation)
+                })
+                .map(|pending| (pending.worker_name.clone(), pending.generation))
+                .collect();
+            for (name, generation) in orphaned_generations {
+                terminalize_model_requests_for_worker(
+                    &name,
+                    generation,
+                    pending_model_requests,
+                    model_receipts,
+                    model_receipts_by_request,
+                    now,
+                );
+            }
+        }
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
-            terminalize_model_requests_for_worker(
-                name,
-                *generation,
-                pending_model_requests,
-                model_receipts,
-                model_receipts_by_request,
-                now,
-            );
             let mut retain_fleet_identity = false;
             let pending = pending_verified_spawns
                 .get(name)

@@ -288,9 +288,9 @@ pub(super) async fn release_worker_locally(
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     dead_letters: &mut DeadLetterStore,
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
-    pending_model_requests: &mut HashMap<String, PendingModelRequest>,
+    _pending_model_requests: &mut HashMap<String, PendingModelRequest>,
     model_receipts: &mut HashMap<WorkerName, ModelReceipt>,
-    model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
+    _model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
     resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
@@ -386,21 +386,6 @@ pub(super) async fn release_worker_locally(
         }
     };
     if outcome == ReleaseOutcome::Released {
-        let generations: HashSet<Uuid> = pending_model_requests
-            .values()
-            .filter(|pending| pending.worker_name == name)
-            .map(|pending| pending.generation)
-            .collect();
-        for generation in generations {
-            terminalize_model_requests_for_worker(
-                &name,
-                generation,
-                pending_model_requests,
-                model_receipts,
-                model_receipts_by_request,
-                Instant::now(),
-            );
-        }
         // Keep request-keyed terminal receipts for correlated polling, but do
         // not expose a released worker's last receipt as current state.
         model_receipts.remove(&name);

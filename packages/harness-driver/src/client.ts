@@ -174,6 +174,7 @@ export interface ModelUpdateResult {
   receipt_id?: string | null;
   generation?: string | null;
   revision?: number;
+  effective_revision?: number;
   success: boolean;
   accepted: boolean;
   pending: boolean;
@@ -198,6 +199,7 @@ function normalizeModelUpdateResult(
     receipt_id: result.receipt_id ?? request_id,
     generation: result.generation ?? null,
     revision: result.revision,
+    effective_revision: result.effective_revision,
     success: result.success === true,
     accepted: result.accepted ?? result.success === true,
     pending: result.pending === true,

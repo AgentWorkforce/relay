@@ -1107,21 +1107,6 @@ impl BrokerRuntime {
                 workers.metrics.on_release(&name);
                 match workers.release(&name).await {
                     Ok(()) => {
-                        let generations: HashSet<Uuid> = pending_model_requests
-                            .values()
-                            .filter(|pending| pending.worker_name == name)
-                            .map(|pending| pending.generation)
-                            .collect();
-                        for generation in generations {
-                            terminalize_model_requests_for_worker(
-                                &name,
-                                generation,
-                                pending_model_requests,
-                                model_receipts,
-                                model_receipts_by_request,
-                                Instant::now(),
-                            );
-                        }
                         // The name-keyed receipt describes the live worker
                         // only; correlated request receipts remain available
                         // in the request cache until their retention TTL.
@@ -1282,21 +1267,6 @@ impl BrokerRuntime {
                             };
                             // Idempotent release is still terminal for any stale
                             // attach state left behind after the process exited.
-                            let generations: HashSet<Uuid> = pending_model_requests
-                                .values()
-                                .filter(|pending| pending.worker_name == name)
-                                .map(|pending| pending.generation)
-                                .collect();
-                            for generation in generations {
-                                terminalize_model_requests_for_worker(
-                                    &name,
-                                    generation,
-                                    pending_model_requests,
-                                    model_receipts,
-                                    model_receipts_by_request,
-                                    Instant::now(),
-                                );
-                            }
                             model_receipts.remove(&name);
                             resize_owners.remove(&name);
                             pty_observability.remove(&name);
