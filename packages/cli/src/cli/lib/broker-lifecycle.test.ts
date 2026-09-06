@@ -575,6 +575,151 @@ describe('runUpCommand node-config gating', () => {
   });
 });
 
+// ── repoPaths -> native-broker registration (#1582) ──────────────────────────
+// The broker, not the served definition, performs node registration on the
+// native path. These assert on what the broker process actually inherits at
+// spawn time -- not on the derivation helper in isolation, which would pass
+// even with the wiring reverted.
+describe('runUpCommand repoPaths registration keys', () => {
+  /** Snapshot `deps.env` at the moment the broker process is created. */
+  function captureBrokerEnv(deps: CoreDependencies): { env?: NodeJS.ProcessEnv } {
+    const captured: { env?: NodeJS.ProcessEnv } = {};
+    const inner = deps.createRelay;
+    deps.createRelay = vi.fn(async (...args: Parameters<CoreDependencies['createRelay']>) => {
+      captured.env = { ...deps.env };
+      return inner(...args);
+    }) as CoreDependencies['createRelay'];
+    return captured;
+  }
+
+  it('hands the derived repo keys to the broker when the definition declares repoPaths', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    const relayPath = pathReal.join(projectRoot, 'checkouts', 'relay');
+    const factoryPath = pathReal.join(projectRoot, 'checkouts', 'factory');
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      `export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [], repoPaths: ${JSON.stringify(
+        { 'AgentWorkforce/relay': relayPath, 'AgentWorkforce/factory': factoryPath }
+      )} };\n`
+    );
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    // Sorted keys only: the absolute checkout paths stay node-local.
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('AgentWorkforce/factory,AgentWorkforce/relay');
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).not.toContain(projectRoot);
+  });
+
+  it('hands the descriptor repo keys to the broker on the compiled-binary path', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'child', capabilities: {}, triggers: [] };\n"
+    );
+    deps.argv = ['bun', '/$bunfs/root/agent-relay', 'node', 'up'];
+    deps.cliScript = '/$bunfs/root/agent-relay';
+    const descriptor = {
+      name: 'child',
+      capabilities: [],
+      repoPaths: { 'AgentWorkforce/relay': pathReal.join(projectRoot, 'checkouts', 'relay') },
+    };
+    deps.execCommand = vi.fn(async (command: string) => ({
+      stdout: command.includes('--describe')
+        ? `__AGENT_RELAY_NODE_DESCRIPTOR__${JSON.stringify(descriptor)}\n`
+        : '',
+      stderr: '',
+    }));
+    const child = Object.assign(new EventEmitter(), { pid: 42, killed: false, kill: vi.fn() });
+    deps.spawnProcess = vi.fn(() => {
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    });
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('AgentWorkforce/relay');
+  });
+
+  it('leaves the broker registration untouched when the definition has no repoPaths', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [] };\n"
+    );
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env).toBeDefined();
+    expect(captured.env).not.toHaveProperty('AGENT_RELAY_NODE_REPO_KEYS');
+  });
+
+  it('keeps a pre-set operator declaration verbatim', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_REPO_KEYS = 'Operator/override';
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      `export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [], repoPaths: ${JSON.stringify(
+        { 'AgentWorkforce/relay': pathReal.join(projectRoot, 'checkouts', 'relay') }
+      )} };\n`
+    );
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('Operator/override');
+  });
+
+  it('sets nothing when the project has no node definition at all', async () => {
+    // The common case, and what CI's standalone smoke exercises: plain `up` in a
+    // project with no agent-relay.* file. There is no node plan, so the broker
+    // must inherit exactly the environment it did before repo keys existed.
+    const { deps } = createUpHarness();
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env).toBeDefined();
+    expect(captured.env).not.toHaveProperty('AGENT_RELAY_NODE_REPO_KEYS');
+  });
+
+  it('honors an explicitly empty operator preset over a definition that declares repoPaths', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    // How an operator clears a CONFIGURED node's stale advertisements. Falling
+    // through to the definition here would silently re-publish what they cleared.
+    (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_REPO_KEYS = '';
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      `export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [], repoPaths: ${JSON.stringify(
+        { 'AgentWorkforce/relay': pathReal.join(projectRoot, 'checkouts', 'relay') }
+      )} };\n`
+    );
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('');
+  });
+
+  it('clears stale advertisements with an explicit empty repoPaths map', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [], repoPaths: {} };\n"
+    );
+    const captured = captureBrokerEnv(deps);
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    // Present-but-empty is distinct from absent: it tells the broker to send
+    // `repo_keys: []` and drop what a previous start advertised.
+    expect(captured.env).toHaveProperty('AGENT_RELAY_NODE_REPO_KEYS');
+    expect(captured.env?.AGENT_RELAY_NODE_REPO_KEYS).toBe('');
+  });
+});
+
 describe('runUpCommand workspace precedence', () => {
   const readPin = (dataDir: string): Record<string, string> =>
     JSON.parse(fsReal.readFileSync(pathReal.join(dataDir, 'workspace-key.json'), 'utf-8'));

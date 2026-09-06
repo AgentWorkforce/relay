@@ -11,7 +11,12 @@ import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand, isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 import { runSignalHandler } from './exit.js';
-import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
+import {
+  createTriggerSyncClient,
+  resolveNodeCapacityHarnesses,
+  resolveNodeRepoKeys,
+  NODE_REPO_KEYS_ENV,
+} from './fleet-sidecar.js';
 import {
   discoverNodeConfigPath,
   discoverPythonNodeConfigPath,
@@ -1541,6 +1546,24 @@ function planCapacitySource(
 }
 
 /**
+ * The repository placement keys a plan contributes to the broker's registration.
+ *
+ * Both serving modes expose the same node-private `repoPaths` map — the
+ * in-process definition directly, the out-of-process descriptor via the
+ * `--describe` child's IPC — so the native broker learns its repo keys on
+ * either path. Only the keys are read; the absolute checkout paths never leave
+ * the node.
+ */
+function planRepoKeySource(
+  plan: NodeDefinitionPlan | undefined
+): { repoPaths?: Readonly<Record<string, string>> } | undefined {
+  if (!plan) {
+    return undefined;
+  }
+  return plan.mode === 'in-process' ? plan.definition : plan.descriptor;
+}
+
+/**
  * Apply the resolved workspace to the environment the broker (and any detached
  * child) inherits, and report which source won. Returns the pinned project
  * session when the repository pin supplied the selection.
@@ -1890,6 +1913,18 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       teamsConfig,
       planCapacitySource(nodePlan)
     );
+
+    // The broker — not the served definition — performs node registration on the
+    // native path, so `repoPaths` has to reach it before it registers or the node
+    // comes up with no `repo:` tags and no `repo_keys`, and repo-based placement
+    // can never match it (#1582). Only the keys travel; the checkout paths stay
+    // node-local. Absence is meaningful: leaving the var unset keeps the broker's
+    // prior registration tags/`repo_keys` untouched for definitions that declare
+    // no `repoPaths`.
+    const nodeRepoKeysCsv = resolveNodeRepoKeys(deps.env[NODE_REPO_KEYS_ENV], planRepoKeySource(nodePlan));
+    if (nodeRepoKeysCsv !== undefined) {
+      deps.env[NODE_REPO_KEYS_ENV] = nodeRepoKeysCsv;
+    }
 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
