@@ -449,9 +449,6 @@ pub(super) fn terminalize_model_requests_for_worker(
     model_receipts.remove(worker_name);
 }
 
-/// Maintenance remains selectable after the worker event channel closes, but
-/// yields to an event that is already queued so its correlated receipt cannot
-/// be expired first.
 const MAX_WORKER_EVENTS_BEFORE_MAINTENANCE: usize = 32;
 
 impl BrokerRuntime {
