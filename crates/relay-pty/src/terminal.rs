@@ -148,6 +148,53 @@ pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
     (has_trust_ref, has_confirmation)
 }
 
+/// The keystrokes needed to select Claude Code's affirmative folder-trust row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaudeTrustPromptAction {
+    Confirm,
+    MoveUpAndConfirm,
+    MoveDownAndConfirm,
+}
+
+/// Determine how to accept a fully rendered Claude Code folder-trust menu.
+///
+/// Claude has shipped the same two choices in both orders, with either choice
+/// initially selected. Require exactly one affirmative row, one exit row, and
+/// one selected-row marker so partial output and unrelated text fail closed.
+pub fn claude_trust_prompt_action(clean_output: &str) -> Option<ClaudeTrustPromptAction> {
+    let mut yes_row = None;
+    let mut no_row = None;
+    let mut selected_row = None;
+
+    for (row, line) in clean_output.lines().enumerate() {
+        let lower = line.to_lowercase();
+        let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+        let is_yes = normalized.contains("yes, i trust this folder");
+        let is_no = normalized.contains("no, exit");
+
+        if is_yes && yes_row.replace(row).is_some() {
+            return None;
+        }
+        if is_no && no_row.replace(row).is_some() {
+            return None;
+        }
+        if (is_yes || is_no) && line.contains('❯') && selected_row.replace(row).is_some() {
+            return None;
+        }
+    }
+
+    let (yes_row, no_row, selected_row) = (yes_row?, no_row?, selected_row?);
+    if selected_row == yes_row {
+        Some(ClaudeTrustPromptAction::Confirm)
+    } else if selected_row == no_row && yes_row < no_row {
+        Some(ClaudeTrustPromptAction::MoveUpAndConfirm)
+    } else if selected_row == no_row && yes_row > no_row {
+        Some(ClaudeTrustPromptAction::MoveDownAndConfirm)
+    } else {
+        None
+    }
+}
+
 /// Detect Claude Code auto-suggestion ghost text.
 pub fn is_auto_suggestion(output: &str) -> bool {
     let has_cursor_ghost = output.contains("\x1b[7m") && output.contains("\x1b[27m\x1b[2m");
@@ -217,6 +264,33 @@ mod tests {
         assert!(!detect_codex_trust_prompt(
             "The agent said yes, continue, then no, quit."
         ));
+    }
+
+    #[test]
+    fn claude_trust_action_supports_both_menu_orderings() {
+        let old_layout = "❯ 1. Yes, I trust this folder\n  2. No, exit";
+        let new_layout = "❯ No, exit\n  Yes, I trust this folder";
+
+        assert_eq!(
+            claude_trust_prompt_action(old_layout),
+            Some(ClaudeTrustPromptAction::Confirm)
+        );
+        assert_eq!(
+            claude_trust_prompt_action(new_layout),
+            Some(ClaudeTrustPromptAction::MoveDownAndConfirm)
+        );
+    }
+
+    #[test]
+    fn claude_trust_action_fails_closed_without_unambiguous_selection() {
+        assert_eq!(
+            claude_trust_prompt_action("Yes, I trust this folder\nNo, exit"),
+            None
+        );
+        assert_eq!(
+            claude_trust_prompt_action("❯ Yes, I trust this folder\n❯ No, exit\nEnter to confirm"),
+            None
+        );
     }
 
     #[test]
