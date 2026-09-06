@@ -264,6 +264,7 @@ export function registerFleetCommands(
             ...(sandboxRelayfilePaths === undefined ? {} : { relayfilePaths: sandboxRelayfilePaths }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
+            workloadProfile: 'long-running-agent',
             waitTimeoutMs: 90_000,
             name: requestedSandboxName,
           });
