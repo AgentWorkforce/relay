@@ -178,9 +178,21 @@ try {
     if (broker.exitCode !== null) throw new Error(`broker exited early with code ${broker.exitCode}`);
     const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
     const url = new URL(connection.url);
-    if (url.hostname !== '127.0.0.1' || !Number(url.port))
+    const port = Number(url.port);
+    if (
+      url.protocol !== 'http:' ||
+      url.hostname !== '127.0.0.1' ||
+      !Number.isInteger(port) ||
+      port <= 0 ||
+      port > 65535
+    ) {
       throw new Error(`bad connection url ${connection.url}`);
-    return connection.url;
+    }
+    // Rebuilt from the validated parts instead of forwarding the file's own
+    // string: the port number is the only thing connection.json gets to
+    // contribute to a request, so no scheme, host, credentials or path from
+    // the file can reach fetch().
+    return `http://127.0.0.1:${port}`;
   }, 'the broker connection file to publish its bound API port');
   const api = brokerClient(brokerUrl);
   await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
