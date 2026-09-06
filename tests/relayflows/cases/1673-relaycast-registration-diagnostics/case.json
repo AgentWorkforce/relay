@@ -5,10 +5,7 @@
   "title": "Preserve Relaycast registration failure diagnostics",
   "requirements": ["broker-linux-x64"],
   "runner": {
-    "command": [
-      "node",
-      "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs"
-    ]
+    "command": ["node", "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs"]
   },
   "timeoutSeconds": 900,
   "expected": {
