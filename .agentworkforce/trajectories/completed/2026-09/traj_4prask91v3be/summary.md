@@ -1,6 +1,6 @@
 # Trajectory: Address Relay 1672 qualification feedback: group-aware worker failure teardown and sealed release proof
 
-> **Status:** ✅ Completed
+> **Status:** ✅ Implementation completed; live qualification pending
 > **Task:** relay#1671
 > **Confidence:** 88%
 > **Started:** September 6, 2026 at 04:49 AM

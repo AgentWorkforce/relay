@@ -622,6 +622,13 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
         } {
             break;
         }
+        #[cfg(windows)]
+        if child.try_wait()?.is_some() {
+            // A Job Object retained by the owning worker handle will tear down
+            // descendants when it is dropped; do not spend the remaining grace
+            // interval sleeping after the wrapper has already exited.
+            break;
+        }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         sleep(remaining.min(Duration::from_millis(50))).await;
