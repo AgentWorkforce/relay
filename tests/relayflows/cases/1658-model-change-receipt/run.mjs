@@ -97,6 +97,45 @@ function runAsync(command, args, label) {
   });
 }
 
+function parseReceiptJson(output, label) {
+  const text = String(output ?? '');
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Ignore unrelated or malformed log objects and inspect the next one.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error(`${label} did not emit a complete JSON receipt: ${text.slice(-500)}`);
+}
+
 try {
   // Build the CLI from the exact checkout so this probe cannot accidentally
   // execute a globally installed command or a stale dist tree.
@@ -433,9 +472,7 @@ try {
         [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'openai/gpt-5.4', '--json'],
         'set-model receipt'
       );
-      const first = receiptOutput.indexOf('{');
-      const last = receiptOutput.lastIndexOf('}');
-      const receipt = JSON.parse(receiptOutput.slice(first, last + 1));
+      const receipt = parseReceiptJson(receiptOutput, 'set-model receipt');
       const validReceipt =
         receipt.name === 'proof-worker' &&
         receipt.requestedModel === 'openai/gpt-5.4' &&
@@ -463,9 +500,7 @@ try {
         [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'unsupported/model', '--json'],
         'unsupported set-model receipt'
       );
-      const unsupportedFirst = unsupportedOutput.indexOf('{');
-      const unsupportedLast = unsupportedOutput.lastIndexOf('}');
-      const unsupported = JSON.parse(unsupportedOutput.slice(unsupportedFirst, unsupportedLast + 1));
+      const unsupported = parseReceiptJson(unsupportedOutput, 'unsupported set-model receipt');
       if (
         unsupported.status !== 'unsupported' ||
         unsupported.applied !== false ||
