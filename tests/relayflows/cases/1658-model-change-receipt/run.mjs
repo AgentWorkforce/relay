@@ -198,6 +198,8 @@ try {
     const requestId = 'model_pr_proof_1658';
     let broker;
     let provider;
+    let providerEndpoint;
+    let providerSessionId;
     let providerOutput = '';
     try {
       const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
@@ -212,7 +214,6 @@ try {
           `real OpenCode CLI is unavailable: ${providerVersion.error?.message ?? providerVersion.stderr ?? `exit ${providerVersion.status}`}`
         );
       }
-      let providerEndpoint;
       let providerReady = false;
       // freePort() necessarily closes its probe socket before the child binds;
       // retry a bounded number of times if another local process wins that
@@ -279,6 +280,7 @@ try {
       if (typeof session.id !== 'string' || session.id.length === 0) {
         throw new Error(`OpenCode session creation omitted id: ${JSON.stringify(session)}`);
       }
+      providerSessionId = session.id;
       broker = spawn(
         binaryPath,
         ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', brokerStateDir],
@@ -403,14 +405,50 @@ try {
         throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
       }
     } finally {
+      const cleanupErrors = [];
       if (broker && broker.exitCode === null) {
-        await terminateChild(broker, 'broker');
+        try {
+          await terminateChild(broker, 'broker');
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
+      }
+      if (providerEndpoint && providerSessionId && provider && provider.exitCode === null) {
+        try {
+          const sessionUrl = `${providerEndpoint}/session/${encodeURIComponent(providerSessionId)}`;
+          const deleted = await fetch(sessionUrl, {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(2_000),
+          });
+          if (![200, 204, 404].includes(deleted.status)) {
+            throw new Error(`OpenCode session deletion failed: ${deleted.status}`);
+          }
+          await waitFor(async () => {
+            try {
+              const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
+              return response.status === 404;
+            } catch {
+              return null;
+            }
+          }, 'deleted OpenCode session to disappear');
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
       }
       if (provider && provider.exitCode === null) {
-        await terminateChild(provider, 'OpenCode provider');
+        try {
+          await terminateChild(provider, 'OpenCode provider');
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
       }
-      await rm(brokerStateDir, { recursive: true, force: true });
+      try {
+        await rm(brokerStateDir, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(`broker state cleanup failed: ${error.message}`);
+      }
       activeProofDirs.delete(brokerStateDir);
+      if (cleanupErrors.length > 0) throw new Error(`proof cleanup failed: ${cleanupErrors.join('; ')}`);
     }
 
     // Keep the CLI-facing check as part of the same head proof: the broker
