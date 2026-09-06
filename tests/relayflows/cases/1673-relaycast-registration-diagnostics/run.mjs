@@ -237,7 +237,9 @@ async function readObservations(port) {
     !Number.isInteger(observation?.lastResponseAtMs) ||
     observation.lastResponseAtMs <= 0
   ) {
-    throw new Error(`registration probe returned invalid request count ${JSON.stringify(observation)}`);
+    throw new Error(
+      `registration probe returned invalid count or response timestamp ${JSON.stringify(observation)}`
+    );
   }
   return observation;
 }
