@@ -64,6 +64,9 @@ const CLAUDE_TRUST_BUF_MAX: usize = 8000;
 const CLAUDE_TRUST_BUF_KEEP: usize = 6000;
 /// Pause between moving the trust-menu highlight and confirming it.
 const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
+/// Gap between successive trust-menu arrow keys, so a multi-row move repaints
+/// between steps instead of arriving as one burst.
+const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
 // Keep this aligned with the runtime PTY input acknowledgement bound. A wrap
 // session is retired when it expires because a blocked write may have been
 // partially delivered and is unsafe to requeue blindly.
@@ -630,7 +633,17 @@ impl PtyAutoState {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        if steps != 0 {
+        // Navigation and confirmation must reach the child as one queue entry.
+        // Submitting them separately lets a full write queue reject the
+        // navigation and then accept the Enter once a slot frees, which
+        // confirms the still-selected decline row — the exact failure this
+        // handler exists to prevent. `submit_write_paced_with_followup` keeps
+        // the arrow keys and the trailing `\r` adjacent on the FIFO, paces one
+        // VT atom at a time so the menu repaints between moves, and either
+        // admits the whole compound write or none of it.
+        let submitted = if steps == 0 {
+            pty.submit_write(b"\r".to_vec())
+        } else {
             let key: &[u8] = if steps > 0 {
                 b"\x1b[B" // cursor down
             } else {
@@ -640,15 +653,31 @@ impl PtyAutoState {
             for _ in 0..steps.unsigned_abs() {
                 nav.extend_from_slice(key);
             }
-            warn_on_auto_response_write(pty.submit_write(nav), "claude_trust_navigate");
-            // Let the menu repaint before confirming; Claude's selection TUI
-            // drops keystrokes that land mid-render.
-            tokio::time::sleep(CLAUDE_TRUST_NAV_SETTLE).await;
-        }
+            pty.submit_write_paced_with_followup(
+                nav,
+                CLAUDE_TRUST_KEY_PACE,
+                CLAUDE_TRUST_NAV_SETTLE,
+                b"\r".to_vec(),
+            )
+        };
 
-        warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "claude_trust");
-        self.claude_trust_buffer.clear();
-        self.claude_trust_handled = true;
+        match submitted {
+            Ok(_) => {
+                self.claude_trust_buffer.clear();
+                self.claude_trust_handled = true;
+            }
+            Err(error) => {
+                // Nothing was admitted, so nothing was confirmed. Leave the
+                // prompt unhandled and retry on the next output chunk rather
+                // than stranding the worker on an unanswered dialog.
+                tracing::warn!(
+                    target: "agent_relay::worker::pty",
+                    context = "claude_trust",
+                    error = %error,
+                    "trust-menu write rejected; leaving prompt unhandled for retry"
+                );
+            }
+        }
     }
 
     /// Send an enter keystroke if the agent appears stuck after injection.

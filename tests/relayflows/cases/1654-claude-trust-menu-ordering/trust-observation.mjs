@@ -1,4 +1,13 @@
-const TRUST_MARKER = /^TRUST_(ACCEPTED|EXITED) layout=(legacy|modern)$/;
+// Single source of truth for the decision vocabulary. The probe interpolates
+// these same constants into its source, so the marker the probe writes and the
+// marker this parser accepts cannot drift apart. Divergence would surface as a
+// proof timeout — reported as an infrastructure failure — rather than as a
+// verdict about the broker.
+export const TRUST_ACCEPTED = 'TRUST_ACCEPTED';
+export const TRUST_EXITED = 'TRUST_EXITED';
+export const TRUST_LAYOUTS = ['modern', 'legacy'];
+
+const TRUST_MARKER = new RegExp(`^(${TRUST_ACCEPTED}|${TRUST_EXITED}) layout=(${TRUST_LAYOUTS.join('|')})$`);
 
 // The deterministic Claude model records its decision as a single line in a
 // file, and the runner reads it from disk rather than from the worker frame

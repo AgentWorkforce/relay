@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseTrustDecision } from './trust-observation.mjs';
+import { parseTrustDecision, TRUST_ACCEPTED, TRUST_EXITED } from './trust-observation.mjs';
 
 test('parses an accepted decision', () => {
   const decision = parseTrustDecision('TRUST_ACCEPTED layout=modern\n');
-  assert.equal(decision?.outcome, 'ACCEPTED');
+  assert.equal(decision?.outcome, TRUST_ACCEPTED);
   assert.equal(decision?.layout, 'modern');
 });
 
 test('parses an exited decision', () => {
-  assert.equal(parseTrustDecision('TRUST_EXITED layout=modern\n')?.outcome, 'EXITED');
+  assert.equal(parseTrustDecision('TRUST_EXITED layout=modern\n')?.outcome, TRUST_EXITED);
 });
 
 test('parses the legacy layout', () => {

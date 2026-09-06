@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
 - A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
 - Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
-- PTY workers no longer die on Claude Code's folder-trust dialog. Relay assumed the affirmative option was preselected and answered with a bare Enter; Claude Code 2.1.259+ preselects `No, exit`, so relay confirmed exit and the worker vanished while its roster row survived. Relay now finds the affirmative option by its label and moves the highlight onto it, so both menu orderings work.
+- PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
 
 ## [11.10.3] - 2026-09-05
 

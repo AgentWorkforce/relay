@@ -149,15 +149,21 @@ pub fn detect_claude_trust_prompt(clean_output: &str) -> (bool, bool) {
 }
 
 /// One row of Claude Code's folder-trust selection menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TrustRow {
     line: usize,
+    /// The row's label with selection marker and list numbering removed. Two
+    /// rows with the same key are the same option, which is how a repaint is
+    /// told apart from a sibling row.
+    key: String,
     affirmative: bool,
     /// Row carries Claude's `❯` selection glyph.
     caret: bool,
-    /// Row carries a plain `>` marker — only trusted when no `❯` is present
-    /// anywhere in the block, since `>` also shows up in ordinary prose.
-    fallback_marker: bool,
+    /// Row begins with a plain `>` marker. Only consulted when no row in the
+    /// frame carries a `❯`; a `>` anywhere other than the row prefix is
+    /// ordinary prose (`No, exit -> quits immediately`) and is never a
+    /// selection marker.
+    leading_marker: bool,
 }
 
 /// How to answer a Claude Code folder-trust menu.
@@ -208,6 +214,19 @@ fn classify_trust_row(norm: &str) -> Option<bool> {
     None
 }
 
+/// Strip the selection marker and any list numbering so the same option
+/// compares equal across repaints and across Claude versions — 2.1.236 renders
+/// `❯1.Yes,Itrustthisfolder` where 2.1.261 renders `Yes,Itrustthisfolder`.
+fn trust_label_key(norm: &str) -> &str {
+    let stripped = norm.trim_start_matches(['❯', '>']);
+    let digits_trimmed = stripped.trim_start_matches(|c: char| c.is_ascii_digit());
+    match digits_trimmed.strip_prefix('.') {
+        // Only treat digits as numbering when a `.` actually followed them.
+        Some(rest) => rest,
+        None => stripped,
+    }
+}
+
 /// Claude renders the selection highlight as a `❯` glyph. The reverse-video
 /// attribute it also sets does not survive `strip_ansi`, so the glyph is the
 /// only signal left by the time we see the text.
@@ -240,9 +259,10 @@ pub fn plan_claude_trust_response(clean_output: &str) -> ClaudeTrustPlan {
         if let Some(affirmative) = classify_trust_row(&norm) {
             rows.push(TrustRow {
                 line: idx,
+                key: trust_label_key(&norm).to_string(),
                 affirmative,
                 caret: row_has_caret(line),
-                fallback_marker: line.contains('>'),
+                leading_marker: line.trim_start().starts_with('>'),
             });
         }
     }
@@ -251,41 +271,42 @@ pub fn plan_claude_trust_response(clean_output: &str) -> ClaudeTrustPlan {
     }
 
     // The buffer accumulates every repaint, so the same menu can appear several
-    // times and only the newest paint says where the highlight actually sits.
-    // Anchor on the *last* highlighted row and grow the menu block outward from
-    // it across adjacent rows. Anchoring on the newest highlight rather than
-    // slicing the row list into groups keeps this correct even when two paints
-    // land close enough together to look contiguous.
+    // times and only the newest paint reflects what is on screen. Split the
+    // rows into frames and consider the last one alone.
     //
-    // Prefer the real `❯` glyph; a bare `>` counts only when no row carries a
-    // caret, so stray prose punctuation cannot steal the highlight from the row
-    // that actually holds it.
-    let anchor = rows
+    // A frame ends when a label repeats — a menu lists each option once, so a
+    // second `No, exit` is the next repaint, not a sibling row — or when a line
+    // gap is too large for the rows to belong to the same menu. Segmenting on
+    // the label rather than on line gaps matters: a partial repaint can begin
+    // on the line directly after the previous frame, and pairing its fresh
+    // highlight with the stale affirmative row computes a step in the wrong
+    // direction.
+    let mut frame_start = 0usize;
+    for i in 1..rows.len() {
+        let repeated = rows[frame_start..i].iter().any(|r| r.key == rows[i].key);
+        let detached = rows[i].line.saturating_sub(rows[i - 1].line) > MAX_TRUST_ROW_GAP;
+        if repeated || detached {
+            frame_start = i;
+        }
+    }
+    let frame = &rows[frame_start..];
+
+    // Prefer the real `❯`. A leading `>` counts only when no row in this frame
+    // carries a caret.
+    let cursor = frame
         .iter()
         .rposition(|r| r.caret)
-        .or_else(|| rows.iter().rposition(|r| r.fallback_marker));
-    let Some(anchor) = anchor else {
-        // Options are painting but nothing is highlighted yet.
+        .or_else(|| frame.iter().rposition(|r| r.leading_marker));
+    let Some(cursor) = cursor else {
+        // The newest frame has not painted its highlight yet. Answering it
+        // would confirm whichever row happens to be selected — the original
+        // bug. Wait for a fuller repaint instead.
         return ClaudeTrustPlan::Ambiguous;
     };
 
-    let mut start = anchor;
-    while start > 0 && rows[start].line.saturating_sub(rows[start - 1].line) <= MAX_TRUST_ROW_GAP {
-        start -= 1;
-    }
-    let mut end = anchor;
-    while end + 1 < rows.len()
-        && rows[end + 1].line.saturating_sub(rows[end].line) <= MAX_TRUST_ROW_GAP
-    {
-        end += 1;
-    }
-    let block = &rows[start..=end];
-    let cursor = anchor - start;
-
-    // Take the affirmative row nearest the highlight. If a stale paint ever did
-    // sit close enough to be absorbed into this block, its copy of the
-    // affirmative row is further from the live highlight than the live one is.
-    let target = block
+    // The affirmative row must come from this same frame. Nearest wins, which
+    // only matters if a future menu ever offers two affirmative wordings.
+    let target = frame
         .iter()
         .enumerate()
         .filter(|(_, r)| r.affirmative)
@@ -296,8 +317,8 @@ pub fn plan_claude_trust_response(clean_output: &str) -> ClaudeTrustPlan {
         Some(target) => ClaudeTrustPlan::Confirm {
             steps: target as i32 - cursor as i32,
         },
-        // The highlight has painted but the affirmative row has not. The frame
-        // is still arriving — never guess which way to move.
+        // The highlight has painted but this frame's affirmative row has not.
+        // Never pair it with a row from an older frame.
         None => ClaudeTrustPlan::Ambiguous,
     }
 }
@@ -472,6 +493,68 @@ Entertoconfirm·Esctocancel\n";
         assert_eq!(
             plan_claude_trust_response(output),
             ClaudeTrustPlan::Ambiguous
+        );
+    }
+
+    #[test]
+    fn claude_trust_highlightless_repaint_is_ambiguous() {
+        // relay#1667 review (codex P1 / coderabbit / cubic): an earlier complete
+        // paint followed by a newer repaint that has both rows but no highlight.
+        // Reusing the older caret answers a frame that is no longer on screen.
+        let output = "Do you trust the files in this folder?\n\
+                      ❯ No, exit\n\
+                        Yes, I trust this folder\n\
+                      \n\n\n\n\n\n\
+                      Do you trust the files in this folder?\n\
+                        No, exit\n\
+                        Yes, I trust this folder\n";
+        assert_eq!(
+            plan_claude_trust_response(output),
+            ClaudeTrustPlan::Ambiguous
+        );
+    }
+
+    #[test]
+    fn claude_trust_partial_next_repaint_is_ambiguous() {
+        // A complete paint immediately followed by only the highlighted first
+        // row of the next repaint. Pairing that fresh highlight with the stale
+        // affirmative row yields an *upward* step; on a menu that clamps at the
+        // first row the following Enter confirms "No, exit" — exactly the
+        // relay#1654 failure this PR exists to remove.
+        let output = "Do you trust the files in this folder?\n\
+                      ❯ No, exit\n\
+                        Yes, I trust this folder\n\
+                      ❯ No, exit\n";
+        assert_eq!(
+            plan_claude_trust_response(output),
+            ClaudeTrustPlan::Ambiguous
+        );
+    }
+
+    #[test]
+    fn claude_trust_prose_arrow_is_not_a_highlight() {
+        // With no `❯` anywhere, a `>` inside option prose must not be promoted
+        // to the selection marker — otherwise this navigates and confirms on a
+        // frame whose highlight has not painted.
+        let output = "Do you trust the files in this folder?\n\
+                        No, exit  ->  quits immediately\n\
+                        Yes, I trust this folder\n";
+        assert_eq!(
+            plan_claude_trust_response(output),
+            ClaudeTrustPlan::Ambiguous
+        );
+    }
+
+    #[test]
+    fn claude_trust_leading_marker_still_counts_as_highlight() {
+        // A renderer that marks the selection with a leading ">" instead of "❯"
+        // must still be answered.
+        let output = "Do you trust the files in this folder?\n\
+                      > No, exit\n\
+                        Yes, I trust this folder\n";
+        assert_eq!(
+            plan_claude_trust_response(output),
+            ClaudeTrustPlan::Confirm { steps: 1 }
         );
     }
 

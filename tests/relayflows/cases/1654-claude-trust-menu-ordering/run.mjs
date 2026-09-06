@@ -6,7 +6,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { parseTrustDecision } from './trust-observation.mjs';
+import { parseTrustDecision, TRUST_ACCEPTED, TRUST_EXITED, TRUST_LAYOUTS } from './trust-observation.mjs';
 
 const CASE_ID = '1654-claude-trust-menu-ordering';
 const DECISION_TIMEOUT_MS = 60_000;
@@ -51,6 +51,8 @@ if (!isWithin(harnessDir, runnerPath)) {
 // never reaches readiness until the dialog has been answered, and an
 // observation that waited on the frame stream would time out on both arms.
 const fakeClaudeSource = String.raw`#!/usr/bin/env node
+const ACCEPTED_MARKER = ${JSON.stringify(TRUST_ACCEPTED)};
+const EXITED_MARKER = ${JSON.stringify(TRUST_EXITED)};
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -116,13 +118,13 @@ process.stdin.on('data', (chunk) => {
     if (bytes[i] === 13) {
       decided = true;
       if (rows[selected].affirmative) {
-        recordDecision('TRUST_ACCEPTED layout=' + layout);
+        recordDecision(ACCEPTED_MARKER + ' layout=' + layout);
         // Trusted: Claude proceeds to its main UI and stays available. This
         // banner is also what lets the broker's readiness gate finally pass.
         process.stdout.write('\r\nWelcome back Relay!\r\n❯');
       } else {
         // "No, exit" confirmed: Claude terminates. This is the #1654 failure.
-        recordDecision('TRUST_EXITED layout=' + layout);
+        recordDecision(EXITED_MARKER + ' layout=' + layout);
         setTimeout(() => process.exit(0), 50);
       }
       return;
@@ -144,7 +146,7 @@ try {
   // Both orderings are exercised on every arm. A change that fixed the modern
   // layout by unconditionally stepping the highlight would break the legacy
   // layout, and must not be able to report success here.
-  for (const layout of ['modern', 'legacy']) {
+  for (const layout of TRUST_LAYOUTS) {
     observations[layout] = await observeTrustDialog(layout);
   }
 
@@ -164,7 +166,7 @@ function classify(results) {
   const modern = results.modern;
   const legacy = results.legacy;
 
-  if (modern === 'ACCEPTED' && legacy === 'ACCEPTED') {
+  if (modern === TRUST_ACCEPTED && legacy === TRUST_ACCEPTED) {
     return {
       outcome: 'fixed',
       signature: 'claude_trust_confirmed_affirmative_both_orderings',
@@ -173,7 +175,7 @@ function classify(results) {
     };
   }
 
-  if (modern === 'EXITED') {
+  if (modern === TRUST_EXITED) {
     return {
       outcome: 'bug',
       signature: 'claude_trust_confirmed_exit',
@@ -207,7 +209,10 @@ async function observeTrustDialog(layout) {
       stderr = `${stderr}${chunk}`.slice(-8_000);
     });
     worker.stdout.resume();
-    worker.once('exit', (code, signal) => {
+    // `close` rather than `exit`: it fires only once the child's stdio has
+    // closed, so the diagnostic cannot report an exit while output is still
+    // in flight.
+    worker.once('close', (code, signal) => {
       exited = signal ?? code ?? 'unknown';
     });
 
