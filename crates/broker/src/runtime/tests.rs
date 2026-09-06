@@ -26,8 +26,9 @@ use crate::{
     util::{
         ansi::{floor_char_boundary, strip_ansi},
         terminal::{
-            detect_bypass_permissions_prompt, detect_claude_trust_prompt, is_auto_suggestion,
-            is_bypass_selection_menu, is_in_editor_mode,
+            claude_trust_prompt_action, detect_bypass_permissions_prompt,
+            detect_claude_trust_prompt, is_auto_suggestion, is_bypass_selection_menu,
+            is_in_editor_mode, ClaudeTrustPromptAction,
         },
     },
 };
@@ -4500,41 +4501,50 @@ fn claude_trust_prompt_full_match() {
                        ❯ 1. Yes, I trust this folder\n\
                          2. No, exit\n\
                        Enter to confirm · Esc to cancel";
-    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
-    assert!(has_trust_ref);
-    assert!(has_confirmation);
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::Enter)
+    );
 }
 
 #[test]
-fn claude_trust_prompt_stripped_spaces() {
-    let output = "Yes,Itrustthisfolder\nNo,exit";
-    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
-    assert!(has_trust_ref);
-    assert!(has_confirmation);
+fn claude_trust_prompt_new_layout_moves_to_affirmative_row() {
+    let output = "Do you trust the files in this folder?\n\
+                  ❯ No, exit\n\
+                    Yes, I trust this folder\n\
+                  Enter to confirm · Esc to cancel";
+    assert_eq!(
+        claude_trust_prompt_action(output),
+        Some(ClaudeTrustPromptAction::Down)
+    );
 }
 
 #[test]
 fn claude_trust_prompt_no_match_normal_output() {
     let output = "I'll help you fix that bug. Let me read the file first.";
-    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
-    assert!(!has_trust_ref);
-    assert!(!has_confirmation);
+    assert_eq!(claude_trust_prompt_action(output), None);
 }
 
 #[test]
 fn claude_trust_prompt_partial_no_exit() {
     let output = "Yes, I trust this folder";
-    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(output);
-    assert!(has_trust_ref);
-    assert!(!has_confirmation, "should not match without exit option");
+    assert_eq!(claude_trust_prompt_action(output), None);
 }
 
 #[test]
 fn claude_trust_prompt_with_ansi() {
     let raw = "\x1b[1m❯ 1. Yes, I trust this folder\x1b[0m\n  2. No, exit";
     let clean = strip_ansi(raw);
-    let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
-    assert!(has_trust_ref && has_confirmation);
+    assert_eq!(
+        claude_trust_prompt_action(&clean),
+        Some(ClaudeTrustPromptAction::Enter)
+    );
+}
+
+#[test]
+fn claude_trust_prompt_ambiguous_selection_fails_closed() {
+    let output = "Yes, I trust this folder\nNo, exit";
+    assert_eq!(claude_trust_prompt_action(output), None);
 }
 
 // ==================== is_in_editor_mode tests ====================
