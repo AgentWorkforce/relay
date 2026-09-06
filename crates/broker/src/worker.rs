@@ -511,15 +511,17 @@ impl WorkerRegistry {
         }
     }
 
-    /// Return the live broker-owned workers that must remain present in the
-    /// Relaycast reconnect inventory. The parent marker is set by the two
-    /// production spawn surfaces (Dashboard and Relaycast); workers without it
-    /// are local-only and must not cause a fleet identity lookup.
+    /// Return every live broker-owned worker that may need to be restored to the
+    /// Relaycast reconnect inventory. Adopted and migrated PTYs can outlive the
+    /// spawn metadata that supplied `parent`, so that marker cannot decide
+    /// roster membership. Reconciliation performs a read-only, workspace-scoped
+    /// identity lookup and only adopts an existing matching Relaycast identity;
+    /// it never registers a local-only worker or rotates a token.
     pub(crate) fn live_fleet_inventory_candidates(&self) -> Vec<LiveFleetInventoryCandidate> {
         self.workers
             .iter()
             .filter_map(|(name, handle)| {
-                if handle.parent.is_none() || !self.is_worker_live(name) {
+                if !self.is_worker_live(name) {
                     return None;
                 }
                 let session_ref = handle.spec.session_id.clone().or_else(|| {

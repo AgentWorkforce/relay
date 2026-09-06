@@ -1,0 +1,87 @@
+{
+  "id": "traj_0c4k1s4nyzg3",
+  "version": 1,
+  "task": {
+    "title": "Fix relay #1602 authoritative live-worker inventory",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1602"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-25T06:48:55.958Z",
+  "completedAt": "2026-08-25T07:27:52.373Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-25T06:57:16.671Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5lb3egoeu1rr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-25T06:57:16.671Z",
+      "endedAt": "2026-08-25T07:27:52.373Z",
+      "events": [
+        {
+          "ts": 1787641036674,
+          "type": "decision",
+          "content": "Use retained fleet_inventory as the sole broker-side identity/name set for inventory.sync and heartbeat live-agent capability: Use retained fleet_inventory as the sole broker-side identity/name set for inventory.sync and heartbeat live-agent capability",
+          "raw": {
+            "question": "Use retained fleet_inventory as the sole broker-side identity/name set for inventory.sync and heartbeat live-agent capability",
+            "chosen": "Use retained fleet_inventory as the sole broker-side identity/name set for inventory.sync and heartbeat live-agent capability",
+            "alternatives": [],
+            "reasoning": "inventory carries authoritative immutable agent IDs, is populated only after registration or audited read-only reconciliation of live PTYs, survives node-control reconnects, and preserves multi-node claim arbitration; deriving heartbeat names from every worker-registry key is the divergent unauthorised projection that caused #1602"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787642870261,
+          "type": "reflection",
+          "content": "Issue 1602 regression now proves heartbeat authorization names and reconnect inventory derive from one retained live-worker vector. Existing reconciliation remains responsible for adopting live PTYs without registration or token rotation; immutable-id/name mismatch guards preserve multi-node claim semantics.",
+          "raw": {
+            "focalPoints": [
+              "authoritative-inventory",
+              "reconnects",
+              "identity-safety"
+            ],
+            "confidence": 0.93
+          },
+          "significance": "high",
+          "tags": [
+            "focal:authoritative-inventory",
+            "focal:reconnects",
+            "focal:identity-safety",
+            "confidence:0.93"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Unified fleet heartbeat live-agent names with the authoritative reconnect inventory, added divergence and reconnect regressions, and validated broker/TypeScript behavior.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "fee5ee2d65e0b4a9a4f43f619c90c587e9440fcd"
+  ],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "crates/broker/src/fleet_wire.rs",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/maintenance.rs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "191e5f14a343431ec42282c1103c9f014854ac0b",
+    "endRef": "fee5ee2d65e0b4a9a4f43f619c90c587e9440fcd",
+    "traceId": "99d12cd8-b320-49c4-8ea6-25391f5313eb"
+  }
+}

@@ -88,10 +88,11 @@ pub struct FleetCapability {
     pub metadata: Option<BTreeMap<String, Value>>,
 }
 
-/// Reserved node capability carrying the broker's live WorkerName set in its
-/// `metadata.names` array. It rides the existing heartbeat descriptor refresh,
-/// so it does not depend on per-agent provider registration or a separate
-/// control-plane write.
+/// Reserved node capability carrying the broker's authoritative reconnect
+/// inventory names in its `metadata.names` array. It rides the existing
+/// heartbeat descriptor refresh while deriving from the same live-worker set
+/// as `inventory.sync`, so heartbeat authorization and roster reconciliation
+/// cannot disagree.
 pub const LIVE_AGENT_CAPABILITY_NAME: &str = "relay:live-agents:v1";
 
 /// Provider identity carried on connection-scoped node frames. `name` is the
@@ -175,8 +176,8 @@ pub struct NodeHeartbeat {
     pub name: String,
     pub node_id: String,
     // The broker appends reserved live-agent capabilities on every heartbeat;
-    // their names come directly from its worker registry, independently of
-    // provider registration and inventory.sync.
+    // their names come from the retained, identity-bearing inventory also sent
+    // by inventory.sync after live-worker reconciliation repairs adopted PTYs.
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub version: String,
