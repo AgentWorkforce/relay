@@ -140,19 +140,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Mint scoped Cloud dispatch token
-        id: cloud_dispatch_token
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.1
-        with:
-          app-id: ${{ secrets.GH_APP_PUSHER_ID }}
-          private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
-          owner: AgentWorkforce
-          repositories: cloud
-          permission-contents: write
-
-      - name: Deliver Cloud qualification request
+      - name: Create the bounded Cloud qualification request
         env:
-          GH_TOKEN: ${{ steps.cloud_dispatch_token.outputs.token }}
           ATTESTATION_ARTIFACT_DIGEST: ${{ steps.attestation.outputs.artifact-digest }}
         run: |
           set -euo pipefail
@@ -161,14 +150,13 @@ jobs:
             --run-id "${GITHUB_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --attestation-artifact-digest "sha256:${ATTESTATION_ARTIFACT_DIGEST}" \
-            --output .qualification/cloud-request.json
-          gh api --method POST repos/AgentWorkforce/cloud/dispatches \
-            --input .qualification/cloud-request.json
-          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
-          const request = require('./.qualification/cloud-request.json');
-          console.log('## Cloud Relay producer request\n');
-          console.log('Delivered `relay_package_qualification_ready` to `AgentWorkforce/cloud`.\n');
-          console.log('```json');
-          console.log(JSON.stringify(request.client_payload));
-          console.log('```');
-          NODE
+            --output .qualification/cloud-request/relay-package-cloud-request.json
+
+      - name: Upload the bounded Cloud qualification request
+        id: cloud-request
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relay-package-cloud-request
+          path: .qualification/cloud-request/relay-package-cloud-request.json
+          if-no-files-found: error
+          retention-days: 30

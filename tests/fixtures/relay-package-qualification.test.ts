@@ -223,7 +223,7 @@ describe('Relay package qualification producer', () => {
     }
   });
 
-  it('is manually dispatched from one exact canonical prerelease branch with a scoped Cloud delivery', async () => {
+  it('is manually dispatched from one exact prerelease branch without receiving Cloud credentials', async () => {
     const workflow = await readFile('.github/workflows/relay-package-qualification.yml', 'utf8');
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).not.toMatch(/\n\s+push:/);
@@ -234,16 +234,20 @@ describe('Relay package qualification producer', () => {
     expect(workflow).toContain('test "${GITHUB_REPOSITORY}" = "AgentWorkforce/relay"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"');
     expect(workflow).toContain('--artifact-digest "sha256:${PAYLOAD_ARTIFACT_DIGEST}"');
-    expect(workflow).toContain(
-      'uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b'
-    );
-    expect(workflow).toContain('owner: AgentWorkforce');
-    expect(workflow).toContain('repositories: cloud');
-    expect(workflow).toContain('permission-contents: write');
-    expect(workflow).toContain('GH_TOKEN: ${{ steps.cloud_dispatch_token.outputs.token }}');
     expect(workflow).toContain('create-cloud-dispatch');
-    expect(workflow).toContain('gh api --method POST repos/AgentWorkforce/cloud/dispatches');
-    expect(workflow).toContain('--input .qualification/cloud-request.json');
+    expect(workflow).toContain('name: relay-package-cloud-request');
+    expect(workflow).toContain('path: .qualification/cloud-request/relay-package-cloud-request.json');
+    expect(workflow).not.toContain('actions/create-github-app-token');
+    expect(workflow).not.toContain('GH_APP_PUSHER');
+    expect(workflow).not.toContain('GH_TOKEN:');
+    expect(workflow).not.toContain('repos/AgentWorkforce/cloud/dispatches');
+    expect(workflow).not.toContain('secrets.');
+    expect(workflow.indexOf('- name: Upload immutable package attestation')).toBeLessThan(
+      workflow.indexOf('- name: Create the bounded Cloud qualification request')
+    );
+    expect(workflow.indexOf('- name: Create the bounded Cloud qualification request')).toBeLessThan(
+      workflow.indexOf('- name: Upload the bounded Cloud qualification request')
+    );
     expect(workflow.indexOf('- name: Set up exact Node.js')).toBeLessThan(
       workflow.indexOf('- name: Require prerelease package version')
     );
