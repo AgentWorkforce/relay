@@ -304,6 +304,7 @@ async fn stale_generation_release_after_restart_preserves_persisted_replacement(
     remote.assert_hits(0);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn http_spawn_retains_identity_when_node_binding_warns() {
     use httpmock::{Method::GET, Method::POST, MockServer};
@@ -392,7 +393,7 @@ async fn http_spawn_retains_identity_when_node_binding_warns() {
         Some("agent-http")
     );
     identity.assert_hits(1);
-    bind.assert_hits(3); // The SDK exhausts its bounded retry policy.
+    bind.assert_hits(1); // SDK 8 does not retry a mutating POST.
 }
 
 #[tokio::test]
