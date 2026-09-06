@@ -190,8 +190,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       // Pin capacity so the node advertises a distinct harness (`claude`) plus the
       // shared `pool`. A `spawn:<harness>` shadow delegates to the broker's native
       // capacity for that harness, so every shadow the node defines (spawn:claude,
-      // spawn:pool) needs matching broker capacity — otherwise the delegation has
-      // nothing to run.
+      // spawn:pool, spawn:release-probe) needs matching broker capacity — otherwise
+      // the delegation has nothing to run.
       capacityHarnesses: 'claude,pool,release-probe',
     });
     nodeB = new FleetNode({
