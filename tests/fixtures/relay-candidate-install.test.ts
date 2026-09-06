@@ -66,25 +66,18 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
-  it('enters the inherited Linux descriptor before running npm', () => {
+  it('runs npm from the parent descriptor on Linux without using --prefix', () => {
     const invocation = privateNpmInvocation(
       ['install', '--package-lock-only'],
       '/proc/self/fd/3',
       '/install',
-      'linux'
+      'linux',
+      '/proc/42/fd/17'
     );
 
     expect(invocation).toEqual({
-      command: '/bin/sh',
-      args: [
-        '-c',
-        'cd -- "$1" && shift && exec "$@"',
-        'relay-private-cwd',
-        '/proc/self/fd/3/install',
-        'npm',
-        'install',
-        '--package-lock-only',
-      ],
+      args: ['install', '--package-lock-only'],
+      cwd: '/proc/42/fd/17/install',
     });
     expect(invocation.args).not.toContain('--prefix');
   });
@@ -106,10 +99,13 @@ describe('Relay candidate clean-install attestation', () => {
           ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
           '/proc/self/fd/3',
           '/install',
-          'linux'
+          'linux',
+          `/proc/${process.pid}/fd/${descriptor.fd}`
         );
-        const result = spawnSync(invocation.command, invocation.args, {
+        const result = spawnSync('npm', invocation.args, {
+          cwd: invocation.cwd,
           encoding: 'utf8',
+          timeout: 300_000,
           stdio: ['ignore', 'pipe', 'pipe', descriptor.fd],
         });
         expect(result.status, result.stderr).toBe(0);

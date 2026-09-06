@@ -289,21 +289,20 @@ async function rejectBundledBrokerContamination() {
   }
 }
 
-export function privateNpmInvocation(args, childRoot, suffix, platform = process.platform) {
+export function privateNpmInvocation(
+  args,
+  childRoot,
+  suffix,
+  platform = process.platform,
+  parentDescriptorRoot = childRoot
+) {
   if (platform === 'linux') {
     return {
-      command: '/bin/sh',
-      args: [
-        '-c',
-        'cd -- "$1" && shift && exec "$@"',
-        'relay-private-cwd',
-        `${childRoot}${suffix}`,
-        'npm',
-        ...args,
-      ],
+      args,
+      cwd: `${parentDescriptorRoot}${suffix}`,
     };
   }
-  return { command: 'npm', args: ['--prefix', `${childRoot}${suffix}`, ...args] };
+  return { args: ['--prefix', `${childRoot}${suffix}`, ...args], cwd: undefined };
 }
 
 function run(command, args, options = {}) {
@@ -323,7 +322,6 @@ function run(command, args, options = {}) {
     }
     return value;
   };
-  let childCommand = command;
   let childArgs = args.map(rewritePrivatePath);
   let childCwd = options.cwd;
   if (privateRoot && typeof options.cwd === 'string') {
@@ -333,13 +331,20 @@ function run(command, args, options = {}) {
     );
     if (prefix && command === 'npm') {
       const suffix = options.cwd.slice(prefix.length);
-      const invocation = privateNpmInvocation(childArgs, childRoot, suffix);
-      childCommand = invocation.command;
+      const parentDescriptorRoot =
+        process.platform === 'linux' ? `/proc/${process.pid}/fd/${privateRoot.handle.fd}` : childRoot;
+      const invocation = privateNpmInvocation(
+        childArgs,
+        childRoot,
+        suffix,
+        process.platform,
+        parentDescriptorRoot
+      );
       childArgs = invocation.args;
-      childCwd = undefined;
+      childCwd = invocation.cwd;
     }
   }
-  const result = spawnSync(childCommand, childArgs, {
+  const result = spawnSync(command, childArgs, {
     cwd: rewritePrivatePath(childCwd),
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 300_000,
