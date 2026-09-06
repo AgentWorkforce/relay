@@ -2071,7 +2071,25 @@
           "defaultValue": null
         }
       ],
-      "options": []
+      "options": [
+        {
+          "flags": "--json",
+          "short": null,
+          "long": "--json",
+          "mandatory": false,
+          "valueRequired": false,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        }
+      ]
     },
     {
       "path": "node agent spawn",
