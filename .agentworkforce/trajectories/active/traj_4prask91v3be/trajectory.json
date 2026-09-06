@@ -1,0 +1,62 @@
+{
+  "id": "traj_4prask91v3be",
+  "version": 1,
+  "task": {
+    "title": "Address Relay 1672 qualification feedback: group-aware worker failure teardown and sealed release proof",
+    "source": {
+      "system": "plain",
+      "id": "relay#1671"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-09-06T02:49:09.708Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T02:49:14.298Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_qvvbgzh3x6ez",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T02:49:14.298Z",
+      "events": [
+        {
+          "ts": 1788662954298,
+          "type": "decision",
+          "content": "Route writer-failure and orphan cleanup through terminate_child: Route writer-failure and orphan cleanup through terminate_child",
+          "raw": {
+            "question": "Route writer-failure and orphan cleanup through terminate_child",
+            "chosen": "Route writer-failure and orphan cleanup through terminate_child",
+            "alternatives": [],
+            "reasoning": "Both paths must terminate descendants and reap the wrapper with the same bounded process-group semantics as explicit release."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788662954731,
+          "type": "decision",
+          "content": "Keep live public roster proof in the two-node E2E lane: Keep live public roster proof in the two-node E2E lane",
+          "raw": {
+            "question": "Keep live public roster proof in the two-node E2E lane",
+            "chosen": "Keep live public roster proof in the two-node E2E lane",
+            "alternatives": [],
+            "reasoning": "The sealed broker-artifact lane has no Relaycast engine or CLI dependencies; claiming static source checks as live proof would be misleading, so exact live qualification remains Cloud/Finn gated."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ed408f5ca0501e91fc011a02014c0b705a0b86cb",
+    "endRef": "ed408f5ca0501e91fc011a02014c0b705a0b86cb"
+  }
+}

@@ -4,7 +4,7 @@ use crate::relaycast::configure_agent_relay_mcp_with_token;
 use anyhow::{Context, Result};
 use tokio::{
     process::{Child, Command},
-    time::timeout,
+    time::{sleep, timeout},
 };
 
 #[cfg(unix)]
@@ -469,9 +469,10 @@ impl Spawner {
 }
 
 pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> Result<()> {
+    let pid = child.id();
     #[cfg(unix)]
     {
-        if let Some(pid) = child.id() {
+        if let Some(pid) = pid {
             // Worker wrappers are session leaders (see WorkerRegistry::spawn),
             // so signal the whole process group. The direct signal is retained
             // as a fallback for legacy children that predate session leaders or
@@ -482,26 +483,68 @@ pub async fn terminate_child(child: &mut Child, timeout_duration: Duration) -> R
 
     #[cfg(not(unix))]
     {
-        let _ = child.kill().await;
+        // Windows has no signal-only equivalent. Use taskkill's tree mode at
+        // the start of teardown so descendants are reached while the wrapper
+        // PID is still addressable; a bounded second pass below covers a
+        // wrapper that exits during the grace window.
+        if let Some(pid) = pid {
+            terminate_process_tree(pid).await;
+        }
     }
 
-    if timeout(timeout_duration, child.wait()).await.is_err() {
+    // Do not let a fast-exiting wrapper shorten the descendant grace period.
+    // Its PID can be reaped while a child remains in the private group, so the
+    // group probe below is independent of the wrapper's wait result.
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    let _ = timeout(timeout_duration, child.wait()).await;
+    while tokio::time::Instant::now() < deadline {
         #[cfg(unix)]
-        {
-            if let Some(pid) = child.id() {
-                signal_process_group(pid, Signal::SIGKILL);
-            }
+        if match pid {
+            Some(pid) => !process_group_alive(pid),
+            None => true,
+        } {
+            break;
         }
 
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill().await;
-        }
-
-        let _ = child.wait().await;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        sleep(remaining.min(Duration::from_millis(50))).await;
     }
+
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        if process_group_alive(pid) {
+            signal_process_group(pid, Signal::SIGKILL);
+        }
+    }
+
+    #[cfg(windows)]
+    if let Some(pid) = pid {
+        // Windows has no portable negative-PID equivalent. taskkill's /T
+        // walks the complete descendant tree after the graceful window.
+        terminate_process_tree(pid).await;
+    }
+
+    let _ = child.wait().await;
 
     Ok(())
+}
+
+#[cfg(windows)]
+async fn terminate_process_tree(pid: u32) {
+    let taskkill = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("taskkill.exe")
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
+    let _ = timeout(
+        Duration::from_secs(1),
+        tokio::process::Command::new(taskkill)
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status(),
+    )
+    .await;
 }
 
 #[cfg(unix)]
@@ -511,6 +554,14 @@ fn signal_process_group(pid: u32, signal: Signal) {
     // signal below still handles those safely.
     let _ = kill(Pid::from_raw(-(pid as i32)), signal);
     let _ = kill(Pid::from_raw(pid as i32), signal);
+}
+
+#[cfg(unix)]
+fn process_group_alive(pid: u32) -> bool {
+    // Legacy children may not be session leaders. Keep the direct-PID probe
+    // as the fallback paired with `signal_process_group`'s direct signal.
+    kill(Pid::from_raw(-(pid as i32)), None).is_ok()
+        || kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
 pub fn spawn_env_vars(
@@ -1258,7 +1309,13 @@ mod tests {
         // wrapper must be a session leader so release cannot strand that child
         // after killing only the wrapper PID.
         let mut child = Command::new("sh");
-        child.args(["-c", "sleep 30 & wait"]);
+        // Let the wrapper exit immediately while a nested descendant ignores
+        // SIGTERM. This specifically proves group liveness is checked after
+        // child.wait() resolves, then force-killed at the bounded deadline.
+        child.args([
+            "-c",
+            "sh -c \"trap '' TERM HUP; while :; do sleep 1; done\" & exit 0",
+        ]);
         unsafe {
             child.pre_exec(|| {
                 if nix::libc::setsid() == -1 {

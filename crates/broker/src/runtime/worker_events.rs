@@ -668,7 +668,9 @@ impl BrokerRuntime {
                         format!("worker command writer failed: {error}"),
                     );
                 }
-                if let Err(release_error) = workers.terminate_after_writer_failure(name.as_str()) {
+                if let Err(release_error) =
+                    workers.terminate_after_writer_failure(name.as_str()).await
+                {
                     tracing::warn!(
                         target = "relay_broker::terminal",
                         worker = %name,

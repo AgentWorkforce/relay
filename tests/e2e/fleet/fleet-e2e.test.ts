@@ -362,7 +362,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           process.kill(descendantPid, 0);
           return false;
         } catch (error) {
-          return error?.code === 'ESRCH' ? true : null;
+          return error && typeof error === 'object' && 'code' in error && error.code === 'ESRCH'
+            ? true
+            : null;
         }
       },
       { timeoutMs: 12_000, intervalMs: 200, label: 'release probe descendant absent' }
@@ -371,8 +373,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     await waitFor(
       async () => {
         const agent = await getAgent(engine, workspaceKey, name);
-        return agent && (agent.status === 'offline' || agent.status === 'released') &&
-          !agent.location_node_id
+        return agent && (agent.status === 'offline' || agent.status === 'released') && !agent.location_node_id
           ? agent
           : null;
       },
@@ -382,9 +383,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
       async () => {
         const nodeEntry = (await getNodes(engine, workspaceKey, { name: 'node-a' }))[0];
         const live = nodeEntry?.capabilities.find((capability) => capability.name === 'relay:live-agents:v1');
-        const names = live?.metadata && typeof live.metadata === 'object' && Array.isArray(live.metadata.names)
-          ? live.metadata.names
-          : [];
+        const names =
+          live?.metadata && typeof live.metadata === 'object' && Array.isArray(live.metadata.names)
+            ? live.metadata.names
+            : [];
         return !names.includes(name) ? nodeEntry : null;
       },
       { timeoutMs: 20_000, label: 'node heartbeat removes released worker' }
@@ -886,8 +888,12 @@ function runFleetRelease(
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 30_000);
     child.once('error', reject);
-    child.once('close', (status) => resolve({ status, stdout, stderr }));
+    child.once('close', (status) => {
+      clearTimeout(timeout);
+      resolve({ status, stdout, stderr });
+    });
   });
 }
 

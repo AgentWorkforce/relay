@@ -1541,7 +1541,7 @@ impl WorkerRegistry {
     /// registry and supervisor entries intact. The normal reap path observes
     /// the exit and applies the configured restart policy; unlike `release`,
     /// this is an unexpected fault rather than an intentional teardown.
-    pub(crate) fn terminate_after_writer_failure(&mut self, name: &str) -> Result<()> {
+    pub(crate) async fn terminate_after_writer_failure(&mut self, name: &str) -> Result<()> {
         let handle = self
             .workers
             .get_mut(name)
@@ -1550,9 +1550,8 @@ impl WorkerRegistry {
         if handle.child.id().is_none() {
             return Ok(());
         }
-        handle
-            .child
-            .start_kill()
+        terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT)
+            .await
             .with_context(|| format!("failed to terminate worker '{name}' after writer failure"))
     }
 
@@ -1645,26 +1644,13 @@ impl WorkerRegistry {
                         reason = orphan.reason(),
                         "reap_exited: harness gone but wrapper alive — killing orphaned wrapper"
                     );
-                    // SIGKILL *and* reap. Dropping the `Child` without waiting
-                    // leaves the wrapper to tokio's best-effort background
-                    // reaper, so a run of failed agent starts accumulates
-                    // zombies. SIGKILL cannot be caught, so this returns
-                    // promptly — but the deadline keeps a wrapper wedged in
-                    // uninterruptible sleep from stalling the maintenance tick,
-                    // which also drives delivery retries.
-                    if let Err(error) = handle.child.start_kill() {
-                        tracing::warn!(worker = %name, %error, "failed to signal orphaned wrapper");
-                    }
-                    match timeout(ORPHAN_REAP_TIMEOUT, handle.child.wait()).await {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => {
-                            tracing::warn!(worker = %name, %error, "orphaned wrapper wait failed")
-                        }
-                        Err(_) => tracing::warn!(
-                            worker = %name,
-                            timeout_ms = ORPHAN_REAP_TIMEOUT.as_millis(),
-                            "orphaned wrapper did not exit before the reap deadline"
-                        ),
+                    // Use the same bounded process-group teardown as explicit
+                    // release. Dropping the Child without waiting can leave
+                    // descendants behind even after the wrapper is gone.
+                    if let Err(error) =
+                        terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT).await
+                    {
+                        tracing::warn!(worker = %name, %error, "failed to terminate orphaned worker group");
                     }
                 }
                 self.workers.remove(&name);
