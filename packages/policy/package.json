@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/policy",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260906.3462",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -25,7 +25,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agent-relay/config": "11.10.3"
+    "@agent-relay/config": "11.10.4-cleanroom.20260906.3462"
   },
   "devDependencies": {
     "@types/node": "^22.19.3",
