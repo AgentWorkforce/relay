@@ -1904,6 +1904,30 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('[REDACTED_DECLARED_SECRET]');
   });
 
+  it('redacts declared credentials before JSON escaping diagnostic fields', () => {
+    const declaredCredential = 'cloud"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('cloud');
+    expect(diagnostic).not.toContain('secret');
+  });
+
+  it('redacts an escaped declared value that begins with a recognized credential prefix', () => {
+    const declaredCredential = 'ghp_abc"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('secret');
+  });
+
   it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
     const secret = 'overflow-run-id-secret';
     const diagnostic = terminalStatusDiagnostic(
@@ -1925,7 +1949,7 @@ describe('trusted dispatcher source contract', () => {
     expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
-  it('uses a fixed bounded record when short-secret redaction expands the fallback', () => {
+  it('redacts short secrets before serialization without rewriting JSON keys', () => {
     const diagnostic = terminalStatusDiagnostic(
       {
         runId: 'a'.repeat(1_024),
@@ -1935,9 +1959,12 @@ describe('trusted dispatcher source contract', () => {
       ['a']
     );
 
-    expect(JSON.parse(diagnostic)).toEqual({
-      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
-    });
+    const parsed = JSON.parse(diagnostic);
+    expect(Object.keys(parsed)).toEqual(['runId', 'status', 'failure']);
+    expect(parsed.runId).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(parsed.status).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(parsed.failure.causeChain).toHaveLength(20);
+    expect(diagnostic).not.toContain('"f[REDACTED_DECLARED_SECRET]ilure"');
     expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
