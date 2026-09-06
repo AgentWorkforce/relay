@@ -74,13 +74,6 @@ const corpusCaseTimeoutSeconds = readdirSync('tests/relayflows/cases', { withFil
 const laneTimeouts = Object.fromEntries(
   lanes.map((lane) => [lane, cleanroomLaneTimeoutMs(matrix, PROFILE, lane, corpusCaseTimeoutSeconds)])
 ) as Record<string, number>;
-// The lane agents can run concurrently, but summing their exact upper bounds
-// remains safe if sandbox scheduling serializes them. The remaining allowance
-// covers every deterministic gate and every configured review/fix round.
-const reviewAndGateTimeout =
-  660_000 + lanes.length * 120_000 + 1_560_000 + REVIEW_ROUNDS * 2 * 2_280_000 + 2_880_000 + 420_000;
-const workflowTimeout =
-  Object.values(laneTimeouts).reduce((total, timeout) => total + timeout, 0) + reviewAndGateTimeout;
 
 function command(action: string, extra = ''): string {
   return `node ${RUNNER} ${action} --matrix ${MATRIX} --profile ${PROFILE} --nonce ${NONCE} --source ${SOURCE}${extra}`;
@@ -294,7 +287,6 @@ async function main() {
     .channel(`relay-cleanroom-${NONCE.slice(0, 8)}`)
     .maxConcurrency(8)
     .onError('continue')
-    .timeout(workflowTimeout)
     .idleNudge({ nudgeAfterMs: 180_000, escalateAfterMs: 180_000, maxNudges: 2 });
 
   wf.agent('campaign-supervisor', {
@@ -586,6 +578,24 @@ async function main() {
     failOnError: true,
     timeoutMs: 300_000,
   });
+
+  // Derive the global envelope from the finalized step plan. Summing rather
+  // than assuming ideal DAG concurrency keeps the workflow valid if sandbox
+  // scheduling serializes lanes. Count the agent or step retry limit because
+  // each retry receives a fresh per-step timeout.
+  const timeoutPlan = wf.toConfig();
+  const timeoutAgents = new Map(timeoutPlan.agents.map((agent) => [agent.name, agent]));
+  const workflowTimeout = timeoutPlan.workflows
+    .flatMap((definition) => definition.steps)
+    .reduce((total, step) => {
+      if (!Number.isSafeInteger(step.timeoutMs) || Number(step.timeoutMs) < 1) {
+        throw new Error(`Clean-room step ${step.name} has no positive timeout`);
+      }
+      const agentRetries = step.agent ? timeoutAgents.get(step.agent)?.constraints?.retries : undefined;
+      const retries = step.retries ?? agentRetries ?? timeoutPlan.errorHandling?.maxRetries ?? 0;
+      return total + Number(step.timeoutMs) * (retries + 1);
+    }, 600_000);
+  wf.timeout(workflowTimeout);
 
   for (const agent of wf.toConfig().agents) {
     if (reviewAgentRoles.includes(agent.name)) {
