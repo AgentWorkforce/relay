@@ -12,6 +12,7 @@ use tokio::{
 
 #[cfg(unix)]
 use nix::{
+    errno::Errno,
     sys::signal::{kill, Signal},
     unistd::Pid,
 };
@@ -702,7 +703,11 @@ fn process_group_alive(pid: u32) -> bool {
     // A negative PID addresses the private worker group. Do not probe the raw
     // wrapper PID here: after child.wait() it can be reused for an unrelated
     // process, while the group identity remains tied to this worker session.
-    kill(Pid::from_raw(-(pid as i32)), None).is_ok()
+    match kill(Pid::from_raw(-(pid as i32)), None) {
+        Ok(()) | Err(Errno::EPERM) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => true,
+    }
 }
 
 pub fn spawn_env_vars(

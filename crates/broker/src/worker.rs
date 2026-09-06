@@ -80,6 +80,11 @@ const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
 const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Release must leave room inside the fleet action deadline for broker
+/// deregistration and result delivery. A shutdown frame is best effort; a
+/// blocked writer must not consume the entire five-second normal write budget
+/// before the configured 25-second process grace begins.
+const WORKER_RELEASE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -1539,7 +1544,7 @@ impl WorkerRegistry {
         {
             // Cancelling this wait cannot cancel the worker-owned write; it
             // only bounds release before the normal process termination path.
-            let _ = timeout(WORKER_WRITE_TIMEOUT, completion_rx).await;
+            let _ = timeout(WORKER_RELEASE_WRITE_TIMEOUT, completion_rx).await;
         }
 
         let result = terminate_child(&mut handle.child, release_grace).await;

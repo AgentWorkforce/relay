@@ -433,6 +433,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
     expect(releasedAgain.status).toBe(0);
     expect(releasedAgain.stdout).toContain(name);
     await assertReleaseAbsence(secondDescendantPid, 'second release');
+    const repeatedRelease = await runFleetRelease(cli, name, workspaceKey, engine.baseUrl);
+    expect(repeatedRelease.status).toBe(0);
+    expect(repeatedRelease.stdout).toContain(name);
+    await assertReleaseAbsence(secondDescendantPid, 'idempotent repeated release');
   }, 90_000);
 
   it('cross-node dispatch: a node-native action runs on its owning node and acks the result', async () => {

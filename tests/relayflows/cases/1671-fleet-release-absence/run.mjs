@@ -194,6 +194,22 @@ try {
       `Exact head broker drove public DELETE /api/spawned/${targetName} in ${releaseElapsedMs}ms; broker roster, controlled Relaycast roster, and descendant PID ${descendantPid} were all absent.`
     );
   }
+
+  if (arm === 'head') {
+    // A retry after the terminal release must be a no-op success: it must not
+    // recreate a roster entry or resurrect the process identity.
+    const repeatedRelease = await brokerRequest(apiBase, `/api/spawned/${encodeURIComponent(targetName)}`, {
+      method: 'DELETE',
+      headers,
+      body: JSON.stringify({ reason: 'sealed idempotency retry' }),
+    });
+    if (repeatedRelease.status >= 300 || repeatedRelease.body.success === false) {
+      throw new Error(`idempotent release retry failed: ${JSON.stringify(repeatedRelease)}`);
+    }
+    if (proofEngine.agents.has(targetName) || pidAlive(descendantPid)) {
+      throw new Error('idempotent release retry resurrected the released process or roster entry');
+    }
+  }
 } finally {
   if (broker && !broker.killed) broker.kill('SIGKILL');
   await proofEngine.close();
