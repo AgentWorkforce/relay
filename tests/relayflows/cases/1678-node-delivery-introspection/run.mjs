@@ -42,6 +42,30 @@ const READINESS_TIMEOUT_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const ENGINE_READY_TIMEOUT_MS = 60_000;
 
+/**
+ * The endpoint's closed vocabularies, mirrored from `NodeDeliveryReport` in
+ * `packages/harness-driver/src/protocol.ts`. Reported values are matched
+ * against these and the matching entry from *here* is what the artifact
+ * records, so the result file never carries text chosen by the peer.
+ */
+const DECISIONS = ['deliver', 'duplicate', 'stale', 'gap', 'identity_reject'];
+const DISPOSITIONS = [
+  'injected',
+  'surfaced_and_acked',
+  'held_for_manual_flush',
+  'surface_failed',
+  'acked_without_surfacing',
+  'rejected_identity',
+  'rejected_sequence_gap',
+];
+/**
+ * Payload discriminators a DM through the engine can legitimately carry. Unlike
+ * the two above this is the engine's vocabulary rather than the broker's, so an
+ * unrecognized value is reported as such rather than failing the case — the
+ * case asserts nothing about it.
+ */
+const PAYLOAD_TYPES = ['dm.received', 'dm.created', 'message.created', 'message.received'];
+
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = requiredValue('RELAY_PR_PROOF_BROKER_BINARY');
@@ -192,8 +216,10 @@ try {
     // And the base broker really is mute, which is why nothing else can answer.
     outcome = 'absent';
     signature = 'deliver_frame_arrival_is_unobservable';
+    // The 404 is the assertion two lines up; record that, not the broker's
+    // echo of it, so no response text reaches the artifact.
     details =
-      `The base broker has no GET /api/node-delivery (${safeField(first.__error, 160)}), while ` +
+      `The base broker has no GET /api/node-delivery (the route answered 404), while ` +
       `GET /api/status answers normally with ${Number(status.agent_count)} agent(s). With RUST_LOG unset ` +
       `the broker emitted ${brokerOutput.length} bytes total on stdout+stderr, so whether a ` +
       `deliver frame reached it cannot be established without a restart that destroys the cursors.`;
@@ -253,16 +279,22 @@ try {
 
     outcome = 'fixed';
     signature = 'deliver_frame_arrival_is_observable';
+    // Nothing the broker said is echoed into the artifact verbatim. Each value
+    // is matched against the endpoint's own closed vocabulary and the LOCAL
+    // literal is what gets written — so an outcome this case does not know
+    // about fails loudly here instead of being pasted through into a PR. The
+    // agent name is the constant this case asserted equal two checks above.
     details =
       `GET /api/node-delivery answered with RUST_LOG unset (the broker emitted ${brokerOutput.length} ` +
       `bytes on stdout+stderr for the whole run). Deliver frames counted 0 before any message was ` +
       `sent — with node control connected, the agent registered and idle, and ` +
-      `${before.socket.text_frames} inbound socket frames already tallied — and ` +
-      `${after.frames.deliver} after one real DM through the engine. The frame is reported as ` +
-      `agent=${safeField(entry.agent)} seq=${Number(entry.seq)} ` +
-      `payload_type=${safeField(entry.payload_type)} decision=${safeField(entry.decision)} ` +
-      `disposition=${safeField(entry.disposition)}, so both "did it arrive" and ` +
-      `"where did it stop" are answerable without restarting the broker.`;
+      `${Number(before.socket.text_frames)} inbound socket frames already tallied — and ` +
+      `${Number(after.frames.deliver)} after one real DM through the engine. The frame is reported ` +
+      `as agent=${AGENT} seq=${Number(entry.seq)} ` +
+      `payload_type=${oneOf(entry.payload_type, PAYLOAD_TYPES) ?? '(unrecognized)'} ` +
+      `decision=${required(oneOf(entry.decision, DECISIONS), 'decision', entry.decision)} ` +
+      `disposition=${required(oneOf(entry.disposition, DISPOSITIONS), 'disposition', entry.disposition)}, ` +
+      `so both "did it arrive" and "where did it stop" are answerable without restarting the broker.`;
   }
 
   await mkdir(path.dirname(resultPath), { recursive: true });
@@ -349,6 +381,23 @@ function safeField(value, limit = 64) {
   return String(value)
     .replace(/[^\x20-\x7e]/g, '?')
     .slice(0, limit);
+}
+
+/** The matching entry from `allowed`, or undefined. Never the caller's copy. */
+function oneOf(value, allowed) {
+  return allowed.find((candidate) => candidate === value);
+}
+
+/** Fail the case on a value outside the endpoint's own documented vocabulary. */
+function required(matched, field, reported) {
+  if (matched === undefined) {
+    throw new Error(
+      `The endpoint reported a ${field} outside its documented vocabulary: ${safeField(reported)}. ` +
+        'Either the broker gained an outcome this case does not know about, or the response is not ' +
+        'from the endpoint under test — neither is a pass.'
+    );
+  }
+  return matched;
 }
 
 function requiredValue(name) {
