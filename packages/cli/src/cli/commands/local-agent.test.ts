@@ -933,9 +933,7 @@ describe('local agent subtree', () => {
     );
 
     expect(client.spawnHeadless).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining('do not support --spawn-mode task-exit')
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('do not support --spawn-mode task-exit'));
     expect(exit).toHaveBeenCalledWith(1);
   });
 
@@ -961,9 +959,7 @@ describe('local agent subtree', () => {
     );
 
     expect(client.spawnHeadless).not.toHaveBeenCalled();
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining('do not support --exit-after-task')
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('do not support --exit-after-task'));
     expect(exit).toHaveBeenCalledWith(1);
   });
 
