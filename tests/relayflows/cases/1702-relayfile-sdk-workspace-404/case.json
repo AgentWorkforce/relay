@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1702-relayfile-sdk-workspace-404",
+  "kind": "bugfix",
+  "title": "createWorkspaceIfNeeded treats a 404 on the workspace collection route as fatal",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1702-relayfile-sdk-workspace-404/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "relayfile_sdk_404_fatal"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "relayfile_sdk_404_treated_as_noop"
+    }
+  }
+}
