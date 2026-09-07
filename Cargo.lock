@@ -2019,9 +2019,9 @@ dependencies = [
 
 [[package]]
 name = "relaycast"
-version = "7.0.0"
+version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8a323473bd0deb2fba53f540250038a1d012d495d494066e3bb8b2128e166b7"
+checksum = "6e62479556619c6c07d42afcf7452fc5dde6c67438564632eda26d1d5f6d7fcc"
 dependencies = [
  "futures-util",
  "reqwest",

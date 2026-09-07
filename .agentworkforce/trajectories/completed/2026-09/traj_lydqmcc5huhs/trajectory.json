@@ -1,0 +1,62 @@
+{
+  "id": "traj_lydqmcc5huhs",
+  "version": 1,
+  "task": {
+    "title": "Harden RelayFlow timing proof after review",
+    "source": {
+      "system": "plain",
+      "id": "relay#1673"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-06T02:55:54.540Z",
+  "completedAt": "2026-09-06T02:56:23.734Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-06T02:55:55.283Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_u3vn6mgpp7wr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-06T02:55:55.283Z",
+      "endedAt": "2026-09-06T02:56:23.734Z",
+      "events": [
+        {
+          "ts": 1788663355283,
+          "type": "decision",
+          "content": "Measure terminal return after the mock response: Measure terminal return after the mock response",
+          "raw": {
+            "question": "Measure terminal return after the mock response",
+            "chosen": "Measure terminal return after the mock response",
+            "alternatives": [],
+            "reasoning": "Process startup time is unrelated to Retry-After behavior. The proof now starts the bounded terminal-delay measurement when its own loopback server writes the 503, and shares all mock diagnostic values with assertions."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened the sealed RelayFlow proof by measuring terminal return after its controlled 503 and single-sourcing all mock diagnostic markers.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [
+    "c4d268e73"
+  ],
+  "filesChanged": [
+    "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "867e2fa81c66a82d9596cc280e73e8d0f6dd3e70",
+    "endRef": "c4d268e733060b0f8da562f59e72beb65f5c835f",
+    "traceId": "517430f9-6379-4d0a-91ac-29dc7029992c"
+  }
+}

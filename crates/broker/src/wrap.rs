@@ -40,10 +40,10 @@ use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
     ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
-        detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
-        detect_codex_trust_prompt, detect_gemini_action_required, detect_gemini_trust_prompt,
-        detect_gemini_untrusted_banner, detect_opencode_permission_prompt, is_auto_suggestion,
-        is_bypass_selection_menu, is_in_editor_mode,
+        detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_codex_trust_prompt,
+        detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
+        detect_opencode_permission_prompt, is_auto_suggestion, is_bypass_selection_menu,
+        is_in_editor_mode, plan_claude_trust_response, ClaudeTrustPlan,
     },
 };
 use crate::worker::detection::ActivityDetector;
@@ -58,6 +58,15 @@ pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(1
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
+/// The trust dialog renders ~1.3 KB of box drawing and can take tens of
+/// seconds to paint, so the window has to outlive several partial frames.
+const CLAUDE_TRUST_BUF_MAX: usize = 8000;
+const CLAUDE_TRUST_BUF_KEEP: usize = 6000;
+/// Pause between moving the trust-menu highlight and confirming it.
+const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
+/// Gap between successive trust-menu arrow keys, so a multi-row move repaints
+/// between steps instead of arriving as one burst.
+const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
 // Keep this aligned with the runtime PTY input acknowledgement bound. A wrap
 // session is retired when it expires because a blocked write may have been
 // partially delivered and is unsafe to requeue blindly.
@@ -589,23 +598,84 @@ impl PtyAutoState {
     }
 
     /// Detect and auto-accept Claude Code folder trust prompts.
-    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
-    /// so we just press Enter to confirm.
+    ///
+    /// The affirmative row is located by its label and the highlighted row by
+    /// its `❯` glyph; we then step the highlight from one to the other before
+    /// confirming. Relay previously assumed the affirmative option was already
+    /// selected and sent a bare Enter — on Claude Code 2.1.259+ that confirmed
+    /// `No, exit`, killing the worker while its roster row survived.
     pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
         if self.interactive_hold {
             return;
         }
-        if !self.claude_trust_handled {
-            Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
-            let clean = strip_ansi(&self.claude_trust_buffer);
-            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
-            if has_trust_ref && has_confirmation {
-                tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
-                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "claude_trust");
+        if self.claude_trust_handled {
+            return;
+        }
+
+        Self::append_buf(
+            &mut self.claude_trust_buffer,
+            text,
+            CLAUDE_TRUST_BUF_MAX,
+            CLAUDE_TRUST_BUF_KEEP,
+        );
+        let clean = strip_ansi(&self.claude_trust_buffer);
+
+        let steps = match plan_claude_trust_response(&clean) {
+            ClaudeTrustPlan::Confirm { steps } => steps,
+            // Partial or unrecognizable frame: wait for a fuller repaint rather
+            // than guessing which row Enter would confirm.
+            ClaudeTrustPlan::Ambiguous | ClaudeTrustPlan::Absent => return,
+        };
+
+        tracing::info!(
+            steps,
+            "Detected Claude Code folder trust prompt, selecting affirmative option by label"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Navigation and confirmation must reach the child as one queue entry.
+        // Submitting them separately lets a full write queue reject the
+        // navigation and then accept the Enter once a slot frees, which
+        // confirms the still-selected decline row — the exact failure this
+        // handler exists to prevent. `submit_write_paced_with_followup` keeps
+        // the arrow keys and the trailing `\r` adjacent on the FIFO, paces one
+        // VT atom at a time so the menu repaints between moves, and either
+        // admits the whole compound write or none of it.
+        let submitted = if steps == 0 {
+            pty.submit_write(b"\r".to_vec())
+        } else {
+            let key: &[u8] = if steps > 0 {
+                b"\x1b[B" // cursor down
+            } else {
+                b"\x1b[A" // cursor up
+            };
+            let mut nav = Vec::with_capacity(key.len() * steps.unsigned_abs() as usize);
+            for _ in 0..steps.unsigned_abs() {
+                nav.extend_from_slice(key);
+            }
+            pty.submit_write_paced_with_followup(
+                nav,
+                CLAUDE_TRUST_KEY_PACE,
+                CLAUDE_TRUST_NAV_SETTLE,
+                b"\r".to_vec(),
+            )
+        };
+
+        match submitted {
+            Ok(_) => {
                 self.claude_trust_buffer.clear();
                 self.claude_trust_handled = true;
+            }
+            Err(error) => {
+                // Nothing was admitted, so nothing was confirmed. Leave the
+                // prompt unhandled and retry on the next output chunk rather
+                // than stranding the worker on an unanswered dialog.
+                tracing::warn!(
+                    target: "agent_relay::worker::pty",
+                    context = "claude_trust",
+                    error = %error,
+                    "trust-menu write rejected; leaving prompt unhandled for retry"
+                );
             }
         }
     }

@@ -22,7 +22,13 @@ export type CloudFleetSandboxRequestOptions = {
   timeoutMs?: number;
 };
 
-export type CloudFleetSandboxProviderId = 'daytona' | 'e2b';
+export type CloudFleetSandboxProviderId =
+  | 'daytona'
+  | 'e2b'
+  | 'vercel'
+  | 'freestyle'
+  | 'agent37'
+  | 'microsandbox';
 
 /**
  * Carries every safe identifier Cloud returned when provisioning failed after
@@ -75,6 +81,8 @@ export type EnsureCloudFleetSandboxInput = {
   snapshotId?: string;
   /** SHA-256 of the manifest that the selected snapshot must expose in-image. */
   snapshotManifestSha256?: string;
+  /** Provider-neutral semantics; Cloud owns the provider decision. */
+  workloadProfile?: CloudFleetSandboxWorkloadProfile;
   waitTimeoutMs?: number;
   /**
    * Repositories to clone into `/srv/agent-workforce/<name>` inside the
@@ -87,6 +95,20 @@ export type EnsureCloudFleetSandboxInput = {
    */
   repos?: readonly string[];
 };
+
+export type CloudFleetSandboxWorkloadProfile =
+  | 'standard'
+  | 'long-running-agent'
+  | 'standard-long-running-agent';
+
+const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] = [
+  'daytona',
+  'e2b',
+  'vercel',
+  'freestyle',
+  'agent37',
+  'microsandbox',
+];
 
 export type CloudFleetSandboxReady = {
   outcome: 'provisioned';
@@ -237,7 +259,9 @@ function readProviderId(
 ): CloudFleetSandboxProviderId | undefined {
   const value = readString(payload, 'providerId');
   if (value === undefined) return undefined;
-  if (value === 'daytona' || value === 'e2b') return value;
+  if (CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(value as CloudFleetSandboxProviderId)) {
+    return value as CloudFleetSandboxProviderId;
+  }
   if (exactProviderRequested) {
     throw new Error('Cloud fleet sandbox response has an unknown providerId.');
   }
@@ -249,8 +273,9 @@ function cleanupProviderId(
   requestedProviderId?: CloudFleetSandboxProviderId
 ): CloudFleetSandboxProviderId | undefined {
   const payloadProviderId = readString(payload, 'providerId');
-  return payloadProviderId === 'daytona' || payloadProviderId === 'e2b'
-    ? payloadProviderId
+  return payloadProviderId &&
+    CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(payloadProviderId as CloudFleetSandboxProviderId)
+    ? (payloadProviderId as CloudFleetSandboxProviderId)
     : requestedProviderId;
 }
 
@@ -394,6 +419,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
           ...(requestedSnapshot ?? {}),
+          ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),

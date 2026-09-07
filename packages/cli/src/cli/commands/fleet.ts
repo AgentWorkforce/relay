@@ -305,6 +305,7 @@ export function registerFleetCommands(
                   snapshotId: sandboxSnapshot,
                   snapshotManifestSha256: sandboxSnapshotManifestSha256,
                 }),
+            workloadProfile: 'long-running-agent',
             waitTimeoutMs: 90_000,
             name: requestedSandboxName,
           });

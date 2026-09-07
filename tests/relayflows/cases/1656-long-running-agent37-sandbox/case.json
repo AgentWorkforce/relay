@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1656-long-running-agent37-sandbox",
+  "kind": "feature",
+  "title": "Route unpinned fleet sandboxes with long-running semantics and preserve Agent37 attribution",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1656-long-running-agent37-sandbox/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "long_running_profile_and_agent37_attribution_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "long_running_profile_and_agent37_attribution_preserved"
+    }
+  }
+}

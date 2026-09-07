@@ -628,6 +628,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_surfaces_terminal_sdk_diagnostics_without_replaying_an_unsafe_post() {
+        let _env = EnvGuard::all();
+        std::env::remove_var("RELAY_API_KEY");
+        std::env::remove_var("RELAY_BASE_URL");
+        std::env::remove_var("RELAY_AGENT_TOKEN");
+
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(503)
+                .header("x-request-id", "mcp-args-374")
+                .header("retry-after", "5")
+                .json_body(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "registration_backend_overloaded",
+                        "message": "deterministic registration failure"
+                    }
+                }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let mut cmd = command("codex", temp.path());
+        cmd.register = true;
+        cmd.base_url = Some(server.base_url());
+        cmd.api_key = Some("rk_live_test".to_string());
+        cmd.agent_token = None;
+
+        let error = compute_mcp_args_output(cmd)
+            .await
+            .expect_err("the controlled registration error must surface");
+        let message = error.to_string();
+
+        for marker in [
+            "(503)",
+            "registration_backend_overloaded",
+            "deterministic registration failure",
+            "request_id: mcp-args-374",
+            "attempts: 1",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        // Registration is an unkeyed POST. Retrying an ambiguous 503 could
+        // duplicate a committed agent registration, so the SDK must not replay
+        // it even when the server advertised Retry-After.
+        register_mock.assert_hits(1);
+    }
+
+    #[tokio::test]
     async fn register_timeout_remains_bounded() {
         let server = MockServer::start();
         let register_mock = server.mock(|when, then| {

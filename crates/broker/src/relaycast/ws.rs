@@ -1486,6 +1486,7 @@ fn registration_metadata_error(agent_name: &str, error: RelayError) -> Relaycast
             status: 429,
             message,
             code,
+            ..
         } => RelaycastRegistrationError::RateLimited {
             agent_name: agent_name.to_string(),
             retry_after_secs: 60,
@@ -1495,6 +1496,7 @@ fn registration_metadata_error(agent_name: &str, error: RelayError) -> Relaycast
             status,
             message,
             code,
+            ..
         } => RelaycastRegistrationError::Api {
             agent_name: agent_name.to_string(),
             status,

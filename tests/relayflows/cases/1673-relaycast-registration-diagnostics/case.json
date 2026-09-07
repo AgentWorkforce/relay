@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1673-relaycast-registration-diagnostics",
+  "kind": "bugfix",
+  "title": "Preserve Relaycast registration failure diagnostics",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1673-relaycast-registration-diagnostics/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "registration_503_replayed_and_diagnostic_lost"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "registration_503_diagnostic_preserved_without_replay"
+    }
+  }
+}

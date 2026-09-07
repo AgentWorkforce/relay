@@ -13,16 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
 - `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
-- `node agent spawn` and `node agent new` accept typed headless AppServer endpoint, protocol, session, and release options for provider-confirmed model changes.
+- `node agent spawn` can attach to existing headless sessions so model changes report provider-confirmed results.
 
 ### Security
 
 - Patched `brace-expansion` prevents unbounded expansion, and the Relayfile adapter uses a patched `undici` release that prevents private-cache cross-user disclosure.
 
+### Changed
+
+- `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.
+
 ### Fixed
 
 - `node agent set-model` now returns correlated applied, pending, rejected, or unsupported receipts and exposes the last confirmed effective model.
-- `node agent set-model` no longer reports queue admission as a successful model application.
+- `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
+- A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
+- Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
+- PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
 
 ## [11.10.3] - 2026-09-05
 
