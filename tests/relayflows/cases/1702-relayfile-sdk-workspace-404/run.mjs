@@ -7,6 +7,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const CASE_ID = '1702-relayfile-sdk-workspace-404';
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+// createWorkspaceIfNeeded() takes no signal/timeout option of its own — it is
+// an opaque call into the target checkout's installed SDK, hitting a
+// same-process mock server that answers instantly, so it should never
+// legitimately take anywhere near this long. Racing it against a timeout
+// keeps a stalled or unexpectedly-retrying call from burning the case's
+// entire 900s budget before failing closed with a clear diagnostic.
+const WORKSPACE_CALL_TIMEOUT_MS = 15_000;
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -79,19 +86,7 @@ try {
   // package-lock.json actually pin — the real thing under test, not an
   // assumption about it.
   await rm(path.join(targetDir, 'node_modules'), { recursive: true, force: true });
-  const install = spawnSync('npm', ['ci'], {
-    cwd: targetDir,
-    encoding: 'utf8',
-    timeout: INSTALL_TIMEOUT_MS,
-  });
-  if (install.error) {
-    throw new Error(`npm ci could not start: ${install.error.message}`);
-  }
-  if (install.status !== 0) {
-    throw new Error(
-      `npm ci failed (exit ${install.status ?? 'unknown'}): ${(install.stderr ?? '').slice(-2000)}`
-    );
-  }
+  run('npm', ['ci'], targetDir, 'npm ci');
 
   const sdkEntryPath = path.join(targetDir, 'node_modules/@relayfile/sdk/dist/workspace-seeder.js');
   const sdkPackagePath = path.join(targetDir, 'node_modules/@relayfile/sdk/package.json');
@@ -102,7 +97,11 @@ try {
 
   let thrown = null;
   try {
-    await createWorkspaceIfNeeded(baseUrl, 'proof-token', 'proof-workspace');
+    await withTimeout(
+      createWorkspaceIfNeeded(baseUrl, 'proof-token', 'proof-workspace'),
+      WORKSPACE_CALL_TIMEOUT_MS,
+      'createWorkspaceIfNeeded'
+    );
   } catch (error) {
     thrown = error;
   }
@@ -144,6 +143,18 @@ function isWithin(directory, candidate) {
     relative === '' ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
   );
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function run(command, args, cwd, label) {
