@@ -1718,6 +1718,25 @@ describe('trusted dispatcher source contract', () => {
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
   });
 
+  it('keeps the pre-install Cloud runner importable without workspace packages', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-cloud-import-'));
+    try {
+      await copyFile('scripts/pr-proof/run-cloud.mjs', path.join(root, 'run-cloud.mjs'));
+      await copyFile('scripts/pr-proof/process-runner.mjs', path.join(root, 'process-runner.mjs'));
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `await import(${JSON.stringify(pathToFileURL(path.join(root, 'run-cloud.mjs')).href)})`,
+        ],
+        { cwd: root, stdio: 'pipe' }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('retains bounded terminal lifecycle evidence while redacting credentials', () => {
     const declaredSecret = 'cloud-proof-api-key-secret';
     const diagnostic = terminalStatusDiagnostic(
@@ -1756,6 +1775,219 @@ describe('trusted dispatcher source contract', () => {
     });
     expect(diagnostic).not.toContain('cloud-proof-api-key-secret');
     expect(diagnostic).not.toContain('must not be copied');
+  });
+
+  it('extracts nested terminal payloads and redacts every declared and GitHub credential shape', () => {
+    const prefixes = [
+      'ghp_',
+      'gho_',
+      'ghu_',
+      'ghs_',
+      'ghr_',
+      'github_pat_',
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ];
+    const credentials = prefixes.flatMap((prefix) => [
+      `${prefix}0123456789abcdefghijklmnop`,
+      `${prefix}short`,
+    ]);
+    const declaredSecret = 'declared-cloud-proof-secret';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        workflowRun: {
+          runId: 'run-nested',
+          status: 'failed',
+          error: `no ${credentials.join(' ')} declared=${declaredSecret}`,
+          failure: { message: `nested failure ${declaredSecret}` },
+        },
+      },
+      [declaredSecret]
+    );
+    const parsed = JSON.parse(diagnostic);
+    expect(parsed).toMatchObject({
+      runId: 'run-nested',
+      status: 'failed',
+      failure: { message: 'nested failure [REDACTED_DECLARED_SECRET]' },
+    });
+    expect(diagnostic).not.toContain(declaredSecret);
+    for (const credential of credentials) expect(diagnostic).not.toContain(credential);
+    expect(diagnostic).not.toContain('0123456789abcdefghijklmnop');
+    expect(diagnostic).not.toContain('defghijklmnop');
+    expect(diagnostic).not.toContain('short');
+  });
+
+  it('fully redacts a declared secret that is itself credential-shaped', () => {
+    const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: declaredCredential,
+        status: 'failed',
+        failure: { message: `provider rejected ${declaredCredential}` },
+      },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: '[REDACTED_DECLARED_SECRET]',
+      status: 'failed',
+      failure: { message: 'provider rejected [REDACTED_DECLARED_SECRET]' },
+    });
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('mnop');
+  });
+
+  it('fully redacts a declared credential followed by another credential-compatible character', () => {
+    const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        status: 'failed',
+        error: `provider rejected ${declaredCredential}X`,
+      },
+      [declaredCredential]
+    );
+
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain(declaredCredential);
+    expect(diagnostic).not.toContain(`${declaredCredential.slice(-4)}X`);
+    expect(diagnostic).not.toContain('ghp_');
+  });
+
+  it('redacts the whole credential when a declared secret is only its recognized prefix', () => {
+    const declaredPrefix = 'ghp_abc';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `provider rejected ${declaredPrefix}defghijklmnopqrstuvwxyz` },
+      [declaredPrefix]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('provider rejected [REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('defghijklmnopqrstuvwxyz');
+  });
+
+  it('redacts an eight-character declared credential body with a compatible suffix', () => {
+    const declaredCredential = 'ghp_12345678';
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: `${declaredCredential}X` }, [
+      declaredCredential,
+    ]);
+
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('5678X');
+  });
+
+  it('does not classify an arbitrary one-character declaration as a credential containment match', () => {
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'ghp_xxxxxxxxxxxx1234' }, ['x']);
+
+    expect(diagnostic).toContain('ghp_…1234');
+    expect(diagnostic).not.toContain('[REDACTED_DECLARED_SECRET]');
+  });
+
+  it('redacts declared credentials before JSON escaping diagnostic fields', () => {
+    const declaredCredential = 'cloud"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('cloud');
+    expect(diagnostic).not.toContain('secret');
+  });
+
+  it('redacts an escaped declared value that begins with a recognized credential prefix', () => {
+    const declaredCredential = 'ghp_abc"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('secret');
+  });
+
+  it('redacts a complete declared secret that contains a credential-shaped substring', () => {
+    const declaredCredential = 'wrapper-ghp_0123456789abcdefghijklmnop-tail';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('wrapper');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('tail');
+  });
+
+  it('masks a credential-shaped diagnostic that is only a prefix of a declared secret', () => {
+    const declaredCredential = 'ghp_abc"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'provider returned ghp_abc' }, [
+      declaredCredential,
+    ]);
+
+    expect(JSON.parse(diagnostic).error).toBe('provider returned ghp_\u2026');
+    expect(diagnostic).not.toContain('ghp_abc');
+  });
+
+  it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
+    const secret = 'overflow-run-id-secret';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        run: {
+          runId: `run-${secret}`,
+          status: 'failed',
+          failure: { causeChain: Array.from({ length: 20 }, () => '"\\'.repeat(2_000)) },
+        },
+      },
+      [secret]
+    );
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'run-[REDACTED_DECLARED_SECRET]',
+      status: 'failed',
+      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+    });
+    expect(diagnostic).not.toContain(secret);
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+  });
+
+  it('redacts short secrets before serialization without rewriting JSON keys', () => {
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: 'a'.repeat(1_024),
+        status: 'a'.repeat(1_024),
+        failure: { causeChain: Array.from({ length: 20 }, () => 'x'.repeat(2_000)) },
+      },
+      ['a']
+    );
+
+    const parsed = JSON.parse(diagnostic);
+    expect(Object.keys(parsed)).toEqual(['runId', 'status', 'failure']);
+    expect(parsed.runId).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(parsed.status).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(parsed.failure.causeChain).toHaveLength(20);
+    expect(diagnostic).not.toContain('"f[REDACTED_DECLARED_SECRET]ilure"');
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+  });
+
+  it('always returns valid UTF-8 JSON inside the terminal diagnostic byte limit', () => {
+    const diagnostic = terminalStatusDiagnostic({
+      run: {
+        runId: 'run-large',
+        status: 'failed',
+        error: '💥'.repeat(30_000),
+        failure: { causeChain: Array.from({ length: 20 }, () => 'é'.repeat(4_000)) },
+      },
+    });
+    expect(() => JSON.parse(diagnostic)).not.toThrow();
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {
