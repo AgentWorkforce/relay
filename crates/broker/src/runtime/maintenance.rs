@@ -3,19 +3,39 @@ use super::*;
 use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
-    /// Apply the FIFO prefix of worker events that was queued when maintenance
-    /// began, without waiting for anything produced afterward.
+    /// Establish a FIFO linearization point, then apply every worker event that
+    /// acquired channel capacity before it.
     ///
-    /// The receiver is the only consumer, so its starting length is an ordering
-    /// barrier: every confirmation preceding the tick is inside this finite
-    /// prefix. Events appended concurrently remain for the normal `select!`
-    /// arm, while delivery maintenance can proceed without waiting for a busy
-    /// channel to become empty.
-    async fn drain_queued_worker_event_prefix(&mut self, queued_before_tick: usize) {
-        for _ in 0..queued_before_tick {
-            match self.worker_event_rx.try_recv() {
-                Ok(event) => self.handle_worker_event(event).await,
-                Err(_) => return,
+    /// Reserving a slot is important when the bounded channel is full: the
+    /// reservation joins the send queue while this method continues receiving,
+    /// so sustained producers cannot take every newly freed slot and starve the
+    /// marker. Once inserted, normal FIFO order means confirmations before the
+    /// marker are applied before delivery expiry and events after it belong to
+    /// the next actor turn.
+    async fn drain_worker_events_through_maintenance_barrier(&mut self) {
+        let reserve = self.workers.event_sender().reserve_owned();
+        tokio::pin!(reserve);
+
+        let permit = loop {
+            tokio::select! {
+                biased;
+                result = &mut reserve => match result {
+                    Ok(permit) => break permit,
+                    Err(_) => return,
+                },
+                event = self.worker_event_rx.recv() => match event {
+                    Some(WorkerEvent::MaintenanceBarrier) => continue,
+                    Some(event) => self.handle_worker_event(event).await,
+                    None => return,
+                },
+            }
+        };
+        permit.send(WorkerEvent::MaintenanceBarrier);
+
+        while let Some(event) = self.worker_event_rx.recv().await {
+            match event {
+                WorkerEvent::MaintenanceBarrier => return,
+                event => self.handle_worker_event(event).await,
             }
         }
     }
@@ -31,12 +51,11 @@ impl BrokerRuntime {
         // message the agent already read. Draining first makes the sweep read
         // the freshest state the broker actually has. See relay#1686.
         //
-        // Snapshot the FIFO prefix instead of draining until empty. This is an
-        // ordering barrier for every confirmation already queued, but traffic
-        // arriving during the drain cannot starve delivery maintenance.
-        let queued_worker_events = self.worker_event_rx.len();
-        self.drain_queued_worker_event_prefix(queued_worker_events)
-            .await;
+        // Insert a marker through the same FIFO as worker confirmations and
+        // drain through it. The marker supplies an exact ordering boundary even
+        // when a confirmation arrives while an earlier backlog is being
+        // handled; traffic ordered after it cannot starve the sweep.
+        self.drain_worker_events_through_maintenance_barrier().await;
 
         let paths = &self.paths;
         let state = &mut self.state;

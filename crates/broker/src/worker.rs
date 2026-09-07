@@ -223,6 +223,9 @@ impl AgentWorkState {
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerEvent {
+    /// Runtime-internal FIFO barrier used to order maintenance after every
+    /// worker event that acquired channel capacity before the barrier.
+    MaintenanceBarrier,
     Message {
         name: WorkerName,
         generation: Uuid,
@@ -362,6 +365,15 @@ impl WorkerRegistry {
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
         }
+    }
+
+    pub(crate) fn event_sender(&self) -> mpsc::Sender<WorkerEvent> {
+        self.event_tx.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_event_sender_for_test(&mut self, event_tx: mpsc::Sender<WorkerEvent>) {
+        self.event_tx = event_tx;
     }
 
     fn commit_hooks_dir(&mut self) -> Result<&Path> {

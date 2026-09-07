@@ -207,7 +207,7 @@ struct WorkerEventRuntimeFixture {
 }
 
 fn worker_event_runtime_fixture(
-    workers: WorkerRegistry,
+    mut workers: WorkerRegistry,
     pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
 ) -> WorkerEventRuntimeFixture {
     let temp_dir = tempfile::tempdir().expect("runtime fixture temp dir");
@@ -236,6 +236,7 @@ fn worker_event_runtime_fixture(
     let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
     let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
     let (worker_event_tx, worker_event_rx) = mpsc::channel(1024);
+    workers.set_event_sender_for_test(worker_event_tx.clone());
     let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
     let mut reap_tick = tokio::time::interval(Duration::from_secs(60));
     reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -3085,7 +3086,7 @@ async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
 
 // relay#1686 review follow-up: a maintenance tick may observe an expired
 // delivery while its matching confirmation is queued behind a burst of other
-// worker events. The tick-start FIFO prefix is an ordering barrier: even a
+// worker events. A marker in the same FIFO is the ordering barrier: even a
 // confirmation far behind the old 256-event limit must apply before the sweep.
 #[tokio::test]
 async fn queued_worker_event_prefix_applies_confirmation_before_delivery_sweep() {
@@ -3136,10 +3137,10 @@ async fn queued_worker_event_prefix_applies_confirmation_before_delivery_sweep()
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
-// The ordering barrier is a finite snapshot, not a queue-emptiness gate. A
-// continuously busy worker therefore cannot postpone retries or terminal
-// deadline handling: after the prefix that preceded this tick is applied, the
-// delivery sweep always runs even if producers have more work to append.
+// The ordering barrier reserves a finite position, rather than waiting for
+// queue emptiness. A continuously busy worker therefore cannot postpone
+// retries or terminal deadline handling: after the marker is reached, the
+// delivery sweep runs even if producers have more work to append.
 #[tokio::test]
 async fn full_worker_event_backlog_does_not_suppress_delivery_expiry() {
     let worker_name = "worker-sustained-backlog";
