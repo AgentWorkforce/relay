@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
 - `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
+- Relayflow agent permissions now grant an exact `files.write` rule that names a not-yet-created file, so a write-once output path is writable when its parent directory exists. Glob write rules are unchanged and still cover only existing files.
 
 ### Changed
 

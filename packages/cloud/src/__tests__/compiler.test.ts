@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'vitest';
@@ -431,4 +431,38 @@ test('globToScopes normalizes and de-duplicates globs', () => {
     'relayfile:fs:write:/src/index.ts',
     'relayfile:fs:write:/docs/**',
   ]);
+});
+
+test('compileAgentScopes keeps a symlink inside the permission model', async () => {
+  // A symlink must resolve to one of readonly, readwrite or denied. Skipping it
+  // during the project walk drops it from every list, which also erases the
+  // directory-level deny rule buildAcl emits for a directory whose entries are
+  // all denied. Without a matching grant a symlink is denied, like any file.
+  const workspace = await createWorkspace({ 'src/index.ts': 'export const value = 1;\n' });
+  const outside = await mkdtemp(path.join(tmpdir(), 'relay-provisioner-outside-'));
+
+  try {
+    await writeFile(path.join(outside, 'id_rsa'), 'PRIVATE KEY\n');
+    await mkdir(path.join(workspace.dir, 'vault'), { recursive: true });
+    await symlink(path.join(outside, 'id_rsa'), path.join(workspace.dir, 'vault', 'leak.pem'));
+
+    const compiled = compileAgentScopes({
+      agentName: 'builder',
+      workspace: 'relay-test',
+      projectDir: workspace.dir,
+      permissions: {
+        access: 'restricted',
+        inherit: false,
+        files: { write: ['src/**'] },
+      },
+    });
+
+    assert.deepEqual(compiled.deniedPaths, ['vault/leak.pem']);
+    assert.ok(!compiled.readonlyPaths.includes('vault/leak.pem'));
+    assert.ok(!compiled.readwritePaths.includes('vault/leak.pem'));
+    assert.deepEqual(compiled.acl['/vault'], ['deny:agent:builder']);
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+    await workspace.cleanup();
+  }
 });

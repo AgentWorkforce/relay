@@ -200,9 +200,6 @@ function walkProjectFiles(projectDir: string, currentDir = projectDir, files: st
     if (entry.isDirectory() && isSkippedDirectory(entry.name)) {
       continue;
     }
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
 
     const fullPath = path.join(currentDir, entry.name);
     const relativePath = normalizeRelativePath(path.relative(projectDir, fullPath));
