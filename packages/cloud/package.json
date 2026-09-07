@@ -1,10 +1,10 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "11.10.3",
+  "version": "11.10.4-cleanroom.20260907.1666.1",
   "engines": {
     "node": ">=22.0.0"
   },
-  "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
+  "description": "Cloud SDK for Agent Relay \u2014 auth, workflow execution, and provider connections",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -62,7 +62,7 @@
     "test:watch": "vitest --root ../.. packages/cloud/"
   },
   "dependencies": {
-    "@agent-relay/config": "11.10.3",
+    "@agent-relay/config": "11.10.4-cleanroom.20260907.1666.1",
     "@aws-sdk/client-s3": "3.1020.0",
     "ignore": "^7.0.5",
     "tar": "^7.5.21"
