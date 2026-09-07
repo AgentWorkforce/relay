@@ -3,7 +3,35 @@ use super::*;
 use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
+    /// Apply worker events that are already queued, without waiting for any.
+    /// Returns once the channel is momentarily empty, `limit` events have been
+    /// applied, or the channel is closed (the `select!` arm owns that
+    /// transition, so it is simply left alone here).
+    async fn drain_ready_worker_events(&mut self, limit: usize) {
+        for _ in 0..limit {
+            match self.worker_event_rx.try_recv() {
+                Ok(event) => self.handle_worker_event(event).await,
+                Err(_) => return,
+            }
+        }
+    }
+
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        // Worker events already sitting in the channel are applied before this
+        // tick reads any worker state. `worker_event_rx` and `reap_tick` are
+        // sibling arms of one `select!`, so their order is arbitrary: without
+        // this, a `delivery_verified` that the worker has already sent but the
+        // loop has not yet handled would be invisible to the deadline sweep
+        // below, which would dead-letter a delivery the agent did receive —
+        // dropping its withheld fleet ack and making the engine redeliver a
+        // message the agent already read. Draining first makes the sweep read
+        // the freshest state the broker actually has. See relay#1686.
+        //
+        // Bounded so a busy worker cannot starve the rest of the tick; anything
+        // left is handled by the normal `select!` arm on the next iterations.
+        self.drain_ready_worker_events(MAX_DRAINED_WORKER_EVENTS_PER_TICK)
+            .await;
+
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;

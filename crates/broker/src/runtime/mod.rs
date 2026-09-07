@@ -86,17 +86,35 @@ const WAIT_DELIVERY_ACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Overridable per-deployment with `AGENT_RELAY_DELIVERY_MAX_AGE_MS`; see
 /// [`delivery_max_age`].
 const MAX_DELIVERY_AGE: Duration = Duration::from_secs(30 * 60);
-/// Absolute ceiling on *cumulative* attempts, as a backstop for
-/// [`MAX_DELIVERY_AGE`]: the deadline is wall-clock, so a frozen or
-/// backwards-stepping system clock could otherwise keep a delivery permanently
-/// young. Unlike `failed_attempts`, `attempts` is never reset by a successful
-/// write, so this can always be reached.
+/// Floor for the *cumulative* attempt ceiling, which is otherwise scaled from
+/// the configured budget (see `delivery_attempt_ceiling`).
 ///
-/// Sized so it never fires first under a working clock: the fastest retry
-/// cadence is the 5s steer verification window, and 1000 x 5s = ~83 minutes,
-/// comfortably past the 30-minute deadline. In wait mode (5 minute cadence) it
-/// is days away. If this is what trips, the clock is broken, not the recipient.
-const MAX_DELIVERY_ATTEMPTS: u32 = 1_000;
+/// The ceiling is a backstop for [`MAX_DELIVERY_AGE`]: the deadline is
+/// wall-clock, so a frozen or backwards-stepping system clock could otherwise
+/// keep a delivery permanently young. Unlike `failed_attempts`, `attempts` is
+/// never reset by a successful write, so this can always be reached.
+///
+/// It must never fire before the deadline under a working clock, which is why
+/// it cannot be a constant: at the default 30-minute budget a fixed 1000 sits
+/// comfortably past it, but an operator raising
+/// `AGENT_RELAY_DELIVERY_MAX_AGE_MS` beyond ~83 minutes would find `Steer`
+/// deliveries dead-lettered at 1000 five-second attempts with the deadline
+/// still in the future — silently capping the setting they asked for.
+const MIN_DELIVERY_ATTEMPT_CEILING: u32 = 1_000;
+/// How far past the attempts a healthy clock would need the ceiling to sit.
+/// Retries can also be deferred (a `delivery_queued` frame pushes the next one
+/// out without consuming an attempt), so the projection is a lower bound on
+/// elapsed time per attempt; the headroom keeps the ceiling behind the
+/// deadline anyway.
+const ATTEMPT_CEILING_HEADROOM: u32 = 4;
+/// Upper bound on `AGENT_RELAY_DELIVERY_MAX_AGE_MS`. Without it, a value like
+/// `u64::MAX` would be accepted as an effectively unbounded age and defeat the
+/// wall-clock termination guarantee this whole change exists to provide — the
+/// same "retries forever, reports nothing" state, reachable by configuration.
+const MAX_CONFIGURABLE_DELIVERY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// How many already-queued worker events a maintenance tick applies before the
+/// rest of its work. Bounded so a chatty worker cannot starve the tick.
+const MAX_DRAINED_WORKER_EVENTS_PER_TICK: usize = 256;
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 #[allow(dead_code)] // only http_api_local_delivery_timeout's default; see its own allow
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;

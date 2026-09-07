@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `AGENT_RELAY_DELIVERY_MAX_AGE_MS` sets how long the broker keeps retrying a message before dead-lettering it (default 30 minutes), and `/api/pending` reports each delivery's `expires_at_ms` / `expires_in_ms`.
+- `node deadletters` now surfaces messages an agent never acknowledged, so a silently deaf recipient is visible and its messages can be requeued.
+- `GET /api/status` reports how much acknowledgement budget each pending delivery has left, so a stalled delivery can be spotted before it is dead-lettered.
 
 ### Changed
 
@@ -21,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
 - Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
 - PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
-- A message the broker hands to an agent that never acknowledges it no longer retries forever in silence. After 30 minutes it reports `message_delivery_failed` and moves to the dead-letter store, where `node deadletters` can requeue it.
+- A message the broker hands to an agent that never acknowledges it no longer retries forever in silence. After 30 minutes it reports `message_delivery_failed` and moves to the dead-letter store; `AGENT_RELAY_DELIVERY_MAX_AGE_MS` tunes the budget.
 
 ## [11.10.3] - 2026-09-05
 

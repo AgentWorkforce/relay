@@ -219,6 +219,16 @@ pub(crate) fn requeue_dead_letter(
     // The event id (message identity) is preserved.
     let mut delivery = entry.delivery;
     delivery.delivery_id = DeliveryId::new(format!("del_{}", Uuid::new_v4().simple()));
+    // A requeue is an explicit decision to try this message again, so it gets a
+    // full fresh acknowledgement budget measured from now. Deriving the
+    // deadline from the retained `queued_at_ms` — kept for provenance, and
+    // already past the budget by definition for anything dead-lettered by that
+    // budget — would re-fail it on the very next maintenance tick.
+    let expires_at_ms = delivery_expires_at_ms(
+        unix_timestamp_millis(),
+        &delivery.injection_mode,
+        delivery_retry_interval(),
+    );
     let pending = PendingDelivery {
         worker_name: entry.worker_name,
         delivery,
@@ -226,12 +236,7 @@ pub(crate) fn requeue_dead_letter(
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: entry.queued_at_ms,
-        // A requeue is an explicit decision to try this message again, so it
-        // gets a full fresh acknowledgement budget measured from now. Deriving
-        // the deadline from the retained `queued_at_ms` — kept for provenance,
-        // and already past the budget by definition for anything dead-lettered
-        // by that budget — would re-fail it on the very next maintenance tick.
-        expires_at_ms: delivery_expires_at_ms(unix_timestamp_millis()),
+        expires_at_ms,
         last_error: None,
         // The dead-lettered entry's withheld fleet ack (if any) was already
         // dropped when it was dead-lettered — see relay#1310. A requeue is a

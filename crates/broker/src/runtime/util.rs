@@ -240,20 +240,27 @@ pub(crate) fn delivery_retry_interval() -> Duration {
 /// Wall-clock budget a single delivery gets before it is terminally failed and
 /// dead-lettered, defaulting to [`MAX_DELIVERY_AGE`].
 ///
+/// Clamped at both ends, and deliberately so.
+///
 /// The floor is the steer-mode verification window: a budget shorter than the
 /// window the broker itself waits for an echo confirmation would dead-letter
-/// deliveries that are still normally in flight. There is deliberately no
-/// value that disables the deadline — an unbounded delivery is the defect this
-/// budget exists to close (relay#1686).
+/// deliveries that are still normally in flight. (Each delivery is floored
+/// again at its own acknowledgement timeout — see `delivery_budget` — so a
+/// `Wait` delivery is never cut short of its 5 minute window either.)
+///
+/// The ceiling exists because there must be no value that disables the
+/// deadline: `u64::MAX` would otherwise be accepted as an effectively
+/// unbounded age and reinstate by configuration exactly the "retries forever,
+/// reports nothing" state this budget closes (relay#1686).
 pub(crate) fn delivery_max_age() -> Duration {
     let configured = std::env::var("AGENT_RELAY_DELIVERY_MAX_AGE_MS")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .map(Duration::from_millis)
         .unwrap_or(MAX_DELIVERY_AGE);
-    std::cmp::max(
-        configured,
+    configured.clamp(
         crate::broker::delivery_verification::VERIFICATION_WINDOW,
+        MAX_CONFIGURABLE_DELIVERY_AGE,
     )
 }
 

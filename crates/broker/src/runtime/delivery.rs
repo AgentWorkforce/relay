@@ -55,12 +55,13 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) failed_attempts: u32,
     #[serde(default)]
     pub(super) queued_at_ms: u64,
-    /// See `PendingDelivery::expires_at_ms`. A snapshot written before this
-    /// field existed deserializes as `0`, which the restore path rebuilds from
-    /// the persisted `queued_at_ms` — an upgrade must not silently hand every
-    /// restored delivery an expired deadline, nor an unbounded one.
+    /// See `PendingDelivery::expires_at_ms`. `Option`, not a `0` sentinel: in
+    /// memory `0` means "already expired", so a snapshot that genuinely holds
+    /// an expired deadline must round-trip as expired. `None` — the only thing
+    /// a pre-relay#1686 snapshot can produce, via `#[serde(default)]` — is the
+    /// distinct "no deadline was ever recorded" case the restore path rebuilds.
     #[serde(default)]
-    pub(super) expires_at_ms: u64,
+    pub(super) expires_at_ms: Option<u64>,
     #[serde(default)]
     pub(super) last_error: Option<String>,
     /// See `PendingDelivery::withheld_fleet_ack`. `#[serde(default)]` so a
@@ -167,12 +168,70 @@ pub(crate) fn unix_timestamp_millis() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
+/// Acknowledgement budget for one delivery: the configured wall-clock age, but
+/// never shorter than this delivery's own acknowledgement timeout.
+///
+/// The floor is per-delivery, not global, because the timeout is per-mode — 5
+/// minutes for `Wait`, the 5 second verification window for `Steer`. A budget
+/// below a delivery's own timeout would dead-letter it before the recipient
+/// had been given one full window to acknowledge, which would make the bound a
+/// statement about the broker's impatience rather than the recipient's
+/// silence. Flooring globally at the `Wait` timeout instead would force that 5
+/// minutes onto steer-only deployments that deliberately configured less.
+pub(crate) fn delivery_budget(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> Duration {
+    std::cmp::max(
+        delivery_max_age(),
+        delivery_ack_timeout(injection_mode, retry_interval),
+    )
+}
+
 /// Absolute deadline for a delivery queued at `queued_at_ms`. Saturating, so a
 /// corrupt far-future queue time yields `u64::MAX` (never expires by age) and
-/// is left to the [`MAX_DELIVERY_ATTEMPTS`] backstop rather than wrapping into
-/// an immediate expiry.
-pub(crate) fn delivery_expires_at_ms(queued_at_ms: u64) -> u64 {
-    queued_at_ms.saturating_add(delivery_max_age().as_millis() as u64)
+/// is left to the attempt-ceiling backstop rather than wrapping into an
+/// immediate expiry.
+pub(crate) fn delivery_expires_at_ms(
+    queued_at_ms: u64,
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> u64 {
+    queued_at_ms.saturating_add(delivery_budget(injection_mode, retry_interval).as_millis() as u64)
+}
+
+/// Cumulative-attempt ceiling for one delivery.
+///
+/// Derived from the configured budget and this delivery's retry cadence rather
+/// than fixed, so raising `AGENT_RELAY_DELIVERY_MAX_AGE_MS` cannot be defeated
+/// by a constant: a fixed 1000 would dead-letter a `Steer` delivery after
+/// ~83 minutes of 5-second attempts even when the operator asked for longer and
+/// the clock is healthy. Scaling keeps the ceiling strictly behind the
+/// deadline under a working clock — it exists only for a clock that has
+/// stopped or stepped backwards — while staying finite, which is the whole
+/// point of having it.
+#[cfg(test)]
+pub(crate) fn delivery_attempt_ceiling_for_test(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> u32 {
+    delivery_attempt_ceiling(injection_mode, retry_interval)
+}
+
+fn delivery_attempt_ceiling(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> u32 {
+    let budget_ms = delivery_budget(injection_mode, retry_interval).as_millis();
+    let cadence_ms = delivery_ack_timeout(injection_mode, retry_interval)
+        .as_millis()
+        .max(1);
+    let projected = budget_ms / cadence_ms;
+    let scaled = projected.saturating_mul(u128::from(ATTEMPT_CEILING_HEADROOM));
+    scaled.clamp(
+        u128::from(MIN_DELIVERY_ATTEMPT_CEILING),
+        u128::from(u32::MAX),
+    ) as u32
 }
 
 /// Pending-delivery map with dirty tracking. Any mutable access (insert,
@@ -264,7 +323,7 @@ pub(crate) fn save_pending_deliveries(
             attempts: pd.attempts,
             failed_attempts: pd.failed_attempts,
             queued_at_ms: pd.queued_at_ms,
-            expires_at_ms: pd.expires_at_ms,
+            expires_at_ms: Some(pd.expires_at_ms),
             last_error: pd.last_error.clone(),
             withheld_fleet_ack: pd.withheld_fleet_ack.clone(),
             withheld_fleet_ack_floor: pd.withheld_fleet_ack_floor,
@@ -291,6 +350,7 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
             } else {
                 p.queued_at_ms
             };
+            let injection_mode = p.delivery.injection_mode.clone();
             (
                 id,
                 PendingDelivery {
@@ -300,16 +360,20 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
                     failed_attempts: p.failed_attempts,
                     next_retry_at: Instant::now(), // retry immediately on restart
                     queued_at_ms,
-                    // A pre-relay#1686 snapshot has no deadline. Rebuild it
-                    // from the queue time rather than from `now`: the point of
-                    // the budget is the age of the *message*, and a delivery
-                    // that a previous broker had already been retrying for
-                    // hours must not have its clock reset by a restart.
-                    expires_at_ms: if p.expires_at_ms == 0 {
-                        delivery_expires_at_ms(queued_at_ms)
-                    } else {
-                        p.expires_at_ms
-                    },
+                    // A pre-relay#1686 snapshot has no deadline at all
+                    // (`None`). Rebuild it from the queue time rather than from
+                    // `now`: the point of the budget is the age of the
+                    // *message*, and a delivery that a previous broker had
+                    // already been retrying for hours must not have its clock
+                    // reset by a restart. A recorded `Some(0)` is an expired
+                    // deadline and is preserved as one.
+                    expires_at_ms: p.expires_at_ms.unwrap_or_else(|| {
+                        delivery_expires_at_ms(
+                            queued_at_ms,
+                            &injection_mode,
+                            delivery_retry_interval(),
+                        )
+                    }),
                     last_error: p.last_error,
                     // Restored from the snapshot (relay#1543 P1): the
                     // fleet control connection itself doesn't survive a
@@ -935,6 +999,8 @@ pub(crate) async fn insert_and_attempt_delivery(
                 .map_or(requested_floor, |floor| floor.min(requested_floor))
         });
     let queued_at_ms = unix_timestamp_millis();
+    let expires_at_ms =
+        delivery_expires_at_ms(queued_at_ms, &delivery.injection_mode, retry_interval);
     pending_deliveries.insert(
         delivery_id.clone(),
         PendingDelivery {
@@ -944,7 +1010,7 @@ pub(crate) async fn insert_and_attempt_delivery(
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms,
-            expires_at_ms: delivery_expires_at_ms(queued_at_ms),
+            expires_at_ms,
             last_error: None,
             withheld_fleet_ack,
             withheld_fleet_ack_floor,
@@ -977,24 +1043,28 @@ pub(crate) async fn insert_and_attempt_delivery(
 ///   same number means ~50 minutes in `Wait` mode (5 minute ack timeout) and
 ///   ~50 seconds in `Steer` (5 second verification window), so any single value
 ///   either kills a busy agent mid-turn or lets a deaf one spin for days.
-/// * the cumulative attempt ceiling ([`MAX_DELIVERY_ATTEMPTS`]) — a backstop
+/// * the cumulative attempt ceiling ([`delivery_attempt_ceiling`]) — a backstop
 ///   only, because the deadline above trusts the system clock and this does
-///   not. It reads `attempts`, which no successful write resets.
+///   not. It reads `attempts`, which no successful write resets, and is scaled
+///   from the configured budget so it stays behind the deadline whatever that
+///   budget is set to.
 ///
 /// Returns `None` while the delivery is still within both bounds.
-fn terminal_unacked_reason(pending: &PendingDelivery) -> Option<String> {
+fn terminal_unacked_reason(pending: &PendingDelivery, retry_interval: Duration) -> Option<String> {
     let now_ms = unix_timestamp_millis();
     if now_ms >= pending.expires_at_ms {
         let age_secs = now_ms.saturating_sub(pending.queued_at_ms) / 1_000;
+        let budget_secs =
+            delivery_budget(&pending.delivery.injection_mode, retry_interval).as_secs();
         return Some(format!(
-            "delivery unacknowledged for {age_secs}s across {} attempt(s): exceeded the {}s acknowledgement deadline",
+            "delivery unacknowledged for {age_secs}s across {} attempt(s): exceeded the {budget_secs}s acknowledgement deadline",
             pending.attempts,
-            delivery_max_age().as_secs()
         ));
     }
-    if pending.attempts >= MAX_DELIVERY_ATTEMPTS {
+    let ceiling = delivery_attempt_ceiling(&pending.delivery.injection_mode, retry_interval);
+    if pending.attempts >= ceiling {
         return Some(format!(
-            "delivery unacknowledged after {} attempts: exceeded the cumulative attempt ceiling of {MAX_DELIVERY_ATTEMPTS}",
+            "delivery unacknowledged after {} attempts: exceeded the cumulative attempt ceiling of {ceiling}",
             pending.attempts
         ));
     }
@@ -1047,7 +1117,7 @@ pub(crate) async fn retry_pending_delivery(
     // due-filter — cannot be dead-lettered. That message landed; failing it
     // would drop its withheld ack and have the engine redeliver what the agent
     // already read.
-    if let Some(last_error) = terminal_unacked_reason(&pending) {
+    if let Some(last_error) = terminal_unacked_reason(&pending, retry_interval) {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
         tracing::warn!(
             target = "relay_broker::delivery",

@@ -56,8 +56,9 @@ use super::{
     take_pending_for_worker, try_inject_pending_relay_message, AgentRuntime, BrokerRuntime,
     DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
     ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
-    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage, MAX_DEAD_LETTERS,
-    MAX_DELIVERY_ATTEMPTS, MAX_DELIVERY_RETRIES,
+    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage,
+    MAX_CONFIGURABLE_DELIVERY_AGE, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
+    WAIT_DELIVERY_ACK_TIMEOUT,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -408,7 +409,11 @@ fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> Pen
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
-        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+        expires_at_ms: super::delivery_expires_at_ms(
+            super::unix_timestamp_millis(),
+            &MessageInjectionMode::Wait,
+            delivery_retry_interval(),
+        ),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -1127,7 +1132,11 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
-        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+        expires_at_ms: super::delivery_expires_at_ms(
+            super::unix_timestamp_millis(),
+            &MessageInjectionMode::Wait,
+            delivery_retry_interval(),
+        ),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -2550,7 +2559,11 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
-            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+            expires_at_ms: super::delivery_expires_at_ms(
+                super::unix_timestamp_millis(),
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: Some("failed writing frame".to_string()),
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -2672,7 +2685,11 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
-            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+            expires_at_ms: super::delivery_expires_at_ms(
+                super::unix_timestamp_millis(),
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -2815,8 +2832,15 @@ async fn unacked_delivery_reaches_terminal_dead_letter_while_writes_keep_succeed
     // Queued just inside its acknowledgement budget, so the opening retries are
     // ordinary successful handoffs and only elapsed wall-clock time — never a
     // write failure — can make this delivery terminal.
-    let budget_ms = super::delivery_max_age().as_millis() as u64;
-    let queued_at_ms = super::unix_timestamp_millis().saturating_sub(budget_ms.saturating_sub(400));
+    // 2s, not a few hundred ms: the loop below must fit at least two retry
+    // calls inside the remaining margin, and a contended CI runner can lose
+    // several hundred milliseconds between iterations. Too tight a margin fails
+    // this test for scheduling reasons while the deadline logic is correct.
+    const REMAINING_BUDGET_MS: u64 = 2_000;
+    let budget_ms = super::delivery_budget(&MessageInjectionMode::Wait, delivery_retry_interval())
+        .as_millis() as u64;
+    let queued_at_ms = super::unix_timestamp_millis()
+        .saturating_sub(budget_ms.saturating_sub(REMAINING_BUDGET_MS));
     let mut pending_deliveries = HashMap::from([(
         DeliveryId::new("del_deaf"),
         PendingDelivery {
@@ -2837,7 +2861,11 @@ async fn unacked_delivery_reaches_terminal_dead_letter_while_writes_keep_succeed
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms,
-            expires_at_ms: super::delivery_expires_at_ms(queued_at_ms),
+            expires_at_ms: super::delivery_expires_at_ms(
+                queued_at_ms,
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -2848,7 +2876,7 @@ async fn unacked_delivery_reaches_terminal_dead_letter_while_writes_keep_succeed
     let mut final_outcome = None;
     // Generously more iterations than the deadline needs. Reaching the end of
     // this loop is the pre-fix behaviour: retry forever, report nothing.
-    for _ in 0..400 {
+    for _ in 0..600 {
         match retry_pending_delivery(
             &DeliveryId::new("del_deaf"),
             &mut workers,
@@ -2991,7 +3019,7 @@ async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
                 priority: None,
                 injection_mode: MessageInjectionMode::Steer,
             },
-            attempts: MAX_DELIVERY_ATTEMPTS,
+            attempts: u32::MAX,
             // Deadline unreachable: only the attempt ceiling can end this.
             failed_attempts: 0,
             next_retry_at: Instant::now(),
@@ -3053,6 +3081,96 @@ async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
     );
 }
 
+// relay#1686 review follow-up: the attempt ceiling is a clock-skew backstop, so
+// it must never be what ends a delivery while the wall-clock deadline is still
+// in the future. A fixed ceiling could not hold that: at 1000 attempts a `Steer`
+// delivery retrying every 5s dies at ~83 minutes, so any operator raising
+// `AGENT_RELAY_DELIVERY_MAX_AGE_MS` past that would silently get the ceiling
+// instead of the budget they configured. Scaling it from the budget is the fix;
+// this pins the invariant for both modes.
+#[test]
+fn attempt_ceiling_stays_behind_a_raised_deadline() {
+    let _guard = env_test_lock().lock().expect("env test lock");
+    std::env::set_var(
+        "AGENT_RELAY_DELIVERY_MAX_AGE_MS",
+        &(6 * 60 * 60 * 1_000).to_string(),
+    );
+    let retry_interval = delivery_retry_interval();
+    for mode in [MessageInjectionMode::Steer, MessageInjectionMode::Wait] {
+        let budget = super::delivery_budget(&mode, retry_interval);
+        let cadence = super::delivery_ack_timeout(&mode, retry_interval);
+        // The most attempts a healthy clock could record inside the budget.
+        let attempts_in_budget = (budget.as_millis() / cadence.as_millis().max(1)) as u128;
+        let ceiling = u128::from(super::delivery_attempt_ceiling_for_test(
+            &mode,
+            retry_interval,
+        ));
+        assert!(
+            ceiling > attempts_in_budget,
+            "{mode:?}: ceiling {ceiling} must sit past the {attempts_in_budget} attempts the \
+             configured {}s budget allows, or it — not the deadline — decides",
+            budget.as_secs()
+        );
+    }
+    std::env::remove_var("AGENT_RELAY_DELIVERY_MAX_AGE_MS");
+}
+
+// relay#1686 review follow-up: `AGENT_RELAY_DELIVERY_MAX_AGE_MS` must not be
+// able to switch the bound off. An unclamped `u64::MAX` would be accepted as an
+// effectively infinite budget and reinstate, by configuration, the exact
+// "retries forever and reports nothing" state this change closes.
+#[test]
+fn configured_delivery_age_is_clamped_at_both_ends() {
+    let _guard = env_test_lock().lock().expect("env test lock");
+    std::env::set_var("AGENT_RELAY_DELIVERY_MAX_AGE_MS", &u64::MAX.to_string());
+    assert_eq!(
+        super::delivery_max_age(),
+        MAX_CONFIGURABLE_DELIVERY_AGE,
+        "an unbounded age must be clamped, not honoured"
+    );
+
+    std::env::set_var("AGENT_RELAY_DELIVERY_MAX_AGE_MS", "1");
+    assert_eq!(
+        super::delivery_max_age(),
+        crate::broker::delivery_verification::VERIFICATION_WINDOW,
+        "a budget below the echo verification window would kill deliveries still in flight"
+    );
+
+    // And a Wait delivery is floored again at its own acknowledgement timeout,
+    // so a short global budget cannot dead-letter it before the recipient has
+    // had one full window to answer.
+    assert_eq!(
+        super::delivery_budget(&MessageInjectionMode::Wait, delivery_retry_interval()),
+        WAIT_DELIVERY_ACK_TIMEOUT,
+    );
+    assert_eq!(
+        super::delivery_budget(&MessageInjectionMode::Steer, delivery_retry_interval()),
+        crate::broker::delivery_verification::VERIFICATION_WINDOW,
+    );
+    std::env::remove_var("AGENT_RELAY_DELIVERY_MAX_AGE_MS");
+}
+
+// relay#1686 review follow-up: in memory `expires_at_ms == 0` means "already
+// expired", so a snapshot holding that must round-trip as expired rather than
+// be mistaken for a pre-upgrade snapshot and handed a fresh budget. Only an
+// absent field means "no deadline was ever recorded".
+#[test]
+fn persisted_zero_deadline_round_trips_as_expired() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let mut delivery = make_pending_delivery("del_expired", "worker-a");
+    delivery.expires_at_ms = 0;
+    let deliveries = HashMap::from([(DeliveryId::new("del_expired"), delivery)]);
+    super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
+
+    let loaded = load_pending_deliveries(&path);
+    assert_eq!(
+        loaded["del_expired"].expires_at_ms, 0,
+        "an explicitly expired deadline must survive the restart as expired — rebuilding it \
+         would hand a delivery that already exhausted its budget a fresh one on every restart"
+    );
+}
+
 // relay#1686: a requeued dead letter keeps its original `queued_at_ms` for
 // provenance, and anything dead-lettered *by* the acknowledgement budget is by
 // definition already past it. Deriving the deadline from the queue time would
@@ -3065,7 +3183,11 @@ fn requeued_dead_letter_gets_a_fresh_acknowledgement_budget() {
     let mut pending = make_pending_delivery("del_stale", "worker-a");
     // Queued a day ago and dead-lettered for exactly that reason.
     pending.queued_at_ms = super::unix_timestamp_millis().saturating_sub(24 * 60 * 60 * 1_000);
-    pending.expires_at_ms = super::delivery_expires_at_ms(pending.queued_at_ms);
+    pending.expires_at_ms = super::delivery_expires_at_ms(
+        pending.queued_at_ms,
+        &MessageInjectionMode::Wait,
+        delivery_retry_interval(),
+    );
     dead_letters.push(DeadLetterEntry::from_pending(
         &pending,
         "delivery unacknowledged for 86400s",
@@ -3099,7 +3221,13 @@ fn legacy_pending_delivery_snapshot_rebuilds_its_acknowledgement_deadline() {
     let dir = tempfile::tempdir().expect("tempdir should create");
     let path = dir.path().join("pending-deliveries.json");
     let mut delivery = make_pending_delivery("del_legacy_deadline", "worker-a");
-    let queued_at_ms = super::unix_timestamp_millis().saturating_sub(30_000);
+    // Derived from the effective budget, not a hard-coded 30s: the budget is
+    // tunable via AGENT_RELAY_DELIVERY_MAX_AGE_MS and floored at the 5s
+    // verification window, so a fixed offset larger than a configured budget
+    // would fail this assertion even though the restore logic is correct.
+    let budget_ms = super::delivery_budget(&MessageInjectionMode::Wait, delivery_retry_interval())
+        .as_millis() as u64;
+    let queued_at_ms = super::unix_timestamp_millis().saturating_sub(budget_ms / 2);
     delivery.queued_at_ms = queued_at_ms;
     let deliveries = HashMap::from([(DeliveryId::new("del_legacy_deadline"), delivery)]);
     super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
@@ -3121,7 +3249,11 @@ fn legacy_pending_delivery_snapshot_rebuilds_its_acknowledgement_deadline() {
     let restored = &loaded["del_legacy_deadline"];
     assert_eq!(
         restored.expires_at_ms,
-        super::delivery_expires_at_ms(queued_at_ms),
+        super::delivery_expires_at_ms(
+            queued_at_ms,
+            &MessageInjectionMode::Wait,
+            delivery_retry_interval()
+        ),
         "a pre-relay#1686 snapshot must come back with a deadline measured from when the \
          message was queued — not unbounded, and not reset by the restart"
     );
@@ -3155,7 +3287,11 @@ async fn delivery_retry_success_clears_stale_last_error() {
             failed_attempts: 1,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
-            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+            expires_at_ms: super::delivery_expires_at_ms(
+                super::unix_timestamp_millis(),
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: Some("old transient failure".to_string()),
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -4084,7 +4220,11 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
-            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+            expires_at_ms: super::delivery_expires_at_ms(
+                super::unix_timestamp_millis(),
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -4110,7 +4250,11 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
-            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+            expires_at_ms: super::delivery_expires_at_ms(
+                super::unix_timestamp_millis(),
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -4143,7 +4287,11 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
         failed_attempts: 1,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
-        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+        expires_at_ms: super::delivery_expires_at_ms(
+            super::unix_timestamp_millis(),
+            &MessageInjectionMode::Wait,
+            delivery_retry_interval(),
+        ),
         last_error: Some("previous blip".to_string()),
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -4216,7 +4364,11 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
-        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+        expires_at_ms: super::delivery_expires_at_ms(
+            super::unix_timestamp_millis(),
+            &MessageInjectionMode::Wait,
+            delivery_retry_interval(),
+        ),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -4254,7 +4406,11 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
-            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+            expires_at_ms: super::delivery_expires_at_ms(
+                super::unix_timestamp_millis(),
+                &MessageInjectionMode::Wait,
+                delivery_retry_interval(),
+            ),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -4674,7 +4830,11 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
-        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
+        expires_at_ms: super::delivery_expires_at_ms(
+            super::unix_timestamp_millis(),
+            &MessageInjectionMode::Wait,
+            delivery_retry_interval(),
+        ),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,

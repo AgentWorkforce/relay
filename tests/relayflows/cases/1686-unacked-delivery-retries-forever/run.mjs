@@ -80,6 +80,14 @@ const BASE_WINDOW_MS = 60_000;
  * never completes.
  */
 const BODY_BYTES = 96 * 1024;
+/**
+ * Every request is bounded, as sibling cases 1615 and 1673 do. A wedged broker
+ * or engine that hangs rather than refusing a connection must fail this case
+ * cleanly, not stall it until the 900s infrastructure timeout — a case that
+ * dies to the harness timeout reports nothing at all.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+const READINESS_TIMEOUT_MS = 2_000;
 
 const targetDir = requiredValue('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredValue('RELAY_PR_PROOF_HARNESS_DIR');
@@ -133,7 +141,7 @@ try {
   const eng = engineClient(engineUrl);
   await waitFor(async () => {
     if (engine.exitCode !== null) throw new Error(`engine exited with code ${engine.exitCode}`);
-    await fetch(engineUrl);
+    await fetch(engineUrl, { signal: AbortSignal.timeout(READINESS_TIMEOUT_MS) });
     return true;
   }, 'the Relaycast engine to accept connections');
 
@@ -211,7 +219,10 @@ try {
     return connection.url;
   }, 'the broker connection file to publish its bound API port');
   const api = brokerClient(brokerUrl);
-  await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
+  await waitFor(
+    () => api('GET', '/api/status', undefined, READINESS_TIMEOUT_MS).then(() => true),
+    'the broker API to answer'
+  );
 
   await api('POST', '/api/spawn', {
     name: AGENT,
@@ -224,23 +235,16 @@ try {
     return (listed.body?.data ?? []).some((agent) => agent.name === AGENT);
   }, 'the agent to register with the real engine');
 
-  // A real DM through the engine, large enough that it cannot be written to a
-  // child that never reads.
-  const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
-  const senderToken = sender.body?.data?.token;
-  if (!senderToken) {
-    throw new Error(`sender create failed: ${JSON.stringify(sender.body).slice(0, 300)}`);
-  }
+  // A real message through the engine, large enough that it cannot be written
+  // to a child that never reads.
+  //
+  // `steer`, not the default `wait`: each delivery's budget is floored at its
+  // own acknowledgement timeout, which is 5 minutes for `wait` and the 5 second
+  // verification window for `steer`. A wait-mode message would therefore ignore
+  // the short DEADLINE_MS this case configures and take 5 minutes per arm.
   const body = `relay-1686 unacked probe ${'x'.repeat(BODY_BYTES)}`;
-  const dm = await eng(
-    'POST',
-    '/v1/dm',
-    { to: AGENT, text: body },
-    { authorization: `Bearer ${senderToken}` }
-  );
-  if (dm.status >= 300) {
-    throw new Error(`DM failed: ${dm.status} ${JSON.stringify(dm.body).slice(0, 300)}`);
-  }
+  const sent = await api('POST', '/api/send', { to: AGENT, text: body, mode: 'steer' });
+  log(`send -> ${JSON.stringify(sent).slice(0, 200)}`);
 
   // Control, on both arms: the broker accepted the message as a retryable
   // delivery and has attempted it. Everything below reads as "no bound" or "a
@@ -358,10 +362,11 @@ function freePort() {
   });
 }
 function engineClient(baseUrl) {
-  return async (method, route, body, headers = {}) => {
+  return async (method, route, body, headers = {}, timeoutMs = REQUEST_TIMEOUT_MS) => {
     const res = await fetch(`${baseUrl}${route}`, {
       method,
       headers: { 'content-type': 'application/json', ...headers },
+      signal: AbortSignal.timeout(timeoutMs),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await res.text();
@@ -375,10 +380,11 @@ function engineClient(baseUrl) {
   };
 }
 function brokerClient(baseUrl) {
-  return async (method, route, body) => {
+  return async (method, route, body, timeoutMs = REQUEST_TIMEOUT_MS) => {
     const res = await fetch(`${baseUrl}${route}`, {
       method,
       headers: { 'content-type': 'application/json', 'x-api-key': BROKER_API_KEY },
+      signal: AbortSignal.timeout(timeoutMs),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await res.text();
@@ -394,7 +400,9 @@ function brokerClient(baseUrl) {
 }
 async function pendingEntry(api) {
   const status = await api('GET', '/api/status');
-  const pending = Array.isArray(status.pending) ? status.pending : [];
+  // `pending_deliveries`, not `pending`: reading the wrong key is what made the
+  // first run of this case time out on its own control.
+  const pending = Array.isArray(status.pending_deliveries) ? status.pending_deliveries : [];
   return pending.find((entry) => entry.worker_name === AGENT) ?? null;
 }
 async function deadLetter(api, deliveryId) {
