@@ -9,7 +9,7 @@
  * charset-restricted run id. The only values that reach the shell are literals
  * this module generates and asserts to be shell-inert.
  */
-import { lstatSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, lstatSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -53,9 +53,37 @@ export function shellInertLiteral(value, field) {
  */
 function regularFile(candidate) {
   try {
-    return statSync(candidate).isFile();
+    if (!statSync(candidate).isFile()) return false;
+    // Type alone is not enough: an unreadable file would otherwise pass
+    // preflight and surface as a late NOT_PASS from the verifier's read.
+    // This is a setup check, not a race-free guarantee — the operator is not
+    // the adversary here; a hostile local user could still swap the file
+    // between this check and the read.
+    accessSync(candidate, constants.R_OK);
+    return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Absolute, symlink-free form of a path, so two names for one file compare
+ * equal. `path.resolve` only normalises `..` and `.`; it would happily treat a
+ * symlink pointing at the verdict file as a different path. Falls back to the
+ * deepest existing ancestor for a path that does not exist yet.
+ */
+function canonical(target) {
+  let current = path.resolve(target);
+  const trailing = [];
+  for (;;) {
+    try {
+      return path.join(realpathSync(current), ...trailing);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(target);
+      trailing.unshift(path.basename(current));
+      current = parent;
+    }
   }
 }
 
@@ -109,18 +137,21 @@ export function resolveQualificationInputs(env = process.env, deps = {}) {
 }
 
 /**
- * An input path that resolves to a file this run is about to write is a
+ * An input path that names a file this run is about to write is a
  * destructive setup error: the params write would truncate the operator's own
  * evidence before the verifier reads it, and an input aliasing the verdict
  * would only surface halfway through the run. Both are BLOCKED here instead.
+ *
+ * Paths are compared canonically, so a symlink aimed at either output is
+ * caught by its target rather than accepted under a different name.
  */
 export function assertNoOutputAliases(inputs, cwd = process.cwd()) {
   const reserved = new Map([
-    [path.resolve(cwd, inputs.paramsPath), 'the qualification params file'],
-    [path.resolve(cwd, inputs.verdictPath), 'the qualification verdict file'],
+    [canonical(path.resolve(cwd, inputs.paramsPath)), 'the qualification params file'],
+    [canonical(path.resolve(cwd, inputs.verdictPath)), 'the qualification verdict file'],
   ]);
   for (const key of ['rawEvidence', 'candidateArtifact', 'candidateManifest']) {
-    const clash = reserved.get(path.resolve(cwd, inputs[key]));
+    const clash = reserved.get(canonical(path.resolve(cwd, inputs[key])));
     if (clash) blocked(`${key} must not be ${clash}`);
   }
 }

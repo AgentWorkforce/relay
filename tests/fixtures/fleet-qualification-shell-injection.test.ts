@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -273,6 +274,38 @@ describe('fleet qualification params write is not a destructive primitive', () =
     expect(() => writeQualificationParams(inputs, { cwd: sandbox })).toThrow(QualificationBlockedError);
     expect(readdirSync(elsewhere)).toEqual([]);
     rmSync(elsewhere, { recursive: true, force: true });
+  });
+
+  it('resolves a symlinked input to its target before accepting it', () => {
+    // `path.resolve` alone would compare the link's own name and let this pass.
+    for (const name of ['params.json', 'verdict.json']) {
+      const output = path.join(sandbox, ARTIFACT_ROOT, name);
+      mkdirSync(path.dirname(output), { recursive: true });
+      writeFileSync(output, 'OPERATOR EVIDENCE\n');
+      const link = path.join(sandbox, `link-to-${name}`);
+      symlinkSync(output, link);
+
+      expect(() => resolveInSandbox({ FLEET_QUALIFICATION_RAW_EVIDENCE: link })).toThrow(
+        QualificationBlockedError
+      );
+      expect(readFileSync(output, 'utf8')).toBe('OPERATOR EVIDENCE\n');
+      rmSync(link);
+      rmSync(output);
+    }
+  });
+
+  it('blocks an input the run cannot read', () => {
+    if (process.getuid?.() === 0) return; // root ignores the mode bits.
+    const unreadable = path.join(sandbox, 'unreadable.json');
+    writeFileSync(unreadable, '{}\n');
+    chmodSync(unreadable, 0o000);
+    try {
+      expect(() => resolveInSandbox({ FLEET_QUALIFICATION_RAW_EVIDENCE: unreadable })).toThrow(
+        QualificationBlockedError
+      );
+    } finally {
+      chmodSync(unreadable, 0o600);
+    }
   });
 
   it('blocks a reused run id rather than overwriting its params file', () => {
