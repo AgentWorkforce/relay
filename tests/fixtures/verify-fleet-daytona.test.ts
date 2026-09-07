@@ -550,24 +550,30 @@ describe('complete Daytona Fleet board', () => {
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
     const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
     const steps = workflowStepDeclarations(source);
+    const installDeps = steps.get('install-dependencies');
     const build = steps.get('build-current-cli');
     const installNpm = steps.get('install-candidate-npm');
     const stageBroker = steps.get('stage-current-platform-broker');
     const prepare = steps.get('prepare-clean-installed-candidate');
     const inventory = steps.get('verify-candidate-cli-inventory');
     const attemptA = steps.get('run-daytona-board-attempt-a');
+    expect(installDeps).toBeDefined();
     expect(build).toBeDefined();
     expect(installNpm).toBeDefined();
     expect(stageBroker).toBeDefined();
     expect(prepare).toBeDefined();
     expect(inventory).toBeDefined();
     expect(attemptA).toBeDefined();
+    expect(build!.offset).toBeGreaterThan(installDeps!.offset);
     expect(installNpm!.offset).toBeGreaterThan(build!.offset);
     expect(stageBroker!.offset).toBeGreaterThan(installNpm!.offset);
     expect(prepare!.offset).toBeGreaterThan(stageBroker!.offset);
     expect(inventory!.offset).toBeGreaterThan(prepare!.offset);
     expect(attemptA!.offset).toBeGreaterThan(inventory!.offset);
-    expect(build!.dependsOn).toEqual(['validate-catalog']);
+    // install-dependencies runs `npm ci` so build-current-cli never builds
+    // against a sandbox snapshot's stale pre-baked node_modules.
+    expect(installDeps!.dependsOn).toEqual(['validate-catalog']);
+    expect(build!.dependsOn).toEqual(['install-dependencies']);
     expect(installNpm!.dependsOn).toEqual(['build-current-cli']);
     expect(stageBroker!.dependsOn).toEqual(['install-candidate-npm']);
     expect(prepare!.dependsOn).toEqual(['candidatePreparationDependency']);

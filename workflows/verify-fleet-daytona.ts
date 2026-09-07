@@ -293,9 +293,24 @@ async function main() {
     failOnError: true,
     timeoutMs: 120_000,
   });
-  wf.step('build-current-cli', {
+  // Every downstream step assumes an exact, lockfile-matched install. The
+  // sandbox's base snapshot node_modules can predate the synced source
+  // (e.g. a lockfile refresh or a dependency bump landed after the
+  // snapshot was baked), which silently builds stale code instead of the
+  // exact candidate under proof. `npm ci` deletes and rebuilds
+  // node_modules strictly from package-lock.json, matching the same
+  // install this repo's own CI runs before every build.
+  wf.step('install-dependencies', {
     type: 'deterministic',
     dependsOn: ['validate-catalog'],
+    command: 'npm ci',
+    captureOutput: true,
+    failOnError: true,
+    timeoutMs: 600_000,
+  });
+  wf.step('build-current-cli', {
+    type: 'deterministic',
+    dependsOn: ['install-dependencies'],
     command: 'npm run build:core',
     captureOutput: true,
     failOnError: true,
