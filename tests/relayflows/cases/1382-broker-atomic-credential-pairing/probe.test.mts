@@ -9,7 +9,9 @@ const ARM = process.env.RELAY_PR_PROOF_ARM;
 function makeDeps(overrides: { env?: NodeJS.ProcessEnv; fileUrl?: string; fileKey?: string } = {}) {
   return {
     readConnectionFile: () =>
-      overrides.fileUrl ? { url: overrides.fileUrl, ...(overrides.fileKey ? { api_key: overrides.fileKey } : {}) } : null,
+      overrides.fileUrl
+        ? { url: overrides.fileUrl, ...(overrides.fileKey ? { api_key: overrides.fileKey } : {}) }
+        : null,
     getDefaultStateDir: () => '/tmp/fake/.agentworkforce/relay',
     env: overrides.env ?? {},
   };

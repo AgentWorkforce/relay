@@ -71,7 +71,7 @@ const observation =
         outcome: 'bug',
         signature: 'cross_wired_credential_pair_and_probe_abort',
         details:
-          'A relay agent\'s own RELAY_BROKER_API_KEY (env) got paired with a different broker\'s URL resolved from connection.json, and the isNativeHarness capability probe\'s rejection propagated instead of degrading, aborting the whole attach.',
+          "A relay agent's own RELAY_BROKER_API_KEY (env) got paired with a different broker's URL resolved from connection.json, and the isNativeHarness capability probe's rejection propagated instead of degrading, aborting the whole attach.",
       }
     : {
         version: 1,

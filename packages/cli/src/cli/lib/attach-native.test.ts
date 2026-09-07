@@ -219,8 +219,8 @@ describe('isNativeHarness', () => {
     const failingFetch = (async () => {
       throw new Error('401 Unauthorized');
     }) as unknown as typeof globalThis.fetch;
-    await expect(
-      isNativeHarness('Worker', { brokerUrl: 'http://broker' }, failingFetch)
-    ).resolves.toBe(false);
+    await expect(isNativeHarness('Worker', { brokerUrl: 'http://broker' }, failingFetch)).resolves.toBe(
+      false
+    );
   });
 });
