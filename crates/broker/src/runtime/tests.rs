@@ -3012,12 +3012,16 @@ async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
     .await
     .expect("the ceiling check must not error");
 
+    assert!(
+        matches!(outcome, DeliveryAttemptOutcome::Failed { .. }),
+        "a delivery at the cumulative attempt ceiling must be terminal, got {outcome:?}"
+    );
     let DeliveryAttemptOutcome::Failed {
         pending: ref failed,
         ref last_error,
     } = outcome
     else {
-        panic!("a delivery at the cumulative attempt ceiling must be terminal: {outcome:?}");
+        unreachable!("asserted Failed above");
     };
     assert_eq!(failed.failed_attempts, 0, "no handoff ever failed");
     assert!(
@@ -3068,8 +3072,9 @@ fn requeued_dead_letter_gets_a_fresh_acknowledgement_budget() {
     ));
 
     let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
-    let requeued = super::requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_stale")
-        .expect("the dead letter should requeue");
+    let requeued =
+        super::requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_stale")
+            .expect("the dead letter should requeue");
 
     let now_ms = super::unix_timestamp_millis();
     assert!(

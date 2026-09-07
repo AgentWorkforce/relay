@@ -404,10 +404,7 @@ async function deadLetter(api, deliveryId) {
     : Array.isArray(body.entries)
       ? body.entries
       : [];
-  return (
-    entries.find((entry) => (entry.delivery_id ?? entry.delivery?.delivery_id) === deliveryId) ??
-    null
-  );
+  return entries.find((entry) => (entry.delivery_id ?? entry.delivery?.delivery_id) === deliveryId) ?? null;
 }
 async function waitFor(predicate, label, timeoutMs = READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
