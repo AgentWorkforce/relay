@@ -237,6 +237,26 @@ pub(crate) fn delivery_retry_interval() -> Duration {
     Duration::from_millis(ms.max(50))
 }
 
+/// Wall-clock budget a single delivery gets before it is terminally failed and
+/// dead-lettered, defaulting to [`MAX_DELIVERY_AGE`].
+///
+/// The floor is the steer-mode verification window: a budget shorter than the
+/// window the broker itself waits for an echo confirmation would dead-letter
+/// deliveries that are still normally in flight. There is deliberately no
+/// value that disables the deadline — an unbounded delivery is the defect this
+/// budget exists to close (relay#1686).
+pub(crate) fn delivery_max_age() -> Duration {
+    let configured = std::env::var("AGENT_RELAY_DELIVERY_MAX_AGE_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(MAX_DELIVERY_AGE);
+    std::cmp::max(
+        configured,
+        crate::broker::delivery_verification::VERIFICATION_WINDOW,
+    )
+}
+
 // No longer called from production code — the HTTP/sidecar send path
 // (runtime/api.rs) no longer attempts direct local delivery, so there's
 // nothing left to bound with a "local delivery" timeout. Kept (with its

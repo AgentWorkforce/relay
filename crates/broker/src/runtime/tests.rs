@@ -57,7 +57,7 @@ use super::{
     DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
     ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
     ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage, MAX_DEAD_LETTERS,
-    MAX_DELIVERY_RETRIES,
+    MAX_DELIVERY_ATTEMPTS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -408,6 +408,7 @@ fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> Pen
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
+        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -1126,6 +1127,7 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
+        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -2548,6 +2550,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
+            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
             last_error: Some("failed writing frame".to_string()),
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -2669,6 +2672,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
+            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -2787,6 +2791,341 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
 }
 
+// relay#1686: the defect this test exists for is a delivery whose handoff
+// write keeps *succeeding* and which is never acknowledged. `MAX_DELIVERY_RETRIES`
+// gates on `failed_attempts` — consecutive handoff failures — and every
+// successful write resets that counter to zero, so it can never fire here. The
+// only cumulative counter, `attempts`, was bounded by nothing. Such a delivery
+// therefore had no terminal condition at all: it retried forever, never emitted
+// `message_delivery_failed`, and never reached the dead-letter store, which is
+// why "an agent that goes idle stops receiving" is invisible from outside the
+// broker.
+//
+// A `cat` worker is exactly that recipient: it accepts every frame written to
+// its stdin and acknowledges none of them.
+#[tokio::test]
+async fn unacked_delivery_reaches_terminal_dead_letter_while_writes_keep_succeeding() {
+    let worker_name = "worker-deaf";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    assert!(
+        workers.has_worker(worker_name),
+        "the recipient must stay present — a gone recipient already had a terminal path"
+    );
+
+    // Queued just inside its acknowledgement budget, so the opening retries are
+    // ordinary successful handoffs and only elapsed wall-clock time — never a
+    // write failure — can make this delivery terminal.
+    let budget_ms = super::delivery_max_age().as_millis() as u64;
+    let queued_at_ms = super::unix_timestamp_millis().saturating_sub(budget_ms.saturating_sub(400));
+    let mut pending_deliveries = HashMap::from([(
+        DeliveryId::new("del_deaf"),
+        PendingDelivery {
+            worker_name: WorkerName::from(worker_name),
+            delivery: RelayDelivery {
+                delivery_id: DeliveryId::new("del_deaf"),
+                event_id: EventId::new("evt_deaf"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
+                from: "orchestrator".to_string(),
+                target: MessageTarget::new(worker_name),
+                body: "never acknowledged".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 0,
+            failed_attempts: 0,
+            next_retry_at: Instant::now(),
+            queued_at_ms,
+            expires_at_ms: super::delivery_expires_at_ms(queued_at_ms),
+            last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
+        },
+    )]);
+
+    let mut successful_writes = 0_u32;
+    let mut final_outcome = None;
+    // Generously more iterations than the deadline needs. Reaching the end of
+    // this loop is the pre-fix behaviour: retry forever, report nothing.
+    for _ in 0..400 {
+        match retry_pending_delivery(
+            &DeliveryId::new("del_deaf"),
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("a succeeding write must not surface as an error")
+        {
+            DeliveryAttemptOutcome::Attempted { .. } => {
+                successful_writes += 1;
+                let pending = pending_deliveries
+                    .get("del_deaf")
+                    .expect("an attempted delivery stays pending until it is acknowledged");
+                assert_eq!(
+                    pending.failed_attempts, 0,
+                    "every write succeeded, so the failed_attempts cap can never fire — this \
+                     is the whole reason the delivery needs a second bound"
+                );
+                assert_eq!(
+                    pending.last_error, None,
+                    "a succeeding write records no error to report later"
+                );
+            }
+            outcome @ DeliveryAttemptOutcome::Failed { .. } => {
+                final_outcome = Some(outcome);
+                break;
+            }
+            DeliveryAttemptOutcome::Noop => panic!("a present worker's write should not no-op"),
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let outcome = final_outcome.expect(
+        "a delivery that is written successfully and never acknowledged must still reach a \
+         terminal state — otherwise it retries forever and nothing ever reports the failure",
+    );
+    assert!(
+        successful_writes >= 2,
+        "the delivery must have been handed over successfully several times before it \
+         terminated, proving the bound is not just the existing handoff-failure cap: saw {successful_writes}"
+    );
+    let DeliveryAttemptOutcome::Failed {
+        pending: ref failed,
+        ref last_error,
+    } = outcome
+    else {
+        unreachable!("matched Failed above");
+    };
+    assert_eq!(
+        failed.failed_attempts, 0,
+        "not one handoff failed; this delivery was terminated by its acknowledgement budget"
+    );
+    assert!(
+        last_error.contains("unacknowledged"),
+        "the terminal reason must name the actual condition so it is diagnosable from the \
+         event alone: {last_error}"
+    );
+    assert!(
+        pending_deliveries.is_empty(),
+        "a terminally failed delivery is removed from the pending map so it cannot keep spinning"
+    );
+
+    // A cap with no dead-letter is half a fix: drive the same terminal path the
+    // existing failure cases take and prove both halves land.
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_deaf"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("the terminal outcome should emit");
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("an unacknowledged delivery must report message_delivery_failed")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(frame.payload["kind"], "message_delivery_failed");
+    assert_eq!(frame.payload["name"], worker_name);
+    assert_eq!(frame.payload["delivery_id"], "del_deaf");
+    assert_eq!(frame.payload["event_id"], "evt_deaf");
+    assert!(frame.payload["lastError"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("unacknowledged"));
+
+    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("the terminal failure must also emit dead_letter_added")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
+    assert_eq!(dead_frame.payload["delivery_id"], "del_deaf");
+
+    let entry = dead_letters
+        .get("del_deaf")
+        .expect("the unacknowledged delivery must land in the dead-letter store, not vanish");
+    assert_eq!(entry.delivery.body, "never acknowledged");
+    assert_eq!(entry.delivery.event_id, EventId::new("evt_deaf"));
+    assert!(
+        entry.reason.contains("unacknowledged"),
+        "the dead-letter reason must distinguish a never-acknowledged delivery from a failed \
+         handoff: {}",
+        entry.reason
+    );
+    assert_eq!(
+        dead_letters.len(),
+        1,
+        "the message is retained for requeue rather than silently dropped"
+    );
+}
+
+// relay#1686 backstop: the deadline above is wall-clock, so a frozen or
+// backwards-stepping system clock could keep an unacknowledged delivery
+// permanently "young". `attempts` is the one counter no successful write
+// resets, so a cumulative ceiling on it is always reachable. It is sized never
+// to fire first under a working clock — if it fires, the clock is broken, not
+// the recipient — but it must still be terminal and still dead-letter.
+#[tokio::test]
+async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
+    let worker_name = "worker-frozen-clock";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    let queued_at_ms = super::unix_timestamp_millis();
+    let mut pending_deliveries = HashMap::from([(
+        DeliveryId::new("del_ceiling"),
+        PendingDelivery {
+            worker_name: WorkerName::from(worker_name),
+            delivery: RelayDelivery {
+                delivery_id: DeliveryId::new("del_ceiling"),
+                event_id: EventId::new("evt_ceiling"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: None,
+                from: "orchestrator".to_string(),
+                target: MessageTarget::new(worker_name),
+                body: "stopped clock".to_string(),
+                thread_id: None,
+                priority: None,
+                injection_mode: MessageInjectionMode::Steer,
+            },
+            attempts: MAX_DELIVERY_ATTEMPTS,
+            // Deadline unreachable: only the attempt ceiling can end this.
+            failed_attempts: 0,
+            next_retry_at: Instant::now(),
+            queued_at_ms,
+            expires_at_ms: u64::MAX,
+            last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
+        },
+    )]);
+
+    let outcome = retry_pending_delivery(
+        &DeliveryId::new("del_ceiling"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("the ceiling check must not error");
+
+    let DeliveryAttemptOutcome::Failed {
+        pending: ref failed,
+        ref last_error,
+    } = outcome
+    else {
+        panic!("a delivery at the cumulative attempt ceiling must be terminal: {outcome:?}");
+    };
+    assert_eq!(failed.failed_attempts, 0, "no handoff ever failed");
+    assert!(
+        last_error.contains("attempt ceiling"),
+        "the reason must name the ceiling so a broken clock is diagnosable: {last_error}"
+    );
+    assert!(pending_deliveries.is_empty());
+
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_ceiling"),
+        true,
+        outcome,
+    )
+    .await
+    .expect("the terminal outcome should emit");
+    let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
+        .await
+        .expect("ceiling breach must report message_delivery_failed")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(frame.payload["kind"], "message_delivery_failed");
+    assert_eq!(
+        dead_letters.len(),
+        1,
+        "the ceiling path is the same terminal path, dead-letter included"
+    );
+}
+
+// relay#1686: a requeued dead letter keeps its original `queued_at_ms` for
+// provenance, and anything dead-lettered *by* the acknowledgement budget is by
+// definition already past it. Deriving the deadline from the queue time would
+// therefore re-fail every requeue on the next maintenance tick — an operator
+// pressing "redeliver" would watch it die instantly. The requeue gets a fresh
+// budget instead.
+#[test]
+fn requeued_dead_letter_gets_a_fresh_acknowledgement_budget() {
+    let mut dead_letters = DeadLetterStore::default();
+    let mut pending = make_pending_delivery("del_stale", "worker-a");
+    // Queued a day ago and dead-lettered for exactly that reason.
+    pending.queued_at_ms = super::unix_timestamp_millis().saturating_sub(24 * 60 * 60 * 1_000);
+    pending.expires_at_ms = super::delivery_expires_at_ms(pending.queued_at_ms);
+    dead_letters.push(DeadLetterEntry::from_pending(
+        &pending,
+        "delivery unacknowledged for 86400s",
+    ));
+
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let requeued = super::requeue_dead_letter(&mut dead_letters, &mut pending_deliveries, "del_stale")
+        .expect("the dead letter should requeue");
+
+    let now_ms = super::unix_timestamp_millis();
+    assert!(
+        requeued.expires_at_ms > now_ms,
+        "a requeued delivery must not arrive already expired: expires_at_ms {} vs now {now_ms}",
+        requeued.expires_at_ms
+    );
+    assert!(
+        requeued.queued_at_ms < now_ms.saturating_sub(60_000),
+        "the original queue time is retained for provenance"
+    );
+    assert_eq!(requeued.attempts, 0);
+}
+
+// relay#1686: a snapshot written by a broker that predates the deadline field
+// must neither load unbounded (the defect) nor load already expired (an
+// upgrade that dead-letters everything in flight). It is rebuilt from the
+// persisted queue time, so a delivery a previous broker had been retrying for
+// hours does not get its clock reset by the restart either.
+#[test]
+fn legacy_pending_delivery_snapshot_rebuilds_its_acknowledgement_deadline() {
+    let dir = tempfile::tempdir().expect("tempdir should create");
+    let path = dir.path().join("pending-deliveries.json");
+    let mut delivery = make_pending_delivery("del_legacy_deadline", "worker-a");
+    let queued_at_ms = super::unix_timestamp_millis().saturating_sub(30_000);
+    delivery.queued_at_ms = queued_at_ms;
+    let deliveries = HashMap::from([(DeliveryId::new("del_legacy_deadline"), delivery)]);
+    super::save_pending_deliveries(&path, &deliveries).expect("pending delivery should save");
+    let mut json: Value = serde_json::from_slice(
+        &std::fs::read(&path).expect("pending delivery snapshot should read"),
+    )
+    .expect("pending delivery snapshot should parse");
+    json[0]
+        .as_object_mut()
+        .expect("pending delivery entry should be an object")
+        .remove("expires_at_ms");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json).expect("legacy snapshot encodes"),
+    )
+    .expect("legacy pending snapshot should write");
+
+    let loaded = load_pending_deliveries(&path);
+    let restored = &loaded["del_legacy_deadline"];
+    assert_eq!(
+        restored.expires_at_ms,
+        super::delivery_expires_at_ms(queued_at_ms),
+        "a pre-relay#1686 snapshot must come back with a deadline measured from when the \
+         message was queued — not unbounded, and not reset by the restart"
+    );
+    assert!(
+        restored.expires_at_ms > super::unix_timestamp_millis(),
+        "a delivery still inside its budget must not be dead-lettered by the upgrade itself"
+    );
+}
+
 #[tokio::test]
 async fn delivery_retry_success_clears_stale_last_error() {
     let worker_name = "worker-clear-error";
@@ -2811,6 +3150,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
             failed_attempts: 1,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
+            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
             last_error: Some("old transient failure".to_string()),
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -3739,6 +4079,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
+            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -3764,6 +4105,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
+            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -3796,6 +4138,7 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
         failed_attempts: 1,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
+        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
         last_error: Some("previous blip".to_string()),
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -3868,6 +4211,7 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
+        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
@@ -3905,6 +4249,7 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
             failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: super::unix_timestamp_millis(),
+            expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
@@ -4324,6 +4669,7 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         failed_attempts: 0,
         next_retry_at: Instant::now(),
         queued_at_ms: super::unix_timestamp_millis(),
+        expires_at_ms: super::delivery_expires_at_ms(super::unix_timestamp_millis()),
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
