@@ -59,6 +59,14 @@ function assertNonce(value) {
   return value;
 }
 
+function laneEvidenceKind(lane) {
+  return `lanes/${assertSafeId(lane, 'lane')}/evidence`;
+}
+
+function reviewProvenanceKind(role) {
+  return `review-provenance/${assertSafeId(role, 'role')}/capture`;
+}
+
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -380,6 +388,49 @@ export async function loadCatalog(matrixPath = DEFAULT_MATRIX) {
   return { matrix, categories, repoRoot, matrixPath: resolvedMatrix, manifestPath };
 }
 
+/**
+ * Return a fail-closed upper bound for one lane from the matrix's own command
+ * and repetition budgets. Corpus cases have individual manifests, so callers
+ * supply their declared timeouts rather than relying on a stale case count.
+ */
+export function cleanroomLaneTimeoutMs(matrix, profileId, laneId, corpusCaseTimeoutSeconds) {
+  const profile = matrix?.profiles?.[profileId];
+  const lane = matrix?.lanes?.find(({ id }) => id === laneId);
+  if (!profile || !lane || !profile.lanes.includes(laneId)) {
+    throw new Error(`cannot derive timeout for inactive cleanroom lane ${laneId}`);
+  }
+  if (
+    !Array.isArray(corpusCaseTimeoutSeconds) ||
+    corpusCaseTimeoutSeconds.some((seconds) => !Number.isSafeInteger(seconds) || seconds < 1)
+  ) {
+    throw new Error('corpus case timeouts must be positive safe integers');
+  }
+  const appliesToProfile = (spec) => !spec.profiles || spec.profiles.includes(profileId);
+  const setupSeconds = [...matrix.commonSetup, ...lane.setup]
+    .filter(appliesToProfile)
+    .reduce((total, spec) => total + spec.timeoutSeconds, 0);
+  const scenarioSeconds = lane.scenarios.filter(appliesToProfile).reduce((total, spec) => {
+    if ((spec.kind ?? 'command') === 'coverage-gap') return total;
+    const repeats = spec.repeats?.[profileId] ?? profile.defaultRepeats;
+    if (spec.kind === 'relayflow-corpus') {
+      return (
+        total +
+        repeats *
+          corpusCaseTimeoutSeconds.reduce(
+            (caseTotal, caseTimeout) => caseTotal + Math.min(caseTimeout, spec.timeoutSeconds),
+            0
+          )
+      );
+    }
+    return total + repeats * spec.timeoutSeconds;
+  }, 0);
+
+  // Process teardown, evidence serialization, and sandbox scheduling are not
+  // included in individual command limits. Preserve ten minutes of bounded
+  // lane-level headroom around the exact declared command budget.
+  return (setupSeconds + scenarioSeconds) * 1_000 + 600_000;
+}
+
 function sourceMode(requested = 'auto', env = process.env) {
   if (!['auto', 'cloud', 'files'].includes(requested))
     throw new Error('--source must be auto, cloud, or files');
@@ -530,7 +581,7 @@ export async function putRecord({
     try {
       // The destination uses a fixed artifact root, validated nonce/kind segments, and O_EXCL.
       // codeql[js/http-to-file-access]
-      await writeFile(destination, encoded, { flag: 'wx', mode: 0o600 });
+      await writePrivateGeneratedArtifact(destination, encoded, `local evidence ${kind}`);
     } catch (error) {
       if (error?.code === 'EEXIST') {
         throw new Error(`evidence storage already contains ${kind}`);
@@ -554,6 +605,7 @@ export async function putRecord({
   // codeql[js/file-access-to-http]
   const response = await fetch(url, {
     method: 'PUT',
+    redirect: 'error',
     signal: requestSignal(),
     headers: {
       authorization: `Bearer ${token}`,
@@ -571,6 +623,7 @@ export async function putRecord({
       `Cloud evidence upload failed (${response.status}): ${await readBoundedResponseText(response, 'Cloud evidence upload error')}`
     );
   const confirmation = await fetch(url, {
+    redirect: 'error',
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
@@ -635,6 +688,7 @@ async function getRecord({ nonce, kind, source = 'auto', artifactRoot = DEFAULT_
   // The URL is confined to Cloud; its key consists only of validated run/nonce/kind data.
   // codeql[js/file-access-to-http]
   const response = await fetch(url, {
+    redirect: 'error',
     signal: requestSignal(),
     headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
   });
@@ -783,7 +837,7 @@ async function killProcessGroup(child, signal = 'SIGKILL') {
   }
 }
 
-async function runProcess(argv, { cwd, env, timeoutSeconds, secrets = [] }) {
+export async function runProcess(argv, { cwd, env, timeoutSeconds, secrets = [] }) {
   const startedAt = new Date().toISOString();
   const stdoutCapture = outputCapture();
   const stderrCapture = outputCapture();
@@ -797,23 +851,43 @@ async function runProcess(argv, { cwd, env, timeoutSeconds, secrets = [] }) {
   });
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
-    stdoutCapture.append(chunk);
+  const closed = await new Promise((resolve) => {
+    let settled = false;
+    let killTimer;
+    const settle = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve({ code, signal });
+    };
+    child.stdout.on('data', (chunk) => {
+      if (!settled) stdoutCapture.append(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      if (!settled) stderrCapture.append(chunk);
+    });
+    child.on('error', (error) => {
+      spawnError = error;
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      void killProcessGroup(child);
+      // A descendant can start a new session and retain these pipes after the
+      // original process group is gone. Do not let that strand the lane: after
+      // a bounded kill grace, close this runner's descriptors and settle the
+      // timeout result from the live child state.
+      killTimer = setTimeout(() => {
+        child.stdin?.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(child.exitCode, child.signalCode);
+      }, 1_500);
+      killTimer.unref();
+    }, timeoutSeconds * 1000);
+    timer.unref();
+    child.on('close', (code, signal) => settle(code, signal));
   });
-  child.stderr.on('data', (chunk) => {
-    stderrCapture.append(chunk);
-  });
-  child.on('error', (error) => {
-    spawnError = error;
-  });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    void killProcessGroup(child);
-  }, timeoutSeconds * 1000);
-  const closed = await new Promise((resolve) =>
-    child.on('close', (code, signal) => resolve({ code, signal }))
-  );
-  clearTimeout(timer);
   const leakedProcessGroup = await processGroupExists(child.pid);
   if (leakedProcessGroup) await killProcessGroup(child);
   const processGroupCleaned = await waitForProcessGroupExit(child.pid);
@@ -854,6 +928,7 @@ async function fetchGithubPages(
         // Every initial and Link-derived URL is revalidated against the fixed GitHub HTTPS origin.
         // codeql[js/file-access-to-http]
         response = await fetch(next, {
+          redirect: 'error',
           signal: requestSignal(),
           headers: {
             accept: 'application/vnd.github+json',
@@ -1509,7 +1584,7 @@ async function runLane({ catalog, laneId, profile, nonce, source, artifactRoot }
         : statuses.includes('blocked')
           ? 'blocked'
           : 'pass';
-    await putRecord({ nonce, kind: `lanes/${laneId}`, value: record, source, artifactRoot });
+    await putRecord({ nonce, kind: laneEvidenceKind(laneId), value: record, source, artifactRoot });
   }
   return record;
 }
@@ -2040,7 +2115,7 @@ export function aggregateRecords({ matrix, categories, scope, laneRecords, profi
       sandboxId: record.sandboxId,
       commit: record.commit,
       cleanup: record.cleanup,
-      evidenceKind: `lanes/${record.lane}`,
+      evidenceKind: laneEvidenceKind(record.lane),
     })),
     scenarios: scenarioResults,
     features,
@@ -2164,9 +2239,23 @@ export function validateReviewProvenance(provenance, { nonce, product, profile, 
   return provenance;
 }
 
+export function assertReviewUploadSource(profile, source = 'auto', env = process.env) {
+  const mode = sourceMode(source, env);
+  if (profile !== 'smoke' && mode !== 'cloud') {
+    throw new Error('full/soak review upload requires write-once Cloud evidence storage');
+  }
+  return mode;
+}
+
 export function validateReviewDraftPath(file, artifactRoot, nonce, role) {
   const resolvedFile = path.resolve(file);
-  const expectedFile = path.join(path.resolve(artifactRoot), nonce, `draft-${role}.json`);
+  const expectedFile = path.join(
+    path.resolve(artifactRoot),
+    nonce,
+    'review-drafts',
+    assertSafeId(role, 'role'),
+    'draft.json'
+  );
   if (resolvedFile !== expectedFile) {
     throw new Error(`review input must be the role's exact draft path: ${expectedFile}`);
   }
@@ -2206,7 +2295,7 @@ async function exportReviewInput({
   });
   const laneFiles = [];
   for (const lane of catalog.matrix.profiles[profile].lanes) {
-    const record = await getRecord({ nonce, kind: `lanes/${lane}`, source, artifactRoot });
+    const record = await getRecord({ nonce, kind: laneEvidenceKind(lane), source, artifactRoot });
     const target = reviewExportPath(artifactRoot, nonce, role, lane);
     await writePrivateReviewExport(target, record);
     laneFiles.push({
@@ -2250,7 +2339,7 @@ async function aggregateFromStorage({ catalog, profile, nonce, source, artifactR
   const laneRecords = [];
   for (const laneId of catalog.matrix.profiles[profile].lanes) {
     try {
-      laneRecords.push(await getRecord({ nonce, kind: `lanes/${laneId}`, source, artifactRoot }));
+      laneRecords.push(await getRecord({ nonce, kind: laneEvidenceKind(laneId), source, artifactRoot }));
     } catch {
       // Missing evidence is represented explicitly by aggregateRecords.
     }
@@ -2549,7 +2638,7 @@ async function main() {
   }
   if (command === 'gate-lane') {
     const lane = assertSafeId(requiredOption(options, 'lane'), 'lane');
-    const record = await getRecord({ nonce, kind: `lanes/${lane}`, source, artifactRoot });
+    const record = await getRecord({ nonce, kind: laneEvidenceKind(lane), source, artifactRoot });
     if (
       record.version !== CONTRACT_VERSION ||
       record.nonce !== nonce ||
@@ -2659,7 +2748,7 @@ async function main() {
     try {
       await putRecord({
         nonce,
-        kind: `review-provenance/${role}`,
+        kind: reviewProvenanceKind(role),
         value: provenance,
         source,
         artifactRoot,
@@ -2670,7 +2759,7 @@ async function main() {
       }
       const stored = await getRecord({
         nonce,
-        kind: `review-provenance/${role}`,
+        kind: reviewProvenanceKind(role),
         source,
         artifactRoot,
       });
@@ -2682,6 +2771,7 @@ async function main() {
     return;
   }
   if (command === 'review-upload') {
+    assertReviewUploadSource(profile, source);
     const role = assertSafeId(requiredOption(options, 'role'), 'role');
     const reviewKind = requiredOption(options, 'review-kind');
     const file = validateReviewDraftPath(requiredOption(options, 'file'), artifactRoot, nonce, role);
@@ -2700,7 +2790,7 @@ async function main() {
     const provenance = validateReviewProvenance(
       await getRecord({
         nonce,
-        kind: `review-provenance/${role}`,
+        kind: reviewProvenanceKind(role),
         source,
         artifactRoot,
       }),

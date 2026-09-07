@@ -439,6 +439,12 @@ export function validateCloudSnapshotAcceptanceEvidence(value, expected) {
   if (new Set(ids).size !== ids.length) {
     throw new Error('Cloud candidate acceptance reused a Daytona sandbox');
   }
+  const correlationIds = [value.cold, ...value.concurrent].map(
+    (record) => record.resources.request.correlationIdSha256
+  );
+  if (new Set(correlationIds).size !== correlationIds.length) {
+    throw new Error('Cloud candidate acceptance reused a request correlation');
+  }
   const overlapStartedAt = Math.max(...value.concurrent.map((record) => Date.parse(record.startedAt)));
   const overlapFinishedAt = Math.min(...value.concurrent.map((record) => Date.parse(record.finishedAt)));
   if (overlapStartedAt >= overlapFinishedAt) {

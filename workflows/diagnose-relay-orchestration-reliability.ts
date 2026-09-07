@@ -20,6 +20,8 @@ import path from 'node:path';
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 
+import { diagnosisAgentNetwork } from '../scripts/verify-features/fleet-permissions.mjs';
+
 const RUN_ID = process.env.RELAY_RELIABILITY_RUN_ID ?? `local-diagnosis-${randomBytes(8).toString('hex')}`;
 const DISABLE_RELAYCAST = process.env.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1';
 if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(RUN_ID)) {
@@ -34,6 +36,11 @@ const MANUAL = 'tests/relayflows/cleanroom/FLEET_DAYTONA_MANUAL_2026-09-04.md';
 const CLOUD = path.resolve(ROOT, process.env.RELAY_CLOUD_REPO ?? '../cloud');
 const RELAYFILE = path.resolve(ROOT, process.env.RELAYFILE_REPO ?? '../relayfile');
 const RELAYFILE_CLOUD = path.resolve(ROOT, process.env.RELAYFILE_CLOUD_REPO ?? '../relayfile-cloud');
+
+function peerPrefix(repository: string): string {
+  const relative = path.relative(ROOT, repository).replaceAll('\\', '/');
+  return relative === '' ? '' : `${relative}/`;
+}
 
 function gate(action: string): string {
   return `node ${GATE} ${action} --artifact ${ART} --run-id ${RUN_ID}`;
@@ -200,9 +207,9 @@ function diagnosisPermissions(agentName: string) {
     files: {
       read: [
         ...repoReads(''),
-        ...repoReads('../cloud/'),
-        ...repoReads('../relayfile/'),
-        ...repoReads('../relayfile-cloud/'),
+        ...repoReads(peerPrefix(CLOUD)),
+        ...repoReads(peerPrefix(RELAYFILE)),
+        ...repoReads(peerPrefix(RELAYFILE_CLOUD)),
         `${ART}/*`,
       ],
       write: writesByAgent[agentName] ?? [],
@@ -231,7 +238,7 @@ function diagnosisPermissions(agentName: string) {
         '**/.workflow-artifacts/**/draft-*',
       ],
     },
-    network: false,
+    network: diagnosisAgentNetwork(agentName),
     exec: ['rg', 'git', 'node', 'npm', 'npx', 'go'],
   };
 }

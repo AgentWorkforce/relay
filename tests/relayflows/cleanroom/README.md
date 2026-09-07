@@ -75,6 +75,9 @@ every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
 post-ready injection, remote attach, Relayfile root/scoped/no-mount behavior,
 workflow execution, release, identity reconciliation, and exact sandbox cleanup.
+Targeted Fleet presence is cross-checked against heartbeat live-name metadata and
+`activeAgents`, unfiltered placement, direct node inventory, and the roster both
+before and after release, so contradictory views cannot be reported as absence.
 Every attempt also runs five critical targeted lifecycle trials across both nodes,
 including independent placement lookup, sender-bound initial and post-ready MCP
 acknowledgements, exact injection reader receipts, same-name reuse, and verified
@@ -90,8 +93,9 @@ npm run verify:fleet-daytona:dry-run
 npm run verify:fleet-daytona
 ```
 
-Run the live command only from an operator host that is already authenticated to
-Relay Cloud and Daytona. The runner never prints or places credentials in child
+Run the live command only from a Linux operator host that is already authenticated
+to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
+on platforms without descriptor-bound directory I/O. The runner never prints or places credentials in child
 argv, stores redacted bounded output, checkpoints after every operation, and
 deletes only exact sandbox IDs/names it recorded as owned. If interrupted, rerun
 exact cleanup with the nonce printed by the workflow:
@@ -145,7 +149,7 @@ immutable qualification manifest; it is otherwise skipped instead of silently
 testing an unspecified build.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
-and validates exactly 143 runtime contracts: 12 state transitions, 23 injected
+and validates exactly 145 runtime contracts: 12 state transitions, 23 injected
 faults, 13 release acceptance gates, and all 97 Fleet operations. Diagnosis mode
 must mark every runtime row `BLOCKED` and bind it bidirectionally to an owned,
 promotion-blocking unknown; static tests and historical observations cannot
@@ -180,6 +184,8 @@ Relayfile Cloud candidate-deployment attestation. The job checks the GitHub run
 attempts and artifact digests, exact acceptance sandbox cleanup, then checks the downloaded Relay package payload
 and envelope, `qualification.json`, full snapshot manifest, baked Relay producer
 closure and SDK version, Relayfile source SHA, and data-plane deployment identity.
+The three scale mounts must carry three distinct hashed request correlations so
+one aggregate Relayfile Cloud counter cannot be reused as per-sandbox evidence.
 Each board attempt receives a separate ephemeral Cloud workspace. The command
 availability preflight is explicitly non-qualifying; only observed candidate
 selection, two reveal-once 0600 workspace credentials, exact data-plane binding,

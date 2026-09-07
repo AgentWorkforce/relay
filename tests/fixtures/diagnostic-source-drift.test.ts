@@ -31,6 +31,8 @@ describe('diagnosis source provenance', () => {
     expect(workflow).toContain('extensions.map((extension)');
     expect(workflow).not.toContain("const extensions = '{");
     expect(workflow).toContain("'**/.workflow-artifacts/**/draft-*'");
+    expect(workflow).toContain('network: diagnosisAgentNetwork(agentName)');
+    expect(workflow).not.toContain('network: false');
   });
 
   it('ignores runtime Trail telemetry but detects real source drift', async () => {

@@ -299,13 +299,13 @@ export function registerFleetCommands(
             ...(sandboxRelayfilePaths === undefined ? {} : { relayfilePaths: sandboxRelayfilePaths }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
+            workloadProfile: 'long-running-agent',
             ...(sandboxSnapshot === undefined
               ? {}
               : {
                   snapshotId: sandboxSnapshot,
                   snapshotManifestSha256: sandboxSnapshotManifestSha256,
                 }),
-            workloadProfile: 'long-running-agent',
             waitTimeoutMs: 90_000,
             name: requestedSandboxName,
           });

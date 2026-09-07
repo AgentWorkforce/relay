@@ -337,6 +337,8 @@ pub(super) struct PendingModelRequest {
     pub(super) deadline: Instant,
     pub(super) provider_deadline: Option<Instant>,
     pub(super) provider_timeout: Duration,
+    /// The provider reported an uncertain mutation that requires confirmation.
+    pub(super) confirmation_pending: bool,
 }
 
 /// Last model-change receipt for a worker generation. Queue admission is

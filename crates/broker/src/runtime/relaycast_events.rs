@@ -987,6 +987,7 @@ mod tests {
                 revision: 1,
                 deadline: Instant::now() + Duration::from_secs(30),
                 provider_deadline: None,
+                confirmation_pending: false,
                 provider_timeout: Duration::from_secs(65),
             },
         );

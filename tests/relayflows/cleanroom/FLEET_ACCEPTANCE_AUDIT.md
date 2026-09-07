@@ -26,7 +26,12 @@ Two distinct candidate Fleet nodes must be live. Targeted Fleet spawns are
 verified through the independent live Fleet inventory, not through echoed input.
 The sender-bound initial and post-ready MCP sentinels must arrive, reader receipts
 must name the exact worker, and every release must converge to process/identity
-absence. In addition to the 97-operation board, every attempt repeats the
+absence. The targeted Fleet read and both process-release variants also fail
+closed unless the same nonce-owned identity agrees across `fleet nodes --all`
+heartbeat names/counts, `fleet agent list --node ... --pretty`, unfiltered Fleet
+placement, direct `node agent list`, and the workspace roster before and after
+release; this guards the contradiction tracked in #1531. In addition to the
+97-operation board, every attempt repeats the
 targeted spawn → placement → initial MCP response → post-ready injection/read
 receipt → release/absence lifecycle five times, alternating nodes and reusing
 the same two names. Any mixed trial makes the attempt RED.
@@ -89,6 +94,10 @@ with the exact snapshot, workspace-create, candidate Relayfile deployment,
 release can be called fully proven. Until Cloud #3351 exists end to end, the
 candidate selector remains a hard blocker and no production/fallback run is a
 qualification result.
+
+The `node agent set-model` JSON receipt is intentionally absent from this
+head's board because that contract is introduced by PR #1666 (based on this
+exact head). PR #1666 re-adds and proves that operation after this PR lands.
 
 ## Commands that are safe before Cloud #3351
 

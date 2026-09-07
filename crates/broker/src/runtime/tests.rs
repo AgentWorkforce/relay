@@ -754,6 +754,33 @@ async fn set_model_unavailable_provider_confirmation_stays_pending() {
     assert_eq!(pending["status"], "accepted_pending");
     assert_eq!(pending["pending"], true);
     assert_eq!(pending["applied"], false);
+    let request_id = pending["request_id"].as_str().unwrap().to_string();
+    fixture
+        .runtime
+        .pending_model_requests
+        .get_mut(&request_id)
+        .unwrap()
+        .provider_deadline = Some(Instant::now() - Duration::from_secs(1));
+    fixture
+        .runtime
+        .handle_maintenance_tick_with_worker_queue_state(true)
+        .await;
+    let receipt = &fixture.runtime.model_receipts_by_request[&request_id];
+    assert_eq!(
+        receipt.status, "unknown",
+        "an unconfirmed provider mutation is not a rejection"
+    );
+    assert!(!receipt.applied);
+    assert!(!receipt.pending);
+    assert!(receipt.accepted);
+    assert_eq!(
+        fixture.runtime.model_receipts[&WorkerName::new("model-worker")].status,
+        "unknown"
+    );
+    assert!(!fixture
+        .runtime
+        .pending_model_requests
+        .contains_key(&request_id));
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
@@ -1096,6 +1123,7 @@ fn terminalization_preserves_confirmed_model_from_the_request_receipt() {
             revision: 2,
             deadline: Instant::now() + Duration::from_secs(60),
             provider_deadline: None,
+            confirmation_pending: false,
             provider_timeout: Duration::from_secs(60),
         },
     );

@@ -14,11 +14,20 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { cleanroomLaneTimeoutMs } from '../scripts/verify-features/cleanroom.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  cleanroomLaneEvidenceScopes,
+  cleanroomLaneNetwork,
+  cleanroomLaneWritePaths,
+  cleanroomReviewNetwork,
+} from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const RUNNER = 'scripts/verify-features/cleanroom.mjs';
@@ -26,7 +35,6 @@ const PROFILE = process.env.VERIFY_CLEANROOM_PROFILE ?? 'full';
 const REVIEW_ROUNDS = Number(process.env.VERIFY_CLEANROOM_REVIEW_ROUNDS ?? '2');
 const NONCE = randomBytes(16).toString('hex');
 const SOURCE = 'auto';
-const STEP_TIMEOUT = 7_200_000;
 
 if (!['smoke', 'full', 'soak'].includes(PROFILE)) {
   throw new Error('VERIFY_CLEANROOM_PROFILE must be smoke, full, or soak');
@@ -37,10 +45,35 @@ if (!Number.isSafeInteger(REVIEW_ROUNDS) || REVIEW_ROUNDS < 1 || REVIEW_ROUNDS >
 
 const matrix = JSON.parse(readFileSync(MATRIX, 'utf8')) as {
   product: string;
-  profiles: Record<string, { lanes: string[] }>;
+  profiles: Record<string, { lanes: string[]; defaultRepeats: number }>;
+  commonSetup: Array<{ timeoutSeconds: number; profiles?: string[] }>;
+  lanes: Array<{
+    id: string;
+    setup: Array<{ timeoutSeconds: number; profiles?: string[] }>;
+    scenarios: Array<{
+      kind?: 'command' | 'coverage-gap' | 'relayflow-corpus';
+      timeoutSeconds: number;
+      profiles?: string[];
+      repeats?: Record<string, number>;
+    }>;
+  }>;
 };
 const lanes = matrix.profiles[PROFILE]?.lanes;
 if (!lanes?.length) throw new Error(`Matrix has no lanes for profile ${PROFILE}`);
+const corpusCaseTimeoutSeconds = readdirSync('tests/relayflows/cases', { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => {
+    const manifest = JSON.parse(readFileSync(`tests/relayflows/cases/${entry.name}/case.json`, 'utf8')) as {
+      timeoutSeconds?: number;
+    };
+    if (!Number.isSafeInteger(manifest.timeoutSeconds) || Number(manifest.timeoutSeconds) < 1) {
+      throw new Error(`Corpus case ${entry.name} has no positive timeoutSeconds`);
+    }
+    return Number(manifest.timeoutSeconds);
+  });
+const laneTimeouts = Object.fromEntries(
+  lanes.map((lane) => [lane, cleanroomLaneTimeoutMs(matrix, PROFILE, lane, corpusCaseTimeoutSeconds)])
+) as Record<string, number>;
 
 function command(action: string, extra = ''): string {
   return `node ${RUNNER} ${action} --matrix ${MATRIX} --profile ${PROFILE} --nonce ${NONCE} --source ${SOURCE}${extra}`;
@@ -51,7 +84,7 @@ function reviewProvenanceCommand(role: string): string {
 }
 
 function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRoles: string[]): string {
-  const artifact = `.workflow-artifacts/verify-cleanroom/${NONCE}/draft-${role}.json`;
+  const artifact = `.workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${role}/draft.json`;
   const input = `.workflow-artifacts/verify-cleanroom/${NONCE}/review-input-${role}.json`;
   const sandboxEnvironmentReference = '${SANDBOX_ID}';
   const laneInputs = lanes.map(
@@ -112,24 +145,23 @@ function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRo
 
 function reviewPermissions(role: string) {
   const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
+  const provenancePath = `${artifactDir}/review-provenance/${role}/capture.json`;
   const cloudApiUrl = process.env.CLOUD_API_URL?.trim();
-  const providerHosts =
-    role.startsWith('claude') || role === 'final-claude-signoff'
-      ? ['api.anthropic.com:443']
-      : role.startsWith('codex') || role === 'final-codex-signoff'
-        ? ['api.openai.com:443', 'chatgpt.com:443', 'auth.openai.com:443']
-        : ['api.opencode.ai:443', 'opencode.ai:443', 'api.openrouter.ai:443', 'openrouter.ai:443'];
-  let network: false | { allow: string[]; deny: string[] } = false;
+  let cloudHost: string | undefined;
   if (cloudApiUrl) {
     const parsed = new URL(cloudApiUrl);
     const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
-    network = { allow: [`${parsed.hostname}:${port}`, ...providerHosts], deny: ['*'] };
+    cloudHost = `${parsed.hostname}:${port}`;
   }
   return {
     description: `Constrain ${role} to sealed clean-room evidence and its own draft.`,
     why: 'Evidence reviewers must not alter Relay source, tests, the matrix, runner, or collected evidence.',
     access: 'restricted' as const,
     inherit: false,
+    // The write anchor makes the role-specific directory writable with the
+    // released RelayFlow compiler; the raw scopes still constrain the
+    // write-once future provenance record to its exact path.
+    scopes: [`relayfile:fs:read:/${provenancePath}`, `relayfile:fs:write:/${provenancePath}`],
     files: {
       read: [
         RUNNER,
@@ -139,54 +171,50 @@ function reviewPermissions(role: string) {
         `${artifactDir}/review-input-${role}.json`,
         ...lanes.map((lane) => `${artifactDir}/review-input-${role}-lane-${lane}.json`),
       ],
-      write: [`${artifactDir}/draft-${role}.json`, `${artifactDir}/review-provenance/${role}.json`],
+      write: [
+        `${artifactDir}/review-drafts/${role}/draft.json`,
+        `${artifactDir}/review-provenance/${role}/.mount-write-anchor`,
+        provenancePath,
+      ],
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
     },
-    network,
+    network: cleanroomReviewNetwork(role, cloudHost),
     exec: [reviewProvenanceCommand(role)],
   };
 }
 
 function lanePermissions(lane: string) {
-  const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
   return {
     description: `Constrain lane-${lane} to immutable source plus generated build/evidence outputs.`,
     why: 'Lane agents may execute the deterministic runner but must not edit product source or test inputs.',
     access: 'restricted' as const,
     inherit: false,
+    // The evidence file is intentionally write-once and absent at compile
+    // time. An existing anchor makes only this lane directory mount-writable
+    // with released compilers; custom scopes constrain the token to the exact
+    // future evidence path, which current compilers also preserve directly.
+    scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
     files: {
       read: ['**'],
-      write: [
-        'node_modules/**',
-        'target/**',
-        'packages/*/dist/**',
-        'packages/*/node_modules/**',
-        'plugins/*/dist/**',
-        'plugins/*/node_modules/**',
-        'tests/integration/broker/dist/**',
-        '.agentworkforce/trajectories/**',
-        `${artifactDir}/**`,
+      write: cleanroomLaneWritePaths(NONCE, lane),
+      deny: [
+        '.env',
+        '.env.*',
+        '**/.env',
+        '**/.env.*',
+        '**/*secret*',
+        '**/.credentials',
+        '**/.credentials/**',
+        '**/credential.json',
+        '**/credentials.json',
+        '**/*-credential.json',
+        '**/*-credentials.json',
+        '**/*_credential.json',
+        '**/*_credentials.json',
+        '**/.git/**',
       ],
-      deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*', '**/.git/**'],
     },
-    network: {
-      allow: [
-        'agentrelay.com:443',
-        'api.github.com:443',
-        'github.com:443',
-        'codeload.github.com:443',
-        'registry.npmjs.org:443',
-        'crates.io:443',
-        'index.crates.io:443',
-        'static.crates.io:443',
-        'pypi.org:443',
-        'files.pythonhosted.org:443',
-        'localhost:*',
-        '127.0.0.1:*',
-        '[::1]:*',
-      ],
-      deny: ['*'],
-    },
+    network: cleanroomLaneNetwork(),
     exec: [command('lane', ` --lane ${lane}`)],
   };
 }
@@ -194,9 +222,37 @@ function lanePermissions(lane: string) {
 async function ensureReviewPlaceholders(roles: string[]) {
   const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
   await mkdir(artifactDir, { recursive: true, mode: 0o700 });
+  await Promise.all(
+    [
+      ...lanes.map((lane) => `lanes/${lane}`),
+      ...roles.flatMap((role) => [`review-drafts/${role}`, `review-provenance/${role}`]),
+    ].map((directory) => mkdir(`${artifactDir}/${directory}`, { recursive: true, mode: 0o700 }))
+  );
+  for (const lane of lanes) {
+    const target = `${artifactDir}/lanes/${lane}/.mount-write-anchor`;
+    try {
+      const handle = await open(target, 'wx', 0o600);
+      try {
+        await handle.writeFile(
+          `${JSON.stringify({
+            version: 1,
+            kind: 'cleanroom-lane-mount-write-anchor',
+            nonce: NONCE,
+            lane,
+          })}\n`
+        );
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
   for (const role of roles) {
     for (const target of [
-      `${artifactDir}/draft-${role}.json`,
+      `${artifactDir}/review-drafts/${role}/draft.json`,
+      `${artifactDir}/review-provenance/${role}/.mount-write-anchor`,
       `${artifactDir}/review-input-${role}.json`,
       ...lanes.map((lane) => `${artifactDir}/review-input-${role}-lane-${lane}.json`),
     ]) {
@@ -246,7 +302,6 @@ async function main() {
     .channel(`relay-cleanroom-${NONCE.slice(0, 8)}`)
     .maxConcurrency(8)
     .onError('continue')
-    .timeout(28_800_000)
     .idleNudge({ nudgeAfterMs: 180_000, escalateAfterMs: 180_000, maxNudges: 2 });
 
   wf.agent('campaign-supervisor', {
@@ -364,7 +419,7 @@ async function main() {
         `Report the command output, including CLEANROOM_LANE_COMPLETE lane=${lane}.`,
       ].join('\n'),
       verification: { type: 'output_contains', value: `CLEANROOM_LANE_COMPLETE lane=${lane}` },
-      timeoutMs: STEP_TIMEOUT,
+      timeoutMs: laneTimeouts[lane],
     });
     wf.step(gateStep, {
       type: 'deterministic',
@@ -413,7 +468,7 @@ async function main() {
     dependsOn: ['supervise'],
     command: command(
       'review-upload',
-      ` --role supervisor --review-kind supervisor --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-supervisor.json`
+      ` --role supervisor --review-kind supervisor --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/supervisor/draft.json`
     ),
     captureOutput: true,
     failOnError: true,
@@ -453,7 +508,7 @@ async function main() {
         dependsOn: [reviewStep],
         command: command(
           'review-upload',
-          ` --role ${reviewer} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-${reviewer}.json`
+          ` --role ${reviewer} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${reviewer}/draft.json`
         ),
         captureOutput: true,
         failOnError: true,
@@ -481,7 +536,7 @@ async function main() {
         dependsOn: [fixStep],
         command: command(
           'review-upload',
-          ` --role ${fixer} --review-kind fix --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-${fixer}.json`
+          ` --role ${fixer} --review-kind fix --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${fixer}/draft.json`
         ),
         captureOutput: true,
         failOnError: true,
@@ -515,7 +570,7 @@ async function main() {
       dependsOn: [`run-${role}`],
       command: command(
         'review-upload',
-        ` --role ${role} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/draft-${role}.json`
+        ` --role ${role} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${role}/draft.json`
       ),
       captureOutput: true,
       failOnError: true,
@@ -538,6 +593,24 @@ async function main() {
     failOnError: true,
     timeoutMs: 300_000,
   });
+
+  // Derive the global envelope from the finalized step plan. Summing rather
+  // than assuming ideal DAG concurrency keeps the workflow valid if sandbox
+  // scheduling serializes lanes. Count the agent or step retry limit because
+  // each retry receives a fresh per-step timeout.
+  const timeoutPlan = wf.toConfig();
+  const timeoutAgents = new Map(timeoutPlan.agents.map((agent) => [agent.name, agent]));
+  const workflowTimeout = timeoutPlan.workflows
+    .flatMap((definition) => definition.steps)
+    .reduce((total, step) => {
+      if (!Number.isSafeInteger(step.timeoutMs) || Number(step.timeoutMs) < 1) {
+        throw new Error(`Clean-room step ${step.name} has no positive timeout`);
+      }
+      const agentRetries = step.agent ? timeoutAgents.get(step.agent)?.constraints?.retries : undefined;
+      const retries = step.retries ?? agentRetries ?? timeoutPlan.errorHandling?.maxRetries ?? 0;
+      return total + Number(step.timeoutMs) * (retries + 1);
+    }, 600_000);
+  wf.timeout(workflowTimeout);
 
   for (const agent of wf.toConfig().agents) {
     if (reviewAgentRoles.includes(agent.name)) {

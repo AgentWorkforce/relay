@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import {
+  access,
   chmod,
   copyFile,
   lstat,
@@ -47,7 +48,7 @@ const REQUIRED_PACKAGE_NAMES = new Set([
 const PLATFORM_PACKAGE_NAME = /^@agent-relay\/broker-(?:darwin|linux|win32)-(?:arm64|x64)$/;
 const CLI_RELATIVE_PATH = 'node_modules/agent-relay/dist/cli/index.js';
 const LOCKFILE_NAME = 'candidate-package-lock.json';
-const REQUIRED_NPM_VERSION = '10.9.7';
+export const REQUIRED_NPM_VERSION = '10.9.7';
 const INSTALL_STRATEGY = 'omit-optional-with-direct-platform-broker';
 const NPM_INSTALL_POLICY_ARGS = ['--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'];
 let activePrivateRootHandle;
@@ -274,6 +275,65 @@ function brokerRelativePath(platform = process.platform, arch = process.arch) {
   return path.posix.join('node_modules', '@agent-relay', packageDirectory, 'bin', binary);
 }
 
+export function sourceBrokerBuildPlan(platform = process.platform, arch = process.arch) {
+  // Validate the same platform/architecture pair that selects the destination
+  // package before deriving a build target.
+  platformPackage(platform, arch);
+  const binary = platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
+  if (platform === 'linux') {
+    const target =
+      arch === 'x64' ? 'x86_64-unknown-linux-musl' : arch === 'arm64' ? 'aarch64-unknown-linux-musl' : null;
+    if (!target) throw new Error(`unsupported portable Linux broker architecture ${arch}`);
+    return {
+      cargoArgs: ['build', '--locked', '--release', '--bin', 'agent-relay-broker', '--target', target],
+      built: path.join('target', target, 'release', binary),
+      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
+      target,
+    };
+  }
+  return {
+    cargoArgs: ['build', '--locked', '--release', '--bin', 'agent-relay-broker'],
+    built: path.join('target', 'release', binary),
+    env: {},
+    target: `${platform}-${arch}-native`,
+  };
+}
+
+export function sourceBrokerToolchainPlan(
+  buildPlan,
+  { muslGccAvailable = false, aptGetAvailable = false, sudoAvailable = false, isRoot = false } = {}
+) {
+  if (!String(buildPlan?.target ?? '').endsWith('-unknown-linux-musl')) return [];
+  const commands = [{ command: 'rustup', args: ['target', 'add', buildPlan.target] }];
+  if (muslGccAvailable) return commands;
+  if (!aptGetAvailable) {
+    throw new Error('portable Linux broker staging requires apt-get to provision musl-tools');
+  }
+  const aptCommand = isRoot ? 'apt-get' : sudoAvailable ? 'sudo' : null;
+  if (!aptCommand) {
+    throw new Error('portable Linux broker staging requires root or sudo to provision musl-tools');
+  }
+  const aptPrefix = isRoot ? [] : ['apt-get'];
+  commands.push(
+    { command: aptCommand, args: [...aptPrefix, 'update'] },
+    { command: aptCommand, args: [...aptPrefix, 'install', '-y', 'musl-tools'] }
+  );
+  return commands;
+}
+
+async function executableOnPath(command) {
+  for (const directory of String(process.env.PATH ?? '').split(path.delimiter)) {
+    if (!directory) continue;
+    try {
+      await access(path.join(directory, command), fsConstants.X_OK);
+      return true;
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+  return false;
+}
+
 async function rejectBundledBrokerContamination() {
   for (const directory of ['packages/sdk/bin', 'packages/harness-driver/bin']) {
     const names = await readdir(directory).catch((error) => {
@@ -289,13 +349,25 @@ async function rejectBundledBrokerContamination() {
   }
 }
 
+export function privateNpmInvocation(
+  args,
+  childRoot,
+  suffix,
+  platform = process.platform,
+  parentDescriptorRoot = childRoot
+) {
+  if (platform !== 'linux') {
+    throw new Error('descriptor-bound candidate npm execution is supported only on Linux');
+  }
+  return {
+    args,
+    cwd: `${parentDescriptorRoot}${suffix}`,
+  };
+}
+
 function run(command, args, options = {}) {
   const privateRoot = activePrivateRootHandle;
-  const childRoot = privateRoot
-    ? process.platform === 'linux'
-      ? `/proc/self/fd/3`
-      : privateRoot.root
-    : null;
+  const childRoot = privateRoot ? `/proc/self/fd/3` : null;
   const rewritePrivatePath = (value) => {
     if (!privateRoot || !childRoot || typeof value !== 'string') return value;
     for (const root of [privateRoot.root, privateRoot.ioRoot]) {
@@ -315,25 +387,84 @@ function run(command, args, options = {}) {
     );
     if (prefix && command === 'npm') {
       const suffix = options.cwd.slice(prefix.length);
-      childArgs = ['--prefix', `${childRoot}${suffix}`, ...childArgs];
-      childCwd = undefined;
+      const parentDescriptorRoot = `/proc/${process.pid}/fd/${privateRoot.handle.fd}`;
+      const invocation = privateNpmInvocation(
+        childArgs,
+        childRoot,
+        suffix,
+        process.platform,
+        parentDescriptorRoot
+      );
+      childArgs = invocation.args;
+      childCwd = invocation.cwd;
     }
   }
-  const result = spawnSync(command, childArgs, {
+  const result = spawnSync(rewritePrivatePath(command), childArgs, {
     cwd: rewritePrivatePath(childCwd),
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 300_000,
     maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1' },
-    ...(privateRoot && process.platform !== 'win32'
-      ? { stdio: ['ignore', 'pipe', 'pipe', privateRoot.handle.fd] }
-      : {}),
+    env: { ...process.env, ...options.env, NO_COLOR: '1' },
+    ...(privateRoot ? { stdio: ['ignore', 'pipe', 'pipe', privateRoot.handle.fd] } : {}),
   });
   if (result.error || result.status !== 0) {
     const detail = String(result.stderr || result.stdout || result.error?.message || '').trim();
     throw new Error(`${command} failed${detail ? `: ${detail.slice(-4096)}` : ''}`);
   }
   return result.stdout;
+}
+
+async function stageSourceBroker() {
+  const [rootPackage, sourceSha, sourceStatus] = await Promise.all([
+    readFile('package.json', 'utf8').then(JSON.parse),
+    Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
+    Promise.resolve(run('git', ['status', '--porcelain']).trim()),
+  ]);
+  if (!SHA40.test(sourceSha)) throw new Error('could not resolve a source commit');
+  if (sourceStatus) throw new Error('source broker staging requires a clean source tree');
+  const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
+  const buildPlan = sourceBrokerBuildPlan();
+  const toolchainCommands = sourceBrokerToolchainPlan(buildPlan, {
+    muslGccAvailable: await executableOnPath('musl-gcc'),
+    aptGetAvailable: await executableOnPath('apt-get'),
+    sudoAvailable: await executableOnPath('sudo'),
+    isRoot: typeof process.getuid === 'function' && process.getuid() === 0,
+  });
+  for (const { command, args } of toolchainCommands) {
+    run(command, args, { timeoutMs: 900_000 });
+  }
+  if (process.platform === 'linux' && !(await executableOnPath('musl-gcc'))) {
+    throw new Error('portable Linux broker staging could not provision musl-gcc');
+  }
+  run('cargo', buildPlan.cargoArgs, {
+    timeoutMs: 1_800_000,
+    env: { ...buildPlan.env, AGENT_RELAY_VERSION: packageVersion },
+  });
+  const binary = process.platform === 'win32' ? 'agent-relay-broker.exe' : 'agent-relay-broker';
+  const destination = path.join('packages', platformPackage(), 'bin', binary);
+  await mkdir(path.dirname(destination), { recursive: true });
+  await copyFile(buildPlan.built, destination);
+  if (process.platform !== 'win32') await chmod(destination, 0o755);
+  const { bytes, mode } = await readRegularFileNoFollow(destination, {
+    label: 'staged source broker',
+  });
+  if (bytes.length < 1 || (process.platform !== 'win32' && mode !== 0o755)) {
+    throw new Error('staged source broker is not an executable regular file');
+  }
+  if (
+    run(destination, ['--version'], { timeoutMs: 30_000 }).trim() !== `agent-relay-broker ${packageVersion}`
+  ) {
+    throw new Error('staged source broker reported a different version');
+  }
+  if (
+    run('git', ['rev-parse', 'HEAD']).trim() !== sourceSha ||
+    run('git', ['status', '--porcelain']).trim()
+  ) {
+    throw new Error('source changed while the broker was staged');
+  }
+  process.stdout.write(
+    `RELAY_SOURCE_BROKER_STAGED package=${platformPackage()} target=${buildPlan.target} bytes=${bytes.length}\n`
+  );
 }
 
 function parseArgs(argv) {
@@ -560,14 +691,38 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   return { attestation, attestationSha256: sha256(bytes) };
 }
 
-function descriptorRoot(handle, fallback) {
-  if (process.platform === 'linux') return `/proc/self/fd/${handle.fd}`;
-  return fallback;
+function descriptorRoot(handle) {
+  return `/proc/self/fd/${handle.fd}`;
+}
+
+export function assertSupportedCandidateOutputPlatform(platform = process.platform) {
+  if (platform !== 'linux') {
+    throw new Error(
+      'candidate prepare/hydrate is supported only on Linux because other Node platforms cannot bind directory I/O to a verified handle'
+    );
+  }
+}
+
+async function verifyPrivateOutputParent(parent) {
+  const info = await lstat(parent);
+  const mode = info.mode & 0o777;
+  const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    (currentUid !== null && info.uid !== currentUid) ||
+    mode !== 0o700
+  ) {
+    throw new Error('candidate output root requires an existing current-user-owned 0700 parent directory');
+  }
 }
 
 async function createPrivateOutputRootHandle(outputRoot) {
+  assertSupportedCandidateOutputPlatform();
   const root = path.resolve(outputRoot);
-  await mkdir(path.dirname(root), { recursive: true, mode: 0o700 });
+  const parent = path.dirname(root);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  await verifyPrivateOutputParent(parent);
   try {
     // mkdir is the existence check: its atomic EEXIST result avoids a
     // check-then-create window where another process could replace the path.
@@ -578,11 +733,6 @@ async function createPrivateOutputRootHandle(outputRoot) {
     }
     throw error;
   }
-  if (process.platform === 'win32') {
-    // Node cannot open directory handles on Windows. mkdir above is still an
-    // atomic must-not-exist boundary; subsequent I/O uses the created path.
-    return { root, ioRoot: root, handle: null };
-  }
   const openFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
   const handle = await open(root, openFlags);
   const info = await handle.stat();
@@ -590,7 +740,7 @@ async function createPrivateOutputRootHandle(outputRoot) {
     await handle.close();
     throw new Error('candidate output root must be a newly created directory');
   }
-  return { root, ioRoot: descriptorRoot(handle, root), handle };
+  return { root, ioRoot: descriptorRoot(handle), handle };
 }
 
 export async function createPrivateOutputRoot(outputRoot) {
@@ -867,6 +1017,11 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
 
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
+  if (command === 'stage-source-broker') {
+    if (Object.keys(options).length > 0) throw new Error('stage-source-broker does not accept options');
+    await stageSourceBroker();
+    return;
+  }
   if (command === 'prepare') {
     await prepare(requiredString(options.output, '--output'));
     return;

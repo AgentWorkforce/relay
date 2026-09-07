@@ -65,7 +65,7 @@ returned an empty array.
 ## Remaining acceptance boundary
 
 This lane proves candidate build and clean installation only. It does not prove
-the 95-operation Fleet board against that candidate because the current Cloud
+the 94-operation Fleet board against that candidate because the current Cloud
 ensure path selects the production snapshot and global Relayfile data plane.
 Qualification remains fail-closed until the system can:
 

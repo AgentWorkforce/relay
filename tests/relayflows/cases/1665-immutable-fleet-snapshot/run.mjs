@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 const CASE_ID = '1665-immutable-fleet-snapshot';
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CLI_TIMEOUT_MS = 60_000;
+const TLS_CERTIFICATE_TIMEOUT_MS = 30_000;
+const OPENSSL_PATH = '/usr/bin/openssl';
 const SNAPSHOT_ID = 'snap_immutable_candidate_1665';
 const MANIFEST_SHA256 = 'a'.repeat(64);
 const WRONG_MANIFEST_SHA256 = 'b'.repeat(64);
@@ -44,13 +46,16 @@ if (!isWithin(harnessDir, runnerPath)) {
 const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1665-'));
 const serverPath = path.join(probeDir, 'fake-fleet-control-plane.mjs');
 const statePath = path.join(probeDir, 'requests.json');
+const tlsConfigPath = path.join(probeDir, 'openssl.cnf');
+const tlsPrivateKeyPath = path.join(probeDir, 'server-key.pem');
+const tlsCertificatePath = path.join(probeDir, 'server-cert.pem');
 const cliHome = path.join(probeDir, 'home');
 const serverSource = String.raw`import fs from 'node:fs';
-import http from 'node:http';
+import https from 'node:https';
 
-const [statePath, snapshotId, manifestSha256, wrongManifestSha256] = process.argv.slice(2);
-if (!statePath || !snapshotId || !manifestSha256 || !wrongManifestSha256) {
-  throw new Error('fake Fleet control plane requires state and snapshot arguments');
+const [statePath, privateKeyPath, certificatePath, snapshotId, manifestSha256, wrongManifestSha256] = process.argv.slice(2);
+if (!statePath || !privateKeyPath || !certificatePath || !snapshotId || !manifestSha256 || !wrongManifestSha256) {
+  throw new Error('fake Fleet control plane requires state, TLS, and snapshot arguments');
 }
 
 const RELAY_WORKSPACE_ID = ${JSON.stringify(RELAY_WORKSPACE_ID)};
@@ -89,7 +94,12 @@ function bearer(request) {
   return request.headers.authorization ?? '';
 }
 
-const server = http.createServer((request, response) => {
+const tlsOptions = {
+  key: fs.readFileSync(privateKeyPath),
+  cert: fs.readFileSync(certificatePath),
+};
+
+const server = https.createServer(tlsOptions, (request, response) => {
   const chunks = [];
   request.on('data', (chunk) => chunks.push(chunk));
   request.on('end', () => {
@@ -103,7 +113,7 @@ const server = http.createServer((request, response) => {
         return;
       }
     }
-    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const url = new URL(request.url ?? '/', 'https://127.0.0.1');
     const entry = { method: request.method, path: url.pathname, body };
     state.requests.push(entry);
     persist();
@@ -222,13 +232,60 @@ try {
     mode: 0o600,
     flag: 'wx',
   });
+  await writeFile(
+    tlsConfigPath,
+    `[req]\n` +
+      `prompt = no\n` +
+      `distinguished_name = subject\n` +
+      `x509_extensions = extensions\n` +
+      `[subject]\n` +
+      `CN = 127.0.0.1\n` +
+      `[extensions]\n` +
+      `basicConstraints = critical,CA:TRUE\n` +
+      `keyUsage = critical,keyCertSign,digitalSignature,keyEncipherment\n` +
+      `subjectAltName = @alt_names\n` +
+      `[alt_names]\n` +
+      `IP.1 = 127.0.0.1\n`,
+    { encoding: 'utf8', mode: 0o600, flag: 'wx' }
+  );
+  run(
+    OPENSSL_PATH,
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-sha256',
+      '-days',
+      '1',
+      '-nodes',
+      '-keyout',
+      tlsPrivateKeyPath,
+      '-out',
+      tlsCertificatePath,
+      '-config',
+      tlsConfigPath,
+    ],
+    probeDir,
+    'ephemeral TLS certificate generation',
+    buildEnvironment(),
+    TLS_CERTIFICATE_TIMEOUT_MS
+  );
 
   run('npm', ['ci', '--ignore-scripts'], targetDir, 'workspace dependency installation', buildEnvironment());
   run('npm', ['run', 'build:core'], targetDir, 'production CLI build', buildEnvironment());
 
   server = spawn(
     process.execPath,
-    [serverPath, statePath, SNAPSHOT_ID, MANIFEST_SHA256, WRONG_MANIFEST_SHA256],
+    [
+      serverPath,
+      statePath,
+      tlsPrivateKeyPath,
+      tlsCertificatePath,
+      SNAPSHOT_ID,
+      MANIFEST_SHA256,
+      WRONG_MANIFEST_SHA256,
+    ],
     {
       cwd: probeDir,
       env: buildEnvironment(),
@@ -236,7 +293,7 @@ try {
     }
   );
   const { port, getStderr } = await waitForServerReady(server);
-  const baseUrl = `http://127.0.0.1:${port}`;
+  const baseUrl = `https://127.0.0.1:${port}`;
   const cliPath = path.join(targetDir, 'packages/cli/dist/cli/index.js');
   const commonArgs = [
     cliPath,
@@ -268,6 +325,7 @@ try {
     AGENT_RELAY_SKIP_UPDATE_CHECK: '1',
     AGENT_RELAY_TELEMETRY_DISABLED: '1',
     DO_NOT_TRACK: '1',
+    NODE_EXTRA_CA_CERTS: tlsCertificatePath,
     CLOUD_API_URL: baseUrl,
     CLOUD_API_ACCESS_TOKEN: 'cloud_relayflow_1665_access',
     CLOUD_API_REFRESH_TOKEN: 'cloud_relayflow_1665_refresh',
@@ -439,12 +497,12 @@ function buildEnvironment() {
   return env;
 }
 
-function run(command, args, cwd, label, env) {
+function run(command, args, cwd, label, env, timeoutMs = COMMAND_TIMEOUT_MS) {
   const completed = spawnSync(command, args, {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: COMMAND_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (completed.error) throw new Error(`${label} could not start: ${completed.error.message}`);
   if (completed.status !== 0) {

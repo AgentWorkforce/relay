@@ -189,26 +189,34 @@ impl BrokerRuntime {
             .collect();
         for request_id in expired_model_requests {
             if let Some(pending) = pending_model_requests.remove(&request_id) {
+                let (status, error) = if pending.confirmation_pending {
+                    (
+                        "unknown",
+                        "provider model confirmation remained unavailable at the deadline",
+                    )
+                } else {
+                    (
+                        "rejected",
+                        "worker did not return a model receipt before the deadline",
+                    )
+                };
                 if let Some(receipt) = model_receipts.get_mut(&pending.worker_name) {
                     if receipt.request_id == request_id && receipt.generation == pending.generation
                     {
-                        receipt.status = "rejected".into();
+                        receipt.status = status.into();
                         receipt.applied = false;
                         receipt.pending = false;
                         receipt.success = false;
-                        receipt.error = Some(
-                            "worker did not return a model receipt before the deadline".into(),
-                        );
+                        receipt.error = Some(error.into());
                         receipt.updated_at = now;
                     }
                 }
                 if let Some(receipt) = model_receipts_by_request.get_mut(&request_id) {
-                    receipt.status = "rejected".into();
+                    receipt.status = status.into();
                     receipt.applied = false;
                     receipt.pending = false;
                     receipt.success = false;
-                    receipt.error =
-                        Some("worker did not return a model receipt before the deadline".into());
+                    receipt.error = Some(error.into());
                     receipt.updated_at = now;
                 }
             }

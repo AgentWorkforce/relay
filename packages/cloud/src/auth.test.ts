@@ -163,6 +163,8 @@ describe('readStoredAuth', () => {
 
   it.each([
     ['apiUrl', { apiUrl: 'not-a-url' }],
+    ['insecureApiUrl', { apiUrl: 'http://cloud.example.test' }],
+    ['credentialApiUrl', { apiUrl: 'https://user:secret@cloud.example.test' }],
     ['accessExpiresAt', { accessTokenExpiresAt: 'not-a-date' }],
   ])('falls through to file auth when env %s is malformed', async (_label, override) => {
     const env = createEnvAuth(override);
@@ -185,6 +187,11 @@ describe('readStoredAuth', () => {
 
     await expect(readStoredAuth({})).resolves.toEqual(FILE_AUTH);
     expect(fsMocks.readFile).toHaveBeenCalledOnce();
+  });
+
+  it('rejects insecure API URLs loaded from the auth file', async () => {
+    fsMocks.readFile.mockResolvedValue(JSON.stringify({ ...FILE_AUTH, apiUrl: 'http://cloud.example.test' }));
+    await expect(readStoredAuth({})).resolves.toBeNull();
   });
 
   it('prefers env auth over file auth when both are available', async () => {
@@ -479,6 +486,13 @@ describe('ensureAuthenticated', () => {
       code: 'AUTH_BROWSER_REQUIRED',
     });
 
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects an insecure configured API URL before authentication', async () => {
+    await expect(
+      ensureCloudSession({ apiUrl: 'http://cloud.example.test', interactive: false })
+    ).rejects.toThrow(/HTTPS/);
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 

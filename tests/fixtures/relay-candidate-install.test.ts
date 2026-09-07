@@ -1,13 +1,18 @@
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertSupportedCandidateOutputPlatform,
   createPrivateOutputRoot,
   digestInstalledClosureTree,
   digestInstalledPackageTree,
+  privateNpmInvocation,
+  sourceBrokerBuildPlan,
+  sourceBrokerToolchainPlan,
   validateCandidateInstallAttestation,
   validateCandidateLockfile,
   verifyCandidateInstall,
@@ -64,7 +69,149 @@ function fixture() {
 }
 
 describe('Relay candidate clean-install attestation', () => {
-  it.skipIf(process.platform === 'win32')('rejects pre-existing output roots and symlinks', async () => {
+  it('stages portable static musl brokers for Linux source qualification', () => {
+    const linuxPlan = sourceBrokerBuildPlan('linux', 'x64');
+    expect(linuxPlan).toEqual({
+      cargoArgs: [
+        'build',
+        '--locked',
+        '--release',
+        '--bin',
+        'agent-relay-broker',
+        '--target',
+        'x86_64-unknown-linux-musl',
+      ],
+      built: path.join('target', 'x86_64-unknown-linux-musl', 'release', 'agent-relay-broker'),
+      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
+      target: 'x86_64-unknown-linux-musl',
+    });
+    expect(sourceBrokerBuildPlan('linux', 'arm64')).toMatchObject({
+      cargoArgs: expect.arrayContaining(['--target', 'aarch64-unknown-linux-musl']),
+      built: path.join('target', 'aarch64-unknown-linux-musl', 'release', 'agent-relay-broker'),
+      env: { RUSTFLAGS: '-C target-feature=+crt-static' },
+    });
+    expect(
+      sourceBrokerToolchainPlan(linuxPlan, {
+        muslGccAvailable: false,
+        aptGetAvailable: true,
+        sudoAvailable: true,
+      })
+    ).toEqual([
+      { command: 'rustup', args: ['target', 'add', 'x86_64-unknown-linux-musl'] },
+      { command: 'sudo', args: ['apt-get', 'update'] },
+      { command: 'sudo', args: ['apt-get', 'install', '-y', 'musl-tools'] },
+    ]);
+    expect(
+      sourceBrokerToolchainPlan(sourceBrokerBuildPlan('darwin', 'arm64'), {
+        muslGccAvailable: false,
+      })
+    ).toEqual([]);
+    expect(() =>
+      sourceBrokerToolchainPlan(linuxPlan, {
+        muslGccAvailable: false,
+        aptGetAvailable: false,
+      })
+    ).toThrow(/apt-get/);
+  });
+
+  it('fails closed outside Linux where directory-handle-bound I/O is unavailable', () => {
+    expect(() => assertSupportedCandidateOutputPlatform('win32')).toThrow(/supported only on Linux/);
+    expect(() => assertSupportedCandidateOutputPlatform('darwin')).toThrow(/supported only on Linux/);
+    expect(() => assertSupportedCandidateOutputPlatform('linux')).not.toThrow();
+    expect(() => privateNpmInvocation([], '/dev/fd/3', '/install', 'darwin')).toThrow(
+      /supported only on Linux/
+    );
+  });
+
+  it('makes the candidate output parent private in producer and hydration workflows', async () => {
+    const [producer, hydration] = await Promise.all([
+      readFile('.github/workflows/relay-package-qualification.yml', 'utf8'),
+      readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8'),
+    ]);
+    for (const workflow of [producer, hydration]) {
+      expect(workflow).toContain('chmod 700 "$RUNNER_TEMP"');
+      expect(workflow.indexOf('chmod 700 "$RUNNER_TEMP"')).toBeLessThan(
+        workflow.indexOf('relay-candidate-install.mjs')
+      );
+    }
+  });
+
+  it('runs npm from the parent descriptor on Linux without using --prefix', () => {
+    const invocation = privateNpmInvocation(
+      ['install', '--package-lock-only'],
+      '/proc/self/fd/3',
+      '/install',
+      'linux',
+      '/proc/42/fd/17'
+    );
+
+    expect(invocation).toEqual({
+      args: ['install', '--package-lock-only'],
+      cwd: '/proc/42/fd/17/install',
+    });
+    expect(invocation.args).not.toContain('--prefix');
+  });
+
+  it('rewrites descriptor-bound executable paths before spawning them', async () => {
+    const source = await readFile('scripts/verify-features/relay-candidate-install.mjs', 'utf8');
+    expect(source).toContain('spawnSync(rewritePrivatePath(command), childArgs');
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'keeps npm lockfile identity canonical through the inherited Linux descriptor',
+    { timeout: 320_000 },
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-procfd-'));
+      const install = path.join(root, 'install');
+      let descriptor;
+      try {
+        await mkdir(install);
+        await writeFile(
+          path.join(install, 'package.json'),
+          `${JSON.stringify({ name: 'relay-candidate-clean-install', private: true, version: '0.0.0' })}\n`
+        );
+        descriptor = await open(root, 'r');
+        const invocation = privateNpmInvocation(
+          ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
+          '/proc/self/fd/3',
+          '/install',
+          'linux',
+          `/proc/${process.pid}/fd/${descriptor.fd}`
+        );
+        const result = await new Promise<{ status: number | null; stderr: string }>((resolve, reject) => {
+          const child = spawn('npm', invocation.args, {
+            cwd: invocation.cwd,
+            timeout: 300_000,
+            stdio: ['ignore', 'ignore', 'pipe', descriptor.fd],
+          });
+          let stderr = '';
+          child.stderr.setEncoding('utf8');
+          child.stderr.on('data', (chunk: string) => {
+            stderr += chunk;
+          });
+          child.once('error', reject);
+          child.once('close', (status) => resolve({ status, stderr }));
+        });
+        expect(result.status, result.stderr).toBe(0);
+
+        const lockfile = JSON.parse(await readFile(path.join(install, 'package-lock.json'), 'utf8'));
+        expect(lockfile).toMatchObject({
+          name: 'relay-candidate-clean-install',
+          version: '0.0.0',
+          lockfileVersion: 3,
+          requires: true,
+          packages: {
+            '': { name: 'relay-candidate-clean-install', version: '0.0.0' },
+          },
+        });
+      } finally {
+        await descriptor?.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform !== 'linux')('rejects pre-existing output roots and symlinks', async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-output-'));
     try {
       const existing = path.join(parent, 'existing');
@@ -86,6 +233,18 @@ describe('Relay candidate clean-install attestation', () => {
       ]);
       expect(attempts.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
       expect(attempts.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('rejects an output root whose parent is not private', async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-public-parent-'));
+    try {
+      await chmod(parent, 0o755);
+      await expect(createPrivateOutputRoot(path.join(parent, 'candidate'))).rejects.toThrow(
+        /current-user-owned 0700 parent/
+      );
     } finally {
       await rm(parent, { recursive: true, force: true });
     }

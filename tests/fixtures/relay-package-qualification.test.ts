@@ -7,10 +7,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PACKAGE_NAMES,
+  RELAY_CLOUD_DISPATCH,
   RELAY_PACKAGE_POLICY,
   RELAY_PACKAGE_PRODUCER,
   assertPrereleaseVersion,
   assertUnpublishedNpmView,
+  createRelayPackageCloudDispatch,
   validateRelayPackageEnvelope,
   validateRelayPackagePayload,
   verifyRelayPackageFiles,
@@ -221,7 +223,7 @@ describe('Relay package qualification producer', () => {
     }
   });
 
-  it('is manually dispatched from one exact canonical prerelease branch without write privileges', async () => {
+  it('is manually dispatched from one exact prerelease branch without receiving Cloud credentials', async () => {
     const workflow = await readFile('.github/workflows/relay-package-qualification.yml', 'utf8');
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).not.toMatch(/\n\s+push:/);
@@ -231,13 +233,74 @@ describe('Relay package qualification producer', () => {
     expect(workflow).toContain('refs/heads/qualification/*');
     expect(workflow).toContain('test "${GITHUB_REPOSITORY}" = "AgentWorkforce/relay"');
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"');
-    expect(workflow.indexOf('- name: Set up exact Node.js')).toBeLessThan(
-      workflow.indexOf('- name: Require prerelease package version')
-    );
+    expect(workflow).toContain('--artifact-digest "sha256:${PAYLOAD_ARTIFACT_DIGEST}"');
+    expect(workflow).toContain('create-cloud-dispatch');
+    expect(workflow).toContain('name: relay-package-cloud-request');
+    expect(workflow).toContain('path: .qualification/cloud-request/relay-package-cloud-request.json');
+    expect(workflow).not.toContain('actions/create-github-app-token');
+    expect(workflow).not.toContain('GH_APP_PUSHER');
+    expect(workflow).not.toContain('GH_TOKEN:');
+    expect(workflow).not.toContain('repos/AgentWorkforce/cloud/dispatches');
+    expect(workflow).not.toContain('secrets.');
+    const uploadAttestation = workflow.indexOf('- name: Upload immutable package attestation');
+    const createCloudRequest = workflow.indexOf('- name: Create the bounded Cloud qualification request');
+    const uploadCloudRequest = workflow.indexOf('- name: Upload the bounded Cloud qualification request');
+    const setupNode = workflow.indexOf('- name: Set up exact Node.js');
+    const requirePrerelease = workflow.indexOf('- name: Require prerelease package version');
+    expect(uploadAttestation).toBeGreaterThan(-1);
+    expect(createCloudRequest).toBeGreaterThan(-1);
+    expect(uploadCloudRequest).toBeGreaterThan(-1);
+    expect(setupNode).toBeGreaterThan(-1);
+    expect(requirePrerelease).toBeGreaterThan(-1);
+    expect(uploadAttestation).toBeLessThan(createCloudRequest);
+    expect(createCloudRequest).toBeLessThan(uploadCloudRequest);
+    expect(setupNode).toBeLessThan(requirePrerelease);
     expect(RELAY_PACKAGE_PRODUCER).toMatchObject({
       event: 'workflow_dispatch',
       ref: 'refs/heads/qualification/',
     });
+  });
+
+  it('creates the exact versioned Cloud repository dispatch pointer', () => {
+    expect(
+      createRelayPackageCloudDispatch({
+        sourceGitSha: producer.sourceGitSha,
+        runId: producer.runId,
+        runAttempt: producer.runAttempt,
+        attestationArtifactDigest: `sha256:${'f'.repeat(64)}`,
+      })
+    ).toEqual({
+      event_type: RELAY_CLOUD_DISPATCH.eventType,
+      client_payload: {
+        schemaVersion: 1,
+        kind: 'relayPackageQualificationReady',
+        relay: {
+          runId: 71,
+          runAttempt: 2,
+          sourceGitSha: producer.sourceGitSha,
+          attestationArtifactDigest: `sha256:${'f'.repeat(64)}`,
+        },
+      },
+    });
+  });
+
+  it('rejects ambiguous or malformed Cloud dispatch producer pointers', () => {
+    const valid = {
+      sourceGitSha: producer.sourceGitSha,
+      runId: producer.runId,
+      runAttempt: producer.runAttempt,
+      attestationArtifactDigest: `sha256:${'f'.repeat(64)}`,
+    };
+    for (const mutation of [
+      { runId: '0' },
+      { runId: '01' },
+      { runId: String(Number.MAX_SAFE_INTEGER + 1) },
+      { runAttempt: '1.5' },
+      { sourceGitSha: 'not-a-sha' },
+      { attestationArtifactDigest: 'f'.repeat(64) },
+    ]) {
+      expect(() => createRelayPackageCloudDispatch({ ...valid, ...mutation })).toThrow();
+    }
   });
 
   it('keeps external protocol pins exact and local SDK/config versions aligned', async () => {

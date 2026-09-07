@@ -12,6 +12,8 @@ const APP_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const RELAY_WORKSPACE_ID_PATTERN = /^rw_[a-z0-9]{8}$/;
 const DEPLOYMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const RECONCILIATION_CONTRACT_HEADER = 'x-agent-relay-ephemeral-reconciliation';
+const RECONCILIATION_CONTRACT_VERSION = 'v1';
 
 type WorkspaceCommandDependencies = Pick<
   CloudDependencies,
@@ -399,14 +401,26 @@ async function reconcileAmbiguousCreate(
   auth: AuthorizedApiAuth,
   idempotencyKey: string,
   expectedDeploymentId?: string
-): Promise<EphemeralWorkspaceReconciliationResponse | null> {
-  const { response } = await deps.authorizedApiFetch(
+): Promise<{
+  workspace: EphemeralWorkspaceReconciliationResponse | null;
+  auth: AuthorizedApiAuth;
+}> {
+  const { response, auth: refreshedAuth } = await deps.authorizedApiFetch(
     auth,
     `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(idempotencyKey)}`,
     { method: 'GET' },
     { interactive: false }
   );
-  if (response.status === 404) return null;
+  if (response.headers.get(RECONCILIATION_CONTRACT_HEADER) !== RECONCILIATION_CONTRACT_VERSION) {
+    throw new Error('Cloud does not advertise the ephemeral workspace reconciliation v1 contract.');
+  }
+  if (response.status === 404) {
+    const missing = await response.json().catch(() => null);
+    if (!isObject(missing) || missing.code !== 'workspace_not_found') {
+      throw new Error('Cloud returned an invalid workspace reconciliation absence response.');
+    }
+    return { workspace: null, auth: refreshedAuth };
+  }
   if (!response.ok) {
     throw new Error(`Cloud could not reconcile the workspace create request (HTTP ${response.status}).`);
   }
@@ -417,7 +431,7 @@ async function reconcileAmbiguousCreate(
   if (!reconciled) {
     throw new Error('Cloud returned an invalid workspace reconciliation response.');
   }
-  return reconciled;
+  return { workspace: reconciled, auth: refreshedAuth };
 }
 
 function apiFailure(operation: 'create' | 'delete', status: number): Error {
@@ -478,6 +492,7 @@ export function registerCloudWorkspaceCommands(
         let createAuth: AuthorizedApiAuth | null = null;
         let createRequestSent = false;
         let credentialCommitted = false;
+        let createdWorkspaceId: string | null = null;
         let idempotencyKey: string | null = null;
         try {
           reserved = reserveCredentialFile(options.credentialFile);
@@ -490,21 +505,21 @@ export function registerCloudWorkspaceCommands(
           // Probe the candidate-aware reconciliation contract before the
           // first mutation. Older Cloud versions ignore unknown POST fields
           // and could otherwise create an unbound workspace.
-          const existing = await reconcileAmbiguousCreate(
+          const preflight = await reconcileAmbiguousCreate(
             deps,
             createAuth,
             idempotencyKey,
             options.relayfileCloudDeployment
           );
-          if (existing) {
-            await deleteEphemeralWorkspaceAndVerify(deps, createAuth, existing.workspaceId);
+          createAuth = preflight.auth;
+          if (preflight.workspace) {
             throw new Error(
-              'Recovered and deleted an earlier workspace for this idempotency key; retry with a new credential path or --idempotency-key.'
+              'An ephemeral workspace already exists for this idempotency key; refusing to delete a workspace this process did not create.'
             );
           }
           createRequestSent = true;
-          const { response } = await deps.authorizedApiFetch(
-            session.auth,
+          const { response, auth: postAuth } = await deps.authorizedApiFetch(
+            createAuth,
             '/api/v1/workspaces',
             {
               method: 'POST',
@@ -519,6 +534,7 @@ export function registerCloudWorkspaceCommands(
             },
             { interactive: false }
           );
+          createAuth = postAuth;
           if (!response.ok) {
             throw apiFailure('create', response.status);
           }
@@ -529,12 +545,13 @@ export function registerCloudWorkspaceCommands(
           if (!created) {
             throw new Error('Cloud returned an invalid ephemeral workspace response.');
           }
+          createdWorkspaceId = created.workspaceId;
 
           reserved.commit({
             ...created.credential,
             cloud: {
               ...created.credential.cloud,
-              apiUrl: session.auth.apiUrl,
+              apiUrl: createAuth.apiUrl,
             },
           });
           credentialCommitted = true;
@@ -560,23 +577,30 @@ export function registerCloudWorkspaceCommands(
             deps.log(`Credential file: ${result.credentialFile}`);
           }
         } catch (error) {
-          let reconciliationFailure: Error | null = null;
+          let reconciliationDetail = '';
           if (!credentialCommitted && createRequestSent && createAuth && idempotencyKey) {
             try {
-              const reconciled = await reconcileAmbiguousCreate(
-                deps,
-                createAuth,
-                idempotencyKey,
-                options.relayfileCloudDeployment
-              );
-              if (reconciled) {
-                await deleteEphemeralWorkspaceAndVerify(deps, createAuth, reconciled.workspaceId);
+              if (createdWorkspaceId) {
+                await deleteEphemeralWorkspaceAndVerify(deps, createAuth, createdWorkspaceId);
+              } else {
+                const reconciliation = await reconcileAmbiguousCreate(
+                  deps,
+                  createAuth,
+                  idempotencyKey,
+                  options.relayfileCloudDeployment
+                );
+                createAuth = reconciliation.auth;
+                if (reconciliation.workspace) {
+                  reconciliationDetail =
+                    ' Cloud retained a workspace after the ambiguous request; it was not deleted because this process cannot prove ownership. Allow its TTL cleanup before reusing the idempotency key.';
+                }
               }
             } catch (reconciliationError) {
-              reconciliationFailure =
+              const detail =
                 reconciliationError instanceof Error
-                  ? reconciliationError
-                  : new Error('Cloud workspace reconciliation failed.');
+                  ? reconciliationError.message
+                  : 'Cloud workspace reconciliation failed.';
+              reconciliationDetail = ` ${detail} Retry only after checking the idempotency key's workspace state.`;
             }
           }
           if (reserved) {
@@ -588,11 +612,7 @@ export function registerCloudWorkspaceCommands(
             }
           }
           const message = error instanceof Error ? error.message : 'Ephemeral workspace creation failed.';
-          deps.error(
-            reconciliationFailure
-              ? `${message} ${reconciliationFailure.message} Retry with the same credential path or --idempotency-key.`
-              : message
-          );
+          deps.error(`${message}${reconciliationDetail}`);
           deps.exit(1);
         }
       }

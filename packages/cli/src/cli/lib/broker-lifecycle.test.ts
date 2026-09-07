@@ -11,6 +11,7 @@ import {
   isBundledBunExecutableEntrypoint,
   readNodeDeliveryStatus,
   resolveNodeIdentityFromSession,
+  runStatusCommand,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
@@ -274,8 +275,15 @@ vi.mock('@agent-relay/fleet', async (importOriginal) => {
 });
 // The capability providers read the broker's resolved node id from its HTTP
 // session; serve it from a fake so `node up` can attach providers to the node.
+const harnessDriverMock = vi.hoisted(() => ({
+  clientOptions: [] as Array<Record<string, unknown>>,
+}));
+
 vi.mock('@agent-relay/harness-driver', () => ({
   HarnessDriverClient: class {
+    constructor(options: Record<string, unknown>) {
+      harnessDriverMock.clientOptions.push(options);
+    }
     async getSession() {
       return {
         node_id: 'node_a',
@@ -396,11 +404,31 @@ function writeRepositoryPin(dataDir: string, session: Record<string, string>): v
 }
 
 afterEach(() => {
+  harnessDriverMock.clientOptions.splice(0);
   vi.mocked(startServeNode).mockClear();
   vi.mocked(startReflexCapture).mockClear();
   for (const dir of upTmpRoots.splice(0)) {
     fsReal.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe('runStatusCommand', () => {
+  it('bounds optional broker detail requests below the CLI liveness budget', async () => {
+    const { deps, log } = createUpHarness();
+    deps.killProcess = vi.fn();
+
+    await runStatusCommand(deps);
+
+    expect(log.mock.calls.flat().join('\n')).toContain('Status: RUNNING');
+    expect(harnessDriverMock.clientOptions).toHaveLength(1);
+    expect(harnessDriverMock.clientOptions[0]).toMatchObject({
+      baseUrl: 'http://127.0.0.1:4999',
+      apiKey: 'test',
+    });
+    expect(harnessDriverMock.clientOptions[0]?.requestTimeoutMs).toEqual(expect.any(Number));
+    expect(harnessDriverMock.clientOptions[0]?.requestTimeoutMs).toBeGreaterThan(0);
+    expect(harnessDriverMock.clientOptions[0]?.requestTimeoutMs).toBeLessThan(10_000);
+  });
 });
 
 describe('runUpCommand node-config gating', () => {

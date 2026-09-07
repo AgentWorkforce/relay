@@ -1021,6 +1021,7 @@ impl BrokerRuntime {
                             // timeout after `set_model_started`.
                             deadline: Instant::now() + WORKER_COMMAND_QUEUE_TIMEOUT,
                             provider_deadline: None,
+                            confirmation_pending: false,
                             provider_timeout: set_model_receipt_timeout(timeout_ms),
                         },
                     );

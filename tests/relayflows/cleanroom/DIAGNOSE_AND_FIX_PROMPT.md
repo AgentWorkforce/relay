@@ -33,7 +33,7 @@ Daytona CLI/API reported a version mismatch: CLI `0.205.1`, API `0.210.0`.
 Do not replace the evidence below with a smaller smoke test. The repeatable
 Relay-only board is defined by:
 
-- `tests/relayflows/cleanroom/fleet-daytona.matrix.json` (95 operations);
+- `tests/relayflows/cleanroom/fleet-daytona.matrix.json` (94 operations);
 - `scripts/verify-features/fleet-daytona.mjs` (operator-host runner, evidence,
   cleanup, and campaign aggregation);
 - `workflows/verify-fleet-daytona.ts` (supervision and independent signoff);
@@ -192,8 +192,8 @@ The repaired diagnostic harness must preserve these invariants:
 - bind context, static gates, coverage, reviews, and final acceptance to the
   same source manifest. Runtime `.agentworkforce/trajectories/` changes may be
   excluded from the content digest, but the directory must remain tracked;
-- require exactly 143 unique, schema-validated coverage rows: 12 state-machine
-  transitions, 23 injected faults, 13 acceptance gates, and all 95 Fleet
+- require exactly 142 unique, schema-validated coverage rows: 12 state-machine
+  transitions, 23 injected faults, 13 acceptance gates, and all 94 Fleet
   operations. Every row must map bidirectionally to a bug or unknown;
 - treat every unresolved `CRITICAL` or `HIGH` bug as a promotion blocker,
   including `CONFIRMED`, `IN_PROGRESS`, and `BLOCKED`, not only a literal
@@ -273,7 +273,7 @@ and passed all 266 changed-surface tests. Both exact sandbox IDs were then
 deleted and proved absent. Preserve the full IDs and hashes in
 `RELAY_PRERELEASE_DAYTONA_2026-09-05.md`.
 
-Do not promote this package proof into a Fleet pass. The live 95-operation
+Do not promote this package proof into a Fleet pass. The live 94-operation
 board still cannot select the candidate's immutable snapshot/data plane or
 create and reclaim the required canonical ephemeral Cloud workspace. Cloud
 issues #3349 and #3351 remain the hard boundary. The next valid Fleet proof is
@@ -385,8 +385,8 @@ reported live, 3,145 offline, 354 named `fleet-ensure-*`, and 110 of those
 `fleet-ensure-*` records still live. The live version distribution was 110 on
 broker 11.8.2, two on 11.8.3, only one on 11.10.2, plus 32 implicit/SDK nodes.
 `finn-mini` reported 11.8.3 while the current source line was 11.10.3. This is both
-an operational cleanup problem and a qualification provenance problem. Issue
-#1455 now carries the evidence. Use exact nonce-owned lookups; never treat a
+an operational cleanup problem and a qualification provenance problem. Issue #1455
+now carries the evidence. Use exact nonce-owned lookups; never treat a
 spawn on a stale broker as proof of the current candidate.
 
 Two cheap Agent Relay workers dispatched and confirmed on live nodes then went

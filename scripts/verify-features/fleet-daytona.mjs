@@ -181,6 +181,49 @@ export function buildDirectNodeSpawnPlan(provider, agentName, sentinel, extra = 
   };
 }
 
+export function ownedBoardNodes(nodes) {
+  return nodes.filter((node) => node?.id && node?.nodeName);
+}
+
+export function compareDaytonaSandboxBaseline(baseline, finalSandboxes) {
+  const baselineIdHashes = [...(baseline?.sandboxIdHashes ?? [])].sort();
+  const baselineNameHashes = [...(baseline?.sandboxNameHashes ?? [])].sort();
+  const finalIdHashes = [
+    ...new Set(
+      finalSandboxes
+        .map(({ id }) => id)
+        .filter((id) => typeof id === 'string' && id.length > 0)
+        .map(sha256)
+    ),
+  ].sort();
+  const finalNameHashes = [
+    ...new Set(
+      finalSandboxes
+        .map(({ name }) => name)
+        .filter((name) => typeof name === 'string' && name.length > 0)
+        .map(sha256)
+    ),
+  ].sort();
+  const missingIdHashes = baselineIdHashes.filter((hash) => !finalIdHashes.includes(hash));
+  const missingNameHashes = baselineNameHashes.filter((hash) => !finalNameHashes.includes(hash));
+  const unexpectedIdHashes = finalIdHashes.filter((hash) => !baselineIdHashes.includes(hash));
+  const unexpectedNameHashes = finalNameHashes.filter((hash) => !baselineNameHashes.includes(hash));
+  const countMatches = Number.isSafeInteger(baseline?.count) && finalSandboxes.length === baseline.count;
+  return {
+    restored:
+      countMatches &&
+      missingIdHashes.length === 0 &&
+      missingNameHashes.length === 0 &&
+      unexpectedIdHashes.length === 0 &&
+      unexpectedNameHashes.length === 0,
+    countMatches,
+    missingIdHashes,
+    missingNameHashes,
+    unexpectedIdHashes,
+    unexpectedNameHashes,
+  };
+}
+
 export function buildFleetSpawnArgs(options, qualification = {}) {
   return [
     'fleet',
@@ -261,7 +304,7 @@ export function parseCliJson(output) {
   throw new Error('set-model did not emit a complete JSON receipt: ' + text.slice(-500));
 }
 
-function buildNodeAppServerModelProofScript() {
+export function buildNodeAppServerModelProofScript() {
   return String.raw`(async () => {
 const fs = require('node:fs');
 const os = require('node:os');
@@ -385,6 +428,132 @@ let providerEndpoint;
 let workerCreated = false;
 let tempDir;
 const result = { worker: workerName, requestedModel, node: expectedNode, sandbox: sandboxId, cleanup: false };
+let cleanupState = 'idle';
+const stopProvider = async () => {
+  if (!opencode || !opencode.pid) return;
+  const exited = () => opencode.exitCode !== null || opencode.signalCode !== null;
+  const signal = (name) => {
+    try { process.kill(-opencode.pid, name); }
+    catch { try { opencode.kill(name); } catch {} }
+  };
+  signal('SIGTERM');
+  try {
+    await wait(exited, 'OpenCode process to terminate', 5_000);
+  } catch {
+    signal('SIGKILL');
+    await wait(exited, 'OpenCode process to terminate after SIGKILL', 5_000);
+  }
+};
+const runCleanup = async () => {
+  if (cleanupState !== 'idle') return;
+  cleanupState = 'running';
+  const cleanupErrors = [];
+  if (connection && workerCreated) {
+    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
+      cwd: tempDir || process.cwd(),
+      env: {
+        ...process.env,
+        AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
+        RELAY_BROKER_URL: connection.url,
+        RELAY_BROKER_API_KEY: connection.api_key,
+      },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
+    try {
+      await wait(
+        async () => {
+          const response = await fetch(
+            connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model',
+            {
+              headers: { 'x-api-key': connection.api_key },
+              signal: AbortSignal.timeout(2_000),
+            }
+          );
+          return response.status === 404;
+        },
+        'released AppServer worker to disappear',
+        10_000
+      );
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+  }
+  if (connection && sessionId) {
+    try {
+      const response = await fetch(providerSessionUrl, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (![200, 204, 404].includes(response.status))
+        cleanupErrors.push('OpenCode session delete failed');
+      await wait(
+        async () => {
+          const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
+          return check.status === 404;
+        },
+        'deleted OpenCode session to disappear',
+        10_000
+      );
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+  }
+  if (opencode && opencode.pid) {
+    try {
+      await stopProvider();
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+    if (providerEndpoint) {
+      try {
+        await wait(
+          async () => {
+            try {
+              await fetch(providerEndpoint + '/global/health', {
+                signal: AbortSignal.timeout(1_000),
+              });
+              return false;
+            } catch (error) {
+              // A refused connection proves the listener is gone. An HTTP
+              // response or request timeout still means the port is reachable.
+              return error?.cause?.code === 'ECONNREFUSED' || error?.code === 'ECONNREFUSED';
+            }
+          },
+          'OpenCode provider port to close',
+          10_000
+        );
+      } catch (error) {
+        cleanupErrors.push(error.message);
+      }
+    }
+  }
+  if (tempDir) {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
+  }
+  cleanupState = 'done';
+  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
+  result.cleanup = true;
+};
+// Daytona's outer --timeout can SIGTERM this helper before it reaches its
+// finally block; without an explicit handler the detached OpenCode provider
+// would survive the wrapper's death until the sandbox itself is torn down.
+// Terminations run the same idempotent cleanup so the provider session,
+// process, and temporary directory are recovered on the wrapper's way out.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (cleanupState !== 'idle') return;
+    runCleanup()
+      .catch(() => {})
+      .finally(() => process.exit(1));
+  });
+}
 try {
   connection = await findConnection();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-model-proof-'));
@@ -414,7 +583,7 @@ try {
       }, 'real OpenCode server', 20_000);
       providerReady = true;
     } catch (error) {
-      try { process.kill(-opencode.pid, 'SIGTERM'); } catch { try { opencode.kill('SIGTERM'); } catch {} }
+      await stopProvider();
       opencode = undefined;
       if (attempt === 2) throw error;
     }
@@ -480,7 +649,7 @@ try {
     cwd: tempDir,
     env: cliEnv,
     encoding: 'utf8',
-    // Leave the outer 180-second Daytona command enough headroom for the
+    // Leave the outer 300-second Daytona command enough headroom for the
     // worker/session/process cleanup in finally, even on the provider timeout.
     timeout: 60_000,
     maxBuffer: 2 * 1024 * 1024,
@@ -505,9 +674,8 @@ try {
     throw new Error('public set-model returned invalid receipt: ' + JSON.stringify(receipt));
   }
   // Confirm through the same /session/{id} API the helper created and deletes
-  // with (providerSessionUrl); /api/session/{id} is the broker's separate v2
-  // model-mutation surface and is not the URL this server answers for reads
-  // of the session document.
+  // with (providerSessionUrl). The v2 /api/session route wraps the document
+  // in data; this route returns the session directly.
   const confirmed = await jsonResponse(await fetch(providerSessionUrl, {
     signal: AbortSignal.timeout(5_000),
   }), 'OpenCode session confirmation');
@@ -781,8 +949,25 @@ export function validateFleetCommandCoverage(matrix, inventory) {
     .filter((command) => command.leaf)
     .map((command) => command.path)
     .sort();
+  const deferredSurface = matrix.deferredCommandSurface ?? [];
+  if (
+    !Array.isArray(deferredSurface) ||
+    deferredSurface.some((commandPath) => typeof commandPath !== 'string' || !commandPath)
+  ) {
+    throw new Error('matrix.deferredCommandSurface must contain non-empty command paths');
+  }
+  const deferred = new Set(deferredSurface);
+  for (const commandPath of deferred) {
+    if (!leaves.includes(commandPath)) {
+      throw new Error(`matrix deferredCommandSurface references missing CLI command ${commandPath}`);
+    }
+    if (Object.prototype.hasOwnProperty.call(matrix.commandSurface, commandPath)) {
+      throw new Error(`matrix deferred command ${commandPath} must not map to an operation`);
+    }
+  }
+  const coveredLeaves = leaves.filter((commandPath) => !deferred.has(commandPath));
   const mapped = Object.keys(matrix.commandSurface).sort();
-  if (leaves.join('\0') !== mapped.join('\0')) {
+  if (coveredLeaves.join('\0') !== mapped.join('\0')) {
     throw new Error('matrix commandSurface must exactly cover every candidate Fleet/node command leaf');
   }
   if (
@@ -1041,7 +1226,19 @@ async function execute(argv, options = {}) {
 
   await new Promise((resolve) => {
     let child;
+    let timer;
     let killTimer;
+    let settled = false;
+    const settle = (code, closeSignal) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      for (const stdinTimer of stdinTimers) clearTimeout(stdinTimer);
+      exitCode = code;
+      signal = closeSignal;
+      resolve();
+    };
     try {
       child = spawn(argv[0], argv.slice(1), {
         cwd: options.cwd ?? process.cwd(),
@@ -1069,12 +1266,14 @@ async function execute(argv, options = {}) {
       }
     }
     child.stdout.on('data', (chunk) => {
+      if (settled) return;
       stdoutBytes += Buffer.byteLength(chunk);
       stdoutTruncated ||= stdoutBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stdoutCaptureTruncated ||= stdoutBytes > captureLimit;
       stdout = boundedAppend(stdout, chunk, captureLimit);
     });
     child.stderr.on('data', (chunk) => {
+      if (settled) return;
       stderrBytes += Buffer.byteLength(chunk);
       stderrTruncated ||= stderrBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stderrCaptureTruncated ||= stderrBytes > captureLimit;
@@ -1083,7 +1282,7 @@ async function execute(argv, options = {}) {
     child.on('error', (error) => {
       spawnError = error;
     });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
       try {
         if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
@@ -1098,16 +1297,15 @@ async function execute(argv, options = {}) {
         } catch {
           // Already gone.
         }
+        child.stdin?.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        settle(child.exitCode, child.signalCode);
       }, 1_500).unref();
     }, timeoutMs);
     timer.unref();
     child.on('close', (code, closeSignal) => {
-      clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      for (const stdinTimer of stdinTimers) clearTimeout(stdinTimer);
-      exitCode = code;
-      signal = closeSignal;
-      resolve();
+      settle(code, closeSignal);
     });
   });
 
@@ -1177,136 +1375,6 @@ export function tryParseJson(text) {
           const opening = stack.pop();
           if ((opening === '{' && character !== '}') || (opening === '[' && character !== ']')) break;
           if (stack.length === 0) {
-            let cleanupState = 'idle';
-            const runCleanup = async () => {
-              if (cleanupState !== 'idle') return;
-              cleanupState = 'running';
-              const cleanupErrors = [];
-              if (connection && workerCreated) {
-                const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
-                  cwd: tempDir || process.cwd(),
-                  env: {
-                    ...process.env,
-                    AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
-                    RELAY_BROKER_URL: connection.url,
-                    RELAY_BROKER_API_KEY: connection.api_key,
-                  },
-                  encoding: 'utf8',
-                  timeout: 30_000,
-                });
-                if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
-                try {
-                  await wait(
-                    async () => {
-                      const response = await fetch(
-                        connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model',
-                        {
-                          headers: { 'x-api-key': connection.api_key },
-                          signal: AbortSignal.timeout(2_000),
-                        }
-                      );
-                      return response.status === 404;
-                    },
-                    'released AppServer worker to disappear',
-                    10_000
-                  );
-                } catch (error) {
-                  cleanupErrors.push(error.message);
-                }
-              }
-              if (connection && sessionId) {
-                try {
-                  const response = await fetch(providerSessionUrl, {
-                    method: 'DELETE',
-                    signal: AbortSignal.timeout(2_000),
-                  });
-                  if (![200, 204, 404].includes(response.status))
-                    cleanupErrors.push('OpenCode session delete failed');
-                  await wait(
-                    async () => {
-                      const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
-                      return check.status === 404;
-                    },
-                    'deleted OpenCode session to disappear',
-                    10_000
-                  );
-                } catch (error) {
-                  cleanupErrors.push(error.message);
-                }
-              }
-              if (opencode && opencode.pid) {
-                try {
-                  process.kill(-opencode.pid, 'SIGTERM');
-                } catch {
-                  try {
-                    opencode.kill('SIGTERM');
-                  } catch {}
-                }
-                try {
-                  await wait(
-                    async () => {
-                      if (opencode.exitCode !== null || opencode.signalCode !== null) return true;
-                      try {
-                        process.kill(opencode.pid, 0);
-                        return false;
-                      } catch {
-                        return true;
-                      }
-                    },
-                    'OpenCode process to terminate',
-                    10_000
-                  );
-                } catch (error) {
-                  cleanupErrors.push(error.message);
-                }
-                if (providerEndpoint) {
-                  try {
-                    await wait(
-                      async () => {
-                        try {
-                          await fetch(providerEndpoint + '/global/health', {
-                            signal: AbortSignal.timeout(1_000),
-                          });
-                          return false;
-                        } catch (error) {
-                          // A refused connection proves the listener is gone. An HTTP
-                          // response or request timeout still means the port is reachable.
-                          return error?.name !== 'AbortError' && error?.name !== 'TimeoutError';
-                        }
-                      },
-                      'OpenCode provider port to close',
-                      10_000
-                    );
-                  } catch (error) {
-                    cleanupErrors.push(error.message);
-                  }
-                }
-              }
-              if (tempDir) {
-                try {
-                  fs.rmSync(tempDir, { recursive: true, force: true });
-                } catch (error) {
-                  cleanupErrors.push(error.message);
-                }
-                if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
-              }
-              cleanupState = 'done';
-              if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
-              result.cleanup = true;
-            };
-            // Daytona's outer --timeout can SIGTERM this helper before it reaches its
-            // finally block; without an explicit handler the detached OpenCode provider
-            // would survive the wrapper's death until the sandbox itself is torn down.
-            // Terminations run the same idempotent cleanup so the provider session,
-            // process, and temporary directory are recovered on the wrapper's way out.
-            for (const signal of ['SIGTERM', 'SIGINT']) {
-              process.on(signal, () => {
-                if (cleanupState !== 'idle') return;
-                runCleanup()
-                  .catch(() => {})
-                  .finally(() => process.exit(1));
-              });
-            }
             try {
               return JSON.parse(trimmed.slice(index, cursor + 1));
             } catch {
@@ -1332,10 +1400,241 @@ function findStringDeep(value, keys) {
   return undefined;
 }
 
-export function findFleetAgentNode(payload, agentName) {
+export function findFleetAgent(payload, agentName) {
   if (!payload || typeof payload !== 'object' || !Array.isArray(payload.perNode)) return undefined;
-  const row = payload.perNode.find((entry) => entry && typeof entry === 'object' && entry.name === agentName);
+  return payload.perNode.find((entry) => entry && typeof entry === 'object' && entry.name === agentName);
+}
+
+export function findFleetAgentNode(payload, agentName) {
+  const row = findFleetAgent(payload, agentName);
   return row && typeof row.node === 'string' ? row.node : undefined;
+}
+
+function sortedUniqueNames(values) {
+  if (!Array.isArray(values)) return null;
+  const names = values.map((value) => value?.name);
+  if (names.some((name) => typeof name !== 'string' || !name) || new Set(names).size !== names.length) {
+    return null;
+  }
+  return names.sort();
+}
+
+function nodeHeartbeatAgentNames(node) {
+  if (!Array.isArray(node?.capabilities)) return null;
+  let supported = false;
+  const names = [];
+  const seen = new Set();
+  for (const capability of node.capabilities) {
+    if (capability?.name !== 'relay:live-agents:v1') continue;
+    supported = true;
+    if (!Array.isArray(capability.metadata?.names)) return null;
+    for (const name of capability.metadata.names) {
+      if (typeof name !== 'string' || !name || seen.has(name)) return null;
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return supported ? names.sort() : null;
+}
+
+function sameNames(left, right) {
+  return (
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    left.length === right.length &&
+    left.every((name, index) => name === right[index])
+  );
+}
+
+/**
+ * Bind one nonce-owned worker to every independently readable Fleet identity
+ * surface. The compact result is stored in qualification evidence so a
+ * targeted empty response cannot pass while node metadata or the direct
+ * broker still reports live workers.
+ */
+export function evaluateFleetIdentityReconciliation({
+  phase,
+  nodeName,
+  agentName,
+  nodesPayload,
+  targetedPayload,
+  allPayload,
+  directAgents,
+  rosterPresent,
+  commandErrors = [],
+}) {
+  const nodes = Array.isArray(nodesPayload?.nodes) ? nodesPayload.nodes : null;
+  const matchingNodes = nodes?.filter((node) => node?.name === nodeName) ?? [];
+  const node = matchingNodes.length === 1 ? matchingNodes[0] : undefined;
+  const heartbeatNames = nodeHeartbeatAgentNames(node);
+  const targetedNames = sortedUniqueNames(
+    Array.isArray(targetedPayload?.perNode)
+      ? targetedPayload.perNode.filter((row) => row?.node === nodeName)
+      : null
+  );
+  const allNodeNames = sortedUniqueNames(
+    Array.isArray(allPayload?.perNode) ? allPayload.perNode.filter((row) => row?.node === nodeName) : null
+  );
+  const directNames = sortedUniqueNames(directAgents);
+  const allUnplacedNames = sortedUniqueNames(allPayload?.unplacedRoster);
+  const targetedErrorCount = Array.isArray(targetedPayload?.errors) ? targetedPayload.errors.length : null;
+  const allErrorCount = Array.isArray(allPayload?.errors) ? allPayload.errors.length : null;
+  const activeAgents = node?.activeAgents;
+  const viewsAgree =
+    commandErrors.length === 0 &&
+    matchingNodes.length === 1 &&
+    node?.status === 'online' &&
+    node?.live === true &&
+    node?.handlersLive === true &&
+    Number.isSafeInteger(activeAgents) &&
+    activeAgents >= 0 &&
+    heartbeatNames !== null &&
+    targetedNames !== null &&
+    allNodeNames !== null &&
+    directNames !== null &&
+    allUnplacedNames !== null &&
+    targetedErrorCount === 0 &&
+    allErrorCount === 0 &&
+    sameNames(heartbeatNames, targetedNames) &&
+    sameNames(heartbeatNames, allNodeNames) &&
+    sameNames(heartbeatNames, directNames) &&
+    activeAgents === heartbeatNames.length;
+
+  const targetCounts = {
+    heartbeat: heartbeatNames?.filter((name) => name === agentName).length ?? null,
+    targeted: targetedNames?.filter((name) => name === agentName).length ?? null,
+    allPlaced: allNodeNames?.filter((name) => name === agentName).length ?? null,
+    direct: directNames?.filter((name) => name === agentName).length ?? null,
+    allUnplaced: allUnplacedNames?.filter((name) => name === agentName).length ?? null,
+  };
+  const placedCounts = [
+    targetCounts.heartbeat,
+    targetCounts.targeted,
+    targetCounts.allPlaced,
+    targetCounts.direct,
+  ];
+  const targetLive = placedCounts.every((count) => count === 1);
+  const targetAbsent = placedCounts.every((count) => count === 0);
+  const phasePass =
+    phase === 'live'
+      ? targetLive && targetCounts.allUnplaced === 0 && rosterPresent === true
+      : phase === 'roster-only'
+        ? targetAbsent && targetCounts.allUnplaced === 1 && rosterPresent === true
+        : phase === 'absent'
+          ? targetAbsent && targetCounts.allUnplaced === 0 && rosterPresent === false
+          : false;
+
+  return {
+    phase,
+    nodeName,
+    agentName,
+    nodeRecordCount: matchingNodes.length,
+    nodeStatus: node?.status ?? null,
+    nodeLive: node?.live ?? null,
+    handlersLive: node?.handlersLive ?? null,
+    activeAgents: Number.isSafeInteger(activeAgents) ? activeAgents : null,
+    heartbeatNames,
+    targetedNames,
+    allNodeNames,
+    directNames,
+    allUnplacedNames,
+    targetedErrorCount,
+    allErrorCount,
+    rosterPresent,
+    targetCounts,
+    commandErrors,
+    pass: viewsAgree && phasePass,
+  };
+}
+
+export function validateFleetIdentityReconciliation(proof, expected) {
+  if (!proof || typeof proof !== 'object') throw new Error('Fleet identity reconciliation is missing');
+  if (proof.nodeRecordCount !== 1) {
+    throw new Error('Fleet identity reconciliation must contain exactly one node metadata record');
+  }
+  if (proof.targetedErrorCount !== 0 || proof.allErrorCount !== 0) {
+    throw new Error('Fleet identity reconciliation contains a degraded Fleet read');
+  }
+  for (const key of [
+    'heartbeatNames',
+    'targetedNames',
+    'allNodeNames',
+    'directNames',
+    'allUnplacedNames',
+    'commandErrors',
+  ]) {
+    if (
+      !Array.isArray(proof[key]) ||
+      proof[key].length > 128 ||
+      proof[key].some((value) => typeof value !== 'string') ||
+      (key !== 'commandErrors' && !sameNames(proof[key], [...new Set(proof[key])].sort()))
+    ) {
+      throw new Error(`Fleet identity reconciliation ${key} is invalid`);
+    }
+  }
+  const recomputed = evaluateFleetIdentityReconciliation({
+    phase: proof.phase,
+    nodeName: proof.nodeName,
+    agentName: proof.agentName,
+    nodesPayload: {
+      nodes: [
+        {
+          name: proof.nodeName,
+          status: proof.nodeStatus,
+          live: proof.nodeLive,
+          handlersLive: proof.handlersLive,
+          activeAgents: proof.activeAgents,
+          capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: proof.heartbeatNames } }],
+        },
+      ],
+    },
+    targetedPayload: {
+      perNode: proof.targetedNames?.map((name) => ({ name, node: proof.nodeName })),
+      errors: [],
+    },
+    allPayload: {
+      perNode: proof.allNodeNames?.map((name) => ({ name, node: proof.nodeName })),
+      unplacedRoster: proof.allUnplacedNames?.map((name) => ({ name })),
+      errors: [],
+    },
+    directAgents: proof.directNames?.map((name) => ({ name })),
+    rosterPresent: proof.rosterPresent,
+    commandErrors: proof.commandErrors,
+  });
+  const fields = [
+    'phase',
+    'nodeName',
+    'agentName',
+    'nodeRecordCount',
+    'nodeStatus',
+    'nodeLive',
+    'handlersLive',
+    'activeAgents',
+    'heartbeatNames',
+    'targetedNames',
+    'allNodeNames',
+    'directNames',
+    'allUnplacedNames',
+    'targetedErrorCount',
+    'allErrorCount',
+    'rosterPresent',
+    'targetCounts',
+    'commandErrors',
+    'pass',
+  ];
+  if (
+    proof.phase !== expected.phase ||
+    proof.nodeName !== expected.nodeName ||
+    proof.agentName !== expected.agentName ||
+    proof.pass !== true ||
+    recomputed.pass !== true ||
+    fields.some((field) => JSON.stringify(proof[field]) !== JSON.stringify(recomputed[field]))
+  ) {
+    throw new Error(
+      `Fleet identity reconciliation did not prove ${expected.agentName} ${expected.phase} on ${expected.nodeName}`
+    );
+  }
+  return proof;
 }
 
 export function findExactSentinelMessage(payload, sentinel, from) {
@@ -1380,6 +1679,36 @@ export function operationStatus(definition, result) {
     return cleanExit && result.observedSentinel === true && result.observedExit === true ? 'pass' : 'fail';
   }
   return 'fail';
+}
+
+function noPartialCreationProofPass(proof, targetName) {
+  if (!proof || typeof proof !== 'object' || proof.targetName !== targetName) return false;
+  const before = proof.before;
+  const after = proof.after;
+  if (!before || !after) return false;
+  const snapshotKeys = ['agentNames', 'fleetNodeKeys', 'sandboxIds', 'sandboxKeys', 'workerProcesses'];
+  if (snapshotKeys.some((key) => !Array.isArray(before[key]) || !Array.isArray(after[key]))) return false;
+  const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const processNames = (snapshot) =>
+    snapshot.workerProcesses
+      .flatMap((entry) => (Array.isArray(entry?.names) ? entry.names : []))
+      .filter(Boolean)
+      .sort();
+  return (
+    !before.agentNames.includes(targetName) &&
+    !after.agentNames.includes(targetName) &&
+    !processNames(before).includes(targetName) &&
+    !processNames(after).includes(targetName) &&
+    !before.fleetNodeKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    !after.fleetNodeKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    !before.sandboxKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    !after.sandboxKeys.some((key) => key.endsWith(`:${targetName}`)) &&
+    same(before.agentNames, after.agentNames) &&
+    same(before.fleetNodeKeys, after.fleetNodeKeys) &&
+    same(before.sandboxIds, after.sandboxIds) &&
+    same(before.sandboxKeys, after.sandboxKeys) &&
+    same(before.workerProcesses, after.workerProcesses)
+  );
 }
 
 export function bindInspectedSnapshotManifest(inspected, inspectionError) {
@@ -1442,6 +1771,63 @@ export function deriveFleetVerdict(operations, cleanup, criticalLifecycle) {
     return 'YELLOW';
   }
   return 'GREEN';
+}
+
+function validateFleetOperationIdentityReconciliation(operation, matrix, nonce) {
+  if (operation.status !== 'pass') return;
+  const proof = operation.fleetIdentityReconciliation;
+  const short = nonce.slice(0, 16);
+  const allowedNames = expectedOwnedAgentNames(matrix, nonce);
+  for (const phase of [proof?.live, proof?.postRelease, proof?.postDelete].filter(Boolean)) {
+    for (const name of [
+      ...(phase.heartbeatNames ?? []),
+      ...(phase.targetedNames ?? []),
+      ...(phase.allNodeNames ?? []),
+      ...(phase.directNames ?? []),
+      ...(phase.allUnplacedNames ?? []),
+    ]) {
+      if (!allowedNames.has(name)) {
+        throw new Error(`Fleet identity reconciliation contains non-owned agent ${name}`);
+      }
+    }
+  }
+  if (operation.id === 'fleet-agent-list-node') {
+    const live = proof?.live;
+    const match = live?.nodeName?.match(new RegExp(`^relay-fleetboard-([ab])-${short}$`));
+    if (!match || live.agentName !== `relay-fleetboard-${match[1]}-initial-${short}`) {
+      throw new Error('fleet-agent-list-node is not bound to the exact owned initial worker');
+    }
+    validateFleetIdentityReconciliation(live, {
+      phase: 'live',
+      nodeName: live.nodeName,
+      agentName: live.agentName,
+    });
+    return;
+  }
+  if (operation.id === 'fleet-release') {
+    const agentName = `fleet-spawn-node-${short}`;
+    const nodeName = proof?.live?.nodeName;
+    if (!new RegExp(`^relay-fleetboard-[ab]-${short}$`).test(nodeName ?? '')) {
+      throw new Error('fleet-release is not bound to an exact owned board node');
+    }
+    validateFleetIdentityReconciliation(proof.live, { phase: 'live', nodeName, agentName });
+    validateFleetIdentityReconciliation(proof.postRelease, {
+      phase: 'roster-only',
+      nodeName,
+      agentName,
+    });
+    validateFleetIdentityReconciliation(proof.postDelete, { phase: 'absent', nodeName, agentName });
+    return;
+  }
+  if (operation.id === 'fleet-release-delete-agent') {
+    const agentName = `fleet-spawn-target-node-alias-${short}`;
+    const nodeName = proof?.live?.nodeName;
+    if (!new RegExp(`^relay-fleetboard-[ab]-${short}$`).test(nodeName ?? '')) {
+      throw new Error('fleet-release-delete-agent is not bound to an exact owned board node');
+    }
+    validateFleetIdentityReconciliation(proof.live, { phase: 'live', nodeName, agentName });
+    validateFleetIdentityReconciliation(proof.postRelease, { phase: 'absent', nodeName, agentName });
+  }
 }
 
 export function validateCriticalLifecycleEvidence(value, matrix, boardNodes, nonce) {
@@ -1653,6 +2039,9 @@ export function validateFleetEvidence(evidence, matrix) {
       throw new Error(`operation ${operation.id} status is inconsistent with its evidence`);
     }
     validateOperationArgvContract(operation, definition, matrix);
+    if (['fleet-agent-list-node', 'fleet-release', 'fleet-release-delete-agent'].includes(operation.id)) {
+      validateFleetOperationIdentityReconciliation(operation, matrix, evidence.nonce);
+    }
     const argvText = operation.argv.join(' ');
     if (/--(?:api-key|join-ticket|token|wk|workspace-key)(?:=|\s+)(?!\[REDACTED\])\S+/i.test(argvText)) {
       throw new Error(`operation ${operation.id} contains an unredacted credential argument`);
@@ -1695,6 +2084,57 @@ export function validateFleetEvidence(evidence, matrix) {
     const serialized = JSON.stringify(operation);
     if (/\b(?:at|nt|rk|wk)_[A-Za-z0-9._~+/=-]{8,}\b/.test(serialized)) {
       throw new Error(`operation ${operation.id} contains an unredacted token`);
+    }
+    if (operation.id.startsWith('initial-task-sentinel-')) {
+      const expectedProvision = operation.id.replace('initial-task-sentinel-', 'provision-node-');
+      if (
+        operation.derivedObservation !== true ||
+        operation.executionKind !== 'derived-observation' ||
+        operation.derivedFrom !== expectedProvision
+      ) {
+        throw new Error(
+          `operation ${operation.id} must be derived from its exact ${expectedProvision} command execution`
+        );
+      }
+    }
+
+    if (operation.id === 'fleet-spawn-reject-droid' && operation.status === 'pass') {
+      const targetName = `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`;
+      if (!noPartialCreationProofPass(operation.partialCreationProof, targetName)) {
+        throw new Error(
+          'fleet-spawn-reject-droid did not prove no agent, worker process, Cloud record, or Daytona sandbox was created'
+        );
+      }
+    }
+    if (
+      (operation.group === 'fleet-provider' ||
+        operation.group === 'fleet-spawn' ||
+        operation.group === 'fleet-sandbox' ||
+        operation.group === 'node-agent-provider' ||
+        operation.group === 'node-agent-spawn') &&
+      (operation.group !== 'node-agent-spawn' || operation.expect !== 'sentinel-and-exit') &&
+      operation.id !== 'fleet-spawn-reject-droid'
+    ) {
+      const expectedProvider =
+        operation.id.match(
+          /^(?:fleet-spawn-provider|node-agent-spawn-provider)-(claude|codex|gemini|aider|goose|grok|opencode|droid|cursor|pi|deepagents)(?:-native)?$/
+        )?.[1] ?? 'codex';
+      const expectedRuntime =
+        (operation.group === 'node-agent-provider' || operation.group === 'node-agent-spawn') &&
+        operation.id.endsWith('-native')
+          ? 'native'
+          : 'pty';
+      if (
+        operation.status === 'pass' &&
+        (operation.observedIdentitySource !== 'node-agent-list' ||
+          operation.observedAgentName !== `${operation.id}-${evidence.nonce.slice(0, 16)}` ||
+          operation.observedProvider !== expectedProvider ||
+          operation.observedRuntime !== expectedRuntime)
+      ) {
+        throw new Error(
+          `operation ${operation.id} did not prove the actual spawned agent provider/runtime identity`
+        );
+      }
     }
   }
 
@@ -1795,6 +2235,52 @@ export function validateFleetEvidence(evidence, matrix) {
     }
     if (evidence.cleanup?.status === 'pass' && resource.cleanupState !== 'absent') {
       throw new Error(`Relay agent ${resource.id} was not cleaned up`);
+    }
+    if (resource.sandboxId !== undefined) {
+      const sandbox = sandboxResources.find(({ id }) => id === resource.sandboxId);
+      if (
+        !sandbox ||
+        resource.sandboxNodeId !== sandbox.nodeId ||
+        resource.sandboxNodeName !== sandbox.nodeName ||
+        resource.cloudWorkspaceId !== sandbox.cloudWorkspaceId ||
+        resource.ownership !== 'created-by-run'
+      ) {
+        throw new Error(`Relay agent ${resource.id} is not bound to the exact owned sandbox identity`);
+      }
+    }
+  }
+  const sandboxRelease = evidence.operations.find(({ id }) => id === 'fleet-release-reclaims-owned-sandbox');
+  if (sandboxRelease?.status === 'pass') {
+    const proof = sandboxRelease.sandboxReleaseProof;
+    const sandbox = sandboxResources.find(({ id }) => id === proof?.sandboxId);
+    const worker = evidence.resources.find(
+      ({ type, id }) => type === 'relay-agent' && id === proof?.workerName
+    );
+    const intent = evidence.ownershipIntents.find(
+      ({ type, name }) => type === 'daytona-sandbox' && name === proof?.sandboxName
+    );
+    if (
+      !proof ||
+      !sandbox ||
+      !worker ||
+      !intent ||
+      proof.sandboxName !== sandbox.nodeName ||
+      proof.cloudWorkspaceId !== sandbox.cloudWorkspaceId ||
+      proof.relayWorkspaceId !== sandbox.relayWorkspaceId ||
+      proof.nodeId !== sandbox.nodeId ||
+      proof.workerName !== `${'fleet-spawn-sandbox-scoped-mount'}-${evidence.nonce.slice(0, 16)}` ||
+      worker.sandboxId !== sandbox.id ||
+      worker.sandboxNodeId !== sandbox.nodeId ||
+      intent.nonce !== evidence.nonce ||
+      proof.ownership !== 'created-by-run' ||
+      proof.ownershipNonce !== evidence.nonce ||
+      proof.workerProcessAbsent !== true ||
+      proof.workerIdentityAbsent !== true ||
+      proof.sandboxAbsent !== true
+    ) {
+      throw new Error(
+        'fleet release sandbox evidence is not bound to the exact owned sandbox, worker, and absence checks'
+      );
     }
   }
   if (!['pass', 'fail'].includes(evidence.cleanup?.status)) {
@@ -1902,7 +2388,13 @@ export function summarizeFleetCampaign(attempts, matrix) {
   const operations = matrix.operations.map(({ id, group }) => {
     const records = attempts.map(({ nonce, evidence }) => {
       const operation = evidence.operations.find((candidate) => candidate.id === id);
-      return { nonce, status: operation.status, durationMs: operation.durationMs };
+      return {
+        nonce,
+        status: operation.status,
+        durationMs: operation.durationMs,
+        executionKind: operation.executionKind ?? 'command',
+        derivedObservation: operation.derivedObservation === true,
+      };
     });
     const statuses = [...new Set(records.map(({ status }) => status))];
     const classification =
@@ -1932,6 +2424,13 @@ export function summarizeFleetCampaign(attempts, matrix) {
       },
     };
   });
+  const derivedObservationIds = new Set(
+    operations
+      .filter(({ attempts: records }) => records.every(({ derivedObservation }) => derivedObservation))
+      .map(({ id }) => id)
+  );
+  const derivedObservations = operations.filter(({ id }) => derivedObservationIds.has(id));
+  const commandExecutions = operations.filter(({ id }) => !derivedObservationIds.has(id));
   const hasProductFailure =
     attempts.some(({ evidence }) => evidence.criticalLifecycle?.status === 'fail') ||
     operations.some(
@@ -1979,6 +2478,14 @@ export function summarizeFleetCampaign(attempts, matrix) {
       })),
     },
     operations,
+    operationTotals: {
+      matrixOperationCount: operations.length,
+      independentCommandExecutionCount: commandExecutions.length,
+      derivedObservationCount: derivedObservations.length,
+      derivedObservationIds: [...derivedObservationIds].filter((id) =>
+        operations.some((operation) => operation.id === id)
+      ),
+    },
     cleanupStatus,
     productVerdict: hasProductFailure ? 'RED' : hasIncomplete ? 'YELLOW' : 'GREEN',
     infrastructureStatus: cleanupStatus === 'pass' ? 'PASS' : 'FAIL',
@@ -2264,6 +2771,9 @@ class FleetBoard {
         : Buffer.byteLength(result.stderr ?? ''),
       stdoutTruncated: result.stdoutTruncated === true,
       stderrTruncated: result.stderrTruncated === true,
+      executionKind: result.derivedObservation === true ? 'derived-observation' : 'command',
+      ...(result.derivedObservation === true ? { derivedObservation: true } : {}),
+      ...(result.derivedFrom ? { derivedFrom: result.derivedFrom } : {}),
       ...(result.signal ? { signal: result.signal } : {}),
       ...(result.stdout ? { stdout: redactFleetEvidence(result.stdout) } : {}),
       ...(result.stderr ? { stderr: redactFleetEvidence(result.stderr) } : {}),
@@ -2273,6 +2783,22 @@ class FleetBoard {
         : {}),
       ...(result.observedExit !== undefined ? { observedExit: result.observedExit === true } : {}),
       ...(result.observedStream !== undefined ? { observedStream: result.observedStream === true } : {}),
+      ...(result.observedAgentName !== undefined ? { observedAgentName: result.observedAgentName } : {}),
+      ...(result.observedProvider !== undefined ? { observedProvider: result.observedProvider } : {}),
+      ...(result.observedRuntime !== undefined ? { observedRuntime: result.observedRuntime } : {}),
+      ...(result.observedModel !== undefined ? { observedModel: result.observedModel } : {}),
+      ...(result.observedIdentitySource !== undefined
+        ? { observedIdentitySource: result.observedIdentitySource }
+        : {}),
+      ...(result.partialCreationProof !== undefined
+        ? { partialCreationProof: result.partialCreationProof }
+        : {}),
+      ...(result.sandboxReleaseProof !== undefined
+        ? { sandboxReleaseProof: result.sandboxReleaseProof }
+        : {}),
+      ...(result.fleetIdentityReconciliation !== undefined
+        ? { fleetIdentityReconciliation: result.fleetIdentityReconciliation }
+        : {}),
       ...(result.blockedReason ? { blockedReason: redactFleetEvidence(result.blockedReason) } : {}),
       ...(result.safetyReason ? { safetyReason: redactFleetEvidence(result.safetyReason) } : {}),
     };
@@ -2324,6 +2850,8 @@ class FleetBoard {
       observedStream: input.observedStream,
       blockedReason: input.blockedReason,
       safetyReason: input.safetyReason,
+      derivedObservation: true,
+      derivedFrom: input.derivedFrom,
     }));
   }
 
@@ -2399,6 +2927,164 @@ class FleetBoard {
       throw new Error('fleet nodes --all returned invalid JSON');
     }
     return payload.nodes;
+  }
+
+  async listNodeAgents(node) {
+    if (!node?.id) throw new Error('node identity is required to inspect worker processes');
+    const result = await execute(this.inside(node.id, 'node', 'agent', 'list'), {
+      timeoutMs: 30_000,
+      maxCaptureBytes: 4 * 1024 * 1024,
+    });
+    if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
+      throw new Error(result._rawStderr || 'node agent list failed');
+    }
+    const payload = tryParseJson(result._rawStdout);
+    const agents = Array.isArray(payload) ? payload : Array.isArray(payload?.agents) ? payload.agents : null;
+    if (!agents) throw new Error('node agent list returned invalid JSON');
+    return agents;
+  }
+
+  async captureFleetIdentityReconciliation(node, agentName, phase) {
+    const settled = await Promise.allSettled([
+      this.listAllFleetNodes(),
+      execute(this.cliArgv('fleet', 'agent', 'list', '--node', node.nodeName, '--json'), {
+        timeoutMs: 30_000,
+        maxCaptureBytes: 16 * 1024 * 1024,
+      }),
+      execute(this.cliArgv('fleet', 'agent', 'list', '--all', '--json'), {
+        timeoutMs: 60_000,
+        maxCaptureBytes: 16 * 1024 * 1024,
+      }),
+      this.listNodeAgents(node),
+      this.exactAgentExists(agentName),
+    ]);
+    const commandErrors = [];
+    const value = (index, label) => {
+      const result = settled[index];
+      if (result.status === 'fulfilled') return result.value;
+      commandErrors.push(label);
+      return undefined;
+    };
+    const nodes = value(0, 'fleet-nodes-all');
+    const targeted = value(1, 'fleet-agent-list-node');
+    const all = value(2, 'fleet-agent-list-all');
+    const directAgents = value(3, 'node-agent-list');
+    const rosterPresent = value(4, 'agent-get');
+    for (const [label, result] of [
+      ['fleet-agent-list-node', targeted],
+      ['fleet-agent-list-all', all],
+    ]) {
+      if (
+        !result ||
+        result.exitCode !== 0 ||
+        result.stdoutCaptureTruncated ||
+        result.stderrCaptureTruncated
+      ) {
+        if (!commandErrors.includes(label)) commandErrors.push(label);
+      }
+    }
+    return evaluateFleetIdentityReconciliation({
+      phase,
+      nodeName: node.nodeName,
+      agentName,
+      nodesPayload: nodes ? { nodes } : undefined,
+      targetedPayload: targeted?.exitCode === 0 ? tryParseJson(targeted._rawStdout) : undefined,
+      allPayload: all?.exitCode === 0 ? tryParseJson(all._rawStdout) : undefined,
+      directAgents,
+      rosterPresent,
+      commandErrors,
+    });
+  }
+
+  async waitForFleetIdentityReconciliation(node, agentName, phase, timeoutMs = 60_000) {
+    const deadline = Date.now() + timeoutMs;
+    let last;
+    while (Date.now() < deadline) {
+      last = await this.captureFleetIdentityReconciliation(node, agentName, phase);
+      if (last.pass) return last;
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    return last;
+  }
+
+  async waitForFleetAgentIdentity(node, name, expectedProvider, expectedRuntime = 'pty', expectedModel) {
+    const deadline = Date.now() + 60_000;
+    let last;
+    while (Date.now() < deadline) {
+      try {
+        const agents = await this.listNodeAgents(node);
+        const exact = agents.find((agent) => agent?.name === name);
+        last = exact;
+        const actualProvider = exact?.cli ?? exact?.provider;
+        const pass =
+          Boolean(exact) &&
+          actualProvider === expectedProvider &&
+          exact.runtime_kind === expectedRuntime &&
+          (expectedModel === undefined || exact.model === expectedModel);
+        if (pass) {
+          return {
+            pass: true,
+            agent: exact,
+            provider: actualProvider,
+            runtime: exact.runtime_kind,
+            model: exact.model,
+          };
+        }
+      } catch {
+        // Keep polling until the bounded identity deadline; an unreadable
+        // inventory is not proof that the worker launched correctly.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    }
+    return {
+      pass: false,
+      agent: last,
+      provider: last?.cli ?? last?.provider,
+      runtime: last?.runtime_kind,
+      model: last?.model,
+    };
+  }
+
+  async waitForSandboxAbsentId(sandboxId, timeoutMs = 45_000) {
+    if (!UUID.test(sandboxId ?? '')) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const present = (await this.listDaytona()).some(({ id }) => id === sandboxId);
+      if (!present) return true;
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+    return false;
+  }
+
+  async captureNoPartialCreationProof(name) {
+    const [agentNames, fleetNodes, sandboxes] = await Promise.all([
+      this.listAllWorkspaceAgentNames(),
+      this.listAllFleetNodes(),
+      this.listDaytona(),
+    ]);
+    const workerProcesses = [];
+    for (const node of this.allBoardNodes()) {
+      const agents = await this.listNodeAgents(node);
+      workerProcesses.push({
+        nodeId: node.nodeId,
+        nodeName: node.nodeName,
+        names: agents
+          .map(({ name }) => name)
+          .filter(Boolean)
+          .sort(),
+      });
+    }
+    return {
+      targetName: name,
+      agentNames: [...agentNames].sort(),
+      fleetNodeKeys: fleetNodes.map(({ id, name }) => `${id ?? ''}:${name ?? ''}`).sort(),
+      sandboxIds: sandboxes
+        .map(({ id }) => id)
+        .filter(Boolean)
+        .sort(),
+      sandboxKeys: sandboxes.map(({ id, name }) => `${id ?? ''}:${name ?? ''}`).sort(),
+      workerProcesses,
+    };
   }
 
   async exactAgentExists(name) {
@@ -2479,9 +3165,11 @@ class FleetBoard {
   }
 
   availableBoardNodes() {
-    return [this.nodeA, this.nodeB].filter(
-      (node) => node?.id && node?.nodeName && !this.taintedNodeIds.has(node.id)
-    );
+    return this.allBoardNodes().filter((node) => !this.taintedNodeIds.has(node.id));
+  }
+
+  allBoardNodes() {
+    return ownedBoardNodes([this.nodeA, this.nodeB]);
   }
 
   async waitForSentinel(sentinel, timeoutMs = 90_000, from) {
@@ -2566,13 +3254,7 @@ class FleetBoard {
     if (!node?.id) return false;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const result = await execute(this.inside(node.id, 'node', 'agent', 'list'), { timeoutMs: 30_000 });
-      const payload = result.exitCode === 0 ? tryParseJson(result._rawStdout) : undefined;
-      const agents = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.agents)
-          ? payload.agents
-          : null;
+      const agents = await this.listNodeAgents(node).catch(() => null);
       if (agents && !agents.some((agent) => agent?.name === name)) return true;
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
@@ -2661,6 +3343,19 @@ class FleetBoard {
       const payload = tryParseJson(rawResult._rawStdout);
       const sandbox = payload?.sandbox;
       const resource = this.addSandboxFromPayload(sandbox, options.sandboxRole ?? 'scenario');
+      if (resource) {
+        const workerResource = this.evidence.resources.find(
+          (entry) => entry.type === 'relay-agent' && entry.id === options.agentName
+        );
+        if (workerResource) {
+          Object.assign(workerResource, {
+            sandboxId: resource.id,
+            sandboxNodeId: resource.nodeId,
+            sandboxNodeName: resource.nodeName,
+            cloudWorkspaceId: resource.cloudWorkspaceId,
+          });
+        }
+      }
       if (resource) await this.checkpoint();
       let sandboxContract = true;
       const sandboxChecks = [];
@@ -2740,6 +3435,21 @@ class FleetBoard {
           ? await this.waitForFleetPlacement(options.agentName, expectedPlacementNode, 60_000)
           : { pass: false, observedNode: undefined, expectedNode: expectedPlacementNode };
       const placementContract = placement.pass === true;
+      const placementNode = expectedPlacementNode
+        ? ([this.nodeA, this.nodeB].find(({ nodeName } = {}) => nodeName === expectedPlacementNode) ??
+          (resource?.id ? { id: resource.id, nodeName: sandbox.nodeName } : undefined))
+        : undefined;
+      const identity =
+        rawResult.exitCode === 0 && placementNode
+          ? await this.waitForFleetAgentIdentity(
+              placementNode,
+              options.agentName,
+              options.provider,
+              options.runtime ?? 'pty',
+              options.model
+            )
+          : { pass: false };
+      const identityContract = identity.pass === true;
       let observedSentinel = false;
       let sentinelDetail = '';
       if (rawResult.exitCode === 0 && options.sentinel) {
@@ -2758,17 +3468,29 @@ class FleetBoard {
           sandboxContract &&
           inputContract &&
           noConfirmContract &&
-          placementContract
+          placementContract &&
+          identityContract
             ? 0
             : 1,
         observedSentinel:
-          observedSentinel && sandboxContract && inputContract && noConfirmContract && placementContract,
+          observedSentinel &&
+          sandboxContract &&
+          inputContract &&
+          noConfirmContract &&
+          placementContract &&
+          identityContract,
+        observedAgentName: identity.agent?.name,
+        observedProvider: identity.provider,
+        observedRuntime: identity.runtime,
+        observedModel: identity.model,
+        observedIdentitySource: identityContract ? 'node-agent-list' : 'node-agent-list-failed',
         summary: [
           resource ? `sandboxId=${resource.id} nodeId=${resource.nodeId} provider=${resource.provider}` : '',
           sandboxChecks.join(' '),
           `inputContract=${inputContract} inputChecks=${JSON.stringify(inputChecks)}`,
           `noConfirmContract=${noConfirmContract} rawCommandMs=${Math.round(rawResult.durationMs)}`,
           `placementContract=${placementContract} expectedNode=${expectedPlacementNode ?? 'missing'} observedNode=${placement.observedNode ?? 'missing'} placementListExit=${placement.lastExitCode ?? 'not-run'} placementMalformed=${placement.malformed === true}`,
+          `identityContract=${identityContract} observedAgent=${identity.agent?.name ?? 'missing'} observedProvider=${identity.provider ?? 'missing'} observedRuntime=${identity.runtime ?? 'missing'} observedModel=${identity.model ?? 'missing'}`,
           `agentOwnership=${agentOwnership}`,
           sentinelDetail,
         ]
@@ -2977,22 +3699,23 @@ class FleetBoard {
       }),
       { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
     );
-    await this.assertedCommand(
-      'fleet-agent-list-node',
-      this.cliArgv('fleet', 'agent', 'list', '--node', primary?.nodeName ?? 'missing'),
-      (result) => {
-        const payload = tryParseJson(result._rawStdout);
-        const rows = Array.isArray(payload?.perNode) ? payload.perNode : null;
-        return {
-          pass:
-            Array.isArray(rows) &&
-            rows.some(({ name }) => name === primary?.agentName) &&
-            rows.every(({ node }) => node === primary?.nodeName),
-          summary: `rowCount=${rows?.length ?? 'invalid'}`,
-        };
-      },
-      { timeoutMs: 60_000, maxCaptureBytes: 4 * 1024 * 1024 }
-    );
+    await this.record('fleet-agent-list-node', async () => {
+      const result = await execute(
+        this.cliArgv('fleet', 'agent', 'list', '--node', primary?.nodeName ?? 'missing', '--pretty'),
+        { timeoutMs: 60_000, maxCaptureBytes: 4 * 1024 * 1024 }
+      );
+      const live = primary
+        ? await this.waitForFleetIdentityReconciliation(primary, primary.agentName, 'live', 60_000)
+        : undefined;
+      const prettyContainsExactAgent =
+        result.exitCode === 0 && Boolean(primary?.agentName) && result._rawStdout.includes(primary.agentName);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: prettyContainsExactAgent && live?.pass ? 0 : 1,
+        summary: `prettyContainsExactAgent=${prettyContainsExactAgent} crossViewLive=${live?.pass === true}`,
+        fleetIdentityReconciliation: { live },
+      };
+    });
     await this.assertedCommand(
       'fleet-agent-list-all',
       this.cliArgv('fleet', 'agent', 'list', '--all'),
@@ -3066,28 +3789,34 @@ class FleetBoard {
       });
       if (id === 'fleet-spawn-node') {
         await this.record('fleet-release', async () => {
+          const live = await this.waitForFleetIdentityReconciliation(node, agentName, 'live', 60_000);
           const release = await execute(
             this.cliArgv('fleet', 'release', agentName, '--reason', `fleet board ${this.short} lifecycle`),
             { timeoutMs: 45_000 }
           );
-          const absent =
-            release.exitCode === 0 && (await this.waitForNodeAgentAbsent(node, agentName, 60_000));
-          const identityPreserved = (await this.exactAgentExists(agentName).catch(() => null)) === true;
+          const postRelease = await this.waitForFleetIdentityReconciliation(
+            node,
+            agentName,
+            'roster-only',
+            60_000
+          );
           await this.removeIdentity(agentName);
-          const identityCleaned = await this.waitForAgentAbsent(agentName, 45_000);
+          const postDelete = await this.waitForFleetIdentityReconciliation(node, agentName, 'absent', 60_000);
           const resource = this.evidence.resources.find(
             (entry) => entry.type === 'relay-agent' && entry.id === agentName
           );
-          if (resource && absent && identityCleaned) resource.cleanupState = 'absent';
-          if (!absent || !identityCleaned) this.taintedNodeIds.add(node.id);
+          if (resource && postRelease.pass && postDelete.pass) resource.cleanupState = 'absent';
+          if (!postRelease.pass || !postDelete.pass) this.taintedNodeIds.add(node.id);
           return {
             ...stripPrivateExecution(release),
-            exitCode: absent && identityPreserved ? 0 : 1,
-            summary: `confirmedProcessAbsent=${absent} identityPreservedWithoutDelete=${identityPreserved} cleanupIdentityAbsent=${identityCleaned}`,
+            exitCode: release.exitCode === 0 && live.pass && postRelease.pass && postDelete.pass ? 0 : 1,
+            summary: `crossViewLive=${live.pass} crossViewRosterOnly=${postRelease.pass} crossViewAbsent=${postDelete.pass}`,
+            fleetIdentityReconciliation: { live, postRelease, postDelete },
           };
         });
       } else if (id === 'fleet-spawn-target-node-alias') {
         await this.record('fleet-release-delete-agent', async () => {
+          const live = await this.waitForFleetIdentityReconciliation(node, agentName, 'live', 60_000);
           const release = await execute(
             this.cliArgv(
               'fleet',
@@ -3099,21 +3828,27 @@ class FleetBoard {
             ),
             { timeoutMs: 45_000 }
           );
-          const processAbsent =
-            release.exitCode === 0 && (await this.waitForNodeAgentAbsent(node, agentName, 60_000));
-          const identityAbsent = processAbsent && (await this.waitForAgentAbsent(agentName, 60_000));
-          if (!identityAbsent) {
+          const postRelease = await this.waitForFleetIdentityReconciliation(
+            node,
+            agentName,
+            'absent',
+            60_000
+          );
+          let supportCleanup;
+          if (!postRelease.pass) {
             await this.removeIdentity(agentName);
-            if (!(await this.waitForAgentAbsent(agentName, 45_000))) this.taintedNodeIds.add(node.id);
+            supportCleanup = await this.waitForFleetIdentityReconciliation(node, agentName, 'absent', 60_000);
+            if (!supportCleanup.pass) this.taintedNodeIds.add(node.id);
           }
           const resource = this.evidence.resources.find(
             (entry) => entry.type === 'relay-agent' && entry.id === agentName
           );
-          if (resource && processAbsent && identityAbsent) resource.cleanupState = 'absent';
+          if (resource && postRelease.pass) resource.cleanupState = 'absent';
           return {
             ...stripPrivateExecution(release),
-            exitCode: processAbsent && identityAbsent ? 0 : 1,
-            summary: `confirmedProcessAbsent=${processAbsent} confirmedIdentityAbsent=${identityAbsent}`,
+            exitCode: release.exitCode === 0 && live.pass && postRelease.pass ? 0 : 1,
+            summary: `crossViewLive=${live.pass} crossViewAbsent=${postRelease.pass}`,
+            fleetIdentityReconciliation: { live, postRelease, supportCleanup },
           };
         });
       } else {
@@ -3149,12 +3884,31 @@ class FleetBoard {
       const placement = await this.waitForFleetPlacement(agentName, undefined, 60_000);
       const assignedNode = placement.observedNode;
       const ownedPlacement = availableNodes.some(({ nodeName }) => nodeName === assignedNode);
+      const assignedNodeResource = availableNodes.find(({ nodeName }) => nodeName === assignedNode);
+      const identity = ownedPlacement
+        ? await this.waitForFleetAgentIdentity(
+            assignedNodeResource,
+            agentName,
+            'codex',
+            'pty',
+            process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna'
+          )
+        : { pass: false };
       const observed = await this.waitForSentinel(sentinel, 60_000, agentName);
       return {
         ...stripPrivateExecution(commandResult),
         observedSentinel:
-          commandResult.exitCode === 0 && placement.pass && ownedPlacement && observed.observed,
-        summary: `assignedNode=${assignedNode ?? 'missing'} placementObserved=${placement.pass} ownedPlacement=${ownedPlacement}\n${observed.detail}`,
+          commandResult.exitCode === 0 &&
+          placement.pass &&
+          ownedPlacement &&
+          identity.pass &&
+          observed.observed,
+        observedAgentName: identity.agent?.name,
+        observedProvider: identity.provider,
+        observedRuntime: identity.runtime,
+        observedModel: identity.model,
+        observedIdentitySource: identity.pass ? 'node-agent-list' : 'node-agent-list-failed',
+        summary: `assignedNode=${assignedNode ?? 'missing'} placementObserved=${placement.pass} ownedPlacement=${ownedPlacement} identityContract=${identity.pass} observedProvider=${identity.provider ?? 'missing'} observedRuntime=${identity.runtime ?? 'missing'}\n${observed.detail}`,
       };
     });
     await this.releaseSupport(agentName, null);
@@ -3188,19 +3942,28 @@ class FleetBoard {
         await this.releaseSupport(agentName, node);
       }
     }
-    await this.command(
-      'fleet-spawn-reject-droid',
-      this.cliArgv(
-        'fleet',
-        'spawn',
-        'droid',
-        '--name',
-        `fleet-spawn-provider-droid-${this.short}`,
-        '--task',
-        'This must be rejected by the public Fleet parser.'
-      ),
-      { timeoutMs: 15_000 }
-    );
+    const rejectedName = `fleet-spawn-provider-droid-${this.short}`;
+    await this.record('fleet-spawn-reject-droid', async () => {
+      const before = await this.captureNoPartialCreationProof(rejectedName);
+      const result = await execute(
+        this.cliArgv(
+          'fleet',
+          'spawn',
+          'droid',
+          '--name',
+          rejectedName,
+          '--task',
+          'This must be rejected by the public Fleet parser.'
+        ),
+        { timeoutMs: 15_000 }
+      );
+      const after = await this.captureNoPartialCreationProof(rejectedName);
+      return {
+        ...stripPrivateExecution(result),
+        partialCreationProof: { targetName: rejectedName, before, after },
+        summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
+      };
+    });
   }
 
   async mountedSandboxCases() {
@@ -3274,6 +4037,7 @@ class FleetBoard {
         ({ id: operationId }) => operationId === `provision-node-${letter}`
       );
       await this.derived(id, {
+        derivedFrom: `provision-node-${letter}`,
         argv: provision?.argv ?? [],
         exitCode: provision?.exitCode ?? 1,
         observedSentinel: provision?.observedSentinel === true,
@@ -3702,29 +4466,32 @@ class FleetBoard {
       if (extra.expectExit) observedExit = await this.waitForNodeAgentAbsent(node, agentName, 45_000);
       let inventoryContract = true;
       let inventorySummary = 'not-required-for-exit-lifecycle';
+      let observedAgent;
       if (!extra.expectExit) {
-        const list = await execute(this.inside(node.id, 'node', 'agent', 'list'), {
-          timeoutMs: 30_000,
-          maxCaptureBytes: 1024 * 1024,
-        });
-        const payload = tryParseJson(list._rawStdout);
-        const agents = Array.isArray(payload) ? payload : [];
+        const agents = await this.listNodeAgents(node);
         const exact = agents.find(({ name }) => name === agentName);
+        observedAgent = exact;
         const expectedRuntime = extra.runtime === 'native' ? 'native' : 'pty';
+        const actualProvider = exact?.cli ?? exact?.provider;
         inventoryContract =
           Boolean(exact) &&
-          exact.cli === provider &&
+          actualProvider === provider &&
           exact.runtime_kind === expectedRuntime &&
           (expectedModel === undefined || exact.model === expectedModel) &&
           (extra.channels === undefined ||
             extra.channels.every((channel) => exact.channels?.includes?.(channel) === true));
-        inventorySummary = `listed=${Boolean(exact)} cli=${exact?.cli ?? 'missing'} runtime=${exact?.runtime_kind ?? 'missing'} model=${exact?.model ?? 'missing'} channels=${JSON.stringify(exact?.channels ?? [])}`;
+        inventorySummary = `listed=${Boolean(exact)} provider=${actualProvider ?? 'missing'} runtime=${exact?.runtime_kind ?? 'missing'} model=${exact?.model ?? 'missing'} channels=${JSON.stringify(exact?.channels ?? [])}`;
       }
       return {
         ...stripPrivateExecution(commandResult),
         exitCode: commandResult.exitCode === 0 && inventoryContract ? 0 : 1,
         observedSentinel: observed.observed && inventoryContract,
         ...(observedExit === undefined ? {} : { observedExit }),
+        observedAgentName: observedAgent?.name,
+        observedProvider: observedAgent?.cli ?? observedAgent?.provider,
+        observedRuntime: observedAgent?.runtime_kind,
+        observedModel: observedAgent?.model,
+        observedIdentitySource: observedAgent ? 'node-agent-list' : 'not-required-exit-lifecycle',
         summary: `${inventorySummary}\n${observed.detail}`,
       };
     });
@@ -4475,6 +5242,21 @@ class FleetBoard {
         (entry) => entry.type === 'daytona-sandbox' && entry.nodeName === scopedName
       );
       if (!resource) return { argv: [], blockedReason: 'scoped sandbox was not provisioned' };
+      const node = [this.nodeA, this.nodeB].find(({ nodeName } = {}) => nodeName === resource.nodeName);
+      const worker = this.evidence.resources.find(
+        (entry) => entry.type === 'relay-agent' && entry.id === scopedAgent
+      );
+      const intent = this.evidence.ownershipIntents.find(
+        ({ type, name }) => type === 'daytona-sandbox' && name === resource.nodeName
+      );
+      const ownershipBound =
+        resource.ownership === 'created-by-run' &&
+        intent?.nonce === this.nonce &&
+        intent?.name === resource.nodeName &&
+        worker?.sandboxId === resource.id &&
+        worker?.sandboxNodeId === resource.nodeId &&
+        worker?.sandboxNodeName === resource.nodeName &&
+        worker?.cloudWorkspaceId === resource.cloudWorkspaceId;
       const result = await execute(
         this.cliArgv(
           'fleet',
@@ -4493,10 +5275,35 @@ class FleetBoard {
         if (!present) break;
         await new Promise((resolve) => setTimeout(resolve, 3_000));
       }
+      const workerProcessAbsent =
+        Boolean(node) && (await this.waitForNodeAgentAbsent(node, scopedAgent, 45_000));
+      const workerIdentityAbsent = await this.waitForAgentAbsent(scopedAgent, 45_000);
+      const sandboxAbsent = await this.waitForSandboxAbsentId(resource.id, 45_000);
       return {
         ...stripPrivateExecution(result),
-        exitCode: result.exitCode === 0 && !present ? 0 : 1,
-        summary: `sandboxPresentAfterRelease=${present}`,
+        exitCode:
+          result.exitCode === 0 &&
+          !present &&
+          workerProcessAbsent &&
+          workerIdentityAbsent &&
+          sandboxAbsent &&
+          ownershipBound
+            ? 0
+            : 1,
+        sandboxReleaseProof: {
+          sandboxId: resource.id,
+          sandboxName: resource.nodeName,
+          cloudWorkspaceId: resource.cloudWorkspaceId,
+          relayWorkspaceId: resource.relayWorkspaceId,
+          nodeId: resource.nodeId,
+          workerName: scopedAgent,
+          ownership: resource.ownership,
+          ownershipNonce: intent?.nonce,
+          workerProcessAbsent,
+          workerIdentityAbsent,
+          sandboxAbsent,
+        },
+        summary: `sandboxId=${resource.id} sandboxName=${resource.nodeName} sandboxPresentAfterRelease=${present} workerProcessAbsent=${workerProcessAbsent} workerIdentityAbsent=${workerIdentityAbsent} sandboxAbsent=${sandboxAbsent} ownershipBound=${ownershipBound}`,
       };
     });
   }
@@ -4730,29 +5537,19 @@ class FleetBoard {
           typeof name === 'string' && name.includes(this.short) && name.startsWith('relay-fleetboard-')
       )
       .map(({ id, name }) => ({ id, name }));
-    const finalSandboxIdHashes = new Set(finalSandboxes.map(({ id }) => sha256(id)));
-    const finalSandboxNameHashes = new Set(finalSandboxes.map(({ name }) => sha256(name)));
+    const sandboxBaseline = compareDaytonaSandboxBaseline(this.baseline, finalSandboxes);
     const finalAgentNames = await this.listAllWorkspaceAgentNames().catch(() => null);
     const finalAgentNameHashes = finalAgentNames
       ? new Set([...finalAgentNames].map((name) => sha256(name)))
       : null;
-    const missingBaselineSandboxIdHashes = (this.baseline?.sandboxIdHashes ?? []).filter(
-      (hash) => !finalSandboxIdHashes.has(hash)
-    );
-    const missingBaselineSandboxNameHashes = (this.baseline?.sandboxNameHashes ?? []).filter(
-      (hash) => !finalSandboxNameHashes.has(hash)
-    );
     const missingBaselineAgentNameHashes = finalAgentNameHashes
       ? (this.baseline?.agentNameHashes ?? []).filter((hash) => !finalAgentNameHashes.has(hash))
       : ['agent-list-reconciliation-failed'];
-    const baselinePreserved =
-      missingBaselineSandboxIdHashes.length === 0 &&
-      missingBaselineSandboxNameHashes.length === 0 &&
-      missingBaselineAgentNameHashes.length === 0;
+    const baselinePreserved = sandboxBaseline.restored && missingBaselineAgentNameHashes.length === 0;
     await this.derived('daytona-baseline-restored', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
       exitCode: exactPrefixLeaks.length === 0 && baselinePreserved ? 0 : 1,
-      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(missingBaselineSandboxIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(missingBaselineSandboxNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
+      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
     });
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&

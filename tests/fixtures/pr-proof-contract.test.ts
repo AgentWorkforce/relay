@@ -59,6 +59,8 @@ import {
   verifyProtectedBrokerExecutable,
 } from '../../scripts/pr-proof/run-arm.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
+import { signalProcessTree } from '../../scripts/pr-proof/process-runner.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   resolveBrokerArtifact,
   resolveBrokerArtifactPair,
@@ -192,6 +194,16 @@ describe('RelayFlow PR proof classification', () => {
 });
 
 describe('RelayFlow case manifest', () => {
+  it('runs the immutable Fleet snapshot proof over a trusted local HTTPS endpoint', async () => {
+    const source = await readFile('tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs', 'utf8');
+    expect(source).toMatch(/import\s+https\s+from\s+['"]node:https['"]/);
+    expect(source).toMatch(/run\(\s*OPENSSL_PATH/);
+    expect(source).toMatch(/const\s+baseUrl\s*=\s*`https:\/\/127\.0\.0\.1:\$\{port\}`/);
+    expect(source).toMatch(/NODE_EXTRA_CA_CERTS\s*:\s*tlsCertificatePath/);
+    expect(source).toMatch(/TLS_CERTIFICATE_TIMEOUT_MS\s*=\s*30_000/);
+    expect(source).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
+  });
+
   it('identifies case directories without treating shared case docs as cases', () => {
     expect(
       changedRelayFlowCaseIds([
@@ -1217,6 +1229,50 @@ describe('exact broker artifact handoff', () => {
 });
 
 describe('process timeout contract', () => {
+  it('falls back to the live child handle when its process group is unowned', () => {
+    const signals: string[] = [];
+    const staleGroupError = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    signalProcessTree(
+      {
+        pid: 12345,
+        exitCode: null,
+        signalCode: null,
+        kill: (signal: string) => {
+          signals.push(signal);
+          return true;
+        },
+      },
+      'SIGKILL',
+      () => {
+        throw staleGroupError;
+      }
+    );
+    expect(signals).toEqual(['SIGKILL']);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'does not signal an exited child again when its former process group is unowned',
+    () => {
+      const staleGroupError = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      expect(() =>
+        signalProcessTree(
+          {
+            pid: 12345,
+            exitCode: 0,
+            signalCode: null,
+            kill: () => {
+              throw new Error('exited child must not be signaled again');
+            },
+          },
+          'SIGKILL',
+          () => {
+            throw staleGroupError;
+          }
+        )
+      ).not.toThrow();
+    }
+  );
+
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
     const result = await runProcess(
       process.execPath,
@@ -1240,7 +1296,7 @@ describe('process timeout contract', () => {
   });
 
   it.skipIf(process.platform === 'win32' || !PS_PATH)(
-    'force-kills same-group descendants even when they do not inherit output pipes',
+    'force-kills same-group descendants after a synchronized abort even when they do not inherit output pipes',
     async () => {
       const script = [
         "const { spawn } = require('node:child_process');",
@@ -1249,13 +1305,27 @@ describe('process timeout contract', () => {
         "process.on('SIGTERM', () => process.exit(0));",
         'setInterval(() => {}, 1000);',
       ].join('');
+      const abort = new AbortController();
+      let descendantPid = 0;
+      let output = '';
       const result = await runProcess(process.execPath, ['-e', script], {
         echo: false,
-        timeoutMs: 100,
+        // Safety net only. The actual termination begins after stdout proves
+        // the descendant exists, avoiding a scheduler race during child boot.
+        timeoutMs: 10_000,
         terminationGraceMs: 100,
+        signal: abort.signal,
+        onStdout: (chunk: string) => {
+          output += chunk;
+          const parsed = Number(output.trim());
+          if (Number.isSafeInteger(parsed) && parsed > 0) {
+            descendantPid = parsed;
+            abort.abort();
+          }
+        },
       });
-      const descendantPid = Number(result.stdout.trim());
-      expect(result.timedOut).toBe(true);
+      expect(result.aborted).toBe(true);
+      expect(result.timedOut).toBe(false);
       expect(descendantPid).toBeGreaterThan(0);
       const deadline = Date.now() + 2_000;
       let running = true;
@@ -1714,8 +1784,29 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('captureLaunchProgressError(() => launchProgress.write(text))');
     expect(source).toContain("['cloud', 'cancel', runId, '--json']");
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
+    expect(source).not.toContain("from '@agent-relay/cloud/redact'");
+    expect(source).toContain('[auth.cliEnv.CLOUD_API_KEY]');
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
+  });
+
+  it('keeps the pre-install Cloud runner importable without workspace packages', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-cloud-import-'));
+    try {
+      await copyFile('scripts/pr-proof/run-cloud.mjs', path.join(root, 'run-cloud.mjs'));
+      await copyFile('scripts/pr-proof/process-runner.mjs', path.join(root, 'process-runner.mjs'));
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `await import(${JSON.stringify(pathToFileURL(path.join(root, 'run-cloud.mjs')).href)})`,
+        ],
+        { cwd: root, stdio: 'pipe' }
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('retains bounded terminal lifecycle evidence while redacting credentials', () => {
@@ -1756,6 +1847,219 @@ describe('trusted dispatcher source contract', () => {
     });
     expect(diagnostic).not.toContain('cloud-proof-api-key-secret');
     expect(diagnostic).not.toContain('must not be copied');
+  });
+
+  it('extracts nested terminal payloads and redacts every declared and GitHub credential shape', () => {
+    const prefixes = [
+      'ghp_',
+      'gho_',
+      'ghu_',
+      'ghs_',
+      'ghr_',
+      'github_pat_',
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ];
+    const credentials = prefixes.flatMap((prefix) => [
+      `${prefix}0123456789abcdefghijklmnop`,
+      `${prefix}short`,
+    ]);
+    const declaredSecret = 'declared-cloud-proof-secret';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        workflowRun: {
+          runId: 'run-nested',
+          status: 'failed',
+          error: `no ${credentials.join(' ')} declared=${declaredSecret}`,
+          failure: { message: `nested failure ${declaredSecret}` },
+        },
+      },
+      [declaredSecret]
+    );
+    const parsed = JSON.parse(diagnostic);
+    expect(parsed).toMatchObject({
+      runId: 'run-nested',
+      status: 'failed',
+      failure: { message: 'nested failure [REDACTED_DECLARED_SECRET]' },
+    });
+    expect(diagnostic).not.toContain(declaredSecret);
+    for (const credential of credentials) expect(diagnostic).not.toContain(credential);
+    expect(diagnostic).not.toContain('0123456789abcdefghijklmnop');
+    expect(diagnostic).not.toContain('defghijklmnop');
+    expect(diagnostic).not.toContain('short');
+  });
+
+  it('fully redacts a declared secret that is itself credential-shaped', () => {
+    const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: declaredCredential,
+        status: 'failed',
+        failure: { message: `provider rejected ${declaredCredential}` },
+      },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: '[REDACTED_DECLARED_SECRET]',
+      status: 'failed',
+      failure: { message: 'provider rejected [REDACTED_DECLARED_SECRET]' },
+    });
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('mnop');
+  });
+
+  it('fully redacts a declared credential followed by another credential-compatible character', () => {
+    const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        status: 'failed',
+        error: `provider rejected ${declaredCredential}X`,
+      },
+      [declaredCredential]
+    );
+
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain(declaredCredential);
+    expect(diagnostic).not.toContain(`${declaredCredential.slice(-4)}X`);
+    expect(diagnostic).not.toContain('ghp_');
+  });
+
+  it('redacts the whole credential when a declared secret is only its recognized prefix', () => {
+    const declaredPrefix = 'ghp_abc';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `provider rejected ${declaredPrefix}defghijklmnopqrstuvwxyz` },
+      [declaredPrefix]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('provider rejected [REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('defghijklmnopqrstuvwxyz');
+  });
+
+  it('redacts an eight-character declared credential body with a compatible suffix', () => {
+    const declaredCredential = 'ghp_12345678';
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: `${declaredCredential}X` }, [
+      declaredCredential,
+    ]);
+
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('5678X');
+  });
+
+  it('does not classify an arbitrary one-character declaration as a credential containment match', () => {
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'ghp_xxxxxxxxxxxx1234' }, ['x']);
+
+    expect(diagnostic).toContain('ghp_…1234');
+    expect(diagnostic).not.toContain('[REDACTED_DECLARED_SECRET]');
+  });
+
+  it('redacts declared credentials before JSON escaping diagnostic fields', () => {
+    const declaredCredential = 'cloud"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('cloud');
+    expect(diagnostic).not.toContain('secret');
+  });
+
+  it('redacts an escaped declared value that begins with a recognized credential prefix', () => {
+    const declaredCredential = 'ghp_abc"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('secret');
+  });
+
+  it('redacts a complete declared secret that contains a credential-shaped substring', () => {
+    const declaredCredential = 'wrapper-ghp_0123456789abcdefghijklmnop-tail';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `before ${declaredCredential} after` },
+      [declaredCredential]
+    );
+
+    expect(JSON.parse(diagnostic).error).toBe('before [REDACTED_DECLARED_SECRET] after');
+    expect(diagnostic).not.toContain('wrapper');
+    expect(diagnostic).not.toContain('ghp_');
+    expect(diagnostic).not.toContain('tail');
+  });
+
+  it('masks a credential-shaped diagnostic that is only a prefix of a declared secret', () => {
+    const declaredCredential = 'ghp_abc"\\line\nsecret';
+    const diagnostic = terminalStatusDiagnostic({ status: 'failed', error: 'provider returned ghp_abc' }, [
+      declaredCredential,
+    ]);
+
+    expect(JSON.parse(diagnostic).error).toBe('provider returned ghp_\u2026');
+    expect(diagnostic).not.toContain('ghp_abc');
+  });
+
+  it('redacts secret-bearing fallback fields after oversized diagnostics are omitted', () => {
+    const secret = 'overflow-run-id-secret';
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        run: {
+          runId: `run-${secret}`,
+          status: 'failed',
+          failure: { causeChain: Array.from({ length: 20 }, () => '"\\'.repeat(2_000)) },
+        },
+      },
+      [secret]
+    );
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'run-[REDACTED_DECLARED_SECRET]',
+      status: 'failed',
+      error: '[TERMINAL DIAGNOSTIC OMITTED: exceeded 32768 byte evidence limit]',
+    });
+    expect(diagnostic).not.toContain(secret);
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+  });
+
+  it('redacts short secrets before serialization without rewriting JSON keys', () => {
+    const diagnostic = terminalStatusDiagnostic(
+      {
+        runId: 'a'.repeat(1_024),
+        status: 'a'.repeat(1_024),
+        failure: { causeChain: Array.from({ length: 20 }, () => 'x'.repeat(2_000)) },
+      },
+      ['a']
+    );
+
+    const parsed = JSON.parse(diagnostic);
+    expect(Object.keys(parsed)).toEqual(['runId', 'status', 'failure']);
+    expect(parsed.runId).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(parsed.status).toContain('[REDACTED_DECLARED_SECRET]');
+    expect(parsed.failure.causeChain).toHaveLength(20);
+    expect(diagnostic).not.toContain('"f[REDACTED_DECLARED_SECRET]ilure"');
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
+  });
+
+  it('always returns valid UTF-8 JSON inside the terminal diagnostic byte limit', () => {
+    const diagnostic = terminalStatusDiagnostic({
+      run: {
+        runId: 'run-large',
+        status: 'failed',
+        error: '💥'.repeat(30_000),
+        failure: { causeChain: Array.from({ length: 20 }, () => 'é'.repeat(4_000)) },
+      },
+    });
+    expect(() => JSON.parse(diagnostic)).not.toThrow();
+    expect(Buffer.byteLength(diagnostic, 'utf8')).toBeLessThanOrEqual(32 * 1024);
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {

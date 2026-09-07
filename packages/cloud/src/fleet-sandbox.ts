@@ -77,12 +77,12 @@ export type EnsureCloudFleetSandboxInput = {
   forceProvision?: boolean;
   /** Constrain provisioning to a provider that Cloud has enabled for routing. */
   providerId?: CloudFleetSandboxProviderId;
+  /** Provider-neutral semantics; Cloud owns the provider decision. */
+  workloadProfile?: CloudFleetSandboxWorkloadProfile;
   /** Immutable Daytona snapshot identifier selected for a qualification run. */
   snapshotId?: string;
   /** SHA-256 of the manifest that the selected snapshot must expose in-image. */
   snapshotManifestSha256?: string;
-  /** Provider-neutral semantics; Cloud owns the provider decision. */
-  workloadProfile?: CloudFleetSandboxWorkloadProfile;
   waitTimeoutMs?: number;
   /**
    * Repositories to clone into `/srv/agent-workforce/<name>` inside the
@@ -418,8 +418,8 @@ export async function ensureCloudFleetSandbox(
           ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
-          ...(requestedSnapshot ?? {}),
           ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
+          ...(requestedSnapshot ?? {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
         }),

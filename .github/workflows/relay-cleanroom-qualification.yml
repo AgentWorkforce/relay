@@ -1,10 +1,12 @@
 name: Relay orchestration cleanroom qualification
 
-# GitHub only exposes workflow_dispatch for workflow files present on the
-# default branch. This deliberately inert definition publishes the input
-# contract. A qualification/<nonce> ref must replace this file with the full
-# verifier before any cleanroom or Fleet evidence can be created.
 on:
+  schedule:
+    - cron: '17 3 * * *'
+  release:
+    types: [prereleased, published]
+  repository_dispatch:
+    types: [relay_candidate_qualification]
   workflow_dispatch:
     inputs:
       mode:
@@ -24,14 +26,763 @@ on:
         type: string
         required: false
 
-permissions: {}
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: relay-cleanroom-${{ github.event_name }}-${{ github.event.release.id || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-  dispatch-bootstrap-only:
+  diagnosis:
+    if: github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name == 'workflow_dispatch' && inputs.mode == 'diagnosis')
     runs-on: ubuntu-24.04
-    timeout-minutes: 1
+    timeout-minutes: 360
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
-      - name: Refuse to claim cleanroom qualification from the bootstrap
+      - name: Check out Relay source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: relay
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check out Cloud source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/cloud
+          path: cloud
+          ref: main
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Check out Relayfile source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/relayfile
+          path: relayfile
+          ref: main
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Check out Relayfile candidate source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/relayfile
+          path: relayfile-candidate
+          ref: ${{ inputs.relayfile_candidate_ref || 'main' }}
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Check out Relayfile Cloud source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/relayfile-cloud
+          path: relayfile-cloud
+          ref: main
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+          cache: npm
+          cache-dependency-path: |
+            relay/package-lock.json
+            cloud/package-lock.json
+            relayfile-cloud/package-lock.json
+
+      - name: Install locked repositories and review CLIs
         run: |
-          echo "::error title=Dispatch bootstrap only::Select a qualification/<nonce> ref containing the complete cleanroom verifier."
-          exit 1
+          npm --prefix relay ci
+          npm --prefix cloud ci
+          npm --prefix relayfile-cloud ci
+          npm install --global npm@11.19.1
+          npm install --global @anthropic-ai/claude-code@2.1.260 @openai/codex@0.153.3 opencode-ai@1.18.25
+          claude --version | grep -F 2.1.260
+          codex --version | grep -F 0.153.3
+          test "$(opencode --version | tail -1)" = 1.18.25
+
+      - name: Verify the exact published Relay package closure
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "v${version}" = "${RELEASE_TAG}"
+          install_root="$(mktemp -d)"
+          trap 'rm -rf "${install_root}"' EXIT
+          npm --prefix "${install_root}" init -y >/dev/null
+          for attempt in $(seq 1 12); do
+            if test "$(npm view "agent-relay@${version}" version 2>/dev/null)" = "${version}"; then
+              break
+            fi
+            if test "${attempt}" = 12; then
+              echo "agent-relay@${version} did not become readable from npm" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+          npm --prefix "${install_root}" install --save-exact "agent-relay@${version}"
+          test "$("${install_root}/node_modules/.bin/agent-relay" version)" = "agent-relay v${version}"
+          "${install_root}/node_modules/.bin/agent-relay" node --help >/dev/null
+          npm --prefix "${install_root}" ls --all >/dev/null
+
+      - name: Run sealed cross-repository diagnosis Relayflow
+        id: diagnosis
+        continue-on-error: true
+        working-directory: relay
+        env:
+          RELAY_RELIABILITY_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+          RELAY_CLOUD_REPO: ../cloud
+          RELAYFILE_REPO: ../relayfile
+          RELAYFILE_CANDIDATE_REPO: ../relayfile-candidate
+          RELAYFILE_CLOUD_REPO: ../relayfile-cloud
+          AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1'
+          RELAYFLOWS_SANDBOX_PROVIDER: local-process
+          # Relayflows 1.1.4 otherwise attempts Relayfile workspace creation for
+          # restricted agents even though this sealed diagnosis uses no mount.
+          RELAY_CLOUD_PROVISIONING_DONE: '1'
+        run: npx relayflows run workflows/diagnose-relay-orchestration-reliability.ts
+
+      - name: Upload immutable diagnosis evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relay-orchestration-diagnosis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: relay/.workflow-artifacts/diagnose-relay-orchestration-reliability/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce diagnosis completion
+        if: always()
+        env:
+          DIAGNOSIS_OUTCOME: ${{ steps.diagnosis.outcome }}
+        run: |
+          node -e "if (process.env.DIAGNOSIS_OUTCOME !== 'success') throw new Error('diagnosis Relayflow did not complete')"
+
+  qualification:
+    if: (github.event_name == 'release' && github.event.release.prerelease == true) || github.event_name == 'repository_dispatch' || (github.event_name == 'schedule' && vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON != '') || (github.event_name == 'workflow_dispatch' && inputs.mode == 'qualification')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    environment: snapshot-qualification
+    outputs:
+      owned_workspace_a: ${{ steps.workspace_a.outputs.cloud_workspace_id }}
+      owned_workspace_b: ${{ steps.workspace_b.outputs.cloud_workspace_id }}
+    env:
+      CLOUD_API_URL: https://agentrelay.com/cloud
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Check out qualification verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: relay-bootstrap
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+
+      - name: Obtain immutable qualification manifest
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          MANUAL_MANIFEST: ${{ github.event.client_payload.qualification_manifest_json || inputs.qualification_manifest_json || vars.RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON }}
+        run: |
+          mkdir -p qualification
+          if [ "$EVENT_NAME" = release ]; then
+            for attempt in $(seq 1 12); do
+              if gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern relay-qualification.json --dir qualification; then
+                break
+              fi
+              if [ "$attempt" = 12 ]; then
+                echo "qualification manifest release asset unavailable" >&2
+                exit 1
+              fi
+              sleep 10
+            done
+          else
+            node -e "const fs=require('node:fs'); if(!process.env.MANUAL_MANIFEST) throw new Error('qualification_manifest_json is required'); JSON.parse(process.env.MANUAL_MANIFEST); fs.writeFileSync('qualification/relay-qualification.json', process.env.MANUAL_MANIFEST, {mode:0o600})"
+          fi
+
+      - name: Validate qualification manifest and release binding
+        id: manifest
+        run: |
+          args=(validate --file qualification/relay-qualification.json --output qualification/normalized.json --github-output "$GITHUB_OUTPUT")
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            args+=(--event "$GITHUB_EVENT_PATH")
+          fi
+          node relay-bootstrap/scripts/verify-features/qualification-manifest.mjs "${args[@]}"
+
+      - name: Bind the release tag ref to the exact Relay candidate commit
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
+          RELAY_SHA: ${{ steps.manifest.outputs.relay_sha }}
+        run: |
+          node - <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const repository = process.env.GITHUB_REPOSITORY;
+          const tag = process.env.RELEASE_TAG;
+          const expected = process.env.RELAY_SHA;
+          function api(path) {
+            return JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8' }));
+          }
+          let object = api(`repos/${repository}/git/ref/tags/${encodeURIComponent(tag)}`).object;
+          for (let depth = 0; depth < 8 && object?.type === 'tag'; depth += 1) {
+            object = api(`repos/${repository}/git/tags/${object.sha}`).object;
+          }
+          if (object?.type !== 'commit' || object.sha !== expected) {
+            throw new Error('release tag does not peel to the exact qualified Relay commit');
+          }
+          NODE
+
+      - name: Download exact Relay, Cloud, and Relayfile Cloud qualification artifacts
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          RELAY_PACKAGE_RUN_ID: ${{ steps.manifest.outputs.relay_package_run_id }}
+          CLOUD_RUN_ID: ${{ steps.manifest.outputs.cloud_qualification_run_id }}
+          CLOUD_ARTIFACT_NAME: ${{ steps.manifest.outputs.cloud_qualification_artifact_name }}
+          CLOUD_ACCEPTANCE_RUN_ID: ${{ steps.manifest.outputs.cloud_acceptance_run_id }}
+          CLOUD_ACCEPTANCE_ARTIFACT_NAME: ${{ steps.manifest.outputs.cloud_acceptance_artifact_name }}
+          RELAYFILE_CLOUD_RUN_ID: ${{ steps.manifest.outputs.relayfile_cloud_run_id }}
+          RELAYFILE_CLOUD_ARTIFACT_NAME: ${{ steps.manifest.outputs.relayfile_cloud_artifact_name }}
+        run: |
+          mkdir -p qualification/relay-packages/payload qualification/relay-packages/attestation qualification/cloud qualification/cloud-acceptance qualification/relayfile-cloud
+          gh run download "$RELAY_PACKAGE_RUN_ID" \
+            --repo AgentWorkforce/relay \
+            --name relay-package-qualification \
+            --dir qualification/relay-packages/payload
+          gh run download "$RELAY_PACKAGE_RUN_ID" \
+            --repo AgentWorkforce/relay \
+            --name relay-package-qualification-attestation \
+            --dir qualification/relay-packages/attestation
+          gh run download "$CLOUD_RUN_ID" \
+            --repo AgentWorkforce/cloud \
+            --name "$CLOUD_ARTIFACT_NAME" \
+            --dir qualification/cloud
+          gh run download "$CLOUD_ACCEPTANCE_RUN_ID" \
+            --repo AgentWorkforce/cloud \
+            --name "$CLOUD_ACCEPTANCE_ARTIFACT_NAME" \
+            --dir qualification/cloud-acceptance
+          gh run download "$RELAYFILE_CLOUD_RUN_ID" \
+            --repo AgentWorkforce/relayfile-cloud \
+            --name "$RELAYFILE_CLOUD_ARTIFACT_NAME" \
+            --dir qualification/relayfile-cloud
+
+      - name: Verify source runs and GitHub artifact digests
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          RELAY_PACKAGE_RUN_ID: ${{ steps.manifest.outputs.relay_package_run_id }}
+          RELAY_PACKAGE_RUN_ATTEMPT: ${{ steps.manifest.outputs.relay_package_run_attempt }}
+          RELAY_SHA: ${{ steps.manifest.outputs.relay_sha }}
+          RELAY_PACKAGE_PAYLOAD_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.relay_package_payload_artifact_digest }}
+          RELAY_PACKAGE_ATTESTATION_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.relay_package_attestation_artifact_digest }}
+          CLOUD_RUN_ID: ${{ steps.manifest.outputs.cloud_qualification_run_id }}
+          CLOUD_RUN_ATTEMPT: ${{ steps.manifest.outputs.cloud_qualification_run_attempt }}
+          CLOUD_SHA: ${{ steps.manifest.outputs.cloud_sha }}
+          CLOUD_ARTIFACT_NAME: ${{ steps.manifest.outputs.cloud_qualification_artifact_name }}
+          CLOUD_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.cloud_qualification_artifact_digest }}
+          CLOUD_ACCEPTANCE_SOURCE_SHA: ${{ steps.manifest.outputs.cloud_acceptance_source_sha }}
+          CLOUD_ACCEPTANCE_RUN_ID: ${{ steps.manifest.outputs.cloud_acceptance_run_id }}
+          CLOUD_ACCEPTANCE_RUN_ATTEMPT: ${{ steps.manifest.outputs.cloud_acceptance_run_attempt }}
+          CLOUD_ACCEPTANCE_ARTIFACT_NAME: ${{ steps.manifest.outputs.cloud_acceptance_artifact_name }}
+          CLOUD_ACCEPTANCE_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.cloud_acceptance_artifact_digest }}
+          CLOUD_ACCEPTANCE_EVIDENCE_SHA256: ${{ steps.manifest.outputs.cloud_acceptance_evidence_sha256 }}
+          RELAYFILE_CLOUD_RUN_ID: ${{ steps.manifest.outputs.relayfile_cloud_run_id }}
+          RELAYFILE_CLOUD_RUN_ATTEMPT: ${{ steps.manifest.outputs.relayfile_cloud_run_attempt }}
+          RELAYFILE_CLOUD_SHA: ${{ steps.manifest.outputs.relayfile_cloud_sha }}
+          RELAYFILE_CLOUD_ARTIFACT_NAME: ${{ steps.manifest.outputs.relayfile_cloud_artifact_name }}
+          RELAYFILE_CLOUD_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.relayfile_cloud_artifact_digest }}
+        run: |
+          gh api "repos/AgentWorkforce/relay/actions/runs/$RELAY_PACKAGE_RUN_ID/attempts/$RELAY_PACKAGE_RUN_ATTEMPT" > qualification/relay-package-run.json
+          gh api "repos/AgentWorkforce/relay/actions/runs/$RELAY_PACKAGE_RUN_ID/artifacts" > qualification/relay-package-artifacts.json
+          gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_RUN_ID/attempts/$CLOUD_RUN_ATTEMPT" > qualification/cloud-run.json
+          gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_RUN_ID/artifacts" > qualification/cloud-artifacts.json
+          gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_ACCEPTANCE_RUN_ID/attempts/$CLOUD_ACCEPTANCE_RUN_ATTEMPT" > qualification/cloud-acceptance-run.json
+          gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_ACCEPTANCE_RUN_ID/artifacts" > qualification/cloud-acceptance-artifacts.json
+          gh api "repos/AgentWorkforce/relayfile-cloud/actions/runs/$RELAYFILE_CLOUD_RUN_ID/attempts/$RELAYFILE_CLOUD_RUN_ATTEMPT" > qualification/relayfile-cloud-run.json
+          gh api "repos/AgentWorkforce/relayfile-cloud/actions/runs/$RELAYFILE_CLOUD_RUN_ID/artifacts" > qualification/relayfile-cloud-artifacts.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const relayRun = JSON.parse(fs.readFileSync('qualification/relay-package-run.json'));
+          const relayArtifacts = JSON.parse(fs.readFileSync('qualification/relay-package-artifacts.json')).artifacts;
+          const relayWorkflowPath = String(relayRun.path ?? '').split('@')[0];
+          const relayWorkflowRef = String(relayRun.path ?? '').split('@')[1];
+          const qualificationBranch = /^qualification\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
+          const expectedRelayRef = `refs/heads/${relayRun.head_branch}`;
+          const safeBranchSegments = String(relayRun.head_branch ?? '').split('/').every((segment) => segment !== '.' && segment !== '..');
+          if (relayRun.id !== Number(process.env.RELAY_PACKAGE_RUN_ID) || relayRun.run_attempt !== Number(process.env.RELAY_PACKAGE_RUN_ATTEMPT) || relayRun.head_sha !== process.env.RELAY_SHA || relayRun.status !== 'completed' || relayRun.conclusion !== 'success' || relayRun.name !== 'Relay package qualification' || relayWorkflowPath !== '.github/workflows/relay-package-qualification.yml' || (relayWorkflowRef !== undefined && relayWorkflowRef !== expectedRelayRef) || relayRun.event !== 'workflow_dispatch' || !qualificationBranch.test(relayRun.head_branch ?? '') || expectedRelayRef.includes('//') || !safeBranchSegments) throw new Error('Relay package producer is not the exact successful manual qualification-branch prerelease run');
+          for (const [name, digest] of [
+            ['relay-package-qualification', process.env.RELAY_PACKAGE_PAYLOAD_ARTIFACT_DIGEST],
+            ['relay-package-qualification-attestation', process.env.RELAY_PACKAGE_ATTESTATION_ARTIFACT_DIGEST],
+          ]) {
+            const matches = relayArtifacts.filter((artifact) => artifact.name === name && !artifact.expired);
+            if (matches.length !== 1 || matches[0].workflow_run?.id !== relayRun.id || matches[0].digest !== digest) throw new Error(`Relay ${name} artifact identity or digest mismatch`);
+          }
+          NODE
+          node relay-bootstrap/scripts/verify-features/qualification-producer-artifacts.mjs cloud \
+            --run qualification/cloud-run.json \
+            --artifacts qualification/cloud-artifacts.json \
+            --directory qualification/cloud \
+            --run-id "$CLOUD_RUN_ID" \
+            --run-attempt "$CLOUD_RUN_ATTEMPT" \
+            --source-sha "$CLOUD_SHA" \
+            --artifact-name "$CLOUD_ARTIFACT_NAME" \
+            --artifact-digest "$CLOUD_ARTIFACT_DIGEST"
+          node relay-bootstrap/scripts/verify-features/qualification-producer-artifacts.mjs cloud-acceptance \
+            --run qualification/cloud-acceptance-run.json \
+            --artifacts qualification/cloud-acceptance-artifacts.json \
+            --directory qualification/cloud-acceptance \
+            --run-id "$CLOUD_ACCEPTANCE_RUN_ID" \
+            --run-attempt "$CLOUD_ACCEPTANCE_RUN_ATTEMPT" \
+            --source-sha "$CLOUD_ACCEPTANCE_SOURCE_SHA" \
+            --artifact-name "$CLOUD_ACCEPTANCE_ARTIFACT_NAME" \
+            --artifact-digest "$CLOUD_ACCEPTANCE_ARTIFACT_DIGEST" \
+            --evidence-sha256 "$CLOUD_ACCEPTANCE_EVIDENCE_SHA256" \
+            --qualification-run-id "$CLOUD_RUN_ID" \
+            --qualification-run-attempt "$CLOUD_RUN_ATTEMPT" \
+            --qualification-artifact-digest "$CLOUD_ARTIFACT_DIGEST" \
+            --snapshot-name "${{ steps.manifest.outputs.snapshot_name }}" \
+            --snapshot-id "${{ steps.manifest.outputs.snapshot_id }}" \
+            --relayfile-cloud-source-sha "$RELAYFILE_CLOUD_SHA" \
+            --relayfile-cloud-run-id "$RELAYFILE_CLOUD_RUN_ID" \
+            --relayfile-cloud-run-attempt "$RELAYFILE_CLOUD_RUN_ATTEMPT" \
+            --relayfile-cloud-artifact-digest "$RELAYFILE_CLOUD_ARTIFACT_DIGEST" \
+            --relayfile-cloud-deployment-id "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
+            --relayfile-cloud-attestation-sha256 "${{ steps.manifest.outputs.relayfile_cloud_attestation_sha256 }}"
+          node relay-bootstrap/scripts/verify-features/qualification-producer-artifacts.mjs relayfile-cloud \
+            --run qualification/relayfile-cloud-run.json \
+            --artifacts qualification/relayfile-cloud-artifacts.json \
+            --directory qualification/relayfile-cloud \
+            --run-id "$RELAYFILE_CLOUD_RUN_ID" \
+            --run-attempt "$RELAYFILE_CLOUD_RUN_ATTEMPT" \
+            --source-sha "$RELAYFILE_CLOUD_SHA" \
+            --artifact-name "$RELAYFILE_CLOUD_ARTIFACT_NAME" \
+            --artifact-digest "$RELAYFILE_CLOUD_ARTIFACT_DIGEST"
+
+      - name: Verify downloaded qualification bundle
+        run: |
+          node relay-bootstrap/scripts/verify-features/qualification-manifest.mjs verify-bundle \
+            --file qualification/relay-qualification.json \
+            --cloud-qualification qualification/cloud/qualification.json \
+            --snapshot-manifest qualification/cloud/snapshot-manifest-full.json \
+            --cloud-acceptance qualification/cloud-acceptance/candidate-acceptance.json \
+            --relayfile-cloud-attestation qualification/relayfile-cloud/relayfile-cloud-attestation.json \
+            --relay-package-payload qualification/relay-packages/payload/relay-package-attestation.json \
+            --relay-package-attestation qualification/relay-packages/attestation/relay-package-qualification-attestation.json \
+            --output qualification/normalized.json
+
+      - name: Check out exact Relay candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/relay
+          path: relay
+          ref: ${{ steps.manifest.outputs.relay_sha }}
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Check out exact Cloud candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/cloud
+          path: cloud
+          ref: ${{ steps.manifest.outputs.cloud_sha }}
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Check out exact Relayfile candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/relayfile
+          path: relayfile
+          ref: ${{ steps.manifest.outputs.relayfile_sha }}
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Check out exact Relayfile Cloud candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: AgentWorkforce/relayfile-cloud
+          path: relayfile-cloud
+          ref: ${{ steps.manifest.outputs.relayfile_cloud_sha }}
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Install exact Relay verifier and workflow source
+        working-directory: relay
+        run: |
+          npm install --global npm@10.9.7
+          npm install --global @anthropic-ai/claude-code@2.1.260 @openai/codex@0.153.3 opencode-ai@1.18.25
+          claude --version | grep -F 2.1.260
+          codex --version | grep -F 0.153.3
+          test "$(opencode --version | tail -1)" = 1.18.25
+          npm ci
+          npm run build:core
+
+      - name: Hydrate the exact producer-packed Relay candidate
+        working-directory: relay
+        run: |
+          chmod 700 "$RUNNER_TEMP"
+          node scripts/verify-features/relay-candidate-install.mjs hydrate \
+            --attestation ../qualification/relay-packages/payload/candidate-install-attestation.json \
+            --tarballs ../qualification/relay-packages/payload/tarballs \
+            --output "$RUNNER_TEMP/relay-candidate-install"
+          cp "$RUNNER_TEMP/relay-candidate-install/candidate-install-attestation.json" \
+            ../qualification/relay-candidate-install-attestation.json
+
+      - name: Bind release tag to exact package version
+        working-directory: relay
+        env:
+          RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
+        run: |
+          node -e "const p=require('./package.json'); if(process.env.RELEASE_TAG !== 'v'+p.version) throw new Error('release tag does not match exact Relay package version'); process.stdout.write(p.version)" > "$RUNNER_TEMP/relay-version"
+
+      - name: Install pinned Daytona CLI
+        env:
+          DAYTONA_URL: https://github.com/daytona/clients/releases/download/v0.207.1/daytona-linux-amd64
+          DAYTONA_SHA256: 94dac407c1692ef537252ddccb0e129cfcaccc023fae1f08696e55d9d8a5c06b
+        run: |
+          curl --fail --location --silent --show-error "$DAYTONA_URL" --output "$RUNNER_TEMP/daytona"
+          echo "$DAYTONA_SHA256  $RUNNER_TEMP/daytona" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/daytona"
+          sudo install -m 0755 "$RUNNER_TEMP/daytona" /usr/local/bin/daytona
+          daytona version
+
+      - name: Check candidate command availability (not runtime qualification)
+        working-directory: relay
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+        run: node scripts/verify-features/qualification-capabilities.mjs --availability-only --cli "$VERIFY_FLEET_CLI"
+
+      - name: Create isolated ephemeral Cloud workspace A
+        id: workspace_a
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+        run: |
+          chmod 0700 "$RUNNER_TEMP"
+          node "$VERIFY_FLEET_CLI" cloud workspace create \
+            --ephemeral \
+            --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a" \
+            --ttl 24h \
+            --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
+            --idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:a" \
+            --credential-file "$RUNNER_TEMP/relay-workspace-a.json" \
+            --json > "$RUNNER_TEMP/workspace-create-a.json"
+          WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-a.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
+
+      - name: Create isolated ephemeral Cloud workspace B
+        id: workspace_b
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+        run: |
+          node "$VERIFY_FLEET_CLI" cloud workspace create \
+            --ephemeral \
+            --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b" \
+            --ttl 24h \
+            --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
+            --idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:b" \
+            --credential-file "$RUNNER_TEMP/relay-workspace-b.json" \
+            --json > "$RUNNER_TEMP/workspace-create-b.json"
+          WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-b.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
+
+      - name: Run exact candidate Fleet Relayflow
+        id: fleet
+        continue-on-error: true
+        working-directory: relay
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VERIFY_FLEET_RELEASE_QUALIFICATION: '1'
+          VERIFY_FLEET_DISPOSABLE_WORKSPACE: '1'
+          VERIFY_FLEET_WORKSPACE_KEY_FILE_A: ${{ runner.temp }}/relay-workspace-a.json
+          VERIFY_FLEET_WORKSPACE_KEY_FILE_B: ${{ runner.temp }}/relay-workspace-b.json
+          VERIFY_FLEET_SNAPSHOT_ID: ${{ steps.manifest.outputs.snapshot_id }}
+          VERIFY_FLEET_SNAPSHOT_NAME: ${{ steps.manifest.outputs.snapshot_name }}
+          VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256: ${{ steps.manifest.outputs.snapshot_manifest_sha256 }}
+          VERIFY_FLEET_NONCE: qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CANDIDATE_ATTESTATION: ${{ runner.temp }}/relay-candidate-install/candidate-install-attestation.json
+          VERIFY_FLEET_MIN_CREDENTIAL_LIFETIME_SECONDS: '21600'
+          AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1'
+          RELAYFLOWS_SANDBOX_PROVIDER: local-process
+          RELAY_CLOUD_PROVISIONING_DONE: '1'
+        run: |
+          VERIFY_FLEET_EXPECTED_RELAY_VERSION="$(cat "$RUNNER_TEMP/relay-version")"
+          export VERIFY_FLEET_EXPECTED_RELAY_VERSION
+          npm run verify:fleet-daytona
+
+      - name: Resolve exact owned workspace IDs for cleanup
+        id: cleanup_ids
+        if: always()
+        env:
+          WORKSPACE_A_OUTPUT: ${{ steps.workspace_a.outputs.cloud_workspace_id }}
+          WORKSPACE_B_OUTPUT: ${{ steps.workspace_b.outputs.cloud_workspace_id }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          function fromFile(file) {
+            try {
+              const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+              return uuid.test(value.workspaceId || '') ? value.workspaceId : '';
+            } catch {
+              return '';
+            }
+          }
+          for (const suffix of ['a', 'b']) {
+            const prior = process.env[`WORKSPACE_${suffix.toUpperCase()}_OUTPUT`] || '';
+            const value = uuid.test(prior)
+              ? prior
+              : fromFile(path.join(process.env.RUNNER_TEMP, `workspace-create-${suffix}.json`)) ||
+                fromFile(path.join(process.env.RUNNER_TEMP, `relay-workspace-${suffix}.json`));
+            if (value) fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${value}\n`);
+          }
+          NODE
+
+      - name: Delete exact ephemeral workspace B and verify cascade
+        if: always() && steps.cleanup_ids.outputs.workspace_b != ''
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          WORKSPACE_ID: ${{ steps.cleanup_ids.outputs.workspace_b }}
+        run: |
+          DELETE_STARTED_AT="$(date +%s)"
+          node "$VERIFY_FLEET_CLI" cloud workspace delete "$WORKSPACE_ID" \
+            --confirm "$WORKSPACE_ID" \
+            --verify-cascade \
+            --json > qualification/workspace-delete-b.json
+          DELETE_FINISHED_AT="$(date +%s)"
+          DELETE_STARTED_AT="$DELETE_STARTED_AT" DELETE_FINISHED_AT="$DELETE_FINISHED_AT" WORKSPACE_ID="$WORKSPACE_ID" node - <<'NODE'
+          const fs = require('node:fs');
+          const started = Number(process.env.DELETE_STARTED_AT);
+          const finished = Number(process.env.DELETE_FINISHED_AT);
+          if (!Number.isSafeInteger(started) || !Number.isSafeInteger(finished) || finished < started) throw new Error('invalid delete timing');
+          const result = JSON.parse(fs.readFileSync('qualification/workspace-delete-b.json', 'utf8'));
+          if (result.workspaceId !== process.env.WORKSPACE_ID || typeof result.operationId !== 'string' || !result.operationId) throw new Error('delete result identity is invalid');
+          fs.writeFileSync('qualification/workspace-delete-b-timing.json', JSON.stringify({ workspaceId: process.env.WORKSPACE_ID, operationId: result.operationId, elapsedSeconds: finished - started }) + '\n', { mode: 0o600, flag: 'wx' });
+          NODE
+
+      - name: Delete exact ephemeral workspace A and verify cascade
+        if: always() && steps.cleanup_ids.outputs.workspace_a != ''
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          WORKSPACE_ID: ${{ steps.cleanup_ids.outputs.workspace_a }}
+        run: |
+          DELETE_STARTED_AT="$(date +%s)"
+          node "$VERIFY_FLEET_CLI" cloud workspace delete "$WORKSPACE_ID" \
+            --confirm "$WORKSPACE_ID" \
+            --verify-cascade \
+            --json > qualification/workspace-delete-a.json
+          DELETE_FINISHED_AT="$(date +%s)"
+          DELETE_STARTED_AT="$DELETE_STARTED_AT" DELETE_FINISHED_AT="$DELETE_FINISHED_AT" WORKSPACE_ID="$WORKSPACE_ID" node - <<'NODE'
+          const fs = require('node:fs');
+          const started = Number(process.env.DELETE_STARTED_AT);
+          const finished = Number(process.env.DELETE_FINISHED_AT);
+          if (!Number.isSafeInteger(started) || !Number.isSafeInteger(finished) || finished < started) throw new Error('invalid delete timing');
+          const result = JSON.parse(fs.readFileSync('qualification/workspace-delete-a.json', 'utf8'));
+          if (result.workspaceId !== process.env.WORKSPACE_ID || typeof result.operationId !== 'string' || !result.operationId) throw new Error('delete result identity is invalid');
+          fs.writeFileSync('qualification/workspace-delete-a-timing.json', JSON.stringify({ workspaceId: process.env.WORKSPACE_ID, operationId: result.operationId, elapsedSeconds: finished - started }) + '\n', { mode: 0o600, flag: 'wx' });
+          NODE
+
+      - name: Compose and enforce runtime qualification effects
+        id: runtime_effects
+        if: always()
+        working-directory: relay
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+        run: |
+          node scripts/verify-features/qualification-effect-evidence.mjs \
+            --manifest ../qualification/normalized.json \
+            --snapshot-manifest ../qualification/cloud/snapshot-manifest-full.json \
+            --cloud-acceptance ../qualification/cloud-acceptance/candidate-acceptance.json \
+            --relayfile-cloud-attestation ../qualification/relayfile-cloud/relayfile-cloud-attestation.json \
+            --create-a "$RUNNER_TEMP/workspace-create-a.json" \
+            --credential-a "$RUNNER_TEMP/relay-workspace-a.json" \
+            --create-b "$RUNNER_TEMP/workspace-create-b.json" \
+            --credential-b "$RUNNER_TEMP/relay-workspace-b.json" \
+            --fleet-matrix tests/relayflows/cleanroom/fleet-daytona.matrix.json \
+            --fleet-artifact-root .workflow-artifacts/verify-fleet-daytona \
+            --fleet-nonce "qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --delete-a ../qualification/workspace-delete-a.json \
+            --delete-a-timing ../qualification/workspace-delete-a-timing.json \
+            --delete-b ../qualification/workspace-delete-b.json \
+            --delete-b-timing ../qualification/workspace-delete-b-timing.json \
+            --output ../qualification/runtime-effects.json
+          node scripts/verify-features/qualification-capabilities.mjs \
+            --cli "$VERIFY_FLEET_CLI" \
+            --effect-evidence ../qualification/runtime-effects.json
+
+      - name: Upload candidate qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relay-candidate-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            qualification/normalized.json
+            qualification/cloud-acceptance/candidate-acceptance.json
+            qualification/relay-candidate-install-attestation.json
+            qualification/runtime-effects.json
+            qualification/workspace-delete-*.json
+            relay/.workflow-artifacts/verify-fleet-daytona/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Enforce candidate qualification completion
+        if: always()
+        env:
+          FLEET_OUTCOME: ${{ steps.fleet.outcome }}
+        run: |
+          node -e "if (process.env.FLEET_OUTCOME !== 'success') throw new Error('candidate Fleet qualification did not complete')"
+
+  qualification_cleanup:
+    name: Reconcile qualification workspaces
+    needs: qualification
+    if: ${{ always() && needs.qualification.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: snapshot-qualification
+    steps:
+      - name: Check out exact cleanup CLI
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: relay-cleanup
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+
+      - name: Build exact cleanup CLI without Cloud credentials
+        working-directory: relay-cleanup
+        run: |
+          npm install --global npm@10.9.7
+          test "$(npm --version)" = "10.9.7"
+          npm ci
+          npm run build:core
+          mkdir -p qualification-cleanup
+
+      - name: Bind only create-step-owned qualification workspace IDs
+        id: resolve
+        working-directory: relay-cleanup
+        env:
+          WORKSPACE_A: ${{ needs.qualification.outputs.owned_workspace_a }}
+          WORKSPACE_B: ${{ needs.qualification.outputs.owned_workspace_b }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          const resolved = {};
+          for (const suffix of ['a', 'b']) {
+            const id = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
+            if (!id) continue;
+            if (!uuid.test(id)) throw new Error(`create-step-owned workspace ${suffix} has an invalid id`);
+            resolved[suffix] = id;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${id}\n`);
+          }
+          fs.writeFileSync(
+            'qualification-cleanup/resolved.json',
+            `${JSON.stringify({ version: 1, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, resolved }, null, 2)}\n`,
+            { mode: 0o600, flag: 'wx' }
+          );
+          NODE
+
+      - name: Delete exact fallback workspace B and verify cascade
+        if: steps.resolve.outputs.workspace_b != ''
+        working-directory: relay-cleanup
+        env:
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          WORKSPACE_ID: ${{ steps.resolve.outputs.workspace_b }}
+        run: |
+          node packages/cli/dist/cli/index.js cloud workspace delete "$WORKSPACE_ID" \
+            --confirm "$WORKSPACE_ID" \
+            --verify-cascade \
+            --json > qualification-cleanup/delete-b.json
+
+      - name: Delete exact fallback workspace A and verify cascade
+        if: always() && steps.resolve.outputs.workspace_a != ''
+        working-directory: relay-cleanup
+        env:
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          WORKSPACE_ID: ${{ steps.resolve.outputs.workspace_a }}
+        run: |
+          node packages/cli/dist/cli/index.js cloud workspace delete "$WORKSPACE_ID" \
+            --confirm "$WORKSPACE_ID" \
+            --verify-cascade \
+            --json > qualification-cleanup/delete-a.json
+
+      - name: Prove every create-step-owned ID has cascade absence evidence
+        if: always()
+        working-directory: relay-cleanup
+        env:
+          WORKSPACE_A: ${{ steps.resolve.outputs.workspace_a }}
+          WORKSPACE_B: ${{ steps.resolve.outputs.workspace_b }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const evidence = {};
+          for (const suffix of ['a', 'b']) {
+            const id = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
+            if (!id) {
+              evidence[suffix] = { createStepOwnedIdRecorded: false };
+              continue;
+            }
+            const result = JSON.parse(fs.readFileSync(`qualification-cleanup/delete-${suffix}.json`, 'utf8'));
+            if (result.workspaceId !== id || result.absence?.workspaceId !== id || result.absence?.status !== 404) {
+              throw new Error(`workspace ${suffix} lacks exact cascade absence evidence`);
+            }
+            evidence[suffix] = { createStepOwnedIdRecorded: true, workspaceId: id, operationId: result.operationId, absence: result.absence };
+          }
+          fs.writeFileSync(
+            'qualification-cleanup/absence.json',
+            `${JSON.stringify({ version: 1, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT, evidence }, null, 2)}\n`,
+            { mode: 0o600, flag: 'wx' }
+          );
+          NODE
+
+      - name: Upload independent cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relay-qualification-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: relay-cleanup/qualification-cleanup/
+          if-no-files-found: error
+          retention-days: 90

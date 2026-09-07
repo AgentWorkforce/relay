@@ -1219,6 +1219,9 @@ impl BrokerRuntime {
                                         .map(str::to_owned);
                                     receipt.updated_at = Instant::now();
                                 }
+                                if let Some(request) = pending_model_requests.get_mut(request_id) {
+                                    request.confirmation_pending = true;
+                                }
                                 return;
                             }
                             let request = pending_model_requests

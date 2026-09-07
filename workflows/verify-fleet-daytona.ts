@@ -19,7 +19,9 @@ import { mkdir, open } from 'node:fs/promises';
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
+import { REQUIRED_NPM_VERSION } from '../scripts/verify-features/relay-candidate-install.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { fleetReviewerNetwork, preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
 const EXPECTED_CLI_INVENTORY = 'tests/relayflows/cleanroom/fleet-cli-inventory.json';
@@ -31,7 +33,7 @@ const STEP_TIMEOUT = 14_400_000;
 const CANDIDATE_INSTALL_ROOT = `.workflow-artifacts/verify-fleet-daytona/${NONCE}/candidate-install`;
 const CONFIGURED_CANDIDATE_CLI = process.env.VERIFY_FLEET_CLI?.trim();
 const CONFIGURED_CANDIDATE_ATTESTATION = process.env.VERIFY_FLEET_CANDIDATE_ATTESTATION?.trim();
-const FLEET_CODEX_MODEL = process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || 'gpt-5.6-luna';
+const FLEET_CODEX_MODEL = process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || CodexModels.GPT_5_1_CODEX_MINI;
 const SAFE_WORKFLOW_PATH = /^[A-Za-z0-9_./-]+$/;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
@@ -153,7 +155,7 @@ function reviewerPermissions(role: string) {
       write: [`${artifactDir}/draft-${role}.json`],
       deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
     },
-    network: false,
+    network: fleetReviewerNetwork(role),
     exec: [],
   };
 }
@@ -237,7 +239,7 @@ async function main() {
   });
   wf.agent('analysis-repair', {
     cli: 'codex',
-    model: CodexModels.GPT_5_1_CODEX_MINI,
+    model: FLEET_CODEX_MODEL,
     preset: 'reviewer',
     role: 'Disposition evidence-review findings without mutating product or evidence.',
     interactive: false,
@@ -253,7 +255,7 @@ async function main() {
   });
   wf.agent('final-codex-review', {
     cli: 'codex',
-    model: CodexModels.GPT_5_1_CODEX_MINI,
+    model: FLEET_CODEX_MODEL,
     preset: 'reviewer',
     role: 'Fresh final independent reviewer of Relay Fleet evidence integrity.',
     interactive: false,
@@ -291,17 +293,52 @@ async function main() {
     failOnError: true,
     timeoutMs: 120_000,
   });
-  wf.step('build-current-cli', {
+  // Every downstream step assumes an exact, lockfile-matched install. The
+  // sandbox's base snapshot node_modules can predate the synced source
+  // (e.g. a lockfile refresh or a dependency bump landed after the
+  // snapshot was baked), which silently builds stale code instead of the
+  // exact candidate under proof. `npm ci` deletes and rebuilds
+  // node_modules strictly from package-lock.json, matching the same
+  // install this repo's own CI runs before every build.
+  wf.step('install-dependencies', {
     type: 'deterministic',
     dependsOn: ['validate-catalog'],
+    command: 'npm ci',
+    captureOutput: true,
+    failOnError: true,
+    timeoutMs: 600_000,
+  });
+  wf.step('build-current-cli', {
+    type: 'deterministic',
+    dependsOn: ['install-dependencies'],
     command: 'npm run build:core',
     captureOutput: true,
     failOnError: true,
     timeoutMs: 1_800_000,
   });
+  let candidatePreparationDependency = 'build-current-cli';
+  if (!CONFIGURED_CANDIDATE_CLI) {
+    wf.step('install-candidate-npm', {
+      type: 'deterministic',
+      dependsOn: ['build-current-cli'],
+      command: `npm install --global npm@${REQUIRED_NPM_VERSION} && test "$(npm --version)" = "${REQUIRED_NPM_VERSION}"`,
+      captureOutput: true,
+      failOnError: true,
+      timeoutMs: 600_000,
+    });
+    wf.step('stage-current-platform-broker', {
+      type: 'deterministic',
+      dependsOn: ['install-candidate-npm'],
+      command: 'node scripts/verify-features/relay-candidate-install.mjs stage-source-broker',
+      captureOutput: true,
+      failOnError: true,
+      timeoutMs: 1_800_000,
+    });
+    candidatePreparationDependency = 'stage-current-platform-broker';
+  }
   wf.step('prepare-clean-installed-candidate', {
     type: 'deterministic',
-    dependsOn: ['build-current-cli'],
+    dependsOn: [candidatePreparationDependency],
     command: CANDIDATE_PREPARE_COMMAND,
     captureOutput: true,
     failOnError: true,

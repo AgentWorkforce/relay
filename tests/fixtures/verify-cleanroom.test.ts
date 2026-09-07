@@ -1,21 +1,27 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { compileAgentPermissions } from '@agent-relay/cloud';
+import { parse } from 'yaml';
 
 // Dependency-free ESM is shared with the Cloud lane sandboxes.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   aggregateMarkdown,
   aggregateRecords,
+  assertReviewUploadSource,
   captureBoundedOutput,
   cleanEnvironment,
+  cleanroomLaneTimeoutMs,
   freshAttemptContext,
   loadCatalog,
   parseFeatureManifest,
+  putRecord,
   readBoundedResponseText,
   redactEvidence,
+  runProcess,
   routeInventory,
   validateCloudApiBaseUrl,
   validateCleanroomSeal,
@@ -25,6 +31,14 @@ import {
   validateReviewProvenance,
   verifyWriteOnceStorage,
 } from '../../scripts/verify-features/cleanroom.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import {
+  cleanroomLaneEvidenceScopes,
+  cleanroomLaneNetwork,
+  cleanroomLaneWritePaths,
+  cleanroomReviewNetwork,
+  MODEL_TRANSPORT_HOSTS,
+} from '../../scripts/verify-features/fleet-permissions.mjs';
 
 const NONCE = 'a'.repeat(32);
 
@@ -384,11 +398,11 @@ describe('clean-room verification catalog', () => {
 
   it('isolates reviewer drafts by campaign nonce and exact role', () => {
     const root = '.workflow-artifacts/verify-cleanroom';
-    const exact = path.resolve(root, NONCE, 'draft-final-codex-signoff.json');
+    const exact = path.resolve(root, NONCE, 'review-drafts', 'final-codex-signoff', 'draft.json');
     expect(validateReviewDraftPath(exact, root, NONCE, 'final-codex-signoff')).toBe(exact);
     expect(() =>
       validateReviewDraftPath(
-        path.resolve(root, 'draft-final-codex-signoff.json'),
+        path.resolve(root, 'review-drafts', 'final-codex-signoff', 'draft.json'),
         root,
         NONCE,
         'final-codex-signoff'
@@ -407,6 +421,37 @@ describe('clean-room verification catalog', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('bounds the complete newline-terminated local evidence object', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-storage-limit-'));
+    try {
+      // The pretty JSON is exactly 2 MiB; the required trailing newline must not cross the limit.
+      await expect(
+        putRecord({
+          nonce: NONCE,
+          kind: 'boundary-probe',
+          value: { payload: 'x'.repeat(2_097_133) },
+          source: 'files',
+          artifactRoot: root,
+        })
+      ).rejects.toThrow(/exceeds 2097152 bytes/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('requires write-once Cloud storage for full and soak review uploads', () => {
+    expect(assertReviewUploadSource('smoke', 'files', {})).toBe('files');
+    expect(() => assertReviewUploadSource('full', 'files', {})).toThrow(/write-once Cloud evidence/);
+    expect(() => assertReviewUploadSource('soak', 'auto', {})).toThrow(/write-once Cloud evidence/);
+    expect(
+      assertReviewUploadSource('full', 'auto', {
+        CLOUD_API_URL: 'https://cloud.example.test',
+        CLOUD_API_ACCESS_TOKEN: 'test-token',
+        RUN_ID: 'test-run',
+      })
+    ).toBe('cloud');
   });
 
   it('confines evidence and inventory traffic to authenticated HTTPS origins', () => {
@@ -476,14 +521,378 @@ describe('clean-room verification catalog', () => {
     expect(source).toMatch(/command\(\s*["']review-export["']/);
     expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
     expect(source).toMatch(/command\(\s*["']review-upload["']/);
-    expect(source).toContain("const sandboxEnvironmentReference = '${SANDBOX_ID}'");
-    expect(source).toContain('"sandboxId": "cloud-${sandboxEnvironmentReference} or local-${role}"');
-    expect(runner).toContain('review.sandboxId !== provenance.sandboxId');
-    expect(runner).toContain('kind: `review-provenance/${role}`');
+    expect(source).toMatch(/const\s+sandboxEnvironmentReference\s*=\s*["']\$\{SANDBOX_ID\}["']/);
+    expect(source).toMatch(/"sandboxId"\s*:\s*"cloud-\$\{sandboxEnvironmentReference\} or local-\$\{role\}"/);
+    expect(runner).toMatch(/if\s*\(\s*review\.sandboxId\s*!==\s*provenance\.sandboxId\s*\)\s*\{/);
+    expect(runner).toContain("return `review-provenance/${assertSafeId(role, 'role')}/capture`");
+    expect(runner.match(/redirect: 'error'/g)?.length).toBeGreaterThanOrEqual(4);
     expect(source).toContain('agent.permissions = lanePermissions');
     expect(source).toContain("access: 'restricted' as const");
     expect(source).toContain('exec: [reviewProvenanceCommand(role)]');
+    expect(source).toContain('write: cleanroomLaneWritePaths(NONCE, lane)');
+    expect(source).toContain('...lanes.map((lane) => `lanes/${lane}`)');
+    expect(source).toContain(
+      '...roles.flatMap((role) => [`review-drafts/${role}`, `review-provenance/${role}`])'
+    );
+    expect(source).toContain('network: cleanroomLaneNetwork()');
+    expect(source).toContain('network: cleanroomReviewNetwork(role, cloudHost)');
     expect(source).not.toContain('CLEANROOM_REVIEW_UPLOADED role=${role}');
+  });
+
+  it('derives full and soak lane timeouts from every configured repetition and corpus case', async () => {
+    const { matrix } = await loadCatalog('tests/relayflows/cleanroom/relay.matrix.json');
+    const corpusEntries = await readdir('tests/relayflows/cases', { withFileTypes: true });
+    const corpusTimeouts = await Promise.all(
+      corpusEntries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          const manifest = JSON.parse(
+            await readFile(path.join('tests/relayflows/cases', entry.name, 'case.json'), 'utf8')
+          );
+          return manifest.timeoutSeconds;
+        })
+    );
+    const fullTimeout = cleanroomLaneTimeoutMs(matrix, 'full', 'regression-corpus', corpusTimeouts);
+    const soakTimeout = cleanroomLaneTimeoutMs(matrix, 'soak', 'regression-corpus', corpusTimeouts);
+    const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
+
+    expect(fullTimeout).toBeGreaterThan(7_200_000);
+    expect(soakTimeout).toBeGreaterThan(fullTimeout);
+    expect(source).toContain('timeoutMs: laneTimeouts[lane]');
+    expect(source).toContain('const timeoutPlan = wf.toConfig()');
+    expect(source).toContain('Number(step.timeoutMs) * (retries + 1)');
+    expect(source).toContain('wf.timeout(workflowTimeout)');
+    expect(source).not.toContain('const STEP_TIMEOUT = 7_200_000');
+  });
+
+  it('derives diagnosis peer reads from the configured repository paths', async () => {
+    const source = await readFile('workflows/diagnose-relay-orchestration-reliability.ts', 'utf8');
+
+    expect(source).toContain('function peerPrefix(repository: string)');
+    for (const repository of ['CLOUD', 'RELAYFILE', 'RELAYFILE_CLOUD']) {
+      expect(source).toContain(`...repoReads(peerPrefix(${repository}))`);
+    }
+    expect(source).not.toContain("...repoReads('../cloud/')");
+    expect(source).not.toContain("...repoReads('../relayfile/')");
+    expect(source).not.toContain("...repoReads('../relayfile-cloud/')");
+  });
+
+  it('keeps credential-named test source readable while denying credential artifacts', async () => {
+    const source = await readFile('workflows/verify-cleanroom.ts', 'utf8');
+    const matrix = await readFile('tests/relayflows/cleanroom/relay.matrix.json', 'utf8');
+    const lanePermissionSource = source.slice(
+      source.indexOf('function lanePermissions'),
+      source.indexOf('async function ensureReviewPlaceholders')
+    );
+
+    expect(lanePermissionSource).toContain("read: ['**']");
+    expect(lanePermissionSource).not.toContain("'**/*credential*'");
+    expect(lanePermissionSource).toContain("'**/*-credentials.json'");
+    expect(matrix).toContain('packages/cli/src/cli/plugin-credential-safety.test.ts');
+  });
+
+  it('rejects an omitted corpus-case timeout budget', async () => {
+    const { matrix } = await loadCatalog('tests/relayflows/cleanroom/relay.matrix.json');
+
+    expect(() => cleanroomLaneTimeoutMs(matrix, 'full', 'regression-corpus')).toThrow(
+      /corpus case timeouts must be positive safe integers/
+    );
+  });
+
+  it('grants each cleanroom agent only its exact output and required model transport', () => {
+    const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
+    const evidenceScopes = cleanroomLaneEvidenceScopes(NONCE, 'polyglot-plugins');
+    expect(writes).toContain('packages/sdk-swift/.build/**');
+    expect(writes).toContain(
+      `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`
+    );
+    expect(writes).toContain(
+      `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/.mount-write-anchor`
+    );
+    expect(writes).not.toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/**`);
+    expect(evidenceScopes).toEqual([
+      `relayfile:fs:read:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`,
+      `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`,
+    ]);
+    expect(() => cleanroomLaneWritePaths('../escape', 'polyglot-plugins')).toThrow(/identity/);
+
+    const laneNetwork = cleanroomLaneNetwork();
+    expect(laneNetwork.allow).toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS.codex));
+    expect(laneNetwork.allow).not.toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS.claude));
+    expect(laneNetwork.allow).not.toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS.opencode));
+    expect(laneNetwork.allow).not.toContain('*');
+    expect(laneNetwork.deny).toEqual(['*']);
+
+    for (const [role, provider] of [
+      ['claude-review-1', 'claude'],
+      ['codex-review-1', 'codex'],
+      ['supervisor', 'opencode'],
+    ] as const) {
+      const withoutCloud = cleanroomReviewNetwork(role);
+      expect(withoutCloud.allow).toEqual(expect.arrayContaining(MODEL_TRANSPORT_HOSTS[provider]));
+      for (const [otherProvider, hosts] of Object.entries(MODEL_TRANSPORT_HOSTS)) {
+        if (otherProvider === provider) continue;
+        for (const host of hosts) expect(withoutCloud.allow).not.toContain(host);
+      }
+      expect(withoutCloud.deny).toEqual(['*']);
+      const withCloud = cleanroomReviewNetwork(role, 'cloud.example.test:443');
+      expect(withCloud.allow).toContain('cloud.example.test:443');
+    }
+    expect(() => cleanroomReviewNetwork('unknown-role')).toThrow(/unknown cleanroom reviewer/);
+  });
+
+  it('compiles an exact writable scope for a write-once lane artifact that does not exist yet', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-permissions-'));
+    try {
+      await mkdir(path.join(projectDir, 'packages', 'fixture', 'dist'), { recursive: true });
+      await writeFile(path.join(projectDir, 'packages', 'fixture', 'dist', 'placeholder'), 'fixture\n');
+      const lane = 'polyglot-plugins';
+      const target = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}/evidence.json`;
+      const mountAnchor = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}/.mount-write-anchor`;
+      const otherTarget = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging/evidence.json`;
+      const otherMountAnchor = `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging/.mount-write-anchor`;
+      await mkdir(path.dirname(path.join(projectDir, target)), { recursive: true });
+      await mkdir(path.dirname(path.join(projectDir, otherTarget)), { recursive: true });
+      await writeFile(path.join(projectDir, mountAnchor), 'lane anchor\n');
+      await writeFile(path.join(projectDir, otherMountAnchor), 'other lane anchor\n');
+      const compiled = compileAgentPermissions({
+        agentName: `lane-${lane}`,
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
+          files: { read: ['**'], write: cleanroomLaneWritePaths(NONCE, lane) },
+        },
+      });
+
+      expect(compiled.readwritePaths).toEqual([mountAnchor, target, 'packages/fixture/dist/placeholder']);
+      expect(compiled.scopes).toEqual(
+        expect.arrayContaining([`relayfile:fs:read:/${target}`, `relayfile:fs:write:/${target}`])
+      );
+      expect(compiled.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/${lane}`]).toEqual([
+        'read',
+        'write',
+      ]);
+      expect(compiled.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes`]).toBeUndefined();
+      expect(compiled.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging`]).not.toContain(
+        'write'
+      );
+      expect(compiled.scopes).not.toContain(
+        `relayfile:fs:write:/.workflow-artifacts/verify-cleanroom/${NONCE}/**`
+      );
+
+      await writeFile(path.join(projectDir, otherTarget), '{"lane":"messaging"}\n', { flag: 'wx' });
+      const afterOtherLaneWrites = compileAgentPermissions({
+        agentName: `lane-${lane}`,
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          scopes: cleanroomLaneEvidenceScopes(NONCE, lane),
+          files: { read: ['**'], write: cleanroomLaneWritePaths(NONCE, lane) },
+        },
+      });
+      expect(afterOtherLaneWrites.readwritePaths).not.toContain(otherTarget);
+      expect(afterOtherLaneWrites.scopes).not.toContain(`relayfile:fs:write:/${otherTarget}`);
+      expect(
+        afterOtherLaneWrites.acl[`/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/messaging`]
+      ).toEqual(['read']);
+      await writeFile(path.join(projectDir, target), '{"created":true}\n', { flag: 'wx' });
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects future writes inside skipped state directories and through dangling symlinks',
+    async () => {
+      const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-future-write-deny-'));
+      try {
+        const deniedTargets = [
+          '.git/future.json',
+          'nested/.relay/future.json',
+          'packages/fixture/node_modules/future.json',
+          'packages/fixture/NODE_MODULES/future.json',
+        ];
+        const danglingTarget = 'safe/dangling.json';
+        const allowedTarget = 'safe/future.json';
+        for (const directory of [
+          '.git',
+          'nested/.relay',
+          'packages/fixture/node_modules',
+          'packages/fixture/NODE_MODULES',
+          'safe',
+        ]) {
+          await mkdir(path.join(projectDir, directory), { recursive: true });
+        }
+        await symlink('missing.json', path.join(projectDir, danglingTarget));
+
+        const compiled = compileAgentPermissions({
+          agentName: 'future-writer',
+          workspace: 'cleanroom-test',
+          projectDir,
+          permissions: {
+            access: 'restricted',
+            inherit: false,
+            files: { write: [...deniedTargets, danglingTarget, allowedTarget] },
+          },
+        });
+
+        expect(compiled.readwritePaths).toEqual([allowedTarget]);
+        for (const deniedTarget of [...deniedTargets, danglingTarget]) {
+          expect(compiled.readwritePaths).not.toContain(deniedTarget);
+          expect(compiled.scopes).not.toContain(`relayfile:fs:write:/${deniedTarget}`);
+        }
+      } finally {
+        await rm(projectDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('rejects an exact future write below an existing regular file without aborting compilation', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-future-write-file-parent-'));
+    try {
+      await writeFile(path.join(projectDir, 'regular-file'), 'not a directory\n');
+
+      const compiled = compileAgentPermissions({
+        agentName: 'future-writer',
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          files: { write: ['regular-file/future.json'] },
+        },
+      });
+
+      expect(compiled.readwritePaths).not.toContain('regular-file/future.json');
+      expect(compiled.scopes).not.toContain('relayfile:fs:write:/regular-file/future.json');
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'settles a timed-out cleanroom command when an escaped descendant retains its output pipes',
+    async () => {
+      const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-timeout-'));
+      const pidFile = path.join(projectDir, 'escaped.pid');
+      let escapedPid = 0;
+      let cleanupError: unknown;
+      const startedAt = Date.now();
+      try {
+        const script = [
+          "const { spawn } = require('node:child_process');",
+          "const fs = require('node:fs');",
+          `const child = spawn(${JSON.stringify(process.execPath)}, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: ['ignore', 1, 2] });`,
+          `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+          'child.unref();',
+          'setTimeout(() => {}, 30000);',
+        ].join('\n');
+        const result = await runProcess([process.execPath, '-e', script], {
+          cwd: projectDir,
+          env: process.env,
+          timeoutSeconds: 0.5,
+        });
+        escapedPid = Number(await readFile(pidFile, 'utf8'));
+
+        expect(result.timedOut).toBe(true);
+        expect(Date.now() - startedAt).toBeLessThan(3_000);
+        expect(Number.isSafeInteger(escapedPid)).toBe(true);
+        expect(escapedPid).toBeGreaterThan(0);
+      } finally {
+        if (escapedPid > 0) {
+          try {
+            process.kill(escapedPid, 'SIGKILL');
+          } catch (error: any) {
+            if (error?.code !== 'ESRCH') cleanupError = error;
+          }
+        }
+        await rm(projectDir, { recursive: true, force: true });
+      }
+      expect(cleanupError).toBeUndefined();
+    }
+  );
+
+  it('isolates each reviewer mount from lane evidence and other reviewer outputs', async () => {
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-review-permissions-'));
+    try {
+      const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
+      const role = 'codex-review-1';
+      const otherRole = 'claude-review-1';
+      const input = `${artifactDir}/review-input-${role}.json`;
+      const laneInput = `${artifactDir}/review-input-${role}-lane-messaging.json`;
+      const ownDraft = `${artifactDir}/review-drafts/${role}/draft.json`;
+      const ownProvenance = `${artifactDir}/review-provenance/${role}/capture.json`;
+      const ownProvenanceAnchor = `${artifactDir}/review-provenance/${role}/.mount-write-anchor`;
+      const otherDraft = `${artifactDir}/review-drafts/${otherRole}/draft.json`;
+      const otherProvenance = `${artifactDir}/review-provenance/${otherRole}/capture.json`;
+      const otherProvenanceAnchor = `${artifactDir}/review-provenance/${otherRole}/.mount-write-anchor`;
+      const laneEvidence = `${artifactDir}/lanes/messaging/evidence.json`;
+
+      for (const directory of [
+        path.dirname(path.join(projectDir, ownDraft)),
+        path.dirname(path.join(projectDir, ownProvenance)),
+        path.dirname(path.join(projectDir, otherDraft)),
+        path.dirname(path.join(projectDir, otherProvenance)),
+        path.dirname(path.join(projectDir, laneEvidence)),
+      ]) {
+        await mkdir(directory, { recursive: true });
+      }
+      for (const target of [
+        input,
+        laneInput,
+        ownDraft,
+        ownProvenanceAnchor,
+        otherDraft,
+        otherProvenance,
+        otherProvenanceAnchor,
+        laneEvidence,
+      ]) {
+        await mkdir(path.dirname(path.join(projectDir, target)), { recursive: true });
+        await writeFile(path.join(projectDir, target), '{}\n');
+      }
+
+      const compiled = compileAgentPermissions({
+        agentName: role,
+        workspace: 'cleanroom-test',
+        projectDir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          scopes: [`relayfile:fs:read:/${ownProvenance}`, `relayfile:fs:write:/${ownProvenance}`],
+          files: {
+            read: [input, laneInput],
+            write: [ownDraft, ownProvenanceAnchor, ownProvenance],
+            deny: ['.env', '.env.*', '**/.env', '**/.env.*', '**/*secret*', '**/*credential*'],
+          },
+        },
+      });
+
+      expect(compiled.readonlyPaths).toEqual(expect.arrayContaining([input, laneInput]));
+      expect(compiled.readwritePaths).toEqual([ownDraft, ownProvenanceAnchor, ownProvenance]);
+      expect(compiled.acl[`/${artifactDir}/review-drafts/${role}`]).toEqual(['read', 'write']);
+      expect(compiled.acl[`/${artifactDir}/review-provenance/${role}`]).toEqual(['read', 'write']);
+      for (const forbiddenDirectory of [
+        `/${artifactDir}/lanes/messaging`,
+        `/${artifactDir}/review-drafts/${otherRole}`,
+        `/${artifactDir}/review-provenance/${otherRole}`,
+      ]) {
+        expect(compiled.acl[forbiddenDirectory]).not.toContain('write');
+      }
+      for (const forbiddenTarget of [laneEvidence, otherDraft, otherProvenance]) {
+        expect(compiled.readwritePaths).not.toContain(forbiddenTarget);
+        expect(compiled.scopes).not.toContain(`relayfile:fs:write:/${forbiddenTarget}`);
+      }
+
+      await writeFile(path.join(projectDir, ownDraft), '{"draft":true}\n');
+      await writeFile(path.join(projectDir, ownProvenance), '{"captured":true}\n', { flag: 'wx' });
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
   });
 
   it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {
@@ -492,8 +901,34 @@ describe('clean-room verification catalog', () => {
     expect(workflow).toContain('github.event.release.prerelease == false');
     expect(workflow).toContain('github.event.release.prerelease == true');
     expect(workflow).toContain('Verify the exact published Relay package closure');
+    expect(workflow).toContain('npm install --global npm@11.19.1');
     expect(workflow).toMatch(
       /relayWorkflowRef\s*!==\s*undefined\s*&&\s*relayWorkflowRef\s*!==\s*expectedRelayRef/
     );
+  });
+
+  it('runs exact-ID workspace reconciliation in an independent post-qualification job', async () => {
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const parsed = parse(source);
+    const cleanup = parsed.jobs.qualification_cleanup;
+
+    expect(cleanup.needs).toBe('qualification');
+    expect(cleanup.if).toContain('always()');
+    expect(cleanup['runs-on']).toBe('ubuntu-24.04');
+    expect(cleanup['timeout-minutes']).toBe(60);
+    expect(cleanup.environment).toBe('snapshot-qualification');
+    expect(cleanup.steps.filter((step: any) => step.run?.includes('cloud workspace delete'))).toHaveLength(2);
+    const cleanupA = cleanup.steps.find(
+      (step: any) => step.name === 'Delete exact fallback workspace A and verify cascade'
+    );
+    expect(cleanupA.if).toContain('always()');
+    expect(cleanup.steps.some((step: any) => step.run?.includes('cloud workspaces --json'))).toBe(false);
+    expect(parsed.jobs.qualification.outputs).toEqual({
+      owned_workspace_a: '${{ steps.workspace_a.outputs.cloud_workspace_id }}',
+      owned_workspace_b: '${{ steps.workspace_b.outputs.cloud_workspace_id }}',
+    });
+    expect(source).toContain('WORKSPACE_A: ${{ needs.qualification.outputs.owned_workspace_a }}');
+    expect(source).toContain('WORKSPACE_B: ${{ needs.qualification.outputs.owned_workspace_b }}');
+    expect(source).toContain('result.absence?.workspaceId !== id || result.absence?.status !== 404');
   });
 });

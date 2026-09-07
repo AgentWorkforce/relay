@@ -432,12 +432,10 @@ try {
               try {
                 const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
                 return response.status === 404;
-              } catch {
-                // Server refused/closed its listener: the session is gone,
-                // cleanup succeeded. Treating the error as "not yet deleted"
-                // would poll for the full module-wide timeout and then fail an
-                // otherwise fully successful proof.
-                return true;
+              } catch (error) {
+                // Only a closed listener proves the provider is unavailable.
+                // Timeouts and other transport errors cannot prove deletion.
+                return error?.cause?.code === 'ECONNREFUSED';
               }
             },
             'deleted OpenCode session to disappear',
