@@ -84,6 +84,19 @@ function trimOrUndefined(value: string | undefined): string | undefined {
 /**
  * Resolve the broker connection in priority order. Returns `null` when no
  * source provides a URL — the caller decides how to surface that.
+ *
+ * URL and API key are not resolved independently past the explicit tier.
+ * A process that is itself a relay agent carries its own broker's
+ * `RELAY_BROKER_API_KEY` in env; if that key got paired with a URL that
+ * resolved from a *different* source (typically another repo's
+ * `connection.json`, e.g. `agent-relay node agent attach` against another
+ * repo's broker), the pair can never authenticate (#1382). Once the URL
+ * resolves from env or the connection file, the key must resolve from that
+ * same tier (or an explicit `--api-key` override) — never reach past it
+ * into a different tier. An explicit `--broker-url` is exempt: it is a
+ * deliberate, single-field override, and the key still resolves normally
+ * beneath it (env, then file) so `--broker-url` alone does not force the
+ * caller to also pass `--api-key`.
  */
 export function resolveBrokerConnection(
   options: BrokerConnectionOptions,
@@ -95,13 +108,23 @@ export function resolveBrokerConnection(
   const connectionFile = deps.readConnectionFile(stateDir);
   const fileUrl = readString(connectionFile, 'url');
 
-  const url = explicitUrl ?? envUrl ?? fileUrl;
-  if (!url) return null;
-
   const explicitKey = trimOrUndefined(options.apiKey);
   const envKey = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
   const fileKey = readString(connectionFile, 'api_key');
-  const apiKey = explicitKey ?? envKey ?? fileKey;
+
+  let url: string | undefined;
+  let apiKey: string | undefined;
+  if (explicitUrl) {
+    url = explicitUrl;
+    apiKey = explicitKey ?? envKey ?? fileKey;
+  } else if (envUrl) {
+    url = envUrl;
+    apiKey = explicitKey ?? envKey;
+  } else if (fileUrl) {
+    url = fileUrl;
+    apiKey = explicitKey ?? fileKey;
+  }
+  if (!url) return null;
 
   return {
     url: url.replace(/\/+$/, ''),

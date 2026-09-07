@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 
-import { attachNative, renderNativeHarnessDiagnostic, renderAgentEvent } from './attach-native.js';
+import {
+  attachNative,
+  isNativeHarness,
+  renderNativeHarnessDiagnostic,
+  renderAgentEvent,
+} from './attach-native.js';
 
 const envelope = (kind: string, fields: Record<string, unknown> = {}) =>
   ({
@@ -203,5 +208,19 @@ describe('native harness attach rendering', () => {
     expect(() =>
       JSON.parse(renderNativeHarnessDiagnostic(diagnostic, { diagnostics: true, json: true })!.trim())
     ).not.toThrow();
+  });
+});
+
+describe('isNativeHarness', () => {
+  // Regression (#1382): a mismatched or unreachable broker connection must
+  // degrade this capability probe to `false`, not reject and abort the
+  // whole attach before it ever tries the non-native fallback path.
+  it('degrades to false when the capability probe fails instead of throwing', async () => {
+    const failingFetch = (async () => {
+      throw new Error('401 Unauthorized');
+    }) as unknown as typeof globalThis.fetch;
+    await expect(
+      isNativeHarness('Worker', { brokerUrl: 'http://broker' }, failingFetch)
+    ).resolves.toBe(false);
   });
 });
