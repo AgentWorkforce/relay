@@ -112,9 +112,6 @@ const ATTEMPT_CEILING_HEADROOM: u32 = 4;
 /// wall-clock termination guarantee this whole change exists to provide — the
 /// same "retries forever, reports nothing" state, reachable by configuration.
 const MAX_CONFIGURABLE_DELIVERY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// How many already-queued worker events a maintenance tick applies before the
-/// rest of its work. Bounded so a chatty worker cannot starve the tick.
-const MAX_DRAINED_WORKER_EVENTS_PER_TICK: usize = 256;
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 #[allow(dead_code)] // only http_api_local_delivery_timeout's default; see its own allow
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;

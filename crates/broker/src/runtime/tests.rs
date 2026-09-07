@@ -3085,10 +3085,10 @@ async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
 
 // relay#1686 review follow-up: a maintenance tick may observe an expired
 // delivery while its matching confirmation is queued behind a burst of other
-// worker events. Reaching the bounded drain limit must defer the delivery sweep
-// rather than dead-lettering before the later confirmation is applied.
+// worker events. The tick-start FIFO prefix is an ordering barrier: even a
+// confirmation far behind the old 256-event limit must apply before the sweep.
 #[tokio::test]
-async fn partial_worker_event_drain_defers_the_delivery_sweep() {
+async fn queued_worker_event_prefix_applies_confirmation_before_delivery_sweep() {
     let worker_name = "worker-busy-confirmation";
     let registry = make_worker_registry_with_worker(worker_name).await;
     let generation = registry.workers[worker_name].generation;
@@ -3100,7 +3100,7 @@ async fn partial_worker_event_drain_defers_the_delivery_sweep() {
         HashMap::from([(DeliveryId::new(delivery_id), pending)]),
     );
 
-    for index in 0..super::MAX_DRAINED_WORKER_EVENTS_PER_TICK {
+    for index in 0..512 {
         fixture
             .worker_event_tx
             .try_send(delivery_lifecycle_worker_event(
@@ -3121,26 +3121,59 @@ async fn partial_worker_event_drain_defers_the_delivery_sweep() {
             delivery_id,
             &format!("evt_{delivery_id}"),
         ))
-        .expect("the matching confirmation should be queued behind the drain bound");
-
-    fixture.runtime.handle_maintenance_tick().await;
-    assert!(
-        fixture.runtime.pending_deliveries.contains_key(delivery_id),
-        "an expired delivery must remain pending while its confirmation may still be queued"
-    );
-    assert!(
-        fixture.runtime.dead_letters.is_empty(),
-        "a partial event drain must not dead-letter before queued confirmations are applied"
-    );
+        .expect("the matching confirmation should be queued deep in the FIFO prefix");
 
     fixture.runtime.handle_maintenance_tick().await;
     assert!(
         !fixture.runtime.pending_deliveries.contains_key(delivery_id),
-        "the next tick must apply the queued confirmation"
+        "the tick must apply the queued confirmation before examining the expired delivery"
     );
     assert!(
         fixture.runtime.dead_letters.is_empty(),
         "a confirmed delivery must never be dead-lettered"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+// The ordering barrier is a finite snapshot, not a queue-emptiness gate. A
+// continuously busy worker therefore cannot postpone retries or terminal
+// deadline handling: after the prefix that preceded this tick is applied, the
+// delivery sweep always runs even if producers have more work to append.
+#[tokio::test]
+async fn full_worker_event_backlog_does_not_suppress_delivery_expiry() {
+    let worker_name = "worker-sustained-backlog";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = "del_expired_under_backlog";
+    let mut pending = make_pending_delivery(delivery_id, worker_name);
+    pending.expires_at_ms = 0;
+    let mut fixture = worker_event_runtime_fixture(
+        registry,
+        HashMap::from([(DeliveryId::new(delivery_id), pending)]),
+    );
+
+    for index in 0..1024 {
+        fixture
+            .worker_event_tx
+            .try_send(delivery_lifecycle_worker_event(
+                worker_name,
+                generation,
+                "test_queue_noise",
+                &format!("noise-{index}"),
+                &format!("evt-noise-{index}"),
+            ))
+            .expect("the worker event backlog should fill the test channel");
+    }
+
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(
+        !fixture.runtime.pending_deliveries.contains_key(delivery_id),
+        "a full worker-event backlog must not suppress terminal delivery maintenance"
+    );
+    assert!(
+        fixture.runtime.dead_letters.get(delivery_id).is_some(),
+        "the expired delivery must reach the dead-letter store under sustained traffic"
     );
 
     cleanup_worker_registry(fixture.runtime.workers).await;
