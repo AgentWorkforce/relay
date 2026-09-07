@@ -200,6 +200,7 @@ async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
 
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
+    worker_event_tx: mpsc::Sender<WorkerEvent>,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
     _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
     _temp_dir: tempfile::TempDir,
@@ -234,7 +235,7 @@ fn worker_event_runtime_fixture(
     let (terminal_control_tx, _terminal_control_rx) = mpsc::channel(4);
     let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
     let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
-    let (_worker_event_tx, worker_event_rx) = mpsc::channel(4);
+    let (worker_event_tx, worker_event_rx) = mpsc::channel(1024);
     let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
     let mut reap_tick = tokio::time::interval(Duration::from_secs(60));
     reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -313,6 +314,7 @@ fn worker_event_runtime_fixture(
 
     WorkerEventRuntimeFixture {
         runtime,
+        worker_event_tx,
         fleet_control_rx,
         _sdk_out_rx: sdk_out_rx,
         _temp_dir: temp_dir,
@@ -3081,6 +3083,69 @@ async fn unacked_delivery_terminates_on_the_cumulative_attempt_ceiling() {
     );
 }
 
+// relay#1686 review follow-up: a maintenance tick may observe an expired
+// delivery while its matching confirmation is queued behind a burst of other
+// worker events. Reaching the bounded drain limit must defer the delivery sweep
+// rather than dead-lettering before the later confirmation is applied.
+#[tokio::test]
+async fn partial_worker_event_drain_defers_the_delivery_sweep() {
+    let worker_name = "worker-busy-confirmation";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = "del_queued_confirmation";
+    let mut pending = make_pending_delivery(delivery_id, worker_name);
+    pending.expires_at_ms = 0;
+    let mut fixture = worker_event_runtime_fixture(
+        registry,
+        HashMap::from([(DeliveryId::new(delivery_id), pending)]),
+    );
+
+    for index in 0..super::MAX_DRAINED_WORKER_EVENTS_PER_TICK {
+        fixture
+            .worker_event_tx
+            .try_send(delivery_lifecycle_worker_event(
+                worker_name,
+                generation,
+                "test_queue_noise",
+                &format!("noise-{index}"),
+                &format!("evt-noise-{index}"),
+            ))
+            .expect("worker event burst should fit the production-sized test channel");
+    }
+    fixture
+        .worker_event_tx
+        .try_send(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_verified",
+            delivery_id,
+            &format!("evt_{delivery_id}"),
+        ))
+        .expect("the matching confirmation should be queued behind the drain bound");
+
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(
+        fixture.runtime.pending_deliveries.contains_key(delivery_id),
+        "an expired delivery must remain pending while its confirmation may still be queued"
+    );
+    assert!(
+        fixture.runtime.dead_letters.is_empty(),
+        "a partial event drain must not dead-letter before queued confirmations are applied"
+    );
+
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(
+        !fixture.runtime.pending_deliveries.contains_key(delivery_id),
+        "the next tick must apply the queued confirmation"
+    );
+    assert!(
+        fixture.runtime.dead_letters.is_empty(),
+        "a confirmed delivery must never be dead-lettered"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
 // relay#1686 review follow-up: the attempt ceiling is a clock-skew backstop, so
 // it must never be what ends a delivery while the wall-clock deadline is still
 // in the future. A fixed ceiling could not hold that: at 1000 attempts a `Steer`
@@ -3146,6 +3211,18 @@ fn configured_delivery_age_is_clamped_at_both_ends() {
     assert_eq!(
         super::delivery_budget(&MessageInjectionMode::Steer, delivery_retry_interval()),
         crate::broker::delivery_verification::VERIFICATION_WINDOW,
+    );
+
+    let oversized_retry_interval = MAX_CONFIGURABLE_DELIVERY_AGE + Duration::from_secs(1);
+    assert_eq!(
+        super::delivery_ack_timeout(&MessageInjectionMode::Steer, oversized_retry_interval),
+        MAX_CONFIGURABLE_DELIVERY_AGE,
+        "an oversized retry interval must not extend the acknowledgement timeout past the cap"
+    );
+    assert_eq!(
+        super::delivery_budget(&MessageInjectionMode::Steer, oversized_retry_interval),
+        MAX_CONFIGURABLE_DELIVERY_AGE,
+        "an oversized retry interval must not extend the delivery budget past the cap"
     );
     std::env::remove_var("AGENT_RELAY_DELIVERY_MAX_AGE_MS");
 }
@@ -3218,6 +3295,7 @@ fn requeued_dead_letter_gets_a_fresh_acknowledgement_budget() {
 // hours does not get its clock reset by the restart either.
 #[test]
 fn legacy_pending_delivery_snapshot_rebuilds_its_acknowledgement_deadline() {
+    let _guard = env_test_lock().lock().expect("env test lock");
     let dir = tempfile::tempdir().expect("tempdir should create");
     let path = dir.path().join("pending-deliveries.json");
     let mut delivery = make_pending_delivery("del_legacy_deadline", "worker-a");

@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
 - Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
 - PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
-- A message the broker hands to an agent that never acknowledges it no longer retries forever in silence. After 30 minutes it reports `message_delivery_failed` and moves to the dead-letter store; `AGENT_RELAY_DELIVERY_MAX_AGE_MS` tunes the budget.
+- A message the broker hands to an agent that never acknowledges it no longer retries forever in silence. After its acknowledgement budget (30 minutes by default), it reports `message_delivery_failed` and moves to the dead-letter store.
 
 ## [11.10.3] - 2026-09-05
 

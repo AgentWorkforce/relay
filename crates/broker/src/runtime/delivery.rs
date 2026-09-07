@@ -1190,7 +1190,12 @@ pub(crate) fn delivery_ack_timeout(
         MessageInjectionMode::Wait => WAIT_DELIVERY_ACK_TIMEOUT,
         MessageInjectionMode::Steer => crate::broker::delivery_verification::VERIFICATION_WINDOW,
     };
-    std::cmp::max(retry_interval, minimum)
+    // Retry scheduling may be configured independently, but it must not turn
+    // the acknowledgement floor into an effectively unbounded delivery age.
+    // Maintenance checks the absolute deadline independently of next_retry_at,
+    // so capping only this derived timeout preserves the configured handoff
+    // cadence while keeping the delivery budget operationally bounded.
+    std::cmp::max(retry_interval.min(MAX_CONFIGURABLE_DELIVERY_AGE), minimum)
 }
 
 pub(crate) async fn emit_delivery_attempt_outcome(

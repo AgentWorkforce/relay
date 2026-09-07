@@ -4,16 +4,18 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     /// Apply worker events that are already queued, without waiting for any.
-    /// Returns once the channel is momentarily empty, `limit` events have been
-    /// applied, or the channel is closed (the `select!` arm owns that
-    /// transition, so it is simply left alone here).
-    async fn drain_ready_worker_events(&mut self, limit: usize) {
+    /// Returns `true` only when the channel is momentarily empty or closed. If
+    /// the bound is reached with events still queued, the caller must defer any
+    /// delivery retry/deadline sweep: a later queued event may be the
+    /// confirmation for a delivery that otherwise looks expired.
+    async fn drain_ready_worker_events(&mut self, limit: usize) -> bool {
         for _ in 0..limit {
             match self.worker_event_rx.try_recv() {
                 Ok(event) => self.handle_worker_event(event).await,
-                Err(_) => return,
+                Err(_) => return true,
             }
         }
+        self.worker_event_rx.is_empty()
     }
 
     pub(super) async fn handle_maintenance_tick(&mut self) {
@@ -27,9 +29,13 @@ impl BrokerRuntime {
         // message the agent already read. Draining first makes the sweep read
         // the freshest state the broker actually has. See relay#1686.
         //
-        // Bounded so a busy worker cannot starve the rest of the tick; anything
-        // left is handled by the normal `select!` arm on the next iterations.
-        self.drain_ready_worker_events(MAX_DRAINED_WORKER_EVENTS_PER_TICK)
+        // Bounded so a busy worker cannot starve the rest of the tick. If the
+        // bound is reached while events remain, the rest of maintenance still
+        // runs but the delivery sweep is deferred: a confirmation behind the
+        // bound must win over an apparent deadline. Anything left is handled
+        // by the normal `select!` arm or the next tick.
+        let worker_events_drained = self
+            .drain_ready_worker_events(MAX_DRAINED_WORKER_EVENTS_PER_TICK)
             .await;
 
         let paths = &self.paths;
@@ -184,21 +190,29 @@ impl BrokerRuntime {
         // hold, but late. `retry_pending_delivery` still owns the decision;
         // this only decides when it gets asked. See relay#1686.
         let now_ms = unix_timestamp_millis();
-        let due_ids: Vec<DeliveryId> = pending_deliveries
-            .iter()
-            .filter_map(|(delivery_id, pending)| {
-                let confirmation_is_held =
-                    pending.withheld_fleet_ack.as_ref().is_some_and(|deliver| {
-                        fleet_delivery_book.is_delivery_confirmation_held(deliver)
-                    });
-                let past_deadline = now_ms >= pending.expires_at_ms;
-                if (pending.next_retry_at <= now || past_deadline) && !confirmation_is_held {
-                    Some(delivery_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let due_ids: Vec<DeliveryId> = if worker_events_drained {
+            pending_deliveries
+                .iter()
+                .filter_map(|(delivery_id, pending)| {
+                    let confirmation_is_held =
+                        pending.withheld_fleet_ack.as_ref().is_some_and(|deliver| {
+                            fleet_delivery_book.is_delivery_confirmation_held(deliver)
+                        });
+                    let past_deadline = now_ms >= pending.expires_at_ms;
+                    if (pending.next_retry_at <= now || past_deadline) && !confirmation_is_held {
+                        Some(delivery_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            tracing::debug!(
+                target = "relay_broker::delivery",
+                "deferring delivery sweep until queued worker events are applied"
+            );
+            Vec::new()
+        };
 
         for delivery_id in due_ids {
             let was_retry = pending_deliveries
