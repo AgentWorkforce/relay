@@ -1824,6 +1824,55 @@ describe('trusted dispatcher source contract', () => {
     expect(diagnostic).not.toContain('short');
   });
 
+  it('merges a nested failure into a wrapper that already carries its own status', () => {
+    // A response can duplicate `status` at the wrapper level while nesting
+    // the detailed failure under `run`/`workflowRun` instead of the wrapper
+    // itself. Preferring the first candidate with a `status` string must not
+    // silently drop that nested detail.
+    const diagnostic = terminalStatusDiagnostic({
+      status: 'failed',
+      run: {
+        status: 'failed',
+        failure: { phase: 'launch', code: 'workflow_launch_failed', message: 'boom' },
+      },
+    });
+
+    expect(JSON.parse(diagnostic)).toMatchObject({
+      status: 'failed',
+      failure: { phase: 'launch', code: 'workflow_launch_failed', message: 'boom' },
+    });
+  });
+
+  it('does not let a nested candidate override a failure the wrapper already has', () => {
+    const diagnostic = terminalStatusDiagnostic({
+      status: 'failed',
+      failure: { message: 'wrapper failure' },
+      run: { status: 'failed', failure: { message: 'nested failure' } },
+    });
+
+    expect(JSON.parse(diagnostic)).toMatchObject({
+      status: 'failed',
+      failure: { message: 'wrapper failure' },
+    });
+  });
+
+  it('redacts the full credential when a declared secret only partially overlaps it', () => {
+    // A declared secret that starts before a live credential and ends partway
+    // through it must not strip the credential's prefix while leaving its
+    // tail behind — that tail would no longer match the whole-credential
+    // regex pass and would leak.
+    const declaredSecret = 'prefix-before-ghp_0123456789ab';
+    const diagnostic = terminalStatusDiagnostic(
+      { status: 'failed', error: `token ${declaredSecret}cdefghijklmnop trailer` },
+      [declaredSecret]
+    );
+
+    expect(diagnostic).not.toContain(declaredSecret);
+    expect(diagnostic).not.toContain('ghp_0123456789ab');
+    expect(diagnostic).not.toContain('cdefghijklmnop');
+    expect(diagnostic).toContain('[REDACTED_DECLARED_SECRET]');
+  });
+
   it('fully redacts a declared secret that is itself credential-shaped', () => {
     const declaredCredential = 'ghp_0123456789abcdefghijklmnop';
     const diagnostic = terminalStatusDiagnostic(

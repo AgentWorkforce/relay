@@ -63,17 +63,28 @@ function parseJsonOutput(output, label) {
 }
 
 function statusPayloadFrom(payload) {
-  for (const candidate of [payload, payload?.run, payload?.workflowRun]) {
-    if (
-      candidate &&
-      typeof candidate === 'object' &&
-      !Array.isArray(candidate) &&
-      typeof candidate.status === 'string'
-    ) {
-      return candidate;
-    }
+  const candidates = [payload, payload?.run, payload?.workflowRun].filter(
+    (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+  );
+  const primary = candidates.find((candidate) => typeof candidate.status === 'string');
+  if (!primary) throw new Error('Cloud status response did not contain a status');
+  // Some Cloud responses duplicate `status` at the wrapper level while
+  // nesting the detailed failure (phase/code/message/causeChain) under
+  // `run`/`workflowRun` instead of the wrapper itself. Preferring the first
+  // candidate with a `status` string then silently drops that detail. Merge
+  // in whichever candidate actually carries a `failure` object, without
+  // overriding one the primary already has.
+  if (primary.failure === undefined) {
+    const failureSource = candidates.find(
+      (candidate) =>
+        candidate !== primary &&
+        candidate.failure &&
+        typeof candidate.failure === 'object' &&
+        !Array.isArray(candidate.failure)
+    );
+    if (failureSource) return { ...primary, failure: failureSource.failure };
   }
-  throw new Error('Cloud status response did not contain a status');
+  return primary;
 }
 
 function statusFrom(payload) {
@@ -114,15 +125,31 @@ function redactTerminalDiagnostic(value, declaredSecrets) {
       const start = redacted.indexOf(secret, searchFrom);
       if (start < 0) break;
       const end = start + secret.length;
-      const containingCredential = credentialRanges.find((range) => start >= range.start && end <= range.end);
-      if (
-        containingCredential &&
-        (start !== containingCredential.start || !LIVE_CREDENTIAL_PREFIX.test(secret))
-      ) {
-        searchFrom = end;
+      const overlappingCredential = credentialRanges.find((range) => start < range.end && end > range.start);
+      if (overlappingCredential) {
+        const fullyContained = start >= overlappingCredential.start && end <= overlappingCredential.end;
+        const atBoundary = start === overlappingCredential.start && LIVE_CREDENTIAL_PREFIX.test(secret);
+        if (fullyContained && !atBoundary) {
+          // An incidental short match fully inside a larger credential, away
+          // from its boundary: leave it for the whole-credential regex pass
+          // below instead of fragmenting the credential here.
+          searchFrom = end;
+          continue;
+        }
+        // Either the declared secret IS the credential's recognized prefix,
+        // or it only partially overlaps the credential (e.g. starts before
+        // it and ends partway through). A partial replacement in either case
+        // would strip the credential's prefix while leaving its tail intact
+        // and unrecognizable to the final regex pass, so redact the
+        // credential's FULL span instead of just the secret's own span.
+        replacementRanges.push({
+          start: Math.min(start, overlappingCredential.start),
+          end: Math.max(end, overlappingCredential.end),
+        });
+        searchFrom = Math.max(end, overlappingCredential.end);
         continue;
       }
-      replacementRanges.push(containingCredential ?? { start, end });
+      replacementRanges.push({ start, end });
       searchFrom = end;
     }
     let cursor = 0;
