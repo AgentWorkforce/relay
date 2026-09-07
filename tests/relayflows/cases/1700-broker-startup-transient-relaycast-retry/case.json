@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1700-broker-startup-transient-relaycast-retry",
+  "kind": "bugfix",
+  "title": "Retry a transient Relaycast 5xx during broker startup",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1700-broker-startup-transient-relaycast-retry/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "startup_503_exits_broker_without_retry"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "startup_503_retried_and_handshake_completes"
+    }
+  }
+}
