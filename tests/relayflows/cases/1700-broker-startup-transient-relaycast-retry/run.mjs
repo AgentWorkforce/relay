@@ -157,7 +157,10 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'startup_503_retried_and_handshake_completes';
-    details = `The head broker replayed the transient ${TRANSIENT_STATUS} once (${registrationCount} registration POSTs) and completed the Relaycast handshake in ${elapsedMs}ms.`;
+    // `registrationCount` gates this branch above and is deliberately not
+    // interpolated here: the observation file must not carry a value read off
+    // the probe socket, only the verdict that value was checked against.
+    details = `The head broker replayed the transient ${TRANSIENT_STATUS} once, sending a second registration POST, and completed the Relaycast handshake in ${elapsedMs}ms.`;
   } else {
     throw new Error(
       `Unexpected compiled startup observation: ${JSON.stringify({
