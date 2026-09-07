@@ -147,6 +147,7 @@
   },
   "packageManager": "npm@10.5.1",
   "overrides": {
+    "@relayfile/sdk": "^0.10.47",
     "flatted": "^3.4.2",
     "axios": "^1.18.1",
     "fast-uri": "^3.1.4",
