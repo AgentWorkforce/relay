@@ -729,14 +729,37 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
-        match RelayCast::create_workspace(
-            name,
-            self.base_url.as_deref(),
-            WorkspaceProvenance::sdk(),
-        )
+        // Workspace creation is an unkeyed POST, so a 5xx is ambiguous:
+        // Relaycast may have committed the workspace before failing to answer.
+        // Replaying is still right — `workspace_storage_unavailable` is a
+        // pre-commit storage failure — but the *conflict* arm below is not
+        // safe after a replay. Count the sends so a conflict that follows our
+        // own replay is treated as our own committed workspace rather than
+        // someone else's, and never silently mints a second one.
+        let sends = std::sync::atomic::AtomicUsize::new(0);
+        match retry_transient_relay_error("creating a Relaycast workspace", || {
+            sends.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            RelayCast::create_workspace(name, self.base_url.as_deref(), WorkspaceProvenance::sdk())
+        })
         .await
         {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
+            Err(error)
+                if is_workspace_name_conflict(&error)
+                    && sends.load(std::sync::atomic::Ordering::Relaxed) > 1 =>
+            {
+                // The name was free when we started and is taken now, after a
+                // request we replayed. That is almost certainly our own
+                // committed creation, whose key the conflict response cannot
+                // return. Minting a fallback here would orphan it and its key.
+                // Fail closed and say so.
+                Err(relay_error_to_anyhow(error)).context(format!(
+                    "workspace '{name}' already existed after a replayed creation; a \
+                     previous attempt likely committed it before Relaycast returned a \
+                     transient error, and its key cannot be recovered from a conflict \
+                     response"
+                ))
+            }
             Err(error) if is_workspace_name_conflict(&error) => {
                 let suffix = Uuid::new_v4().simple().to_string();
                 let fallback_name = format!("{name}-{}", &suffix[..8]);
@@ -745,13 +768,16 @@ impl AuthClient {
                     fallback_name = %fallback_name,
                     "workspace already exists; retrying with a fresh fallback name"
                 );
-                let result = RelayCast::create_workspace(
-                    &fallback_name,
-                    self.base_url.as_deref(),
-                    WorkspaceProvenance::sdk(),
-                )
-                .await
-                .map_err(relay_error_to_anyhow)?;
+                let result =
+                    retry_transient_relay_error("creating a fallback Relaycast workspace", || {
+                        RelayCast::create_workspace(
+                            &fallback_name,
+                            self.base_url.as_deref(),
+                            WorkspaceProvenance::sdk(),
+                        )
+                    })
+                    .await
+                    .map_err(relay_error_to_anyhow)?;
                 Ok((result.workspace_id, result.api_key))
             }
             Err(error) => Err(relay_error_to_anyhow(error)),
@@ -886,6 +912,121 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
 
 const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
 const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Broker-owned retry budget for transient Relaycast server failures on the
+/// startup path. One entry per *retry*, so the total attempt budget is
+/// `len() + 1`.
+///
+/// Two gaps make this the broker's job rather than the SDK's:
+///
+/// * `RelayCast::create_workspace` builds its own `reqwest` client and never
+///   passes through the SDK's HTTP retry loop at all.
+/// * relaycast 8.0.0 narrowed that loop to idempotent methods or requests
+///   carrying an idempotency key (its `request_is_retryable`). Agent
+///   registration is an unkeyed `POST /v1/agents`, and `register_agent` calls
+///   `client.post(..., None)`, so the broker cannot supply a key through the
+///   public API. Before the 8.0.0 pin, a 5xx here was retried three times.
+///
+/// Startup is where an unretried transient is fatal: the handshake loop in
+/// `runtime/session.rs` replays only timeouts and never a returned error, so
+/// a single upstream 503 exits the broker process with code 1. Publish run
+/// 34099838274 lost three jobs to exactly that.
+const TRANSIENT_STARTUP_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
+
+/// The server-side statuses worth replaying: 500, 502, 503, 504. A 501 is a
+/// contract mismatch rather than a transient and is deliberately excluded, as
+/// are transport errors — a timed-out `POST /v1/agents` may already have
+/// created the agent, and re-sending it is the AR-448 duplicate shape.
+fn is_transient_server_error(error: &RelayError) -> bool {
+    matches!(
+        error,
+        RelayError::Api {
+            status: 500 | 502 | 503 | 504,
+            ..
+        }
+    )
+}
+
+/// HTTP attempts the SDK reports behind a terminal error, so the broker can
+/// report the true total rather than only its own outermost count.
+fn relay_error_attempts(error: &RelayError) -> u32 {
+    match error {
+        RelayError::Api { attempts, .. } => (*attempts).max(1),
+        _ => 1,
+    }
+}
+
+/// Restamp a terminal API error with every HTTP attempt that actually
+/// happened. Keeps the diagnostics contract from #1673 truthful once the
+/// broker adds retries of its own on top of the SDK's.
+fn with_total_attempts(error: RelayError, total_attempts: u32) -> RelayError {
+    match error {
+        RelayError::Api {
+            code,
+            message,
+            status,
+            request_id,
+            ..
+        } => RelayError::Api {
+            code,
+            message,
+            status,
+            request_id,
+            attempts: total_attempts,
+        },
+        other => other,
+    }
+}
+
+/// Run a Relaycast request, replaying it on a transient server failure with a
+/// bounded backoff. A non-transient error is returned untouched and
+/// immediately; an exhausted budget returns the *last* error — with its
+/// server code, status and request id intact — never a synthesised
+/// "max retries exceeded" that erases them.
+async fn retry_transient_relay_error<T, F, Fut>(
+    operation: &str,
+    mut request: F,
+) -> std::result::Result<T, RelayError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, RelayError>>,
+{
+    let mut total_attempts: u32 = 0;
+    let mut retry = 0usize;
+
+    loop {
+        match request().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                total_attempts = total_attempts.saturating_add(relay_error_attempts(&error));
+
+                if !is_transient_server_error(&error) {
+                    // A *changed* failure — a 401 after a 503, say — is
+                    // terminal, but it still arrived after every request
+                    // before it. Report the real total, not this response's
+                    // own count.
+                    return Err(with_total_attempts(error, total_attempts));
+                }
+
+                let Some(backoff_ms) = TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.get(retry).copied()
+                else {
+                    return Err(with_total_attempts(error, total_attempts));
+                };
+
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    operation,
+                    attempts_so_far = total_attempts,
+                    retry_in_ms = backoff_ms,
+                    error = %error,
+                    "transient Relaycast failure during startup; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                retry += 1;
+            }
+        }
+    }
+}
 
 async fn relay_request_with_timeout<T>(
     timeout_window: std::time::Duration,
@@ -1054,9 +1195,25 @@ async fn admit_agent_registration(
         metadata,
     };
 
-    match relay.register_agent(request).await {
+    // A transient 5xx here used to be absorbed by the SDK's own retry loop.
+    // relaycast 8.0.0 stopped retrying unkeyed POSTs, and `register_agent`
+    // gives callers no way to attach an idempotency key, so the budget lives
+    // here instead. A replay that lands after the first request did register
+    // falls through to the conflict arm below, which is the identity gate
+    // this function already owns.
+    match retry_transient_relay_error("registering the broker agent", || {
+        relay.register_agent(request.clone())
+    })
+    .await
+    {
         Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
-        Err(RelayError::Api { code, status, .. }) if is_conflict_code(&code) || status == 409 => {
+        Err(RelayError::Api {
+            code,
+            status,
+            request_id: conflict_request_id,
+            attempts: conflict_attempts,
+            ..
+        }) if is_conflict_code(&code) || status == 409 => {
             let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
             let existing_identity = existing
                 .metadata
@@ -1078,8 +1235,11 @@ async fn admit_agent_registration(
                          credentials (set RELAY_AGENT_IDENTITY_KEY to the original work unit's \
                          identity to reclaim it after a crash)"
                     ),
-                    request_id: None,
-                    attempts: 1,
+                    // The conflict's own diagnostics, not a synthetic 1: a
+                    // retried registration can reach this arm after several
+                    // requests.
+                    request_id: conflict_request_id,
+                    attempts: conflict_attempts,
                 }));
             }
 
@@ -1376,9 +1536,9 @@ mod tests {
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
         is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
-        relay_request_with_timeout, resolve_relaycast_base_url, stable_node_identity_key,
-        AuthClient, AuthHttpError, CredentialCache, AGENT_TOKEN_INVALID_CODE,
-        DEFAULT_RELAYCAST_BASE_URL,
+        relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
+        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
+        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -1577,6 +1737,421 @@ mod tests {
 
         workspace.assert_hits(1);
         register.assert_hits(1);
+    }
+
+    /// A transient Relaycast 5xx during startup must not kill the broker.
+    ///
+    /// `RelayCast::create_workspace` bypasses the SDK's HTTP client (and so
+    /// its retry loop) entirely, and relaycast 8.0.0 narrowed that loop to
+    /// idempotent methods or requests carrying an idempotency key — agent
+    /// registration is an unkeyed `POST /v1/agents`. Publish run 34099838274
+    /// died on exactly these two responses, one per failing job.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transient_startup_5xx_is_retried_until_it_clears() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        #[derive(Clone)]
+        struct FlakyState {
+            workspace_attempts: Arc<AtomicUsize>,
+            register_attempts: Arc<AtomicUsize>,
+        }
+
+        async fn create_workspace(
+            State(state): State<FlakyState>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            if state.workspace_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_storage_unavailable",
+                            "message": "Workspace storage temporarily unavailable"
+                        }
+                    })),
+                );
+            }
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "workspace_id": "ws_new",
+                        "api_key": "rk_live_new",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        async fn register_agent(State(state): State<FlakyState>) -> (AxumStatusCode, Json<Value>) {
+            if state.register_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "database_overloaded",
+                            "message": "The database is temporarily overloaded."
+                        }
+                    })),
+                );
+            }
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "a1",
+                        "workspace_id": "ws_new",
+                        "name": "lead",
+                        "token": "at_live_1",
+                        "status": "online",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        let state = FlakyState {
+            workspace_attempts: Arc::new(AtomicUsize::new(0)),
+            register_attempts: Arc::new(AtomicUsize::new(0)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/workspaces", post(create_workspace))
+                    .route("/v1/agents", post(register_agent))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let session = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect("a transient startup 5xx must be retried, not fatal");
+
+        assert_eq!(session.token, "at_live_1");
+        assert_eq!(session.credentials.workspace_id, "ws_new");
+        assert_eq!(state.workspace_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(state.register_attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
+    }
+
+    /// A retried registration can turn into a 409, and the identity-mismatch
+    /// rejection built from it is what an operator reads. It must carry the
+    /// conflict's own request id and the real attempt total, not a synthetic
+    /// single attempt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_conflict_after_a_retry_keeps_its_request_diagnostics() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State,
+            http::StatusCode as AxumStatusCode,
+            response::{IntoResponse, Response},
+            routing::{get, post},
+            Json, Router,
+        };
+
+        async fn register(State(attempts): State<Arc<AtomicUsize>>) -> Response {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "database_overloaded",
+                            "message": "The database is temporarily overloaded."
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            (
+                AxumStatusCode::CONFLICT,
+                [("x-request-id", "conflict-after-retry")],
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "agent_already_exists",
+                        "message": "agent name already registered"
+                    }
+                })),
+            )
+                .into_response()
+        }
+
+        async fn existing_agent() -> Json<Value> {
+            // No identity_key metadata, so the incumbent cannot be reclaimed
+            // and the admission gate rejects the registration.
+            Json(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_incumbent",
+                    "name": "lead",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2025-01-01T00:00:00Z",
+                    "channels": []
+                }
+            }))
+        }
+
+        let _env_guard = clear_relay_env();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(register))
+                    .route("/v1/agents/lead", get(existing_agent))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let error = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("an unproven identity collision must still be rejected");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("agent_identity_mismatch"), "{message}");
+        assert!(
+            message.contains("request_id: conflict-after-retry"),
+            "the conflict's own correlation id must survive: {message}"
+        );
+        assert!(
+            message.contains("attempts: 2"),
+            "the rejection must report every request the broker sent: {message}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
+    }
+
+    /// Workspace creation is an unkeyed POST, so a 5xx can hide a committed
+    /// write. If the replay then hits a name conflict, that conflict is our
+    /// own workspace — whose key a conflict response cannot return. Minting a
+    /// fallback name there would orphan it, so the retry must fail closed
+    /// instead of quietly creating a second workspace.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replayed_workspace_creation_conflict_never_mints_a_second_workspace() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        async fn create_workspace(
+            State(attempts): State<Arc<AtomicUsize>>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Committed, then failed to answer.
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_storage_unavailable",
+                            "message": "Workspace storage temporarily unavailable"
+                        }
+                    })),
+                );
+            }
+            (
+                AxumStatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "name_taken",
+                        "message": "workspace name already exists"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/workspaces", post(create_workspace))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let error = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("an ambiguous replayed creation must not be resolved by guessing");
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("already existed after a replayed creation"),
+            "{message}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "the conflict must end the sequence, not trigger a fallback-name creation"
+        );
+
+        server.abort();
+    }
+
+    /// A failure that *changes* mid-retry — a 401 after a 503 — is terminal,
+    /// but it still arrived after every request before it. The attempt count
+    /// an operator reads must be the real total.
+    #[tokio::test]
+    async fn a_changed_failure_mid_retry_still_reports_every_attempt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error("probing a changed failure", || {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    return Err::<(), _>(RelayError::api("database_overloaded", "overloaded", 503));
+                }
+                Err(RelayError::api(
+                    "agent_token_invalid",
+                    "Invalid agent token",
+                    401,
+                ))
+            }
+        })
+        .await
+        .expect_err("a 401 after a 503 is terminal");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        match error {
+            RelayError::Api {
+                status, attempts, ..
+            } => {
+                assert_eq!(status, 401);
+                assert_eq!(attempts, 2, "both HTTP attempts must be reported");
+            }
+            other => panic!("expected a terminal API error, got {other}"),
+        }
+    }
+
+    /// The retry budget is bounded, and the terminal error still carries the
+    /// registration diagnostics PR #1673 added. An operator chasing a sandbox
+    /// worker that spawns but never registers (AgentWorkforce/cloud#3401)
+    /// needs the server code, the status, and a truthful attempt count — not
+    /// a swallowed "max retries exceeded".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exhausted_startup_retries_keep_terminal_relaycast_diagnostics() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        async fn always_overloaded(
+            State(attempts): State<Arc<AtomicUsize>>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            (
+                AxumStatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "database_overloaded",
+                        "message": "The database is temporarily overloaded."
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(always_overloaded))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let error = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("a persistent 503 must still be terminal");
+
+        let message = format!("{error:#}");
+        assert!(
+            message
+                .contains("failed registering agent with AGENT_RELAY_WORKSPACE_KEY workspace key"),
+            "{message}"
+        );
+        assert!(message.contains("database_overloaded"), "{message}");
+        assert!(message.contains("503 Service Unavailable"), "{message}");
+        assert!(
+            message.contains("attempts: 3"),
+            "the terminal error must report every attempt the broker actually made: {message}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+        server.abort();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
     }
 
     #[tokio::test]
