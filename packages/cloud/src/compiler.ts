@@ -191,7 +191,19 @@ function exactFutureWritePath(projectDir: string, pattern: string): string | und
   return relativePath;
 }
 
-function walkProjectFiles(projectDir: string, currentDir = projectDir, files: string[] = []): string[] {
+/**
+ * Collect every project-relative file path, recording which of them are
+ * symlinks. Symlinks are walked rather than skipped: the classification loop
+ * assigns every returned path to exactly one of readonly, readwrite or denied,
+ * and buildAcl derives a directory-level deny rule from that assignment, so a
+ * path dropped here would silently leave the permission model.
+ */
+function walkProjectFiles(
+  projectDir: string,
+  currentDir = projectDir,
+  files: string[] = [],
+  symlinks = new Set<string>()
+): { files: string[]; symlinks: Set<string> } {
   const entries = readdirSync(currentDir, { withFileTypes: true }).sort((left, right) =>
     left.name.localeCompare(right.name)
   );
@@ -205,14 +217,20 @@ function walkProjectFiles(projectDir: string, currentDir = projectDir, files: st
     const relativePath = normalizeRelativePath(path.relative(projectDir, fullPath));
 
     if (entry.isDirectory()) {
-      walkProjectFiles(projectDir, fullPath, files);
+      walkProjectFiles(projectDir, fullPath, files, symlinks);
       continue;
+    }
+
+    // readdir reports lstat metadata, so a symlink is never isDirectory() and
+    // is not recursed into, whatever it points at.
+    if (entry.isSymbolicLink()) {
+      symlinks.add(relativePath);
     }
 
     files.push(relativePath);
   }
 
-  return files;
+  return { files, symlinks };
 }
 
 function buildSources(
@@ -419,7 +437,17 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
   const readwritePaths: string[] = [];
   const deniedPaths: string[] = [];
 
-  for (const relativePath of walkProjectFiles(projectDir)) {
+  const walked = walkProjectFiles(projectDir);
+
+  for (const relativePath of walked.files) {
+    // A symlink is granted by its own in-project path, which says nothing about
+    // where it resolves. Writing through one reaches the target, and a dangling
+    // link creates it. Deny them and let an explicit rule name the real path.
+    if (walked.symlinks.has(relativePath)) {
+      deniedPaths.push(relativePath);
+      continue;
+    }
+
     const dotDenied = inherited && matchesAny(relativePath, dotDenyMatcher);
     const dotReadonly = inherited && !dotDenied && matchesAny(relativePath, dotReadonlyMatcher);
     const yamlRead = matchesAny(relativePath, fileReadMatcher);
@@ -468,6 +496,7 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
     const relativePath = exactFutureWritePath(projectDir, pattern);
     if (
       relativePath &&
+      !walked.symlinks.has(relativePath) &&
       !readwritePaths.includes(relativePath) &&
       !matchesAny(relativePath, fileDenyMatcher)
     ) {
