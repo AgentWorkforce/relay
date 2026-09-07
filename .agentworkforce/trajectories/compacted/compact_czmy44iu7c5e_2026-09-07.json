@@ -1,0 +1,37 @@
+{
+  "id": "compact_czmy44iu7c5e",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-07T15:53:04.180Z",
+  "sourceTrajectories": [
+    "traj_ehnrlq2gjvjo"
+  ],
+  "dateRange": {
+    "start": "2026-09-07T15:47:14.396Z",
+    "end": "2026-09-07T15:53:03.477Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Require a fail-closed server release contract before adding durable broker retries",
+          "chosen": "Require a fail-closed server release contract before adding durable broker retries",
+          "reasoning": "Relaycast 8.5 adds token-generation CAS, but older route projections discard that guard. The pinned Rust SDK lacks the guarded method. A stable agent ID, name retry, or separate version probe cannot authorize cleanup of the original process across takeover and mixed server versions.",
+          "fromTrajectory": "traj_ehnrlq2gjvjo"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
