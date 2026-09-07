@@ -1838,6 +1838,16 @@ describe('classification reads the diff, not the title', () => {
   it('still exempts the CI-only script subtrees', () => {
     expect(runtimeSurfaceChanged(['scripts/pr-proof/prepare.mjs'])).toBe(false);
     expect(runtimeSurfaceChanged(['scripts/evals/run-relay-evals.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/fleet-qualification/evidence.mjs'])).toBe(false);
+  });
+
+  /**
+   * The exemption is the subtree, not the word. A sibling that merely starts
+   * with the same prefix must still demand a proof.
+   */
+  it('does not extend the fleet-qualification exemption to sibling paths', () => {
+    expect(runtimeSurfaceChanged(['scripts/fleet-qualification-runner.mjs'])).toBe(true);
+    expect(runtimeSurfaceChanged(['packages/cli/src/fleet-qualification/run.ts'])).toBe(true);
   });
 
   /**
