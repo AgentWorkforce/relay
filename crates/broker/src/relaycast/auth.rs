@@ -754,7 +754,10 @@ impl AuthClient {
                 // return. Minting a fallback here would orphan it and its key.
                 // Fail closed and say so.
                 Err(relay_error_to_anyhow(error)).context(format!(
-                    "workspace '{name}' already existed after a replayed creation; a previous                      attempt likely committed it before Relaycast returned a transient error,                      and its key cannot be recovered from a conflict response"
+                    "workspace '{name}' already existed after a replayed creation; a \
+                     previous attempt likely committed it before Relaycast returned a \
+                     transient error, and its key cannot be recovered from a conflict \
+                     response"
                 ))
             }
             Err(error) if is_workspace_name_conflict(&error) => {
@@ -1204,7 +1207,13 @@ async fn admit_agent_registration(
     .await
     {
         Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
-        Err(RelayError::Api { code, status, .. }) if is_conflict_code(&code) || status == 409 => {
+        Err(RelayError::Api {
+            code,
+            status,
+            request_id: conflict_request_id,
+            attempts: conflict_attempts,
+            ..
+        }) if is_conflict_code(&code) || status == 409 => {
             let existing = relay.get_agent(name).await.map_err(relay_error_to_anyhow)?;
             let existing_identity = existing
                 .metadata
@@ -1226,8 +1235,11 @@ async fn admit_agent_registration(
                          credentials (set RELAY_AGENT_IDENTITY_KEY to the original work unit's \
                          identity to reclaim it after a crash)"
                     ),
-                    request_id: None,
-                    attempts: 1,
+                    // The conflict's own diagnostics, not a synthetic 1: a
+                    // retried registration can reach this arm after several
+                    // requests.
+                    request_id: conflict_request_id,
+                    attempts: conflict_attempts,
                 }));
             }
 
@@ -1838,6 +1850,116 @@ mod tests {
         assert_eq!(state.register_attempts.load(Ordering::SeqCst), 2);
 
         server.abort();
+    }
+
+    /// A retried registration can turn into a 409, and the identity-mismatch
+    /// rejection built from it is what an operator reads. It must carry the
+    /// conflict's own request id and the real attempt total, not a synthetic
+    /// single attempt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_conflict_after_a_retry_keeps_its_request_diagnostics() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State,
+            http::StatusCode as AxumStatusCode,
+            response::{IntoResponse, Response},
+            routing::{get, post},
+            Json, Router,
+        };
+
+        async fn register(State(attempts): State<Arc<AtomicUsize>>) -> Response {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "database_overloaded",
+                            "message": "The database is temporarily overloaded."
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            (
+                AxumStatusCode::CONFLICT,
+                [("x-request-id", "conflict-after-retry")],
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "agent_already_exists",
+                        "message": "agent name already registered"
+                    }
+                })),
+            )
+                .into_response()
+        }
+
+        async fn existing_agent() -> Json<Value> {
+            // No identity_key metadata, so the incumbent cannot be reclaimed
+            // and the admission gate rejects the registration.
+            Json(json!({
+                "ok": true,
+                "data": {
+                    "id": "a_incumbent",
+                    "name": "lead",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {},
+                    "last_seen": "2025-01-01T00:00:00Z",
+                    "channels": []
+                }
+            }))
+        }
+
+        let _env_guard = clear_relay_env();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(register))
+                    .route("/v1/agents/lead", get(existing_agent))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let error = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("an unproven identity collision must still be rejected");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("agent_identity_mismatch"), "{message}");
+        assert!(
+            message.contains("request_id: conflict-after-retry"),
+            "the conflict's own correlation id must survive: {message}"
+        );
+        assert!(
+            message.contains("attempts: 2"),
+            "the rejection must report every request the broker sent: {message}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
     }
 
     /// Workspace creation is an unkeyed POST, so a 5xx can hide a committed
