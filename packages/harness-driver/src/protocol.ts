@@ -281,6 +281,16 @@ export interface BrokerStatus {
   auth?: BrokerAuthStatus;
 }
 
+/** Where a `deliver` frame ended up once the broker had acted on it. */
+export type NodeDeliveryDisposition =
+  | 'injected'
+  | 'surfaced_and_acked'
+  | 'held_for_manual_flush'
+  | 'surface_failed'
+  | 'acked_without_surfacing'
+  | 'rejected_identity'
+  | 'rejected_sequence_gap';
+
 /**
  * One `deliver` frame the broker observed on `/v1/node/ws`, reduced to
  * identifiers. Message bodies are deliberately absent: this report is meant to
@@ -305,7 +315,27 @@ export interface NodeDeliveryRecord {
     | 'surface_failed'
     | 'acked_without_surfacing'
     | 'rejected_identity'
+    | 'rejected_sequence_gap'
     | null;
+}
+
+/**
+ * Per-agent delivery tallies, retained past the FIFO eviction of
+ * `recent_delivers` so a single deaf agent stays diagnosable on a busy broker.
+ *
+ * `delivers_seen` not advancing means the frame never reached this broker;
+ * advancing while `dispositions.injected` does not means the delivery book
+ * discarded it, and `decisions` says which way.
+ */
+export interface NodeDeliveryAgentRow {
+  agent: string;
+  agent_id: string;
+  delivers_seen: number;
+  decisions: Record<'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject', number>;
+  dispositions: Record<NodeDeliveryDisposition, number>;
+  last_deliver_at_ms: number | null;
+  /** Last confirmed delivery to this agent — a deaf agent from a quiet one. */
+  last_injected_at_ms: number | null;
 }
 
 /**
@@ -342,15 +372,22 @@ export interface NodeDeliveryReport {
     last_deliver_at_ms: number | null;
   };
   decisions: Record<'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject', number>;
-  dispositions: Record<
-    | 'injected'
-    | 'surfaced_and_acked'
-    | 'held_for_manual_flush'
-    | 'surface_failed'
-    | 'acked_without_surfacing'
-    | 'rejected_identity',
-    number
-  >;
+  dispositions: Record<NodeDeliveryDisposition, number>;
+  /**
+   * Whether the `delivery_ack` the dispositions above imply actually left the
+   * broker. A disposition is stamped by the runtime when it *decides* to ack;
+   * the ack is then handed to the socket task, which is where it can still be
+   * lost. `enqueued` above `sent` means acks are stuck between the two.
+   */
+  acks: {
+    enqueued: number;
+    enqueue_failed: number;
+    sent: number;
+    send_failed: number;
+    last_sent_at_ms: number | null;
+  };
+  /** Per-agent rows, retained past the FIFO eviction of `recent_delivers`. */
+  agents: NodeDeliveryAgentRow[];
   recent_delivers: NodeDeliveryRecord[];
   /** Frame `type` values the broker could not deserialize, and how often. */
   unparsed_frame_types: Record<string, number>;

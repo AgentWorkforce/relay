@@ -62,6 +62,17 @@ const ERROR_EXCERPT_LIMIT: usize = 300;
 /// against a peer inventing names.
 const AGENT_STATS_CAPACITY: usize = 256;
 
+/// Cap on any single peer-supplied string this probe retains.
+///
+/// The slot counts above bound how *many* strings are kept; without a per-field
+/// bound a peer can still multiply one oversized value across every slot — 32
+/// `RecentDeliver` rows, 16 `unparsed_frame_types` keys and 256 agent rows all
+/// hold peer-chosen text. Real values are short: `payload_type` is `dm.received`
+/// or `message.created`, ids are UUID-shaped, agent names are handles. 128 bytes
+/// keeps every legitimate value intact while capping retained peer text at a few
+/// hundred kilobytes in the worst case.
+const PEER_STRING_LIMIT: usize = 128;
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -211,6 +222,9 @@ struct AgentStats {
     rejected_sequence_gap: u64,
     last_deliver_at_ms: u64,
     last_injected_at_ms: u64,
+    /// Strictly increasing rank of the last time this row was touched. See
+    /// [`agent_row`] — eviction orders on this, not on the millisecond clock.
+    last_touch_order: u64,
 }
 
 impl AgentStats {
@@ -274,6 +288,13 @@ struct Counters {
     session_live: std::sync::atomic::AtomicBool,
     last_deliver_at_ms: AtomicU64,
     last_frame_at_ms: AtomicU64,
+    /// Ticket dispenser for [`AgentStats::last_touch_order`].
+    agent_touch_order: AtomicU64,
+    ack_enqueued: AtomicU64,
+    ack_enqueue_failed: AtomicU64,
+    ack_sent: AtomicU64,
+    ack_send_failed: AtomicU64,
+    last_ack_sent_at_ms: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -297,6 +318,13 @@ pub(crate) struct NodeDeliveryProbe {
 impl NodeDeliveryProbe {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Mint the next strictly-increasing agent-row touch rank.
+    fn next_agent_touch(&self) -> u64 {
+        self.counters
+            .agent_touch_order
+            .fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn record_connected(&self) {
@@ -323,12 +351,9 @@ impl NodeDeliveryProbe {
     /// never retained.
     pub(crate) fn record_parse_failure(&self, error: &str, raw: &str) {
         self.counters.parse_failures.fetch_add(1, Ordering::Relaxed);
-        let frame_type = serde_json::from_str::<Value>(raw).ok().and_then(|value| {
-            value
-                .get("type")
-                .and_then(Value::as_str)
-                .map(|found| found.to_string())
-        });
+        let frame_type = serde_json::from_str::<Value>(raw)
+            .ok()
+            .and_then(|value| value.get("type").and_then(Value::as_str).map(bounded));
         let mut error = error.to_string();
         truncate_on_char_boundary(&mut error, ERROR_EXCERPT_LIMIT);
         let Ok(mut retained) = self.retained.lock() else {
@@ -380,19 +405,21 @@ impl NodeDeliveryProbe {
         };
         counter.fetch_add(1, Ordering::Relaxed);
 
-        let payload_type = deliver
-            .payload
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        let payload_type = bounded(
+            deliver
+                .payload
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
         let now = now_ms();
+        let touch = self.next_agent_touch();
         let entry = RecentDeliver {
             at_ms: now,
-            agent: deliver.agent.clone(),
-            agent_id: deliver.agent_id.clone(),
-            delivery_id: deliver.delivery_id.clone(),
-            msg_id: deliver.msg_id.clone(),
+            agent: bounded(&deliver.agent),
+            agent_id: bounded(&deliver.agent_id),
+            delivery_id: bounded(&deliver.delivery_id),
+            msg_id: bounded(&deliver.msg_id),
             seq: deliver.seq,
             payload_type,
             decision: decision_label(decision),
@@ -408,8 +435,8 @@ impl NodeDeliveryProbe {
 
         // Per-agent row: survives the ring's FIFO eviction, which is what makes
         // a single deaf agent diagnosable on a busy broker. See `AgentStats`.
-        if let Some(stats) = agent_row(&mut retained.agents, &deliver.agent) {
-            stats.agent_id.clone_from(&deliver.agent_id);
+        if let Some(stats) = agent_row(&mut retained.agents, &bounded(&deliver.agent), touch) {
+            stats.agent_id = bounded(&deliver.agent_id);
             stats.delivers_seen += 1;
             stats.last_deliver_at_ms = now;
             match decision {
@@ -436,6 +463,8 @@ impl NodeDeliveryProbe {
             DeliverDisposition::RejectedSequenceGap => &self.counters.rejected_sequence_gap,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+        let touch = self.next_agent_touch();
+        let delivery_id = bounded(&deliver.delivery_id);
         let Ok(mut retained) = self.retained.lock() else {
             return;
         };
@@ -443,11 +472,11 @@ impl NodeDeliveryProbe {
             .recent
             .iter_mut()
             .rev()
-            .find(|entry| entry.delivery_id == deliver.delivery_id)
+            .find(|entry| entry.delivery_id == delivery_id)
         {
             entry.disposition = Some(disposition.as_str());
         }
-        if let Some(stats) = agent_row(&mut retained.agents, &deliver.agent) {
+        if let Some(stats) = agent_row(&mut retained.agents, &bounded(&deliver.agent), touch) {
             match disposition {
                 DeliverDisposition::Injected => {
                     stats.injected += 1;
@@ -463,6 +492,46 @@ impl NodeDeliveryProbe {
                 DeliverDisposition::RejectedSequenceGap => stats.rejected_sequence_gap += 1,
             }
         }
+    }
+
+    /// The runtime handed a `delivery_ack` to the node-control task.
+    ///
+    /// A disposition of `surfaced_and_acked` or `acked_without_surfacing` only
+    /// says the *broker* decided to acknowledge. It is recorded before the ack
+    /// has gone anywhere, and it cannot be recorded later: the runtime event
+    /// loop hands the ack to the socket task over a channel and must not block
+    /// on the wire, so the two events genuinely happen in different places. The
+    /// four tallies below close that gap without coupling them — an operator
+    /// reads `dispositions.surfaced_and_acked` against `acks.sent` and sees
+    /// directly whether the engine was told. `enqueued` > `sent` means acks are
+    /// stuck between the runtime and the socket; `enqueue_failed` means the
+    /// control task is gone; `send_failed` means the socket rejected the write.
+    pub(crate) fn record_ack_enqueued(&self) {
+        self.counters.ack_enqueued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The runtime could not hand a `delivery_ack` to the node-control task at
+    /// all — the command channel is closed or full, so the engine will never
+    /// see this ack and will redeliver.
+    pub(crate) fn record_ack_enqueue_failed(&self) {
+        self.counters
+            .ack_enqueue_failed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The node-control task wrote a `delivery_ack` to the socket.
+    pub(crate) fn record_ack_sent(&self) {
+        self.counters.ack_sent.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .last_ack_sent_at_ms
+            .store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// The node-control task failed to write a `delivery_ack` to the socket.
+    pub(crate) fn record_ack_send_failed(&self) {
+        self.counters
+            .ack_send_failed
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Republish the runtime's delivery-book cursors. Called from the runtime,
@@ -552,6 +621,13 @@ impl NodeDeliveryProbe {
                 "rejected_identity": load(&c.rejected_identity),
                 "rejected_sequence_gap": load(&c.rejected_sequence_gap),
             },
+            "acks": {
+                "enqueued": load(&c.ack_enqueued),
+                "enqueue_failed": load(&c.ack_enqueue_failed),
+                "sent": load(&c.ack_sent),
+                "send_failed": load(&c.ack_send_failed),
+                "last_sent_at_ms": non_zero(load(&c.last_ack_sent_at_ms)),
+            },
             "agents": agents,
             "recent_delivers": recent,
             "unparsed_frame_types": unparsed,
@@ -573,26 +649,37 @@ impl NodeDeliveryProbe {
     }
 }
 
-/// Fetch (or create) an agent's row, evicting the least recently delivered-to
-/// agent when full.
+/// Fetch (or create) an agent's row, evicting the least recently touched agent
+/// when full.
 ///
 /// Agent names arrive from the engine, so a first-wins bound would let a
 /// buggy peer occupy every slot with names that never deliver again and
 /// starve the agents an operator is actually watching — which defeats the
-/// point of these rows. Evicting by `last_deliver_at_ms` keeps the most
+/// point of these rows. Evicting the least recently touched row keeps the most
 /// recently active agents, which are the ones a diagnosis is about.
+///
+/// `touch` rather than `last_deliver_at_ms` decides that order. The wall clock
+/// has millisecond resolution and a busy broker takes many frames per
+/// millisecond, so timestamps tie routinely; the old tiebreak was the agent
+/// *name*, which meant a newly active `"a"` was evicted ahead of a long-idle
+/// `"z"` — an operator would find the row for the agent they are watching gone
+/// because of its name. `touch` is a strictly increasing ticket, so the order
+/// is exact and no tiebreak is needed.
 fn agent_row<'a>(
     agents: &'a mut BTreeMap<String, AgentStats>,
     agent: &str,
+    touch: u64,
 ) -> Option<&'a mut AgentStats> {
     if !agents.contains_key(agent) && agents.len() >= AGENT_STATS_CAPACITY {
         let stalest = agents
             .iter()
-            .min_by_key(|(name, stats)| (stats.last_deliver_at_ms, (*name).clone()))
+            .min_by_key(|(_, stats)| stats.last_touch_order)
             .map(|(name, _)| name.clone())?;
         agents.remove(&stalest);
     }
-    Some(agents.entry(agent.to_string()).or_default())
+    let stats = agents.entry(agent.to_string()).or_default();
+    stats.last_touch_order = touch;
+    Some(stats)
 }
 
 /// Shorten `value` to at most `limit` BYTES without splitting a character.
@@ -614,6 +701,20 @@ fn truncate_on_char_boundary(value: &mut String, limit: usize) {
         end -= 1;
     }
     value.truncate(end);
+}
+
+/// Copy a peer-supplied string into retained state under [`PEER_STRING_LIMIT`].
+///
+/// Every retained peer string goes through here, and every *comparison* against
+/// a retained peer string must too — `record_disposition` matches on
+/// `delivery_id` and both `record_decision` and `record_disposition` key the
+/// agent map by name, so bounding one side only would silently stop the
+/// disposition from landing on its frame. Truncation is deterministic, so
+/// bounding both sides preserves the match.
+fn bounded(value: &str) -> String {
+    let mut owned = value.to_string();
+    truncate_on_char_boundary(&mut owned, PEER_STRING_LIMIT);
+    owned
 }
 
 /// Render a never-set timestamp as `null` rather than `0`, so a reader cannot
@@ -919,6 +1020,149 @@ mod tests {
     /// Bounded, and bounded the right way round: the rows that survive are the
     /// most recently delivered-to. A first-wins bound would let a peer that
     /// invents names starve the agents an operator is actually watching.
+    // relay#1680 review (coderabbitai, node_delivery_probe.rs:592) MUST-FIRE:
+    // `last_deliver_at_ms` is a millisecond clock and a busy broker takes many
+    // frames per millisecond, so rows tie routinely. The old tiebreak was the
+    // agent NAME, which evicted a just-active `"aaa-fresh"` ahead of a long-idle
+    // `"zzz-stale"` — the operator's row disappears because of its name.
+    //
+    // Driven through `agent_row` directly and with every `last_deliver_at_ms`
+    // pinned to one value, so the wall clock cannot accidentally break the tie
+    // and let the unfixed code pass. Against `(last_deliver_at_ms, name)` this
+    // fails on the `aaa-fresh` assertion.
+    #[test]
+    fn eviction_orders_on_activity_not_on_the_agent_name() {
+        let mut agents: BTreeMap<String, AgentStats> = BTreeMap::new();
+        let same_millisecond = 1_700_000_000_000;
+        for index in 0..AGENT_STATS_CAPACITY {
+            let name = match index {
+                0 => "zzz-stale".to_string(),
+                n if n == AGENT_STATS_CAPACITY - 1 => "aaa-fresh".to_string(),
+                n => format!("filler-{n:04}"),
+            };
+            let row = agent_row(&mut agents, &name, index as u64).expect("row");
+            row.last_deliver_at_ms = same_millisecond;
+        }
+        assert_eq!(agents.len(), AGENT_STATS_CAPACITY);
+
+        // Full: admitting one more name must evict exactly one row.
+        agent_row(&mut agents, "newcomer", AGENT_STATS_CAPACITY as u64).expect("row");
+        assert_eq!(agents.len(), AGENT_STATS_CAPACITY);
+        assert!(
+            !agents.contains_key("zzz-stale"),
+            "the least recently touched row must be the one evicted"
+        );
+        assert!(
+            agents.contains_key("aaa-fresh"),
+            "a freshly active agent must not be evicted ahead of an idle one \
+             just because its name sorts first"
+        );
+    }
+
+    // relay#1680 review (coderabbitai, node_delivery_probe.rs:331) MUST-FIRE:
+    // the slot counts bound how MANY peer strings are retained; without a
+    // per-field bound one oversized value multiplies across every slot. Asserts
+    // the bound at each retention site, and — because `record_disposition`
+    // joins on `delivery_id` and both writers key the agent map by name — that
+    // bounding both sides kept the disposition landing on its frame.
+    #[test]
+    fn peer_supplied_strings_are_bounded_before_retention() {
+        let probe = NodeDeliveryProbe::new();
+        let oversized = "x".repeat(4_096);
+        let mut frame = deliver(&oversized, &oversized, &oversized, 1);
+        frame.payload = json!({ "type": oversized });
+
+        probe.record_decision(&frame, &DeliveryDecision::Deliver { up_to_seq: 1 });
+        probe.record_disposition(&frame, DeliverDisposition::Injected);
+        probe.record_parse_failure("boom", &json!({ "type": oversized }).to_string());
+
+        let snapshot = probe.snapshot_with_token(true);
+        let row = &snapshot["recent_delivers"][0];
+        for field in ["agent", "agent_id", "delivery_id", "msg_id", "payload_type"] {
+            let value = row[field].as_str().expect(field);
+            assert!(
+                value.len() <= PEER_STRING_LIMIT,
+                "recent_delivers.{field} retained {} bytes of peer text",
+                value.len()
+            );
+        }
+        assert_eq!(
+            row["disposition"], "injected",
+            "bounding the retained delivery_id must not break the join that \
+             stamps the disposition onto its frame"
+        );
+
+        let agent = snapshot["agents"][0]["agent"].as_str().expect("agent row");
+        assert!(
+            agent.len() <= PEER_STRING_LIMIT,
+            "the agent map key retained {} bytes of peer text",
+            agent.len()
+        );
+        assert_eq!(
+            snapshot["agents"][0]["dispositions"]["injected"], 1,
+            "bounding the agent name on both writers must keep them on one row"
+        );
+
+        let frame_type = snapshot["last_parse_failure"]["frame_type"]
+            .as_str()
+            .expect("frame_type");
+        assert!(
+            frame_type.len() <= PEER_STRING_LIMIT,
+            "the parse-failure discriminator retained {} bytes",
+            frame_type.len()
+        );
+        for key in snapshot["unparsed_frame_types"]
+            .as_object()
+            .expect("unparsed map")
+            .keys()
+        {
+            assert!(
+                key.len() <= PEER_STRING_LIMIT,
+                "an unparsed_frame_types key retained {} bytes",
+                key.len()
+            );
+        }
+    }
+
+    // relay#1680 review (coderabbitai, fleet.rs:857) MUST-FIRE: a disposition of
+    // `surfaced_and_acked` is stamped when the runtime DECIDES to ack, which is
+    // not evidence the engine was told — the ack still has to cross a channel
+    // and a socket. Without the `acks` tallies the report cannot express "the
+    // broker acked but the ack never left", which is precisely the negative
+    // this instrument exists to report.
+    #[test]
+    fn an_ack_decision_is_distinguishable_from_an_ack_that_reached_the_wire() {
+        let probe = NodeDeliveryProbe::new();
+        let frame = deliver("agent-a", "agent-a-id", "del_ack", 1);
+        probe.record_decision(&frame, &DeliveryDecision::Deliver { up_to_seq: 1 });
+        probe.record_disposition(&frame, DeliverDisposition::SurfacedAndAcked);
+        probe.record_ack_enqueued();
+
+        let handed_off = probe.snapshot_with_token(true);
+        assert_eq!(handed_off["dispositions"]["surfaced_and_acked"], 1);
+        assert_eq!(handed_off["acks"]["enqueued"], 1);
+        assert_eq!(
+            handed_off["acks"]["sent"], 0,
+            "an ack that has not reached the socket must not read as sent"
+        );
+        assert_eq!(
+            handed_off["acks"]["last_sent_at_ms"],
+            Value::Null,
+            "no ack has reached the wire, so there is no last-sent time"
+        );
+
+        probe.record_ack_sent();
+        let on_the_wire = probe.snapshot_with_token(true);
+        assert_eq!(on_the_wire["acks"]["sent"], 1);
+        assert!(on_the_wire["acks"]["last_sent_at_ms"].is_u64());
+
+        probe.record_ack_enqueue_failed();
+        probe.record_ack_send_failed();
+        let failed = probe.snapshot_with_token(true);
+        assert_eq!(failed["acks"]["enqueue_failed"], 1);
+        assert_eq!(failed["acks"]["send_failed"], 1);
+    }
+
     #[test]
     fn agent_rows_are_bounded_and_evict_the_stalest_first() {
         let probe = NodeDeliveryProbe::new();

@@ -935,13 +935,32 @@ impl BrokerRuntime {
                 return;
             }
         };
-        let _ = self
+        // The ack is handed to the node-control task, which owns the socket.
+        // This loop must not await the wire, so `surfaced_and_acked` /
+        // `acked_without_surfacing` above can only mean "the broker decided to
+        // acknowledge" — not "the engine was told". The probe therefore tallies
+        // the handoff here and the wire write in the socket task, so a reader
+        // can tell an ack the engine received from one that died in between.
+        match self
             .fleet_control_tx
             .send(FleetControlCommand::Send(delivery_ack(
-                deliver.agent,
+                deliver.agent.clone(),
                 up_to_seq,
             )))
-            .await;
+            .await
+        {
+            Ok(()) => self.node_delivery_probe.record_ack_enqueued(),
+            Err(_) => {
+                self.node_delivery_probe.record_ack_enqueue_failed();
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    agent = %deliver.agent,
+                    delivery_id = %deliver.delivery_id,
+                    up_to_seq,
+                    "node control is gone; delivery ack was never queued"
+                );
+            }
+        }
     }
 
     /// Republish the delivery book's cursors into the shared probe when the

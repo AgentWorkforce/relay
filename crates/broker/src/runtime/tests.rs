@@ -1917,6 +1917,62 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
 /// advance was invisible: `GET /api/node-delivery` kept serving the old ACK
 /// until some later frame happened to arrive. Publication now runs off the
 /// book's dirty flag once per event-loop turn, so the confirmation surfaces.
+/// relay#1680 review (coderabbitai, fleet.rs:857) MUST-FIRE.
+///
+/// `acked_without_surfacing` is stamped before the ack is handed to the
+/// node-control task. When that task is gone the ack goes nowhere and the
+/// engine will redeliver, but the disposition still reads as an acknowledgement
+/// — the instrument reporting a success that did not happen. The `acks`
+/// tallies are what separate the two, and they are only worth anything if the
+/// runtime actually stops swallowing the channel error.
+#[tokio::test]
+async fn an_ack_that_never_left_the_runtime_is_reported_as_such() {
+    let worker_name = "agent-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    let deliver = withheld_ack_for("del_ack_enqueue_failed");
+    // Seed the book so the frame below is a duplicate: that plans a bare
+    // `Acknowledge`, which is the shortest path to the ack send.
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(deliver.agent.clone(), deliver.agent_id.clone());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_delivered(&deliver);
+
+    // The node-control task is gone; nothing can receive the ack.
+    drop(fixture.fleet_control_rx);
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(deliver.clone()),
+        ))
+        .await;
+
+    let snapshot = fixture
+        .runtime
+        .node_delivery_probe
+        .snapshot_with_token(true);
+    assert_eq!(
+        snapshot["dispositions"]["acked_without_surfacing"], 1,
+        "the runtime did decide to acknowledge this frame"
+    );
+    assert_eq!(
+        snapshot["acks"]["enqueue_failed"], 1,
+        "the ack never reached the node-control task, and the endpoint must \
+         say so rather than leave the disposition reading as a delivered ack"
+    );
+    assert_eq!(
+        snapshot["acks"]["enqueued"], 0,
+        "nothing was handed off, so nothing may be tallied as enqueued"
+    );
+    assert_eq!(snapshot["acks"]["sent"], 0);
+}
+
 #[tokio::test]
 async fn a_worker_confirmed_ack_becomes_visible_on_the_node_delivery_endpoint() {
     let worker_name = "worker-a";

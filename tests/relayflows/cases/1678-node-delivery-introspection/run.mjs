@@ -142,14 +142,21 @@ try {
     log(`[broker] ${d}`);
   });
 
+  // The broker publishes its bound port to a file; every later request is built
+  // from it. Only the port is taken, and only after it validates as a number on
+  // the loopback host — the origin is then rebuilt from constants rather than
+  // returning the file's own string. Reusing that string would let anything else
+  // it carried (a userinfo segment, a path, a query) ride into every request
+  // built by string concatenation below.
   const brokerUrl = await waitFor(async () => {
     if (broker.exitCode !== null) throw new Error(`broker exited early with code ${broker.exitCode}`);
     const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
     const url = new URL(connection.url);
-    if (url.hostname !== '127.0.0.1' || !Number(url.port)) {
+    const port = Number(url.port);
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !Number.isInteger(port) || port <= 0) {
       throw new Error(`bad connection url ${connection.url}`);
     }
-    return connection.url;
+    return `http://127.0.0.1:${port}`;
   }, 'the broker connection file to publish its bound API port');
   const api = brokerClient(brokerUrl);
   await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
@@ -186,8 +193,8 @@ try {
     outcome = 'absent';
     signature = 'deliver_frame_arrival_is_unobservable';
     details =
-      `The base broker has no GET /api/node-delivery (${first.__error.slice(0, 160)}), while ` +
-      `GET /api/status answers normally with ${status.agent_count} agent(s). With RUST_LOG unset ` +
+      `The base broker has no GET /api/node-delivery (${safeField(first.__error, 160)}), while ` +
+      `GET /api/status answers normally with ${Number(status.agent_count)} agent(s). With RUST_LOG unset ` +
       `the broker emitted ${brokerOutput.length} bytes total on stdout+stderr, so whether a ` +
       `deliver frame reached it cannot be established without a restart that destroys the cursors.`;
   } else {
@@ -252,8 +259,9 @@ try {
       `sent — with node control connected, the agent registered and idle, and ` +
       `${before.socket.text_frames} inbound socket frames already tallied — and ` +
       `${after.frames.deliver} after one real DM through the engine. The frame is reported as ` +
-      `agent=${entry.agent} seq=${entry.seq} payload_type=${entry.payload_type} ` +
-      `decision=${entry.decision} disposition=${entry.disposition}, so both "did it arrive" and ` +
+      `agent=${safeField(entry.agent)} seq=${Number(entry.seq)} ` +
+      `payload_type=${safeField(entry.payload_type)} decision=${safeField(entry.decision)} ` +
+      `disposition=${safeField(entry.disposition)}, so both "did it arrive" and ` +
       `"where did it stop" are answerable without restarting the broker.`;
   }
 
@@ -290,7 +298,15 @@ async function startEngineOnFreePort(serveBin, attempts = 5) {
           if (child.exitCode !== null) {
             throw new Error(`engine exited with code ${child.exitCode}`);
           }
-          await fetchBounded(url, {}, READINESS_TIMEOUT_MS);
+          // `fetch` resolves for any HTTP status, so "something answered" is
+          // not "the engine answered" — the port was free a moment ago and any
+          // process could hold it now. Require the engine's own /health body.
+          const res = await fetchBounded(`${url}/health`, {}, READINESS_TIMEOUT_MS);
+          if (!res.ok) throw new Error(`/health answered ${res.status}`);
+          const body = await res.json().catch(() => null);
+          if (body?.ok !== true) {
+            throw new Error(`/health is not the Relaycast engine: ${JSON.stringify(body)?.slice(0, 120)}`);
+          }
           return true;
         },
         `the Relaycast engine to accept connections on ${port}`,
@@ -317,6 +333,22 @@ async function startEngineOnFreePort(serveBin, attempts = 5) {
  */
 async function fetchBounded(url, init, timeoutMs) {
   return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+/**
+ * Reduce a value the broker reported over HTTP to something safe to embed in
+ * the result artifact.
+ *
+ * The result file is read back by the dispatcher and pasted into a PR, and
+ * these fields originate from the engine's frame, not from this case. Bound the
+ * length and keep only printable ASCII, so a hostile or merely malformed
+ * discriminator cannot inject newlines, control characters or unbounded text
+ * into the record.
+ */
+function safeField(value, limit = 64) {
+  return String(value)
+    .replace(/[^\x20-\x7e]/g, '?')
+    .slice(0, limit);
 }
 
 function requiredValue(name) {

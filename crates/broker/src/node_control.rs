@@ -2049,7 +2049,21 @@ async fn run_connected_once(
                         }
                     }
                     Some(FleetControlCommand::Send(message)) => {
-                        if send_wire(&mut sink, &message).await.is_err() {
+                        // A `delivery_ack` is the engine's only evidence that a
+                        // frame was consumed. The runtime records the *decision*
+                        // to ack before handing it here and cannot wait for the
+                        // wire, so the probe learns the outcome at the one place
+                        // that knows it. See `NodeDeliveryProbe::record_ack_sent`.
+                        let is_ack = matches!(message, BrokerToRelaycast::DeliveryAck(_));
+                        let sent = send_wire(&mut sink, &message).await;
+                        if let (true, Some(probe)) = (is_ack, config.probe.as_ref()) {
+                            if sent.is_ok() {
+                                probe.record_ack_sent();
+                            } else {
+                                probe.record_ack_send_failed();
+                            }
+                        }
+                        if sent.is_err() {
                             return ControlRunResult::Disconnected;
                         }
                     }
@@ -4050,6 +4064,117 @@ mod tests {
         panic!(
             "probe never reached the expected state: {}",
             probe.snapshot_with_token(true)
+        );
+    }
+
+    /// relay#1680 review (coderabbitai, fleet.rs:857) MUST-FIRE.
+    ///
+    /// The runtime stamps `surfaced_and_acked` / `acked_without_surfacing` when
+    /// it DECIDES to acknowledge, then hands the ack to this task over a
+    /// channel. It cannot await the wire, so the disposition alone reports an
+    /// ack the engine may never have received. This task is the only place that
+    /// knows, so `acks.sent` must be recorded here — and only for acks, or the
+    /// tally would be satisfied by unrelated traffic and could not report the
+    /// negative.
+    #[tokio::test]
+    async fn the_socket_task_records_which_acks_reached_the_wire() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let probe = std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+
+        // Drain whatever the client writes and never close from this side, so
+        // the session ends on the `Shutdown` the driver sends.
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: Some(probe.clone()),
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["connects"] == 1).await;
+            command_tx
+                .send(FleetControlCommand::Send(delivery_ack("agent-a", 7)))
+                .await
+                .expect("ack should be accepted");
+            wait_for_probe(&probe, |snapshot| snapshot["acks"]["sent"] == 1).await;
+
+            // Traffic that is not an ack must not move the ack tally, or
+            // `acks.sent` could not distinguish "the engine was told" from
+            // "the socket was busy".
+            command_tx
+                .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
+                    ActionResult {
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        invocation_id: "inv-not-an-ack".to_string(),
+                        result: ActionResultPayload::Output(ActionResultOutput {
+                            output: json!({"ok": true}),
+                        }),
+                    },
+                )))
+                .await
+                .expect("action result should be accepted");
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .expect("shutdown should be accepted");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("mock node-control session should finish");
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
+
+        let snapshot = probe.snapshot_with_token(true);
+        assert_eq!(
+            snapshot["acks"]["sent"], 1,
+            "the ack reached the wire, so the probe must be able to say so"
+        );
+        assert_eq!(
+            snapshot["acks"]["send_failed"], 0,
+            "the write succeeded; nothing should be tallied as failed"
+        );
+        assert!(
+            snapshot["acks"]["last_sent_at_ms"].is_u64(),
+            "an ack on the wire must stamp a last-sent time"
         );
     }
 
