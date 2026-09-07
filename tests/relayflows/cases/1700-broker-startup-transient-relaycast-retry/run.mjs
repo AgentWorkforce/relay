@@ -145,8 +145,7 @@ try {
     stderr.includes('attempts: 1') &&
     TERMINAL_DIAGNOSTIC_MARKERS.every((marker) => stderr.includes(marker));
   // The head broker replays the transient once and completes the handshake.
-  const headObserved =
-    registrationCount === 2 && stderr.includes(HANDSHAKE_MARKER) && !observed.timedOut;
+  const headObserved = registrationCount === 2 && stderr.includes(HANDSHAKE_MARKER) && !observed.timedOut;
 
   let outcome;
   let signature;
@@ -200,11 +199,11 @@ try {
  */
 function runBrokerStartup({ binaryPath, cwd, env }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      binaryPath,
-      ['init', '--instance-name', INSTANCE_NAME, '--channels', 'general'],
-      { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }
-    );
+    const child = spawn(binaryPath, ['init', '--instance-name', INSTANCE_NAME, '--channels', 'general'], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -308,9 +307,7 @@ function waitForServerReady(child) {
     child.once('exit', (code, signal) => {
       clearTimeout(timer);
       reject(
-        new Error(
-          `startup probe server exited before readiness (${signal ?? code ?? 'unknown'}): ${stderr}`
-        )
+        new Error(`startup probe server exited before readiness (${signal ?? code ?? 'unknown'}): ${stderr}`)
       );
     });
   });
