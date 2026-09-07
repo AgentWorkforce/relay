@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1686-unacked-delivery-retries-forever",
+  "kind": "bugfix",
+  "title": "A delivery the recipient never acknowledges retries forever and is never reported",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1686-unacked-delivery-retries-forever/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "unacked_delivery_retries_without_bound"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "unacked_delivery_dead_lettered_at_its_deadline"
+    }
+  }
+}

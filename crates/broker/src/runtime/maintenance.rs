@@ -149,6 +149,13 @@ impl BrokerRuntime {
             );
         }
 
+        // A delivery past its acknowledgement deadline is picked up here even
+        // when its next retry is not due yet. Without this the deadline would
+        // only be noticed on the next scheduled retry, which in `Wait` mode is
+        // up to `WAIT_DELIVERY_ACK_TIMEOUT` (5 minutes) away — the bound would
+        // hold, but late. `retry_pending_delivery` still owns the decision;
+        // this only decides when it gets asked. See relay#1686.
+        let now_ms = unix_timestamp_millis();
         let due_ids: Vec<DeliveryId> = pending_deliveries
             .iter()
             .filter_map(|(delivery_id, pending)| {
@@ -156,7 +163,8 @@ impl BrokerRuntime {
                     pending.withheld_fleet_ack.as_ref().is_some_and(|deliver| {
                         fleet_delivery_book.is_delivery_confirmation_held(deliver)
                     });
-                if pending.next_retry_at <= now && !confirmation_is_held {
+                let past_deadline = now_ms >= pending.expires_at_ms;
+                if (pending.next_retry_at <= now || past_deadline) && !confirmation_is_held {
                     Some(delivery_id.clone())
                 } else {
                     None
