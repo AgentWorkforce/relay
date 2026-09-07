@@ -9,20 +9,31 @@ import {
   validateQualificationEvidence,
 } from './evidence.mjs';
 import { FLEET_QUALIFICATION_OPERATIONS } from './matrix.mjs';
+import { argument, readQualificationParams } from './params.mjs';
 
-function argument(name) {
-  const index = process.argv.indexOf(name);
-  return index === -1 ? undefined : process.argv[index + 1];
+/**
+ * Operator-supplied paths arrive through the params file written by the
+ * Relayflow, never through a shell command line, so a value containing shell
+ * metacharacters cannot be interpreted. The explicit flags remain for direct
+ * invocation outside the workflow.
+ */
+let params;
+try {
+  params = readQualificationParams();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message.startsWith('NOT_PASS:') ? message : `NOT_PASS: ${message}`);
+  process.exit(1);
 }
-
-const input = argument('--input');
-const output = argument('--output');
-const expectedHead = argument('--expected-head');
-const candidateArtifact = argument('--candidate-artifact');
-const candidateManifest = argument('--candidate-manifest');
+const input = params?.rawEvidence ?? argument(process.argv, '--input');
+const output = params?.verdictPath ?? argument(process.argv, '--output');
+const expectedHead = params?.expectedHead ?? argument(process.argv, '--expected-head');
+const candidateArtifact = params?.candidateArtifact ?? argument(process.argv, '--candidate-artifact');
+const candidateManifest = params?.candidateManifest ?? argument(process.argv, '--candidate-manifest');
 if (!input || !output || !expectedHead || !candidateArtifact || !candidateManifest) {
   console.error(
-    'Usage: verify-evidence.mjs --input <raw-evidence.json> --output <verdict.json> --expected-head <40-char-sha> --candidate-artifact <packed.tgz> --candidate-manifest <manifest.json>'
+    'Usage: verify-evidence.mjs --params <params.json>\n' +
+      '   or: verify-evidence.mjs --input <raw-evidence.json> --output <verdict.json> --expected-head <40-char-sha> --candidate-artifact <packed.tgz> --candidate-manifest <manifest.json>'
   );
   process.exit(2);
 }
