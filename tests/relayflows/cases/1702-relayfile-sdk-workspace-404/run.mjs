@@ -20,7 +20,12 @@ if (arm !== 'base' && arm !== 'head') {
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
-const targetSha = run('git', ['-C', targetDir, 'rev-parse', 'HEAD'], targetDir, 'git rev-parse').stdout.trim();
+const targetSha = run(
+  'git',
+  ['-C', targetDir, 'rev-parse', 'HEAD'],
+  targetDir,
+  'git rev-parse'
+).stdout.trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
