@@ -1,9 +1,19 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { argument } from '../../scripts/fleet-qualification/params.mjs';
 import {
   buildQualificationCommands,
   QualificationBlockedError,
@@ -178,5 +188,112 @@ describe('fleet qualification shell injection', () => {
     ]) {
       expect(() => resolveQualificationInputs({ ...base, ...override })).toThrow(QualificationBlockedError);
     }
+  });
+});
+
+/**
+ * The params file is the one thing this run writes before the workflow starts,
+ * and its path is derived from the run id — which the operator also supplies.
+ * These cover the ways a hostile or careless setup can aim that write at
+ * something it must not touch.
+ */
+describe('fleet qualification params write is not a destructive primitive', () => {
+  const RUN_ID = 'inject-probe';
+  const ARTIFACT_ROOT = `.workflow-artifacts/fleet-qualification/${RUN_ID}`;
+
+  function envFor(overrides: Record<string, string>) {
+    const { files } = maliciousInputs();
+    return {
+      FLEET_QUALIFICATION_RUN_ID: RUN_ID,
+      FLEET_QUALIFICATION_RAW_EVIDENCE: files.rawEvidence,
+      FLEET_QUALIFICATION_CANDIDATE_ARTIFACT: files.candidateArtifact,
+      FLEET_QUALIFICATION_CANDIDATE_MANIFEST: files.candidateManifest,
+      FLEET_QUALIFICATION_EXPECTED_HEAD: HEAD,
+      ...overrides,
+    };
+  }
+
+  function resolveInSandbox(overrides: Record<string, string> = {}) {
+    return resolveQualificationInputs(envFor(overrides), { cwd: sandbox });
+  }
+
+  it('blocks an input that is a directory rather than a regular file', () => {
+    const directory = path.join(sandbox, 'evidence-dir');
+    mkdirSync(directory);
+    for (const key of [
+      'FLEET_QUALIFICATION_RAW_EVIDENCE',
+      'FLEET_QUALIFICATION_CANDIDATE_ARTIFACT',
+      'FLEET_QUALIFICATION_CANDIDATE_MANIFEST',
+    ]) {
+      expect(() => resolveInSandbox({ [key]: directory })).toThrow(QualificationBlockedError);
+    }
+  });
+
+  it('blocks an input that is a FIFO instead of blocking the run on it', () => {
+    const fifo = path.join(sandbox, 'evidence-fifo');
+    execFileSync('mkfifo', [fifo]);
+    expect(() => resolveInSandbox({ FLEET_QUALIFICATION_RAW_EVIDENCE: fifo })).toThrow(
+      QualificationBlockedError
+    );
+  });
+
+  it('blocks an input path that aliases the params or verdict file', () => {
+    for (const name of ['params.json', 'verdict.json']) {
+      const alias = path.join(sandbox, ARTIFACT_ROOT, name);
+      mkdirSync(path.dirname(alias), { recursive: true });
+      writeFileSync(alias, 'OPERATOR EVIDENCE\n');
+      expect(() => resolveInSandbox({ FLEET_QUALIFICATION_RAW_EVIDENCE: alias })).toThrow(
+        QualificationBlockedError
+      );
+      // The caller's own file is still intact — nothing truncated it.
+      expect(readFileSync(alias, 'utf8')).toBe('OPERATOR EVIDENCE\n');
+      rmSync(alias);
+    }
+  });
+
+  it('does not follow a symlink planted at the params path', () => {
+    const victim = path.join(sandbox, 'victim.json');
+    writeFileSync(victim, 'DO NOT OVERWRITE\n');
+    const paramsPath = path.join(sandbox, ARTIFACT_ROOT, 'params.json');
+    mkdirSync(path.dirname(paramsPath), { recursive: true });
+    symlinkSync(victim, paramsPath);
+
+    const inputs = resolveInSandbox();
+    expect(() => writeQualificationParams(inputs, { cwd: sandbox })).toThrow(QualificationBlockedError);
+    expect(readFileSync(victim, 'utf8')).toBe('DO NOT OVERWRITE\n');
+  });
+
+  it('does not follow a symlinked artifact root', () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'fleet-qual-victim-'));
+    const root = path.join(sandbox, ARTIFACT_ROOT);
+    mkdirSync(path.dirname(root), { recursive: true });
+    symlinkSync(elsewhere, root);
+
+    const inputs = resolveInSandbox();
+    expect(() => writeQualificationParams(inputs, { cwd: sandbox })).toThrow(QualificationBlockedError);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    rmSync(elsewhere, { recursive: true, force: true });
+  });
+
+  it('blocks a reused run id rather than overwriting its params file', () => {
+    const inputs = resolveInSandbox();
+    writeQualificationParams(inputs, { cwd: sandbox });
+    expect(() => writeQualificationParams(inputs, { cwd: sandbox })).toThrow(QualificationBlockedError);
+  });
+});
+
+describe('fleet qualification argv parsing', () => {
+  it("does not accept a known flag as another flag's value", () => {
+    const argv = ['node', 'verify-evidence.mjs', '--input', '--expected-head', 'a'.repeat(40)];
+    expect(argument(argv, '--input')).toBeUndefined();
+    expect(argument(argv, '--expected-head')).toBe('a'.repeat(40));
+  });
+
+  it('does not read past the end of the command line', () => {
+    expect(argument(['node', 'verify-evidence.mjs', '--params'], '--params')).toBeUndefined();
+  });
+
+  it('still reads a well-formed value', () => {
+    expect(argument(['node', 'x.mjs', '--params', 'a/params.json'], '--params')).toBe('a/params.json');
   });
 });

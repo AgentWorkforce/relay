@@ -10,9 +10,31 @@ const REQUIRED_FIELDS = [
   'verdictPath',
 ];
 
+/**
+ * Every flag this module and verify-evidence.mjs accept. A value that is itself
+ * one of these is a malformed command line, not a value.
+ */
+const KNOWN_FLAGS = new Set([
+  '--params',
+  '--input',
+  '--output',
+  '--expected-head',
+  '--candidate-artifact',
+  '--candidate-manifest',
+]);
+
+/**
+ * Read the token after `name`. Returns undefined when the flag is last on the
+ * line or its "value" is another known flag, so a malformed
+ * `--input --expected-head <sha>` fails the caller's required-argument check
+ * instead of silently binding the SHA to `--input`.
+ */
 function argument(argv, name) {
   const index = argv.indexOf(name);
-  return index === -1 ? undefined : argv[index + 1];
+  if (index === -1) return undefined;
+  const value = argv[index + 1];
+  if (value === undefined || KNOWN_FLAGS.has(value)) return undefined;
+  return value;
 }
 
 /**

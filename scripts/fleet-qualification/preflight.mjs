@@ -9,7 +9,7 @@
  * charset-restricted run id. The only values that reach the shell are literals
  * this module generates and asserts to be shell-inert.
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -44,40 +44,49 @@ export function shellInertLiteral(value, field) {
   return value;
 }
 
-function requiredPath(env, key, description, fileExists) {
+/**
+ * `test -f` semantics, which the shell preflight this replaced relied on:
+ * follow symlinks, accept only a regular file. `existsSync` alone would let a
+ * directory, FIFO, socket or device through — a directory then surfaces as a
+ * terminal NOT_PASS deep in the verifier, and reading a FIFO blocks until the
+ * workflow times out, instead of failing fast as a BLOCKED setup error.
+ */
+function regularFile(candidate) {
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function requiredPath(env, key, description) {
   const value = env[key] ?? '';
   if (!value) blocked(`${key} is required`);
-  if (!fileExists(value)) blocked(`${description} is absent`);
+  if (!regularFile(value)) blocked(`${description} is not a readable regular file`);
   return value;
 }
 
 /**
  * Validate every operator-supplied input up front, outside the shell.
  * @param {Record<string, string | undefined>} env
- * @param {{ fileExists?: (p: string) => boolean, now?: () => number }} [deps]
+ * @param {{ now?: () => number, cwd?: string }} [deps]
  */
 export function resolveQualificationInputs(env = process.env, deps = {}) {
-  const fileExists = deps.fileExists ?? existsSync;
   const now = deps.now ?? Date.now;
+  const cwd = deps.cwd ?? process.cwd();
 
   const runId = env.FLEET_QUALIFICATION_RUN_ID ?? `fleet-${now()}`;
   if (!RUN_ID.test(runId)) {
     blocked('FLEET_QUALIFICATION_RUN_ID must be a safe 1-128 character artifact name');
   }
 
-  const rawEvidence = requiredPath(env, 'FLEET_QUALIFICATION_RAW_EVIDENCE', 'raw evidence file', fileExists);
+  const rawEvidence = requiredPath(env, 'FLEET_QUALIFICATION_RAW_EVIDENCE', 'raw evidence file');
   const candidateArtifact = requiredPath(
     env,
     'FLEET_QUALIFICATION_CANDIDATE_ARTIFACT',
-    'packed candidate artifact',
-    fileExists
+    'packed candidate artifact'
   );
-  const candidateManifest = requiredPath(
-    env,
-    'FLEET_QUALIFICATION_CANDIDATE_MANIFEST',
-    'candidate manifest',
-    fileExists
-  );
+  const candidateManifest = requiredPath(env, 'FLEET_QUALIFICATION_CANDIDATE_MANIFEST', 'candidate manifest');
 
   const expectedHead = env.FLEET_QUALIFICATION_EXPECTED_HEAD ?? '';
   if (!GIT_SHA.test(expectedHead)) {
@@ -85,7 +94,7 @@ export function resolveQualificationInputs(env = process.env, deps = {}) {
   }
 
   const artifacts = `.workflow-artifacts/fleet-qualification/${runId}`;
-  return {
+  const inputs = {
     runId,
     artifacts,
     paramsPath: `${artifacts}/params.json`,
@@ -95,6 +104,25 @@ export function resolveQualificationInputs(env = process.env, deps = {}) {
     candidateManifest,
     expectedHead: expectedHead.toLowerCase(),
   };
+  assertNoOutputAliases(inputs, cwd);
+  return inputs;
+}
+
+/**
+ * An input path that resolves to a file this run is about to write is a
+ * destructive setup error: the params write would truncate the operator's own
+ * evidence before the verifier reads it, and an input aliasing the verdict
+ * would only surface halfway through the run. Both are BLOCKED here instead.
+ */
+export function assertNoOutputAliases(inputs, cwd = process.cwd()) {
+  const reserved = new Map([
+    [path.resolve(cwd, inputs.paramsPath), 'the qualification params file'],
+    [path.resolve(cwd, inputs.verdictPath), 'the qualification verdict file'],
+  ]);
+  for (const key of ['rawEvidence', 'candidateArtifact', 'candidateManifest']) {
+    const clash = reserved.get(path.resolve(cwd, inputs[key]));
+    if (clash) blocked(`${key} must not be ${clash}`);
+  }
 }
 
 /** Serialize the resolved inputs for the verifier steps. */
@@ -111,11 +139,55 @@ export function qualificationParams(inputs) {
   };
 }
 
-/** Write the params file the deterministic steps read instead of argv. */
+/**
+ * Reject a symlink or non-directory anywhere in the artifact root this module
+ * is about to create. `mkdirSync(..., { recursive: true })` happily accepts a
+ * pre-planted symlink-to-directory and would then write the params file into
+ * the link target. Only the segments this module owns are walked; the
+ * workspace root above them belongs to the operator.
+ */
+function assertRealArtifactRoot(cwd, relative) {
+  let current = path.resolve(cwd);
+  for (const segment of relative.split('/')) {
+    current = path.join(current, segment);
+    let stats;
+    try {
+      stats = lstatSync(current);
+    } catch {
+      return; // Absent, so every deeper segment is too: mkdirSync creates real dirs.
+    }
+    if (stats.isSymbolicLink()) {
+      blocked(`${relative} must be a real directory, but ${segment} is a symlink`);
+    }
+    if (!stats.isDirectory()) {
+      blocked(`${relative} must be a real directory, but ${segment} is not a directory`);
+    }
+  }
+}
+
+/**
+ * Write the params file the deterministic steps read instead of argv.
+ *
+ * Created exclusively (`wx`, i.e. O_EXCL), matching how verify-evidence.mjs
+ * writes the verdict. A pre-existing params.json — a reused run id, or a
+ * symlink planted at that path — is BLOCKED rather than followed and
+ * overwritten.
+ */
 export function writeQualificationParams(inputs, { cwd = process.cwd() } = {}) {
+  assertNoOutputAliases(inputs, cwd);
+  assertRealArtifactRoot(cwd, inputs.artifacts);
   const absolute = path.resolve(cwd, inputs.paramsPath);
   mkdirSync(path.dirname(absolute), { recursive: true });
-  writeFileSync(absolute, `${JSON.stringify(qualificationParams(inputs), null, 2)}\n`);
+  try {
+    writeFileSync(absolute, `${JSON.stringify(qualificationParams(inputs), null, 2)}\n`, {
+      flag: 'wx',
+    });
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      blocked(`${inputs.paramsPath} already exists; use a fresh FLEET_QUALIFICATION_RUN_ID`);
+    }
+    throw error;
+  }
   return absolute;
 }
 
