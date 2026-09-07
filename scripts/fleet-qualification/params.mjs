@@ -43,8 +43,15 @@ function argument(argv, name) {
  * back here as plain JSON strings.
  */
 export function readQualificationParams(argv = process.argv) {
+  // `argument` returns undefined both when --params is absent and when it is
+  // present but valueless. Only the first is a legitimate direct invocation;
+  // conflating them would let a malformed --params fall through to the direct
+  // flags and silently verify a different set of inputs.
+  if (!argv.includes('--params')) return undefined;
   const paramsPath = argument(argv, '--params');
-  if (!paramsPath) return undefined;
+  if (!paramsPath) {
+    throw new Error('NOT_PASS: --params requires a file path');
+  }
   const params = JSON.parse(readFileSync(paramsPath, 'utf8'));
   if (params?.schemaVersion !== QUALIFICATION_PARAMS_SCHEMA) {
     throw new Error(`NOT_PASS: params file schemaVersion must be ${QUALIFICATION_PARAMS_SCHEMA}`);

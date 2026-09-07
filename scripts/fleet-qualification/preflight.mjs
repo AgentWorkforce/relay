@@ -171,21 +171,33 @@ export function qualificationParams(inputs) {
 }
 
 /**
- * Reject a symlink or non-directory anywhere in the artifact root this module
- * is about to create. `mkdirSync(..., { recursive: true })` happily accepts a
- * pre-planted symlink-to-directory and would then write the params file into
- * the link target. Only the segments this module owns are walked; the
- * workspace root above them belongs to the operator.
+ * Create the run's artifact root, and own it exclusively.
+ *
+ * The shared parents (`.workflow-artifacts`, `.workflow-artifacts/fleet-qualification`)
+ * may already exist, but each is checked with `lstat` first:
+ * `mkdirSync(..., { recursive: true })` accepts a pre-planted
+ * symlink-to-directory and would redirect everything below it into the link
+ * target.
+ *
+ * The run-specific leaf must NOT exist. A plain `mkdirSync` fails `EEXIST`
+ * atomically for a directory, a file or a symlink, so there is no window
+ * between deciding the path is free and taking it. That also rejects a stale
+ * root left by an earlier run — one holding a `verdict.json` but no
+ * `params.json` would otherwise pass, start the workflow, and only fail later
+ * when verify-evidence.mjs's own exclusive verdict write hit `EEXIST`.
  */
-function assertRealArtifactRoot(cwd, relative) {
+function createQualificationArtifactRoot(cwd, relative) {
+  const segments = relative.split('/');
+  const leaf = segments.pop();
   let current = path.resolve(cwd);
-  for (const segment of relative.split('/')) {
+
+  for (const segment of segments) {
     current = path.join(current, segment);
     let stats;
     try {
       stats = lstatSync(current);
     } catch {
-      return; // Absent, so every deeper segment is too: mkdirSync creates real dirs.
+      break; // Absent, so every deeper segment is too.
     }
     if (stats.isSymbolicLink()) {
       blocked(`${relative} must be a real directory, but ${segment} is a symlink`);
@@ -194,21 +206,34 @@ function assertRealArtifactRoot(cwd, relative) {
       blocked(`${relative} must be a real directory, but ${segment} is not a directory`);
     }
   }
+
+  const parent = path.resolve(cwd, ...segments);
+  mkdirSync(parent, { recursive: true });
+  const root = path.join(parent, leaf);
+  try {
+    mkdirSync(root);
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      blocked(`${relative} already exists; use a fresh FLEET_QUALIFICATION_RUN_ID`);
+    }
+    throw error;
+  }
+  return root;
 }
 
 /**
- * Write the params file the deterministic steps read instead of argv.
+ * Write the params file the deterministic steps read instead of argv, into an
+ * artifact root this call has just created exclusively.
  *
- * Created exclusively (`wx`, i.e. O_EXCL), matching how verify-evidence.mjs
- * writes the verdict. A pre-existing params.json — a reused run id, or a
- * symlink planted at that path — is BLOCKED rather than followed and
- * overwritten.
+ * The write is still exclusive (`wx`, i.e. `O_EXCL`, as verify-evidence.mjs
+ * does for the verdict). With the root freshly created that is unreachable in
+ * practice; it is kept as a backstop against anything racing into the new
+ * directory, and it is the reason this function can never follow a symlink.
  */
 export function writeQualificationParams(inputs, { cwd = process.cwd() } = {}) {
   assertNoOutputAliases(inputs, cwd);
-  assertRealArtifactRoot(cwd, inputs.artifacts);
+  createQualificationArtifactRoot(cwd, inputs.artifacts);
   const absolute = path.resolve(cwd, inputs.paramsPath);
-  mkdirSync(path.dirname(absolute), { recursive: true });
   try {
     writeFileSync(absolute, `${JSON.stringify(qualificationParams(inputs), null, 2)}\n`, {
       flag: 'wx',

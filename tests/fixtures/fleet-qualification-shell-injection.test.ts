@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { argument } from '../../scripts/fleet-qualification/params.mjs';
+import { argument, readQualificationParams } from '../../scripts/fleet-qualification/params.mjs';
 import {
   buildQualificationCommands,
   QualificationBlockedError,
@@ -308,6 +308,30 @@ describe('fleet qualification params write is not a destructive primitive', () =
     }
   });
 
+  it('does not follow a symlink planted on a shared parent directory', () => {
+    const elsewhere = mkdtempSync(path.join(tmpdir(), 'fleet-qual-victim-'));
+    const parent = path.join(sandbox, '.workflow-artifacts', 'fleet-qualification');
+    mkdirSync(path.dirname(parent), { recursive: true });
+    symlinkSync(elsewhere, parent);
+
+    const inputs = resolveInSandbox();
+    expect(() => writeQualificationParams(inputs, { cwd: sandbox })).toThrow(QualificationBlockedError);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    rmSync(elsewhere, { recursive: true, force: true });
+  });
+
+  it('blocks a stale artifact root that holds a verdict but no params', () => {
+    // The params write would have succeeded here; the run would only have
+    // failed later, on verify-evidence.mjs's own exclusive verdict write.
+    const root = path.join(sandbox, ARTIFACT_ROOT);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(path.join(root, 'verdict.json'), '{"verdict":"PASS"}\n');
+
+    const inputs = resolveInSandbox();
+    expect(() => writeQualificationParams(inputs, { cwd: sandbox })).toThrow(QualificationBlockedError);
+    expect(existsSync(path.join(root, 'params.json'))).toBe(false);
+  });
+
   it('blocks a reused run id rather than overwriting its params file', () => {
     const inputs = resolveInSandbox();
     writeQualificationParams(inputs, { cwd: sandbox });
@@ -324,6 +348,22 @@ describe('fleet qualification argv parsing', () => {
 
   it('does not read past the end of the command line', () => {
     expect(argument(['node', 'verify-evidence.mjs', '--params'], '--params')).toBeUndefined();
+  });
+
+  it('rejects a present-but-valueless --params instead of falling back', () => {
+    // Returning undefined here would let verify-evidence.mjs silently verify
+    // the direct --input/--output flags instead of the params file it was told
+    // to use.
+    expect(() =>
+      readQualificationParams(['node', 'verify-evidence.mjs', '--params', '--input', 'e.json'])
+    ).toThrow(/--params requires a file path/);
+    expect(() => readQualificationParams(['node', 'verify-evidence.mjs', '--params'])).toThrow(
+      /--params requires a file path/
+    );
+  });
+
+  it('leaves a genuinely absent --params as a direct invocation', () => {
+    expect(readQualificationParams(['node', 'verify-evidence.mjs', '--input', 'e.json'])).toBeUndefined();
   });
 
   it('still reads a well-formed value', () => {
