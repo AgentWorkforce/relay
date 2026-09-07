@@ -64,16 +64,18 @@ const READY_TIMEOUT_MS = 90_000;
 const DEADLINE_MS = 10_000;
 /**
  * How long the head broker is given to act on that budget. The deadline is
- * swept on the broker's 500ms maintenance tick, so this is generous by an order
- * of magnitude.
+ * swept on the broker's 500ms maintenance tick, so three times the configured
+ * budget leaves ample scheduling margin.
  */
-const HEAD_WINDOW_MS = 45_000;
+const HEAD_WINDOW_MS = 30_000;
 /**
- * How long the base broker is watched for any terminal outcome. Six times the
- * deadline and four times the head window: if a bound existed anywhere in the
- * base broker's retry path, it would have fired well inside this.
+ * How long the base broker is watched for any terminal outcome. Twice the
+ * configured deadline is enough to prove that the base broker ignores that
+ * bound while still observing several 5-second steer retry cycles. Keeping the
+ * window focused also leaves the Cloud proof owner enough time for its clean
+ * checkout, engine install, and broker startup before the step deadline.
  */
-const BASE_WINDOW_MS = 60_000;
+const BASE_WINDOW_MS = 20_000;
 /**
  * Message body size. The tty input queue is a few kilobytes, so a body this
  * size cannot be written to a child that never reads, and the injection write
