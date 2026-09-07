@@ -729,12 +729,34 @@ impl AuthClient {
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
+        // Workspace creation is an unkeyed POST, so a 5xx is ambiguous:
+        // Relaycast may have committed the workspace before failing to answer.
+        // Replaying is still right — `workspace_storage_unavailable` is a
+        // pre-commit storage failure — but the *conflict* arm below is not
+        // safe after a replay. Count the sends so a conflict that follows our
+        // own replay is treated as our own committed workspace rather than
+        // someone else's, and never silently mints a second one.
+        let sends = std::sync::atomic::AtomicUsize::new(0);
         match retry_transient_relay_error("creating a Relaycast workspace", || {
+            sends.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             RelayCast::create_workspace(name, self.base_url.as_deref(), WorkspaceProvenance::sdk())
         })
         .await
         {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
+            Err(error)
+                if is_workspace_name_conflict(&error)
+                    && sends.load(std::sync::atomic::Ordering::Relaxed) > 1 =>
+            {
+                // The name was free when we started and is taken now, after a
+                // request we replayed. That is almost certainly our own
+                // committed creation, whose key the conflict response cannot
+                // return. Minting a fallback here would orphan it and its key.
+                // Fail closed and say so.
+                Err(relay_error_to_anyhow(error)).context(format!(
+                    "workspace '{name}' already existed after a replayed creation; a previous                      attempt likely committed it before Relaycast returned a transient error,                      and its key cannot be recovered from a conflict response"
+                ))
+            }
             Err(error) if is_workspace_name_conflict(&error) => {
                 let suffix = Uuid::new_v4().simple().to_string();
                 let fallback_name = format!("{name}-{}", &suffix[..8]);
@@ -976,7 +998,11 @@ where
                 total_attempts = total_attempts.saturating_add(relay_error_attempts(&error));
 
                 if !is_transient_server_error(&error) {
-                    return Err(error);
+                    // A *changed* failure — a 401 after a 503, say — is
+                    // terminal, but it still arrived after every request
+                    // before it. Report the real total, not this response's
+                    // own count.
+                    return Err(with_total_attempts(error, total_attempts));
                 }
 
                 let Some(backoff_ms) = TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.get(retry).copied()
@@ -1498,9 +1524,9 @@ mod tests {
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
         is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
-        relay_request_with_timeout, resolve_relaycast_base_url, stable_node_identity_key,
-        AuthClient, AuthHttpError, CredentialCache, AGENT_TOKEN_INVALID_CODE,
-        DEFAULT_RELAYCAST_BASE_URL,
+        relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
+        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
+        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -1812,6 +1838,120 @@ mod tests {
         assert_eq!(state.register_attempts.load(Ordering::SeqCst), 2);
 
         server.abort();
+    }
+
+    /// Workspace creation is an unkeyed POST, so a 5xx can hide a committed
+    /// write. If the replay then hits a name conflict, that conflict is our
+    /// own workspace — whose key a conflict response cannot return. Minting a
+    /// fallback name there would orphan it, so the retry must fail closed
+    /// instead of quietly creating a second workspace.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replayed_workspace_creation_conflict_never_mints_a_second_workspace() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        async fn create_workspace(
+            State(attempts): State<Arc<AtomicUsize>>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Committed, then failed to answer.
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_storage_unavailable",
+                            "message": "Workspace storage temporarily unavailable"
+                        }
+                    })),
+                );
+            }
+            (
+                AxumStatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "name_taken",
+                        "message": "workspace name already exists"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/workspaces", post(create_workspace))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let error = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("an ambiguous replayed creation must not be resolved by guessing");
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("already existed after a replayed creation"),
+            "{message}"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "the conflict must end the sequence, not trigger a fallback-name creation"
+        );
+
+        server.abort();
+    }
+
+    /// A failure that *changes* mid-retry — a 401 after a 503 — is terminal,
+    /// but it still arrived after every request before it. The attempt count
+    /// an operator reads must be the real total.
+    #[tokio::test]
+    async fn a_changed_failure_mid_retry_still_reports_every_attempt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error("probing a changed failure", || {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    return Err::<(), _>(RelayError::api("database_overloaded", "overloaded", 503));
+                }
+                Err(RelayError::api(
+                    "agent_token_invalid",
+                    "Invalid agent token",
+                    401,
+                ))
+            }
+        })
+        .await
+        .expect_err("a 401 after a 503 is terminal");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        match error {
+            RelayError::Api {
+                status, attempts, ..
+            } => {
+                assert_eq!(status, 401);
+                assert_eq!(attempts, 2, "both HTTP attempts must be reported");
+            }
+            other => panic!("expected a terminal API error, got {other}"),
+        }
     }
 
     /// The retry budget is bounded, and the terminal error still carries the
