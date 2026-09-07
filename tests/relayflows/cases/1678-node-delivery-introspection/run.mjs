@@ -216,7 +216,7 @@ try {
     // And the base broker really is mute, which is why nothing else can answer.
     outcome = 'absent';
     signature = 'deliver_frame_arrival_is_unobservable';
-    // The 404 is the assertion two lines up; record that, not the broker's
+    // The 404 is what the check above asserted; record that, not the broker's
     // echo of it, so no response text reaches the artifact.
     details =
       `The base broker has no GET /api/node-delivery (the route answered 404), while ` +
