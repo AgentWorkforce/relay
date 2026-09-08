@@ -660,6 +660,49 @@ describe('Cloud dispatcher API key lifecycle', () => {
     ).rejects.toThrow('transform failed');
   });
 
+  it.skipIf(process.platform === 'win32' || !PS_PATH)(
+    'kills same-group descendants when an output transform fails during final flush',
+    async () => {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(String(child.pid) + '\\n');",
+        'child.unref();',
+      ].join('');
+      let transformed = '';
+      await expect(
+        runBoundedProcess(process.execPath, ['-e', script], {
+          echo: false,
+          transformChunk: (text, _stream, final) => {
+            if (final) throw new Error('final transform failed');
+            transformed += text;
+            return text;
+          },
+        })
+      ).rejects.toThrow('final transform failed');
+
+      const descendantPid = Number(transformed.trim());
+      expect(descendantPid).toBeGreaterThan(0);
+      const deadline = Date.now() + 2_000;
+      let running = true;
+      while (running && Date.now() < deadline) {
+        let processState = '';
+        try {
+          processState = execFileSync(PS_PATH!, ['-o', 'stat=', '-p', String(descendantPid)], {
+            encoding: 'utf8',
+          }).trim();
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if (status !== 1) throw error;
+        }
+        running = processState.length > 0 && !processState.startsWith('Z');
+        if (running) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (running) process.kill(descendantPid, 'SIGKILL');
+      expect(running).toBe(false);
+    }
+  );
+
   it('omits malformed JSON status payloads instead of falling back to raw output', () => {
     const diagnostic = sanitizeCloudStatusDiagnostic(
       '{"status":"failed","result":{"token":"unknown-secret"}'

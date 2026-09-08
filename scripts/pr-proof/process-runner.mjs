@@ -219,8 +219,10 @@ export function runBoundedProcess(command, args, options = {}) {
         consumeOutput('stdout', '', true);
         consumeOutput('stderr', '', true);
       } catch (error) {
-        settled = true;
-        reject(error);
+        // A descendant can keep running after the process-group leader closes
+        // its inherited pipes. Use the same terminal cleanup path as a
+        // transform failure observed during a data event.
+        fail(error);
         return;
       }
       settled = true;
