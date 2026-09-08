@@ -90,6 +90,174 @@
     "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
   },
   "deferredCommandSurface": [],
+  "optionCoverage": {
+    "fleet spawn": [
+      {
+        "option": "--sandbox-provider",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount",
+        "variants": [
+          { "value": "daytona", "status": "supported" },
+          {
+            "value": "e2b",
+            "status": "unsupported",
+            "reason": "E2B is not part of the Daytona qualification provider contract."
+          }
+        ]
+      },
+      {
+        "option": "--sandbox-name",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-scoped-mount"
+      },
+      {
+        "option": "--sandbox-snapshot",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount"
+      },
+      {
+        "option": "--sandbox-snapshot-manifest-sha256",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount"
+      },
+      {
+        "option": "--confirm-timeout",
+        "status": "supported",
+        "operationId": "fleet-spawn-no-confirm-readiness"
+      }
+    ],
+    "fleet serve": [
+      {
+        "option": "file",
+        "argvToken": "tests/relayflows/cleanroom/fleet-daytona.matrix.json",
+        "status": "supported",
+        "operationId": "fleet-serve-migration"
+      }
+    ],
+    "node agent new": [
+      { "option": "--runtime", "status": "supported", "operationId": "node-agent-new-view" },
+      { "option": "--model", "status": "supported", "operationId": "node-agent-new-view" },
+      { "option": "--task", "status": "supported", "operationId": "node-agent-new-view" },
+      { "option": "--channels", "status": "supported", "operationId": "node-agent-new-view" },
+      { "option": "--cwd", "status": "supported", "operationId": "node-agent-new-view" },
+      { "option": "--mode", "status": "supported", "operationId": "node-agent-new-view" },
+      {
+        "option": "--release",
+        "status": "unsupported",
+        "reason": "node agent new rejects headless workers and does not have a meaningful AppServer release policy for attachable PTY/native workers."
+      }
+    ],
+    "node agent attach": [
+      {
+        "option": "--broker-url",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+      },
+      {
+        "option": "--api-key",
+        "status": "skipped",
+        "reason": "Credential-bearing attach is not run in deterministic cleanroom fixtures."
+      },
+      {
+        "option": "--state-dir",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+      },
+      {
+        "option": "--ssh-host",
+        "status": "skipped",
+        "reason": "SSH transport is unavailable in the Daytona qualification environment."
+      },
+      {
+        "option": "--join-ticket",
+        "status": "skipped",
+        "reason": "Join tickets are credential-bearing and require an external broker fixture."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json"
+      },
+      {
+        "option": "--reasoning",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json",
+        "takesValue": false
+      },
+      {
+        "option": "--diagnostics",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json",
+        "takesValue": false
+      }
+    ],
+    "node agent message hold": [
+      {
+        "option": "--broker-url",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+      },
+      {
+        "option": "--api-key",
+        "status": "skipped",
+        "reason": "Credential-bearing message control is not run in deterministic cleanroom fixtures."
+      },
+      {
+        "option": "--state-dir",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-message-hold"
+      }
+    ],
+    "node agent message flush": [
+      {
+        "option": "--broker-url",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+      },
+      {
+        "option": "--api-key",
+        "status": "skipped",
+        "reason": "Credential-bearing message control is not run in deterministic cleanroom fixtures."
+      },
+      {
+        "option": "--state-dir",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-message-flush"
+      }
+    ],
+    "node agent message auto": [
+      {
+        "option": "--broker-url",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+      },
+      {
+        "option": "--api-key",
+        "status": "skipped",
+        "reason": "Credential-bearing message control is not run in deterministic cleanroom fixtures."
+      },
+      {
+        "option": "--state-dir",
+        "status": "skipped",
+        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-message-auto"
+      }
+    ]
+  },
   "acceptance": {
     "version": 1,
     "profiles": {
@@ -584,7 +752,7 @@
       "id": "fleet-spawn-no-confirm-readiness",
       "group": "fleet-spawn",
       "expect": "sentinel",
-      "argvMustContain": ["--no-confirm"]
+      "argvMustContain": ["--no-confirm", "--confirm-timeout"]
     },
     {
       "id": "fleet-spawn-metadata-channel-model-cwd",
@@ -655,13 +823,19 @@
       "id": "fleet-spawn-sandbox-root-mount",
       "group": "fleet-sandbox",
       "expect": "sentinel",
-      "argvMustContain": ["--sandbox"]
+      "argvMustContain": [
+        "--sandbox",
+        "--sandbox-provider",
+        "daytona",
+        "--sandbox-snapshot",
+        "--sandbox-snapshot-manifest-sha256"
+      ]
     },
     {
       "id": "fleet-spawn-sandbox-scoped-mount",
       "group": "fleet-sandbox",
       "expect": "sentinel",
-      "argvMustContain": ["--sandbox", "--sandbox-relayfile-path"]
+      "argvMustContain": ["--sandbox", "--sandbox-name", "--sandbox-relayfile-path"]
     },
     {
       "id": "fleet-spawn-sandbox-no-mount",
@@ -696,7 +870,8 @@
       "id": "fleet-serve-migration",
       "group": "fleet",
       "expect": "expected-failure",
-      "mustContain": "node up"
+      "mustContain": "node up",
+      "argvMustContain": ["tests/relayflows/cleanroom/fleet-daytona.matrix.json"]
     },
 
     { "id": "post-ready-steer-a", "group": "injection", "expect": "sentinel" },
@@ -854,7 +1029,7 @@
       "group": "node-agent",
       "expect": "sentinel",
       "allowTimeout": true,
-      "argvMustContain": ["--mode", "view"]
+      "argvMustContain": ["--runtime", "--model", "--task", "--channels", "--cwd", "--mode"]
     },
     {
       "id": "node-agent-set-model",
@@ -901,7 +1076,7 @@
       "group": "node-agent",
       "expect": "stream",
       "allowTimeout": true,
-      "argvMustContain": ["--json"]
+      "argvMustContain": ["--node", "--workspace-key", "--reasoning", "--diagnostics", "--json"]
     },
     {
       "id": "node-agent-attach-drive-json",
@@ -917,9 +1092,24 @@
       "allowTimeout": true,
       "argvMustContain": ["--json"]
     },
-    { "id": "node-agent-message-hold", "group": "node-agent", "expect": "success" },
-    { "id": "node-agent-message-flush", "group": "node-agent", "expect": "success" },
-    { "id": "node-agent-message-auto", "group": "node-agent", "expect": "success" },
+    {
+      "id": "node-agent-message-hold",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-flush",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-auto",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--node", "--workspace-key"]
+    },
     { "id": "node-agent-release", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-same-name-reclaim", "group": "node-agent", "expect": "sentinel" },
 

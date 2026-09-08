@@ -32,6 +32,31 @@ const CANDIDATE_SURFACES = new Set([
   'daytona-candidate',
   'operator-and-daytona-candidate',
 ]);
+const OPTION_COVERAGE_STATUSES = new Set(['supported', 'unsupported', 'skipped']);
+const MATERIAL_OPTION_PATHS = {
+  'fleet spawn': [
+    '--sandbox-provider',
+    '--sandbox-name',
+    '--sandbox-snapshot',
+    '--sandbox-snapshot-manifest-sha256',
+    '--confirm-timeout',
+  ],
+  'fleet serve': ['file'],
+  'node agent new': ['--runtime', '--model', '--task', '--channels', '--cwd', '--mode', '--release'],
+  'node agent attach': [
+    '--broker-url',
+    '--api-key',
+    '--state-dir',
+    '--ssh-host',
+    '--join-ticket',
+    '--workspace-key',
+    '--reasoning',
+    '--diagnostics',
+  ],
+  'node agent message hold': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
+  'node agent message flush': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
+  'node agent message auto': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
+};
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
 const KNOWN_SECRET_ENV = [
   'RELAY_AGENT_TOKEN',
@@ -225,6 +250,7 @@ export function compareDaytonaSandboxBaseline(baseline, finalSandboxes) {
 }
 
 export function buildFleetSpawnArgs(options, qualification = {}) {
+  const sandboxProvider = options.sandboxProvider ?? 'daytona';
   return [
     'fleet',
     'spawn',
@@ -234,8 +260,8 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
     '--task',
     options.task,
     ...(options.node ? [options.nodeFlag ?? '--node', options.node] : []),
-    ...(options.sandbox ? ['--sandbox', '--sandbox-provider', 'daytona'] : []),
-    ...(options.sandbox && qualification.releaseQualificationRequested
+    ...(options.sandbox ? ['--sandbox', '--sandbox-provider', sandboxProvider] : []),
+    ...(options.sandbox && sandboxProvider === 'daytona' && qualification.releaseQualificationRequested
       ? [
           '--sandbox-snapshot',
           qualification.expectedSnapshotId,
@@ -939,6 +965,176 @@ export function validateFleetAcceptance(matrix) {
   return acceptance;
 }
 
+export function validateFleetOptionCoverage(matrix, inventory) {
+  const coverage = matrix.optionCoverage;
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
+    throw new Error('matrix.optionCoverage is required');
+  }
+  for (const [commandPath, options] of Object.entries(MATERIAL_OPTION_PATHS)) {
+    const command = inventory.commands.find(({ path: candidate }) => candidate === commandPath);
+    if (!command?.leaf) throw new Error(`option coverage references missing leaf ${commandPath}`);
+    const entries = coverage[commandPath];
+    if (!Array.isArray(entries)) throw new Error(`optionCoverage.${commandPath} is required`);
+    const expected = new Set(options);
+    const seen = new Set();
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || typeof entry.option !== 'string') {
+        throw new Error(`optionCoverage.${commandPath} contains an invalid entry`);
+      }
+      if (!expected.has(entry.option) || seen.has(entry.option)) {
+        throw new Error(`optionCoverage.${commandPath} has an unexpected or duplicate option`);
+      }
+      seen.add(entry.option);
+      if (!OPTION_COVERAGE_STATUSES.has(entry.status)) {
+        throw new Error(`optionCoverage.${commandPath}.${entry.option} has an invalid status`);
+      }
+      if (entry.status === 'supported') {
+        const operation = matrix.operations.find(({ id }) => id === entry.operationId);
+        if (typeof entry.operationId !== 'string' || !operation) {
+          throw new Error(`supported option ${commandPath} ${entry.option} must name an operation`);
+        }
+        if (!(matrix.commandSurface[commandPath] ?? []).includes(entry.operationId)) {
+          throw new Error(
+            `supported option ${commandPath} ${entry.option} must use an operation on that leaf`
+          );
+        }
+        const coverageToken = entry.argvToken ?? entry.option;
+        if (!(operation.argvMustContain ?? []).includes(coverageToken)) {
+          throw new Error(
+            `supported option ${commandPath} ${entry.option} is not required by operation ${entry.operationId}`
+          );
+        }
+      } else if (typeof entry.reason !== 'string' || !entry.reason.trim()) {
+        throw new Error(`non-supported option ${commandPath} ${entry.option} requires a reason`);
+      }
+      if (entry.variants !== undefined) {
+        if (!Array.isArray(entry.variants) || entry.variants.length === 0) {
+          throw new Error(`option ${commandPath} ${entry.option} variants must be non-empty`);
+        }
+        const variantNames = new Set();
+        for (const variant of entry.variants) {
+          if (!variant || typeof variant.value !== 'string' || variantNames.has(variant.value)) {
+            throw new Error(`option ${commandPath} ${entry.option} has invalid variants`);
+          }
+          variantNames.add(variant.value);
+          if (!OPTION_COVERAGE_STATUSES.has(variant.status)) {
+            throw new Error(`option ${commandPath} ${entry.option} variant has invalid status`);
+          }
+          if (
+            variant.status !== 'supported' &&
+            (typeof variant.reason !== 'string' || !variant.reason.trim())
+          ) {
+            throw new Error(`non-supported variant ${commandPath} ${entry.option} requires a reason`);
+          }
+        }
+      }
+    }
+    if (seen.size !== expected.size)
+      throw new Error(`optionCoverage.${commandPath} must cover every material option`);
+  }
+  return coverage;
+}
+
+export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspaceAgents, processAgents }) {
+  const inventoriesPresent =
+    Array.isArray(brokerNodes) &&
+    Array.isArray(brokerAgents) &&
+    Array.isArray(workspaceAgents) &&
+    Array.isArray(processAgents);
+  const nodeList = Array.isArray(brokerNodes) ? brokerNodes : [];
+  const brokerAgentList = Array.isArray(brokerAgents) ? brokerAgents : [];
+  const workspaceAgentList = Array.isArray(workspaceAgents) ? workspaceAgents : [];
+  const processAgentList = Array.isArray(processAgents) ? processAgents : [];
+  const nodeRecordsValid = nodeList.every(
+    (node) => node && typeof node.name === 'string' && node.name && typeof node.status === 'string'
+  );
+  const brokerAgentRecordsValid = brokerAgentList.every(
+    (agent) => agent && typeof agent.name === 'string' && agent.name && typeof agent.node === 'string'
+  );
+  const workspaceAgentRecordsValid = workspaceAgentList.every((name) => typeof name === 'string' && name);
+  const processAgentRecordsValid = processAgentList.every(
+    (agent) => agent && typeof agent.name === 'string' && agent.name
+  );
+  const onlineNodes = nodeList.filter((node) => node?.status === 'online' || node?.live === true);
+  const pass =
+    inventoriesPresent &&
+    nodeRecordsValid &&
+    brokerAgentRecordsValid &&
+    workspaceAgentRecordsValid &&
+    processAgentRecordsValid &&
+    onlineNodes.every((node) => node.handlersLive === true) &&
+    brokerAgentList.length === 0 &&
+    workspaceAgentList.length === 0 &&
+    processAgentList.length === 0;
+  return {
+    pass,
+    inventoriesPresent,
+    recordsValid:
+      nodeRecordsValid && brokerAgentRecordsValid && workspaceAgentRecordsValid && processAgentRecordsValid,
+    brokerNodeCount: nodeList.length,
+    onlineNodeCount: onlineNodes.length,
+    brokerAgentNames: brokerAgentList
+      .map((agent) => agent?.name)
+      .filter(Boolean)
+      .sort(),
+    workspaceAgentNames: workspaceAgentList
+      .map((agent) => agent?.name ?? agent)
+      .filter(Boolean)
+      .sort(),
+    processAgentNames: processAgentList
+      .map((agent) => agent?.name)
+      .filter(Boolean)
+      .sort(),
+  };
+}
+
+function validateOperationOptionCoverage(operation, matrix) {
+  for (const entries of Object.values(matrix.optionCoverage ?? {})) {
+    for (const entry of entries) {
+      if (entry?.status !== 'supported' || entry.operationId !== operation.id) continue;
+      const token = entry.argvToken ?? entry.option;
+      const index = operation.argv.indexOf(token);
+      if (index < 0) {
+        throw new Error(`operation ${operation.id} did not execute supported option ${entry.option}`);
+      }
+      if (entry.option.startsWith('--') && entry.takesValue !== false) {
+        const value = operation.argv[index + 1];
+        if (typeof value !== 'string' || !value || value.startsWith('--')) {
+          throw new Error(`operation ${operation.id} did not execute a value for ${entry.option}`);
+        }
+      }
+    }
+  }
+}
+
+export function validateFleetNodesPayload(payload) {
+  if (!payload || !Array.isArray(payload.nodes)) throw new Error('Fleet nodes payload must contain nodes[]');
+  for (const node of payload.nodes) {
+    if (!node || typeof node.name !== 'string' || !node.name || typeof node.status !== 'string') {
+      throw new Error('Fleet nodes payload contains an invalid node record');
+    }
+    if (
+      node.activeAgents !== undefined &&
+      (!Number.isSafeInteger(node.activeAgents) || node.activeAgents < 0)
+    ) {
+      throw new Error('Fleet nodes payload contains an invalid activeAgents count');
+    }
+  }
+  return payload;
+}
+
+export function validateFleetStatusPayload(payload, expectedNodeName) {
+  if (!payload || typeof payload !== 'object' || !payload.broker || !payload.node) {
+    throw new Error('Fleet status payload must contain broker and node objects');
+  }
+  if (payload.broker.running !== true || payload.node.available !== true) {
+    throw new Error('Fleet status payload does not report a running broker and available node');
+  }
+  const nodeName = payload.node.name ?? payload.node.nodeName;
+  if (nodeName !== expectedNodeName) throw new Error('Fleet status payload reports the wrong node');
+  return payload;
+}
+
 export function validateFleetCommandCoverage(matrix, inventory) {
   validateFleetMatrix(matrix);
   validateFleetCliInventory(inventory);
@@ -976,6 +1172,7 @@ export function validateFleetCommandCoverage(matrix, inventory) {
   ) {
     throw new Error('hidden fleet serve migration surface is not exactly covered');
   }
+  validateFleetOptionCoverage(matrix, inventory);
   return matrix;
 }
 
@@ -1010,6 +1207,7 @@ export function validateOperationArgvContract(operation, definition, matrix) {
       throw new Error(`operation ${operation.id} argv is missing required token ${token}`);
     }
   }
+  validateOperationOptionCoverage(operation, matrix);
   return operation;
 }
 
@@ -2923,9 +3121,7 @@ class FleetBoard {
       throw new Error('fleet nodes --all JSON exceeded the capture bound');
     }
     const payload = tryParseJson(result._rawStdout);
-    if (!payload || !Array.isArray(payload.nodes)) {
-      throw new Error('fleet nodes --all returned invalid JSON');
-    }
+    validateFleetNodesPayload(payload);
     return payload.nodes;
   }
 
@@ -4566,6 +4762,9 @@ class FleetBoard {
     await this.directNodeSpawn('node-agent-new-view', newNode, 'codex', {
       commandName: 'new',
       mode: 'view',
+      runtime: 'pty',
+      channels: ['general'],
+      cwd: '/home/daytona',
     });
     await this.releaseSupport(`node-agent-new-view-${this.short}`, newNode, 'node');
   }
@@ -4622,26 +4821,29 @@ class FleetBoard {
       await this.record(id, async () => {
         const inputMarker = `FLEET_ATTACH_INPUT_${mode.toUpperCase()}_${this.short.toUpperCase()}`;
         const injectionMarker = `FLEET_ATTACH_INJECTION_${this.short.toUpperCase()}`;
-        const attachPromise = execute(
-          this.cliArgv(
-            'node',
-            'agent',
-            'attach',
-            controlName,
-            '--node',
-            node.nodeName,
-            '--mode',
-            mode,
-            '--json'
-          ),
-          {
-            timeoutMs: 20_000,
-            stdin: [
-              { data: `${inputMarker}\n`, delayMs: 2_500, end: false },
-              { data: '\x03', delayMs: 7_000, end: true },
-            ],
-          }
+        const workspaceKey = process.env.RELAY_WORKSPACE_KEY;
+        const attachArgv = this.cliArgv(
+          'node',
+          'agent',
+          'attach',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey,
+          '--mode',
+          mode,
+          '--json',
+          ...(mode === 'view' ? ['--reasoning', '--diagnostics'] : [])
         );
+        const attachPromise = execute(attachArgv, {
+          timeoutMs: 20_000,
+          extraSecrets: [workspaceKey],
+          stdin: [
+            { data: `${inputMarker}\n`, delayMs: 2_500, end: false },
+            { data: '\x03', delayMs: 7_000, end: true },
+          ],
+        });
         await new Promise((resolve) => setTimeout(resolve, 1_500));
         const injection =
           mode === 'passthrough' && this.controller
@@ -4724,11 +4926,22 @@ class FleetBoard {
       return { result, messageId: findStringDeep(payload, ['messageId', 'id']) };
     };
     const holdSentinel = `NODE_AGENT_HOLD_FLUSH_${this.short.toUpperCase()}_READY`;
+    const workspaceKey = process.env.RELAY_WORKSPACE_KEY;
     let heldMessageId;
     await this.record('node-agent-message-hold', async () => {
       const result = await execute(
-        this.cliArgv('node', 'agent', 'message', 'hold', controlName, '--node', node.nodeName),
-        { timeoutMs: 210_000 }
+        this.cliArgv(
+          'node',
+          'agent',
+          'message',
+          'hold',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey
+        ),
+        { timeoutMs: 210_000, extraSecrets: [workspaceKey] }
       );
       const held = await readDeliveryState('manual_flush', false);
       const sent = await sendControlMessage(holdSentinel);
@@ -4750,8 +4963,18 @@ class FleetBoard {
     });
     await this.record('node-agent-message-flush', async () => {
       const result = await execute(
-        this.cliArgv('node', 'agent', 'message', 'flush', controlName, '--node', node.nodeName),
-        { timeoutMs: 210_000 }
+        this.cliArgv(
+          'node',
+          'agent',
+          'message',
+          'flush',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey
+        ),
+        { timeoutMs: 210_000, extraSecrets: [workspaceKey] }
       );
       const observed = await this.waitForSentinel(holdSentinel, 90_000, controlName);
       const drained = await readDeliveryState('manual_flush', false);
@@ -4775,8 +4998,18 @@ class FleetBoard {
     const autoSentinel = `NODE_AGENT_AUTO_${this.short.toUpperCase()}_READY`;
     await this.record('node-agent-message-auto', async () => {
       const result = await execute(
-        this.cliArgv('node', 'agent', 'message', 'auto', controlName, '--node', node.nodeName),
-        { timeoutMs: 210_000 }
+        this.cliArgv(
+          'node',
+          'agent',
+          'message',
+          'auto',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey
+        ),
+        { timeoutMs: 210_000, extraSecrets: [workspaceKey] }
       );
       const automatic = await readDeliveryState('auto_inject', false);
       const sent = await sendControlMessage(autoSentinel);
@@ -5211,10 +5444,13 @@ class FleetBoard {
         this.inside(statusNode.id, 'fleet', 'status'),
         (result) => {
           const payload = tryParseJson(result._rawStdout);
-          const pass =
-            payload?.broker?.running === true &&
-            payload?.node?.available === true &&
-            (payload.node.name === statusNode.nodeName || payload.node.nodeName === statusNode.nodeName);
+          let pass = false;
+          try {
+            validateFleetStatusPayload(payload, statusNode.nodeName);
+            pass = true;
+          } catch {
+            pass = false;
+          }
           return {
             pass,
             summary: `brokerRunning=${payload?.broker?.running} nodeAvailable=${payload?.node?.available} exactNode=${statusNode.nodeName}`,
@@ -5224,7 +5460,10 @@ class FleetBoard {
       );
     }
     await this.record('fleet-serve-migration', async () => {
-      const result = await execute(this.cliArgv('fleet', 'serve', '--old-flag'), { timeoutMs: 15_000 });
+      const result = await execute(
+        this.cliArgv('fleet', 'serve', 'tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
+        { timeoutMs: 15_000 }
+      );
       const guidance = `${result._rawStdout}${result._rawStderr}`.includes('node up');
       return {
         ...stripPrivateExecution(result),
@@ -5546,16 +5785,44 @@ class FleetBoard {
       ? (this.baseline?.agentNameHashes ?? []).filter((hash) => !finalAgentNameHashes.has(hash))
       : ['agent-list-reconciliation-failed'];
     const baselinePreserved = sandboxBaseline.restored && missingBaselineAgentNameHashes.length === 0;
+    const finalBoardNodes = await this.listAllFleetNodes().catch(() => null);
+    const finalBrokerAgents = await execute(this.cliArgv('fleet', 'agent', 'list', '--all', '--json'), {
+      timeoutMs: 60_000,
+      maxCaptureBytes: 16 * 1024 * 1024,
+    })
+      .then((result) => {
+        if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated)
+          return null;
+        const payload = tryParseJson(result._rawStdout);
+        return Array.isArray(payload?.perNode) ? payload.perNode : null;
+      })
+      .catch(() => null);
+    const finalProcessAgents = [];
+    for (const node of finalBoardNodes ?? []) {
+      try {
+        finalProcessAgents.push(...(await this.listNodeAgents(node)));
+      } catch {
+        finalProcessAgents.push({ name: `unreadable:${node?.name ?? 'unknown'}` });
+      }
+    }
+    const finalCleanup = validateFleetFinalCleanup({
+      brokerNodes: finalBoardNodes,
+      brokerAgents: finalBrokerAgents,
+      workspaceAgents: finalAgentNames ? [...finalAgentNames] : null,
+      processAgents: finalProcessAgents,
+    });
+    this.evidence.cleanup.finalBoard = finalCleanup;
     await this.derived('daytona-baseline-restored', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
-      exitCode: exactPrefixLeaks.length === 0 && baselinePreserved ? 0 : 1,
+      exitCode: exactPrefixLeaks.length === 0 && baselinePreserved && finalCleanup.pass ? 0 : 1,
       summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
     });
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&
       leakedSandboxIds.length === 0 &&
       exactPrefixLeaks.length === 0 &&
-      baselinePreserved
+      baselinePreserved &&
+      finalCleanup.pass
         ? 'pass'
         : 'fail';
     this.evidence.cleanup.finishedAt = new Date().toISOString();

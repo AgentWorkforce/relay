@@ -32,6 +32,10 @@ import {
   validateFleetEvidence,
   validateFleetIdentityReconciliation,
   validateFleetCommandCoverage,
+  validateFleetFinalCleanup,
+  validateFleetNodesPayload,
+  validateFleetOptionCoverage,
+  validateFleetStatusPayload,
   validateFleetAcceptance,
   validateFleetMatrix,
   validateOperationArgvContract,
@@ -193,6 +197,25 @@ function operationRecord(operation: {
     nodeProvider !== undefined ||
     (operation.group === 'node-agent-spawn' && operation.expect !== 'sentinel-and-exit');
   const derivedObservation = /^initial-task-sentinel-[ab]$/.test(operation.id);
+  const argv = commandLeaf
+    ? ['agent-relay', ...commandLeaf.split(' '), ...(operation.argvMustContain ?? [])]
+    : ['daytona', 'semantic-proof', operation.id];
+  for (const entries of Object.values(fixtureMatrix.optionCoverage ?? {})) {
+    for (const entry of entries) {
+      if (
+        entry.status !== 'supported' ||
+        entry.operationId !== operation.id ||
+        !entry.option.startsWith('--') ||
+        entry.takesValue === false
+      ) {
+        continue;
+      }
+      const index = argv.indexOf(entry.argvToken ?? entry.option);
+      if (index >= 0 && (argv[index + 1] === undefined || argv[index + 1].startsWith('--'))) {
+        argv.splice(index + 1, 0, 'fixture-value');
+      }
+    }
+  }
   return {
     ...operation,
     acceptanceProfile: fixtureMatrix.acceptance.operationProfiles[operation.id],
@@ -202,9 +225,7 @@ function operationRecord(operation: {
     monotonicStartNs: '1000',
     monotonicEndNs: '2000',
     durationMs: 0.001,
-    argv: commandLeaf
-      ? ['agent-relay', ...commandLeaf.split(' '), ...(operation.argvMustContain ?? [])]
-      : ['daytona', 'semantic-proof', operation.id],
+    argv,
     exitCode: operation.expect === 'expected-failure' ? 1 : 0,
     timedOut: false,
     stdoutBytes: 0,
@@ -333,6 +354,16 @@ let fixtureMatrix: {
     operationProfiles: Record<string, string>;
   };
   commandSurface: Record<string, string[]>;
+  optionCoverage: Record<
+    string,
+    Array<{
+      option: string;
+      argvToken?: string;
+      status: string;
+      operationId?: string;
+      takesValue?: boolean;
+    }>
+  >;
   operations: Array<{
     id: string;
     group: string;
@@ -350,6 +381,16 @@ function completeEvidence(matrix: {
     operationProfiles: Record<string, string>;
   };
   commandSurface: Record<string, string[]>;
+  optionCoverage: Record<
+    string,
+    Array<{
+      option: string;
+      argvToken?: string;
+      status: string;
+      operationId?: string;
+      takesValue?: boolean;
+    }>
+  >;
   operations: Array<{
     id: string;
     group: string;
@@ -660,6 +701,99 @@ describe('complete Daytona Fleet board', () => {
     ).toMatchObject({ expect: 'success' });
     const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
     expect(runner).toContain("['claude', 'opencode', 'pi', 'deepagents']");
+    expect(Object.keys(matrix.optionCoverage)).toEqual(
+      expect.arrayContaining([
+        'fleet spawn',
+        'fleet serve',
+        'node agent new',
+        'node agent attach',
+        'node agent message hold',
+        'node agent message flush',
+        'node agent message auto',
+      ])
+    );
+  });
+
+  it('enforces material option coverage with explicit unsupported and skipped contracts', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const inventory = await readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(
+      JSON.parse
+    );
+    expect(() => validateFleetOptionCoverage(matrix, inventory)).not.toThrow();
+    const missing = structuredClone(matrix);
+    missing.optionCoverage['node agent attach'] = missing.optionCoverage['node agent attach'].filter(
+      ({ option }: { option: string }) => option !== '--ssh-host'
+    );
+    expect(() => validateFleetOptionCoverage(missing, inventory)).toThrow(/every material option/);
+    const dishonest = structuredClone(matrix);
+    dishonest.optionCoverage['node agent attach'].find(
+      ({ option }: { option: string }) => option === '--ssh-host'
+    ).status = 'unsupported';
+    delete dishonest.optionCoverage['node agent attach'].find(
+      ({ option }: { option: string }) => option === '--ssh-host'
+    ).reason;
+    expect(() => validateFleetOptionCoverage(dishonest, inventory)).toThrow(/requires a reason/);
+    const unexecuted = structuredClone(matrix);
+    unexecuted.operations.find(({ id }: { id: string }) => id === 'node-agent-new-view').argvMustContain = [
+      '--mode',
+      'view',
+    ];
+    expect(() => validateFleetOptionCoverage(unexecuted, inventory)).toThrow(
+      /supported option node agent new --runtime is not required/
+    );
+
+    const newDefinition = matrix.operations.find(({ id }: { id: string }) => id === 'node-agent-new-view');
+    expect(() =>
+      validateOperationArgvContract(
+        {
+          id: 'node-agent-new-view',
+          argv: ['agent-relay', 'node', 'agent', 'new', 'codex', '--mode', 'view'],
+        },
+        newDefinition,
+        matrix
+      )
+    ).toThrow(/missing required token --runtime|did not execute supported option --runtime/);
+  });
+
+  it('fails closed on malformed list/status payloads and final board leaks', () => {
+    expect(() =>
+      validateFleetNodesPayload({ nodes: [{ name: 'node-a', status: 'online', activeAgents: -1 }] })
+    ).toThrow(/activeAgents/);
+    expect(() =>
+      validateFleetStatusPayload({ broker: { running: true }, node: { available: true } }, 'node-a')
+    ).toThrow(/wrong node/);
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
+        brokerAgents: [],
+        workspaceAgents: [],
+        processAgents: [],
+      })
+    ).toMatchObject({ pass: true, brokerNodeCount: 1 });
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
+        brokerAgents: [{ name: 'leaked' }],
+        workspaceAgents: [],
+        processAgents: [],
+      }).pass
+    ).toBe(false);
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: null,
+        brokerAgents: null,
+        workspaceAgents: [],
+        processAgents: [],
+      }).pass
+    ).toBe(false);
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'offline' }],
+        brokerAgents: null,
+        workspaceAgents: [],
+        processAgents: [],
+      }).pass
+    ).toBe(false);
   });
 
   it('binds every operation record to an executable acceptance profile', async () => {
@@ -787,6 +921,15 @@ describe('complete Daytona Fleet board', () => {
         mountPaths: ['/tests/**'],
       })
     );
+    expect(
+      buildFleetSpawnArgs({
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        sandbox: true,
+        sandboxProvider: 'e2b',
+      })
+    ).toEqual(expect.arrayContaining(['--sandbox', '--sandbox-provider', 'e2b']));
     validate(
       'fleet-spawn-provider-claude',
       buildFleetSpawnArgs({ provider: 'claude', agentName: 'worker', task: 'task', node: 'node-a' })
