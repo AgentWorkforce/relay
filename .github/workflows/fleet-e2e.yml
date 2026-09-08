@@ -60,14 +60,14 @@ jobs:
 
       # The relaycast engine lives in a separate repo. This E2E drives the
       # node-provider model and heartbeats whose load may be unreported for
-      # unbounded providers. Keep the pin on a released engine that supports the
-      # complete wire shape: older engines reject an omitted/null `load` and
-      # silently stop applying active-agent heartbeat updates (relaycast#307).
+      # unbounded providers. This companion PR candidate supplies isolated
+      # registration, acknowledged cleanup and node-owned spawn status reads.
+      # It is a test pin, not a released or deployed product dependency.
       - name: Checkout relaycast engine (node-provider model)
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: eefbcc913805abd605255489d304dd72b70d82e7 # relaycast#387: isolated registration + acknowledged owned cleanup
+          ref: eb2efbd528827a02e57601e27d4e002b99150d3e # relaycast#387: verified served-node spawn completion
           path: relaycast-engine
 
       - name: Setup Node.js

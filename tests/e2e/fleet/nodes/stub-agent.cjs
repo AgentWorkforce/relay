@@ -29,6 +29,7 @@ function recordBriefNonce(nonce) {
       nonce,
       agent: process.env.RELAY_AGENT_NAME ?? null,
       node: process.env.RELAY_E2E_NODE_NAME ?? null,
+      args: process.argv.slice(2),
       observedAt: new Date().toISOString(),
     })
   );
@@ -68,6 +69,12 @@ try {
 setTimeout(() => {
   ready = true;
   process.stdout.write('->pty:ready\n');
+  // The native Codex-shaped fixture models the boot marker and input prompt
+  // required by the broker when it injects the MCP configuration. No MCP/AI
+  // service is started by this stub; the assertion covers launch arguments.
+  if (path.basename(process.argv[1]) === 'codex') {
+    process.stdout.write('booting mcp server: agent-relay\n❯ ');
+  }
 }, readyDelayMs);
 
 setInterval(() => {}, 1 << 30);

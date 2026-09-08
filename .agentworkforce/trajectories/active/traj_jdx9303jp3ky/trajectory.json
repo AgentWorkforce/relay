@@ -91,6 +91,30 @@
           "tags": [
             "confidence:0.85"
           ]
+        },
+        {
+          "ts": 1788887953597,
+          "type": "reflection",
+          "content": "Review4 repairs now pass 1343 Rust tests and full JavaScript validation plus nine optional Bun cases. Owned cleanup no longer waits on remote ACKs inside the runtime; a parent-behavior red control proves the old stall. Token hashes and generations remain guarded through retries. Native startup rehearsal passes fifteen checks. Committed portable ten-minute proof and fresh review5 remain pending; all intended-environment gates still require coordinated release and capacity clearance.",
+          "raw": {
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.86"
+          ]
+        },
+        {
+          "ts": 1788890747648,
+          "type": "decision",
+          "content": "Wait for delegated broker readiness in served fleet actions: Wait for delegated broker readiness in served fleet actions",
+          "raw": {
+            "question": "Wait for delegated broker readiness in served fleet actions",
+            "chosen": "Wait for delegated broker readiness in served fleet actions",
+            "alternatives": [],
+            "reasoning": "The native fleet matrix exposed placement-only false success hiding rejected launches. Keep SDK placement semantics and add a bounded served-provider wait using least-privilege node-owned invocation reads; use a genuine Codex-shaped native resume fixture and confirm both launch and release."
+          },
+          "significance": "high"
         }
       ]
     }

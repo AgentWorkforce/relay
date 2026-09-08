@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
 - Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
 - Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
+- Served fleet spawn actions wait for the broker's confirmed readiness and propagate terminal launch failures instead of completing at placement.
 
 ### Changed
 
