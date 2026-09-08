@@ -57,7 +57,12 @@ describe('subscription recipient launch', () => {
   });
   it('rejects a nonexistent cwd before connecting or registering a worker', async () => {
     mocks.connect.mockClear();
-    await expect(launchSubscriptionRecipient({ ...input, cwd: `/private/tmp/missing-github-demo-cwd-${process.pid}/child` })).rejects.toThrow('Invalid recipient cwd');
+    await expect(
+      launchSubscriptionRecipient({
+        ...input,
+        cwd: `/private/tmp/missing-github-demo-cwd-${process.pid}/child`,
+      })
+    ).rejects.toThrow('Invalid recipient cwd');
     expect(mocks.connect).not.toHaveBeenCalled();
     expect(client.spawnCli).not.toHaveBeenCalled();
   });

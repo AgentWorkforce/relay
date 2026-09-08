@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
 - MCP raw CLI spawns wait for harness readiness and report terminal startup errors.
 
-
 ## [11.10.4] - 2026-09-08
 
 ### Changed
