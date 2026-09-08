@@ -361,7 +361,7 @@ try {
     observation.ensureSandboxId === null &&
     observation.ensureWorkloadProfile === 'long-running-agent' &&
     observation.responseSandboxId === REPLAY_SANDBOX_ID &&
-    observation.responseProviderSandboxId === PROVIDER_SANDBOX_ID &&
+    observation.responseProviderSandboxId === null &&
     observation.responseProviderId === 'agent37' &&
     observation.responseNodeName === REPLAY_SANDBOX_NAME &&
     observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
@@ -393,7 +393,7 @@ try {
     outcome = 'absent';
     signature = 'long_running_profile_replay_identity_absent_agent37_attribution_preserved';
     details =
-      "fleet spawn --sandbox reached Cloud with the existing long-running profile and Cloud's agent37 response, but without a caller-declared sandbox identity; only the one-to-one replay identity is absent while provider attribution remains preserved.";
+      "fleet spawn --sandbox reached Cloud with the existing long-running profile and Cloud's agent37 response, but without a caller-declared sandbox identity; the one-to-one replay identity and separately observed providerSandboxId are absent while agent37 cleanup attribution remains preserved.";
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'long_running_profile_replay_identity_and_agent37_attribution_preserved';
