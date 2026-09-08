@@ -655,11 +655,12 @@ describe('Cloud dispatcher API key lifecycle', () => {
         [
           `process.stdout.write('x'.repeat(${captureLimit - 'rk_live_'.length}))`,
           "process.stdout.write('rk_')",
-          `setImmediate(() => process.stdout.write('live_' + ${JSON.stringify(boundaryCredential)} + ' tail'))`,
+          "setImmediate(() => process.stdout.write('live_' + process.env.BOUNDARY_CREDENTIAL + ' tail'))",
         ].join(';'),
       ],
       {
         echo: false,
+        env: { ...process.env, BOUNDARY_CREDENTIAL: boundaryCredential },
         maxCaptureBytes: captureLimit,
         maxLiveOutputBytes: 128,
         transformChunk: (text, stream, final) => {
