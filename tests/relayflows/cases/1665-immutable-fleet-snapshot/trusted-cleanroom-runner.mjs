@@ -1,3 +1,4 @@
+// Auxiliary red/green assertion invoked by the single PR #1665 RelayFlow case.
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -175,7 +176,7 @@ if (present.every((value) => !value)) {
   };
   const artifactPagesPath = path.join(cliRoot, 'artifact-pages.json');
   const selectionPath = path.join(cliRoot, 'selection.json');
-  await writeFile(artifactPagesPath, JSON.stringify({ total_count: 1, artifacts: [artifact] }));
+  await writeFile(artifactPagesPath, JSON.stringify([{ total_count: 1, artifacts: [artifact] }]));
   runRequestCli([
     'select-artifact',
     '--context',
@@ -191,7 +192,7 @@ if (present.every((value) => !value)) {
   if (selection.artifactId !== artifact.id) throw new Error('CLI did not select the exact request artifact.');
   await writeFile(
     artifactPagesPath,
-    JSON.stringify({ total_count: 1, artifacts: [{ ...artifact, workflow_run: { id: 902 } }] })
+    JSON.stringify([{ total_count: 1, artifacts: [{ ...artifact, workflow_run: { id: 902 } }] }])
   );
   assertThrows(
     () =>

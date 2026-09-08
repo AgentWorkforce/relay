@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseStrictWorkflowYaml } from '../relayflows/cases/1682-trusted-cleanroom-runner/strict-yaml-subset.mjs';
+import { parseStrictWorkflowYaml } from '../relayflows/cases/1665-immutable-fleet-snapshot/strict-yaml-subset.mjs';
 
 describe('hermetic RelayFlow workflow YAML parser', () => {
   it('parses mappings, sequences, flow needs, literal commands, and pinned-action comments', () => {

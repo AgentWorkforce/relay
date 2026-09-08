@@ -225,6 +225,49 @@ process.once('SIGTERM', () => server.close(() => process.exit(0)));
 
 let server;
 try {
+  const trustedCleanroomResultPath = path.join(probeDir, 'trusted-cleanroom-result.json');
+  const trustedCleanroomRunnerPath = path.join(
+    harnessDir,
+    'tests/relayflows/cases/1665-immutable-fleet-snapshot/trusted-cleanroom-runner.mjs'
+  );
+  const trustedCleanroomEnv = {
+    ...buildEnvironment(),
+    RELAY_PR_PROOF_TARGET_DIR: targetDir,
+    RELAY_PR_PROOF_HARNESS_DIR: harnessDir,
+    RELAY_PR_PROOF_RESULT_PATH: trustedCleanroomResultPath,
+    RELAY_PR_PROOF_ARM: arm,
+  };
+  for (const name of ['RELAY_PR_PROOF_BASE_SHA', 'RELAY_PR_PROOF_HEAD_SHA']) {
+    if (process.env[name]) trustedCleanroomEnv[name] = process.env[name];
+  }
+  run(
+    process.execPath,
+    [trustedCleanroomRunnerPath],
+    harnessDir,
+    'trusted cleanroom runner proof',
+    trustedCleanroomEnv,
+    60_000
+  );
+  const trustedCleanroomObservation = JSON.parse(await readFile(trustedCleanroomResultPath, 'utf8'));
+  const expectedTrustedCleanroom =
+    arm === 'base'
+      ? { outcome: 'bug', signature: 'trusted_cleanroom_runner_missing' }
+      : {
+          outcome: 'fixed',
+          signature: 'trusted_cleanroom_rejects_unapproved_ref_execution',
+        };
+  if (
+    trustedCleanroomObservation?.version !== 1 ||
+    trustedCleanroomObservation?.caseId !== '1682-trusted-cleanroom-runner' ||
+    trustedCleanroomObservation?.arm !== arm ||
+    trustedCleanroomObservation?.outcome !== expectedTrustedCleanroom.outcome ||
+    trustedCleanroomObservation?.signature !== expectedTrustedCleanroom.signature
+  ) {
+    throw new Error(
+      `Unexpected trusted cleanroom observation: ${JSON.stringify(trustedCleanroomObservation)}.`
+    );
+  }
+
   await mkdir(cliHome, { recursive: true, mode: 0o700 });
   await writeFile(serverPath, serverSource, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   await writeFile(statePath, `${JSON.stringify({ requests: [] })}\n`, {
@@ -361,7 +404,7 @@ try {
     await writeObservation(
       'absent',
       'immutable_fleet_snapshot_selector_absent',
-      'The exact base production CLI rejected --sandbox-snapshot as an unknown option before contacting either Relaycast or Cloud.'
+      'The exact base production CLI rejected --sandbox-snapshot as an unknown option before contacting either Relaycast or Cloud; the base also lacks a trusted cleanroom runner that prevents candidate refs from becoming executable workflow code.'
     );
   } else {
     const mismatching = invokeCli(
@@ -456,7 +499,7 @@ try {
     await writeObservation(
       'fixed',
       'immutable_fleet_snapshot_bound_and_fail_closed',
-      'The exact head production CLI forwarded the Daytona snapshot and manifest digest, exposed the attested pair in successful spawn output, refused a mismatched Cloud attestation before dispatch, and deleted the rejected sandbox.'
+      'The exact head production CLI forwarded the Daytona snapshot and manifest digest, exposed the attested pair in successful spawn output, refused a mismatched Cloud attestation before dispatch, deleted the rejected sandbox, and independently proved that unapproved candidate refs cannot become executable cleanroom workflow code.'
     );
   }
 } finally {
