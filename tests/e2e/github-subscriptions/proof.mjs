@@ -2,6 +2,22 @@ import { createHash } from 'node:crypto';
 
 export const digest = (nonce) => createHash('sha256').update(nonce).digest('hex');
 export const noncePattern = /GHSUB_EVENT_NONCE=([a-f0-9]{32})\b/g;
+
+/** Standalone control writes exclude the atomic body+submit delivery itself. */
+export function standaloneControlsAfter(text, after) {
+  const cutoff = Date.parse(after);
+  if (!Number.isFinite(cutoff)) throw new Error('A recorded first idle boundary is required');
+  const controls = [];
+  for (const line of text.split('\n')) {
+    const marker = line.indexOf('writing terminal control input');
+    if (marker < 0) continue;
+    const timestamp = line.slice(0, marker).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z/)?.[0];
+    const control = line.slice(marker).match(/control=\[([0-9, ]*)\]/)?.[1];
+    if (!timestamp || control === undefined) throw new Error('Unrecognized standalone control-write log');
+    if (Date.parse(timestamp) >= cutoff) controls.push({ at: timestamp, control });
+  }
+  return controls;
+}
 export const claudeReceiverArgs = [
   '--strict-mcp-config',
   '--disallowedTools',

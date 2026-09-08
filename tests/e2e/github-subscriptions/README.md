@@ -122,4 +122,9 @@ Run only after the independent reviewer exits. Codex results do not establish
 Claude-specific behavior; neither provider's synthetic ingress proof establishes
 real GitHub delivery or actual-chief acceptance.
 
+The runner also audits standalone PTY control writes after the first idle boundary.
+Background Enter recovery invalidates no-poke evidence even if digest responses
+succeed. Missing control-write diagnostics fail the proof; initial startup input
+before the first idle boundary and the atomic body+submit event write are separate.
+
 Owned cleanup runs independently of the broker API loop. The name and generation remain reserved until confirmed deletion; failed attempts retry up to five times at five-second intervals. A generation-guarded release retries retained cleanup. API failures identify unconfirmed cleanup and its generation; they do not claim resources are gone. Shutdown waits up to one second for pending cleanup and logs any generation still requiring reconciliation.

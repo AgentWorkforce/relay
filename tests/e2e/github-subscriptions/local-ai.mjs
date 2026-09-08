@@ -35,7 +35,7 @@ if (existsSync(path.join(output, 'report.json')))
   throw new Error('Use a fresh output directory; prior evidence must remain intact');
 mkdirSync(output, { recursive: true });
 const { HarnessDriverClient } = await import(root + '/packages/harness-driver/dist/index.js');
-const { receiverTask, digest, claudeReceiverArgs } = await import(
+const { receiverTask, digest, claudeReceiverArgs, standaloneControlsAfter } = await import(
   root + '/tests/e2e/github-subscriptions/proof.mjs'
 );
 const { startServer } = await import(
@@ -345,7 +345,7 @@ try {
   actorId = identity.id;
   report.actor = { name, id: actorId, pid: ready.pid, generation: worker.generation };
   note(`Real ${receiverCli} started; awaiting initial idle`);
-  await idle(Date.now());
+  report.firstIdleAt = (await idle(Date.now())).observedAt;
   assert(
     !(await messages()).some((m) => m.agent_id === actorId && m.text?.includes(digest(stale.stimulus.nonce))),
     'replayed stale prejoin event'
@@ -515,9 +515,17 @@ try {
     const descriptor = openSync(full, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       assert(fstatSync(descriptor).isFile(), 'Owned actor diagnostic must be a regular file');
+      const actorLog = readFileSync(descriptor, 'utf8');
+      report.idleControlWrites = standaloneControlsAfter(actorLog, report.firstIdleAt);
+      if (report.idleControlWrites.length) {
+        report.idleControlAuditError =
+          'Standalone PTY control input occurred after initial idle; no-poke proof rejected';
+        report.pass = false;
+        process.exitCode = 1;
+      }
       diagnostic.push({
         file: path.relative(work, full),
-        tail: readFileSync(descriptor, 'utf8')
+        tail: actorLog
           .slice(-12000)
           .replace(/(?:rk_live_|at_live_|nt_live_|sk-ant-|sk-)[A-Za-z0-9_-]+/g, '[redacted]'),
       });
@@ -527,6 +535,8 @@ try {
     writeFileSync(path.join(output, 'diagnostics.json'), JSON.stringify(diagnostic, null, 2) + '\n');
   } catch (error) {
     report.diagnosticError = error.message;
+    report.pass = false;
+    process.exitCode = 1;
   }
   rmSync(work, { recursive: true, force: true });
   save();

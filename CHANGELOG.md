@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex subscription deliveries submit pasted input with a separate Enter write and stop background Enter recovery after acknowledgment, so handled events do not keep poking idle workers.
 - Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
 - Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
 - Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.

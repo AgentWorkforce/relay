@@ -1,6 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { correlate, digest, semanticMatches, hasContinuousCoverage } from './proof.mjs';
+import {
+  correlate,
+  digest,
+  semanticMatches,
+  hasContinuousCoverage,
+  standaloneControlsAfter,
+} from './proof.mjs';
+
+test('no-poke audit catches background Enter after idle and excludes initial submission', () => {
+  const before =
+    '2026-09-08T20:27:25.677751Z DEBUG relay_pty::startup_input: writing terminal control input control=[13]';
+  const after =
+    '2026-09-08T20:28:35.404753Z DEBUG relay_pty::startup_input: writing terminal control input control=[13]';
+  assert.deepEqual(standaloneControlsAfter(before, '2026-09-08T20:28:29Z'), []);
+  assert.deepEqual(standaloneControlsAfter(before + '\n' + after, '2026-09-08T20:28:29Z'), [
+    { at: '2026-09-08T20:28:35.404753Z', control: '13' },
+  ]);
+  assert.throws(() => standaloneControlsAfter(after, undefined), /idle boundary/);
+  assert.throws(
+    () => standaloneControlsAfter('writing terminal control input unknown format', '2026-09-08T20:28:29Z'),
+    /Unrecognized/
+  );
+});
 
 const fixture = () => {
   const nonce = '0123456789abcdef0123456789abcdef';

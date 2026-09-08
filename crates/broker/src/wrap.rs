@@ -57,7 +57,7 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
-const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
+const PASTE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
 /// Pause between moving the trust-menu highlight and confirming it.
 const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
 /// Gap between successive trust-menu arrow keys, so a multi-row move repaints
@@ -68,7 +68,7 @@ const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
 // partially delivered and is unsafe to requeue blindly.
 const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Claude Code treats multiline input and a trailing Enter received in the
+/// Claude Code and Codex treat multiline input and a trailing Enter received in the
 /// same paste burst as editor content, leaving the task parked in its composer.
 /// Give its submit key a distinct, delayed PTY write. Other harnesses retain
 /// the established body-plus-Enter write shape.
@@ -82,10 +82,8 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
     // wrappers such as `company-claude` and `claude-code`. Match the same
     // Claude identity signal used by readiness and activity detection so a
     // wrapper cannot silently fall back to the broken body-plus-Enter burst.
-    basename
-        .to_ascii_lowercase()
-        .contains("claude")
-        .then_some(CLAUDE_INJECTION_SUBMIT_DELAY)
+    let lower = basename.to_ascii_lowercase();
+    (lower.contains("claude") || lower.contains("codex")).then_some(PASTE_INJECTION_SUBMIT_DELAY)
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -692,6 +690,20 @@ impl PtyAutoState {
         }
     }
 
+    /// Call only after the atomic body+submit write is acknowledged. Codex's
+    /// delayed submit is complete at that point; background Enter recovery
+    /// would poke an idle session long after it already consumed the event.
+    pub(crate) fn note_completed_injection(&mut self, cli: &str) {
+        let codex = cli
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(cli)
+            .to_ascii_lowercase()
+            .contains("codex");
+        self.last_injection_time = if codex { None } else { Some(Instant::now()) };
+        self.auto_enter_retry_count = 0;
+    }
+
     pub(crate) fn update_auto_suggestion(&mut self, text: &str) {
         if is_auto_suggestion(text) {
             self.auto_suggestion_visible = true;
@@ -892,6 +904,37 @@ while True:
                 .count(),
             1
         );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn acknowledged_codex_submit_never_arms_idle_enter_recovery() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        for cli in ["codex", "/usr/local/bin/Codex.EXE", "company-codex"] {
+            let mut state = PtyAutoState::new();
+            state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+            state.auto_enter_retry_count = 3;
+            state.note_completed_injection(cli);
+            state.last_output_time = Instant::now() - Duration::from_secs(120);
+            for _ in 0..6 {
+                state.try_auto_enter(&pty);
+            }
+            assert_eq!(
+                state.auto_enter_retry_count, 0,
+                "acknowledged Codex submit must never poke idle"
+            );
+            assert!(state.last_injection_time.is_none());
+        }
+        let mut legacy = PtyAutoState::new();
+        legacy.note_completed_injection("opencode");
+        assert!(
+            legacy.last_injection_time.is_some(),
+            "other harness recovery remains unchanged"
+        );
+        legacy.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+        legacy.last_output_time = Instant::now() - Duration::from_secs(120);
+        legacy.try_auto_enter(&pty);
+        assert_eq!(legacy.auto_enter_retry_count, 1);
         let _ = pty.shutdown();
     }
 
@@ -2066,8 +2109,7 @@ pub(crate) async fn run_wrap(
                             event_id = %pending.event_id,
                             "wrap: delivery injection confirmed"
                         );
-                        pty_auto.last_injection_time = Some(Instant::now());
-                        pty_auto.auto_enter_retry_count = 0;
+                        pty_auto.note_completed_injection(&resolved_cli);
                         let verification = PendingVerification {
                             delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
@@ -2329,7 +2371,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn only_claude_uses_a_delayed_submit_followup() {
+    fn paste_aware_harnesses_use_a_delayed_submit_followup() {
         let expected = Some(Duration::from_millis(250));
         assert_eq!(injection_submit_followup_delay("claude"), expected);
         assert_eq!(
@@ -2349,7 +2391,11 @@ mod tests {
             expected
         );
         assert_eq!(injection_submit_followup_delay("claude-code"), expected);
-        assert_eq!(injection_submit_followup_delay("codex"), None);
+        assert_eq!(injection_submit_followup_delay("codex"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/usr/local/bin/Codex.EXE"),
+            expected
+        );
         assert_eq!(injection_submit_followup_delay("opencode"), None);
     }
 

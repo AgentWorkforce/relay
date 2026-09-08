@@ -1716,7 +1716,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         // Submit the body and mandatory Enter as one FIFO
-                        // command and hold the ack. Claude Code needs Enter as
+                        // command and hold the ack. Claude Code and Codex need Enter as
                         // a distinct PTY write after its multiline paste
                         // boundary settles; relay-pty keeps that delayed
                         // follow-up atomic with the body. Other harnesses keep
@@ -1815,8 +1815,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 ),
                             )
                             .await;
-                            pty_auto.last_injection_time = Some(Instant::now());
-                            pty_auto.auto_enter_retry_count = 0;
+                            pty_auto.note_completed_injection(&resolved_cli);
 
                             // Queue echo verification against the confirmed body,
                             // or confirm immediately when the echo raced ahead of
