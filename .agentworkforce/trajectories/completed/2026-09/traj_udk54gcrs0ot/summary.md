@@ -10,7 +10,7 @@
 
 ## Summary
 
-Rebased PR #1691 onto current main and fixed unreadable non-functional classification to require proof with kind null; added regression coverage. Focused contract tests and formatting pass.
+Repaired PR #1691 so unreadable non-functional declarations require proof without a fabricated bugfix kind, preserved explicit feature/bugfix kinds, added regression coverage, and corrected the Trail scope metadata.
 
 **Approach:** Standard approach
 
@@ -36,5 +36,12 @@ Rebased PR #1691 onto current main and fixed unreadable non-functional classific
 
 ## Artifacts
 
-**Commits:** 8051b4dae, d754fff14, dadaf8531
-**Files changed:** 24
+**Commits:** 8051b4dae, 2138f7564
+**Files changed:** 6
+
+- `.agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot.trace.json`
+- `.agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/summary.md`
+- `.agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/trajectory.json`
+- `scripts/pr-proof/contract.mjs`
+- `scripts/pr-proof/prepare.mjs`
+- `tests/fixtures/pr-proof-contract.test.ts`

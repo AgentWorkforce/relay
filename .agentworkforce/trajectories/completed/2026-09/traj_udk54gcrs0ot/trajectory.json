@@ -10,7 +10,7 @@
   },
   "status": "completed",
   "startedAt": "2026-09-08T14:19:33.476Z",
-  "completedAt": "2026-09-08T14:22:59.575Z",
+  "completedAt": "2026-09-08T14:23:09.000Z",
   "agents": [
     {
       "name": "default",
@@ -24,7 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-08T14:20:43.980Z",
-      "endedAt": "2026-09-08T14:22:59.575Z",
+      "endedAt": "2026-09-08T14:23:09.000Z",
       "events": [
         {
           "ts": 1788877243983,
@@ -41,7 +41,7 @@
         {
           "ts": 1788877372174,
           "type": "reflection",
-          "content": "Audit confirmed the single hosted P3 is valid: unreadable non-functional declarations were required but mislabeled as bugfix by the fallback. Rebased cleanly onto origin/main, narrowed kind to null only for that unverifiable path, preserved explicit bugfix metadata, and focused contract coverage passes.",
+          "content": "Audit confirmed the single hosted P3 is valid: unreadable non-functional declarations were required but mislabeled as bugfix by the fallback. Rebased cleanly onto origin/main, narrowed kind to null only for that unverifiable path, preserved explicit bugfix metadata, and corrected the Trail metadata to the two PR commits and six-file scope.",
           "raw": {
             "focalPoints": [
               "classification semantics",
@@ -62,46 +62,27 @@
     }
   ],
   "retrospective": {
-    "summary": "Rebased PR #1691 onto current main and fixed unreadable non-functional classification to require proof with kind null; added regression coverage. Focused contract tests and formatting pass.",
+    "summary": "Repaired PR #1691 so unreadable non-functional declarations require proof without a fabricated bugfix kind, preserved explicit feature/bugfix kinds, added regression coverage, and corrected the Trail scope metadata.",
     "approach": "Standard approach",
     "confidence": 0.94
   },
   "commits": [
-    "8051b4dae",
-    "d754fff14",
-    "dadaf8531"
+    "8051b4dae9e41fd666b6c8222dbbf08a28cb72ad",
+    "2138f756447f42f268ab0b6b1ccc5a229fb29880"
   ],
   "filesChanged": [
-    "CHANGELOG.md",
-    "crates/broker/src/relaycast/auth.rs",
-    "package.json",
-    "packages/brand/package.json",
-    "packages/broker-darwin-arm64/package.json",
-    "packages/broker-darwin-x64/package.json",
-    "packages/broker-linux-arm64/package.json",
-    "packages/broker-linux-x64/package.json",
-    "packages/broker-win32-x64/package.json",
-    "packages/cli/package.json",
-    "packages/cloud/package.json",
-    "packages/config/package.json",
-    "packages/evals/package.json",
-    "packages/fleet/package.json",
-    "packages/harness-driver/package.json",
-    "packages/harnesses/package.json",
-    "packages/integration-prompts/package.json",
-    "packages/policy/package.json",
-    "packages/sdk-py/pyproject.toml",
-    "packages/sdk/package.json",
-    "packages/session/package.json",
-    "packages/utils/package.json",
-    "tests/relayflows/cases/1700-broker-startup-transient-relaycast-retry/case.json",
-    "tests/relayflows/cases/1700-broker-startup-transient-relaycast-retry/run.mjs"
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot.trace.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/trajectory.json",
+    "scripts/pr-proof/contract.mjs",
+    "scripts/pr-proof/prepare.mjs",
+    "tests/fixtures/pr-proof-contract.test.ts"
   ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
-    "startRef": "3e64b58fceb075bfe8836200e410ece87985329a",
-    "endRef": "8051b4dae9e41fd666b6c8222dbbf08a28cb72ad",
+    "startRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d",
+    "endRef": "2138f756447f42f268ab0b6b1ccc5a229fb29880",
     "traceId": "50e106cb-ac6a-4e53-b765-2d2793de3351"
   }
 }
