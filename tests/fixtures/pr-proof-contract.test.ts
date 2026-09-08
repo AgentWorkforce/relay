@@ -51,6 +51,7 @@ import {
   createCliApiKeyEnvironment,
   formatCloudRunArtifact,
   formatCloudRunDiagnostics,
+  maskCapturedCommandOutput,
   parseJsonOutput,
   preparedRunIdFromOutput,
   recognizedCloudStatusFromOutput,
@@ -622,32 +623,57 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(prefixedArtifact).not.toContain('rk_live_token');
   });
 
-  it('never releases cross-stream credential fragments at finalization', () => {
-    const redactor = createCredentialRedactor(['split-secret'], {
-      maskPendingOnFinal: true,
+  it('never releases cross-stream credential fragments in captures or artifacts', async () => {
+    const captureWithRedaction = async (code: string, secretValues: string[]) => {
+      const redactor = createCredentialRedactor(secretValues, { maskPendingOnFinal: true });
+      const capture = await runBoundedProcess(process.execPath, ['-e', code], {
+        echo: false,
+        transformChunk: (text, _stream, final) => redactor.push(text, final),
+      });
+      return maskCapturedCommandOutput(capture, redactor);
+    };
+
+    const configuredCapture = await captureWithRedaction(
+      "process.stdout.write('secret'); setTimeout(() => process.stderr.write('split-'), 25)",
+      ['split-secret']
+    );
+    const configuredArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-redaction-a',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: configuredCapture,
+      diagnosticSecretValues: ['split-secret'],
     });
 
-    // Model the OS reporting stdout before an earlier stderr write. The suffix
-    // cannot be recognized on its own, but the trailing prefix must not be
-    // released when the shared stream closes.
-    const sanitized =
-      redactor.push('secret', false) + redactor.push('split-', false) + redactor.push('', true);
+    for (const value of [configuredCapture.stdout, configuredCapture.stderr, configuredArtifact]) {
+      expect(value).not.toContain('secret');
+      expect(value).not.toContain('split-');
+      expect(value).not.toContain('split-secret');
+    }
+    expect(configuredCapture.stdout + configuredCapture.stderr).toContain('[redacted]');
+    expect(configuredArtifact).toContain('[redacted]');
 
-    expect(sanitized).toBe('secret[redacted]');
-    expect(sanitized).not.toContain('split-');
-    expect(sanitized).not.toContain('split-secret');
-
-    const prefixRedactor = createCredentialRedactor([], {
-      maskPendingOnFinal: true,
+    const prefixCapture = await captureWithRedaction(
+      "process.stdout.write('live_token'); setTimeout(() => process.stderr.write('rk_'), 25)",
+      []
+    );
+    const prefixArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-redaction-b',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: prefixCapture,
+      diagnosticSecretValues: [],
     });
-    const sanitizedPrefix =
-      prefixRedactor.push('live_token', false) +
-      prefixRedactor.push('rk_', false) +
-      prefixRedactor.push('', true);
 
-    expect(sanitizedPrefix).toBe('live_token[redacted]');
-    expect(sanitizedPrefix).not.toContain('rk_');
-    expect(sanitizedPrefix).not.toContain('rk_live_token');
+    for (const value of [prefixCapture.stdout, prefixCapture.stderr, prefixArtifact]) {
+      expect(value).not.toContain('live_token');
+      expect(value).not.toContain('rk_');
+      expect(value).not.toContain('rk_live_token');
+    }
+    expect(prefixCapture.stdout + prefixCapture.stderr).toContain('[redacted]');
+    expect(prefixArtifact).toContain('[redacted]');
   });
 
   it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {

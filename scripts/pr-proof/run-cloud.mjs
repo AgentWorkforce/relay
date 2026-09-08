@@ -63,7 +63,7 @@ const STATUS_DIAGNOSTIC_FIELDS = [
 ];
 const STATUS_FAILURE_DIAGNOSTIC_FIELDS = ['phase', 'code', 'dispatchType', 'sandboxId', 'occurredAt'];
 
-function run(command, args, options = {}) {
+async function run(command, args, options = {}) {
   const diagnosticSecretValues = options.diagnosticSecretValues ?? [];
   // One ordering-aware redactor covers both pipes. If the OS reports the two
   // streams in the opposite order, conservatively mask any trailing fragment
@@ -71,7 +71,7 @@ function run(command, args, options = {}) {
   const outputRedactor = createCredentialRedactor(diagnosticSecretValues, {
     maskPendingOnFinal: true,
   });
-  return runBoundedProcess(command, args, {
+  const result = await runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
     maxCaptureBytes: MAX_CAPTURE_BYTES,
@@ -82,6 +82,22 @@ function run(command, args, options = {}) {
     onStderr: options.onStderr,
     transformChunk: (text, _stream, final) => outputRedactor.push(text, final),
   });
+
+  // A trailing fragment means the other half may already have been captured
+  // from the other pipe in an order that cannot be reconstructed safely.
+  // Fail closed by replacing every non-empty captured stream wholesale.
+  return maskCapturedCommandOutput(result, outputRedactor);
+}
+
+export function maskCapturedCommandOutput(result, outputRedactor) {
+  if (outputRedactor.requiresCapturedOutputMask()) {
+    return {
+      ...result,
+      stdout: result.stdout ? '[redacted]' : '',
+      stderr: result.stderr ? '[redacted]' : '',
+    };
+  }
+  return result;
 }
 
 export function boundedDuration(value, { fallback, minimum, maximum, label }) {
@@ -137,6 +153,7 @@ function longestSuffixThatStartsSecret(value, secrets) {
 function createCredentialPrefixRedactor(maskPendingOnFinal = false) {
   let pending = '';
   let active = null;
+  let maskedPendingOnFinal = false;
 
   return {
     push(value, final = false) {
@@ -191,16 +208,21 @@ function createCredentialPrefixRedactor(maskPendingOnFinal = false) {
       }
 
       if (final && active && !active.emitted) {
+        if (maskPendingOnFinal) maskedPendingOnFinal = true;
         output += maskPendingOnFinal ? '[redacted]' : active.prefix;
       }
       if (final) {
         active = null;
         if (pending) {
+          if (maskPendingOnFinal) maskedPendingOnFinal = true;
           output += maskPendingOnFinal ? '[redacted]' : pending;
           pending = '';
         }
       }
       return output;
+    },
+    maskedPendingOnFinal() {
+      return maskedPendingOnFinal;
     },
   };
 }
@@ -208,6 +230,7 @@ function createCredentialPrefixRedactor(maskPendingOnFinal = false) {
 function createConfiguredSecretRedactor(secretValues, maskPendingOnFinal = false) {
   const secrets = [...new Set(secretValues.filter((value) => typeof value === 'string' && value))];
   let pending = '';
+  let maskedPendingOnFinal = false;
 
   return {
     push(value, final = false) {
@@ -247,10 +270,14 @@ function createConfiguredSecretRedactor(secretValues, maskPendingOnFinal = false
         break;
       }
       if (final) {
+        if (pending && maskPendingOnFinal) maskedPendingOnFinal = true;
         output += pending && maskPendingOnFinal ? '[redacted]' : pending;
         pending = '';
       }
       return output;
+    },
+    maskedPendingOnFinal() {
+      return maskedPendingOnFinal;
     },
   };
 }
@@ -263,6 +290,9 @@ export function createCredentialRedactor(secretValues = [], { maskPendingOnFinal
     push(value, final = false) {
       const prefixed = prefixRedactor.push(value, final);
       return secretRedactor.push(prefixed, final);
+    },
+    requiresCapturedOutputMask() {
+      return prefixRedactor.maskedPendingOnFinal() || secretRedactor.maskedPendingOnFinal();
     },
   };
 }
