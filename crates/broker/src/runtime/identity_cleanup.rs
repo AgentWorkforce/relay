@@ -204,7 +204,12 @@ impl BrokerRuntime {
             let generation = pending.generation;
             if let Err(error) = &result {
                 pending.retry_at = Instant::now() + CLEANUP_RETRY_DELAY;
-                tracing::warn!(worker = %name, %generation, %error, "owned identity cleanup unconfirmed; name reserved for retry");
+                if pending.attempts >= 5 {
+                    tracing::error!(worker = %name, %generation, agent_id = ?pending.agent_id, %error,
+                        "owned identity cleanup retries exhausted; name stays reserved until an explicit generation-matched release retry");
+                } else {
+                    tracing::warn!(worker = %name, %generation, %error, "owned identity cleanup unconfirmed; name reserved for retry");
+                }
             } else {
                 let delete_identity = pending.delete_identity;
                 let agent_id = pending.agent_id.clone();

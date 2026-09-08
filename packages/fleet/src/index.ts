@@ -56,6 +56,8 @@ export interface FleetAgentRegistrationMetadata {
 
 export interface FleetSpawnAgentInput {
   agent: AgentSpec;
+  /** Defaults to true. False returns explicit unverified placement, never readiness. */
+  verifyReady?: boolean;
   initialTask?: string;
   registrationMetadata?: FleetAgentRegistrationMetadata;
   skipRelayPrompt?: boolean;
@@ -179,6 +181,8 @@ const spawnInputSchema = z
 export type SpawnInput = z.infer<typeof spawnInputSchema>;
 
 export interface SpawnHandlerOptions {
+  /** Defaults to true; legacy engines may opt out only for placement-only handlers. */
+  verifyReady?: boolean;
   model?: string;
   args?: string[];
   channels?: string[];
@@ -309,6 +313,7 @@ export function spawn(
 
     return ctx.spawnAgent({
       agent,
+      ...(options.verifyReady !== undefined ? { verifyReady: options.verifyReady } : {}),
       ...(task !== undefined ? { initialTask: task } : {}),
       ...(metadata ? { registrationMetadata: metadata } : {}),
       skipRelayPrompt: input.skip_relay_prompt ?? options.skipRelayPrompt ?? false,

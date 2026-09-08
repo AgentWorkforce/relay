@@ -340,6 +340,9 @@ function makeContext(
       const placement = await nodeCtx.spawnAgent(
         buildSpawnInput(spawn, nodeCtx.invocationId, shadowedHarness)
       );
+      if (spawn.verifyReady === false) {
+        return { placement, ready: false, readiness: 'unverified' };
+      }
       return waitForDelegatedSpawn(options, placement);
     },
   };
@@ -348,7 +351,7 @@ function makeContext(
 // node.spawn acknowledges placement, not launch. A served handler must not
 // complete until its broker confirms readiness (or reports the terminal error).
 // Node credentials can read only spawn invocations dispatched to their own node.
-async function waitForDelegatedSpawn(options: ServeNodeOptions, placement: unknown): Promise<unknown> {
+export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement: unknown): Promise<unknown> {
   const invocationId = (placement as { invocation_id?: unknown } | null)?.invocation_id;
   if (typeof invocationId !== 'string' || !invocationId) {
     throw new Error('spawn_confirmation_missing: engine returned no delegated invocation ID');
@@ -392,10 +395,13 @@ async function waitForDelegatedSpawn(options: ServeNodeOptions, placement: unkno
         if (!['pending', 'dispatched'].includes(invocation?.status ?? '')) {
           throw new Error(`spawn_confirmation_invalid: ${invocationId} returned an invalid status`);
         }
-      } else if (response.status !== 429 && response.status !== 503) {
-        throw new Error(
-          `spawn_confirmation_unavailable: ${invocationId} HTTP ${response.status}; engine must support node-owned spawn status reads`
-        );
+      } else {
+        await response.body?.cancel();
+        if (response.status !== 429 && response.status !== 503) {
+          throw new Error(
+            `spawn_confirmation_unavailable: ${invocationId} HTTP ${response.status}; engine must support node-owned spawn status reads`
+          );
+        }
       }
       await new Promise<void>((resolve, reject) => {
         const abort = () => {
@@ -439,7 +445,7 @@ function buildSpawnInput(
   const invocationId = spawn.invocationId ?? fallbackInvocationId;
   return {
     ...spawn.agent,
-    verify_ready: true,
+    verify_ready: spawn.verifyReady !== false,
     ...(spawn.initialTask !== undefined ? { task: spawn.initialTask } : {}),
     ...(spawn.registrationMetadata ? { metadata: spawn.registrationMetadata } : {}),
     skip_relay_prompt: spawn.skipRelayPrompt ?? false,

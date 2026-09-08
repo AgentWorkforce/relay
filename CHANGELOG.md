@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `serveNode` verifies spawns by default and requires engine support for node-owned spawn status reads; deploy the compatible engine before publishing/upgrading fleet clients. Legacy handlers can explicitly set `verifyReady: false` to receive unverified placement only.
 - SDK `waitForReady` reports `startup_fallback` at its deadline when `worker_startup_fallback` occurred without a proven readiness handshake.
 - MCP raw CLI spawns wait for harness readiness and report terminal startup errors; the selected broker must support the readiness contract.
 

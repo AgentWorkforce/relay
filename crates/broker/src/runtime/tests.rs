@@ -205,6 +205,149 @@ struct WorkerEventRuntimeFixture {
 }
 
 #[tokio::test]
+async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
+    use crate::listen_api::ListenApiRequest;
+    use std::io::Write;
+    use std::sync::Arc;
+    use tokio::sync::oneshot;
+    use tracing::instrument::WithSubscriber;
+    #[derive(Clone)]
+    struct LogWriter(Arc<Mutex<Vec<u8>>>);
+    impl Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let sink = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || LogWriter(sink.clone()))
+        .finish();
+    async {
+        let (tx, _rx) = mpsc::channel(16);
+        let registry = WorkerRegistry::new(
+            tx,
+            Vec::new(),
+            PathBuf::from("/tmp/cleanup-exhaustion-fixture"),
+            Instant::now(),
+        );
+        let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+        let name = WorkerName::from("exhausted-owner");
+        let generation = Uuid::new_v4();
+        let http = RelaycastHttpClient::new(
+            Some("http://127.0.0.1:1".into()),
+            "rk_live_fixture",
+            "broker",
+            "codex",
+        );
+        http.seed_agent_token(&name, "owned-token");
+        fixture
+            .runtime
+            .workers
+            .owned_spawn_generations
+            .insert(name.clone(), (generation, http));
+        fixture
+            .runtime
+            .fleet_delivery_book
+            .bind_authoritative_identity(name.to_string(), "original-agent-id");
+        let (reply, _released) = oneshot::channel();
+        fixture
+            .runtime
+            .handle_api_request(ListenApiRequest::Release {
+                name: name.clone(),
+                reason: None,
+                expected_generation: Some(generation.to_string()),
+                delete_identity: true,
+                reply,
+            })
+            .await;
+        for attempt in 1..=5 {
+            loop {
+                if let FleetControlCommand::DeregisterAgent { reply, .. } =
+                    fixture.fleet_control_rx.recv().await.unwrap()
+                {
+                    reply.send(Err("fixture rejection".into())).unwrap();
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            fixture.runtime.reconcile_identity_cleanups().await;
+            assert_eq!(
+                fixture.runtime.workers.identity_cleanups[&name].attempts,
+                attempt
+            );
+            fixture
+                .runtime
+                .workers
+                .identity_cleanups
+                .get_mut(&name)
+                .unwrap()
+                .retry_at = Instant::now();
+            if attempt < 5 {
+                fixture.runtime.reconcile_identity_cleanups().await;
+            }
+        }
+        for _ in 0..6 {
+            fixture.runtime.reconcile_identity_cleanups().await;
+        }
+        while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+            assert!(
+                !matches!(command, FleetControlCommand::DeregisterAgent { .. }),
+                "exhaustion must stop automatic retries"
+            );
+        }
+        assert!(fixture
+            .runtime
+            .workers
+            .owned_spawn_generations
+            .contains_key(&name));
+        let (reply, retried) = oneshot::channel();
+        fixture
+            .runtime
+            .handle_api_request(ListenApiRequest::Release {
+                name: name.clone(),
+                reason: None,
+                expected_generation: Some(generation.to_string()),
+                delete_identity: true,
+                reply,
+            })
+            .await;
+        fixture.runtime.reconcile_identity_cleanups().await;
+        loop {
+            if let FleetControlCommand::DeregisterAgent { request, reply } =
+                fixture.fleet_control_rx.recv().await.unwrap()
+            {
+                assert_eq!(request.agent_id, "original-agent-id");
+                reply.send(Err("sixth fixture rejection".into())).unwrap();
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        fixture.runtime.reconcile_identity_cleanups().await;
+        assert!(retried.await.unwrap().is_err());
+        assert_eq!(fixture.runtime.workers.identity_cleanups[&name].attempts, 1);
+        let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            text.matches("owned identity cleanup retries exhausted")
+                .count(),
+            1
+        );
+        assert!(text.contains("ERROR"));
+        assert!(text.contains("original-agent-id"));
+        assert!(text.contains(&generation.to_string()));
+        assert!(text.contains("explicit generation-matched release retry"));
+    }
+    .with_subscriber(subscriber)
+    .await;
+}
+
+#[tokio::test]
 async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{Method::POST, MockServer};
