@@ -220,7 +220,7 @@ async function main() {
   await ensurePermissionPlaceholders();
   const wf = workflow('relay-fleet-daytona-comprehensive')
     .description(
-      'Run the 97-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.'
+      'Run the 105-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.'
     )
     .pattern('dag')
     .channel(`relay-fleet-daytona-${NONCE.slice(0, 8)}`)
@@ -516,9 +516,10 @@ async function main() {
     process.env.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1'
       ? { AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1' }
       : undefined;
+  const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
   const result = await wf.run({
     cwd: process.cwd(),
-    dryRun: process.env.DRY_RUN === '1',
+    dryRun,
     ...(relayEnv ? { relay: { env: relayEnv } } : {}),
   });
   if ('status' in result && result.status !== undefined && result.status !== 'completed') {

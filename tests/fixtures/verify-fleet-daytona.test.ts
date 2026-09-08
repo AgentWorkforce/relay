@@ -13,6 +13,7 @@ import {
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
+  buildLocalBrokerOptionProofScript,
   compareDaytonaSandboxBaseline,
   deriveFleetVerdict,
   evaluateFleetIdentityReconciliation,
@@ -671,9 +672,9 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations).toHaveLength(97);
+    expect(matrix.operations).toHaveLength(105);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(97);
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(105);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -742,6 +743,15 @@ describe('complete Daytona Fleet board', () => {
     expect(() => validateFleetOptionCoverage(unexecuted, inventory)).toThrow(
       /supported option node agent new --runtime is not required/
     );
+    const unboundVariant = structuredClone(matrix);
+    unboundVariant.operations.find(
+      ({ id }: { id: string }) => id === 'fleet-spawn-sandbox-root-mount'
+    ).argvMustContain = unboundVariant.operations
+      .find(({ id }: { id: string }) => id === 'fleet-spawn-sandbox-root-mount')
+      .argvMustContain.filter((token: string) => token !== 'daytona');
+    expect(() => validateFleetOptionCoverage(unboundVariant, inventory)).toThrow(
+      /supported variant fleet spawn --sandbox-provider=daytona is not required/
+    );
 
     const newDefinition = matrix.operations.find(({ id }: { id: string }) => id === 'node-agent-new-view');
     expect(() =>
@@ -754,6 +764,57 @@ describe('complete Daytona Fleet board', () => {
         matrix
       )
     ).toThrow(/missing required token --runtime|did not execute supported option --runtime/);
+
+    const sandboxDefinition = matrix.operations.find(
+      ({ id }: { id: string }) => id === 'fleet-spawn-sandbox-root-mount'
+    );
+    const variantDefinition = {
+      ...sandboxDefinition,
+      argvMustContain: sandboxDefinition.argvMustContain.filter((token: string) => token !== 'daytona'),
+    };
+    expect(() =>
+      validateOperationArgvContract(
+        {
+          id: sandboxDefinition.id,
+          argv: [
+            'agent-relay',
+            'fleet',
+            'spawn',
+            'codex',
+            '--sandbox',
+            '--sandbox-provider',
+            'e2b',
+            '--sandbox-snapshot',
+            'fixture',
+            '--sandbox-snapshot-manifest-sha256',
+            'a'.repeat(64),
+          ],
+        },
+        variantDefinition,
+        matrix
+      )
+    ).toThrow(/did not execute supported variant --sandbox-provider=daytona/);
+  });
+
+  it('generates a bounded local-broker option proof that redacts the explicit API key', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'fleet-local-broker-proof-'));
+    const scriptPath = path.join(directory, 'proof.cjs');
+    try {
+      const script = buildLocalBrokerOptionProofScript();
+      await writeFile(scriptPath, script);
+      await expect(execFileAsync(process.execPath, ['--check', scriptPath])).resolves.toMatchObject({
+        stderr: '',
+      });
+      expect(script).toContain("value === connection.api_key ? '[REDACTED]' : value");
+      expect(script).toContain('delete env[key]');
+      expect(script).toContain('AbortSignal.timeout(2_000)');
+      expect(script).toContain('execution.stdoutBytes > 2 * 1024 * 1024');
+      expect(script).toContain('execution.stderrBytes > 2 * 1024 * 1024');
+      expect(script).not.toContain('result.api_key');
+      expect(script).not.toContain('result.connection');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('fails closed on malformed list/status payloads and final board leaks', () => {
@@ -809,7 +870,7 @@ describe('complete Daytona Fleet board', () => {
 
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
-    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 97/);
+    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 105/);
   });
 
   it('fails closed when Fleet qualification evidence loses creation, identity, or release binding', async () => {
@@ -1096,14 +1157,14 @@ describe('complete Daytona Fleet board', () => {
 
     const wrongCount = structuredClone(matrix);
     wrongCount.operations.pop();
-    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 97/);
+    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 105/);
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 97 operations/);
+    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 105 operations/);
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -1653,7 +1714,7 @@ describe('complete Daytona Fleet board', () => {
       verdict: 'COMPREHENSIVELY_SATISFIED',
       whyPassed: 'All matrix operations and cleanup evidence were inspected.',
       endToEndWiringVerified: 'The sealed evidence connects the board to exact resources.',
-      deterministicEvidence: ['97 exact operation records'],
+      deterministicEvidence: ['105 exact operation records'],
       remainingRisks: ['Product RED is permitted as truthful evidence.'],
       findings: [],
     };

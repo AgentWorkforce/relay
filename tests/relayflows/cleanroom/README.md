@@ -70,10 +70,11 @@ Daytona baseline and hard acceptance gates, use
 Fleet has a dedicated operator-host Relayflow because its proof environment is
 itself a set of fresh Cloud sandboxes. The flow runs two sequential attempts;
 each provisions at least two distinct Daytona sandboxes, registers both as live
-Fleet nodes, and measures 97 operations:
+Fleet nodes, and measures 105 operations:
 every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
-post-ready injection, remote attach, Relayfile root/scoped/no-mount behavior,
+post-ready injection, remote and broker-local attach/message control,
+Relayfile root/scoped/no-mount behavior,
 workflow execution, release, identity reconciliation, and exact sandbox cleanup.
 Targeted Fleet presence is cross-checked against heartbeat live-name metadata and
 `activeAgents`, unfiltered placement, direct node inventory, and the roster both
@@ -84,7 +85,7 @@ acknowledgements, exact injection reader receipts, same-name reuse, and verified
 process/identity absence after release. The baseline rejects any total or online
 agent identity and any total or live Fleet node record; release qualification
 also hashes the actual CLI and broker executables inside each sandbox. See the
-exact 97-operation acceptance crosswalk and external gates in
+exact 105-operation acceptance crosswalk and external gates in
 [`FLEET_ACCEPTANCE_AUDIT.md`](./FLEET_ACCEPTANCE_AUDIT.md).
 
 ```bash
@@ -150,7 +151,7 @@ testing an unspecified build.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
 and validates exactly 145 runtime contracts: 12 state transitions, 23 injected
-faults, 13 release acceptance gates, and all 97 Fleet operations. Diagnosis mode
+faults, 13 release acceptance gates, and all 105 Fleet operations. Diagnosis mode
 must mark every runtime row `BLOCKED` and bind it bidirectionally to an owned,
 promotion-blocking unknown; static tests and historical observations cannot
 become runtime passes. The seal hashes every generated artifact and reproduction

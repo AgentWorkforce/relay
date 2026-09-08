@@ -80,11 +80,25 @@
     "node agent attach": [
       "node-agent-attach-view-json",
       "node-agent-attach-drive-json",
-      "node-agent-attach-passthrough-json"
+      "node-agent-attach-passthrough-json",
+      "node-agent-attach-local-explicit-json",
+      "node-agent-attach-local-state-dir-json"
     ],
-    "node agent message flush": ["node-agent-message-flush"],
-    "node agent message hold": ["node-agent-message-hold"],
-    "node agent message auto": ["node-agent-message-auto"],
+    "node agent message flush": [
+      "node-agent-message-flush",
+      "node-agent-message-flush-local-explicit",
+      "node-agent-message-flush-local-state-dir"
+    ],
+    "node agent message hold": [
+      "node-agent-message-hold",
+      "node-agent-message-hold-local-explicit",
+      "node-agent-message-hold-local-state-dir"
+    ],
+    "node agent message auto": [
+      "node-agent-message-auto",
+      "node-agent-message-auto-local-explicit",
+      "node-agent-message-auto-local-state-dir"
+    ],
     "node workflow run": ["node-workflow-run"],
     "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
     "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
@@ -150,18 +164,18 @@
     "node agent attach": [
       {
         "option": "--broker-url",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+        "status": "supported",
+        "operationId": "node-agent-attach-local-explicit-json"
       },
       {
         "option": "--api-key",
-        "status": "skipped",
-        "reason": "Credential-bearing attach is not run in deterministic cleanroom fixtures."
+        "status": "supported",
+        "operationId": "node-agent-attach-local-explicit-json"
       },
       {
         "option": "--state-dir",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+        "status": "supported",
+        "operationId": "node-agent-attach-local-state-dir-json"
       },
       {
         "option": "--ssh-host",
@@ -194,18 +208,18 @@
     "node agent message hold": [
       {
         "option": "--broker-url",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+        "status": "supported",
+        "operationId": "node-agent-message-hold-local-explicit"
       },
       {
         "option": "--api-key",
-        "status": "skipped",
-        "reason": "Credential-bearing message control is not run in deterministic cleanroom fixtures."
+        "status": "supported",
+        "operationId": "node-agent-message-hold-local-explicit"
       },
       {
         "option": "--state-dir",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+        "status": "supported",
+        "operationId": "node-agent-message-hold-local-state-dir"
       },
       {
         "option": "--workspace-key",
@@ -216,18 +230,18 @@
     "node agent message flush": [
       {
         "option": "--broker-url",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+        "status": "supported",
+        "operationId": "node-agent-message-flush-local-explicit"
       },
       {
         "option": "--api-key",
-        "status": "skipped",
-        "reason": "Credential-bearing message control is not run in deterministic cleanroom fixtures."
+        "status": "supported",
+        "operationId": "node-agent-message-flush-local-explicit"
       },
       {
         "option": "--state-dir",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+        "status": "supported",
+        "operationId": "node-agent-message-flush-local-state-dir"
       },
       {
         "option": "--workspace-key",
@@ -238,18 +252,18 @@
     "node agent message auto": [
       {
         "option": "--broker-url",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; an explicit local broker endpoint is a separate credential-bearing lane."
+        "status": "supported",
+        "operationId": "node-agent-message-auto-local-explicit"
       },
       {
         "option": "--api-key",
-        "status": "skipped",
-        "reason": "Credential-bearing message control is not run in deterministic cleanroom fixtures."
+        "status": "supported",
+        "operationId": "node-agent-message-auto-local-explicit"
       },
       {
         "option": "--state-dir",
-        "status": "skipped",
-        "reason": "The board exercises the canonical authenticated --node transport; local connection.json discovery is a separate lane."
+        "status": "supported",
+        "operationId": "node-agent-message-auto-local-state-dir"
       },
       {
         "option": "--workspace-key",
@@ -688,9 +702,17 @@
       "node-agent-attach-view-json": "agent-control",
       "node-agent-attach-drive-json": "agent-control",
       "node-agent-attach-passthrough-json": "agent-control",
+      "node-agent-attach-local-explicit-json": "agent-control",
+      "node-agent-attach-local-state-dir-json": "agent-control",
       "node-agent-message-hold": "agent-control",
+      "node-agent-message-hold-local-explicit": "agent-control",
+      "node-agent-message-hold-local-state-dir": "agent-control",
       "node-agent-message-flush": "agent-control",
+      "node-agent-message-flush-local-explicit": "agent-control",
+      "node-agent-message-flush-local-state-dir": "agent-control",
       "node-agent-message-auto": "agent-control",
+      "node-agent-message-auto-local-explicit": "agent-control",
+      "node-agent-message-auto-local-state-dir": "agent-control",
       "node-agent-release": "node-release-reclaim",
       "node-agent-same-name-reclaim": "node-release-reclaim",
       "node-workflow-run": "node-workflow",
@@ -1093,10 +1115,36 @@
       "argvMustContain": ["--json"]
     },
     {
+      "id": "node-agent-attach-local-explicit-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--broker-url", "--api-key", "--json"]
+    },
+    {
+      "id": "node-agent-attach-local-state-dir-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--state-dir", "--json"]
+    },
+    {
       "id": "node-agent-message-hold",
       "group": "node-agent",
       "expect": "success",
       "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-hold-local-explicit",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--broker-url", "--api-key"]
+    },
+    {
+      "id": "node-agent-message-hold-local-state-dir",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--state-dir"]
     },
     {
       "id": "node-agent-message-flush",
@@ -1105,10 +1153,34 @@
       "argvMustContain": ["--node", "--workspace-key"]
     },
     {
+      "id": "node-agent-message-flush-local-explicit",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--broker-url", "--api-key"]
+    },
+    {
+      "id": "node-agent-message-flush-local-state-dir",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--state-dir"]
+    },
+    {
       "id": "node-agent-message-auto",
       "group": "node-agent",
       "expect": "success",
       "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-auto-local-explicit",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--broker-url", "--api-key"]
+    },
+    {
+      "id": "node-agent-message-auto-local-state-dir",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--state-dir"]
     },
     { "id": "node-agent-release", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-same-name-reclaim", "group": "node-agent", "expect": "sentinel" },

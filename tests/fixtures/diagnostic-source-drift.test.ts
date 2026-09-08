@@ -20,13 +20,29 @@ afterEach(async () => {
 });
 
 describe('diagnosis source provenance', () => {
+  it('accepts the RelayFlows CLI dry-run environment value in every verification workflow', async () => {
+    const workflowPaths = [
+      'workflows/verify-fleet-daytona.ts',
+      'workflows/verify-cleanroom.ts',
+      'workflows/diagnose-relay-orchestration-reliability.ts',
+      'workflows/verify-features.ts',
+    ];
+    for (const workflowPath of workflowPaths) {
+      const source = await readFile(workflowPath, 'utf8');
+      expect(source, workflowPath).toContain("process.env.DRY_RUN === '1'");
+      expect(source, workflowPath).toContain("process.env.DRY_RUN === 'true'");
+    }
+  });
+
   it('wires the package dry-run command into the Relayflow runner', async () => {
     const [packageJson, workflow] = await Promise.all([
       readFile('package.json', 'utf8').then(JSON.parse),
       readFile('workflows/diagnose-relay-orchestration-reliability.ts', 'utf8'),
     ]);
     expect(packageJson.scripts['diagnose:orchestration:dry-run']).toMatch(/(?:^|\s)DRY_RUN\s*=\s*1(?:\s|$)/);
-    expect(workflow).toMatch(/dryRun\s*:\s*process\.env\.DRY_RUN\s*===\s*["']1["']/);
+    expect(workflow).toMatch(
+      /dryRun\s*:\s*process\.env\.DRY_RUN\s*===\s*["']1["']\s*\|\|\s*process\.env\.DRY_RUN\s*===\s*["']true["']/
+    );
     expect(workflow).toContain('`${ART}/*`');
     expect(workflow).toContain('extensions.map((extension)');
     expect(workflow).not.toContain("const extensions = '{");

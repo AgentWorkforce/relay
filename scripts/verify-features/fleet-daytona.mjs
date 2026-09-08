@@ -721,6 +721,178 @@ process.stdout.write(JSON.stringify(result));
 `;
 }
 
+export function buildLocalBrokerOptionProofScript() {
+  return String.raw`(async () => {
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
+
+const commandKind = process.argv[1];
+const action = process.argv[2];
+const credentialMode = process.argv[3];
+const workerName = process.argv[4];
+const expectedNode = process.argv[5];
+if (!['attach', 'message'].includes(commandKind)) throw new Error('invalid command kind');
+if (!['explicit', 'state-dir'].includes(credentialMode)) throw new Error('invalid credential mode');
+
+const findConnection = async () => {
+  const roots = [
+    path.join(os.homedir(), '.agentworkforce', 'relay'),
+    path.join(process.cwd(), '.agentworkforce', 'relay'),
+  ];
+  const queue = roots.filter((root) => fs.existsSync(root)).map((root) => ({ root, depth: 0 }));
+  const candidates = [];
+  while (queue.length) {
+    const { root, depth } = queue.shift();
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const candidate = path.join(root, entry.name);
+      if (entry.isFile() && entry.name === 'connection.json') {
+        try {
+          const connection = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+          if (connection.url && connection.api_key) candidates.push({ connection, candidate });
+        } catch {}
+      } else if (entry.isDirectory() && depth < 6) {
+        queue.push({ root: candidate, depth: depth + 1 });
+      }
+    }
+  }
+  for (const { connection, candidate } of candidates) {
+    try {
+      const response = await fetch(connection.url + '/api/status', {
+        headers: { 'x-api-key': connection.api_key },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const status = response.ok ? await response.json() : null;
+      if (status?.node_name === expectedNode) return { ...connection, path: candidate };
+    } catch {}
+  }
+  throw new Error('no live node broker connection matched ' + JSON.stringify(expectedNode));
+};
+const parseTrailingJSON = (text) => {
+  const source = String(text).trim();
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== '[' && source[index] !== '{') continue;
+    try { return JSON.parse(source.slice(index)); } catch {}
+  }
+  throw new Error('CLI did not emit trailing JSON');
+};
+const scrubbedEnv = () => {
+  const env = { ...process.env };
+  for (const key of ['AGENT_RELAY_STATE_DIR', 'RELAY_BROKER_URL', 'RELAY_BROKER_API_KEY']) delete env[key];
+  return env;
+};
+const connection = await findConnection();
+const stateDir = path.dirname(connection.path);
+const credentialArgs = credentialMode === 'explicit'
+  ? ['--broker-url', connection.url, '--api-key', connection.api_key]
+  : ['--state-dir', stateDir];
+const commandArgs = commandKind === 'attach'
+  ? ['node', 'agent', 'attach', workerName, '--mode', action, '--json', ...credentialArgs]
+  : ['node', 'agent', 'message', action, workerName, ...credentialArgs];
+const publicArgv = ['agent-relay', ...commandArgs.map((value) => value === connection.api_key ? '[REDACTED]' : value)];
+const result = {
+  commandKind,
+  action,
+  credentialMode,
+  workerName,
+  expectedNode,
+  publicArgv,
+  pass: false,
+};
+
+if (commandKind === 'attach') {
+  const execution = await new Promise((resolve, reject) => {
+    const child = spawn('agent-relay', commandArgs, {
+      cwd: os.tmpdir(),
+      env: scrubbedEnv(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const append = (current, chunk) => (current + chunk.toString('utf8')).slice(-2 * 1024 * 1024);
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      stdout = append(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += chunk.length;
+      stderr = append(stderr, chunk);
+    });
+    child.once('error', reject);
+    const inputTimer = setTimeout(() => {
+      try { child.stdin.write(Buffer.from([3])); } catch {}
+      try { child.stdin.end(); } catch {}
+    }, 4_000);
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+    }, 12_000);
+    child.once('close', (status, signal) => {
+      clearTimeout(inputTimer);
+      clearTimeout(killTimer);
+      resolve({ status, signal, stdout, stderr, stdoutBytes, stderrBytes });
+    });
+  });
+  const events = execution.stdout
+    .split(/\r?\n/)
+    .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+    .filter(Boolean);
+  const streams = events.filter((event) => event.kind === 'worker_stream' && event.name === workerName);
+  result.streamEvents = streams.length;
+  result.stdoutBytes = execution.stdoutBytes;
+  result.stderrBytes = execution.stderrBytes;
+  result.stdoutTruncated = execution.stdoutBytes > 2 * 1024 * 1024;
+  result.stderrTruncated = execution.stderrBytes > 2 * 1024 * 1024;
+  result.exitStatus = execution.status;
+  result.exitSignal = execution.signal;
+  result.pass =
+    streams.length > 0 &&
+    (execution.status === 0 || execution.signal === 'SIGTERM') &&
+    !result.stdoutTruncated &&
+    !result.stderrTruncated;
+} else {
+  const execution = spawnSync('agent-relay', commandArgs, {
+    cwd: os.tmpdir(),
+    env: scrubbedEnv(),
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (execution.error) throw execution.error;
+  const inventory = spawnSync('agent-relay', ['node', 'agent', 'list', '--status'], {
+    cwd: os.tmpdir(),
+    env: {
+      ...scrubbedEnv(),
+      AGENT_RELAY_STATE_DIR: stateDir,
+      RELAY_BROKER_URL: connection.url,
+      RELAY_BROKER_API_KEY: connection.api_key,
+    },
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (inventory.error) throw inventory.error;
+  const agents = inventory.status === 0 ? parseTrailingJSON(inventory.stdout) : [];
+  const exact = Array.isArray(agents) ? agents.find((agent) => agent?.name === workerName) : null;
+  const expectedMode = action === 'auto' ? 'auto_inject' : 'manual_flush';
+  result.commandExitStatus = execution.status;
+  result.inventoryExitStatus = inventory.status;
+  result.observedDeliveryMode = exact?.delivery_mode ?? null;
+  result.pendingCount = Array.isArray(exact?.pending) ? exact.pending.length : null;
+  result.pass = execution.status === 0 && inventory.status === 0 && exact?.delivery_mode === expectedMode;
+}
+
+process.stdout.write(JSON.stringify(result));
+if (!result.pass) process.exitCode = 1;
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack ? error.stack : error) + '\n');
+  process.exitCode = 1;
+});
+`;
+}
+
 function requiredOption(options, name) {
   const value = options[name];
   if (typeof value !== 'string' || !value.trim()) throw new Error(`--${name} is required`);
@@ -853,8 +1025,8 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 97)
-    throw new Error('matrix.operations must contain exactly 97 operations');
+  if (matrix.operations.length !== 105)
+    throw new Error('matrix.operations must contain exactly 105 operations');
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const commandOperationIds = new Set();
@@ -955,7 +1127,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 97 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 105 operations');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -1020,10 +1192,26 @@ export function validateFleetOptionCoverage(matrix, inventory) {
           if (!OPTION_COVERAGE_STATUSES.has(variant.status)) {
             throw new Error(`option ${commandPath} ${entry.option} variant has invalid status`);
           }
-          if (
-            variant.status !== 'supported' &&
-            (typeof variant.reason !== 'string' || !variant.reason.trim())
-          ) {
+          if (variant.status === 'supported') {
+            const variantOperationId = variant.operationId ?? entry.operationId;
+            const operation = matrix.operations.find(({ id }) => id === variantOperationId);
+            if (typeof variantOperationId !== 'string' || !operation) {
+              throw new Error(
+                `supported variant ${commandPath} ${entry.option}=${variant.value} must name an operation`
+              );
+            }
+            if (!(matrix.commandSurface[commandPath] ?? []).includes(variantOperationId)) {
+              throw new Error(
+                `supported variant ${commandPath} ${entry.option}=${variant.value} must use an operation on that leaf`
+              );
+            }
+            const variantToken = variant.argvToken ?? variant.value;
+            if (!(operation.argvMustContain ?? []).includes(variantToken)) {
+              throw new Error(
+                `supported variant ${commandPath} ${entry.option}=${variant.value} is not required by operation ${variantOperationId}`
+              );
+            }
+          } else if (typeof variant.reason !== 'string' || !variant.reason.trim()) {
             throw new Error(`non-supported variant ${commandPath} ${entry.option} requires a reason`);
           }
         }
@@ -1101,6 +1289,17 @@ function validateOperationOptionCoverage(operation, matrix) {
         const value = operation.argv[index + 1];
         if (typeof value !== 'string' || !value || value.startsWith('--')) {
           throw new Error(`operation ${operation.id} did not execute a value for ${entry.option}`);
+        }
+      }
+      for (const variant of entry.variants ?? []) {
+        if (variant.status !== 'supported' || (variant.operationId ?? entry.operationId) !== operation.id) {
+          continue;
+        }
+        const expectedValue = variant.argvToken ?? variant.value;
+        if (operation.argv[index + 1] !== expectedValue) {
+          throw new Error(
+            `operation ${operation.id} did not execute supported variant ${entry.option}=${variant.value}`
+          );
         }
       }
     }
@@ -4778,9 +4977,17 @@ class FleetBoard {
         'node-agent-attach-view-json',
         'node-agent-attach-drive-json',
         'node-agent-attach-passthrough-json',
+        'node-agent-attach-local-explicit-json',
+        'node-agent-attach-local-state-dir-json',
         'node-agent-message-hold',
+        'node-agent-message-hold-local-explicit',
+        'node-agent-message-hold-local-state-dir',
         'node-agent-message-flush',
+        'node-agent-message-flush-local-explicit',
+        'node-agent-message-flush-local-state-dir',
         'node-agent-message-auto',
+        'node-agent-message-auto-local-explicit',
+        'node-agent-message-auto-local-state-dir',
         'node-agent-release',
         'node-agent-same-name-reclaim',
       ])
@@ -4891,6 +5098,22 @@ class FleetBoard {
         };
       });
     }
+    await this.localNodeAgentOptionProof(
+      'node-agent-attach-local-explicit-json',
+      node,
+      controlName,
+      'attach',
+      'view',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-attach-local-state-dir-json',
+      node,
+      controlName,
+      'attach',
+      'view',
+      'state-dir'
+    );
     const readDeliveryState = async (expectedMode, requirePending, timeoutMs = 30_000) => {
       const deadline = Date.now() + timeoutMs;
       let exact;
@@ -4961,6 +5184,22 @@ class FleetBoard {
         summary: `mode=${queued?.delivery_mode ?? held?.delivery_mode ?? 'missing'} pending=${queued?.pending?.length ?? 'missing'} messageIdCaptured=${Boolean(heldMessageId)} injectedBeforeFlush=${early.observed}`,
       };
     });
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-hold-local-explicit',
+      node,
+      controlName,
+      'message',
+      'hold',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-hold-local-state-dir',
+      node,
+      controlName,
+      'message',
+      'hold',
+      'state-dir'
+    );
     await this.record('node-agent-message-flush', async () => {
       const result = await execute(
         this.cliArgv(
@@ -4995,6 +5234,22 @@ class FleetBoard {
         summary: `sentinel=${observed.observed} pending=${drained?.pending?.length ?? 'missing'} exactReaderAck=${readerAck}`,
       };
     });
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-flush-local-explicit',
+      node,
+      controlName,
+      'message',
+      'flush',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-flush-local-state-dir',
+      node,
+      controlName,
+      'message',
+      'flush',
+      'state-dir'
+    );
     const autoSentinel = `NODE_AGENT_AUTO_${this.short.toUpperCase()}_READY`;
     await this.record('node-agent-message-auto', async () => {
       const result = await execute(
@@ -5036,6 +5291,22 @@ class FleetBoard {
         summary: `mode=${automatic?.delivery_mode ?? 'missing'} sentinel=${observed.observed} exactReaderAck=${readerAck}`,
       };
     });
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-auto-local-explicit',
+      node,
+      controlName,
+      'message',
+      'auto',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-auto-local-state-dir',
+      node,
+      controlName,
+      'message',
+      'auto',
+      'state-dir'
+    );
     await this.record('node-agent-release', async () => {
       const result = await execute(this.inside(node.id, 'node', 'agent', 'release', controlName), {
         timeoutMs: 45_000,
@@ -5073,6 +5344,49 @@ class FleetBoard {
       };
     });
     await this.releaseSupport(controlName, node, 'node');
+  }
+
+  async localNodeAgentOptionProof(id, node, workerName, commandKind, action, credentialMode) {
+    return this.record(id, async () => {
+      const result = await execute(
+        this.daytonaArgv(
+          'sandbox',
+          'exec',
+          node.id,
+          '--timeout',
+          '90',
+          '--',
+          'node',
+          '-e',
+          buildLocalBrokerOptionProofScript(),
+          commandKind,
+          action,
+          credentialMode,
+          workerName,
+          node.nodeName
+        ),
+        { timeoutMs: 105_000, maxCaptureBytes: 2 * 1024 * 1024 }
+      );
+      const payload = tryParseJson(result._rawStdout);
+      const publicArgv = Array.isArray(payload?.publicArgv) ? sanitizeFleetArgv(payload.publicArgv) : [];
+      const pass =
+        result.exitCode === 0 &&
+        payload?.pass === true &&
+        payload?.commandKind === commandKind &&
+        payload?.action === action &&
+        payload?.credentialMode === credentialMode &&
+        payload?.workerName === workerName &&
+        payload?.expectedNode === node.nodeName &&
+        publicArgv[0] === 'agent-relay' &&
+        (credentialMode !== 'explicit' || publicArgv.includes('[REDACTED]'));
+      return {
+        ...stripPrivateExecution(result),
+        argv: publicArgv,
+        exitCode: pass ? 0 : 1,
+        observedStream: commandKind === 'attach' && pass,
+        summary: `kind=${commandKind} action=${action} credentialMode=${credentialMode} streamEvents=${payload?.streamEvents ?? 'n/a'} deliveryMode=${payload?.observedDeliveryMode ?? 'n/a'} pending=${payload?.pendingCount ?? 'n/a'}`,
+      };
+    });
   }
 
   async nodeAgentAppServerModelProof(id, node) {
