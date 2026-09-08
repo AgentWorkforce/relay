@@ -33,44 +33,6 @@ const CANDIDATE_SURFACES = new Set([
   'operator-and-daytona-candidate',
 ]);
 const OPTION_COVERAGE_STATUSES = new Set(['supported', 'unsupported', 'skipped']);
-const MATERIAL_OPTION_PATHS = {
-  'fleet spawn': [
-    '--sandbox-provider',
-    '--sandbox-name',
-    '--sandbox-snapshot',
-    '--sandbox-snapshot-manifest-sha256',
-    '--confirm-timeout',
-  ],
-  'fleet serve': ['file'],
-  'node agent spawn': [
-    '--channels',
-    '--cwd',
-    '--endpoint',
-    '--exit-after-task',
-    '--model',
-    '--name',
-    '--protocol',
-    '--release',
-    '--runtime',
-    '--session-id',
-    '--spawn-mode',
-    '--task',
-  ],
-  'node agent new': ['--runtime', '--model', '--task', '--channels', '--cwd', '--mode', '--release'],
-  'node agent attach': [
-    '--broker-url',
-    '--api-key',
-    '--state-dir',
-    '--ssh-host',
-    '--join-ticket',
-    '--workspace-key',
-    '--reasoning',
-    '--diagnostics',
-  ],
-  'node agent message hold': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
-  'node agent message flush': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
-  'node agent message auto': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
-};
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
 // Kept local and dependency-free (like scripts/pr-proof/run-cloud.mjs's
 // LIVE_CREDENTIAL and scripts/verify-features/escalation-status.mjs's
@@ -125,7 +87,11 @@ function parseArgs(argv) {
 }
 
 export function dryRunRequested(env = process.env) {
-  return ['1', 'true'].includes(String(env.DRY_RUN ?? '').trim().toLowerCase());
+  return ['1', 'true'].includes(
+    String(env.DRY_RUN ?? '')
+      .trim()
+      .toLowerCase()
+  );
 }
 
 export function assertGreenRunVerdict(evidence) {
@@ -1034,6 +1000,9 @@ export function validateFleetMatrix(matrix) {
   if (!Array.isArray(matrix.operations) || matrix.operations.length === 0) {
     throw new Error('matrix.operations must be a non-empty array');
   }
+  if (!Number.isSafeInteger(matrix.operationCount) || matrix.operationCount !== matrix.operations.length) {
+    throw new Error('matrix.operationCount must equal the inventory-backed operation count');
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.json$/.test(matrix.inventoryFile ?? '')) {
     throw new Error('matrix.inventoryFile is invalid');
   }
@@ -1069,8 +1038,6 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 105)
-    throw new Error('matrix.operations must contain exactly 105 operations');
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const multiCommandOperations = matrix.multiCommandOperations ?? {};
@@ -1193,7 +1160,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 105 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map every matrix operation');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -1208,12 +1175,23 @@ export function validateFleetOptionCoverage(matrix, inventory) {
   if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
     throw new Error('matrix.optionCoverage is required');
   }
-  for (const [commandPath, options] of Object.entries(MATERIAL_OPTION_PATHS)) {
+  const coveredLeaves = inventory.commands
+    .filter(
+      (command) =>
+        command.leaf && (command.path.startsWith('fleet ') || command.path.startsWith('node agent '))
+    )
+    .map(({ path: commandPath }) => commandPath)
+    .sort();
+  const declaredLeaves = Object.keys(coverage).sort();
+  if (declaredLeaves.join('\0') !== coveredLeaves.join('\0')) {
+    throw new Error('matrix.optionCoverage must exactly cover every public Fleet and node-agent leaf');
+  }
+  for (const commandPath of coveredLeaves) {
     const command = inventory.commands.find(({ path: candidate }) => candidate === commandPath);
-    if (!command?.leaf) throw new Error(`option coverage references missing leaf ${commandPath}`);
     const entries = coverage[commandPath];
     if (!Array.isArray(entries)) throw new Error(`optionCoverage.${commandPath} is required`);
-    const expected = new Set(options);
+    const expected = new Set(command.options.map(({ long }) => long).filter(Boolean));
+    if (commandPath === 'fleet serve') expected.add('file');
     const seen = new Set();
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object' || typeof entry.option !== 'string') {
@@ -1237,7 +1215,10 @@ export function validateFleetOptionCoverage(matrix, inventory) {
           );
         }
         const coverageToken = entry.argvToken ?? entry.option;
-        if (!(operation.argvMustContain ?? []).includes(coverageToken)) {
+        if (
+          !operation.argvMustContain?.includes(coverageToken) &&
+          !operation.argvMustContain?.includes(entry.option)
+        ) {
           throw new Error(
             `supported option ${commandPath} ${entry.option} is not required by operation ${entry.operationId}`
           );
@@ -1272,10 +1253,26 @@ export function validateFleetOptionCoverage(matrix, inventory) {
               );
             }
             const variantToken = variant.argvToken ?? variant.value;
-            if (!(operation.argvMustContain ?? []).includes(variantToken)) {
+            if (variant.omitted !== true && !(operation.argvMustContain ?? []).includes(variantToken)) {
               throw new Error(
                 `supported variant ${commandPath} ${entry.option}=${variant.value} is not required by operation ${variantOperationId}`
               );
+            }
+          } else if (variant.operationId !== undefined) {
+            const operation = matrix.operations.find(({ id }) => id === variant.operationId);
+            if (!operation || !(matrix.commandSurface[commandPath] ?? []).includes(variant.operationId)) {
+              throw new Error(
+                `negative variant ${commandPath} ${entry.option}=${variant.value} must name an operation on that leaf`
+              );
+            }
+            const variantToken = variant.argvToken ?? variant.value;
+            if (variant.omitted !== true && !(operation.argvMustContain ?? []).includes(variantToken)) {
+              throw new Error(
+                `negative variant ${commandPath} ${entry.option}=${variant.value} is not required by operation ${variant.operationId}`
+              );
+            }
+            if (typeof variant.reason !== 'string' || !variant.reason.trim()) {
+              throw new Error(`negative variant ${commandPath} ${entry.option} requires a reason`);
             }
           } else if (typeof variant.reason !== 'string' || !variant.reason.trim()) {
             throw new Error(`non-supported variant ${commandPath} ${entry.option} requires a reason`);
@@ -1289,7 +1286,15 @@ export function validateFleetOptionCoverage(matrix, inventory) {
   return coverage;
 }
 
-export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspaceAgents, processAgents }) {
+export function validateFleetFinalCleanup({
+  brokerNodes,
+  brokerAgents,
+  workspaceAgents,
+  processAgents,
+  processInventories,
+  processInventoryComplete,
+  processInventoryErrors,
+}) {
   const inventoriesPresent =
     Array.isArray(brokerNodes) &&
     Array.isArray(brokerAgents) &&
@@ -1299,6 +1304,8 @@ export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspace
   const brokerAgentList = Array.isArray(brokerAgents) ? brokerAgents : [];
   const workspaceAgentList = Array.isArray(workspaceAgents) ? workspaceAgents : [];
   const processAgentList = Array.isArray(processAgents) ? processAgents : [];
+  const processInventoryList = Array.isArray(processInventories) ? processInventories : [];
+  const processErrors = Array.isArray(processInventoryErrors) ? processInventoryErrors : [];
   const nodeRecordsValid = nodeList.every(
     (node) => node && typeof node.name === 'string' && node.name && typeof node.status === 'string'
   );
@@ -1309,6 +1316,26 @@ export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspace
   const processAgentRecordsValid = processAgentList.every(
     (agent) => agent && typeof agent.name === 'string' && agent.name
   );
+  const processInventoryRecordsValid = processInventoryList.every(
+    (inventory) =>
+      inventory &&
+      typeof inventory.nodeName === 'string' &&
+      inventory.nodeName &&
+      Array.isArray(inventory.agents) &&
+      inventory.agents.every((agent) => agent && typeof agent.name === 'string' && agent.name)
+  );
+  const processInventoryNodeNamesUnique =
+    new Set(processInventoryList.map((inventory) => inventory.nodeName)).size === processInventoryList.length;
+  const processAgentNamesUnique =
+    new Set(processAgentList.map((agent) => agent?.name)).size === processAgentList.length;
+  const onlineNodeNames = new Set(
+    nodeList.filter((node) => node?.status === 'online' || node?.live === true).map((node) => node.name)
+  );
+  const inspectedNodeNames = new Set(processInventoryList.map((inventory) => inventory.nodeName));
+  const processInventoriesCoverOnlineNodes = [...onlineNodeNames].every((name) =>
+    inspectedNodeNames.has(name)
+  );
+  const processInventoryEmpty = processInventoryList.every((inventory) => inventory.agents.length === 0);
   const onlineNodes = nodeList.filter((node) => node?.status === 'online' || node?.live === true);
   const pass =
     inventoriesPresent &&
@@ -1316,6 +1343,13 @@ export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspace
     brokerAgentRecordsValid &&
     workspaceAgentRecordsValid &&
     processAgentRecordsValid &&
+    processInventoryRecordsValid &&
+    processInventoryNodeNamesUnique &&
+    processAgentNamesUnique &&
+    processInventoryComplete === true &&
+    processErrors.length === 0 &&
+    processInventoriesCoverOnlineNodes &&
+    processInventoryEmpty &&
     onlineNodes.every((node) => node.handlersLive === true) &&
     brokerAgentList.length === 0 &&
     workspaceAgentList.length === 0 &&
@@ -1324,7 +1358,20 @@ export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspace
     pass,
     inventoriesPresent,
     recordsValid:
-      nodeRecordsValid && brokerAgentRecordsValid && workspaceAgentRecordsValid && processAgentRecordsValid,
+      nodeRecordsValid &&
+      brokerAgentRecordsValid &&
+      workspaceAgentRecordsValid &&
+      processAgentRecordsValid &&
+      processInventoryRecordsValid &&
+      processInventoryNodeNamesUnique &&
+      processAgentNamesUnique,
+    processInventoryComplete: processInventoryComplete === true,
+    processInventoryErrors: processErrors,
+    processInventoryNodeNames: [...inspectedNodeNames].sort(),
+    processInventoryNodeNamesUnique,
+    processAgentNamesUnique,
+    processInventoriesCoverOnlineNodes,
+    processInventoryEmpty,
     brokerNodeCount: nodeList.length,
     onlineNodeCount: onlineNodes.length,
     brokerAgentNames: brokerAgentList
@@ -1345,28 +1392,36 @@ export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspace
 function validateOperationOptionCoverage(operation, matrix) {
   for (const entries of Object.values(matrix.optionCoverage ?? {})) {
     for (const entry of entries) {
-      if (entry?.status !== 'supported') continue;
-      const variantsForOperation = (entry.variants ?? []).filter(
-        (variant) =>
-          variant.status === 'supported' && (variant.operationId ?? entry.operationId) === operation.id
-      );
-      if (entry.operationId !== operation.id && variantsForOperation.length === 0) continue;
-      const token = entry.argvToken ?? entry.option;
-      const index = operation.argv.indexOf(token);
-      if (index < 0) {
-        throw new Error(`operation ${operation.id} did not execute supported option ${entry.option}`);
-      }
-      if (entry.option.startsWith('--') && entry.takesValue !== false) {
-        const value = operation.argv[index + 1];
-        if (typeof value !== 'string' || !value || value.startsWith('--')) {
-          throw new Error(`operation ${operation.id} did not execute a value for ${entry.option}`);
+      if (!entry || !Array.isArray(operation.argv)) continue;
+      const direct = entry.status === 'supported' && entry.operationId === operation.id;
+      if (direct) {
+        const token = entry.argvToken ?? entry.option;
+        const index = operation.argv.indexOf(token);
+        if (index < 0) {
+          throw new Error(`operation ${operation.id} did not execute supported option ${entry.option}`);
+        }
+        if (entry.option.startsWith('--') && entry.takesValue !== false) {
+          const value = operation.argv[index + 1];
+          if (typeof value !== 'string' || !value || value.startsWith('--')) {
+            throw new Error(`operation ${operation.id} did not execute a value for ${entry.option}`);
+          }
         }
       }
-      for (const variant of variantsForOperation) {
+      for (const variant of entry.variants ?? []) {
+        if (variant.operationId === undefined && variant.status !== 'supported') continue;
+        if ((variant.operationId ?? entry.operationId) !== operation.id) continue;
+        const token = entry.argvToken ?? entry.option;
+        const index = operation.argv.indexOf(token);
+        if (variant.omitted === true) {
+          if (index >= 0) {
+            throw new Error(`operation ${operation.id} unexpectedly supplied ${entry.option}`);
+          }
+          continue;
+        }
         const expectedValue = variant.argvToken ?? variant.value;
-        if (operation.argv[index + 1] !== expectedValue) {
+        if (index < 0 || operation.argv[index + 1] !== expectedValue) {
           throw new Error(
-            `operation ${operation.id} did not execute supported variant ${entry.option}=${variant.value}`
+            `operation ${operation.id} did not execute ${variant.status} variant ${entry.option}=${variant.value}`
           );
         }
       }
@@ -1376,9 +1431,21 @@ function validateOperationOptionCoverage(operation, matrix) {
 
 export function validateFleetNodesPayload(payload) {
   if (!payload || !Array.isArray(payload.nodes)) throw new Error('Fleet nodes payload must contain nodes[]');
+  const names = new Set();
   for (const node of payload.nodes) {
     if (!node || typeof node.name !== 'string' || !node.name || typeof node.status !== 'string') {
       throw new Error('Fleet nodes payload contains an invalid node record');
+    }
+    if (names.has(node.name)) throw new Error(`Fleet nodes payload contains duplicate node ${node.name}`);
+    names.add(node.name);
+    if (node.live !== undefined && typeof node.live !== 'boolean') {
+      throw new Error('Fleet nodes payload contains an invalid live flag');
+    }
+    if (node.handlersLive !== undefined && typeof node.handlersLive !== 'boolean') {
+      throw new Error('Fleet nodes payload contains an invalid handlersLive flag');
+    }
+    if (node.capabilities !== undefined && !Array.isArray(node.capabilities)) {
+      throw new Error('Fleet nodes payload contains an invalid capabilities list');
     }
     if (
       node.activeAgents !== undefined &&
@@ -1435,7 +1502,8 @@ export function validateFleetCommandCoverage(matrix, inventory) {
   }
   if (
     inventory.commands.find((command) => command.path === 'fleet serve')?.hidden !== true ||
-    JSON.stringify(matrix.commandSurface['fleet serve']) !== JSON.stringify(['fleet-serve-migration'])
+    JSON.stringify(matrix.commandSurface['fleet serve']) !==
+      JSON.stringify(['fleet-serve-migration', 'fleet-serve-migration-default'])
   ) {
     throw new Error('hidden fleet serve migration surface is not exactly covered');
   }
@@ -1463,16 +1531,16 @@ export function validateOperationArgvContract(operation, definition, matrix) {
   if (!Array.isArray(operation.argv)) {
     throw new Error(`operation ${operation.id} has no sanitized argv`);
   }
+  for (const token of definition.argvMustContain ?? []) {
+    if (!operation.argv.includes(token)) {
+      throw new Error(`operation ${operation.id} argv is missing required token ${token}`);
+    }
+  }
   const leaves = commandLeavesForOperation(matrix, operation.id);
   if (leaves.length === 0) return operation;
   for (const leaf of leaves) {
     if (!argvContainsCommandInvocation(operation.argv, leaf)) {
       throw new Error(`operation ${operation.id} argv does not invoke command leaf ${leaf}`);
-    }
-  }
-  for (const token of definition.argvMustContain ?? []) {
-    if (!operation.argv.includes(token)) {
-      throw new Error(`operation ${operation.id} argv is missing required token ${token}`);
     }
   }
   validateOperationOptionCoverage(operation, matrix);
@@ -2565,11 +2633,17 @@ export function validateFleetEvidence(evidence, matrix) {
       }
     }
 
-    if (operation.id === 'fleet-spawn-reject-droid' && operation.status === 'pass') {
-      const targetName = `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`;
+    if (
+      ['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id) &&
+      operation.status === 'pass'
+    ) {
+      const targetName =
+        operation.id === 'fleet-spawn-reject-droid'
+          ? `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`
+          : `fleet-spawn-unavailable-provider-${evidence.nonce.slice(0, 16)}`;
       if (!noPartialCreationProofPass(operation.partialCreationProof, targetName)) {
         throw new Error(
-          'fleet-spawn-reject-droid did not prove no agent, worker process, Cloud record, or Daytona sandbox was created'
+          `${operation.id} did not prove no agent, worker process, Cloud record, or Daytona sandbox was created`
         );
       }
     }
@@ -2580,7 +2654,7 @@ export function validateFleetEvidence(evidence, matrix) {
         operation.group === 'node-agent-provider' ||
         operation.group === 'node-agent-spawn') &&
       (operation.group !== 'node-agent-spawn' || operation.expect !== 'sentinel-and-exit') &&
-      operation.id !== 'fleet-spawn-reject-droid'
+      !['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id)
     ) {
       const expectedProvider =
         operation.id.match(
@@ -2752,6 +2826,21 @@ export function validateFleetEvidence(evidence, matrix) {
   }
   if (!['pass', 'fail'].includes(evidence.cleanup?.status)) {
     throw new Error('evidence cleanup status is invalid');
+  }
+  if (evidence.cleanup?.status === 'pass') {
+    const finalBoard = evidence.cleanup.finalBoard;
+    if (!finalBoard || finalBoard.pass !== true) {
+      throw new Error('cleanup cannot pass without an explicit clean final board assertion');
+    }
+    if (
+      finalBoard.processInventoryComplete !== true ||
+      finalBoard.processInventoryEmpty !== true ||
+      finalBoard.processInventoriesCoverOnlineNodes !== true ||
+      !Array.isArray(finalBoard.processInventoryErrors) ||
+      finalBoard.processInventoryErrors.length !== 0
+    ) {
+      throw new Error('cleanup cannot pass without complete empty final board process inventories');
+    }
   }
   const failedReleaseAttempt = (evidence.cleanup?.attempts ?? []).find(
     ({ type, exitCode }) => typeof type === 'string' && type.includes('release') && exitCode !== 0
@@ -3394,18 +3483,24 @@ class FleetBoard {
     return payload.nodes;
   }
 
-  async listNodeAgents(node) {
+  async listNodeAgents(node, withStatus = false) {
     if (!node?.id) throw new Error('node identity is required to inspect worker processes');
-    const result = await execute(this.inside(node.id, 'node', 'agent', 'list'), {
-      timeoutMs: 30_000,
-      maxCaptureBytes: 4 * 1024 * 1024,
-    });
+    const result = await execute(
+      this.inside(node.id, 'node', 'agent', 'list', ...(withStatus ? ['--status'] : [])),
+      {
+        timeoutMs: 30_000,
+        maxCaptureBytes: 4 * 1024 * 1024,
+      }
+    );
     if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
       throw new Error(result._rawStderr || 'node agent list failed');
     }
     const payload = tryParseJson(result._rawStdout);
     const agents = Array.isArray(payload) ? payload : Array.isArray(payload?.agents) ? payload.agents : null;
     if (!agents) throw new Error('node agent list returned invalid JSON');
+    if (agents.some((agent) => !agent || typeof agent.name !== 'string' || !agent.name)) {
+      throw new Error('node agent list returned an invalid agent record');
+    }
     return agents;
   }
 
@@ -4429,6 +4524,31 @@ class FleetBoard {
         summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
       };
     });
+    await this.record('fleet-spawn-reject-unavailable-provider', async () => {
+      const rejectedName = `fleet-spawn-unavailable-provider-${this.short}`;
+      const before = await this.captureNoPartialCreationProof(rejectedName);
+      const result = await execute(
+        this.cliArgv(
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          rejectedName,
+          '--task',
+          'This must be rejected before any sandbox provider is contacted.',
+          '--sandbox',
+          '--sandbox-provider',
+          'unavailable-fixture'
+        ),
+        { timeoutMs: 15_000 }
+      );
+      const after = await this.captureNoPartialCreationProof(rejectedName);
+      return {
+        ...stripPrivateExecution(result),
+        partialCreationProof: { targetName: rejectedName, before, after },
+        summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
+      };
+    });
   }
 
   async mountedSandboxCases() {
@@ -4872,14 +4992,19 @@ class FleetBoard {
     const assertAgentList = (result, withStatus = false) => {
       const payload = tryParseJson(result._rawStdout);
       const agents = Array.isArray(payload) ? payload : [];
-      const exact = agents.find(({ name }) => name === node.agentName);
+      const exactMatches = agents.filter(({ name }) => name === node.agentName);
+      const exact = exactMatches[0];
+      const provider = exact?.cli ?? exact?.provider;
       const pass =
-        Boolean(exact) &&
+        exactMatches.length === 1 &&
+        provider === 'codex' &&
         exact.runtime_kind === 'pty' &&
+        Array.isArray(exact.channels) &&
+        exact.channels.includes('general') &&
         (!withStatus || (typeof exact.delivery_mode === 'string' && Array.isArray(exact.pending)));
       return {
         pass,
-        summary: `exactAgent=${Boolean(exact)} runtime=${exact?.runtime_kind ?? 'missing'} deliveryMode=${exact?.delivery_mode ?? 'not-requested'}`,
+        summary: `exactAgentCount=${exactMatches.length} provider=${provider ?? 'missing'} runtime=${exact?.runtime_kind ?? 'missing'} channels=${JSON.stringify(exact?.channels ?? [])} deliveryMode=${exact?.delivery_mode ?? 'not-requested'}`,
       };
     };
     await this.assertedCommand(
@@ -4892,8 +5017,12 @@ class FleetBoard {
       'node-agent-list-pretty',
       this.inside(sandboxId, 'node', 'agent', 'list', '--pretty'),
       (result) => ({
-        pass: result._rawStdout.includes(node.agentName) && result._rawStdout.includes('codex'),
-        summary: `listedExactAgent=${result._rawStdout.includes(node.agentName)}`,
+        pass:
+          result._rawStdout.includes(node.agentName) &&
+          result._rawStdout.includes('codex') &&
+          result._rawStdout.includes('runtime_kind') &&
+          result._rawStdout.includes('pty'),
+        summary: `listedExactAgent=${result._rawStdout.includes(node.agentName)} providerCodex=${result._rawStdout.includes('codex')} runtimePty=${result._rawStdout.includes('pty')}`,
       }),
       { timeoutMs: 45_000 }
     );
@@ -5036,6 +5165,34 @@ class FleetBoard {
       cwd: '/home/daytona',
     });
     await this.releaseSupport(`node-agent-new-view-${this.short}`, newNode, 'node');
+    await this.record('node-agent-new-reject-headless', async () => {
+      const rejectedName = `node-agent-new-headless-${this.short}`;
+      const result = await execute(
+        this.inside(
+          newNode.id,
+          'node',
+          'agent',
+          'new',
+          'codex',
+          '--name',
+          rejectedName,
+          '--task',
+          'This must be rejected before a headless worker is created.',
+          '--runtime',
+          'headless',
+          '--release',
+          'delete'
+        ),
+        { timeoutMs: 30_000 }
+      );
+      const output = `${result._rawStdout}\n${result._rawStderr}`;
+      const rejected = result.exitCode !== 0 && output.includes('cannot attach to headless');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: rejected ? result.exitCode : 1,
+        summary: `headlessRejectedBeforeSpawn=${rejected}`,
+      };
+    });
   }
 
   async nodeAgentControls(node) {
@@ -5855,6 +6012,15 @@ class FleetBoard {
         summary: `migrationGuidance=${guidance}`,
       };
     });
+    await this.record('fleet-serve-migration-default', async () => {
+      const result = await execute(this.cliArgv('fleet', 'serve'), { timeoutMs: 15_000 });
+      const guidance = `${result._rawStdout}${result._rawStderr}`.includes('node up');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode !== 0 && guidance ? result.exitCode : 0,
+        summary: `migrationGuidance=${guidance} optionalFileOmitted=true`,
+      };
+    });
   }
 
   async fleetReleaseCases() {
@@ -6182,11 +6348,17 @@ class FleetBoard {
       })
       .catch(() => null);
     const finalProcessAgents = [];
-    for (const node of finalBoardNodes ?? []) {
+    const processInventories = [];
+    const processInventoryErrors = [];
+    for (const node of (finalBoardNodes ?? []).filter(
+      ({ status, live }) => status === 'online' || live === true
+    )) {
       try {
-        finalProcessAgents.push(...(await this.listNodeAgents(node)));
-      } catch {
-        finalProcessAgents.push({ name: `unreadable:${node?.name ?? 'unknown'}` });
+        const agents = await this.listNodeAgents(node, true);
+        processInventories.push({ nodeName: node.name, agents });
+        finalProcessAgents.push(...agents);
+      } catch (error) {
+        processInventoryErrors.push(`${node?.name ?? 'unknown'}:${redactFleetEvidence(error)}`);
       }
     }
     const finalCleanup = validateFleetFinalCleanup({
@@ -6194,12 +6366,15 @@ class FleetBoard {
       brokerAgents: finalBrokerAgents,
       workspaceAgents: finalAgentNames ? [...finalAgentNames] : null,
       processAgents: finalProcessAgents,
+      processInventories,
+      processInventoryComplete: Array.isArray(finalBoardNodes) && processInventoryErrors.length === 0,
+      processInventoryErrors,
     });
     this.evidence.cleanup.finalBoard = finalCleanup;
     await this.derived('daytona-baseline-restored', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
       exitCode: exactPrefixLeaks.length === 0 && baselinePreserved && finalCleanup.pass ? 0 : 1,
-      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
+      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)} processInventoryComplete=${finalCleanup.processInventoryComplete} processInventoryErrors=${JSON.stringify(finalCleanup.processInventoryErrors)} processInventoryNodeNames=${JSON.stringify(finalCleanup.processInventoryNodeNames)} processInventoryEmpty=${finalCleanup.processInventoryEmpty}`,
     });
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&

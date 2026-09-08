@@ -261,10 +261,13 @@ function operationRecord(operation: {
           observedIdentitySource: 'node-agent-list',
         }
       : {}),
-    ...(operation.id === 'fleet-spawn-reject-droid'
+    ...(['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id)
       ? {
           partialCreationProof: {
-            targetName: `fleet-spawn-provider-droid-${NONCE.slice(0, 16)}`,
+            targetName:
+              (operation.id === 'fleet-spawn-reject-droid'
+                ? 'fleet-spawn-provider-droid'
+                : 'fleet-spawn-unavailable-provider') + `-${NONCE.slice(0, 16)}`,
             before: {
               agentNames: [],
               fleetNodeKeys: [],
@@ -528,7 +531,17 @@ function completeEvidence(matrix: {
         nonce: NONCE,
       },
     ],
-    cleanup: { status: 'pass' },
+    cleanup: {
+      status: 'pass',
+      finalBoard: {
+        pass: true,
+        processInventoryComplete: true,
+        processInventoryEmpty: true,
+        processInventoriesCoverOnlineNodes: true,
+        processInventoryErrors: [],
+        processInventoryNodeNames: boardResources.map(({ nodeName }) => nodeName),
+      },
+    },
     verdict: 'GREEN',
   };
 }
@@ -677,9 +690,9 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations).toHaveLength(105);
+    expect(matrix.operations).toHaveLength(108);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(105);
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(108);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -732,6 +745,11 @@ describe('complete Daytona Fleet board', () => {
       ({ option }: { option: string }) => option !== '--ssh-host'
     );
     expect(() => validateFleetOptionCoverage(missing, inventory)).toThrow(/every material option/);
+    const extraLeaf = structuredClone(matrix);
+    extraLeaf.optionCoverage['fleet synthetic-leaf'] = [];
+    expect(() => validateFleetOptionCoverage(extraLeaf, inventory)).toThrow(
+      /every public Fleet and node-agent leaf/
+    );
     const dishonest = structuredClone(matrix);
     dishonest.optionCoverage['node agent attach'].find(
       ({ option }: { option: string }) => option === '--ssh-host'
@@ -746,7 +764,7 @@ describe('complete Daytona Fleet board', () => {
       'view',
     ];
     expect(() => validateFleetOptionCoverage(unexecuted, inventory)).toThrow(
-      /supported option node agent new --runtime is not required/
+      /supported option node agent new --(?:channels|runtime) is not required/
     );
     const unboundVariant = structuredClone(matrix);
     unboundVariant.operations.find(
@@ -822,22 +840,26 @@ describe('complete Daytona Fleet board', () => {
       /does not invoke command leaf node agent set-model/
     );
 
-    const wrongRuntime = structuredClone(operation);
+    const headlessOperation = evidence.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-new-reject-headless'
+    );
+    const headlessDefinition = matrix.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-new-reject-headless'
+    );
+    const wrongRuntime = structuredClone(headlessOperation);
     wrongRuntime.argv[wrongRuntime.argv.indexOf('--runtime') + 1] = 'pty';
     const variantOnlyDefinition = {
-      ...definition,
-      argvMustContain: definition.argvMustContain.filter((token: string) => token !== 'headless'),
+      ...headlessDefinition,
+      argvMustContain: headlessDefinition.argvMustContain.filter((token: string) => token !== 'headless'),
     };
     expect(() => validateOperationArgvContract(wrongRuntime, variantOnlyDefinition, matrix)).toThrow(
-      /did not execute supported variant --runtime=headless/
+      /did not execute (?:un)?supported variant --runtime=headless/
     );
   });
 
   it('fails closed for non-green runs and makes DRY_RUN a runner-level no-op', async () => {
     expect(assertGreenRunVerdict({ verdict: 'GREEN' })).toEqual({ verdict: 'GREEN' });
-    expect(() => assertGreenRunVerdict({ verdict: 'RED' })).toThrow(
-      /Fleet Daytona run verdict is RED/
-    );
+    expect(() => assertGreenRunVerdict({ verdict: 'RED' })).toThrow(/Fleet Daytona run verdict is RED/);
     expect(() => assertGreenRunVerdict({})).toThrow(/verdict is missing/);
     expect(dryRunRequested({ DRY_RUN: 'true' })).toBe(true);
     expect(dryRunRequested({ DRY_RUN: '1' })).toBe(true);
@@ -889,8 +911,22 @@ describe('complete Daytona Fleet board', () => {
         brokerAgents: [],
         workspaceAgents: [],
         processAgents: [],
+        processInventories: [{ nodeName: 'node-a', agents: [] }],
+        processInventoryComplete: true,
+        processInventoryErrors: [],
       })
     ).toMatchObject({ pass: true, brokerNodeCount: 1 });
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
+        brokerAgents: [],
+        workspaceAgents: [],
+        processAgents: [],
+        processInventories: [],
+        processInventoryComplete: true,
+        processInventoryErrors: [],
+      }).pass
+    ).toBe(false);
     expect(
       validateFleetFinalCleanup({
         brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
@@ -929,7 +965,9 @@ describe('complete Daytona Fleet board', () => {
 
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
-    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 105/);
+    expect(() => validateFleetAcceptance(missing)).toThrow(
+      /exactly map all 108|exactly map every matrix operation/
+    );
   });
 
   it('fails closed when Fleet qualification evidence loses creation, identity, or release binding', async () => {
@@ -1214,18 +1252,21 @@ describe('complete Daytona Fleet board', () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const duplicate = structuredClone(matrix);
     duplicate.operations.push(structuredClone(duplicate.operations[0]));
+    duplicate.operationCount = duplicate.operations.length;
     expect(() => validateFleetMatrix(duplicate)).toThrow(/duplicate operation/);
 
     const wrongCount = structuredClone(matrix);
     wrongCount.operations.pop();
-    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 105/);
+    expect(() => validateFleetMatrix(wrongCount)).toThrow(/operationCount/);
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 105 operations/);
+    expect(() => validateFleetMatrix(incomplete)).toThrow(
+      /must exactly map every matrix operation|must exactly map all 108 operations/
+    );
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -1850,7 +1891,7 @@ describe('complete Daytona Fleet board', () => {
       verdict: 'COMPREHENSIVELY_SATISFIED',
       whyPassed: 'All matrix operations and cleanup evidence were inspected.',
       endToEndWiringVerified: 'The sealed evidence connects the board to exact resources.',
-      deterministicEvidence: ['105 exact operation records'],
+      deterministicEvidence: ['108 exact operation records'],
       remainingRisks: ['Product RED is permitted as truthful evidence.'],
       findings: [],
     };
