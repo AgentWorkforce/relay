@@ -44,6 +44,7 @@ import {
 } from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  boundedDiagnostic,
   boundedDuration,
   createPreparedRunProgressParser,
   createCliApiKeyEnvironment,
@@ -453,6 +454,13 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(diagnostics).toContain('status_poll_failures=2');
     expect(diagnostics).toContain('step timeout');
     expect(diagnostics).toContain('cloud_logs_output=empty');
+  });
+
+  it('bounds multibyte Cloud diagnostics by UTF-8 bytes', () => {
+    const diagnostics = boundedDiagnostic('😀'.repeat(100_000));
+
+    expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(diagnostics).toContain('[... diagnostic output truncated ...]');
   });
 
   it('waits for a complete prepared-run progress line split across stderr chunks', () => {

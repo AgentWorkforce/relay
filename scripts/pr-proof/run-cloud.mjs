@@ -55,10 +55,19 @@ function parseJsonOutput(output, label) {
   }
 }
 
-function boundedDiagnostic(value) {
+export function boundedDiagnostic(value) {
   const text = String(value ?? '');
-  if (Buffer.byteLength(text, 'utf8') <= MAX_DIAGNOSTIC_BYTES) return text;
-  return `${text.slice(-MAX_DIAGNOSTIC_BYTES)}\n[... diagnostic output truncated ...]`;
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= MAX_DIAGNOSTIC_BYTES) return text;
+
+  const marker = '\n[... diagnostic output truncated ...]';
+  const tailBudget = MAX_DIAGNOSTIC_BYTES - Buffer.byteLength(marker, 'utf8');
+  let tail = bytes.subarray(bytes.length - tailBudget).toString('utf8');
+  // A byte slice can begin in the middle of a multi-byte code point. Removing
+  // the replacement character (or another leading code point if needed) keeps
+  // the final diagnostic, including its marker, within the byte contract.
+  while (Buffer.byteLength(tail, 'utf8') > tailBudget) tail = tail.slice(1);
+  return `${tail}${marker}`;
 }
 
 export function formatCloudRunDiagnostics({
