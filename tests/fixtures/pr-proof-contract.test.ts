@@ -631,7 +631,7 @@ describe('Cloud dispatcher API key lifecycle', () => {
     const longCredential = 'a'.repeat(200_000);
     const capture = await runBoundedProcess(
       process.execPath,
-      ['-e', `process.stdout.write('head rk_live_${longCredential} tail')`],
+      ['-e', "process.stdout.write('head rk_live_' + 'a'.repeat(200_000) + ' tail')"],
       {
         echo: false,
         maxCaptureBytes: 128,
