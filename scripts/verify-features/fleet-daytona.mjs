@@ -45,13 +45,13 @@ const LIVE_CREDENTIAL_PREFIX_SOURCE =
 // github_pat_...), not a hyphen.
 const GITHUB_TOKEN_SOURCE = '(?:gh[opurs]_|github_pat_)[A-Za-z0-9_]{8,}';
 const PROVIDER_SECRET_SOURCE = '(?:sk-proj|sk-ant)-[A-Za-z0-9._~+/=-]{8,}';
-const LIVE_CREDENTIAL_RE = new RegExp(`\\b${LIVE_CREDENTIAL_PREFIX_SOURCE}\\b`, 'g');
-const GITHUB_TOKEN_RE = new RegExp(`\\b${GITHUB_TOKEN_SOURCE}\\b`, 'g');
-const PROVIDER_SECRET_RE = new RegExp(`\\b${PROVIDER_SECRET_SOURCE}\\b`, 'g');
+const LIVE_CREDENTIAL_RE = new RegExp(`${LIVE_CREDENTIAL_PREFIX_SOURCE}\\b`, 'g');
+const GITHUB_TOKEN_RE = new RegExp(`${GITHUB_TOKEN_SOURCE}\\b`, 'g');
+const PROVIDER_SECRET_RE = new RegExp(`${PROVIDER_SECRET_SOURCE}\\b`, 'g');
 // Non-global by design: reused via .test() in validateFleetEvidence, where a
 // global regex's stateful lastIndex would make repeated calls unreliable.
 const UNREDACTED_CREDENTIAL_RE = new RegExp(
-  `\\b(?:${LIVE_CREDENTIAL_PREFIX_SOURCE}|${GITHUB_TOKEN_SOURCE}|${PROVIDER_SECRET_SOURCE})\\b`
+  `(?:${LIVE_CREDENTIAL_PREFIX_SOURCE}|${GITHUB_TOKEN_SOURCE}|${PROVIDER_SECRET_SOURCE})\\b`
 );
 const KNOWN_SECRET_ENV = [
   'RELAY_AGENT_TOKEN',
@@ -1657,12 +1657,18 @@ export function validateRecoveryEvidence(evidence, matrix, nonce) {
   return evidence;
 }
 
+// JSON literal tokens that must never be used as secret replacement targets:
+// replacing them would corrupt a serialized evidence document.
+const JSON_RESERVED_VALUES = new Set(['true', 'false', 'null']);
+
 function secretValues(extra = []) {
   return [
     ...KNOWN_SECRET_ENV.map((name) => process.env[name]).filter(
-      (value) => typeof value === 'string' && value.length > 0
+      (value) => typeof value === 'string' && value.length > 0 && !JSON_RESERVED_VALUES.has(value)
     ),
-    ...extra.filter((value) => typeof value === 'string' && value.length > 0),
+    ...extra.filter(
+      (value) => typeof value === 'string' && value.length > 0 && !JSON_RESERVED_VALUES.has(value)
+    ),
   ];
 }
 
@@ -1906,8 +1912,8 @@ async function execute(argv, options = {}) {
     stderrTruncated,
     stdoutCaptureTruncated,
     stderrCaptureTruncated,
-    stdout: redactFleetEvidence(boundedAppend('', stdout, MAX_CAPTURE_BYTES), options.extraSecrets),
-    stderr: redactFleetEvidence(boundedAppend('', stderr, MAX_CAPTURE_BYTES), options.extraSecrets),
+    stdout: boundedAppend('', redactFleetEvidence(stdout, options.extraSecrets), MAX_CAPTURE_BYTES),
+    stderr: boundedAppend('', redactFleetEvidence(stderr, options.extraSecrets), MAX_CAPTURE_BYTES),
     ...(stdinChunks === undefined
       ? {}
       : { stdinBytes: stdinChunks.reduce((total, entry) => total + entry.bytes.length, 0) }),
@@ -2850,6 +2856,8 @@ export function validateFleetEvidence(evidence, matrix) {
       !sandbox ||
       !worker ||
       !intent ||
+      proof.sandboxPresentBeforeRelease !== true ||
+      proof.workerPresentBeforeRelease !== true ||
       proof.sandboxName !== sandbox.nodeName ||
       proof.cloudWorkspaceId !== sandbox.cloudWorkspaceId ||
       proof.relayWorkspaceId !== sandbox.relayWorkspaceId ||
@@ -6095,6 +6103,9 @@ class FleetBoard {
         worker?.sandboxNodeId === resource.nodeId &&
         worker?.sandboxNodeName === resource.nodeName &&
         worker?.cloudWorkspaceId === resource.cloudWorkspaceId;
+      const sandboxPresentBeforeRelease = Boolean(await this.findSandboxByName(scopedName));
+      const workerPresentBeforeRelease =
+        (await this.exactAgentExists(scopedAgent).catch(() => null)) === true;
       const result = await execute(
         this.cliArgv(
           'fleet',
@@ -6137,6 +6148,8 @@ class FleetBoard {
           workerName: scopedAgent,
           ownership: resource.ownership,
           ownershipNonce: intent?.nonce,
+          sandboxPresentBeforeRelease,
+          workerPresentBeforeRelease,
           workerProcessAbsent,
           workerIdentityAbsent,
           sandboxAbsent,

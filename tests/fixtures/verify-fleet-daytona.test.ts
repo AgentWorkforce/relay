@@ -295,6 +295,8 @@ function operationRecord(operation: {
             workerName: `fleet-spawn-sandbox-scoped-mount-${NONCE.slice(0, 16)}`,
             ownership: 'created-by-run',
             ownershipNonce: NONCE,
+            sandboxPresentBeforeRelease: true,
+            workerPresentBeforeRelease: true,
             workerProcessAbsent: true,
             workerIdentityAbsent: true,
             sandboxAbsent: true,
@@ -2365,4 +2367,121 @@ describe('complete Daytona Fleet board', () => {
       await rm(temporary, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('redacts a credential whose prefix falls in the dropped output prefix (RED-1 adversarial)', async () => {
+    // MAX_CAPTURE_BYTES = 16 * 1024 internally.
+    // Use maxCaptureBytes: 2 * MAX_CAPTURE to trigger the second truncation.
+    const MAX_CAPTURE = 16 * 1024;
+    const secretBody = 'dead1234dead1234dead1234'; // 24 chars — distinctive
+    const secret = 'rk_live_' + secretBody; // 32 chars total
+    // Place secret 16 chars before the second-truncation boundary so that the
+    // 8-char prefix 'rk_live_' plus the first 8 body chars end up in the
+    // dropped half and only the trailing body survives.
+    const fillLen = MAX_CAPTURE - 16; // 16368 chars
+    const script = `process.stdout.write('${'x'.repeat(fillLen)}' + ${JSON.stringify(secret)} + 'x'.repeat(${fillLen}))`;
+    const result = await executeFleetCommand([process.execPath, '-e', script], {
+      maxCaptureBytes: 2 * MAX_CAPTURE,
+    });
+    // Raw capture still has the full secret — sanity check.
+    expect(result._rawStdout).toContain(secret);
+    // After fix: full secret is redacted before truncation.
+    // Before fix (current): 16 trailing body chars survive unredacted.
+    expect(result.stdout).not.toContain('dead1234');
+    expect(result.stdout).not.toContain('rk_live_');
+  });
+
+  it('catches credentials embedded adjacent to leading word characters (RED-2 adversarial)', () => {
+    // Before fix: \b at start prevents matching when a credential immediately
+    // follows a word character, e.g. 'prefixrk_live_ABCDEF12'.
+    const cases: Array<[string, string]> = [
+      ['prefix', 'rk_live_0123456789abcdef'],
+      ['x', 'br_0123456789abcdef'],
+      ['key', 'ghp_abcdefghijklmnopqrstuvwxyz0'],
+      ['api', 'at_live_0123456789abcdef'],
+      ['oauth', 'rjt_live_0123456789abcdef'],
+    ];
+    for (const [prefix, token] of cases) {
+      const adjacent = prefix + token;
+      const redacted = redactFleetEvidence(adjacent);
+      expect(redacted, `expected ${token} to be redacted when adjacent to '${prefix}'`).not.toContain(token);
+      // The body must also be absent (not just the prefixed form)
+      const bodyStart = token.indexOf('_', token.indexOf('_') + 1) + 1;
+      const body = token.slice(bodyStart);
+      expect(redacted, `expected body of ${token} to be absent`).not.toContain(body);
+    }
+    // Non-credential shapes must not be caught (no false positives)
+    expect(redactFleetEvidence('ghp-not-a-real-github-token-shape')).toContain(
+      'ghp-not-a-real-github-token-shape'
+    );
+  });
+
+  it('requires both pre-release existence and post-release absence in the reclaim proof (RED-3 adversarial)', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+
+    // Baseline: complete proof passes
+    expect(() => validateFleetEvidence(evidence, matrix)).not.toThrow();
+
+    const releaseOp = (ev: ReturnType<typeof completeEvidence>) =>
+      ev.operations.find(({ id }: { id: string }) => id === 'fleet-release-reclaims-owned-sandbox')
+        .sandboxReleaseProof;
+
+    // Missing sandboxPresentBeforeRelease must fail
+    const missingSandboxPre = structuredClone(evidence);
+    delete releaseOp(missingSandboxPre).sandboxPresentBeforeRelease;
+    expect(() => validateFleetEvidence(missingSandboxPre, matrix)).toThrow(/exact owned sandbox/);
+
+    // sandboxPresentBeforeRelease: false must fail
+    const sandboxNotPre = structuredClone(evidence);
+    releaseOp(sandboxNotPre).sandboxPresentBeforeRelease = false;
+    expect(() => validateFleetEvidence(sandboxNotPre, matrix)).toThrow(/exact owned sandbox/);
+
+    // Missing workerPresentBeforeRelease must fail
+    const missingWorkerPre = structuredClone(evidence);
+    delete releaseOp(missingWorkerPre).workerPresentBeforeRelease;
+    expect(() => validateFleetEvidence(missingWorkerPre, matrix)).toThrow(/exact owned sandbox/);
+
+    // workerPresentBeforeRelease: false must fail
+    const workerNotPre = structuredClone(evidence);
+    releaseOp(workerNotPre).workerPresentBeforeRelease = false;
+    expect(() => validateFleetEvidence(workerNotPre, matrix)).toThrow(/exact owned sandbox/);
+  });
+
+  it('preserves checkpoint JSON when a secret value equals a JSON reserved word (RED-4 adversarial)', async () => {
+    const previousNodeToken = process.env.RELAY_NODE_TOKEN;
+    const previousWorkspaceKey = process.env.RELAY_WORKSPACE_KEY;
+    try {
+      // Set a secret env var to a JSON-reserved literal
+      process.env.RELAY_NODE_TOKEN = 'false';
+      process.env.RELAY_WORKSPACE_KEY = 'null';
+      const json = JSON.stringify(
+        { status: true, enabled: false, missing: null, data: 'example-value' },
+        null,
+        2
+      );
+      const redacted = redactFleetEvidence(json);
+      // Must still be valid JSON after redaction
+      expect(() => JSON.parse(redacted)).not.toThrow();
+      const parsed = JSON.parse(redacted);
+      // JSON boolean/null literals must be preserved
+      expect(parsed.enabled).toBe(false);
+      expect(parsed.status).toBe(true);
+      expect(parsed.missing).toBeNull();
+      // Confirm the leak scanner is still fail-closed: a real credential-shaped
+      // token in the evidence must still trigger the unredacted-token check.
+      const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+      const evidence = completeEvidence(matrix);
+      evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+      const leakyEvidence = structuredClone(evidence);
+      leakyEvidence.resources[1].nodeId = 'different';
+      leakyEvidence.operations[0].summary = 'credential=br_0123456789abcdef';
+      expect(() => validateFleetEvidence(leakyEvidence, matrix)).toThrow(/unredacted token/);
+    } finally {
+      if (previousNodeToken === undefined) delete process.env.RELAY_NODE_TOKEN;
+      else process.env.RELAY_NODE_TOKEN = previousNodeToken;
+      if (previousWorkspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
+      else process.env.RELAY_WORKSPACE_KEY = previousWorkspaceKey;
+    }
+  });
 });
