@@ -631,9 +631,7 @@ describe('Cloud dispatcher API key lifecycle', () => {
     // cannot be recognized on its own, but the trailing prefix must not be
     // released when the shared stream closes.
     const sanitized =
-      redactor.push('secret', false) +
-      redactor.push('split-', false) +
-      redactor.push('', true);
+      redactor.push('secret', false) + redactor.push('split-', false) + redactor.push('', true);
 
     expect(sanitized).toBe('secret[redacted]');
     expect(sanitized).not.toContain('split-');

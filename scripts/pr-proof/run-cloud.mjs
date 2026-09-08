@@ -238,9 +238,7 @@ function createConfiguredSecretRedactor(secretValues, maskPendingOnFinal = false
           continue;
         }
         const suffixLength =
-          final && !maskPendingOnFinal
-            ? 0
-            : longestSuffixThatStartsSecret(input.slice(index), secrets);
+          final && !maskPendingOnFinal ? 0 : longestSuffixThatStartsSecret(input.slice(index), secrets);
         const end = input.length - suffixLength;
         output += input.slice(index, end);
         if (suffixLength > 0) {
