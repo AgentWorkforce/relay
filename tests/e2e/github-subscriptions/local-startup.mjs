@@ -34,7 +34,10 @@ let key, client, actionToken;
 const request = async (route, method = 'GET', body) => {
   const response = await fetch(baseUrl + route, {
     method,
-    headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${route.startsWith('/v1/actions/') ? actionToken : key}` } : {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(key ? { authorization: `Bearer ${route.startsWith('/v1/actions/') ? actionToken : key}` } : {}),
+    },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(15000),
   });
@@ -283,7 +286,9 @@ try {
     false
   );
   report.checks.push({ name: 'real plural membership and generation-safe release', pass: true });
-  actionToken = (await request('/v1/agents', 'POST', { name: 'owned-fleet-test-caller', auto_join_general: false })).token;
+  actionToken = (
+    await request('/v1/agents', 'POST', { name: 'owned-fleet-test-caller', auto_join_general: false })
+  ).token;
   const pluralAction = await request('/v1/actions/spawn/invoke', 'POST', {
     input: {
       name: 'fleet-plural',

@@ -691,7 +691,13 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; sessionId?: string; readiness_proven?: boolean };
+      payload: {
+        name: string;
+        runtime: AgentRuntime;
+        provider?: HeadlessProvider;
+        sessionId?: string;
+        readiness_proven?: boolean;
+      };
     }
   | {
       type: 'delivery_ack';
