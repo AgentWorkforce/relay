@@ -108,4 +108,16 @@ node tests/e2e/github-subscriptions/local-ai.mjs /absolute/fresh-ai-evidence
 
 This starts one actual Claude worker. Keep the assignment's independent reviewer stopped until cleanup completes. It verifies two successive idle actions, a600-second idle interval, ten distinct burst events, duplicate idempotency, no pre-join replay and an actual node WebSocket reconnect. Its signed producer is synthetic; these results cannot satisfy the real GitHub or actual-chief gates. It retains broker events, source/binary and runner/helper hashes, sanitized logs, channel messages and receiver tool-call names. Missing tool evidence, history/network polling, cleanup failure or missing digest action fails the run. `LOCAL_AI_LONG_IDLE_MS` may shorten a repair rerun, but such a run is not ten-minute idle proof.
 
+Set `LOCAL_AI_CLI=codex` for a separately labeled actual Codex proof using an existing
+logged-in Codex installation. This pins the actor to `gpt-6-astra` with high reasoning,
+restricts the Relay MCP server to `post_message`, and disables web search, apps,
+multi-agent and code-mode tools. The audit requires exactly one newly created Codex
+session with the disposable worker's exact cwd, retains its ID/version/transcript
+hash and sanitized tool-call metadata, and rejects every tool except the prescribed
+digest-only shell command and Relay `post_message`. It does not copy credentials or
+change the user's Codex configuration. Unsupported transcript formats fail the audit.
+Run only after the independent reviewer exits. Codex results do not establish
+Claude-specific behavior; neither provider's synthetic ingress proof establishes
+real GitHub delivery or actual-chief acceptance.
+
 Owned cleanup runs independently of the broker API loop. The name and generation remain reserved until confirmed deletion; failed attempts retry up to five times at five-second intervals. A generation-guarded release retries retained cleanup. API failures identify unconfirmed cleanup and its generation; they do not claim resources are gone. Shutdown waits up to one second for pending cleanup and logs any generation still requiring reconciliation.

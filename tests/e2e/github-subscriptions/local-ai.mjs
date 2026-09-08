@@ -1,4 +1,4 @@
-// Isolated real Claude + candidate broker/engine; synthetic signed provider events.
+// Isolated real Claude or Codex + candidate broker/engine; synthetic signed provider events.
 // This cannot satisfy the intended-environment real GitHub or chief gates.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -22,6 +22,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { codexReceiverArgs, codexMcpArgs, sessionFiles, auditOwnedCodexSession } from './codex-proof.mjs';
+const receiverCli = process.env.LOCAL_AI_CLI ?? 'claude';
+assert(['claude', 'codex'].includes(receiverCli), 'LOCAL_AI_CLI must be claude or codex');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const engineDir = process.env.RELAYCAST_ENGINE_DIR;
 const binaryPath = process.env.BROKER_BINARY_PATH;
@@ -41,7 +44,8 @@ const { startServer } = await import(
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const report = {
   at: new Date().toISOString(),
-  environment: 'isolated real Claude; synthetic signed Relayfile payloads; no GitHub delivery claim',
+  environment: `isolated real ${receiverCli}; synthetic signed Relayfile payloads; no GitHub delivery claim`,
+  receiverCli,
   ready: false,
   checks: [],
   stimuli: [],
@@ -80,19 +84,23 @@ for (const [name, directory] of [
   );
 }
 report.scriptSha256 = {};
-for (const script of ['local-ai.mjs', 'proof.mjs']) {
+for (const script of ['local-ai.mjs', 'proof.mjs', 'codex-proof.mjs']) {
   report.scriptSha256[script] = createHash('sha256')
     .update(readFileSync(path.join(root, 'tests/e2e/github-subscriptions', script)))
     .digest('hex');
 }
 report.expectedHead = expectedHead;
 const work = mkdtempSync(path.join(tmpdir(), 'ghsub-local-ai-'));
+const codexSessions = path.join(process.env.CODEX_HOME ?? path.join(process.env.HOME, '.codex'), 'sessions');
+const codexSessionsBefore = new Set(receiverCli === 'codex' ? sessionFiles(codexSessions) : []);
 report.workDir = work;
 report.sourceHeads.brokerBinarySha256 = createHash('sha256').update(readFileSync(binaryPath)).digest('hex');
 report.runtimeProof = 'candidate broker/CLI and engine builds; synthetic producer only';
 report.inputPacingMs = process.env.LOCAL_AI_INJECT_RATE_MS ?? 'default';
 report.receiverHistoryTools =
-  'Explicitly disallowed inbox, history, thread/message reads, search, MCP resource reads and WebFetch/WebSearch; actual nonce must arrive via push';
+  receiverCli === 'claude'
+    ? 'Explicitly disallowed inbox, history, thread/message reads, search, MCP resource reads and WebFetch/WebSearch; actual nonce must arrive via push'
+    : 'Relay MCP post_message allowlist; web/apps/multi-agent/code-mode disabled; exact owned-session audit permits only digest shell and post_message calls';
 const save = () => writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 const note = (text) => {
   report.status = text;
@@ -294,14 +302,27 @@ try {
   const start = Date.now();
   worker = await client.spawnCli({
     name,
-    cli: 'claude',
+    cli: receiverCli,
     channels: ['local-ai-proof'],
     cwd: work,
-    args: claudeReceiverArgs,
+    args:
+      receiverCli === 'claude'
+        ? claudeReceiverArgs
+        : [
+            ...codexReceiverArgs,
+            ...codexMcpArgs({ node: process.execPath, cli: root + '/packages/cli/dist/cli/index.js', base }),
+            '-c',
+            `projects.${JSON.stringify(work)}.trust_level="trusted"`,
+            '-c',
+            `projects.${JSON.stringify(realpathSync(work))}.trust_level="trusted"`,
+          ],
     idleThresholdSecs: 5,
     task:
       receiverTask +
-      ' This is an isolated synthetic-event rehearsal. Your only output action is the requested digest message to its incoming channel. Do not read environment/configuration files or change code. Do not ACK this initial task on Relay; wait for pushed events.',
+      ' This is an isolated synthetic-event rehearsal. Your only output action is the requested digest message to its incoming channel. Do not read environment/configuration files or change code. Do not ACK this initial task on Relay; wait for pushed events.' +
+      (receiverCli === 'codex'
+        ? " For each nonce use exec_command with exactly: printf '%s' '<nonce>' | shasum -a 256 (substitute only the 32 hex digits). Use mcp__agent-relay__post_message for the reply. Do not use any other tool, including sleep, inbox, resource reads, or tool orchestration."
+        : ''),
   });
   assert.deepEqual(worker.channels, ['local-ai-proof']);
   report.spawnedWorker = { name: worker.name, pid: worker.pid, generation: worker.generation };
@@ -318,7 +339,7 @@ try {
   );
   actorId = identity.id;
   report.actor = { name, id: actorId, pid: ready.pid, generation: worker.generation };
-  note('Real Claude started; awaiting initial idle');
+  note(`Real ${receiverCli} started; awaiting initial idle`);
   await idle(Date.now());
   assert(
     !(await messages()).some((m) => m.agent_id === actorId && m.text?.includes(digest(stale.stimulus.nonce))),
@@ -401,11 +422,11 @@ try {
       writeFileSync(path.join(output, 'messages.json'), JSON.stringify(await messages(), null, 2) + '\n');
     } catch {}
   }
-  // Inspect only this disposable Claude session's tool names, not credential files.
+  // Inspect only this disposable provider session's tool names, not credential files.
   const projectName = path.resolve(work).replace(/[^A-Za-z0-9]/g, '-');
   const canonicalName = realpathSync(work).replace(/[^A-Za-z0-9]/g, '-');
   const calls = [];
-  for (const name of new Set([projectName, canonicalName])) {
+  for (const name of receiverCli === 'claude' ? new Set([projectName, canonicalName]) : []) {
     const dir = path.join(process.env.HOME, '.claude', 'projects', name);
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir).filter((f) => f.endsWith('.jsonl'))) {
@@ -430,6 +451,23 @@ try {
           }
         } catch {}
       }
+    }
+  }
+  if (receiverCli === 'codex') {
+    try {
+      report.codexToolAudit = await auditOwnedCodexSession({
+        directory: codexSessions,
+        before: codexSessionsBefore,
+        cwd: work,
+        startedAt: report.at,
+      });
+      calls.push(...report.codexToolAudit.calls);
+      if (!report.codexToolAudit.pass)
+        throw new Error('Codex tool audit rejected missing or unexpected tool use');
+    } catch (error) {
+      report.receiverToolAuditError = error.message;
+      report.pass = false;
+      process.exitCode = 1;
     }
   }
   report.receiverToolCalls = calls;
