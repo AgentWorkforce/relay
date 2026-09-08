@@ -96,8 +96,11 @@ npm run verify:fleet-daytona
 
 Run the live command only from a Linux operator host that is already authenticated
 to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
-on platforms without descriptor-bound directory I/O. The runner never prints or places credentials in child
-argv, stores redacted bounded output, checkpoints after every operation, and
+on platforms without descriptor-bound directory I/O. The runner never persists
+unredacted credentials in recorded evidence. The explicit `--api-key` and
+`--workspace-key` option probes necessarily place an ephemeral, sandbox-local
+credential in that one child process's argv, then retain only a redacted copy.
+All captured output is bounded and redacted. The runner checkpoints after every operation and
 deletes only exact sandbox IDs/names it recorded as owned. If interrupted, rerun
 exact cleanup with the nonce printed by the workflow:
 
@@ -150,7 +153,7 @@ immutable qualification manifest; it is otherwise skipped instead of silently
 testing an unspecified build.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
-and validates exactly 145 runtime contracts: 12 state transitions, 23 injected
+and validates exactly 153 runtime contracts: 12 state transitions, 23 injected
 faults, 13 release acceptance gates, and all 105 Fleet operations. Diagnosis mode
 must mark every runtime row `BLOCKED` and bind it bidirectionally to an owned,
 promotion-blocking unknown; static tests and historical observations cannot

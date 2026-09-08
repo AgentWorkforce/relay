@@ -10,12 +10,14 @@ import * as ts from 'typescript';
 // Dependency-free ESM is also used by the local Relayflow runner.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  assertGreenRunVerdict,
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
   buildLocalBrokerOptionProofScript,
   compareDaytonaSandboxBaseline,
   deriveFleetVerdict,
+  dryRunRequested,
   evaluateFleetIdentityReconciliation,
   executeFleetCommand,
   findExactSentinelMessage,
@@ -184,9 +186,9 @@ function operationRecord(operation: {
   mustContain?: string;
   argvMustContain?: string[];
 }) {
-  const commandLeaf = Object.entries(fixtureMatrix.commandSurface).find(([, ids]) =>
-    (ids as string[]).includes(operation.id)
-  )?.[0];
+  const commandLeaves = Object.entries(fixtureMatrix.commandSurface)
+    .filter(([, ids]) => (ids as string[]).includes(operation.id))
+    .map(([commandLeaf]) => commandLeaf);
   const fleetProvider = operation.id.match(
     /^fleet-spawn-provider-(claude|codex|gemini|aider|goose|grok|opencode)$/
   )?.[1];
@@ -199,8 +201,11 @@ function operationRecord(operation: {
     nodeProvider !== undefined ||
     (operation.group === 'node-agent-spawn' && operation.expect !== 'sentinel-and-exit');
   const derivedObservation = /^initial-task-sentinel-[ab]$/.test(operation.id);
-  const argv = commandLeaf
-    ? ['agent-relay', ...commandLeaf.split(' '), ...(operation.argvMustContain ?? [])]
+  const argv = commandLeaves.length
+    ? [
+        ...commandLeaves.flatMap((commandLeaf) => ['agent-relay', ...commandLeaf.split(' ')]),
+        ...(operation.argvMustContain ?? []),
+      ]
     : ['daytona', 'semantic-proof', operation.id];
   for (const entries of Object.values(fixtureMatrix.optionCoverage ?? {})) {
     for (const entry of entries) {
@@ -796,6 +801,60 @@ describe('complete Daytona Fleet board', () => {
     ).toThrow(/did not execute supported variant --sandbox-provider=daytona/);
   });
 
+  it('requires every command invocation and exact runtime variant for multi-command evidence', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    const operation = evidence.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-set-model-app-server-a'
+    );
+    const definition = matrix.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-set-model-app-server-a'
+    );
+    expect(() => validateOperationArgvContract(operation, definition, matrix)).not.toThrow();
+
+    const missingSetModel = structuredClone(operation);
+    const setModelOffset = missingSetModel.argv.findIndex(
+      (token: string, index: number, argv: string[]) =>
+        token === 'agent-relay' && argv.slice(index + 1, index + 4).join(' ') === 'node agent set-model'
+    );
+    missingSetModel.argv.splice(setModelOffset, 4);
+    expect(() => validateOperationArgvContract(missingSetModel, definition, matrix)).toThrow(
+      /does not invoke command leaf node agent set-model/
+    );
+
+    const wrongRuntime = structuredClone(operation);
+    wrongRuntime.argv[wrongRuntime.argv.indexOf('--runtime') + 1] = 'pty';
+    const variantOnlyDefinition = {
+      ...definition,
+      argvMustContain: definition.argvMustContain.filter((token: string) => token !== 'headless'),
+    };
+    expect(() => validateOperationArgvContract(wrongRuntime, variantOnlyDefinition, matrix)).toThrow(
+      /did not execute supported variant --runtime=headless/
+    );
+  });
+
+  it('fails closed for non-green runs and makes DRY_RUN a runner-level no-op', async () => {
+    expect(assertGreenRunVerdict({ verdict: 'GREEN' })).toEqual({ verdict: 'GREEN' });
+    expect(() => assertGreenRunVerdict({ verdict: 'RED' })).toThrow(
+      /Fleet Daytona run verdict is RED/
+    );
+    expect(() => assertGreenRunVerdict({})).toThrow(/verdict is missing/);
+    expect(dryRunRequested({ DRY_RUN: 'true' })).toBe(true);
+    expect(dryRunRequested({ DRY_RUN: '1' })).toBe(true);
+    expect(dryRunRequested({ DRY_RUN: 'false' })).toBe(false);
+
+    const result = await execFileAsync(
+      process.execPath,
+      ['scripts/verify-features/fleet-daytona.mjs', 'run'],
+      {
+        cwd: path.resolve('.'),
+        env: { ...process.env, DRY_RUN: 'true' },
+      }
+    );
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe('FLEET_DAYTONA_DRY_RUN_NOOP command=run\n');
+  });
+
   it('generates a bounded local-broker option proof that redacts the explicit API key', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'fleet-local-broker-proof-'));
     const scriptPath = path.join(directory, 'proof.cjs');
@@ -1125,6 +1184,8 @@ describe('complete Daytona Fleet board', () => {
     // a covered command leaf from the surface: exact coverage must fail.
     const uncoveredCommand = structuredClone(matrix);
     delete uncoveredCommand.commandSurface['node agent set-model'];
+    delete uncoveredCommand.multiCommandOperations['node-agent-set-model-app-server-a'];
+    delete uncoveredCommand.multiCommandOperations['node-agent-set-model-app-server-b'];
     expect(() => validateFleetCommandCoverage(uncoveredCommand, actual)).toThrow(
       /commandSurface must exactly cover every candidate/
     );

@@ -42,6 +42,20 @@ const MATERIAL_OPTION_PATHS = {
     '--confirm-timeout',
   ],
   'fleet serve': ['file'],
+  'node agent spawn': [
+    '--channels',
+    '--cwd',
+    '--endpoint',
+    '--exit-after-task',
+    '--model',
+    '--name',
+    '--protocol',
+    '--release',
+    '--runtime',
+    '--session-id',
+    '--spawn-mode',
+    '--task',
+  ],
   'node agent new': ['--runtime', '--model', '--task', '--channels', '--cwd', '--mode', '--release'],
   'node agent attach': [
     '--broker-url',
@@ -89,6 +103,17 @@ function parseArgs(argv) {
     }
   }
   return { command, options };
+}
+
+export function dryRunRequested(env = process.env) {
+  return ['1', 'true'].includes(String(env.DRY_RUN ?? '').trim().toLowerCase());
+}
+
+export function assertGreenRunVerdict(evidence) {
+  if (evidence?.verdict !== 'GREEN') {
+    throw new Error(`Fleet Daytona run verdict is ${evidence?.verdict ?? 'missing'}`);
+  }
+  return evidence;
 }
 
 export async function loadWorkspaceCredentialFile() {
@@ -1029,7 +1054,9 @@ export function validateFleetMatrix(matrix) {
     throw new Error('matrix.operations must contain exactly 105 operations');
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
-  const commandOperationIds = new Set();
+  const multiCommandOperations = matrix.multiCommandOperations ?? {};
+  assertObject(multiCommandOperations, 'matrix.multiCommandOperations');
+  const commandOperationLeaves = new Map();
   for (const [leaf, operationIds] of Object.entries(matrix.commandSurface)) {
     if (!/^(?:fleet|node)(?: [a-z][a-z-]*)+$/.test(leaf)) {
       throw new Error(`matrix.commandSurface has invalid command leaf ${leaf}`);
@@ -1041,10 +1068,30 @@ export function validateFleetMatrix(matrix) {
       if (!ids.has(operationId)) {
         throw new Error(`matrix.commandSurface.${leaf} references missing operation ${operationId}`);
       }
-      if (commandOperationIds.has(operationId)) {
-        throw new Error(`matrix operation ${operationId} is mapped to more than one command leaf`);
+      const leaves = commandOperationLeaves.get(operationId) ?? [];
+      leaves.push(leaf);
+      commandOperationLeaves.set(operationId, leaves);
+    }
+  }
+  for (const [operationId, leaves] of commandOperationLeaves) {
+    const declared = multiCommandOperations[operationId];
+    if (leaves.length === 1 && declared !== undefined) {
+      throw new Error(`matrix multi-command operation ${operationId} is mapped to only one leaf`);
+    }
+    if (leaves.length > 1) {
+      if (!Array.isArray(declared) || declared.length !== leaves.length) {
+        throw new Error(`matrix operation ${operationId} must declare every mapped command leaf`);
       }
-      commandOperationIds.add(operationId);
+      const actual = [...leaves].sort();
+      const expected = [...declared].sort();
+      if (actual.some((leaf, index) => leaf !== expected[index])) {
+        throw new Error(`matrix multi-command operation ${operationId} declaration does not match`);
+      }
+    }
+  }
+  for (const operationId of Object.keys(multiCommandOperations)) {
+    if (!commandOperationLeaves.has(operationId)) {
+      throw new Error(`matrix multiCommandOperations references unmapped operation ${operationId}`);
     }
   }
   for (const required of [
@@ -1279,7 +1326,12 @@ export function validateFleetFinalCleanup({ brokerNodes, brokerAgents, workspace
 function validateOperationOptionCoverage(operation, matrix) {
   for (const entries of Object.values(matrix.optionCoverage ?? {})) {
     for (const entry of entries) {
-      if (entry?.status !== 'supported' || entry.operationId !== operation.id) continue;
+      if (entry?.status !== 'supported') continue;
+      const variantsForOperation = (entry.variants ?? []).filter(
+        (variant) =>
+          variant.status === 'supported' && (variant.operationId ?? entry.operationId) === operation.id
+      );
+      if (entry.operationId !== operation.id && variantsForOperation.length === 0) continue;
       const token = entry.argvToken ?? entry.option;
       const index = operation.argv.indexOf(token);
       if (index < 0) {
@@ -1291,10 +1343,7 @@ function validateOperationOptionCoverage(operation, matrix) {
           throw new Error(`operation ${operation.id} did not execute a value for ${entry.option}`);
         }
       }
-      for (const variant of entry.variants ?? []) {
-        if (variant.status !== 'supported' || (variant.operationId ?? entry.operationId) !== operation.id) {
-          continue;
-        }
+      for (const variant of variantsForOperation) {
         const expectedValue = variant.argvToken ?? variant.value;
         if (operation.argv[index + 1] !== expectedValue) {
           throw new Error(
@@ -1375,11 +1424,10 @@ export function validateFleetCommandCoverage(matrix, inventory) {
   return matrix;
 }
 
-function commandLeafForOperation(matrix, operationId) {
-  for (const [leaf, operationIds] of Object.entries(matrix.commandSurface)) {
-    if (operationIds.includes(operationId)) return leaf;
-  }
-  return null;
+function commandLeavesForOperation(matrix, operationId) {
+  return Object.entries(matrix.commandSurface)
+    .filter(([, operationIds]) => operationIds.includes(operationId))
+    .map(([leaf]) => leaf);
 }
 
 function argvContainsCommandInvocation(argv, leaf) {
@@ -1396,10 +1444,12 @@ export function validateOperationArgvContract(operation, definition, matrix) {
   if (!Array.isArray(operation.argv)) {
     throw new Error(`operation ${operation.id} has no sanitized argv`);
   }
-  const leaf = commandLeafForOperation(matrix, operation.id);
-  if (!leaf) return operation;
-  if (!argvContainsCommandInvocation(operation.argv, leaf)) {
-    throw new Error(`operation ${operation.id} argv does not invoke command leaf ${leaf}`);
+  const leaves = commandLeavesForOperation(matrix, operation.id);
+  if (leaves.length === 0) return operation;
+  for (const leaf of leaves) {
+    if (!argvContainsCommandInvocation(operation.argv, leaf)) {
+      throw new Error(`operation ${operation.id} argv does not invoke command leaf ${leaf}`);
+    }
   }
   for (const token of definition.argvMustContain ?? []) {
     if (!operation.argv.includes(token)) {
@@ -6509,6 +6559,10 @@ async function main() {
     process.stdout.write(`FLEET_DAYTONA_MATRIX_VALID operations=${matrix.operations.length}\n`);
     return;
   }
+  if (dryRunRequested()) {
+    process.stdout.write(`FLEET_DAYTONA_DRY_RUN_NOOP command=${command ?? '(missing)'}\n`);
+    return;
+  }
   if (['run', 'cleanup'].includes(command)) {
     const credentialEnv = options['workspace-credential-env'];
     if (credentialEnv !== undefined) {
@@ -6619,6 +6673,7 @@ async function main() {
       process.stdout.write(
         `FLEET_DAYTONA_COMPLETE nonce=${nonce} verdict=${evidence.verdict} artifact=${path.join(artifactDir, 'evidence.json')}\n`
       );
+      assertGreenRunVerdict(evidence);
     } finally {
       await lock.close();
       await unlink(lockPath).catch(() => undefined);

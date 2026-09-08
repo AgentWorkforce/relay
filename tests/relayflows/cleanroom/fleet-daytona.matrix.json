@@ -68,7 +68,9 @@
       "node-agent-spawn-provider-opencode-native",
       "node-agent-spawn-provider-cursor",
       "node-agent-spawn-provider-pi-native",
-      "node-agent-spawn-provider-deepagents-native"
+      "node-agent-spawn-provider-deepagents-native",
+      "node-agent-set-model-app-server-a",
+      "node-agent-set-model-app-server-b"
     ],
     "node agent new": ["node-agent-new-view"],
     "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
@@ -102,6 +104,10 @@
     "node workflow run": ["node-workflow-run"],
     "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
     "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
+  },
+  "multiCommandOperations": {
+    "node-agent-set-model-app-server-a": ["node agent spawn", "node agent set-model"],
+    "node-agent-set-model-app-server-b": ["node agent spawn", "node agent set-model"]
   },
   "deferredCommandSurface": [],
   "optionCoverage": {
@@ -146,6 +152,82 @@
         "argvToken": "tests/relayflows/cleanroom/fleet-daytona.matrix.json",
         "status": "supported",
         "operationId": "fleet-serve-migration"
+      }
+    ],
+    "node agent spawn": [
+      {
+        "option": "--channels",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-pty"
+      },
+      {
+        "option": "--cwd",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-pty"
+      },
+      {
+        "option": "--endpoint",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--exit-after-task",
+        "status": "supported",
+        "operationId": "node-agent-spawn-exit-after-task",
+        "takesValue": false
+      },
+      {
+        "option": "--model",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-auto-a"
+      },
+      {
+        "option": "--name",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-auto-a"
+      },
+      {
+        "option": "--protocol",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--release",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--runtime",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-pty",
+        "variants": [
+          { "value": "pty", "status": "supported" },
+          {
+            "value": "native",
+            "status": "supported",
+            "operationId": "node-agent-spawn-codex-native"
+          },
+          {
+            "value": "headless",
+            "status": "supported",
+            "operationId": "node-agent-set-model-app-server-a"
+          }
+        ]
+      },
+      {
+        "option": "--session-id",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--spawn-mode",
+        "status": "supported",
+        "operationId": "node-agent-spawn-task-exit"
+      },
+      {
+        "option": "--task",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-auto-a"
       }
     ],
     "node agent new": [
@@ -948,13 +1030,18 @@
       "expect": "success",
       "argvMustContain": ["--status"]
     },
-    { "id": "node-agent-spawn-codex-auto-a", "group": "node-agent-spawn", "expect": "sentinel" },
+    {
+      "id": "node-agent-spawn-codex-auto-a",
+      "group": "node-agent-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--name", "--task", "--model"]
+    },
     { "id": "node-agent-spawn-codex-auto-b", "group": "node-agent-spawn", "expect": "sentinel" },
     {
       "id": "node-agent-spawn-codex-pty",
       "group": "node-agent-spawn",
       "expect": "sentinel",
-      "argvMustContain": ["--runtime", "pty"]
+      "argvMustContain": ["--runtime", "pty", "--channels", "--cwd"]
     },
     {
       "id": "node-agent-spawn-codex-native",
@@ -1073,7 +1160,9 @@
         "headless",
         "--protocol",
         "opencode",
-        "--session-id"
+        "--endpoint",
+        "--session-id",
+        "--release"
       ]
     },
     {
@@ -1090,7 +1179,9 @@
         "headless",
         "--protocol",
         "opencode",
-        "--session-id"
+        "--endpoint",
+        "--session-id",
+        "--release"
       ]
     },
     {
