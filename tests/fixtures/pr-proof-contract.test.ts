@@ -570,6 +570,30 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(artifact).not.toContain('opaque-status-secret');
   });
 
+  it('redacts complete credentials before configured prefix secrets in console and artifacts', () => {
+    const credentialSuffix = '0123456789abcdef';
+    const consoleOutput = sanitizeCloudCommandOutput(`launch rk_live_${credentialSuffix}`, ['rk_live_']);
+    expect(consoleOutput).toBe('launch [redacted]…');
+    expect(consoleOutput).not.toContain(credentialSuffix);
+
+    const artifact = formatCloudRunArtifact({
+      runId: 'cloud-run-prefix-secret',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: {
+        stdout: `workflow output rk_live_${credentialSuffix}\n`,
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      diagnosticSecretValues: ['rk_live_'],
+    });
+
+    expect(artifact).toContain('workflow output [redacted]…');
+    expect(artifact).not.toContain(credentialSuffix);
+  });
+
   it('omits malformed JSON status payloads instead of falling back to raw output', () => {
     const diagnostic = sanitizeCloudStatusDiagnostic(
       '{"status":"failed","result":{"token":"unknown-secret"}'

@@ -99,12 +99,12 @@ export function boundedDiagnostic(value) {
 }
 
 export function sanitizeCloudCommandOutput(value, secretValues = []) {
-  let text = String(value ?? '');
+  let text = String(value ?? '').replace(LIVE_CREDENTIAL_RE, (_match, prefix) => `${prefix}…`);
   for (const secretValue of secretValues) {
     const secret = typeof secretValue === 'string' ? secretValue : '';
     if (secret) text = text.split(secret).join('[redacted]');
   }
-  return text.replace(LIVE_CREDENTIAL_RE, (_match, prefix) => `${prefix}…`);
+  return text;
 }
 
 function structuralDiagnosticValue(field, value, secretValues) {
