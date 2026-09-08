@@ -43,6 +43,18 @@
             "reasoning": "Independent Claude review exposed empty-channel defaulting, absent-generation cleanup and raw-hook overflow gaps. Repaired them, added actual D1 concurrent overflow/retry and real command startup cleanup proofs. Unverified acknowledgements and undeployed source do not satisfy the nine live gates."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788876103263,
+          "type": "decision",
+          "content": "Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion: Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion",
+          "raw": {
+            "question": "Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion",
+            "chosen": "Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion",
+            "alternatives": [],
+            "reasoning": "Round2 review exposed cached identity provenance and enqueue-versus-completion races; fail closed on older brokers lacking empty-channel confirmation."
+          },
+          "significance": "high"
         }
       ]
     }

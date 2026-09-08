@@ -75,6 +75,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   readonly sessionId?: string;
   readonly pid?: number;
   readonly generation?: string;
+  readonly channels?: string[];
 
   constructor(
     result: SpawnAgentResult,
@@ -87,6 +88,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
     this.sessionId = result.sessionId;
     this.pid = result.pid;
     this.generation = result.generation;
+    this.channels = result.channels;
   }
 
   /** Exit info if the agent has already exited (from broker event history), else `undefined`. */

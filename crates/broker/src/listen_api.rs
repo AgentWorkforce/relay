@@ -679,6 +679,7 @@ async fn listen_api_session(
 ) -> axum::Json<Value> {
     axum::Json(json!({
         "broker_version": state.broker_version,
+        "spawn_capabilities": {"explicit_empty_channels": true, "create_only_identity": true},
         "protocol_version": 2,
         "workspace_key": state.workspace_key,
         "relay_base_url": state.relay_base_url,

@@ -562,6 +562,10 @@ pub(crate) enum FleetControlCommand {
     UpdateLoad(FleetLoadSnapshot),
     HeartbeatNow,
     Send(BrokerToRelaycast),
+    DeregisterAgent {
+        request: AgentDeregister,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     RegisterAgent {
         request: AgentRegister,
         reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
@@ -1568,6 +1572,9 @@ fn handle_disconnected_command(
         }
         Some(FleetControlCommand::UpdateLoad(next)) => *load = next,
         Some(FleetControlCommand::UpdateInventory(next)) => *inventory = next,
+        Some(FleetControlCommand::DeregisterAgent { reply, .. }) => {
+            let _ = reply.send(Err(register_agent_error.to_string()));
+        }
         Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
             let _ = reply.send(Err(register_agent_error.to_string()));
         }
@@ -1859,6 +1866,8 @@ async fn run_connected_once(
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
+    let mut pending_deregistrations: HashMap<String, oneshot::Sender<Result<(), String>>> =
+        HashMap::new();
 
     if send_wire(
         &mut sink,
@@ -1933,6 +1942,15 @@ async fn run_connected_once(
                     }
                     Some(FleetControlCommand::Send(message)) => {
                         if send_wire(&mut sink, &message).await.is_err() {
+                            return ControlRunResult::Disconnected;
+                        }
+                    }
+                    Some(FleetControlCommand::DeregisterAgent { mut request, reply }) => {
+                        let request_id = format!("agent_deregister_{}", Uuid::new_v4().simple());
+                        request.id = Some(request_id.clone());
+                        pending_deregistrations.retain(|_, pending| !pending.is_closed());
+                        pending_deregistrations.insert(request_id, reply);
+                        if send_wire(&mut sink, &BrokerToRelaycast::AgentDeregister(request)).await.is_err() {
                             return ControlRunResult::Disconnected;
                         }
                     }
@@ -2020,7 +2038,7 @@ async fn run_connected_once(
                 // answering our ping, which is the only traffic a healthy but
                 // idle engine is guaranteed to send.
                 last_inbound = Instant::now();
-                if !handle_server_message(message, event_tx, &mut pending_agent_registrations, &mut sink).await {
+                if !handle_server_message(message, event_tx, &mut pending_agent_registrations, &mut pending_deregistrations, &mut sink).await {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
                 }
@@ -2060,6 +2078,7 @@ async fn handle_server_message<S>(
     message: Message,
     event_tx: &mpsc::Sender<FleetControlEvent>,
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
     sink: &mut S,
 ) -> bool
 where
@@ -2069,9 +2088,24 @@ where
     match message {
         Message::Text(text) => match serde_json::from_str::<RelaycastToBroker>(&text) {
             Ok(RelaycastToBroker::Reply(reply)) => {
+                if let Some(pending) = pending_deregistrations.remove(&reply.id) {
+                    let result = if reply.ok {
+                        Ok(())
+                    } else {
+                        Err("agent_deregister_rejected".to_string())
+                    };
+                    let _ = pending.send(result);
+                    return true;
+                }
+
                 complete_agent_registration(reply, pending_agent_registrations, sink).await
             }
             Ok(RelaycastToBroker::Error(error)) => {
+                if let Some(pending) = pending_deregistrations.remove(&error.id) {
+                    let _ = pending.send(Err(format!("{}: {}", error.code, error.message)));
+                    return true;
+                }
+
                 // Surface every engine rejection at error level. A node.register or
                 // heartbeat rejection (e.g. node_name_conflict) matches no pending
                 // agent registration below, so without this it vanishes silently —

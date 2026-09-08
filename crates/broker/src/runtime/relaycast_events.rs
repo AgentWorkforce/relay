@@ -201,6 +201,14 @@ pub(super) fn relaycast_spawn_channels(
     value: &Value,
     channel: Option<&str>,
 ) -> Result<Vec<ChannelName>> {
+    relaycast_spawn_channels_with_defaults(value, channel, default_spawn_channels())
+}
+
+fn relaycast_spawn_channels_with_defaults(
+    value: &Value,
+    channel: Option<&str>,
+    defaults: Vec<ChannelName>,
+) -> Result<Vec<ChannelName>> {
     if let Some(requested) = value
         .get("channels")
         .or_else(|| value.pointer("/agent/channels"))
@@ -231,14 +239,14 @@ pub(super) fn relaycast_spawn_channels(
         }
         return Ok(channels);
     }
-    let mut channels = default_spawn_channels();
+    let mut channels = defaults;
     if let Some(channel) = channel {
         let candidate = ChannelName::from(channel);
         if !channels.contains(&candidate) {
             channels.push(candidate);
         }
     }
-    Ok(channels)
+    relaycast_spawn_channels(&serde_json::json!({"channels": channels}), None)
 }
 
 pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
@@ -1270,6 +1278,26 @@ mod tests {
             relaycast_spawn_channels(&json!({}), None).unwrap(),
             default_spawn_channels()
         );
+    }
+
+    #[test]
+    fn implicit_and_legacy_channels_use_the_same_validation() {
+        assert!(relaycast_spawn_channels(&json!({}), Some("Eng Team")).is_err());
+        assert!(relaycast_spawn_channels_with_defaults(
+            &json!({}),
+            None,
+            vec![ChannelName::from("General")]
+        )
+        .is_err());
+        assert!(relaycast_spawn_channels_with_defaults(
+            &json!({"channels": []}),
+            None,
+            vec![ChannelName::from("General")]
+        )
+        .unwrap()
+        .is_empty());
+        let names = relaycast_spawn_channels(&json!({}), Some("#demo-events")).unwrap();
+        assert!(names.contains(&ChannelName::from("demo-events")));
     }
 
     #[test]

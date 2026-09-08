@@ -1522,6 +1522,27 @@ pub async fn retry_agent_registration(
     sdk_retry_agent_registration(registration, name, cli).await
 }
 
+/// Create a new spawn identity, never reuse a cached credential or take over a name.
+/// A successful result is ownership evidence for cleanup of a failed new spawn.
+pub async fn register_new_spawn_identity(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+) -> Result<String, RegRetryOutcome> {
+    let relay = http.relay.as_ref().as_ref().ok_or_else(|| {
+        RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
+            agent_name: name.to_string(),
+            detail: "SDK relay client not initialized".to_string(),
+        })
+    })?;
+    // A fresh registration client intentionally has no cached incumbent token.
+    // The server's atomic create-only operation arbitrates name collisions.
+    let registration = AgentRegistrationClient::new(relay.clone(), http.default_cli.clone());
+    let token = sdk_retry_agent_registration(&registration, name, cli).await?;
+    http.seed_agent_token(name, &token);
+    Ok(token)
+}
+
 /// The declared fields alone, trimmed, with blanks omitted.
 ///
 /// Omitting rather than sending `""` matters because both callers merge this
@@ -1587,9 +1608,10 @@ mod tests {
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
     use super::{
-        format_worker_preregistration_error, registration_is_retryable,
-        registration_retry_after_secs, ImpersonationAwareRegistrationError, MessageInjectionMode,
-        RecipientReachability, RegisterIntent, RelaycastHttpClient,
+        format_worker_preregistration_error, register_new_spawn_identity,
+        registration_is_retryable, registration_retry_after_secs,
+        ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
+        RegRetryOutcome, RegisterIntent, RelaycastHttpClient, RelaycastRegistrationError,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -1882,6 +1904,47 @@ mod tests {
             .expect("explicit release should succeed");
 
         release.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn fresh_spawn_registration_refuses_cached_incumbent_without_takeover_or_release() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(
+                json!({"ok":false,"error":{"code":"agent_already_exists","message":"name held"}}),
+            );
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/chief/takeover");
+            then.status(500);
+        });
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(500);
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("chief", "incumbent-token");
+        let result = register_new_spawn_identity(&client, "chief", Some("claude")).await;
+        assert!(matches!(
+            result,
+            Err(RegRetryOutcome::Fatal(
+                RelaycastRegistrationError::AlreadyExists { .. }
+            ))
+        ));
+        assert_eq!(
+            client
+                .registration
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .cached_agent_token("chief")
+                .as_deref(),
+            Some("incumbent-token")
+        );
+        create.assert_hits(1);
+        takeover.assert_hits(0);
+        release.assert_hits(0);
     }
 
     #[tokio::test]

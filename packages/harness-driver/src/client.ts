@@ -114,11 +114,13 @@ export const SpawnAgentResultSchema = z.looseObject({
   warning: z.string().nullable().optional(),
   sessionId: optionalString,
   generation: optionalString,
+  channels: z.array(z.string()).optional(),
 });
 
 export interface SessionInfo {
   broker_version: string;
   protocol_version: number;
+  spawn_capabilities?: { explicit_empty_channels?: boolean; create_only_identity?: boolean };
   workspace_key?: string;
   relay_base_url?: string;
   default_workspace_id?: string;

@@ -1038,6 +1038,7 @@ describe('createAgentRelayMcpServer', () => {
       invocationId: 'inv_1',
       actionName: 'spawn',
       status: 'completed',
+      handler_node_id: 'registered-handler-node',
       output,
     });
 
@@ -1047,9 +1048,7 @@ describe('createAgentRelayMcpServer', () => {
         cli: 'codex',
         target_node: 'node-a',
       })
-    ).rejects.toThrow(
-      'Spawn completed without broker registration and harness readiness proof. The selected broker must support top-level verify_ready (Relay PR #1708); upgrade the selected broker before retrying.'
-    );
+    ).rejects.toThrow('Resolved handler node: registered-handler-node; invocation: inv_1.');
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
       name: 'RawWorker',
       cli: 'codex',

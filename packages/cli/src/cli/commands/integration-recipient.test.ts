@@ -18,14 +18,22 @@ describe('subscription recipient launch', () => {
     spawnCli: ReturnType<typeof vi.fn>;
     disconnect: ReturnType<typeof vi.fn>;
   };
-  let handle: { waitForReady: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn> };
+  let handle: {
+    channels?: string[];
+    waitForReady: ReturnType<typeof vi.fn>;
+    release: ReturnType<typeof vi.fn>;
+  };
   beforeEach(() => {
     handle = {
+      channels: [],
       waitForReady: vi.fn(async () => ({ reason: 'ready', pid: 123 })),
       release: vi.fn(async () => {}),
     };
     client = {
-      getSession: vi.fn(async () => ({ workspace_key: 'rk_live_explicit' })),
+      getSession: vi.fn(async () => ({
+        workspace_key: 'rk_live_explicit',
+        spawn_capabilities: { explicit_empty_channels: true, create_only_identity: true },
+      })),
       listAgents: vi.fn(async () => []),
       spawnCli: vi.fn(async () => handle),
       disconnect: vi.fn(),
@@ -56,6 +64,44 @@ describe('subscription recipient launch', () => {
     await expect(launchSubscriptionRecipient(input)).rejects.toThrow(reason);
     expect(handle.release).toHaveBeenCalledOnce();
     expect(client.disconnect).toHaveBeenCalledOnce();
+  });
+  it('refuses an older broker before it can join default channels or reuse an identity', async () => {
+    client.getSession.mockResolvedValue({ workspace_key: 'rk_live_explicit' });
+    await expect(launchSubscriptionRecipient(input)).rejects.toThrow('isolated, create-only spawn support');
+    expect(client.spawnCli).not.toHaveBeenCalled();
+    expect(handle.release).not.toHaveBeenCalled();
+  });
+  it.each([undefined, ['general']])(
+    'fails closed when channel isolation is not confirmed: %j',
+    async (channels) => {
+      handle.channels = channels;
+      await expect(launchSubscriptionRecipient(input)).rejects.toThrow('channel isolation did not verify');
+      expect(handle.waitForReady).not.toHaveBeenCalled();
+      expect(handle.release).toHaveBeenCalledWith('subscription startup failed', { deleteIdentity: true });
+    }
+  );
+  it.each([
+    [401, 'unauthorized'],
+    [409, 'channel_archived'],
+    [429, 'rate_limited'],
+    [503, 'unavailable'],
+  ])('reports routing HTTP %s without a misleading upgrade instruction', async (status, code) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: { code } }), { status: Number(status) }))
+    );
+    const failure = await resolveSubscriptionAgentChannel('fresh', input.options).catch((error) => error);
+    expect(failure.message).toContain(`HTTP ${status} ${code}`);
+    expect(failure.message).not.toMatch(/upgrade/i);
+  });
+  it.each([404, 405])('reports missing routing support for HTTP %s', async (status) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status }))
+    );
+    await expect(resolveSubscriptionAgentChannel('fresh', input.options)).rejects.toThrow(
+      'relaycast PR #387'
+    );
   });
   it('rejects a nonexistent cwd before connecting or registering a worker', async () => {
     mocks.connect.mockClear();

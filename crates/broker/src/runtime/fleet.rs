@@ -2056,6 +2056,41 @@ pub(super) async fn deregister_fleet_agent(
     Ok(true)
 }
 
+/// Owned identity deletion must wait until the engine has removed the live
+/// binding. Enqueue alone cannot establish the release action's local-completion
+/// precondition. The node-control task resolves the acknowledgement independently
+/// of the runtime API actor; no dispatched release is polled by its own handler.
+pub(super) async fn deregister_fleet_agent_confirmed(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_delivery_book: &FleetDeliveryBook,
+    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    name: &WorkerName,
+) -> Result<bool, String> {
+    let Some(agent_id) = fleet_delivery_book.active_agent_id(name.as_str()) else {
+        return Ok(false);
+    };
+    // Remove the reconnect snapshot first, on the same FIFO control channel.
+    // Otherwise a periodic inventory sync could rebind the identity between
+    // the deregistration acknowledgement and the subsequent release request.
+    prune_fleet_inventory_entry(fleet_control_tx, fleet_inventory, name).await;
+    let (reply, received) = tokio::sync::oneshot::channel();
+    fleet_control_tx
+        .try_send(FleetControlCommand::DeregisterAgent {
+            request: AgentDeregister {
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                agent_id: agent_id.to_string(),
+                name: Some(name.to_string()),
+            },
+            reply,
+        })
+        .map_err(|error| format!("fleet deregistration unavailable: {error}"))?;
+    tokio::time::timeout(Duration::from_secs(30), received)
+        .await.map_err(|_| "fleet deregistration acknowledgement timed out; engine must support acknowledged agent.deregister".to_string())?
+        .map_err(|_| "fleet deregistration connection closed before acknowledgement".to_string())??;
+    Ok(true)
+}
+
 pub(super) async fn publish_fleet_inventory_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_inventory: &HashMap<WorkerName, InventoryAgent>,
@@ -3390,6 +3425,66 @@ mod tests {
             delivery_book.observe(&mismatch),
             DeliveryDecision::IdentityReject
         );
+    }
+
+    #[tokio::test]
+    async fn owned_cleanup_waits_for_engine_deregistration_ack() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        let mut inventory = HashMap::from([(
+            WorkerName::from("agent-a"),
+            InventoryAgent {
+                agent_id: "agent-a-id".to_string(),
+                name: "agent-a".to_string(),
+                invocation_id: None,
+                session_ref: None,
+            },
+        )]);
+        let task = tokio::spawn(async move {
+            deregister_fleet_agent_confirmed(
+                &tx,
+                &book,
+                &mut inventory,
+                &WorkerName::from("agent-a"),
+            )
+            .await
+        });
+        let FleetControlCommand::UpdateInventory(snapshot) = rx.recv().await.unwrap() else {
+            panic!("expected inventory removal before deregistration");
+        };
+        assert!(snapshot.is_empty());
+        let FleetControlCommand::DeregisterAgent { request, reply } = rx.recv().await.unwrap()
+        else {
+            panic!("expected acknowledged deregistration");
+        };
+        assert_eq!(request.agent_id, "agent-a-id");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!task.is_finished(), "enqueue is not engine completion");
+        reply.send(Ok(())).unwrap();
+        assert_eq!(task.await.unwrap(), Ok(true));
+    }
+
+    #[tokio::test]
+    async fn owned_cleanup_retains_identity_when_deregistration_disconnects() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        let task = tokio::spawn(async move {
+            deregister_fleet_agent_confirmed(
+                &tx,
+                &book,
+                &mut HashMap::new(),
+                &WorkerName::from("agent-a"),
+            )
+            .await
+        });
+        drop(rx.recv().await.unwrap());
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("before acknowledgement"));
     }
 
     #[tokio::test]

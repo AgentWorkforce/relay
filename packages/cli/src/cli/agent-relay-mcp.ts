@@ -77,7 +77,7 @@ const VERIFIED_SPAWN_TIMEOUT_MS = 130_000;
 const VERIFIED_SPAWN_POLL_MS = 250;
 const VERIFIED_SPAWN_TIMEOUT_MESSAGE = 'Spawn timed out before broker registration and harness readiness.';
 const VERIFIED_SPAWN_MISSING_READY_MESSAGE =
-  'Spawn completed without broker registration and harness readiness proof. The selected broker must support top-level verify_ready (Relay PR #1708); upgrade the selected broker before retrying.';
+  'Spawn completed without broker registration and harness readiness proof. The resolved spawn handler must honor top-level verify_ready and return spawned:true and ready:true. For a broker handler, use a release containing Relay PR #1708.';
 const VERIFIED_SPAWN_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
 const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled', 'denied']);
 
@@ -165,6 +165,19 @@ async function pollInvocation(
   }
 }
 
+function missingVerifiedSpawnProof(
+  record: Record<string, unknown>,
+  ack: Record<string, unknown>,
+  invocationId: string
+): string {
+  const handler =
+    invocationText(record, 'handlerNodeId', 'handler_node_id') ??
+    invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
+    invocationText(ack, 'handlerNodeId', 'handler_node_id') ??
+    'unknown';
+  return `${VERIFIED_SPAWN_MISSING_READY_MESSAGE} Resolved handler node: ${handler}; invocation: ${invocationId}.`;
+}
+
 async function waitForVerifiedSpawn(
   actions: InvocationReader,
   ackValue: unknown,
@@ -193,7 +206,7 @@ async function waitForVerifiedSpawn(
       }
       const output = recordValue(record.output);
       if (output.spawned !== true || output.ready !== true) {
-        throw new Error(VERIFIED_SPAWN_MISSING_READY_MESSAGE);
+        throw new Error(missingVerifiedSpawnProof(record, ack, current.invocationId));
       }
       return invocation;
     }

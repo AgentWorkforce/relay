@@ -1,5 +1,5 @@
 use super::*;
-use crate::relaycast::retry_agent_registration;
+use crate::relaycast::register_new_spawn_identity;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
@@ -340,6 +340,9 @@ impl BrokerRuntime {
                 replay_buffer,
                 reply,
             } => {
+                // Both tokenless registration paths below are create-only;
+                // only their successful new identity may be deleted on failure.
+                // A supplied credential never grants cleanup ownership.
                 let owns_identity = agent_token.is_none();
                 let effective_channels = channels.unwrap_or_else(default_spawn_channels);
                 let effective_channels = match super::relaycast_events::relaycast_spawn_channels(
@@ -444,13 +447,11 @@ impl BrokerRuntime {
                                 error = %node_error,
                                 "node agent.register unavailable; falling back to HTTP pre-registration"
                             );
-                            // The ordinary cache-aware registration: it honours
-                            // the SDK's cached token and rate-limit block, so a
-                            // name already seeded by preflight or an earlier
-                            // spawn is reused rather than re-created. Declared
-                            // metadata is published separately, exactly as on
-                            // the node path.
-                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
+                            // Only an atomic create-only registration can establish
+                            // ownership for cleanup. Never reuse a cached identity
+                            // when this request did not supply its credential.
+                            match register_new_spawn_identity(relaycast_http, &name, Some(&cli))
+                                .await
                             {
                                 Ok(token) => {
                                     super::fleet::spawn_declared_metadata_publish(
@@ -499,13 +500,10 @@ impl BrokerRuntime {
                                 Err(RegRetryOutcome::RetryableExhausted(error)) => {
                                     let message =
                                         format_worker_preregistration_error(&name, &error);
-                                    tracing::warn!(
-                                        worker = %name,
-                                        error = %error,
-                                        "continuing spawn without pre-registration after retries exhausted"
-                                    );
-                                    preregistration_warning = Some(message);
-                                    None
+                                    // Do not launch a tokenless process that could create
+                                    // an identity later without broker cleanup ownership.
+                                    let _ = reply.send(Err(message));
+                                    return;
                                 }
                                 Err(RegRetryOutcome::Fatal(error)) => {
                                     let _ = reply.send(Err(format_worker_preregistration_error(
@@ -535,9 +533,10 @@ impl BrokerRuntime {
                         );
                         let membership_warning =
                             format!("worker channel membership was not fully reconciled: {error}");
-                        let cleanup = super::fleet::deregister_fleet_agent(
+                        let cleanup = super::fleet::deregister_fleet_agent_confirmed(
                             fleet_control_tx,
                             fleet_delivery_book,
+                            fleet_inventory,
                             &name,
                         )
                         .await;
@@ -825,6 +824,7 @@ impl BrokerRuntime {
                             "sessionId": effective_spec.session_id.clone(),
                             "pid": pid,
                             "generation": generation.clone(),
+                            "channels": effective_spec.channels,
                             "sessionId": effective_spec.session_id.clone(),
                             "pre_registered": worker_relay_key.is_some(),
                             "warning": preregistration_warning,
@@ -837,9 +837,10 @@ impl BrokerRuntime {
                         eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
                         let mut message = e.to_string();
                         if owns_identity && worker_relay_key.is_some() {
-                            let cleanup = super::fleet::deregister_fleet_agent(
+                            let cleanup = super::fleet::deregister_fleet_agent_confirmed(
                                 fleet_control_tx,
                                 fleet_delivery_book,
+                                fleet_inventory,
                                 &name,
                             )
                             .await;
@@ -987,12 +988,22 @@ impl BrokerRuntime {
                 workers.metrics.on_release(&name);
                 match workers.release(&name).await {
                     Ok(()) => {
-                        let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
-                            fleet_control_tx,
-                            fleet_delivery_book,
-                            &name,
-                        )
-                        .await
+                        let fleet_deregistration_error = if delete_identity {
+                            super::fleet::deregister_fleet_agent_confirmed(
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                fleet_inventory,
+                                &name,
+                            )
+                            .await
+                        } else {
+                            super::fleet::deregister_fleet_agent(
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                            .await
+                        }
                         .err();
                         if let Some(error) = &fleet_deregistration_error {
                             tracing::warn!(
@@ -1001,10 +1012,17 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        let relaycast_release_error = match relaycast_http
-                            .release_agent_identity(&name, reason.as_deref(), delete_identity)
-                            .await
+                        let relaycast_release_error = match if delete_identity
+                            && fleet_deregistration_error.is_some()
                         {
+                            Err(anyhow::anyhow!(
+                                "identity retained: fleet deregistration was not confirmed"
+                            ))
+                        } else {
+                            relaycast_http
+                                .release_agent_identity(&name, reason.as_deref(), delete_identity)
+                                .await
+                        } {
                             Ok(()) => None,
                             Err(error) => {
                                 tracing::warn!(

@@ -84,3 +84,10 @@ node --test tests/e2e/github-subscriptions/proof.test.mjs
 ```
 
 For an isolated HTTP/WebSocket/broker rehearsal of invalid cwd, early process exit, two-channel membership and generation-safe release, run `local-startup.mjs` with `RELAYCAST_ENGINE_DIR` and `BROKER_BINARY_PATH` pointing to candidate builds. It uses native process fixtures, not an AI harness or real GitHub delivery, and never marks live readiness.
+
+Subscribe-on-spawn requires the selected broker to advertise create-only identity
+registration and explicit empty-channel support in `/api/session`. The CLI refuses
+an older broker before launching; it also checks the effective channel list in
+the spawn response. Existing confirmed local workers are reused without claiming
+ownership. For new-worker cleanup, deploy the engine's correlated
+`agent.deregister` acknowledgement support before upgrading the broker.

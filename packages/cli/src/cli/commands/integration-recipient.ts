@@ -50,6 +50,14 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
       process.kill(existing.pid, 0);
       return { rollback: async () => {}, close: () => client.disconnect() };
     }
+    if (
+      session.spawn_capabilities?.explicit_empty_channels !== true ||
+      session.spawn_capabilities?.create_only_identity !== true
+    ) {
+      throw new Error(
+        'The selected broker does not confirm isolated, create-only spawn support; upgrade to a release containing Relay PR #1708 before --spawn.'
+      );
+    }
     owned = await client.spawnCli({
       name: input.name,
       cli: input.cli,
@@ -59,6 +67,11 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
         input.task ??
         `Monitor pushed ${input.provider} events for the explicit resource ${input.resource}. Wait for incoming events; do not poll provider or channel history. No broader subscription is authorized by this task.`,
     });
+    if (!Array.isArray(owned.channels) || owned.channels.length !== 0) {
+      throw new Error(
+        `Recipient ${input.name} channel isolation did not verify; the selected broker must confirm an explicit empty channel list (Relay PR #1708).`
+      );
+    }
     const ready = await owned.waitForReady(90_000);
     if (ready.reason !== 'ready' || !ready.pid || ready.pid <= 0) {
       throw new Error(
@@ -102,10 +115,22 @@ export async function resolveSubscriptionAgentChannel(
       headers: { authorization: `Bearer ${resolveWorkspaceKey(options)}` },
     }
   );
-  if (!response.ok)
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => undefined)) as
+      | { error?: { code?: unknown } }
+      | undefined;
+    const code =
+      typeof detail?.error?.code === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(detail.error.code)
+        ? ` ${detail.error.code}`
+        : '';
+    const remedy =
+      response.status === 404 || response.status === 405
+        ? ' Upgrade the selected Relaycast deployment to a release containing agent subscription channels (relaycast PR #387) before retrying.'
+        : '';
     throw new Error(
-      `Could not provision @${name} subscription routing (HTTP ${response.status}); upgrade the selected Relaycast deployment to a release containing agent subscription channels (relaycast PR #387) before retrying. No subscription resources were created.`
+      `Could not provision @${name} subscription routing (HTTP ${response.status}${code}).${remedy} No subscription resources were created.`
     );
+  }
   const body = (await response.json()) as {
     data?: { name?: string; members?: Array<{ agent_name?: string }> };
   };

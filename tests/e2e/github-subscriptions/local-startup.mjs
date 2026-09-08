@@ -157,6 +157,26 @@ try {
     pass: true,
   });
 
+  const incumbent = await request('/v1/agents', 'POST', { name: 'incumbent-fixture' });
+  const incumbentChannel = await request('/v1/agents/incumbent-fixture/subscription-channel', 'POST');
+  const incumbentError = await failSubscribe('incumbent-fixture', work);
+  assert.match(incumbentError, /already exists|name.*held|already registered/i);
+  assert.equal((await request('/v1/agents/incumbent-fixture')).id, incumbent.id);
+  assert(
+    (await request(`/v1/channels/${incumbentChannel.name}`)).members.some(
+      (m) => m.agent_name === 'incumbent-fixture'
+    )
+  );
+  const incumbentRead = await fetch(`${baseUrl}/v1/channels/${incumbentChannel.name}`, {
+    headers: { authorization: `Bearer ${incumbent.token}` },
+    signal: AbortSignal.timeout(15000),
+  });
+  assert.equal(incumbentRead.status, 200, 'failed new spawn must preserve incumbent credential');
+  report.checks.push({
+    name: 'existing remote identity collision preserves identity, token and membership with zero new resources',
+    pass: true,
+  });
+
   const unrelated = await request('/v1/agents', 'POST', { name: 'unmapped-identity' });
   await assert.rejects(
     client.release('unmapped-identity', 'stale absent cleanup', 'stale-generation'),
@@ -170,6 +190,7 @@ try {
     cwd: work,
     harnessConfig: { runtime: 'native', command: '/bin/cat', args: [], sessionId: 'empty-channels-process' },
   });
+  assert.deepEqual(isolated.channels, [], 'broker must confirm effective empty channels');
   for (const channel of await request('/v1/channels')) {
     const detail = await request(`/v1/channels/${channel.name}`);
     assert(
@@ -197,6 +218,7 @@ try {
     },
   });
   assert(worker.generation && worker.pid);
+  assert.deepEqual(worker.channels, ['proof-one', 'proof-two']);
   assert.equal(
     (await client.listAgents()).find((w) => w.name === worker.name)?.generation,
     worker.generation
