@@ -458,37 +458,40 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
-  it('marks an identifier-less server failure unknown without exposing a cleanup ID', async () => {
-    mocks.authorizedApiFetch
-      .mockResolvedValueOnce({
-        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
-        auth,
-      })
-      .mockResolvedValueOnce({
-        response: Response.json({ error: 'provider timed out after allocation' }, { status: 504 }),
-        auth,
+  it.each([500, 502, 503, 504])(
+    'marks an identifier-less server failure (%s) unknown without exposing a cleanup ID',
+    async (status) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json({ error: 'provider timed out after allocation' }, { status }),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        providerId: 'e2b',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+        nodeName: SANDBOX_NAME,
+        providerId: 'e2b',
+        outcomeUnknown: true,
+        sandboxId: undefined,
       });
-
-    const error = await ensureCloudFleetSandbox({
-      workspaceId: 'rw_abc',
-      requiredCapability: 'spawn:codex',
-      sandboxId: SANDBOX_ID,
-      name: SANDBOX_NAME,
-      providerId: 'e2b',
-      forceProvision: true,
-      workloadProfile: 'long-running-agent',
-    }).catch((caught: unknown) => caught);
-
-    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
-    expect(error).toMatchObject({
-      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-      nodeName: SANDBOX_NAME,
-      providerId: 'e2b',
-      outcomeUnknown: true,
-      sandboxId: undefined,
-    });
-    expect(String(error)).toContain('provider timed out after allocation');
-  });
+      expect(String(error)).toContain('provider timed out after allocation');
+    }
+  );
 
   it('keeps a proven client error ordinary when a stable sandbox ID was supplied', async () => {
     mocks.authorizedApiFetch

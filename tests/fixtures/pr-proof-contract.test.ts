@@ -551,6 +551,8 @@ describe('Cloud dispatcher API key lifecycle', () => {
   it('redacts configured and recognized credentials from raw command output and artifacts', () => {
     const raw = 'stdout ci-api-key rk_live_0123456789abcdef';
     expect(sanitizeCloudCommandOutput(raw, ['ci-api-key'])).toBe('stdout [redacted] rk_live_…');
+    const githubToken = 'github_pat_0123456789abcdef0123456789abcdef';
+    expect(sanitizeCloudCommandOutput(`status ${githubToken}`)).toBe('status github_pat_…');
 
     const artifact = formatCloudRunArtifact({
       runId: 'cloud-run-123',
@@ -628,10 +630,10 @@ describe('Cloud dispatcher API key lifecycle', () => {
       redactor.push('secret tail', true);
     expect(sanitized).toBe('prefix rk_live_… [redacted] tail');
 
-    const longCredential = 'a'.repeat(200_000);
+    const longCredentialLength = 200_000;
     const capture = await runBoundedProcess(
       process.execPath,
-      ['-e', "process.stdout.write('head rk_live_' + 'a'.repeat(200_000) + ' tail')"],
+      ['-e', `process.stdout.write('head rk_live_' + 'a'.repeat(${longCredentialLength}) + ' tail')`],
       {
         echo: false,
         maxCaptureBytes: 128,
@@ -641,7 +643,44 @@ describe('Cloud dispatcher API key lifecycle', () => {
     );
 
     expect(capture.stdout).toBe('head rk_live_… tail');
-    expect(capture.stdout).not.toContain(longCredential);
+    expect(capture.stdout).not.toContain('a'.repeat(longCredentialLength));
+
+    const captureLimit = 2 * 1024 * 1024;
+    const boundaryCredential = '0123456789abcdef'.repeat(128);
+    const boundaryRedactor = createCredentialRedactor();
+    const boundaryCapture = await runBoundedProcess(
+      process.execPath,
+      [
+        '-e',
+        [
+          `process.stdout.write('x'.repeat(${captureLimit - 'rk_live_'.length}))`,
+          "process.stdout.write('rk_')",
+          `setImmediate(() => process.stdout.write('live_' + ${JSON.stringify(boundaryCredential)} + ' tail'))`,
+        ].join(';'),
+      ],
+      {
+        echo: false,
+        maxCaptureBytes: captureLimit,
+        maxLiveOutputBytes: 128,
+        transformChunk: (text, stream, final) => {
+          // Force the credential prefix to cross a redactor boundary even if
+          // the OS coalesces the two writes into one pipe chunk.
+          const prefixIndex = text.indexOf('rk_live_');
+          if (prefixIndex >= 0) {
+            const split = prefixIndex + 'rk_'.length;
+            return (
+              boundaryRedactor.push(text.slice(0, split), false) +
+              boundaryRedactor.push(text.slice(split), final)
+            );
+          }
+          return boundaryRedactor.push(text, final);
+        },
+      }
+    );
+
+    expect(Buffer.byteLength(boundaryCapture.stdout, 'utf8')).toBeLessThanOrEqual(captureLimit);
+    expect(boundaryCapture.stdout).toContain('rk_live_…');
+    expect(boundaryCapture.stdout).not.toContain('0123456789abcdef');
   });
 
   it('preserves large credential-free output without pathological rescanning', () => {

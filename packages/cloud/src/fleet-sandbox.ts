@@ -480,11 +480,11 @@ export async function ensureCloudFleetSandbox(
       });
     }
     const error = endpointError('provision the fleet sandbox', response, payload);
-    if (
-      response.status >= 500 &&
-      sandboxIdentity.sandboxId !== undefined &&
-      returnedSandboxId === undefined
-    ) {
+    // Gateway/server failures can arrive after Cloud accepted the ensure
+    // request but before it could return an identity. Keep every 5xx failure
+    // replayable as an unknown outcome, even for legacy custom-name callers;
+    // never copy an unverified response ID into cleanup authority.
+    if (response.status >= 500) {
       throw new CloudFleetSandboxProvisionError(error.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),

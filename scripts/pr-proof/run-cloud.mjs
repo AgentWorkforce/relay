@@ -41,6 +41,12 @@ const LIVE_CREDENTIAL_PREFIXES = [
   'rth_at_',
   'ocl_node_enr_',
   'br_',
+  'github_pat_',
+  'ghp_',
+  'gho_',
+  'ghu_',
+  'ghs_',
+  'ghr_',
 ];
 const LIVE_CREDENTIAL_PREFIX_RE = new RegExp(
   `(${LIVE_CREDENTIAL_PREFIXES.map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,
