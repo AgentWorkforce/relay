@@ -333,8 +333,13 @@ describe('Relay candidate clean-install attestation', () => {
       process.env.PATH = `${fixtureBin}${path.delimiter}${originalPath ?? ''}`;
 
       const input = fixture();
+      const cliExecutionMarker = path.join(root, 'candidate-cli-executed');
+      const brokerExecutionMarker = path.join(root, 'candidate-broker-executed');
       const cliEntrypoint = path.join(root, 'install', ...input.cliRelativePath.split('/'));
-      const cli = `console.log('agent-relay v${input.packageVersion}')\n`;
+      const cli =
+        `import { writeFileSync } from 'node:fs';\n` +
+        `writeFileSync(${JSON.stringify(cliExecutionMarker)}, 'executed');\n` +
+        `console.log('agent-relay v${input.packageVersion}');\n`;
       await mkdir(path.dirname(cliEntrypoint), { recursive: true });
       await writeFile(cliEntrypoint, cli);
       input.cliSha256 = sha256(cli);
@@ -356,7 +361,10 @@ describe('Relay candidate clean-install attestation', () => {
         if (entry.name === '@agent-relay/broker-linux-x64') {
           const broker = path.join(installedPackageDir, 'bin', 'agent-relay-broker');
           await mkdir(path.dirname(broker), { recursive: true });
-          await writeFile(broker, `#!/bin/sh\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`);
+          await writeFile(
+            broker,
+            `#!/bin/sh\nprintf 'executed' > ${JSON.stringify(brokerExecutionMarker)}\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`
+          );
           await chmod(broker, 0o755);
           const brokerBytes = await readFile(broker);
           input.brokerSha256 = sha256(brokerBytes);
@@ -434,9 +442,30 @@ describe('Relay candidate clean-install attestation', () => {
         await writeFile(attestationPath, `${JSON.stringify(input, null, 2)}\n`, { mode: 0o600 });
       };
       await syncBrokerAttestation();
+
+      // Hydration accepts only verified bytes as data. These marker-bearing
+      // candidate executables prove structural verification does not invoke
+      // either candidate entrypoint before Fleet qualification.
+      await expect(
+        verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha, executeCandidate: false })
+      ).resolves.toMatchObject({ attestation: input });
+      await expect(readFile(cliExecutionMarker)).rejects.toThrow();
+      await expect(readFile(brokerExecutionMarker)).rejects.toThrow();
+      await expect(
+        verifyCandidateInstall(attestationPath, { sourceSha: 'b'.repeat(40), executeCandidate: false })
+      ).rejects.toThrow('source SHA does not match');
+      await expect(
+        verifyCandidateInstall(attestationPath, {
+          packageVersion: '11.10.3-candidate.2',
+          executeCandidate: false,
+        })
+      ).rejects.toThrow('package version does not match');
+
       await expect(
         verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha })
       ).resolves.toMatchObject({ attestation: input });
+      await expect(readFile(cliExecutionMarker, 'utf8')).resolves.toBe('executed');
+      await expect(readFile(brokerExecutionMarker, 'utf8')).resolves.toBe('executed');
 
       const substitutedTransitive = path.join(root, 'install', 'node_modules', 'substituted-transitive');
       await mkdir(substitutedTransitive);

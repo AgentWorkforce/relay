@@ -1,0 +1,80 @@
+{
+  "id": "traj_c63mi2fk124x",
+  "version": 1,
+  "task": {
+    "title": "Independent exact review of Relay PR #1665 repair at 414c1636"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-08T19:50:06.768Z",
+  "completedAt": "2026-09-08T20:03:11.490Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T19:58:15.549Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_06aebf603ykh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T19:58:15.549Z",
+      "endedAt": "2026-09-08T20:03:11.490Z",
+      "events": [
+        {
+          "ts": 1788897495550,
+          "type": "decision",
+          "content": "Hydrate against caller-supplied candidate identity and verify structurally only: Hydrate against caller-supplied candidate identity and verify structurally only",
+          "raw": {
+            "question": "Hydrate against caller-supplied candidate identity and verify structurally only",
+            "chosen": "Hydrate against caller-supplied candidate identity and verify structurally only",
+            "alternatives": [],
+            "reasoning": "The workflow checkout is intentionally github.workflow_sha, so local HEAD/version cannot attest the candidate; hydration must consume the exact manifest-bound source/package identity as data and must not execute candidate binaries before Fleet qualification."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788897718183,
+          "type": "reflection",
+          "content": "Hydration now binds candidate source/package identity to the manifest-supplied inputs, not the trusted verifier checkout. Structural verification is guarded by marker-bearing candidate executables; focused tests and typecheck are green.",
+          "raw": {
+            "focalPoints": [
+              "attestation-boundary",
+              "candidate-execution",
+              "relayflow-proof"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:attestation-boundary",
+            "focal:candidate-execution",
+            "focal:relayflow-proof",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Repaired trusted cleanroom candidate hydration: caller-supplied manifest source/package identity is now required, structural hydration does not execute candidate CLI or broker, and the existing #1665 RelayFlow proof plus adversarial marker regressions cover the boundary.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [
+    "38065a522"
+  ],
+  "filesChanged": [
+    "scripts/verify-features/relay-candidate-install.mjs",
+    "tests/fixtures/relay-candidate-install.test.ts",
+    "tests/relayflows/cases/1665-immutable-fleet-snapshot/trusted-cleanroom-runner.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "414c1636d4734e6771c495708a62d00ab5f3b149",
+    "endRef": "38065a522c9b5e3670300e44eca74152709bf7f8",
+    "traceId": "3ec33299-aed0-4f18-92e7-da7ca03bd27b"
+  }
+}

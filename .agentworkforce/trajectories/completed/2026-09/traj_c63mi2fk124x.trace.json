@@ -1,0 +1,104 @@
+{
+  "version": "1.0.0",
+  "id": "3ec33299-aed0-4f18-92e7-da7ca03bd27b",
+  "timestamp": "2026-09-08T20:03:11.617Z",
+  "trajectory": "traj_c63mi2fk124x",
+  "files": [
+    {
+      "path": "scripts/verify-features/relay-candidate-install.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 645,
+              "end_line": 659,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 690,
+              "end_line": 700,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 938,
+              "end_line": 960,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 1016,
+              "end_line": 1026,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 1056,
+              "end_line": 1064,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/relay-candidate-install.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 333,
+              "end_line": 345,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 361,
+              "end_line": 370,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 442,
+              "end_line": 471,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1665-immutable-fleet-snapshot/trusted-cleanroom-runner.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 36,
+              "end_line": 45,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 216,
+              "end_line": 226,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 315,
+              "end_line": 338,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            },
+            {
+              "start_line": 342,
+              "end_line": 348,
+              "revision": "38065a522c9b5e3670300e44eca74152709bf7f8"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

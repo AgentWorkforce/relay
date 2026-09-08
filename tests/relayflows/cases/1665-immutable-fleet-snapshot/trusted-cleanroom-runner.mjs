@@ -36,6 +36,10 @@ const consumerWorkflowPath = path.join(
   targetDir,
   '.github/workflows/relay-cleanroom-qualification-consumer.yml'
 );
+const candidateInstallScriptPath = path.join(
+  targetDir,
+  'scripts/verify-features/relay-candidate-install.mjs'
+);
 const present = await Promise.all(
   [scriptPath, requestWorkflowPath, consumerWorkflowPath].map(async (file) => {
     try {
@@ -212,8 +216,11 @@ if (present.every((value) => !value)) {
   );
   await rm(cliRoot, { recursive: true, force: true });
 
-  const requestSource = await readFile(requestWorkflowPath, 'utf8');
-  const consumerSource = await readFile(consumerWorkflowPath, 'utf8');
+  const [requestSource, consumerSource, candidateInstallSource] = await Promise.all([
+    readFile(requestWorkflowPath, 'utf8'),
+    readFile(consumerWorkflowPath, 'utf8'),
+    readFile(candidateInstallScriptPath, 'utf8'),
+  ]);
   const requestWorkflow = parseStrictWorkflowYaml(requestSource);
   const consumer = parseStrictWorkflowYaml(consumerSource);
   assertDeepEqual(
@@ -308,6 +315,24 @@ if (present.every((value) => !value)) {
   ) {
     throw new Error('Downloaded candidate metadata is not hardened before private hydration.');
   }
+  const hydrateSource = candidateInstallSource.slice(
+    candidateInstallSource.indexOf('async function hydrate('),
+    candidateInstallSource.indexOf('\nasync function main()')
+  );
+  const hydrateStepSource = String(qualification.steps[hydrateIndex]?.run ?? '');
+  if (
+    !hydrateStepSource.includes('--source-sha "$RELAY_SHA"') ||
+    !hydrateStepSource.includes('--package-version "$version"') ||
+    !hydrateSource.includes("requiredString(expectedSourceSha, '--source-sha', SHA40)") ||
+    !hydrateSource.includes("requiredString(expectedPackageVersion, '--package-version', VERSION)") ||
+    hydrateSource.includes("run('git'") ||
+    hydrateSource.includes("readFile('package.json'") ||
+    !hydrateSource.includes('executeCandidate: false')
+  ) {
+    throw new Error(
+      'Hydration must bind the attested candidate source and package identity as data without executing it.'
+    );
+  }
   if (
     consumerSource.includes('ref: ${{ github.sha }}') ||
     /ref:\s*\$\{\{ steps\.manifest/.test(consumerSource)
@@ -317,7 +342,7 @@ if (present.every((value) => !value)) {
   outcome = 'fixed';
   signature = 'trusted_cleanroom_rejects_unapproved_ref_execution';
   details =
-    'An approved malicious candidate ref is accepted only as bound data; actor, rerunner, fork, workflow, nested-ref, and wrong-run artifact substitutions fail, and all executable code is pinned to github.workflow_sha.';
+    'An approved malicious candidate ref is accepted only as bound data; actor, rerunner, fork, workflow, nested-ref, wrong-run artifact, and source/package attestation substitutions fail. Hydration structurally verifies the exact candidate without executing it, while all verifier code is pinned to github.workflow_sha.';
 }
 
 await mkdir(path.dirname(resultPath), { recursive: true });

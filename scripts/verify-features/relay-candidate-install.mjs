@@ -645,9 +645,15 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
     throw new Error('candidate broker digest changed');
   }
   if (brokerBytes.length !== attestation.brokerBytes) throw new Error('candidate broker size changed');
-  const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
-  if (brokerVersion !== `agent-relay-broker ${attestation.packageVersion}`) {
-    throw new Error('clean-installed candidate broker reported a different version');
+  // Hydration runs from a credential-bearing, trusted workflow checkout. The
+  // candidate package is data at that boundary: verify its bytes and metadata,
+  // but do not run its broker or CLI until the isolated Fleet qualification.
+  const executeCandidate = expected.executeCandidate !== false;
+  if (executeCandidate) {
+    const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
+    if (brokerVersion !== `agent-relay-broker ${attestation.packageVersion}`) {
+      throw new Error('clean-installed candidate broker reported a different version');
+    }
   }
   for (const entry of attestation.packages) {
     const installedRoot = packageRoot(installDir, entry.name);
@@ -684,9 +690,11 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   if (sha256(cliBytes) !== attestation.cliSha256) {
     throw new Error('candidate install CLI digest changed');
   }
-  const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 }).trim();
-  if (reportedVersion !== `agent-relay v${attestation.packageVersion}`) {
-    throw new Error('clean-installed candidate CLI reported a different version');
+  if (executeCandidate) {
+    const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 }).trim();
+    if (reportedVersion !== `agent-relay v${attestation.packageVersion}`) {
+      throw new Error('clean-installed candidate CLI reported a different version');
+    }
   }
   return { attestation, attestationSha256: sha256(bytes) };
 }
@@ -930,20 +938,23 @@ async function prepare(outputRoot) {
   });
 }
 
-async function hydrate(attestationPath, tarballDirectory, outputRoot) {
+async function hydrate(
+  attestationPath,
+  tarballDirectory,
+  outputRoot,
+  expectedSourceSha,
+  expectedPackageVersion
+) {
   const sourceAttestation = path.resolve(attestationPath);
-  const [sourceSha, sourceStatus, rootPackage, sourceBytes] = await Promise.all([
-    Promise.resolve(run('git', ['rev-parse', 'HEAD']).trim()),
-    Promise.resolve(run('git', ['status', '--porcelain']).trim()),
-    readFile('package.json', 'utf8').then(JSON.parse),
+  const [sourceSha, packageVersion, sourceBytes] = await Promise.all([
+    Promise.resolve(requiredString(expectedSourceSha, '--source-sha', SHA40)),
+    Promise.resolve(requiredString(expectedPackageVersion, '--package-version', VERSION)),
     readRegularFileNoFollow(sourceAttestation, {
       label: 'portable candidate attestation',
       privateMode: true,
       currentUserOwned: true,
     }).then((result) => result.bytes),
   ]);
-  if (sourceStatus) throw new Error('candidate hydration requires a clean source tree');
-  const packageVersion = requiredString(rootPackage.version, 'root package version', VERSION);
   const candidate = validateCandidateInstallAttestation(JSON.parse(sourceBytes.toString('utf8')), {
     sourceSha,
     packageVersion,
@@ -1005,7 +1016,11 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot) {
       cwd: installDir,
       timeoutMs: 900_000,
     });
-    await verifyCandidateInstall(targetAttestation, { sourceSha, packageVersion });
+    await verifyCandidateInstall(targetAttestation, {
+      sourceSha,
+      packageVersion,
+      executeCandidate: false,
+    });
     process.stdout.write(
       `RELAY_CANDIDATE_INSTALL_HYDRATED cli=${path.join(rootHandle.root, 'install', ...CLI_RELATIVE_PATH.split('/'))}\n`
     );
@@ -1041,7 +1056,9 @@ async function main() {
     await hydrate(
       requiredString(options.attestation, '--attestation'),
       requiredString(options.tarballs, '--tarballs'),
-      requiredString(options.output, '--output')
+      requiredString(options.output, '--output'),
+      requiredString(options['source-sha'], '--source-sha', SHA40),
+      requiredString(options['package-version'], '--package-version', VERSION)
     );
     return;
   }
