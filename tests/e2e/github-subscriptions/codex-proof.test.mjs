@@ -33,7 +33,28 @@ test('session audit selects only a new owned cwd and fails closed on ambiguous o
     rmSync(dir, { recursive: true, force: true });
   }
 });
-const valid = [call('exec_command', { cmd: command }), call('mcp__agent-relay__post_message')];
+const postArgs = { channel: 'local-ai-proof', text: 'GHSUB_ACK ' + 'a'.repeat(64) };
+const valid = [call('exec_command', { cmd: command }), call('mcp__agent-relay__post_message', postArgs)];
+const hosted = (input) => ({
+  type: 'response_item',
+  payload: { type: 'custom_tool_call', name: 'exec', input },
+});
+test('hosted code-mode audit parses only literal direct digest/action calls without executing code', () => {
+  const digest = `text(await tools.exec_command(${JSON.stringify({ cmd: command, login: false })}));`;
+  const post = `text(await tools.mcp__agent_relay__post_message(${JSON.stringify(postArgs)}));`;
+  assert.equal(auditCodexRecords([hosted(digest), hosted(post)]).pass, true);
+  for (const script of [
+    digest + '; fetch("http://bad")',
+    'text(await tools.exec_command({cmd: process.env.SECRET}));',
+    'text(await tools.exec_command({...options}));',
+    'text(await tools.exec_command({cmd: getter()}));',
+    'text(await tools.mcp__agent_relay__check_inbox({}));',
+    'text(ALL_TOOLS);',
+    'const r=await tools.exec_command({}); text(r);',
+  ]) {
+    assert.equal(auditCodexRecords([...valid, hosted(script)]).pass, false, script);
+  }
+});
 test('digest and outbound action are required, and raw commands are not retained', () => {
   const result = auditCodexRecords(valid);
   assert.equal(result.pass, true);

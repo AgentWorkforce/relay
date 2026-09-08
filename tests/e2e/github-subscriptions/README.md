@@ -111,7 +111,9 @@ This starts one actual Claude worker. Keep the assignment's independent reviewer
 Set `LOCAL_AI_CLI=codex` for a separately labeled actual Codex proof using an existing
 logged-in Codex installation. This pins the actor to `gpt-6-astra` with high reasoning,
 restricts the Relay MCP server to `post_message`, and disables web search, apps,
-multi-agent and code-mode tools. The audit requires exactly one newly created Codex
+multi-agent tools. The installed Codex code-mode host stays enabled; its tool calls
+are parsed as syntax, never evaluated by the auditor, and only a single literal
+digest/action call inside `text(await tools.tool(...))` is accepted. The audit requires exactly one newly created Codex
 session with the disposable worker's exact cwd, retains its ID/version/transcript
 hash and sanitized tool-call metadata, and rejects every tool except the prescribed
 digest-only shell command and Relay `post_message`. It does not copy credentials or

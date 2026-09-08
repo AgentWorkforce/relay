@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
+import ts from 'typescript';
 
 export const codexReceiverArgs = [
   '--model',
@@ -19,7 +20,7 @@ export const codexReceiverArgs = [
   '-c',
   'features.code_mode=false',
   '-c',
-  'features.code_mode_host=false',
+  'features.code_mode_host=true',
 ];
 
 export function codexMcpArgs({ node, cli, base, home }) {
@@ -42,27 +43,84 @@ export function isDigestOnlyCommand(command) {
   return /^printf '%s' '[a-f0-9]{32}' \| shasum -a 256$/.test(command);
 }
 
+function literalObject(node) {
+  if (!ts.isObjectLiteralExpression(node)) throw new Error('Literal tool arguments required');
+  return Object.fromEntries(
+    node.properties.map((property) => {
+      if (
+        !ts.isPropertyAssignment(property) ||
+        (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))
+      )
+        throw new Error('Plain argument properties required');
+      const value = property.initializer;
+      if (ts.isStringLiteral(value)) return [property.name.text, value.text];
+      if (value.kind === ts.SyntaxKind.FalseKeyword) return [property.name.text, false];
+      throw new Error('Only literal strings and false are permitted');
+    })
+  );
+}
+
+// Parse, never evaluate. Only one direct tool call wrapped in text(...) is allowed.
+export function hostedToolCall(source) {
+  const file = ts.createSourceFile('proof.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  if (file.parseDiagnostics.length || file.statements.length !== 1)
+    throw new Error('One proof tool call required');
+  const statement = file.statements[0];
+  if (!ts.isExpressionStatement(statement)) throw new Error('Expected text(await tools.tool(...))');
+  const outer = statement.expression;
+  if (
+    !ts.isCallExpression(outer) ||
+    !ts.isIdentifier(outer.expression) ||
+    outer.expression.text !== 'text' ||
+    outer.arguments.length !== 1
+  )
+    throw new Error('Expected text wrapper');
+  const awaited = outer.arguments[0];
+  if (!ts.isAwaitExpression(awaited) || !ts.isCallExpression(awaited.expression))
+    throw new Error('Expected awaited call');
+  const call = awaited.expression;
+  if (
+    !ts.isPropertyAccessExpression(call.expression) ||
+    !ts.isIdentifier(call.expression.expression) ||
+    call.expression.expression.text !== 'tools' ||
+    call.arguments.length !== 1
+  )
+    throw new Error('Direct tools call required');
+  return { name: call.expression.name.text, args: literalObject(call.arguments[0]) };
+}
+
 export function auditCodexRecords(records) {
   const calls = [];
   for (const record of records) {
     if (record.type !== 'response_item') continue;
     const item = record.payload ?? {};
     if (!String(item.type).endsWith('_call')) continue;
-    let args;
+    let args,
+      name = item.name;
     try {
-      args = JSON.parse(item.arguments ?? '{}');
+      if (item.type === 'custom_tool_call' && name === 'exec') {
+        ({ name, args } = hostedToolCall(item.input));
+      } else args = JSON.parse(item.arguments ?? '{}');
     } catch {
       args = {};
     }
     const command = args.cmd ?? args.command;
-    const shell = item.name === 'exec_command' || item.name === 'shell_command';
-    const post = item.name === 'mcp__agent-relay__post_message';
+    const shell = name === 'exec_command' || name === 'shell_command';
+    const post = name === 'mcp__agent-relay__post_message' || name === 'mcp__agent_relay__post_message';
     const admissible =
-      item.type === 'function_call' &&
-      ((shell && typeof command === 'string' && isDigestOnlyCommand(command)) || post);
+      (item.type === 'function_call' || (item.type === 'custom_tool_call' && name !== 'exec')) &&
+      ((shell &&
+        typeof command === 'string' &&
+        isDigestOnlyCommand(command) &&
+        Object.keys(args).every((k) => ['cmd', 'command', 'login'].includes(k)) &&
+        (args.login === undefined || args.login === false)) ||
+        (post &&
+          args.channel === 'local-ai-proof' &&
+          /^GHSUB_ACK [a-f0-9]{64}$/.test(args.text) &&
+          Object.keys(args).every((k) => ['channel', 'text'].includes(k))));
     calls.push({
       at: record.timestamp,
-      name: item.name ?? item.type,
+      name: post ? 'mcp__agent-relay__post_message' : (name ?? item.type),
       admissible,
       ...(shell && typeof command === 'string'
         ? {

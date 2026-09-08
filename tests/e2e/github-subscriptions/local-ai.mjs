@@ -100,7 +100,7 @@ report.inputPacingMs = process.env.LOCAL_AI_INJECT_RATE_MS ?? 'default';
 report.receiverHistoryTools =
   receiverCli === 'claude'
     ? 'Explicitly disallowed inbox, history, thread/message reads, search, MCP resource reads and WebFetch/WebSearch; actual nonce must arrive via push'
-    : 'Relay MCP post_message allowlist; web/apps/multi-agent/code-mode disabled; exact owned-session audit permits only digest shell and post_message calls';
+    : 'Relay MCP post_message allowlist; web/apps/multi-agent disabled; exact owned-session audit parses hosted calls and permits only digest shell and post_message calls';
 const save = () => writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 const note = (text) => {
   report.status = text;
@@ -326,7 +326,7 @@ try {
       receiverTask +
       ' This is an isolated synthetic-event rehearsal. Your only output action is the requested digest message to its incoming channel. Do not read environment/configuration files or change code. Do not ACK this initial task on Relay; wait for pushed events.' +
       (receiverCli === 'codex'
-        ? " For each nonce use exec_command with exactly: printf '%s' '<nonce>' | shasum -a 256 (substitute only the 32 hex digits). Use mcp__agent-relay__post_message for the reply. Do not use any other tool, including sleep, inbox, resource reads, or tool orchestration."
+        ? ' Use functions.exec twice per event, with EXACTLY one expression each time. First: text(await tools.exec_command({cmd:"printf \'%s\' \'<nonce>\' | shasum -a 256",login:false})); substitute only the 32 hex digits. Then: text(await tools.mcp__agent_relay__post_message({channel:"local-ai-proof",text:"GHSUB_ACK <digest>"})); substitute the digest output. No variable declarations, ALL_TOOLS lookup, extra expressions, other tools, sleep, inbox, resource reads, or polling. The two tool names above are provided so no discovery is needed.'
         : ''),
   });
   assert.deepEqual(worker.channels, ['local-ai-proof']);
