@@ -50,6 +50,7 @@ import {
   createCliApiKeyEnvironment,
   formatCloudRunArtifact,
   formatCloudRunDiagnostics,
+  parseJsonOutput,
   preparedRunIdFromOutput,
   recognizedCloudRunStatus,
   sanitizeCloudCommandOutput,
@@ -568,6 +569,14 @@ describe('Cloud dispatcher API key lifecycle', () => {
 
     expect(diagnostic).toBe('<malformed JSON status response omitted>');
     expect(diagnostic).not.toContain('unknown-secret');
+  });
+
+  it('uses a fixed error when malformed JSON contains unrecognized secrets', () => {
+    const malformed = 'status response follows\n{"status":"failed","token":unknown-secret}';
+
+    expect(() => parseJsonOutput(malformed, 'Cloud status')).toThrow(
+      new Error('Cloud status did not return JSON')
+    );
   });
 
   it('persists bounded diagnostics when a Cloud status poll times out', async () => {

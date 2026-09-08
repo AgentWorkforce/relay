@@ -66,13 +66,19 @@ export function boundedDuration(value, { fallback, minimum, maximum, label }) {
   return parsed;
 }
 
-function parseJsonOutput(output, label) {
+export function parseJsonOutput(output, label) {
   try {
     return JSON.parse(output);
   } catch {
     const first = output.indexOf('{');
     const last = output.lastIndexOf('}');
-    if (first >= 0 && last > first) return JSON.parse(output.slice(first, last + 1));
+    if (first >= 0 && last > first) {
+      try {
+        return JSON.parse(output.slice(first, last + 1));
+      } catch {
+        // Fall through to the fixed error below without exposing payload excerpts.
+      }
+    }
     throw new Error(`${label} did not return JSON`);
   }
 }
