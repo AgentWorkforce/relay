@@ -1,0 +1,37 @@
+{
+  "id": "compact_msichwe8jqzl",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-08T10:22:43.328Z",
+  "sourceTrajectories": [
+    "traj_pg9aglu4aqlw"
+  ],
+  "dateRange": {
+    "start": "2026-09-08T10:04:45.586Z",
+    "end": "2026-09-08T10:21:50.230Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Move HTTP-spawn cloud preparation out of the broker actor and bound it",
+          "chosen": "Move HTTP-spawn cloud preparation out of the broker actor and bound it",
+          "reasoning": "Wrangler traced a 35.7s duplicate registration blocking local attach. Preserve node tokens, merge only completed identity/cursor state, reserve local names, reject pending releases, and skip launch when the caller is gone. Retry only explicit pre-allocation D1 overload for fleet attach.",
+          "fromTrajectory": "traj_pg9aglu4aqlw"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

@@ -262,6 +262,9 @@ function retryDelayBudgetMs(attempts: number, initialMs: number, maxMs: number):
 }
 
 function terminalSessionFailureSummary(error: TerminalSessionAttemptError): string {
+  if (error.code === 'database_overloaded') {
+    return 'The fleet control-plane database is overloaded; this does not mean the agent has stopped';
+  }
   if (error.code === 'node_not_found') return 'Control-plane node lookup found no matching record';
   if (error.code === 'node_unreachable') {
     return /no terminal transport/i.test(error.message)
@@ -276,12 +279,26 @@ function terminalSessionFailureSummary(error: TerminalSessionAttemptError): stri
   return 'The terminal-session request was rejected';
 }
 
-function isRetryableTerminalSessionFailure(code: string | undefined): boolean {
+function isRetryableTerminalSessionFailure(code: string | undefined, status: number): boolean {
   // These structured responses are emitted before a session is returned, so
   // retrying cannot duplicate a successful allocation. A fetch timeout,
   // network failure, or unclassified 5xx is different: this POST may already
   // have completed server-side, and retrying it could create a second session.
-  return code === 'node_unreachable' || code === 'terminal_session_unavailable';
+  // The gateway performs D1 auth/node/agent reads BEFORE terminal/create.
+  // Its explicit D1 overload rejection is therefore safe to replay. Do not
+  // generalize this to other endpoints or unknown 5xx/transport failures.
+  return (
+    code === 'node_unreachable' ||
+    code === 'terminal_session_unavailable' ||
+    (status === 503 && code === 'database_overloaded')
+  );
+}
+
+function retryAfterMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const seconds = /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+  const delay = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(value) - Date.now();
+  return Number.isFinite(delay) && delay > 0 ? delay : 0;
 }
 
 /** Start a broker-compatible loopback proxy for one remote terminal session. */
@@ -307,6 +324,7 @@ export async function startFleetNodeAttachProxy(
   let sessionRequestAttempts = 0;
   let sessionRequestBudgetExhaustedBetweenAttempts = false;
   let lastSessionError: TerminalSessionAttemptError | undefined;
+  let serverRetryAfterMs = 0;
   const sessionResult = await collectWithRetry(
     'terminal session request',
     async () => {
@@ -333,6 +351,7 @@ export async function startFleetNodeAttachProxy(
         throw exhausted;
       }
       sessionRequestAttempts += 1;
+      serverRetryAfterMs = 0;
       const controller = new AbortController();
       let timedOut = false;
       const attemptTimeoutMs = Math.min(sessionRequestTimeoutMs, remainingRequestBudgetMs);
@@ -373,13 +392,14 @@ export async function startFleetNodeAttachProxy(
       const resumeToken = ticketPayload.data?.resume_token;
       if (!ticketResponse.ok || !terminalUrl || !sessionId || !resumeToken) {
         const code = ticketPayload.error?.code;
+        serverRetryAfterMs = retryAfterMs(ticketResponse.headers?.get('retry-after'));
         const message =
           ticketPayload.error?.message ?? `terminal session request failed (HTTP ${ticketResponse.status})`;
         lastSessionError = new TerminalSessionAttemptError(
           message,
           code,
           ticketResponse.status,
-          isRetryableTerminalSessionFailure(code),
+          isRetryableTerminalSessionFailure(code, ticketResponse.status),
           false
         );
         throw lastSessionError;
@@ -392,7 +412,7 @@ export async function startFleetNodeAttachProxy(
       sleep: async (delayMs) => {
         const remainingRequestBudgetMs = sessionRequestDeadline - Date.now();
         if (remainingRequestBudgetMs <= 0) return;
-        await sessionRequestSleep(Math.min(delayMs, remainingRequestBudgetMs));
+        await sessionRequestSleep(Math.min(Math.max(delayMs, serverRetryAfterMs), remainingRequestBudgetMs));
       },
       shouldRetry: (error) => error instanceof TerminalSessionAttemptError && error.retryable,
     }

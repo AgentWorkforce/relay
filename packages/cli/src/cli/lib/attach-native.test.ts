@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 
-import { attachNative, renderNativeHarnessDiagnostic, renderAgentEvent } from './attach-native.js';
+import {
+  attachNative,
+  isNativeHarness,
+  renderNativeHarnessDiagnostic,
+  renderAgentEvent,
+} from './attach-native.js';
 
 const envelope = (kind: string, fields: Record<string, unknown> = {}) =>
   ({
@@ -13,6 +18,17 @@ const envelope = (kind: string, fields: Record<string, unknown> = {}) =>
   }) as never;
 
 describe('native harness attach rendering', () => {
+  it('explains a broker lookup timeout without reporting the running agent as dead', async () => {
+    await expect(
+      isNativeHarness(
+        'session-thread-rollout',
+        { brokerUrl: 'http://127.0.0.1:1', apiKey: 'test-key' },
+        (async () => {
+          throw new DOMException('The operation timed out.', 'TimeoutError');
+        }) as typeof fetch
+      )
+    ).rejects.toThrow(/broker could not complete the agent lookup.*agent may still be running/);
+  });
   it('rejects passthrough without probing a terminal or broker', async () => {
     let error = '';
     await expect(

@@ -305,6 +305,17 @@ export async function isNativeHarness(
   });
   if (!connection) return false;
   const client = createBrokerClient(connection, fetchFn);
-  const agent = (await client.listAgents()).find((candidate) => candidate.name === name);
-  return agent?.runtime_kind === 'native';
+  try {
+    const agent = (await client.listAgents()).find((candidate) => candidate.name === name);
+    return agent?.runtime_kind === 'native';
+  } catch (error) {
+    throw new Error(
+      `Cannot attach to ${JSON.stringify(name)}: the broker could not complete the agent lookup. ` +
+        'The agent may still be running; this lookup failure does not establish that it needs a restart. ' +
+        `Check broker responsiveness and retry. Cause: ${describeError(error)}`,
+      { cause: error }
+    );
+  } finally {
+    client.disconnect();
+  }
 }

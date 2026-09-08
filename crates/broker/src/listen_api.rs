@@ -612,6 +612,29 @@ async fn listen_api_health(
     let mut payload = listen_api_health_payload(state.default_workspace_id, state.memberships);
     if let Some(status) = fetch_status_for_health(&state.tx).await {
         merge_status_into_health_payload(&mut payload, &status);
+        payload["runtimeResponsive"] = json!(true);
+    } else {
+        // Keep the existing public liveness HTTP contract: a busy actor must
+        // not induce a supervisor restart storm. But never present fabricated
+        // zero-agent/offline values as a successful runtime observation.
+        payload["runtimeResponsive"] = json!(false);
+        if payload["status"] == "ok" {
+            payload["status"] = json!("degraded");
+        }
+        payload["runtimeStatusError"] = json!("runtime_status_unavailable");
+        for key in [
+            "agentCount",
+            "uptimeMs",
+            "pendingDeliveryCount",
+            "deadLetterCount",
+            "wsConnections",
+            "memoryMb",
+            "relaycastConnected",
+            "nodeConnected",
+            "nodeDelivery",
+        ] {
+            payload[key] = Value::Null;
+        }
     }
     axum::Json(payload)
 }
@@ -3880,6 +3903,35 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["runtimeResponsive"], false);
+        assert_eq!(payload["runtimeStatusError"], "runtime_status_unavailable");
+        assert!(payload["agentCount"].is_null());
+        assert!(payload["nodeConnected"].is_null());
+    }
+
+    #[tokio::test]
+    async fn health_route_reports_a_responsive_runtime_without_losing_counts() {
+        let (router, mut rx) = test_router(None);
+        let runtime = tokio::spawn(async move {
+            if let Some(super::ListenApiRequest::GetStatus { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agent_count": 1 })));
+            }
+        });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["runtimeResponsive"], true);
+        assert_eq!(payload["agentCount"], 1);
+        runtime.await.unwrap();
     }
 
     #[test]

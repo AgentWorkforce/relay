@@ -676,6 +676,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         hosted_agent_event_tx,
         pty_observability: HashMap::new(),
         api_rx,
+        pending_api_spawns: Default::default(),
+        pending_api_spawn_names: HashSet::new(),
         api_open: true,
         ws_inbound_rx,
         relaycast_open: true,

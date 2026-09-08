@@ -1,0 +1,53 @@
+{
+  "id": "traj_pg9aglu4aqlw",
+  "version": 1,
+  "task": {
+    "title": "Keep local attach responsive during slow cloud registration"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-08T10:04:45.586Z",
+  "completedAt": "2026-09-08T10:21:50.230Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T10:16:44.611Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_k90zf0m041ko",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T10:16:44.611Z",
+      "endedAt": "2026-09-08T10:21:50.230Z",
+      "events": [
+        {
+          "ts": 1788862604611,
+          "type": "decision",
+          "content": "Move HTTP-spawn cloud preparation out of the broker actor and bound it: Move HTTP-spawn cloud preparation out of the broker actor and bound it",
+          "raw": {
+            "question": "Move HTTP-spawn cloud preparation out of the broker actor and bound it",
+            "chosen": "Move HTTP-spawn cloud preparation out of the broker actor and bound it",
+            "alternatives": [],
+            "reasoning": "Wrangler traced a 35.7s duplicate registration blocking local attach. Preserve node tokens, merge only completed identity/cursor state, reserve local names, reject pending releases, and skip launch when the caller is gone. Retry only explicit pre-allocation D1 overload for fleet attach."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Isolated HTTP-spawn cloud registration from local attach; bounded registration and overload retries; accurate health/attach diagnostics. 1065 broker tests passed (4 ignored), 43 attach tests passed, CLI typecheck passed. Same real-pipe regression fails on baseline 11.10.4 and passes with fix. Production broker untouched; rollout pending.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d",
+    "endRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d"
+  }
+}

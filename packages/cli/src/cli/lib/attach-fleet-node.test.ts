@@ -141,6 +141,98 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
     }
   });
 
+  it('recovers from a database overload and honors the server Retry-After', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const success = fakeTicketFetch(remote.url);
+    let calls = 0;
+    const retryDelays: number[] = [];
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'running-agent',
+      node: 'finn-mini',
+      mode: 'drive',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: (async (input, init) => {
+        calls += 1;
+        if (calls === 1) {
+          return Response.json(
+            { ok: false, error: { code: 'database_overloaded', message: 'D1 overloaded' } },
+            { status: 503, headers: { 'Retry-After': '8' } }
+          );
+        }
+        return success(input, init);
+      }) as typeof globalThis.fetch,
+      sessionRequest: {
+        sleep: async (ms) => {
+          retryDelays.push(ms);
+        },
+      },
+    });
+    cleanup.push(proxy.close);
+    expect(calls).toBe(2);
+    expect(retryDelays).toEqual([8_000]);
+    sendReady(await remote.nextConnection());
+  });
+
+  it.each([
+    ['database_overloaded', 503, 5],
+    ['internal_error', 503, 1],
+    ['database_overloaded', 401, 1],
+  ])('bounds retries for %s HTTP %s to %s attempts', async (code, status, expectedCalls) => {
+    let calls = 0;
+    const delays: number[] = [];
+    const failure = await startFleetNodeAttachProxy({
+      agent: 'running-agent',
+      node: 'finn-mini',
+      mode: 'drive',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        calls += 1;
+        return Response.json(
+          { ok: false, error: { code, message: 'unavailable' } },
+          { status, headers: { 'Retry-After': 'invalid' } }
+        );
+      }) as typeof globalThis.fetch,
+      sessionRequest: {
+        sleep: async (ms) => {
+          delays.push(ms);
+        },
+      },
+    }).catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(calls).toBe(expectedCalls);
+    expect(delays.length).toBe(expectedCalls - 1);
+    if (expectedCalls === 5) {
+      expect(delays).toEqual([6_000, 7_200, 8_400, 9_600]);
+      expect((failure as Error).message).toContain('does not mean the agent has stopped');
+    }
+  });
+
+  it('does not retry early when Retry-After exceeds the overall request budget', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const attempt = startFleetNodeAttachProxy({
+      agent: 'running-agent',
+      node: 'finn-mini',
+      mode: 'view',
+      baseUrl: 'https://fake.example',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        calls += 1;
+        return Response.json(
+          { ok: false, error: { code: 'database_overloaded', message: 'overloaded' } },
+          { status: 503, headers: { 'Retry-After': '120' } }
+        );
+      }) as typeof globalThis.fetch,
+    }).catch((error: Error) => error);
+    await vi.advanceTimersByTimeAsync(90_000);
+    const failure = await attempt;
+    expect(calls).toBe(1);
+    expect((failure as Error).message).toContain('overall budget was exhausted');
+  });
+
   // MUST FIRE: before relay#1571 the first 503 escaped directly and this
   // never reached the successful second response.
   it('retries a transient node_unreachable response before opening the terminal', async () => {

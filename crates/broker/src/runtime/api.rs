@@ -268,8 +268,353 @@ fn observer_token_filters_are_empty(filters: &ObserverTokenFilters) -> bool {
         && created_after.is_none()
 }
 
+// Remote registration is polled alongside the runtime, never awaited inside
+// its actor. Bound both concurrency and the complete cloud preparation phase.
+const MAX_PENDING_API_SPAWNS: usize = 8;
+const API_SPAWN_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub(super) struct PreparedApiSpawn {
+    pub(super) request: ListenApiRequest,
+    registration: Result<ApiSpawnRegistration, String>,
+}
+
+struct ApiSpawnRegistration {
+    spec: AgentSpec,
+    worker_relay_key: Option<String>,
+    fleet_registration: Option<(
+        crate::node_control::AgentRegistrationToken,
+        Option<String>,
+        Option<String>,
+    )>,
+    preregistration_warning: Option<String>,
+}
+
+async fn prepare_api_spawn_registration(
+    request: &ListenApiRequest,
+    relaycast_http: &RelaycastHttpClient,
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_node_name: &str,
+) -> Result<ApiSpawnRegistration, String> {
+    let ListenApiRequest::Spawn {
+        name,
+        cli,
+        transport,
+        model,
+        args,
+        registration_metadata,
+        channels,
+        cwd,
+        team,
+        shadow_of,
+        shadow_mode,
+        restart_policy,
+        harness_config,
+        agent_token,
+        ..
+    } = request
+    else {
+        unreachable!("only spawn requests are prepared")
+    };
+    let (
+        name,
+        cli,
+        transport,
+        model,
+        args,
+        registration_metadata,
+        channels,
+        cwd,
+        team,
+        shadow_of,
+        shadow_mode,
+        restart_policy,
+        harness_config,
+        agent_token,
+    ) = (
+        name.clone(),
+        cli.clone(),
+        transport.clone(),
+        model.clone(),
+        args.clone(),
+        registration_metadata.clone(),
+        channels.clone(),
+        cwd.clone(),
+        team.clone(),
+        shadow_of.clone(),
+        shadow_mode.clone(),
+        restart_policy.clone(),
+        harness_config.clone(),
+        agent_token.clone(),
+    );
+    // Merge only this result's identity/cursor, never a stale copy of the book.
+    let mut fleet_delivery_book = FleetDeliveryBook::default();
+    let effective_channels = if channels.is_empty() {
+        default_spawn_channels()
+    } else {
+        channels.clone()
+    };
+    let spec = match build_http_api_spawn_spec(
+        name.clone(),
+        cli.clone(),
+        transport,
+        model.clone(),
+        args,
+        effective_channels.clone(),
+        cwd,
+        team,
+        shadow_of,
+        shadow_mode,
+        *restart_policy,
+        harness_config,
+    ) {
+        Ok(spec) => spec,
+        Err(error) => {
+            return Err(error.to_string());
+        }
+    };
+    let mut preregistration_warning: Option<String> = None;
+    // Caller-supplied agent_token is authoritative. In fleet mode it
+    // was minted by the node control connection, and the worker must
+    // receive that exact token before its harness starts.
+    //
+    // Otherwise bind the agent to this node via node-control
+    // `agent.register` — the same step the engine `action.invoke`
+    // spawn converges on — so the agent is born `via_node`-bound and
+    // delivery flows over /v1/node/ws. The minted token is injected
+    // as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP) so
+    // the worker MCP never re-registers over HTTP. If node binding is
+    // unavailable, fall back to HTTP pre-registration so a tokenless
+    // node (e.g. mint failure) still spawns a working agent.
+    let mut fleet_registration = None;
+    let session_ref = super::fleet::fleet_initial_session_ref(&spec);
+    let worker_relay_key = if let Some(token) = agent_token {
+        seed_supplied_agent_token(relaycast_http, &name, &token);
+        match super::fleet::resolve_fleet_agent_token_identity(
+            relaycast_http,
+            &mut fleet_delivery_book,
+            &name,
+            &token,
+        )
+        .await
+        {
+            Ok(registration) => {
+                fleet_registration = Some((registration, None, session_ref.clone()));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    worker = %name,
+                    error = %error,
+                    "could not resolve supplied agent token for reconnect inventory"
+                );
+            }
+        }
+        Some(token)
+    } else {
+        // Derive the session ref from the resolved spec the same way
+        // the fleet/sidecar paths do, so an HTTP spawn carrying a
+        // `harnessConfig.session_id` registers as a resumable session
+        // rather than a fresh spawn. No invocation id exists on the
+        // HTTP path.
+        match super::fleet::register_node_agent_token(
+            fleet_control_tx,
+            &mut fleet_delivery_book,
+            name.as_str(),
+            None,
+            session_ref.clone(),
+        )
+        .await
+        {
+            Ok(token) => {
+                tracing::info!(
+                    worker = %name,
+                    "bound agent to node via agent.register for HTTP spawn"
+                );
+                super::fleet::spawn_declared_metadata_publish(
+                    relaycast_http,
+                    name.as_str(),
+                    registration_metadata,
+                );
+                let relay_key = token.token.clone();
+                fleet_registration = Some((token, None, session_ref));
+                Some(relay_key)
+            }
+            Err(node_error) => {
+                tracing::warn!(
+                    worker = %name,
+                    error = %node_error,
+                    "node agent.register unavailable; falling back to HTTP pre-registration"
+                );
+                // The ordinary cache-aware registration: it honours
+                // the SDK's cached token and rate-limit block, so a
+                // name already seeded by preflight or an earlier
+                // spawn is reused rather than re-created. Declared
+                // metadata is published separately, exactly as on
+                // the node path.
+                match retry_agent_registration(relaycast_http, &name, Some(&cli)).await {
+                    Ok(token) => {
+                        super::fleet::spawn_declared_metadata_publish(
+                            relaycast_http,
+                            name.as_str(),
+                            registration_metadata,
+                        );
+                        // HTTP registration alone leaves the agent
+                        // without a node binding; the engine only
+                        // delivers to `via_node` agents in node-only
+                        // delivery. Bind it to this node so it is
+                        // deliverable, surfacing a loud warning if the
+                        // bind fails.
+                        let bind_warning =
+                            super::relaycast_events::bind_http_registered_agent_to_node(
+                                relaycast_http,
+                                fleet_node_name,
+                                &name,
+                            )
+                            .await;
+                        if let Some(warning) = bind_warning {
+                            preregistration_warning = Some(warning);
+                        } else {
+                            match super::fleet::resolve_fleet_agent_token_identity(
+                                relaycast_http,
+                                &mut fleet_delivery_book,
+                                &name,
+                                &token,
+                            )
+                            .await
+                            {
+                                Ok(registration) => {
+                                    fleet_registration =
+                                        Some((registration, None, session_ref.clone()));
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %error,
+                                        "could not resolve HTTP-registered agent for reconnect inventory"
+                                    );
+                                }
+                            }
+                        }
+                        Some(token)
+                    }
+                    Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                        let message = format_worker_preregistration_error(&name, &error);
+                        tracing::warn!(
+                            worker = %name,
+                            error = %error,
+                            "continuing spawn without pre-registration after retries exhausted"
+                        );
+                        preregistration_warning = Some(message);
+                        None
+                    }
+                    Err(RegRetryOutcome::Fatal(error)) => {
+                        return Err(format_worker_preregistration_error(&name, &error));
+                    }
+                }
+            }
+        }
+    };
+    if let Some(token) = worker_relay_key.as_deref() {
+        // Node registration returns a token without populating the
+        // HTTP client's worker cache. Seed it before authenticating
+        // as the worker so channel reconciliation cannot rotate an
+        // already-live identity's token.
+        seed_supplied_agent_token(relaycast_http, &name, token);
+        if let Err(error) = relaycast_http
+            .ensure_agent_channels(&name, Some(&cli), &effective_channels)
+            .await
+        {
+            tracing::error!(
+                worker = %name,
+                channels = ?effective_channels,
+                error = %error,
+                "worker channel membership reconciliation failed"
+            );
+            let membership_warning =
+                format!("worker channel membership was not fully reconciled: {error}");
+            preregistration_warning = Some(match preregistration_warning.take() {
+                Some(existing) => format!("{existing}; {membership_warning}"),
+                None => membership_warning,
+            });
+        }
+    }
+
+    Ok(ApiSpawnRegistration {
+        spec,
+        worker_relay_key,
+        fleet_registration,
+        preregistration_warning,
+    })
+}
+
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
+        if let ListenApiRequest::Spawn { name, .. } = &req {
+            let error =
+                if self.workers.has_worker(name) || self.pending_api_spawn_names.contains(name) {
+                    Some(format!(
+                        "agent '{}' already exists or has a spawn in progress",
+                        name
+                    ))
+                } else if self.pending_api_spawns.len() >= MAX_PENDING_API_SPAWNS {
+                    Some(
+                        "spawn_admission_busy: too many registrations in progress; retry later"
+                            .to_string(),
+                    )
+                } else {
+                    None
+                };
+            if let Some(error) = error {
+                if let ListenApiRequest::Spawn { reply, .. } = req {
+                    let _ = reply.send(Err(error));
+                }
+                return;
+            }
+            self.pending_api_spawn_names.insert(name.clone());
+            let http = self.relaycast_http.clone();
+            let control = self.fleet_control_tx.clone();
+            let node = self.fleet_node_name.clone();
+            self.pending_api_spawns.push(Box::pin(async move {
+                let registration = timeout(API_SPAWN_REGISTRATION_TIMEOUT,
+                    prepare_api_spawn_registration(&req, &http, &control, &node)).await
+                    .unwrap_or_else(|_| Err("spawn_registration_timeout: cloud registration exceeded 20s; no local worker was started; remote registration may have completed".to_string()));
+                PreparedApiSpawn { request: req, registration }
+            }));
+            return;
+        }
+        // Do not acknowledge release of a name that could still launch later.
+        if let ListenApiRequest::Release { name, .. } = &req {
+            if self.pending_api_spawn_names.contains(name) {
+                if let ListenApiRequest::Release { reply, .. } = req {
+                    let _ = reply.send(Err("spawn_in_progress: wait for registration to finish before releasing this agent".to_string()));
+                }
+                return;
+            }
+        }
+        self.handle_ready_api_request(req, None).await;
+    }
+
+    pub(super) async fn finish_api_spawn(&mut self, prepared: PreparedApiSpawn) {
+        if let ListenApiRequest::Spawn { name, reply, .. } = &prepared.request {
+            self.pending_api_spawn_names.remove(name);
+            if reply.is_closed() {
+                return;
+            }
+            if self.workers.has_worker(name) {
+                if let ListenApiRequest::Spawn { reply, name, .. } = prepared.request {
+                    let _ = reply.send(Err(format!("agent '{}' already exists", name)));
+                }
+                return;
+            }
+        }
+        self.handle_ready_api_request(prepared.request, Some(prepared.registration))
+            .await;
+    }
+
+    async fn handle_ready_api_request(
+        &mut self,
+        req: ListenApiRequest,
+        prepared: Option<Result<ApiSpawnRegistration, String>>,
+    ) {
         let paths = &self.paths;
         let state = &mut self.state;
         let workspaces = &self.workspaces;
@@ -319,219 +664,37 @@ impl BrokerRuntime {
             ListenApiRequest::Spawn {
                 name,
                 cli,
-                transport,
-                model,
-                args,
                 task,
-                registration_metadata,
-                channels,
-                cwd,
-                team,
-                shadow_of,
-                shadow_mode,
                 continue_from,
                 idle_threshold_secs,
                 exit_after_task,
                 skip_relay_prompt,
-                restart_policy,
-                harness_config,
-                agent_token,
                 agent_result_schema,
                 replay_buffer,
                 reply,
+                ..
             } => {
-                let effective_channels = if channels.is_empty() {
-                    default_spawn_channels()
-                } else {
-                    channels.clone()
-                };
-                let spec = match build_http_api_spawn_spec(
-                    name.clone(),
-                    cli.clone(),
-                    transport,
-                    model.clone(),
-                    args,
-                    effective_channels.clone(),
-                    cwd,
-                    team,
-                    shadow_of,
-                    shadow_mode,
-                    *restart_policy,
-                    harness_config,
-                ) {
-                    Ok(spec) => spec,
+                let ApiSpawnRegistration {
+                    spec,
+                    worker_relay_key,
+                    mut fleet_registration,
+                    preregistration_warning,
+                } = match prepared.expect("spawn must be prepared off the runtime actor") {
+                    Ok(registration) => registration,
                     Err(error) => {
-                        let _ = reply.send(Err(error.to_string()));
+                        let _ = reply.send(Err(error));
                         return;
                     }
                 };
-                let mut preregistration_warning: Option<String> = None;
-                // Caller-supplied agent_token is authoritative. In fleet mode it
-                // was minted by the node control connection, and the worker must
-                // receive that exact token before its harness starts.
-                //
-                // Otherwise bind the agent to this node via node-control
-                // `agent.register` — the same step the engine `action.invoke`
-                // spawn converges on — so the agent is born `via_node`-bound and
-                // delivery flows over /v1/node/ws. The minted token is injected
-                // as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP) so
-                // the worker MCP never re-registers over HTTP. If node binding is
-                // unavailable, fall back to HTTP pre-registration so a tokenless
-                // node (e.g. mint failure) still spawns a working agent.
-                let mut fleet_registration = None;
-                let session_ref = super::fleet::fleet_initial_session_ref(&spec);
-                let worker_relay_key = if let Some(token) = agent_token {
-                    seed_supplied_agent_token(relaycast_http, &name, &token);
-                    match super::fleet::resolve_fleet_agent_token_identity(
-                        relaycast_http,
-                        fleet_delivery_book,
-                        &name,
-                        &token,
-                    )
-                    .await
-                    {
-                        Ok(registration) => {
-                            fleet_registration = Some((registration, None, session_ref.clone()));
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "could not resolve supplied agent token for reconnect inventory"
-                            );
-                        }
-                    }
-                    Some(token)
-                } else {
-                    // Derive the session ref from the resolved spec the same way
-                    // the fleet/sidecar paths do, so an HTTP spawn carrying a
-                    // `harnessConfig.session_id` registers as a resumable session
-                    // rather than a fresh spawn. No invocation id exists on the
-                    // HTTP path.
-                    match super::fleet::register_node_agent_token(
-                        fleet_control_tx,
-                        fleet_delivery_book,
-                        name.as_str(),
-                        None,
-                        session_ref.clone(),
-                    )
-                    .await
-                    {
-                        Ok(token) => {
-                            tracing::info!(
-                                worker = %name,
-                                "bound agent to node via agent.register for HTTP spawn"
-                            );
-                            super::fleet::spawn_declared_metadata_publish(
-                                relaycast_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
-                            let relay_key = token.token.clone();
-                            fleet_registration = Some((token, None, session_ref));
-                            Some(relay_key)
-                        }
-                        Err(node_error) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %node_error,
-                                "node agent.register unavailable; falling back to HTTP pre-registration"
-                            );
-                            // The ordinary cache-aware registration: it honours
-                            // the SDK's cached token and rate-limit block, so a
-                            // name already seeded by preflight or an earlier
-                            // spawn is reused rather than re-created. Declared
-                            // metadata is published separately, exactly as on
-                            // the node path.
-                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
-                            {
-                                Ok(token) => {
-                                    super::fleet::spawn_declared_metadata_publish(
-                                        relaycast_http,
-                                        name.as_str(),
-                                        registration_metadata,
-                                    );
-                                    // HTTP registration alone leaves the agent
-                                    // without a node binding; the engine only
-                                    // delivers to `via_node` agents in node-only
-                                    // delivery. Bind it to this node so it is
-                                    // deliverable, surfacing a loud warning if the
-                                    // bind fails.
-                                    let bind_warning = super::relaycast_events::bind_http_registered_agent_to_node(
-                                        relaycast_http,
-                                        fleet_node_name,
-                                        &name,
-                                    )
-                                    .await;
-                                    if let Some(warning) = bind_warning {
-                                        preregistration_warning = Some(warning);
-                                    } else {
-                                        match super::fleet::resolve_fleet_agent_token_identity(
-                                            relaycast_http,
-                                            fleet_delivery_book,
-                                            &name,
-                                            &token,
-                                        )
-                                        .await
-                                        {
-                                            Ok(registration) => {
-                                                fleet_registration =
-                                                    Some((registration, None, session_ref.clone()));
-                                            }
-                                            Err(error) => {
-                                                tracing::warn!(
-                                                    worker = %name,
-                                                    error = %error,
-                                                    "could not resolve HTTP-registered agent for reconnect inventory"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Some(token)
-                                }
-                                Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                                    let message =
-                                        format_worker_preregistration_error(&name, &error);
-                                    tracing::warn!(
-                                        worker = %name,
-                                        error = %error,
-                                        "continuing spawn without pre-registration after retries exhausted"
-                                    );
-                                    preregistration_warning = Some(message);
-                                    None
-                                }
-                                Err(RegRetryOutcome::Fatal(error)) => {
-                                    let _ = reply.send(Err(format_worker_preregistration_error(
-                                        &name, &error,
-                                    )));
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                };
-                if let Some(token) = worker_relay_key.as_deref() {
-                    // Node registration returns a token without populating the
-                    // HTTP client's worker cache. Seed it before authenticating
-                    // as the worker so channel reconciliation cannot rotate an
-                    // already-live identity's token.
-                    seed_supplied_agent_token(relaycast_http, &name, token);
-                    if let Err(error) = relaycast_http
-                        .ensure_agent_channels(&name, Some(&cli), &effective_channels)
-                        .await
-                    {
-                        tracing::error!(
-                            worker = %name,
-                            channels = ?effective_channels,
-                            error = %error,
-                            "worker channel membership reconciliation failed"
+                if let Some((token, _, _)) = &fleet_registration {
+                    fleet_delivery_book
+                        .bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
+                    if let Some(up_to_seq) = token.delivery_ack_seq {
+                        fleet_delivery_book.seed_cursor(
+                            token.name.clone(),
+                            token.agent_id.clone(),
+                            up_to_seq,
                         );
-                        let membership_warning =
-                            format!("worker channel membership was not fully reconciled: {error}");
-                        preregistration_warning = Some(match preregistration_warning.take() {
-                            Some(existing) => format!("{existing}; {membership_warning}"),
-                            None => membership_warning,
-                        });
                     }
                 }
 

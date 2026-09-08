@@ -1,6 +1,7 @@
 use super::*;
 
 use futures_util::future::{join, join_all};
+use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
 ///
@@ -206,6 +207,9 @@ pub(crate) struct BrokerRuntime {
     pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
     pub(super) api_open: bool,
+    pub(super) pending_api_spawns:
+        FuturesUnordered<BoxFuture<'static, super::api::PreparedApiSpawn>>,
+    pub(super) pending_api_spawn_names: HashSet<WorkerName>,
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
@@ -285,6 +289,7 @@ enum RuntimeEvent {
     Sigterm,
     Api(Box<ListenApiRequest>),
     ApiClosed,
+    ApiSpawnPrepared(Box<super::api::PreparedApiSpawn>),
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
     Fleet(Option<FleetControlEvent>),
@@ -330,6 +335,8 @@ impl BrokerRuntime {
                     Some(request) => RuntimeEvent::Api(Box::new(request)),
                     None => RuntimeEvent::ApiClosed,
                 },
+                Some(prepared) = self.pending_api_spawns.next(), if !self.pending_api_spawns.is_empty() =>
+                    RuntimeEvent::ApiSpawnPrepared(Box::new(prepared)),
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
@@ -354,6 +361,9 @@ impl BrokerRuntime {
                 }
                 RuntimeEvent::ApiClosed => {
                     self.api_open = false;
+                }
+                RuntimeEvent::ApiSpawnPrepared(prepared) => {
+                    self.finish_api_spawn(*prepared).await;
                 }
                 RuntimeEvent::Stdin(result) => {
                     if matches!(result, Ok(None) | Err(_)) {
