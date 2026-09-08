@@ -24,7 +24,7 @@ describe('diagnosis source provenance', () => {
   it('derives coverage rows from the inventories and executable Fleet matrix', async () => {
     const matrix = JSON.parse(await readFile('tests/relayflows/cleanroom/fleet-daytona.matrix.json', 'utf8'));
     const original = expectedCoverageRowCount(matrix);
-    expect(original).toBe(142);
+    expect(original).toBeGreaterThan(matrix.operations.length);
     expect(
       expectedCoverageRowCount({ ...matrix, operations: [...matrix.operations, { id: 'future' }] })
     ).toBe(original + 1);

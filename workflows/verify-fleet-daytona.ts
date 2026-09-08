@@ -14,6 +14,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
@@ -24,6 +25,7 @@ import { REQUIRED_NPM_VERSION } from '../scripts/verify-features/relay-candidate
 import { fleetReviewerNetwork, preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
+const FLEET_OPERATION_COUNT = JSON.parse(readFileSync(MATRIX, 'utf8')).operations.length;
 const EXPECTED_CLI_INVENTORY = 'tests/relayflows/cleanroom/fleet-cli-inventory.json';
 const CLI_INVENTORY_RUNNER = 'scripts/verify-features/fleet-cli-inventory.mjs';
 const RUNNER = 'scripts/verify-features/fleet-daytona.mjs';
@@ -220,7 +222,7 @@ async function main() {
   await ensurePermissionPlaceholders();
   const wf = workflow('relay-fleet-daytona-comprehensive')
     .description(
-      'Run the 94-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.'
+      `Run the ${FLEET_OPERATION_COUNT}-operation Relay Fleet and node-agent catalog twice, each time on two fresh Daytona nodes with five critical targeted lifecycle trials, zero ambient identities, executable candidate attestation, exact cleanup, repeatability classification, and fresh Claude/Codex evidence signoff.`
     )
     .pattern('dag')
     .channel(`relay-fleet-daytona-${NONCE.slice(0, 8)}`)

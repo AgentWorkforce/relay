@@ -1,0 +1,53 @@
+{
+  "id": "traj_btj891uh5hgy",
+  "version": 1,
+  "task": {
+    "title": "Repair cleanroom qualification authorization, credentialed install isolation, and fleet count drift"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-08T13:57:02.951Z",
+  "completedAt": "2026-09-08T13:57:37.521Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T13:57:11.851Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_zsclzmfr0a8t",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T13:57:11.851Z",
+      "endedAt": "2026-09-08T13:57:37.521Z",
+      "events": [
+        {
+          "ts": 1788875831852,
+          "type": "decision",
+          "content": "Replaced the secret-bearing dispatch workflow with a no-secret request plus default-branch workflow_run consumer pinned to github.workflow_sha; derive fleet prompt counts from matrix.json.: Replaced the secret-bearing dispatch workflow with a no-secret request plus default-branch workflow_run consumer pinned to github.workflow_sha; derive fleet prompt counts from matrix.json.",
+          "raw": {
+            "question": "Replaced the secret-bearing dispatch workflow with a no-secret request plus default-branch workflow_run consumer pinned to github.workflow_sha; derive fleet prompt counts from matrix.json.",
+            "chosen": "Replaced the secret-bearing dispatch workflow with a no-secret request plus default-branch workflow_run consumer pinned to github.workflow_sha; derive fleet prompt counts from matrix.json.",
+            "alternatives": [],
+            "reasoning": "A dispatch-time ref guard cannot establish a trusted code boundary when credentials are available, and hardcoded inventory counts drift as operations change."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened cleanroom qualification with a no-secret request and trusted workflow_run consumer pinned to the default workflow SHA; added authorization/artifact adversarial tests; changed credentialed installs to npm ci --ignore-scripts; derived fleet counts from matrix inventory and updated drift tests. Validation passed.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "07f8f3b6b816a49184b5ac330b7b5928e1cb50f2",
+    "endRef": "07f8f3b6b816a49184b5ac330b7b5928e1cb50f2"
+  }
+}

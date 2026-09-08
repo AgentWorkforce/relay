@@ -611,9 +611,9 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations).toHaveLength(94);
+    expect(matrix.operations.length).toBeGreaterThan(0);
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(matrix.operations.length);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(94);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -654,7 +654,7 @@ describe('complete Daytona Fleet board', () => {
 
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
-    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 94/);
+    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all matrix operations/);
   });
 
   it('fails closed when Fleet qualification evidence loses creation, identity, or release binding', async () => {
@@ -897,14 +897,14 @@ describe('complete Daytona Fleet board', () => {
 
     const wrongCount = structuredClone(matrix);
     wrongCount.operations.pop();
-    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 94/);
+    expect(() => validateFleetMatrix(wrongCount)).toThrow(/must exactly map all matrix operations/);
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 94 operations/);
+    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all matrix operations/);
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -1412,7 +1412,8 @@ describe('complete Daytona Fleet board', () => {
     expect(() => validateRecoveryEvidence(malicious, matrix, NONCE)).toThrow(/not authorized/);
   });
 
-  it('binds valid reviews to the exact immutable evidence seal', () => {
+  it('binds valid reviews to the exact immutable evidence seal', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const digests = {
       evidenceSha256: 'a'.repeat(64),
       matrixSha256: 'b'.repeat(64),
@@ -1435,7 +1436,7 @@ describe('complete Daytona Fleet board', () => {
       verdict: 'COMPREHENSIVELY_SATISFIED',
       whyPassed: 'All matrix operations and cleanup evidence were inspected.',
       endToEndWiringVerified: 'The sealed evidence connects the board to exact resources.',
-      deterministicEvidence: ['94 exact operation records'],
+      deterministicEvidence: [`${matrix.operations.length} exact operation records`],
       remainingRisks: ['Product RED is permitted as truthful evidence.'],
       findings: [],
     };
@@ -1540,7 +1541,7 @@ describe('complete Daytona Fleet board', () => {
     );
     expect(green.verdict).toBe('GREEN');
     expect(green.operationTotals).toEqual({
-      matrixOperationCount: 94,
+      matrixOperationCount: matrix.operations.length,
       independentCommandExecutionCount: 92,
       derivedObservationCount: 2,
       derivedObservationIds: ['initial-task-sentinel-a', 'initial-task-sentinel-b'],

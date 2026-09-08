@@ -1383,7 +1383,7 @@ const REQUIRED_ACCEPTANCE = [
   'full-cleanroom',
   'independent-review',
   'full-root-scale',
-  'fleet-95-operations',
+  'fleet-operations',
   'flush-fatal-deployment',
 ];
 const DIAGNOSIS_SEAL_FILES = [
