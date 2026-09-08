@@ -1,0 +1,37 @@
+{
+  "id": "compact_i1awloiwxfcs",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-08T09:23:48.828Z",
+  "sourceTrajectories": [
+    "traj_reymjvg3qqxh"
+  ],
+  "dateRange": {
+    "start": "2026-09-08T09:22:23.818Z",
+    "end": "2026-09-08T09:23:48.112Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Keep recovery blocked and mark the saved work handoff seat-releasable",
+          "chosen": "Keep recovery blocked and mark the saved work handoff seat-releasable",
+          "reasoning": "Current upstream still uses an optional guard on the legacy endpoint; published Rust remains 8.0.0. Successful Deploy jobs do not identify the API engine rollout, and public health returned 403. All remaining implementation requirements are durable in the branch; no running work requires this seat.",
+          "fromTrajectory": "traj_reymjvg3qqxh"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
