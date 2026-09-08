@@ -5,6 +5,8 @@ import { defaultApiUrl } from './types.js';
 type JsonRecord = Record<string, unknown>;
 
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CLOUD_SANDBOX_ID_PATTERN =
+  /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // Mounted provisioning can spend up to 240s completing the initial Relayfile
 // sync, then up to 90s waiting for the enrolled node to report ready. Leave a
@@ -60,9 +62,13 @@ export class CloudFleetSandboxProvisionError extends Error {
   }
 }
 
+class CloudFleetSandboxIdentityMismatchError extends Error {}
+
 export type EnsureCloudFleetSandboxInput = {
   /** Cloud UUID or unified rw_* workspace id. */
   workspaceId: string;
+  /** Caller-declared one-time Cloud identity used to resume a cut-off provision. */
+  sandboxId?: string;
   name?: string;
   requiredCapability: string;
   maxAgents?: number;
@@ -110,6 +116,7 @@ export type CloudFleetSandboxReady = {
   nodeId: string;
   nodeName: string;
   sandboxId: string;
+  providerSandboxId: string;
   relayWorkspaceId: string;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
@@ -131,6 +138,7 @@ export type CloudFleetSandboxProvisioningTimeout = {
   outcome: 'provisioning_timeout';
   cloudWorkspaceId: string;
   sandboxId: string;
+  providerSandboxId: string;
   relayWorkspaceId: string;
   nodeName: string;
   waitedMs: number;
@@ -214,6 +222,51 @@ function requiredString(payload: JsonRecord, key: string, context: string): stri
   return value;
 }
 
+function validateSandboxIdentity(input: EnsureCloudFleetSandboxInput): {
+  sandboxId?: string;
+  name?: string;
+} {
+  if (input.sandboxId !== undefined && typeof input.sandboxId !== 'string') {
+    throw new Error('Cloud fleet sandbox sandboxId must be a string.');
+  }
+  if (input.name !== undefined && typeof input.name !== 'string') {
+    throw new Error('Cloud fleet sandbox name must be a string.');
+  }
+  const sandboxId = input.sandboxId?.trim();
+  const name = input.name?.trim();
+  if (input.sandboxId !== undefined && (!sandboxId || !CLOUD_SANDBOX_ID_PATTERN.test(sandboxId))) {
+    throw new Error('Cloud fleet sandbox sandboxId must match sbx_<UUID> using an RFC 4122 UUID.');
+  }
+  if (sandboxId !== undefined && input.forceProvision !== true) {
+    throw new Error('Cloud fleet sandbox sandboxId requires forceProvision: true.');
+  }
+  if (sandboxId !== undefined && !name) {
+    throw new Error('Cloud fleet sandbox sandboxId requires a node name.');
+  }
+
+  const longRunning =
+    input.workloadProfile === 'long-running-agent' || input.workloadProfile === 'standard-long-running-agent';
+  if (longRunning) {
+    if (sandboxId === undefined) {
+      throw new Error('Long-running Cloud fleet sandbox requests require sandboxId.');
+    }
+    if (input.forceProvision !== true) {
+      throw new Error('Long-running Cloud fleet sandbox requests require forceProvision: true.');
+    }
+    const expectedName = `fleet-sandbox-${sandboxId.slice('sbx_'.length)}`;
+    if (name !== expectedName) {
+      throw new Error(
+        `Long-running Cloud fleet sandbox requests require name '${expectedName}' to preserve the one-to-one sandbox identity.`
+      );
+    }
+  }
+
+  return {
+    ...(sandboxId === undefined ? {} : { sandboxId }),
+    ...(name === undefined ? {} : { name }),
+  };
+}
+
 async function resolveCloudWorkspaceId(
   workspaceId: string,
   auth: Awaited<ReturnType<typeof ensureCloudSession>>['auth'],
@@ -270,6 +323,7 @@ function cleanupProviderId(
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
+  expectedSandboxId?: string,
   requestedProviderId?: CloudFleetSandboxProviderId
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
@@ -288,12 +342,19 @@ function normalizeEnsureResult(
     if (typeof payload.relayfileMounted !== 'boolean') {
       throw new Error('Cloud fleet sandbox response is missing relayfileMounted.');
     }
+    const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
+    if (expectedSandboxId !== undefined && sandboxId !== expectedSandboxId) {
+      throw new CloudFleetSandboxIdentityMismatchError(
+        `Cloud returned sandboxId ${sandboxId} instead of requested sandboxId ${expectedSandboxId}.`
+      );
+    }
     return {
       outcome,
       cloudWorkspaceId,
       nodeId: requiredString(payload, 'nodeId', 'Cloud fleet sandbox'),
       nodeName,
-      sandboxId: requiredString(payload, 'sandboxId', 'Cloud fleet sandbox'),
+      sandboxId,
+      providerSandboxId: requiredString(payload, 'providerSandboxId', 'Cloud fleet sandbox'),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
@@ -317,10 +378,17 @@ function normalizeEnsureResult(
   }
 
   if (outcome === 'provisioning_timeout') {
+    const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
+    if (expectedSandboxId !== undefined && sandboxId !== expectedSandboxId) {
+      throw new CloudFleetSandboxIdentityMismatchError(
+        `Cloud returned sandboxId ${sandboxId} instead of requested sandboxId ${expectedSandboxId}.`
+      );
+    }
     return {
       outcome,
       cloudWorkspaceId,
-      sandboxId: requiredString(payload, 'sandboxId', 'Cloud fleet sandbox'),
+      sandboxId,
+      providerSandboxId: requiredString(payload, 'providerSandboxId', 'Cloud fleet sandbox'),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
@@ -340,6 +408,7 @@ export async function ensureCloudFleetSandbox(
   const requiredCapability = input.requiredCapability.trim();
   if (!workspaceId) throw new Error('A workspace ID is required to provision a fleet sandbox.');
   if (!requiredCapability) throw new Error('A spawn capability is required to provision a fleet sandbox.');
+  const sandboxIdentity = validateSandboxIdentity(input);
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
@@ -362,7 +431,8 @@ export async function ensureCloudFleetSandbox(
         body: JSON.stringify({
           workspaceId: resolved.cloudWorkspaceId,
           requiredCapability,
-          ...(input.name ? { name: input.name } : {}),
+          ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
+          ...(sandboxIdentity.name === undefined ? {} : { name: sandboxIdentity.name }),
           ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
@@ -407,16 +477,22 @@ export async function ensureCloudFleetSandbox(
     throw error;
   }
   try {
-    return normalizeEnsureResult(payload, resolved.cloudWorkspaceId, input.providerId);
+    return normalizeEnsureResult(
+      payload,
+      resolved.cloudWorkspaceId,
+      sandboxIdentity.sandboxId,
+      input.providerId
+    );
   } catch (error) {
     const providerId = isObject(payload) ? cleanupProviderId(payload, input.providerId) : input.providerId;
+    const identityMismatch = error instanceof CloudFleetSandboxIdentityMismatchError;
+    const cleanupSandboxId =
+      !identityMismatch && isObject(payload) ? readString(payload, 'sandboxId') : undefined;
     throw new CloudFleetSandboxProvisionError(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
       {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
-        ...(isObject(payload) && readString(payload, 'sandboxId')
-          ? { sandboxId: readString(payload, 'sandboxId') }
-          : {}),
+        ...(cleanupSandboxId === undefined ? {} : { sandboxId: cleanupSandboxId }),
         ...(isObject(payload) && (readString(payload, 'nodeName') ?? input.name)
           ? { nodeName: readString(payload, 'nodeName') ?? input.name }
           : {}),

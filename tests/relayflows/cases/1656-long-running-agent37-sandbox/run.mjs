@@ -1,14 +1,14 @@
 /**
  * relay#1656 — `agent-relay fleet spawn --sandbox` must ask Cloud for
- * long-running semantics and must clean up against the provider Cloud actually
- * chose.
+ * long-running semantics with a one-to-one sandbox identity and must clean up
+ * against the provider Cloud actually chose.
  *
  * The claim has two halves and they live in different packages, so the probe
  * runs them as one chain rather than as two independent assertions:
  *
  *   `fleet spawn --sandbox` (packages/cli)
  *      -> ensureCloudFleetSandbox   (packages/cloud, REAL)
- *      -> POST /fleet/nodes/sandbox/ensure   <- workloadProfile observed here
+ *      -> POST /fleet/nodes/sandbox/ensure   <- identity/profile observed here
  *      <- Cloud answers `providerId: agent37`
  *      -> deleteCloudFleetSandbox   (packages/cloud, REAL)
  *      -> DELETE /fleet/nodes/sandbox/<id>   <- providerId observed here
@@ -32,10 +32,13 @@
  * Dispatch is then failed on purpose, because the cleanup call is what carries
  * the attribution.
  *
- * Base: the CLI sends no workload profile, and `agent37` is not a provider the
- * Cloud client will parse, so it is dropped and cleanup names no provider.
- * Head: the profile reaches the ensure body and `agent37` reaches the delete
- * body.
+ * Base: the CLI sends no sandbox identity, while the existing long-running
+ * profile and Cloud-selected `agent37` response are present; the older client
+ * drops provider attribution during cleanup. Head: an explicit replay
+ * `sbx_<UUID>` identity, deterministic node name, and long-running profile
+ * reach the ensure body, while the exact public identity reaches cleanup and
+ * the separate physical provider sandbox ID is returned as evidence. Base does
+ * not know the replay flags, so it remains the negative arm.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -45,6 +48,9 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1656-long-running-agent37-sandbox';
+const REPLAY_SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
+const REPLAY_SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
+const PROVIDER_SANDBOX_ID = 'provider-sandbox-relayflow';
 // Separate budgets, both inside case.json's 900s per-arm deadline. The install
 // and the probe are very different jobs and a shared cap sizes neither: a
 // timeout on either is an INFRASTRUCTURE failure, which cannot report red or
@@ -171,6 +177,9 @@ import { deleteCloudFleetSandbox, ensureCloudFleetSandbox } from './fleet-sandbo
 import { registerFleetCommands } from '../../cli/src/cli/commands/fleet.js';
 
 const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
+const REPLAY_SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
+const REPLAY_SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
+const PROVIDER_SANDBOX_ID = 'provider-sandbox-relayflow';
 const auth = {
   accessToken: 'relayflow-probe-access',
   refreshToken: 'relayflow-probe-refresh',
@@ -178,11 +187,22 @@ const auth = {
   apiUrl: 'https://relayflow.invalid',
 };
 
-test('fleet spawn --sandbox reaches Cloud with a profile and cleans up by returned provider', async () => {
+test('fleet spawn --sandbox replays an exact identity and cleans up by returned provider', async () => {
   const output = process.env.RELAY_PR1656_OBSERVATION_PATH;
   if (!output) throw new Error('Missing RELAY_PR1656_OBSERVATION_PATH.');
 
   mocks.ensureCloudSession.mockResolvedValue({ auth, client: {} });
+  const provisionedResponse = {
+    outcome: 'provisioned',
+    nodeId: 'node-relayflow',
+    nodeName: 'agent37-relayflow',
+    sandboxId: REPLAY_SANDBOX_ID,
+    providerSandboxId: PROVIDER_SANDBOX_ID,
+    relayWorkspaceId: 'rw_relayflow',
+    relayfileMounted: true,
+    relayfileMountPath: '/workspace',
+    providerId: 'agent37',
+  };
   mocks.authorizedApiFetch
     // 1. workspace resolution
     .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
@@ -190,27 +210,22 @@ test('fleet spawn --sandbox reaches Cloud with a profile and cleans up by return
     //    never names a provider, which is the whole point of the feature.
     .mockResolvedValueOnce({
       response: Response.json(
-        {
-          outcome: 'provisioned',
-          nodeId: 'node-relayflow',
-          nodeName: 'agent37-relayflow',
-          sandboxId: 'sandbox-relayflow',
-          relayWorkspaceId: 'rw_relayflow',
-          relayfileMounted: true,
-          relayfileMountPath: '/workspace',
-          providerId: 'agent37',
-        },
+        provisionedResponse,
         { status: 201 }
       ),
       auth,
     })
     // 3. cleanup, triggered by the deliberate dispatch failure below
     .mockResolvedValueOnce({
-      response: Response.json({ sandboxId: 'sandbox-relayflow', deleted: true }),
+      response: Response.json({ sandboxId: PROVIDER_SANDBOX_ID, deleted: true }),
       auth,
     });
 
   const errors: string[] = [];
+  const replayArgs =
+    process.env.RELAY_PR_PROOF_ARM === 'head'
+      ? ['--sandbox-id', REPLAY_SANDBOX_ID, '--sandbox-name', REPLAY_SANDBOX_NAME]
+      : [];
   const program = new Command();
   program.exitOverride();
   registerFleetCommands(program, {
@@ -251,6 +266,7 @@ test('fleet spawn --sandbox reaches Cloud with a profile and cleans up by return
         'spawn',
         'codex',
         '--sandbox',
+        ...replayArgs,
         '--name',
         'sandbox-worker',
         '--task',
@@ -279,7 +295,16 @@ test('fleet spawn --sandbox reaches Cloud with a profile and cleans up by return
     output,
     JSON.stringify({
       ensureWorkloadProfile: ensureBody.workloadProfile ?? null,
+      ensureSandboxId: ensureBody.sandboxId ?? null,
+      ensureForceProvision: ensureBody.forceProvision ?? null,
+      ensureName: ensureBody.name ?? null,
       ensureProviderId: ensureBody.providerId ?? null,
+      responseSandboxId: provisionedResponse.sandboxId,
+      responseProviderSandboxId: provisionedResponse.providerSandboxId,
+      responseProviderId: provisionedResponse.providerId,
+      deleteSandboxId: decodeURIComponent(
+        String(mocks.authorizedApiFetch.mock.calls[2]?.[1] ?? '').split('/').pop() ?? ''
+      ) || null,
       deleteProviderId: deleteBody.providerId ?? null,
       dispatchFailureObserved: errors.join('\n').includes('dispatch failed'),
     }),
@@ -323,23 +348,46 @@ try {
     );
   }
 
-  const baseObserved = observation.ensureWorkloadProfile === null && observation.deleteProviderId === null;
+  const baseObserved =
+    observation.ensureSandboxId === null &&
+    observation.ensureWorkloadProfile === 'long-running-agent' &&
+    observation.responseSandboxId === REPLAY_SANDBOX_ID &&
+    observation.responseProviderSandboxId === PROVIDER_SANDBOX_ID &&
+    observation.responseProviderId === 'agent37' &&
+    observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
+    observation.deleteProviderId === 'agent37';
+  const sandboxIdentityObserved =
+    typeof observation.ensureSandboxId === 'string' &&
+    /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      observation.ensureSandboxId
+    ) &&
+    observation.ensureName === `fleet-sandbox-${observation.ensureSandboxId.slice('sbx_'.length)}` &&
+    observation.ensureForceProvision === true;
+  const replayIdentityObserved =
+    observation.ensureSandboxId === REPLAY_SANDBOX_ID && observation.ensureName === REPLAY_SANDBOX_NAME;
   const headObserved =
-    observation.ensureWorkloadProfile === 'long-running-agent' && observation.deleteProviderId === 'agent37';
+    observation.ensureWorkloadProfile === 'long-running-agent' &&
+    sandboxIdentityObserved &&
+    replayIdentityObserved &&
+    observation.responseSandboxId === REPLAY_SANDBOX_ID &&
+    observation.responseProviderSandboxId === PROVIDER_SANDBOX_ID &&
+    observation.responseProviderId === 'agent37' &&
+    observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
+    observation.deleteProviderId === 'agent37';
 
   let outcome;
   let signature;
   let details;
   if (baseObserved) {
     outcome = 'absent';
-    signature = 'long_running_profile_and_agent37_attribution_absent';
+    signature = 'long_running_profile_replay_identity_absent_agent37_attribution_preserved';
     details =
-      'fleet spawn --sandbox reached Cloud with no workload profile in the ensure request, and the agent37 provider Cloud returned was dropped, so cleanup named no provider.';
+      "fleet spawn --sandbox reached Cloud with the existing long-running profile and Cloud's agent37 response, but without a caller-declared sandbox identity; only the one-to-one replay identity is absent while provider attribution remains preserved.";
   } else if (headObserved) {
     outcome = 'fixed';
-    signature = 'long_running_profile_and_agent37_attribution_preserved';
+    signature = 'long_running_profile_replay_identity_and_agent37_attribution_preserved';
     details =
-      "fleet spawn --sandbox reached Cloud with workloadProfile 'long-running-agent' in the ensure request without pinning a provider, and the agent37 provider Cloud returned was carried into the cleanup request.";
+      "fleet spawn --sandbox replayed the exact caller-declared sbx_<UUID>/fleet-sandbox-<UUID> identity with workloadProfile 'long-running-agent' and forceProvision true without pinning a provider; Cloud echoed the public identity, returned a separate providerSandboxId, and agent37 attribution reached cleanup by public sandbox ID.";
   } else {
     throw new Error(`Unexpected long-running Agent37 observation: ${JSON.stringify(observation)}.`);
   }

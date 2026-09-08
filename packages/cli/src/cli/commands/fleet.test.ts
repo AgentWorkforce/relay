@@ -46,6 +46,9 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
 import { registerFleetCommands } from './fleet.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
+const REPLAY_SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
+const REPLAY_SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
+
 const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
 const liveAgentCapabilities = (...names: string[]) => [
   {
@@ -668,6 +671,7 @@ describe('fleet command support', () => {
       nodeId: 'node-1',
       nodeName: 'e2b-codex',
       sandboxId: 'sandbox-1',
+      providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
@@ -701,10 +705,12 @@ describe('fleet command support', () => {
         '--sandbox',
         '--sandbox-provider',
         'e2b',
+        '--sandbox-id',
+        REPLAY_SANDBOX_ID,
+        '--sandbox-name',
+        REPLAY_SANDBOX_NAME,
         '--sandbox-relayfile-path',
         '/live-review/run-123/**',
-        '--sandbox-name',
-        'e2b-codex',
         '--name',
         'sandbox-worker',
         '--task',
@@ -714,18 +720,21 @@ describe('fleet command support', () => {
       ],
       { from: 'user' }
     );
-    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith({
+    const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
+    expect(ensureInput).toEqual({
       workspaceId: 'rw_abc',
       requiredCapability: 'spawn:codex',
       maxAgents: 1,
       mountRelayfile: true,
       relayfilePaths: ['/live-review/run-123/**'],
+      sandboxId: REPLAY_SANDBOX_ID,
       forceProvision: true,
       providerId: 'e2b',
       workloadProfile: 'long-running-agent',
       waitTimeoutMs: 90_000,
-      name: 'e2b-codex',
+      name: REPLAY_SANDBOX_NAME,
     });
+    expect(ensureInput?.name).toBe(`fleet-sandbox-${ensureInput?.sandboxId?.slice('sbx_'.length)}`);
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
         name: expect.stringMatching(/^fleet-spawn-launcher-[a-f0-9]{8}$/),
@@ -772,6 +781,7 @@ describe('fleet command support', () => {
       nodeId: 'node-1',
       nodeName: 'agent37-codex',
       sandboxId: 'sandbox-1',
+      providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
@@ -834,6 +844,111 @@ describe('fleet command support', () => {
     });
   });
 
+  it('rejects a custom sandbox name before provisioning because identity is one-to-one', async () => {
+    const ensureCloudFleetSandbox = vi.fn();
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-name',
+          'custom-node',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(errors.join('\n')).toContain('--sandbox-name');
+    expect(errors.join('\n')).toContain('one-to-one sandbox identity');
+  });
+
+  it('rejects an invalid replay sandbox ID before provisioning', async () => {
+    const ensureCloudFleetSandbox = vi.fn();
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-id',
+          'sandbox-1',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(errors.join('\n')).toContain('--sandbox-id must match sbx_<UUID>');
+  });
+
   it('cleans up when Cloud reports a post-provision response failure with a sandbox ID', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const program = new Command();
@@ -873,8 +988,10 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
           '--sandbox-name',
-          'daytona-codex',
+          REPLAY_SANDBOX_NAME,
           '--name',
           'sandbox-worker',
           '--task',
@@ -936,8 +1053,6 @@ describe('fleet command support', () => {
           '--sandbox',
           '--sandbox-provider',
           'e2b',
-          '--sandbox-name',
-          'e2b-codex',
           '--name',
           'sandbox-worker',
           '--task',
@@ -997,8 +1112,10 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
           '--sandbox-name',
-          'daytona-codex',
+          REPLAY_SANDBOX_NAME,
           '--name',
           'sandbox-worker',
           '--task',
@@ -1014,6 +1131,7 @@ describe('fleet command support', () => {
 
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
     expect(warnings.join('\n')).toContain("check Cloud Fleet for node 'daytona-codex'");
+    expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
   it('warns when an unmounted sandbox cannot be cleaned up automatically', async () => {
@@ -1040,6 +1158,7 @@ describe('fleet command support', () => {
         nodeId: 'node-1',
         nodeName: 'daytona-codex',
         sandboxId: 'sandbox-1',
+        providerSandboxId: 'provider-sandbox-1',
         relayWorkspaceId: 'rw_abc',
         relayfileMounted: false,
         providerId: 'agent37' as const,
