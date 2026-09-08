@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
+- Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
 - Fleet Daytona live verification now fails early unless immutable candidate snapshot qualification inputs are explicit.
 
 ## [11.10.4] - 2026-09-08

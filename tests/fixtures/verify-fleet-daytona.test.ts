@@ -2389,6 +2389,45 @@ describe('complete Daytona Fleet board', () => {
     expect(result.stdout).toContain('[REDACTED_TOKEN]');
   });
 
+  it('redacts split stdout and stderr credentials across the bounded stream boundary (RED-5 adversarial)', async () => {
+    const maxCapture = 16 * 1024;
+    const cases = [
+      { token: 'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz', extraSecrets: [] },
+      { token: 'rk_live_0123456789abcdef', extraSecrets: [] },
+      { token: 'opaque-split-secret', extraSecrets: ['opaque-split-secret'] },
+      {
+        token: `${'x'.repeat(100)}tail-secret`,
+        extraSecrets: [`${'x'.repeat(100)}tail-secret`],
+      },
+    ];
+    for (const { token, extraSecrets } of cases) {
+      for (const tokenStart of [maxCapture - 127, maxCapture - 1, maxCapture, maxCapture + 1]) {
+        const chunks = [
+          'x'.repeat(tokenStart),
+          token.slice(0, Math.max(1, Math.floor(token.length / 2))),
+          token.slice(Math.max(1, Math.floor(token.length / 2))),
+          'y'.repeat(127),
+        ];
+        const script = [
+          'const stdout = process.stdout;',
+          'const stderr = process.stderr;',
+          `const chunks = ${JSON.stringify(chunks)};`,
+          'let index = 0;',
+          'const write = () => { if (index < chunks.length) { stdout.write(chunks[index]); stderr.write(chunks[index]); index += 1; setImmediate(write); } };',
+          'write();',
+        ].join('');
+        const result = await executeFleetCommand([process.execPath, '-e', script], { extraSecrets });
+        for (const stream of [result.stdout, result.stderr]) {
+          expect(stream).not.toContain(token);
+          if (extraSecrets.length === 0) {
+            expect(stream).not.toContain(token.slice(token.indexOf('_') + 1));
+          }
+          expect(stream).toContain(extraSecrets.length === 0 ? '[REDACTED_TOKEN]' : '[REDACTED_SECRET]');
+        }
+      }
+    }
+  });
+
   it('catches credentials embedded adjacent to leading word characters (RED-2 adversarial)', () => {
     // Before fix: \b at start prevents matching when a credential immediately
     // follows a word character, e.g. 'prefixrk_live_ABCDEF12'.

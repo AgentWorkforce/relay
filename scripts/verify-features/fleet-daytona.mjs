@@ -1760,14 +1760,31 @@ const STREAM_TOKEN_SPECS = [
 const STREAM_TOKEN_PREFIXES = STREAM_TOKEN_SPECS.flatMap(({ prefixes }) => prefixes);
 const STREAM_TOKEN_MIN_BODY_LENGTH = 8;
 
-function splitStringAtBytes(value, maxBytes) {
-  const bytes = Buffer.from(value);
-  if (bytes.byteLength <= maxBytes) return [value, ''];
-  const prefix = bytes.subarray(0, maxBytes).toString('utf8');
-  return [prefix, value.slice(prefix.length)];
+function tokenSpecAt(value, index) {
+  for (const { prefixes, body } of STREAM_TOKEN_SPECS) {
+    for (const prefix of prefixes) {
+      if (value.startsWith(prefix, index)) return { prefix, body };
+    }
+  }
+  return undefined;
+}
+
+function suffixPrefixStart(value) {
+  const firstPossibleIndex = Math.max(
+    0,
+    value.length - Math.max(...STREAM_TOKEN_PREFIXES.map((prefix) => prefix.length)) + 1
+  );
+  for (let index = firstPossibleIndex; index < value.length; index += 1) {
+    const suffix = value.slice(index);
+    if (STREAM_TOKEN_PREFIXES.some((prefix) => suffix.length < prefix.length && prefix.startsWith(suffix))) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function partialSecretStart(value, secrets) {
+  let earliest = -1;
   for (const secret of secrets) {
     const completeStarts = [];
     let completeStart = value.indexOf(secret);
@@ -1779,94 +1796,109 @@ function partialSecretStart(value, secrets) {
     for (let index = firstPossibleIndex; index < value.length; index += 1) {
       if (completeStarts.some((start) => index > start && index < start + secret.length)) continue;
       const suffix = value.slice(index);
-      if (suffix.length < secret.length && secret.startsWith(suffix)) return index;
+      if (suffix.length < secret.length && secret.startsWith(suffix)) {
+        earliest = earliest < 0 ? index : Math.min(earliest, index);
+      }
     }
   }
-  return -1;
+  return earliest;
 }
 
-function partialTokenStart(value) {
-  const completeTokenRanges = [];
-  const incompleteTokenStarts = [];
-  for (const { prefixes, body } of STREAM_TOKEN_SPECS) {
-    for (const prefix of prefixes) {
-      let start = value.indexOf(prefix);
+function extendPastCompleteSecrets(value, emitLength, secrets) {
+  let extended = emitLength;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const secret of secrets) {
+      let start = value.indexOf(secret);
       while (start >= 0) {
-        let bodyLength = 0;
-        while (body.test(value[start + prefix.length + bodyLength] ?? '')) bodyLength += 1;
-        if (
-          bodyLength < STREAM_TOKEN_MIN_BODY_LENGTH &&
-          start + prefix.length + bodyLength === value.length
-        ) {
-          incompleteTokenStarts.push(start);
+        const end = start + secret.length;
+        if (start < extended && end > extended) {
+          extended = end;
+          changed = true;
         }
-        if (bodyLength >= STREAM_TOKEN_MIN_BODY_LENGTH) {
-          completeTokenRanges.push({ start, end: start + prefix.length + bodyLength });
-        }
-        start = value.indexOf(prefix, start + 1);
+        start = value.indexOf(secret, start + 1);
       }
     }
   }
-  const validIncompleteStarts = incompleteTokenStarts.filter(
-    (start) => !completeTokenRanges.some((range) => start >= range.start && start < range.end)
-  );
-  if (validIncompleteStarts.length > 0) return Math.min(...validIncompleteStarts);
-  for (const { prefixes } of STREAM_TOKEN_SPECS) {
-    for (const prefix of prefixes) {
-      const firstPossibleIndex = Math.max(0, value.length - prefix.length + 1);
-      for (let index = firstPossibleIndex; index < value.length; index += 1) {
-        if (completeTokenRanges.some((range) => index >= range.start && index < range.end)) continue;
-        const suffix = value.slice(index);
-        if (suffix.length < prefix.length && prefix.startsWith(suffix)) return index;
-      }
-    }
-  }
-  return -1;
+  return extended;
 }
 
-function redactStreamingSegment(value, extraSecrets) {
-  const trailingToken = new RegExp(
-    `(?:${LIVE_CREDENTIAL_PREFIX_SOURCE}|${GITHUB_TOKEN_SOURCE}|${PROVIDER_SECRET_SOURCE})$`
-  ).test(value);
-  if (!trailingToken) return redactFleetEvidence(value, extraSecrets);
-  const marked = redactFleetEvidence(`${value} `, extraSecrets);
-  return marked.endsWith(' ') ? marked.slice(0, -1) : marked;
-}
-
-function createStreamingEvidenceCapture(limit, extraSecrets = []) {
-  const secrets = secretValues(extraSecrets);
-  const overlap = Math.max(
-    64,
-    ...secrets.map((secret) => Buffer.byteLength(secret)),
-    ...STREAM_TOKEN_PREFIXES.map((prefix) => Buffer.byteLength(prefix) + STREAM_TOKEN_MIN_BODY_LENGTH)
-  );
+/**
+ * Redact credential-shaped tokens as a stream. A token body is intentionally
+ * consumed across chunks after its minimum length is reached, so a long
+ * word-adjacent token can never be split into a redacted prefix and a raw
+ * suffix at the evidence boundary.
+ */
+function createStreamingTokenRedactor(emit, extraSecrets) {
   let pending = '';
-  let captured = '';
+  let activeToken = null;
 
   const flush = (force = false) => {
-    if (!pending) return;
-    const candidateStarts = [partialSecretStart(pending, secrets), partialTokenStart(pending)].filter(
-      (index) => index >= 0
-    );
-    let holdStart = candidateStarts.length > 0 ? Math.min(...candidateStarts) : -1;
-    if (holdStart < 0 && !force) {
-      const split = splitStringAtBytes(pending, Math.max(0, Buffer.byteLength(pending) - overlap));
-      captured = boundedAppend(captured, redactStreamingSegment(split[0], extraSecrets), limit);
-      pending = split[1];
-      return;
-    }
-    if (holdStart < 0) holdStart = pending.length;
-    if (holdStart > 0) {
-      captured = boundedAppend(
-        captured,
-        redactStreamingSegment(pending.slice(0, holdStart), extraSecrets),
-        limit
-      );
-      pending = pending.slice(holdStart);
-    }
-    if (force && pending) {
-      captured = boundedAppend(captured, redactStreamingSegment(pending, extraSecrets), limit);
-      pending = '';
+    while (pending) {
+      if (activeToken) {
+        let bodyLength = 0;
+        while (bodyLength < pending.length && activeToken.body.test(pending[bodyLength])) {
+          bodyLength += 1;
+        }
+        if (bodyLength === pending.length && !force) {
+          pending = '';
+          return;
+        }
+        pending = pending.slice(bodyLength);
+        activeToken = null;
+        continue;
+      }
+
+      let tokenStart = -1;
+      let tokenSpec;
+      for (let index = 0; index < pending.length; index += 1) {
+        const candidate = tokenSpecAt(pending, index);
+        if (candidate) {
+          tokenStart = index;
+          tokenSpec = candidate;
+          break;
+        }
+      }
+      if (tokenStart < 0) {
+        const holdStart = force ? -1 : suffixPrefixStart(pending);
+        const emitLength = holdStart < 0 ? pending.length : holdStart;
+        if (emitLength > 0) emit(redactFleetEvidence(pending.slice(0, emitLength), extraSecrets));
+        pending = pending.slice(emitLength);
+        if (!force) return;
+        if (pending) {
+          emit(redactFleetEvidence(pending, extraSecrets));
+          pending = '';
+        }
+        return;
+      }
+
+      if (tokenStart > 0) {
+        emit(redactFleetEvidence(pending.slice(0, tokenStart), extraSecrets));
+        pending = pending.slice(tokenStart);
+      }
+
+      const prefixLength = tokenSpec.prefix.length;
+      let bodyLength = 0;
+      while (
+        prefixLength + bodyLength < pending.length &&
+        tokenSpec.body.test(pending[prefixLength + bodyLength])
+      ) {
+        bodyLength += 1;
+      }
+      if (bodyLength < STREAM_TOKEN_MIN_BODY_LENGTH) {
+        if (prefixLength + bodyLength === pending.length && !force) return;
+        emit(redactFleetEvidence(pending.slice(0, prefixLength + bodyLength), extraSecrets));
+        pending = pending.slice(prefixLength + bodyLength);
+        continue;
+      }
+
+      emit('[REDACTED_TOKEN]');
+      pending = pending.slice(prefixLength + bodyLength);
+      if (pending.length === 0 && !force) {
+        activeToken = tokenSpec;
+        return;
+      }
     }
   };
 
@@ -1877,6 +1909,40 @@ function createStreamingEvidenceCapture(limit, extraSecrets = []) {
     },
     finish() {
       flush(true);
+    },
+  };
+}
+
+function createStreamingEvidenceCapture(limit, extraSecrets = []) {
+  const secrets = secretValues(extraSecrets);
+  const literalOverlap = Math.max(64, ...secrets.map((secret) => secret.length));
+  let literalPending = '';
+  let captured = '';
+
+  const emitLiteral = (value) => {
+    if (!value) return;
+    literalPending += value;
+    const partialStart = partialSecretStart(literalPending, secrets);
+    const initialEmitLength =
+      partialStart >= 0 ? partialStart : Math.max(0, literalPending.length - literalOverlap);
+    const emitLength = extendPastCompleteSecrets(literalPending, initialEmitLength, secrets);
+    if (emitLength === 0) return;
+    const emitted = literalPending.slice(0, emitLength);
+    literalPending = literalPending.slice(emitLength);
+    captured = boundedAppend(captured, redactFleetEvidence(emitted, extraSecrets), limit);
+  };
+
+  const tokenRedactor = createStreamingTokenRedactor(emitLiteral, extraSecrets);
+  return {
+    append(chunk) {
+      tokenRedactor.append(chunk);
+    },
+    finish() {
+      tokenRedactor.finish();
+      if (literalPending) {
+        captured = boundedAppend(captured, redactFleetEvidence(literalPending, extraSecrets), limit);
+        literalPending = '';
+      }
       return captured;
     },
   };
