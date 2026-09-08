@@ -91,6 +91,25 @@ export function formatCloudRunDiagnostics({
   ].join('\n');
 }
 
+export async function writeStatusPollTimeoutDiagnostics({
+  logsPath,
+  runId,
+  lastStatusOutput,
+  statusPollFailures,
+}) {
+  await mkdir(path.dirname(logsPath), { recursive: true });
+  await writeFile(
+    logsPath,
+    formatCloudRunDiagnostics({
+      runId,
+      terminalStatus: 'status_poll_timeout',
+      lastStatusOutput,
+      statusPollFailures,
+      logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: true },
+    })
+  );
+}
+
 function statusFrom(payload) {
   for (const candidate of [payload.status, payload.run?.status, payload.workflowRun?.status]) {
     if (typeof candidate === 'string') return candidate.toLowerCase();
@@ -291,7 +310,14 @@ export async function main() {
         timeoutMs: commandTimeoutMs,
       });
       if (statusResult.timedOut) {
+        statusPollFailures += 1;
         lastStatusOutput = statusResult.stderr.trim() || statusResult.stdout.trim();
+        await writeStatusPollTimeoutDiagnostics({
+          logsPath,
+          runId,
+          lastStatusOutput,
+          statusPollFailures,
+        });
         throw new Error(`Cloud status command timed out for run ${runId}`);
       }
       if (statusResult.exitCode !== 0) {

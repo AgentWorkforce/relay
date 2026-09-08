@@ -306,17 +306,6 @@ function readProviderId(
   return undefined;
 }
 
-function cleanupProviderId(
-  payload: JsonRecord,
-  requestedProviderId?: CloudFleetSandboxProviderId
-): CloudFleetSandboxProviderId | undefined {
-  const payloadProviderId = readString(payload, 'providerId');
-  return payloadProviderId &&
-    CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(payloadProviderId as CloudFleetSandboxProviderId)
-    ? (payloadProviderId as CloudFleetSandboxProviderId)
-    : requestedProviderId;
-}
-
 function assertExpectedSandboxIdentity(payload: JsonRecord, expectedSandboxId: string): void {
   const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
   if (sandboxId !== expectedSandboxId) {
@@ -490,12 +479,11 @@ export async function ensureCloudFleetSandbox(
     }
     const error = endpointError('provision the fleet sandbox', response, payload);
     if (isObject(payload) && readString(payload, 'sandboxId')) {
-      const providerId = cleanupProviderId(payload, input.providerId);
       throw new CloudFleetSandboxProvisionError(error.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
-        sandboxId: readString(payload, 'sandboxId'),
-        nodeName: readString(payload, 'nodeName') ?? input.name,
-        ...(providerId === undefined ? {} : { providerId }),
+        ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
+        outcomeUnknown: true,
         cause: error,
       });
     }
@@ -510,19 +498,12 @@ export async function ensureCloudFleetSandbox(
       input.providerId
     );
   } catch (error) {
-    const providerId = isObject(payload) ? cleanupProviderId(payload, input.providerId) : input.providerId;
-    const identityMismatch = error instanceof CloudFleetSandboxIdentityMismatchError;
-    const cleanupSandboxId =
-      !identityMismatch && isObject(payload) ? readString(payload, 'sandboxId') : undefined;
     throw new CloudFleetSandboxProvisionError(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
       {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
-        ...(cleanupSandboxId === undefined ? {} : { sandboxId: cleanupSandboxId }),
-        ...(isObject(payload) && (readString(payload, 'nodeName') ?? input.name)
-          ? { nodeName: readString(payload, 'nodeName') ?? input.name }
-          : {}),
-        ...(providerId === undefined ? {} : { providerId }),
+        ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,
         cause: error,
       }

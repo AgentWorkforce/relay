@@ -165,7 +165,7 @@ export function registerFleetCommands(
       )
       .option(
         '--sandbox-name <name>',
-        'Explicit sandbox node name (must match the generated fleet-sandbox-<UUID> identity)'
+        'Explicit sandbox node name (custom unless --sandbox-id requires matching fleet-sandbox-<UUID>)'
       )
       .option('--sandbox-id <id>', 'Reuse a caller-declared sbx_<UUID> identity for an exact replay')
       .option('--sandbox-provider <provider>', 'Sandbox provider: daytona or e2b')

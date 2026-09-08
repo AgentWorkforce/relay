@@ -50,6 +50,7 @@ import {
   createCliApiKeyEnvironment,
   formatCloudRunDiagnostics,
   preparedRunIdFromOutput,
+  writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
@@ -454,6 +455,28 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(diagnostics).toContain('status_poll_failures=2');
     expect(diagnostics).toContain('step timeout');
     expect(diagnostics).toContain('cloud_logs_output=empty');
+  });
+
+  it('persists bounded diagnostics when a Cloud status poll times out', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-timeout-'));
+    const logsPath = path.join(root, 'nested', 'cloud.log');
+    try {
+      await writeStatusPollTimeoutDiagnostics({
+        logsPath,
+        runId: 'cloud-run-timeout',
+        lastStatusOutput: '😀'.repeat(100_000),
+        statusPollFailures: 3,
+      });
+
+      const diagnostics = await readFile(logsPath, 'utf8');
+      expect(diagnostics).toContain('run_id=cloud-run-timeout');
+      expect(diagnostics).toContain('terminal_status=status_poll_timeout');
+      expect(diagnostics).toContain('status_poll_failures=3');
+      expect(diagnostics).toContain('cloud_logs_timed_out=true');
+      expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('bounds multibyte Cloud diagnostics by UTF-8 bytes', () => {

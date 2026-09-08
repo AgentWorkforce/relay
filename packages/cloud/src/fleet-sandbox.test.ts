@@ -288,7 +288,7 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        nodeName: 'fleet-sandbox-other',
+        nodeName: SANDBOX_NAME,
         outcomeUnknown: true,
         sandboxId: undefined,
       });
@@ -369,6 +369,82 @@ describe('Cloud fleet sandbox client', () => {
       providerId: undefined,
     });
     expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+  });
+
+  it('does not expose a matching sandbox identity from a non-OK response for cleanup', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'provider request failed after allocation',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-sandbox-1',
+            providerId: 'agent37',
+          },
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: undefined,
+      providerId: undefined,
+    });
+  });
+
+  it('does not expose a matching sandbox identity from a malformed success for cleanup', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: undefined,
+      providerId: undefined,
+    });
   });
 
   it('forwards a repos list into the ensure request body when the caller opts in', async () => {
@@ -568,7 +644,7 @@ describe('Cloud fleet sandbox client', () => {
     );
   });
 
-  it('rejects and preserves cleanup identity when Cloud cannot prove the requested provider', async () => {
+  it('rejects without exposing cleanup identity when Cloud cannot prove the requested provider', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
@@ -599,9 +675,9 @@ describe('Cloud fleet sandbox client', () => {
 
     expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
     expect(error).toMatchObject({
-      sandboxId: 'sandbox-1',
-      nodeName: 'wrong-provider',
-      providerId: 'daytona',
+      sandboxId: undefined,
+      nodeName: undefined,
+      providerId: 'e2b',
       outcomeUnknown: true,
     });
     expect(String(error)).toContain('instead of requested provider e2b');
@@ -611,7 +687,7 @@ describe('Cloud fleet sandbox client', () => {
     ['missing', undefined],
     ['invalid', 'modal'],
   ])(
-    'preserves the requested provider for cleanup when a %s provider proof arrives on a 201 response',
+    'rejects without cleanup identity when a %s provider proof arrives on a 201 response',
     async (_case, providerId) => {
       mocks.authorizedApiFetch
         .mockResolvedValueOnce({
@@ -644,8 +720,8 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: 'sandbox-e2b',
-        nodeName: 'e2b-reviewer',
+        sandboxId: undefined,
+        nodeName: undefined,
         providerId: 'e2b',
         outcomeUnknown: true,
       });
@@ -656,7 +732,7 @@ describe('Cloud fleet sandbox client', () => {
     ['missing', undefined],
     ['invalid', 'modal'],
   ])(
-    'preserves the requested provider for cleanup when a %s provider proof arrives on a 202 timeout response',
+    'rejects without cleanup identity when a %s provider proof arrives on a 202 timeout response',
     async (_case, providerId) => {
       mocks.authorizedApiFetch
         .mockResolvedValueOnce({
@@ -688,8 +764,8 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: 'sandbox-e2b',
-        nodeName: 'e2b-reviewer',
+        sandboxId: undefined,
+        nodeName: undefined,
         providerId: 'e2b',
         outcomeUnknown: true,
       });
@@ -700,7 +776,7 @@ describe('Cloud fleet sandbox client', () => {
     ['missing', undefined],
     ['invalid', 'modal'],
   ])(
-    'preserves the public cleanup identity when a %s provider proof arrives on a non-OK response',
+    'rejects without cleanup identity when a %s provider proof arrives on a non-OK response',
     async (_case, providerId) => {
       mocks.authorizedApiFetch
         .mockResolvedValueOnce({
@@ -730,9 +806,10 @@ describe('Cloud fleet sandbox client', () => {
       expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
       expect(error).toMatchObject({
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: 'sandbox-e2b',
-        nodeName: 'e2b-reviewer',
+        sandboxId: undefined,
+        nodeName: undefined,
         providerId: 'e2b',
+        outcomeUnknown: true,
       });
     }
   );
@@ -947,7 +1024,7 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves the sandbox identity from a malformed successful response', async () => {
+  it('does not expose an unrequested sandbox identity from a malformed successful response', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
@@ -976,8 +1053,8 @@ describe('Cloud fleet sandbox client', () => {
     expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
     expect(error).toMatchObject({
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-      sandboxId: 'sandbox-1',
-      nodeName: 'daytona-codex',
+      sandboxId: undefined,
+      nodeName: undefined,
       outcomeUnknown: true,
     });
   });
