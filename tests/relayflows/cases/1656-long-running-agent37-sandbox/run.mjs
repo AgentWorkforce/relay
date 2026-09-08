@@ -195,7 +195,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
   const provisionedResponse = {
     outcome: 'provisioned',
     nodeId: 'node-relayflow',
-    nodeName: 'agent37-relayflow',
+    nodeName: REPLAY_SANDBOX_NAME,
     sandboxId: REPLAY_SANDBOX_ID,
     providerSandboxId: PROVIDER_SANDBOX_ID,
     relayWorkspaceId: 'rw_relayflow',
@@ -302,6 +302,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
       responseSandboxId: provisionedResponse.sandboxId,
       responseProviderSandboxId: provisionedResponse.providerSandboxId,
       responseProviderId: provisionedResponse.providerId,
+      responseNodeName: provisionedResponse.nodeName,
       deleteSandboxId: decodeURIComponent(
         String(mocks.authorizedApiFetch.mock.calls[2]?.[1] ?? '').split('/').pop() ?? ''
       ) || null,
@@ -354,6 +355,7 @@ try {
     observation.responseSandboxId === REPLAY_SANDBOX_ID &&
     observation.responseProviderSandboxId === PROVIDER_SANDBOX_ID &&
     observation.responseProviderId === 'agent37' &&
+    observation.responseNodeName === REPLAY_SANDBOX_NAME &&
     observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
     observation.deleteProviderId === 'agent37';
   const sandboxIdentityObserved =
@@ -372,6 +374,7 @@ try {
     observation.responseSandboxId === REPLAY_SANDBOX_ID &&
     observation.responseProviderSandboxId === PROVIDER_SANDBOX_ID &&
     observation.responseProviderId === 'agent37' &&
+    observation.responseNodeName === REPLAY_SANDBOX_NAME &&
     observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
     observation.deleteProviderId === 'agent37';
 

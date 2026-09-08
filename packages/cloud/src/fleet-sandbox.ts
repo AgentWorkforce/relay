@@ -330,6 +330,7 @@ function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
   expectedSandboxId?: string,
+  expectedNodeName?: string,
   requestedProviderId?: CloudFleetSandboxProviderId
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
@@ -341,6 +342,11 @@ function normalizeEnsureResult(
   }
   const outcome = readString(payload, 'outcome');
   const nodeName = requiredString(payload, 'nodeName', 'Cloud fleet sandbox');
+  if (expectedSandboxId !== undefined && expectedNodeName !== undefined && nodeName !== expectedNodeName) {
+    throw new CloudFleetSandboxIdentityMismatchError(
+      `Cloud returned nodeName ${nodeName} instead of requested nodeName ${expectedNodeName}.`
+    );
+  }
   const providerId = readProviderId(payload, requestedProviderId !== undefined);
   if (requestedProviderId !== undefined && providerId !== requestedProviderId) {
     throw new Error(
@@ -500,6 +506,7 @@ export async function ensureCloudFleetSandbox(
       payload,
       resolved.cloudWorkspaceId,
       sandboxIdentity.sandboxId,
+      sandboxIdentity.name,
       input.providerId
     );
   } catch (error) {

@@ -48,7 +48,7 @@ describe('Cloud fleet sandbox client', () => {
           {
             outcome: 'provisioned',
             nodeId: 'node-1',
-            nodeName: 'daytona-codex',
+            nodeName: SANDBOX_NAME,
             sandboxId: SANDBOX_ID,
             providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
@@ -98,7 +98,7 @@ describe('Cloud fleet sandbox client', () => {
       outcome: 'provisioned',
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       nodeId: 'node-1',
-      nodeName: 'daytona-codex',
+      nodeName: SANDBOX_NAME,
       sandboxId: SANDBOX_ID,
       providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
@@ -240,6 +240,59 @@ describe('Cloud fleet sandbox client', () => {
         sandboxId: undefined,
       });
       expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+    }
+  );
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'fails closed when Cloud echoes a different deterministic node name for %s',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-other',
+                  nodeName: 'fleet-sandbox-other',
+                  sandboxId: SANDBOX_ID,
+                  providerSandboxId: 'provider-sandbox-other',
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  sandboxId: SANDBOX_ID,
+                  providerSandboxId: 'provider-sandbox-other',
+                  relayWorkspaceId: 'rw_abc',
+                  nodeName: 'fleet-sandbox-other',
+                  waitedMs: 90_000,
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+        nodeName: 'fleet-sandbox-other',
+        outcomeUnknown: true,
+        sandboxId: undefined,
+      });
+      expect(String(error)).toContain(`instead of requested nodeName ${SANDBOX_NAME}`);
     }
   );
 
