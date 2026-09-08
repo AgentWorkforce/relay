@@ -1,0 +1,103 @@
+{
+  "version": "1.0.0",
+  "id": "50e106cb-ac6a-4e53-b765-2d2793de3351",
+  "timestamp": "2026-09-08T14:23:09.839Z",
+  "trajectory": "traj_udk54gcrs0ot",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot.trace.json",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/summary.md",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/trajectory.json",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 107,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/contract.mjs",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 151,
+              "end_line": 167,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            },
+            {
+              "start_line": 227,
+              "end_line": 265,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/pr-proof/prepare.mjs",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 182,
+              "end_line": 229,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/pr-proof-contract.test.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 1872,
+              "end_line": 1948,
+              "revision": "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
