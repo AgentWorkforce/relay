@@ -887,6 +887,116 @@ describe('complete Daytona Fleet board', () => {
     expect(resource.cleanupState).toBe('delete-timeout');
   });
 
+  it('classifies the production-shaped timed-out delete result and preserves stronger provider truth', async () => {
+    const timedOutDelete = async () => ({ exitCode: null, timedOut: true });
+    const activeResource = {
+      id: 'abababab-abab-4bab-8bab-abababababab',
+      cleanupState: 'owned',
+    };
+    const active = await cleanupDaytonaSandbox({
+      resource: activeResource,
+      persistState: async () => undefined,
+      issueDelete: timedOutDelete,
+      listSandbox: async () => ({ id: activeResource.id, state: 'started', desiredState: 'running' }),
+      now: () => 0,
+      cleanupSlaMs: 25,
+      slaMs: 0,
+      sleep: async () => undefined,
+    });
+    expect(active).toMatchObject({
+      cleanupState: 'delete-timeout',
+      attemptType: 'daytona-delete-timeout',
+      timedOut: true,
+      deleteIssued: true,
+      converged: false,
+    });
+    expect(activeResource.cleanupOutcome).toMatchObject({ timedOut: true, converged: false });
+
+    const absentResource = {
+      id: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+      cleanupState: 'owned',
+    };
+    const absent = await cleanupDaytonaSandbox({
+      resource: absentResource,
+      persistState: async () => undefined,
+      issueDelete: timedOutDelete,
+      listSandbox: async () => undefined,
+      now: () => 0,
+      cleanupSlaMs: 25,
+      slaMs: 0,
+      sleep: async () => undefined,
+    });
+    expect(absent).toMatchObject({
+      cleanupState: 'absent',
+      attemptType: 'daytona-delete-timeout',
+      timedOut: true,
+      deleteIssued: true,
+      converged: true,
+    });
+
+    const acceptedResource = {
+      id: 'efefefef-efef-4fef-8fef-efefefefefef',
+      cleanupState: 'owned',
+    };
+    let acceptedNow = 0;
+    const acceptedTombstone = {
+      id: acceptedResource.id,
+      state: 'destroying',
+      desiredState: 'destroyed',
+    };
+    const acceptedStates = [
+      { id: acceptedResource.id, state: 'started', desiredState: 'running' },
+      acceptedTombstone,
+    ];
+    const accepted = await cleanupDaytonaSandbox({
+      resource: acceptedResource,
+      persistState: async () => undefined,
+      issueDelete: timedOutDelete,
+      listSandbox: async () => acceptedStates.shift() ?? acceptedTombstone,
+      now: () => acceptedNow,
+      cleanupSlaMs: 25,
+      slaMs: 11,
+      pollIntervalMs: 5,
+      sleep: async (milliseconds) => {
+        acceptedNow += milliseconds;
+      },
+    });
+    expect(accepted).toMatchObject({
+      cleanupState: 'deletion-not-converged',
+      attemptType: 'daytona-delete-timeout',
+      timedOut: true,
+      deleteIssued: true,
+      accepted: true,
+      converged: false,
+    });
+
+    const inspectionFailedResource = {
+      id: '12121212-1212-4212-8212-121212121212',
+      cleanupState: 'owned',
+    };
+    const inspectionFailed = await cleanupDaytonaSandbox({
+      resource: inspectionFailedResource,
+      persistState: async () => undefined,
+      issueDelete: timedOutDelete,
+      listSandbox: () => new Promise(() => undefined),
+      now: () => 0,
+      cleanupSlaMs: 25,
+      slaMs: 10,
+      setTimeoutFn: (callback) => {
+        callback();
+        return 1;
+      },
+      clearTimeoutFn: () => undefined,
+    });
+    expect(inspectionFailed).toMatchObject({
+      cleanupState: 'inspection-failed',
+      attemptType: 'daytona-delete-timeout',
+      timedOut: true,
+      converged: false,
+    });
+    expect(inspectionFailedResource.cleanupOutcome).toMatchObject({ timedOut: true, converged: false });
+  });
+
   it('fails closed when a prior leaked resource is absent from the final provider list', () => {
     expect(
       summarizeDaytonaCleanupStates([

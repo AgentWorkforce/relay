@@ -388,6 +388,7 @@ export async function convergeDaytonaSandboxDeletion({
 
   const startedAtMs = now();
   const deadlineMs = startedAtMs + slaMs;
+  const deleteTimedOut = deleteIssued && deleteResult.timedOut === true;
   const inspect = async () => {
     const remainingMs = deadlineMs - now();
     const timeoutMs = Math.max(0, remainingMs);
@@ -435,6 +436,7 @@ export async function convergeDaytonaSandboxDeletion({
       polls,
       observations,
       inspectionFailure: String(error instanceof Error ? error.message : error),
+      ...(deleteTimedOut ? { timedOut: true } : {}),
     };
   }
   accepted = isDaytonaDeletionAccepted(sandbox);
@@ -446,10 +448,14 @@ export async function convergeDaytonaSandboxDeletion({
       acceptedState: null,
       polls,
       observations,
+      ...(deleteTimedOut ? { timedOut: true } : {}),
     };
   }
   accepted ||= presence === 'deletion-accepted';
-  if (deleteIssued && deleteResult.exitCode !== 0 && !accepted) {
+  // Provider observation is stronger than the local CLI result: absence is
+  // already handled above, while a timed-out delete remains ambiguous and is
+  // observed until the deadline so a later accepted/absent state can win.
+  if (!deleteTimedOut && deleteIssued && deleteResult.exitCode !== 0 && !accepted) {
     return {
       cleanupState: 'delete-failed',
       converged: false,
@@ -475,6 +481,7 @@ export async function convergeDaytonaSandboxDeletion({
         polls,
         observations,
         inspectionFailure: String(error instanceof Error ? error.message : error),
+        ...(deleteTimedOut ? { timedOut: true } : {}),
       };
     }
     polls += 1;
@@ -487,18 +494,20 @@ export async function convergeDaytonaSandboxDeletion({
         acceptedState: accepted ? 'deletion-accepted' : null,
         polls,
         observations,
+        ...(deleteTimedOut ? { timedOut: true } : {}),
       };
     }
     accepted ||= presence === 'deletion-accepted';
   }
 
   return {
-    cleanupState: accepted ? 'deletion-not-converged' : 'leaked',
+    cleanupState: accepted ? 'deletion-not-converged' : deleteTimedOut ? 'delete-timeout' : 'leaked',
     converged: false,
     accepted,
     acceptedState: accepted ? 'deletion-accepted' : null,
     polls,
     observations,
+    ...(deleteTimedOut ? { timedOut: true } : {}),
   };
 }
 
@@ -615,24 +624,26 @@ export async function cleanupDaytonaSandbox({
     }
   }
   resource.cleanupState = convergence.cleanupState;
+  const timedOut = deleteResult.timedOut === true || convergence.timedOut === true;
   resource.cleanupOutcome = {
     resumed,
     accepted: convergence.accepted,
     acceptedState: convergence.acceptedState,
     converged: convergence.converged,
     polls: convergence.polls,
-    ...(convergence.timedOut ? { timedOut: true } : {}),
+    ...(timedOut ? { timedOut: true } : {}),
     observations: convergence.observations,
     ...(convergence.inspectionFailure ? { inspectionFailure: convergence.inspectionFailure } : {}),
   };
   return {
     ...convergence,
+    ...(timedOut ? { timedOut: true } : {}),
     resumed,
     deleteIssued: !resumed,
     deleteExitCode: deleteResult.exitCode ?? null,
     deleteStderr: deleteResult.stderr,
     attemptType:
-      convergence.cleanupState === 'delete-timeout'
+      timedOut || convergence.cleanupState === 'delete-timeout'
         ? 'daytona-delete-timeout'
         : convergence.cleanupState === 'inspection-failed'
           ? 'daytona-delete-inspection-failed'
