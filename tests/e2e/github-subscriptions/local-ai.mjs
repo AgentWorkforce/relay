@@ -310,7 +310,12 @@ try {
         ? claudeReceiverArgs
         : [
             ...codexReceiverArgs,
-            ...codexMcpArgs({ node: process.execPath, cli: root + '/packages/cli/dist/cli/index.js', base }),
+            ...codexMcpArgs({
+              node: process.execPath,
+              cli: root + '/packages/cli/dist/cli/index.js',
+              base,
+              home: path.join(work, 'mcp-home'),
+            }),
             '-c',
             `projects.${JSON.stringify(work)}.trust_level="trusted"`,
             '-c',

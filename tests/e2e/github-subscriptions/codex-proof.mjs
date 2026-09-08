@@ -22,7 +22,8 @@ export const codexReceiverArgs = [
   'features.code_mode_host=false',
 ];
 
-export function codexMcpArgs({ node, cli, base }) {
+export function codexMcpArgs({ node, cli, base, home }) {
+  assert(home, 'An isolated MCP home is required; ambient workspace fallback discards an agent-only token');
   return Object.entries({
     command: node,
     args: [cli, 'mcp'],
@@ -32,6 +33,7 @@ export function codexMcpArgs({ node, cli, base }) {
     'env.RELAY_AGENT_TYPE': 'agent',
     'env.RELAY_STRICT_AGENT_NAME': '1',
     'env.RELAY_SKIP_BOOTSTRAP': '1',
+    'env.AGENT_RELAY_HOME': home,
   }).flatMap(([key, value]) => ['-c', `mcp_servers.agent-relay.${key}=${JSON.stringify(value)}`]);
 }
 
