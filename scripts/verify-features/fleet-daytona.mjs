@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 
 import { validateCandidateInstallAttestation } from './relay-candidate-install.mjs';
@@ -1733,7 +1734,15 @@ export function sanitizeFleetArgv(argv) {
 function boundedAppend(current, chunk, limit) {
   const combined = current + String(chunk);
   const bytes = Buffer.from(combined);
-  return bytes.byteLength <= limit ? combined : bytes.subarray(bytes.byteLength - limit).toString('utf8');
+  if (bytes.byteLength <= limit) return combined;
+  let start = bytes.byteLength - limit;
+  // `chunk` is decoded with StringDecoder before it reaches this helper, so
+  // the only boundary we need to repair is the retained tail's first byte.
+  // Never decode from the middle of a UTF-8 continuation sequence: doing so
+  // would emit replacement characters and can also make the resulting string
+  // exceed the byte bound we are enforcing.
+  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
+  return bytes.subarray(start).toString('utf8');
 }
 
 const STREAM_TOKEN_SPECS = [
@@ -2001,6 +2010,8 @@ async function execute(argv, options = {}) {
   let stderr = '';
   const stdoutEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
   const stderrEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let stdoutBytes = 0;
   let stderrBytes = 0;
   let stdoutTruncated = false;
@@ -2067,19 +2078,21 @@ async function execute(argv, options = {}) {
     }
     child.stdout.on('data', (chunk) => {
       if (settled) return;
-      stdoutBytes += Buffer.byteLength(chunk);
+      stdoutBytes += chunk.byteLength;
       stdoutTruncated ||= stdoutBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stdoutCaptureTruncated ||= stdoutBytes > captureLimit;
-      stdout = boundedAppend(stdout, chunk, captureLimit);
-      stdoutEvidence.append(chunk);
+      const text = stdoutDecoder.write(chunk);
+      stdout = boundedAppend(stdout, text, captureLimit);
+      stdoutEvidence.append(text);
     });
     child.stderr.on('data', (chunk) => {
       if (settled) return;
-      stderrBytes += Buffer.byteLength(chunk);
+      stderrBytes += chunk.byteLength;
       stderrTruncated ||= stderrBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stderrCaptureTruncated ||= stderrBytes > captureLimit;
-      stderr = boundedAppend(stderr, chunk, captureLimit);
-      stderrEvidence.append(chunk);
+      const text = stderrDecoder.write(chunk);
+      stderr = boundedAppend(stderr, text, captureLimit);
+      stderrEvidence.append(text);
     });
     child.on('error', (error) => {
       spawnError = error;
@@ -2110,6 +2123,17 @@ async function execute(argv, options = {}) {
       settle(code, closeSignal);
     });
   });
+
+  const stdoutRemainder = stdoutDecoder.end();
+  const stderrRemainder = stderrDecoder.end();
+  if (stdoutRemainder) {
+    stdout = boundedAppend(stdout, stdoutRemainder, captureLimit);
+    stdoutEvidence.append(stdoutRemainder);
+  }
+  if (stderrRemainder) {
+    stderr = boundedAppend(stderr, stderrRemainder, captureLimit);
+    stderrEvidence.append(stderrRemainder);
+  }
 
   const monotonicEndNs = process.hrtime.bigint();
   return {
@@ -2865,8 +2889,8 @@ export function validateFleetEvidence(evidence, matrix) {
       throw new Error(`operation ${operation.id}.durationMs does not match monotonic timing`);
     }
     if (
-      (operation.stdout?.length ?? 0) > MAX_CAPTURE_BYTES ||
-      (operation.stderr?.length ?? 0) > MAX_CAPTURE_BYTES
+      Buffer.byteLength(operation.stdout ?? '', 'utf8') > MAX_CAPTURE_BYTES ||
+      Buffer.byteLength(operation.stderr ?? '', 'utf8') > MAX_CAPTURE_BYTES
     ) {
       throw new Error(`operation ${operation.id} output exceeds the evidence bound`);
     }
@@ -3698,7 +3722,7 @@ class FleetBoard {
       const argv = this.daytonaArgv('sandbox', 'list', '--format', 'json', '--limit', '100');
       if (cursor) argv.push('--cursor', cursor);
       const result = await execute(argv, { timeoutMs: 30_000, maxCaptureBytes: 4 * 1024 * 1024 });
-      if (result.exitCode !== 0) throw new Error(result._rawStderr || 'daytona sandbox list failed');
+      if (result.exitCode !== 0) throw new Error(result.stderr || 'daytona sandbox list failed');
       if (result.stdoutCaptureTruncated) {
         throw new Error('Daytona list JSON exceeded the capture bound');
       }
@@ -3718,7 +3742,7 @@ class FleetBoard {
       timeoutMs: 60_000,
       maxCaptureBytes: 16 * 1024 * 1024,
     });
-    if (result.exitCode !== 0) throw new Error(result._rawStderr || 'agent list failed');
+    if (result.exitCode !== 0) throw new Error(result.stderr || 'agent list failed');
     if (result.stdoutCaptureTruncated) throw new Error('agent list JSON exceeded the capture bound');
     const payload = tryParseJson(result._rawStdout);
     if (!Array.isArray(payload)) throw new Error('agent list returned invalid JSON');
@@ -3745,7 +3769,7 @@ class FleetBoard {
       timeoutMs: 60_000,
       maxCaptureBytes: 16 * 1024 * 1024,
     });
-    if (result.exitCode !== 0) throw new Error(result._rawStderr || 'fleet nodes --all failed');
+    if (result.exitCode !== 0) throw new Error(result.stderr || 'fleet nodes --all failed');
     if (result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
       throw new Error('fleet nodes --all JSON exceeded the capture bound');
     }
@@ -3764,7 +3788,7 @@ class FleetBoard {
       }
     );
     if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
-      throw new Error(result._rawStderr || 'node agent list failed');
+      throw new Error(result.stderr || 'node agent list failed');
     }
     const payload = tryParseJson(result._rawStdout);
     const agents = Array.isArray(payload) ? payload : Array.isArray(payload?.agents) ? payload.agents : null;
@@ -3933,8 +3957,8 @@ class FleetBoard {
       }
       return true;
     }
-    if (result._rawStderr.includes(`Agent ${JSON.stringify(name)} was not found.`)) return false;
-    throw new Error(result._rawStderr || `exact agent lookup for ${name} failed`);
+    if (result.stderr.includes(`Agent ${JSON.stringify(name)} was not found.`)) return false;
+    throw new Error(result.stderr || `exact agent lookup for ${name} failed`);
   }
 
   async findExistingAgents(names) {

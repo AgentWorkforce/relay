@@ -21,6 +21,7 @@ import {
   dryRunRequested,
   evaluateFleetIdentityReconciliation,
   executeFleetCommand,
+  FleetBoard,
   findExactSentinelMessage,
   findFleetAgentNode,
   loadFleetMatrix,
@@ -1514,6 +1515,15 @@ describe('complete Daytona Fleet board', () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024);
   });
 
+  it('validates evidence output limits in UTF-8 bytes, not UTF-16 code units', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+    evidence.operations[0].stdout = '中'.repeat(6_000);
+    expect(Buffer.byteLength(evidence.operations[0].stdout)).toBeGreaterThan(16 * 1024);
+    expect(() => validateFleetEvidence(evidence, matrix)).toThrow(/output exceeds the evidence bound/);
+  });
+
   it('returns a timeout result when an escaped descendant retains the output pipes', async () => {
     let escapedPid: number | undefined;
     let cleanupError: unknown;
@@ -2377,7 +2387,8 @@ describe('complete Daytona Fleet board', () => {
     // raw tail therefore contains only its suffix, which used to bypass the
     // token regex after truncation.
     const prefixLen = 100;
-    const suffixLen = MAX_CAPTURE + 8 - prefixLen - secret.length;
+    const totalBytes = MAX_CAPTURE + prefixLen + 20;
+    const suffixLen = totalBytes - prefixLen - secret.length;
     const script = `process.stdout.write('${'x'.repeat(prefixLen)}' + ${JSON.stringify(secret)} + 'x'.repeat(${suffixLen}))`;
     const result = await executeFleetCommand([process.execPath, '-e', script]);
     // Raw capture still has the full secret — sanity check.
@@ -2387,6 +2398,66 @@ describe('complete Daytona Fleet board', () => {
     expect(result.stdout).not.toContain('dead1234');
     expect(result.stdout).not.toContain('rk_live_');
     expect(result.stdout).toContain('[REDACTED_TOKEN]');
+  });
+
+  it('does not checkpoint a credential suffix when a raw stderr tail becomes an error (RED-6 adversarial)', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), 'fleet-error-redaction-'));
+    const binDir = await mkdtemp(path.join(os.tmpdir(), 'fleet-error-command-'));
+    // Preserve the adversarial Stripe-prefix shape without committing a
+    // live-key-shaped literal that repository push protection must reject.
+    const token = ['rk', 'live', 'deadbeefdead1234'].join('_');
+    const prefixLen = 100;
+    const totalBytes = 16 * 1024 + prefixLen + 20;
+    const suffixLen = totalBytes - prefixLen - token.length;
+    const daytona = path.join(binDir, 'daytona');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(
+        daytona,
+        `#!/usr/bin/env node\nprocess.stderr.write('x'.repeat(${prefixLen}) + ${JSON.stringify(token)} + 'x'.repeat(${suffixLen})); process.exit(7);\n`
+      );
+      await chmod(daytona, 0o755);
+      process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ''}`;
+      const board = new FleetBoard(matrix, 'fleet-error-redaction-test', artifactDir);
+      await board.record('fleet-status', () => board.listDaytona());
+      const evidence = await readFile(path.join(artifactDir, 'evidence.json'), 'utf8');
+      expect(evidence).not.toContain('dead1234');
+      expect(evidence).not.toContain('rk_live_');
+      expect(evidence).toContain('[REDACTED_TOKEN]');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(artifactDir, { recursive: true, force: true });
+      await rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves UTF-8 and the byte bound when output splits multibyte characters per byte', async () => {
+    const expected = 'α🙂中 café — résumé\n';
+    const bytes = [...Buffer.from(expected)];
+    const script = [
+      `const bytes = Buffer.from(${JSON.stringify(bytes)});`,
+      'let index = 0;',
+      'const write = () => { if (index < bytes.length) { process.stdout.write(bytes.subarray(index, index + 1)); index += 1; setImmediate(write); } };',
+      'write();',
+    ].join('');
+    const result = await executeFleetCommand([process.execPath, '-e', script]);
+    expect(result.stdout).toBe(expected);
+    expect(Buffer.byteLength(result.stdout)).toBe(bytes.length);
+  });
+
+  it('keeps multibyte output within the 16 KiB evidence bound', async () => {
+    const bytes = [...Buffer.from('中'.repeat(12_000))];
+    const script = [
+      `const bytes = Buffer.from(${JSON.stringify(bytes)});`,
+      'let index = 0;',
+      'const write = () => { if (index < bytes.length) { process.stdout.write(bytes.subarray(index, index + 1)); index += 1; setImmediate(write); } };',
+      'write();',
+    ].join('');
+    const result = await executeFleetCommand([process.execPath, '-e', script]);
+    expect(result.stdoutTruncated).toBe(true);
+    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024);
   });
 
   it('redacts split stdout and stderr credentials across the bounded stream boundary (RED-5 adversarial)', async () => {
