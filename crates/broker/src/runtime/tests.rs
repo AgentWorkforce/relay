@@ -74,6 +74,10 @@ fn env_test_lock() -> &'static Mutex<()> {
 }
 
 async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
+    make_worker_registry_with_worker_stdout(name, false).await
+}
+
+async fn make_worker_registry_with_worker_stdout(name: &str, piped: bool) -> WorkerRegistry {
     let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
     let mut registry = WorkerRegistry::new(
         tx.clone(),
@@ -83,7 +87,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
     );
     let mut child = tokio::process::Command::new("cat")
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(if piped { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::null())
         .spawn()
         .expect("test worker process should spawn");
@@ -262,6 +266,8 @@ fn worker_event_runtime_fixture(
         hosted_agent_event_tx,
         pty_observability: HashMap::new(),
         api_rx,
+        pending_api_spawns: Default::default(),
+        pending_api_spawn_names: HashSet::new(),
         api_open: true,
         ws_inbound_rx,
         relaycast_open: true,
@@ -337,6 +343,299 @@ fn delivery_lifecycle_worker_event(
             },
         }),
     }
+}
+
+fn attach_regression_spawn(
+    name: &str,
+) -> (
+    crate::listen_api::ListenApiRequest,
+    tokio::sync::oneshot::Receiver<Result<Value, String>>,
+) {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    (
+        crate::listen_api::ListenApiRequest::Spawn {
+            name: name.into(),
+            cli: "claude".to_string(),
+            transport: None,
+            model: None,
+            args: vec![],
+            task: None,
+            registration_metadata: Default::default(),
+            channels: vec![],
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            continue_from: None,
+            idle_threshold_secs: None,
+            exit_after_task: false,
+            skip_relay_prompt: true,
+            restart_policy: Box::new(None),
+            harness_config: None,
+            agent_token: None,
+            agent_result_schema: None,
+            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+            reply,
+        },
+        rx,
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn api_registration_has_an_overall_deadline_and_frees_admission() {
+    use futures_util::StreamExt;
+    let registry = make_worker_registry_with_worker("existing-agent").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (request, reply) = attach_regression_spawn("timeout-agent");
+    fixture.runtime.handle_api_request(request).await;
+    // Keep fleet_control_rx alive and its registration reply unanswered.
+    // Tokio's test clock advances to the phase deadline without a real sleep.
+    let started = tokio::time::Instant::now();
+    let prepared = fixture.runtime.pending_api_spawns.next().await.unwrap();
+    assert_eq!(started.elapsed(), Duration::from_secs(20));
+    fixture.runtime.finish_api_spawn(prepared).await;
+    assert!(reply
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("spawn_registration_timeout"));
+    assert!(!fixture.runtime.workers.has_worker("timeout-agent"));
+    assert!(fixture.runtime.pending_api_spawn_names.is_empty());
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn api_registration_does_not_launch_after_the_caller_disconnects() {
+    use futures_util::StreamExt;
+    let server = httpmock::MockServer::start_async().await;
+    let _membership = server
+        .mock_async(|_when, then| {
+            then.status(401).json_body(json!({"ok": false, "error": {
+                "code": "unauthorized", "message": "test channel reconciliation unavailable"
+            }}));
+        })
+        .await;
+    let registry = make_worker_registry_with_worker("existing-agent").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    let (request, reply) = attach_regression_spawn("abandoned-agent");
+    fixture.runtime.handle_api_request(request).await;
+    drop(reply);
+    let register = async {
+        let Some(FleetControlCommand::RegisterAgent { reply, .. }) =
+            fixture.fleet_control_rx.recv().await
+        else {
+            panic!("expected registration")
+        };
+        reply
+            .send(Ok(crate::node_control::AgentRegistrationToken {
+                name: "abandoned-agent".to_string(),
+                agent_id: "abandoned-id".to_string(),
+                token: "at_test".to_string(),
+                delivery_ack_seq: Some(42),
+            }))
+            .unwrap();
+    };
+    let (prepared, ()) = tokio::join!(fixture.runtime.pending_api_spawns.next(), register);
+    fixture.runtime.finish_api_spawn(prepared.unwrap()).await;
+    assert!(!fixture.runtime.workers.has_worker("abandoned-agent"));
+    assert!(fixture.runtime.pending_api_spawn_names.is_empty());
+    assert!(fixture
+        .runtime
+        .fleet_delivery_book
+        .active_agent_id("abandoned-agent")
+        .is_none());
+    assert!(fixture.runtime.fleet_inventory.is_empty());
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+// Exercise the actual runtime select loop, not a stand-in task that just
+// sleeps. Hold the node registration's reply indefinitely and prove the
+// attach bootstrap APIs still answer before that registration completes.
+#[tokio::test]
+async fn slow_api_registration_does_not_block_attach_or_shutdown() {
+    use crate::listen_api::ListenApiRequest;
+    use tokio::io::AsyncBufReadExt;
+    let mut registry = make_worker_registry_with_worker_stdout("existing-agent", true).await;
+    let worker = registry.workers.get_mut("existing-agent").unwrap();
+    let generation = worker.generation;
+    let stdout = worker.child.stdout.take().unwrap();
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (worker_tx, worker_rx) = mpsc::channel(16);
+    fixture.runtime.worker_event_rx = worker_rx;
+    // A real child pipe echoes the broker's frames; turn them into worker
+    // responses so both snapshot and input traverse the actual request/ack lane.
+    let responder = tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            let kind = frame["type"].as_str().unwrap();
+            if frame.get("request_id").is_none() {
+                continue;
+            }
+            let _ = worker_tx
+                .send(WorkerEvent::Message {
+                    name: "existing-agent".into(),
+                    generation,
+                    value: json!({
+                        "type": format!("{kind}_response"),
+                        "request_id": frame["request_id"],
+                        "payload": { "screen": "still alive", "bytes_written": 4 }
+                    }),
+                })
+                .await;
+        }
+    });
+    let (api_tx, api_rx) = mpsc::channel(16);
+    fixture.runtime.api_rx = api_rx;
+    fixture.runtime.reap_tick.reset();
+    fixture.runtime.lease_check.reset();
+    let (request, mut spawn_reply) = attach_regression_spawn("slow-new-agent");
+    api_tx.send(request).await.unwrap();
+    let exercise = async {
+        let registration =
+            tokio::time::timeout(Duration::from_secs(2), fixture.fleet_control_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        let FleetControlCommand::RegisterAgent {
+            reply: registration_reply,
+            ..
+        } = registration
+        else {
+            panic!("expected real node registration");
+        };
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        api_tx.send(ListenApiRequest::List { reply }).await.unwrap();
+        let list = tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("slow registration blocked attach lookup")
+            .unwrap()
+            .unwrap();
+        assert_eq!(list["agents"][0]["name"], "existing-agent");
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        api_tx
+            .send(ListenApiRequest::WorkerRequest {
+                name: "existing-agent".into(),
+                kind: "snapshot_pty".to_string(),
+                payload: json!({}),
+                timeout: Duration::from_secs(5),
+                reply,
+            })
+            .await
+            .unwrap();
+        let snapshot = tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("slow registration blocked snapshot")
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot["screen"], "still alive");
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        api_tx
+            .send(ListenApiRequest::SendInput {
+                name: "existing-agent".into(),
+                data: "test".to_string(),
+                reply,
+            })
+            .await
+            .unwrap();
+        let input = tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("slow registration blocked input acknowledgement")
+            .unwrap()
+            .unwrap();
+        assert_eq!(input["bytes_written"], 4);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        api_tx
+            .send(ListenApiRequest::GetInboundDeliveryMode {
+                name: "existing-agent".into(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("slow registration blocked delivery-mode lookup")
+            .unwrap()
+            .is_ok());
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        api_tx
+            .send(ListenApiRequest::GetStatus { reply })
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("slow registration blocked health status")
+            .unwrap()
+            .is_ok());
+        assert!(matches!(
+            spawn_reply.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        api_tx
+            .send(ListenApiRequest::Shutdown { reply })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("slow registration blocked shutdown")
+            .unwrap()
+            .unwrap();
+        // The reply stays live until after shutdown was acknowledged; dropping
+        // it earlier would let the old blocking path fall back and hide the bug.
+        drop(registration_reply);
+    };
+    let (result, ()) = tokio::join!(fixture.runtime.run(), exercise);
+    result.unwrap();
+    responder.await.unwrap();
+}
+
+#[tokio::test]
+async fn api_registration_reserves_names_and_bounds_admission() {
+    use crate::listen_api::ListenApiRequest;
+    let registry = make_worker_registry_with_worker("existing-agent").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (existing, existing_reply) = attach_regression_spawn("existing-agent");
+    fixture.runtime.handle_api_request(existing).await;
+    assert!(existing_reply
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("already exists"));
+    assert!(fixture.runtime.pending_api_spawns.is_empty());
+    let mut replies = vec![];
+    for i in 0..8 {
+        let (request, reply) = attach_regression_spawn(&format!("pending-{i}"));
+        fixture.runtime.handle_api_request(request).await;
+        replies.push(reply);
+    }
+    let (duplicate, reply) = attach_regression_spawn("pending-0");
+    fixture.runtime.handle_api_request(duplicate).await;
+    assert!(reply.await.unwrap().unwrap_err().contains("already exists"));
+    let (extra, reply) = attach_regression_spawn("over-capacity");
+    fixture.runtime.handle_api_request(extra).await;
+    assert!(reply
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("spawn_admission_busy"));
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: "pending-0".into(),
+            reason: None,
+            reply,
+        })
+        .await;
+    assert!(rx.await.unwrap().unwrap_err().contains("spawn_in_progress"));
+    assert_eq!(fixture.runtime.pending_api_spawns.len(), 8);
+    assert_eq!(fixture.runtime.pending_api_spawn_names.len(), 8);
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {

@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Local agent attach, snapshots, and input remain responsive while HTTP spawns wait for cloud registration; registration now has bounded concurrency and an overall deadline.
+- Fleet attach retries explicit database-overload rejections with server-directed backoff, and attach lookup failures explain that the agent may still be running.
+- Broker health marks runtime status as unavailable instead of claiming zero agents when its status lookup times out.
 
 ## [11.10.4] - 2026-09-08
 
