@@ -108,6 +108,21 @@ const note = (text) => {
   save();
   console.log(report.updatedAt + ' ' + text);
 };
+function assertNoIdleControls() {
+  const file = path.join(work, '.agentworkforce', 'relay', 'team', 'worker-logs', `${name}.log`);
+  const descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assert(fstatSync(descriptor).isFile(), 'Owned actor log must be a regular file');
+    report.idleControlWrites = standaloneControlsAfter(readFileSync(descriptor, 'utf8'), report.firstIdleAt);
+    assert.equal(
+      report.idleControlWrites.length,
+      0,
+      'Standalone PTY control input after initial idle; no-poke proof rejected'
+    );
+  } finally {
+    closeSync(descriptor);
+  }
+}
 async function req(route, method = 'GET', body, token = key) {
   const response = await fetch(base + route, {
     method,
@@ -358,6 +373,7 @@ try {
     assert.equal(duplicate.replayed, true);
     assert.equal(String(duplicate.message_id), sent.stimulus.messageId);
     await idle(Date.parse(action.created_at));
+    assertNoIdleControls();
     note('Acted on idle event ' + index + ' and returned to idle');
   }
   const longIdleMs = Number(process.env.LOCAL_AI_LONG_IDLE_MS || 600000);
@@ -365,6 +381,7 @@ try {
   note('Beginning longer idle interval: ' + longIdleMs + 'ms');
   while (Date.now() - longStart < longIdleMs) {
     await delay(Math.min(30000, longIdleMs - (Date.now() - longStart)));
+    assertNoIdleControls();
     note('Long idle elapsed ' + Math.round((Date.now() - longStart) / 1000) + 's');
   }
   const longer = await emit('long-idle');
