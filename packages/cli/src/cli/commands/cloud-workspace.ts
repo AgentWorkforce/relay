@@ -400,14 +400,17 @@ async function reconcileAmbiguousCreate(
   deps: WorkspaceCommandDependencies,
   auth: AuthorizedApiAuth,
   idempotencyKey: string,
-  expectedDeploymentId?: string
+  expectedDeploymentId?: string,
+  expectedName?: string
 ): Promise<{
   workspace: EphemeralWorkspaceReconciliationResponse | null;
   auth: AuthorizedApiAuth;
 }> {
+  const query = new URLSearchParams({ ephemeral: 'true', idempotencyKey });
+  if (expectedName !== undefined) query.set('name', expectedName);
   const { response, auth: refreshedAuth } = await deps.authorizedApiFetch(
     auth,
-    `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(idempotencyKey)}`,
+    `/api/v1/workspaces?${query.toString()}`,
     { method: 'GET' },
     { interactive: false }
   );
@@ -509,7 +512,8 @@ export function registerCloudWorkspaceCommands(
             deps,
             createAuth,
             idempotencyKey,
-            options.relayfileCloudDeployment
+            options.relayfileCloudDeployment,
+            options.name
           );
           createAuth = preflight.auth;
           if (preflight.workspace) {
@@ -589,7 +593,8 @@ export function registerCloudWorkspaceCommands(
                   deps,
                   createAuth,
                   idempotencyKey,
-                  options.relayfileCloudDeployment
+                  options.relayfileCloudDeployment,
+                  options.name
                 );
                 createAuth = reconciliation.auth;
                 if (reconciliation.workspace) {
@@ -654,6 +659,62 @@ export function registerCloudWorkspaceCommands(
           }
         } catch (error) {
           deps.error(error instanceof Error ? error.message : 'Ephemeral workspace deletion failed.');
+          deps.exit(1);
+        }
+      }
+    );
+
+  workspaceCommand
+    .command('reconcile')
+    .description('Reconcile one run-scoped ephemeral workspace create request by idempotency key')
+    .requiredOption('--idempotency-key <key>', 'Stable create idempotency key', parseIdempotencyKey)
+    .requiredOption('--name <name>', 'Expected run-scoped workspace name')
+    .requiredOption(
+      '--relayfile-cloud-deployment <id>',
+      'Require the exact prequalified Relayfile Cloud deployment',
+      parseDeploymentId
+    )
+    .option('--json', 'Print reconciliation proof as JSON', false)
+    .action(
+      async (options: {
+        idempotencyKey: string;
+        name: string;
+        relayfileCloudDeployment: string;
+        json?: boolean;
+      }) => {
+        try {
+          const session = await deps.ensureCloudSession({
+            apiUrl: defaultApiUrl(),
+            interactive: false,
+          });
+          const reconciliation = await reconcileAmbiguousCreate(
+            deps,
+            session.auth,
+            options.idempotencyKey,
+            options.relayfileCloudDeployment,
+            options.name
+          );
+          const observedName = (
+            reconciliation.workspace as (EphemeralWorkspaceReconciliationResponse & { name?: unknown }) | null
+          )?.name;
+          if (observedName !== undefined && observedName !== options.name) {
+            throw new Error('Cloud reconciliation returned a workspace with the wrong run-scoped name.');
+          }
+          const result = {
+            version: 1,
+            kind: 'ephemeral-workspace-reconciliation',
+            idempotencyKey: options.idempotencyKey,
+            expectedName: options.name,
+            absent: reconciliation.workspace === null,
+            workspaceId: reconciliation.workspace?.workspaceId ?? null,
+            relayWorkspaceId: reconciliation.workspace?.relayWorkspaceId ?? null,
+            state: reconciliation.workspace?.state ?? 'absent',
+            credentialRevealed: reconciliation.workspace?.credentialRevealed ?? false,
+            reconciledAt: new Date().toISOString(),
+          };
+          deps.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          deps.error(error instanceof Error ? error.message : 'Ephemeral workspace reconciliation failed.');
           deps.exit(1);
         }
       }

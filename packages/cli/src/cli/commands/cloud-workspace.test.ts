@@ -170,7 +170,7 @@ describe('cloud workspace lifecycle commands', () => {
   it('registers only explicit create and delete lifecycle operations', () => {
     const { workspace } = harness();
     expect(workspace.name()).toBe('workspace');
-    expect(workspace.commands.map((command) => command.name())).toEqual(['create', 'delete']);
+    expect(workspace.commands.map((command) => command.name())).toEqual(['create', 'delete', 'reconcile']);
   });
 
   it('writes the reveal-once credential to a new 0600 file and prints only safe JSON', async () => {
@@ -341,7 +341,7 @@ describe('cloud workspace lifecycle commands', () => {
     expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(1);
     expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
       auth,
-      `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(IDEMPOTENCY_KEY)}`,
+      `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(IDEMPOTENCY_KEY)}&name=Unsupported+Cloud`,
       { method: 'GET' },
       { interactive: false }
     );
@@ -534,7 +534,7 @@ describe('cloud workspace lifecycle commands', () => {
     expect(deps.authorizedApiFetch).toHaveBeenNthCalledWith(
       3,
       auth,
-      `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(IDEMPOTENCY_KEY)}`,
+      `/api/v1/workspaces?ephemeral=true&idempotencyKey=${encodeURIComponent(IDEMPOTENCY_KEY)}&name=Ambiguous+create`,
       { method: 'GET' },
       { interactive: false }
     );

@@ -67,6 +67,7 @@ const expectedLeafCommands = [
   'cloud cancel',
   'cloud workspace create',
   'cloud workspace delete',
+  'cloud workspace reconcile',
   'cloud worker register',
   'cloud worker start',
   'cloud worker status',

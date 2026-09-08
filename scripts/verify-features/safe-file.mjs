@@ -31,7 +31,7 @@ async function openNoFollow(target, flags, label) {
     return await open(target, flags | noFollow | nonBlock);
   } catch (error) {
     if (error?.code === 'ELOOP') {
-      throw new Error(`${label} must not be a symbolic link`, { cause: error });
+      throw new Error(`${label} is not a regular file and must not be a symbolic link`, { cause: error });
     }
     throw error;
   }

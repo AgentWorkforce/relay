@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { QUALIFICATION_SCALE } from './qualification-scale.mjs';
 
 function run(cli, args) {
   const result = spawnSync(process.execPath, [cli, ...args], {
@@ -79,10 +80,10 @@ function validEffect(id, effects) {
       SHA256.test(effect.endpointIdentitySha256 ?? '') &&
       effect.mountEntrypoint === 'agent-relay fleet spawn --sandbox' &&
       effect.mountMode === 'fleet-auto-mount' &&
-      effect.scaleFiles === 851 &&
-      effect.scaleDirectories === 454 &&
-      effect.scaleBytes === 270_532_608 &&
-      effect.scaleManifestSha256 === '905968a14268ec5e8ec38ae1d6b24749e855cac035976a87a65ef43f6612a55a' &&
+      effect.scaleFiles === QUALIFICATION_SCALE.files &&
+      effect.scaleDirectories === QUALIFICATION_SCALE.directories &&
+      effect.scaleBytes === QUALIFICATION_SCALE.bytes &&
+      effect.scaleManifestSha256 === QUALIFICATION_SCALE.manifestSha256 &&
       Number.isSafeInteger(effect.totalBulkRequests) &&
       effect.totalBulkRequests >= 3 &&
       effect.totalPointRequests === 0 &&

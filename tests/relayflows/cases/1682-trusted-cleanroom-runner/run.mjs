@@ -105,6 +105,18 @@ if (present.every((value) => !value)) {
   if (context.headBranch !== 'qualification/malicious-ref' || context.headSha !== relaySha) {
     throw new Error('Trusted validator did not bind the candidate ref as immutable data.');
   }
+  const candidateExecutionMarker = path.join(cliRoot, 'candidate-executed');
+  await writeFile(
+    path.join(cliRoot, 'malicious-candidate.mjs'),
+    `await import('node:fs/promises').then(({ writeFile }) => writeFile(${JSON.stringify(candidateExecutionMarker)}, 'executed'));
+`
+  );
+  try {
+    await readFile(candidateExecutionMarker);
+    throw new Error('trusted request validation executed the malicious candidate module');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   for (const [label, message, mutate] of [
     [
       'unapproved actor',

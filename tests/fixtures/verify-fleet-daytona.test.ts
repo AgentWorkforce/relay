@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -579,18 +580,12 @@ describe('complete Daytona Fleet board', () => {
     expect(stageBroker!.dependsOn).toEqual(['install-candidate-npm']);
     expect(prepare!.dependsOn).toEqual(['candidatePreparationDependency']);
     expect(inventory!.dependsOn).toEqual(['prepare-clean-installed-candidate']);
-    expect(attemptA!.dependsOn).toEqual([
-      'preflight-opencode-model',
-      'preflight-codex-model',
-      'preflight-claude-model',
-    ]);
-    expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
-    expect(source).toContain("let candidatePreparationDependency = 'build-current-cli'");
-    expect(source.indexOf("wf.step('install-candidate-npm'")).toBeGreaterThan(
-      source.indexOf('if (!CONFIGURED_CANDIDATE_CLI)')
-    );
-    expect(source).toContain('npm install --global npm@${REQUIRED_NPM_VERSION}');
-    expect(source).toContain('test "$(npm --version)" = "${REQUIRED_NPM_VERSION}"');
+    expect(attemptA!.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
+    expect(source).toMatch(/if\s*\(\s*!CONFIGURED_CANDIDATE_CLI\s*\)/);
+    expect(source).toMatch(/let\s+candidatePreparationDependency\s*=\s*['"]build-current-cli['"]/);
+    expect(installNpm!.offset).toBeGreaterThan(build!.offset);
+    expect(source).toMatch(/npm\s+install\s+--global\s+npm@\$\{REQUIRED_NPM_VERSION\}/);
+    expect(source).toMatch(/test\s+"\$\(npm --version\)"\s*=\s*"\$\{REQUIRED_NPM_VERSION\}"/);
     expect(source).toMatch(/candidatePreparationDependency\s*=\s*["']stage-current-platform-broker["']/);
     expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
@@ -938,6 +933,41 @@ describe('complete Daytona Fleet board', () => {
       else process.env.CLOUD_API_ACCESS_TOKEN = previousAccess;
       if (previousRefresh === undefined) delete process.env.CLOUD_API_REFRESH_TOKEN;
       else process.env.CLOUD_API_REFRESH_TOKEN = previousRefresh;
+    }
+  });
+
+  it('routes candidate API fetches through the broker without exposing upstream credentials', async () => {
+    let requestBody = '';
+    const server = createServer((request, response) => {
+      request.on('data', (chunk) => {
+        requestBody += chunk;
+      });
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('broker test server did not bind');
+    const brokerUrl = `http://127.0.0.1:${address.port}`;
+    try {
+      await execFileAsync(process.execPath, ['-e', "await fetch('https://cloud.example.test/api/v1/ping')"], {
+        env: {
+          PATH: process.env.PATH,
+          NODE_OPTIONS: `--import=${path.resolve('scripts/verify-features/candidate-credential-broker-client.mjs')}`,
+          RELAY_FLEET_BROKER_URL: brokerUrl,
+          RELAY_FLEET_BROKER_CAPABILITY: 'test-capability',
+          RELAY_FLEET_CLOUD_ORIGIN: 'https://cloud.example.test',
+          RELAY_FLEET_RELAY_ORIGIN: 'https://relay.example.test',
+        },
+      });
+      const forwarded = JSON.parse(requestBody);
+      expect(forwarded.target).toBe('https://cloud.example.test/api/v1/ping');
+      expect(forwarded.headers.authorization).toBeUndefined();
+      expect(forwarded.headers.cookie).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

@@ -45,6 +45,38 @@ const CLEANROOM_INFRASTRUCTURE_HOSTS = Object.freeze([
   '[::1]:*',
 ]);
 
+const HOSTNAME =
+  /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+const IPV4 = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+
+export function validateStrictHostPort(value) {
+  if (typeof value !== 'string' || value.length > 255 || /[\s\\/@?#]/u.test(value)) {
+    throw new Error('cloudHost must be a strict host:port value');
+  }
+  let host;
+  let port;
+  if (value.startsWith('[')) {
+    const closing = value.indexOf(']');
+    if (closing < 2 || value[closing + 1] !== ':')
+      throw new Error('cloudHost must be a strict host:port value');
+    host = value.slice(1, closing);
+    port = value.slice(closing + 2);
+    if (!/^[0-9A-Fa-f:]+$/u.test(host)) throw new Error('cloudHost IPv6 host is invalid');
+  } else {
+    const separator = value.lastIndexOf(':');
+    if (separator <= 0 || separator === value.length - 1 || value.indexOf(':') !== separator) {
+      throw new Error('cloudHost must be a strict host:port value');
+    }
+    host = value.slice(0, separator);
+    port = value.slice(separator + 1);
+    if (!HOSTNAME.test(host) && !IPV4.test(host)) throw new Error('cloudHost host is invalid');
+  }
+  if (!/^(?:[1-9]\d{0,3})$/u.test(port) || Number(port) > 65_535) {
+    throw new Error('cloudHost port must be between 1 and 65535');
+  }
+  return value;
+}
+
 function modelTransportNetwork(provider, label) {
   const allow = MODEL_TRANSPORT_HOSTS[provider];
   if (!allow) throw new Error(`unknown ${label} model provider ${provider ?? '<missing>'}`);
@@ -82,7 +114,7 @@ export function cleanroomReviewNetwork(role, cloudHost) {
           ? 'opencode'
           : undefined;
   const allow = [...modelTransportNetwork(provider, `cleanroom reviewer ${role}`).allow];
-  if (cloudHost) allow.unshift(cloudHost);
+  if (cloudHost) allow.unshift(validateStrictHostPort(cloudHost));
   return { allow: [...new Set(allow)], deny: ['*'] };
 }
 
@@ -111,15 +143,16 @@ export function cleanroomLaneEvidenceScopes(nonce, lane) {
 
 export function cleanroomLaneWritePaths(nonce, lane) {
   const evidencePath = cleanroomLaneEvidencePath(nonce, lane);
+  const laneRoot = `.workflow-artifacts/verify-cleanroom/${nonce}/lanes/${lane}/workspace`;
   return [
-    'node_modules/**',
-    'target/**',
-    'packages/sdk-swift/.build/**',
-    'packages/*/dist/**',
-    'packages/*/node_modules/**',
-    'plugins/*/dist/**',
-    'plugins/*/node_modules/**',
-    'tests/integration/broker/dist/**',
+    `${laneRoot}/node_modules/**`,
+    `${laneRoot}/target/**`,
+    `${laneRoot}/packages/sdk-swift/.build/**`,
+    `${laneRoot}/packages/*/dist/**`,
+    `${laneRoot}/packages/*/node_modules/**`,
+    `${laneRoot}/plugins/*/dist/**`,
+    `${laneRoot}/plugins/*/node_modules/**`,
+    `${laneRoot}/tests/integration/broker/dist/**`,
     cleanroomLaneMountAnchorPath(nonce, lane),
     evidencePath,
   ];

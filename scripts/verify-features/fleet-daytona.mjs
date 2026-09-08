@@ -2,7 +2,9 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,8 +14,11 @@ import { readRegularFileNoFollow } from './safe-file.mjs';
 
 const CONTRACT_VERSION = 1;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const TRUSTED_REPO_ROOT = path.resolve(
+  process.env.VERIFY_FLEET_TRUSTED_ROOT ?? path.join(SCRIPT_DIR, '../..')
+);
 const DEFAULT_MATRIX = path.resolve(SCRIPT_DIR, '../../tests/relayflows/cleanroom/fleet-daytona.matrix.json');
-const DEFAULT_CLI = path.resolve('packages/cli/dist/cli/index.js');
+const DEFAULT_CLI = path.join(TRUSTED_REPO_ROOT, 'packages/cli/dist/cli/index.js');
 const MOUNT_SCOPE_MARKER = 'tests/relayflows/cleanroom/relayfile-scope-marker.txt';
 const MOUNT_ROOT_ONLY_MARKER = 'tests/relayflows/relayfile-root-marker.txt';
 const MAX_CAPTURE_BYTES = 16 * 1024;
@@ -48,6 +53,127 @@ const KNOWN_SECRET_ENV = [
   'CLOUD_API_ACCESS_TOKEN',
   'CLOUD_API_REFRESH_TOKEN',
 ];
+const CANDIDATE_SAFE_VERIFY_ENV = new Set([
+  'VERIFY_FLEET_CLI',
+  'VERIFY_FLEET_CANDIDATE_ATTESTATION',
+  'VERIFY_FLEET_CODEX_MODEL',
+  'VERIFY_FLEET_RELEASE_QUALIFICATION',
+  'VERIFY_FLEET_DISPOSABLE_WORKSPACE',
+  'VERIFY_FLEET_SNAPSHOT_ID',
+  'VERIFY_FLEET_SNAPSHOT_NAME',
+  'VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256',
+  'VERIFY_FLEET_NONCE',
+  'VERIFY_FLEET_EXPECTED_RELAY_VERSION',
+  'VERIFY_FLEET_EXPECTED_RELAY_SHA',
+  'VERIFY_FLEET_EXPECTED_WORKSPACE_ID',
+  'VERIFY_FLEET_EXPECTED_RELAY_WORKSPACE_ID',
+]);
+let activeCredentialBroker;
+
+const BROKER_REQUEST_MAX_BYTES = 4 * 1024 * 1024;
+
+function readRequestBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > BROKER_REQUEST_MAX_BYTES) {
+        reject(new Error('candidate credential broker request is too large'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+function brokerOrigin(value, label) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${label} is not an absolute URL`);
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error(`${label} must be a credential-free HTTPS origin`);
+  }
+  return parsed.origin;
+}
+
+async function startCredentialBroker() {
+  const relayOrigin = brokerOrigin(process.env.RELAY_BASE_URL, 'RELAY_BASE_URL');
+  const cloudOrigin = brokerOrigin(process.env.CLOUD_API_URL, 'CLOUD_API_URL');
+  const capability = randomBytes(32).toString('hex');
+  const trusted = {
+    relayWorkspaceKey: process.env.RELAY_WORKSPACE_KEY,
+    cloudAccessToken: process.env.CLOUD_API_ACCESS_TOKEN,
+    cloudRefreshToken: process.env.CLOUD_API_REFRESH_TOKEN,
+  };
+  if (!trusted.relayWorkspaceKey || !trusted.cloudAccessToken || !trusted.cloudRefreshToken) {
+    throw new Error('credential broker requires trusted workspace and cloud credentials');
+  }
+  const server = http.createServer(async (request, response) => {
+    try {
+      if (request.method !== 'POST' || request.headers['x-relay-fleet-capability'] !== capability) {
+        response.writeHead(404).end();
+        return;
+      }
+      const payload = JSON.parse((await readRequestBody(request)).toString('utf8'));
+      if (!payload || typeof payload.target !== 'string' || typeof payload.method !== 'string') {
+        throw new Error('invalid credential broker request');
+      }
+      const target = new URL(payload.target);
+      if (![relayOrigin, cloudOrigin].includes(target.origin) || target.username || target.password) {
+        throw new Error('credential broker target is outside the approved upstream origins');
+      }
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(payload.headers ?? {})) {
+        if (
+          typeof value === 'string' &&
+          !['authorization', 'cookie', 'host', 'x-relay-workspace-key'].includes(key.toLowerCase())
+        ) {
+          headers.set(key, value);
+        }
+      }
+      if (target.origin === cloudOrigin) headers.set('authorization', `Bearer ${trusted.cloudAccessToken}`);
+      else headers.set('x-relay-workspace-key', trusted.relayWorkspaceKey);
+      const body = typeof payload.body === 'string' ? Buffer.from(payload.body, 'base64') : undefined;
+      const upstream = await fetch(target, {
+        method: payload.method,
+        headers,
+        body: body?.length ? body : undefined,
+        redirect: 'error',
+      });
+      const upstreamBody = Buffer.from(await upstream.arrayBuffer());
+      const responseHeaders = {};
+      for (const name of ['content-type', 'content-encoding', 'etag', 'retry-after']) {
+        const value = upstream.headers.get(name);
+        if (value) responseHeaders[name] = value;
+      }
+      response.writeHead(upstream.status, responseHeaders).end(upstreamBody);
+    } catch (error) {
+      response
+        .writeHead(502, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: error instanceof Error ? error.message : 'credential broker failure' }));
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('credential broker did not bind a TCP port');
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    capability,
+    relayOrigin,
+    cloudOrigin,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -288,6 +414,10 @@ function sha256(value) {
 
 function sha256Bytes(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+async function readBoundedArtifact(target, label = target) {
+  return (await readRegularFileNoFollow(target, { label, maxBytes: 64 * 1024 * 1024 })).bytes;
 }
 
 export function matchesSandboxFileInspection(inspection, expected) {
@@ -580,8 +710,14 @@ export function validateOperationArgvContract(operation, definition, matrix) {
 
 export async function loadFleetMatrix(matrixPath = DEFAULT_MATRIX) {
   const target = path.resolve(matrixPath);
-  const matrix = validateFleetMatrix(JSON.parse(await readFile(target, 'utf8')));
-  const inventory = JSON.parse(await readFile(path.join(path.dirname(target), matrix.inventoryFile), 'utf8'));
+  const matrix = validateFleetMatrix(
+    JSON.parse((await readBoundedArtifact(target, 'Fleet matrix')).toString('utf8'))
+  );
+  const inventory = JSON.parse(
+    (
+      await readBoundedArtifact(path.join(path.dirname(target), matrix.inventoryFile), 'Fleet CLI inventory')
+    ).toString('utf8')
+  );
   return validateFleetCommandCoverage(matrix, inventory);
 }
 
@@ -715,8 +851,8 @@ function boundedAppend(current, chunk, limit) {
   return bytes.byteLength <= limit ? combined : bytes.subarray(bytes.byteLength - limit).toString('utf8');
 }
 
-function childEnvironment(overrides = {}) {
-  const allowedExact = new Set([
+function childEnvironment(overrides = {}, { candidate = false, broker } = {}) {
+  const trustedExact = new Set([
     'PATH',
     'HOME',
     'USER',
@@ -746,23 +882,66 @@ function childEnvironment(overrides = {}) {
     'CLOUD_API_REFRESH_TOKEN_EXPIRES_AT',
     'RELAY_AGENT_NAME',
   ]);
+  const safeExact = new Set(['PATH', 'TMPDIR', 'TERM', 'LANG', 'CI', 'NO_COLOR', 'RELAY_AGENT_NAME']);
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (
       value !== undefined &&
-      (allowedExact.has(key) || key.startsWith('LC_') || key.startsWith('VERIFY_FLEET_'))
+      ((candidate ? safeExact : trustedExact).has(key) ||
+        key.startsWith('LC_') ||
+        (!candidate && key.startsWith('VERIFY_FLEET_')))
     ) {
       env[key] = value;
     }
   }
-  return { ...env, NO_COLOR: '1', AGENT_RELAY_TELEMETRY_DISABLED: '1', ...overrides };
+  if (!candidate) return { ...env, NO_COLOR: '1', AGENT_RELAY_TELEMETRY_DISABLED: '1', ...overrides };
+  if (!broker) throw new Error('candidate execution requires a credential broker');
+  const candidateEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (CANDIDATE_SAFE_VERIFY_ENV.has(key)) candidateEnv[key] = value;
+  }
+  return {
+    // Do not inherit a user-controlled PATH or HOME. The candidate runs as
+    // an unprivileged UID and must not discover credentials in the runner's
+    // shell configuration, CLI state, or home directory.
+    PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    HOME: '/tmp',
+    LANG: process.env.LANG ?? 'C',
+    LC_ALL: process.env.LC_ALL ?? 'C',
+    ...candidateEnv,
+    NO_COLOR: '1',
+    AGENT_RELAY_TELEMETRY_DISABLED: '1',
+    // These values are deliberately non-secret placeholders. The trusted
+    // broker replaces them on the upstream request without exposing any
+    // credential to the candidate process.
+    RELAY_BASE_URL: process.env.RELAY_BASE_URL,
+    RELAY_WORKSPACE_KEY: 'relay-fleet-broker-placeholder',
+    CLOUD_API_URL: process.env.CLOUD_API_URL,
+    CLOUD_API_ACCESS_TOKEN: 'relay-fleet-broker-placeholder',
+    CLOUD_API_REFRESH_TOKEN: 'relay-fleet-broker-placeholder',
+    CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: process.env.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT,
+    CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: process.env.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT,
+    RELAY_FLEET_BROKER_URL: broker.url,
+    RELAY_FLEET_BROKER_CAPABILITY: broker.capability,
+    RELAY_FLEET_CLOUD_ORIGIN: broker.cloudOrigin,
+    RELAY_FLEET_RELAY_ORIGIN: broker.relayOrigin,
+    NODE_OPTIONS: `--import=${path.resolve(SCRIPT_DIR, 'candidate-credential-broker-client.mjs')}`,
+    ...overrides,
+  };
 }
 
 async function execute(argv, options = {}) {
   const startedAt = new Date().toISOString();
   const monotonicStartNs = process.hrtime.bigint();
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const env = childEnvironment(options.env);
+  const configuredCandidate = process.env.VERIFY_FLEET_CLI?.trim();
+  const candidate =
+    options.candidate === true ||
+    (configuredCandidate !== undefined && path.resolve(argv[1] ?? '') === path.resolve(configuredCandidate));
+  const env = childEnvironment(options.env, {
+    candidate,
+    broker: options.broker ?? activeCredentialBroker,
+  });
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
   let stderr = '';
@@ -805,10 +984,22 @@ async function execute(argv, options = {}) {
       resolve();
     };
     try {
+      const candidateUid = candidate ? Number(process.env.VERIFY_FLEET_CANDIDATE_UID) : undefined;
+      const candidateGid = candidate ? Number(process.env.VERIFY_FLEET_CANDIDATE_GID) : undefined;
+      if (
+        candidate &&
+        (!Number.isSafeInteger(candidateUid) ||
+          candidateUid <= 0 ||
+          !Number.isSafeInteger(candidateGid) ||
+          candidateGid <= 0)
+      ) {
+        throw new Error('candidate execution requires a dedicated unprivileged UID');
+      }
       child = spawn(argv[0], argv.slice(1), {
         cwd: options.cwd ?? process.cwd(),
         env,
         detached: process.platform !== 'win32',
+        ...(candidateUid ? { uid: candidateUid, gid: candidateGid } : {}),
         stdio: [stdinChunks === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
@@ -2108,6 +2299,7 @@ class FleetBoard {
     this.baselineAgentNames = new Set();
     this.steerReceipts = [];
     this.taintedNodeIds = new Set();
+    this.broker = null;
     if (this.evidence.environment.releaseQualificationRequested) {
       if (!SAFE_SNAPSHOT_ID.test(this.evidence.environment.expectedSnapshotId ?? '')) {
         throw new Error('VERIFY_FLEET_SNAPSHOT_ID is required and must be a safe immutable provider id');
@@ -2174,8 +2366,12 @@ class FleetBoard {
 
   async captureProvenance() {
     const [head, status, version, daytonaVersion, workspace] = await Promise.all([
-      execute(['git', 'rev-parse', 'HEAD'], { timeoutMs: 15_000 }),
-      execute(['git', 'status', '--porcelain'], { timeoutMs: 30_000, maxCaptureBytes: 4 * 1024 * 1024 }),
+      execute(['git', 'rev-parse', 'HEAD'], { timeoutMs: 15_000, cwd: TRUSTED_REPO_ROOT }),
+      execute(['git', 'status', '--porcelain'], {
+        timeoutMs: 30_000,
+        maxCaptureBytes: 4 * 1024 * 1024,
+        cwd: TRUSTED_REPO_ROOT,
+      }),
       execute(this.cliArgv('version'), { timeoutMs: 30_000 }),
       execute(this.daytonaArgv('version'), { timeoutMs: 30_000 }),
       execute(this.cliArgv('workspace', 'active', '--json'), {
@@ -4987,6 +5183,8 @@ class FleetBoard {
   }
 
   async run() {
+    this.broker = await startCredentialBroker();
+    activeCredentialBroker = this.broker;
     await this.checkpoint();
     let fatal;
     try {
@@ -5133,6 +5331,8 @@ class FleetBoard {
         this.evidence.criticalLifecycle
       );
       await this.checkpoint();
+      await this.broker.close();
+      if (activeCredentialBroker === this.broker) activeCredentialBroker = undefined;
     }
     return this.evidence;
   }
@@ -5143,14 +5343,18 @@ function artifactDirFor(matrix, nonce) {
 }
 
 async function readEvidence(matrix, nonce) {
-  return JSON.parse(await readFile(path.join(artifactDirFor(matrix, nonce), 'evidence.json'), 'utf8'));
+  return JSON.parse(
+    (
+      await readBoundedArtifact(path.join(artifactDirFor(matrix, nonce), 'evidence.json'), 'Fleet evidence')
+    ).toString('utf8')
+  );
 }
 
 async function activeArtifactSnapshot(matrixPath, artifactDir) {
   const [evidenceBytes, matrixBytes, runnerBytes] = await Promise.all([
-    readFile(path.join(artifactDir, 'evidence.json')),
-    readFile(path.resolve(matrixPath)),
-    readFile(fileURLToPath(import.meta.url)),
+    readBoundedArtifact(path.join(artifactDir, 'evidence.json'), 'Fleet evidence'),
+    readBoundedArtifact(path.resolve(matrixPath), 'Fleet matrix'),
+    readBoundedArtifact(fileURLToPath(import.meta.url), 'Fleet runner'),
   ]);
   return {
     evidenceBytes,
@@ -5196,10 +5400,10 @@ function isPermissionPlaceholder(value, nonce, file) {
 
 async function readAndValidateSeal(matrixPath, artifactDir, nonce) {
   const [rawSeal, snapshot] = await Promise.all([
-    readFile(path.join(artifactDir, 'seal.json'), 'utf8'),
+    readBoundedArtifact(path.join(artifactDir, 'seal.json'), 'Fleet evidence seal'),
     activeArtifactSnapshot(matrixPath, artifactDir),
   ]);
-  return validateSeal(JSON.parse(rawSeal), nonce, snapshot.digests);
+  return validateSeal(JSON.parse(rawSeal.toString('utf8')), nonce, snapshot.digests);
 }
 
 function campaignReviewSeal(seal) {
@@ -5212,13 +5416,13 @@ function campaignReviewSeal(seal) {
 
 export async function readAndValidateCampaign(matrixPath, matrix, artifactDir, nonce) {
   const [campaignBytes, rawSeal, matrixBytes, runnerBytes] = await Promise.all([
-    readFile(path.join(artifactDir, 'campaign.json')),
-    readFile(path.join(artifactDir, 'campaign-seal.json'), 'utf8'),
-    readFile(matrixPath),
-    readFile(fileURLToPath(import.meta.url)),
+    readBoundedArtifact(path.join(artifactDir, 'campaign.json'), 'Fleet campaign'),
+    readBoundedArtifact(path.join(artifactDir, 'campaign-seal.json'), 'Fleet campaign seal'),
+    readBoundedArtifact(matrixPath, 'Fleet matrix'),
+    readBoundedArtifact(fileURLToPath(import.meta.url), 'Fleet runner'),
   ]);
   const campaign = assertObject(JSON.parse(campaignBytes.toString('utf8')), 'campaign');
-  const seal = assertObject(JSON.parse(rawSeal), 'campaign seal');
+  const seal = assertObject(JSON.parse(rawSeal.toString('utf8')), 'campaign seal');
   if (
     campaign.version !== CONTRACT_VERSION ||
     campaign.kind !== 'fleet-daytona-reliability-campaign' ||
@@ -5251,7 +5455,10 @@ export async function readAndValidateCampaign(matrixPath, matrix, artifactDir, n
     assertObject(record, `campaign.attempts[${index}]`);
     const attemptNonce = assertSafeId(record.nonce, `campaign.attempts[${index}].nonce`);
     const attemptArtifactDir = artifactDirFor(matrix, attemptNonce);
-    const evidenceBytes = await readFile(path.join(attemptArtifactDir, 'evidence.json'));
+    const evidenceBytes = await readBoundedArtifact(
+      path.join(attemptArtifactDir, 'evidence.json'),
+      `Fleet evidence ${attemptNonce}`
+    );
     const evidence = validateFleetEvidence(JSON.parse(evidenceBytes.toString('utf8')), matrix);
     const attemptSeal = await readAndValidateSeal(matrixPath, attemptArtifactDir, attemptNonce);
     const evidenceSha256 = sha256Bytes(evidenceBytes);
@@ -5269,7 +5476,7 @@ export async function readAndValidateCampaign(matrixPath, matrix, artifactDir, n
   }
   const recomputed = { nonce, ...summarizeFleetCampaign(attempts, matrix) };
   recomputed.createdAt = campaign.createdAt;
-  if (JSON.stringify(recomputed) !== JSON.stringify(campaign)) {
+  if (!isDeepStrictEqual(recomputed, campaign)) {
     throw new Error('campaign summary no longer matches its sealed attempt evidence');
   }
   return { campaign, seal, reviewSeal: campaignReviewSeal(seal), attempts };
@@ -5340,6 +5547,15 @@ async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
   const matrixPath = path.resolve(options.matrix ?? DEFAULT_MATRIX);
   const matrix = await loadFleetMatrix(matrixPath);
+  if (typeof options['artifact-root'] === 'string') {
+    const artifactRoot = path.resolve(options['artifact-root']);
+    Object.defineProperty(matrix, 'artifactRoot', {
+      value: artifactRoot,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
   if (command === 'validate') {
     process.stdout.write(`FLEET_DAYTONA_MATRIX_VALID operations=${matrix.operations.length}\n`);
     return;
@@ -5367,7 +5583,7 @@ async function main() {
     for (const attemptNonce of attemptNonces) {
       const attemptArtifactDir = artifactDirFor(matrix, attemptNonce);
       const evidencePath = path.join(attemptArtifactDir, 'evidence.json');
-      const evidenceBytes = await readFile(evidencePath);
+      const evidenceBytes = await readBoundedArtifact(evidencePath, `Fleet evidence ${attemptNonce}`);
       const evidence = validateFleetEvidence(JSON.parse(evidenceBytes.toString('utf8')), matrix);
       if (evidence.nonce !== attemptNonce) {
         throw new Error(`attempt ${attemptNonce} evidence nonce does not match its artifact directory`);
@@ -5386,14 +5602,16 @@ async function main() {
     const campaign = { nonce, ...summarizeFleetCampaign(attempts, matrix) };
     const campaignBytes = Buffer.from(`${JSON.stringify(campaign, null, 2)}\n`);
     const [matrixBytes, runnerBytes] = await Promise.all([
-      readFile(matrixPath),
-      readFile(fileURLToPath(import.meta.url)),
+      readBoundedArtifact(matrixPath, 'Fleet matrix'),
+      readBoundedArtifact(fileURLToPath(import.meta.url), 'Fleet runner'),
     ]);
     await mkdir(artifactDir, { recursive: true });
     for (const file of ['campaign.json', 'campaign-seal.json']) {
       const target = path.join(artifactDir, file);
       try {
-        const existing = JSON.parse(await readFile(target, 'utf8'));
+        const existing = JSON.parse(
+          (await readBoundedArtifact(target, `Fleet campaign ${file}`)).toString('utf8')
+        );
         if (!isPermissionPlaceholder(existing, nonce, file)) {
           throw new Error(`Refusing to overwrite existing Fleet campaign artifact ${file}`);
         }
@@ -5434,7 +5652,9 @@ async function main() {
     await mkdir(artifactDir, { recursive: true });
     const evidencePath = path.join(artifactDir, 'evidence.json');
     try {
-      const existing = JSON.parse(await readFile(evidencePath, 'utf8'));
+      const existing = JSON.parse(
+        (await readBoundedArtifact(evidencePath, 'Fleet evidence')).toString('utf8')
+      );
       if (!isPermissionPlaceholder(existing, nonce, 'evidence.json')) {
         throw new Error(`Refusing to overwrite existing fleet-board evidence for nonce ${nonce}`);
       }
@@ -5478,7 +5698,14 @@ async function main() {
       ({ type, role }) => type === 'relay-agent' && role === 'controller'
     );
     board.controller = controller ? { name: controller.id, token: '' } : null;
-    await board.cleanup();
+    board.broker = await startCredentialBroker();
+    activeCredentialBroker = board.broker;
+    try {
+      await board.cleanup();
+    } finally {
+      await board.broker.close();
+      if (activeCredentialBroker === board.broker) activeCredentialBroker = undefined;
+    }
     board.evidence.verdict = deriveFleetVerdict(
       board.evidence.operations,
       board.evidence.cleanup,
@@ -5505,7 +5732,9 @@ async function main() {
     const sealPath = path.join(artifactDir, 'seal.json');
     let seal;
     try {
-      const existing = JSON.parse(await readFile(sealPath, 'utf8'));
+      const existing = JSON.parse(
+        (await readBoundedArtifact(sealPath, 'Fleet evidence seal')).toString('utf8')
+      );
       if (isPermissionPlaceholder(existing, nonce, 'seal.json')) {
         seal = {
           version: CONTRACT_VERSION,
@@ -5538,7 +5767,9 @@ async function main() {
     const filename = ['evidence', 'seal', 'signoff', 'campaign'].includes(kind)
       ? `${kind}.json`
       : `review-${assertSafeId(kind, 'kind')}.json`;
-    process.stdout.write(await readFile(path.join(artifactDir, filename), 'utf8'));
+    process.stdout.write(
+      (await readBoundedArtifact(path.join(artifactDir, filename), `Fleet ${kind}`)).toString('utf8')
+    );
     return;
   }
   if (command === 'review-upload') {
@@ -5552,7 +5783,9 @@ async function main() {
     const scope = options.scope ?? 'evidence';
     const { reviewSeal } = await readReviewTarget(matrixPath, matrix, artifactDir, nonce, scope);
     const review = validateReview(
-      sanitizeJsonStrings(JSON.parse(await readFile(inputPath, 'utf8'))),
+      sanitizeJsonStrings(
+        JSON.parse((await readBoundedArtifact(inputPath, `Fleet review draft ${role}`)).toString('utf8'))
+      ),
       role,
       kind,
       reviewSeal
@@ -5572,7 +5805,11 @@ async function main() {
     const scope = options.scope ?? 'evidence';
     const { reviewSeal } = await readReviewTarget(matrixPath, matrix, artifactDir, nonce, scope);
     const review = validateReview(
-      JSON.parse(await readFile(path.join(artifactDir, `review-${role}.json`), 'utf8')),
+      JSON.parse(
+        (
+          await readBoundedArtifact(path.join(artifactDir, `review-${role}.json`), `Fleet review ${role}`)
+        ).toString('utf8')
+      ),
       role,
       kind,
       reviewSeal
@@ -5588,7 +5825,11 @@ async function main() {
     const { reviewSeal } = await readReviewTarget(matrixPath, matrix, artifactDir, nonce, scope);
     const reviews = [];
     for (const role of [claudeRole, codexRole]) {
-      const review = JSON.parse(await readFile(path.join(artifactDir, `review-${role}.json`), 'utf8'));
+      const review = JSON.parse(
+        (
+          await readBoundedArtifact(path.join(artifactDir, `review-${role}.json`), `Fleet review ${role}`)
+        ).toString('utf8')
+      );
       const validated = validateReview(review, role, 'review', reviewSeal);
       if (validated.scope !== scope) throw new Error(`review ${role} has the wrong scope`);
       reviews.push(validated);
@@ -5615,7 +5856,9 @@ async function main() {
     const target = await readReviewTarget(matrixPath, matrix, artifactDir, nonce, scope);
     const reviewSeal = target.reviewSeal;
     const signoff = assertObject(
-      JSON.parse(await readFile(path.join(artifactDir, 'signoff.json'), 'utf8')),
+      JSON.parse(
+        (await readBoundedArtifact(path.join(artifactDir, 'signoff.json'), 'Fleet signoff')).toString('utf8')
+      ),
       'signoff'
     );
     if (
@@ -5641,7 +5884,11 @@ async function main() {
       throw new Error('signoff requires one satisfied Claude review and one satisfied Codex review');
     }
     for (const { role } of signoff.reviewers) {
-      const review = JSON.parse(await readFile(path.join(artifactDir, `review-${role}.json`), 'utf8'));
+      const review = JSON.parse(
+        (
+          await readBoundedArtifact(path.join(artifactDir, `review-${role}.json`), `Fleet review ${role}`)
+        ).toString('utf8')
+      );
       validateReview(review, role, 'review', reviewSeal);
       if (review.scope !== scope) throw new Error(`review ${role} has the wrong scope`);
     }

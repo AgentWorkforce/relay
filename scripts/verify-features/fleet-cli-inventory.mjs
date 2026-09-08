@@ -120,6 +120,7 @@ export async function collectFleetCliInventory(cliPath) {
       maxBuffer: 8 * 1024 * 1024,
       timeout: 120_000,
       env: isolatedCandidateEnvironment(),
+      ...isolatedCandidateSpawnOptions(),
     }
   );
   if (result.error) throw new Error(`candidate CLI inventory isolation failed: ${result.error.message}`);
@@ -145,6 +146,12 @@ export async function collectFleetCliInventory(cliPath) {
 function isolatedCandidateEnvironment() {
   const environment = { PATH: process.env.PATH ?? '', LANG: 'C', LC_ALL: 'C' };
   return environment;
+}
+
+function isolatedCandidateSpawnOptions() {
+  const uid = Number(process.env.VERIFY_FLEET_CANDIDATE_UID);
+  const gid = Number(process.env.VERIFY_FLEET_CANDIDATE_GID);
+  return Number.isSafeInteger(uid) && uid > 0 && Number.isSafeInteger(gid) && gid > 0 ? { uid, gid } : {};
 }
 
 async function collectFleetCliInventoryInProcess(cliPath) {

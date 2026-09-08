@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { lstat, readFile, readdir } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readRegularFileNoFollow } from './safe-file.mjs';
+import { QUALIFICATION_SCALE } from './qualification-scale.mjs';
 
 export const CLOUD_SNAPSHOT_PRODUCER = Object.freeze({
   repository: 'AgentWorkforce/cloud',
@@ -52,10 +54,10 @@ export const RELAYFILE_CLOUD_FILES = Object.freeze([
 ]);
 export const CLOUD_ACCEPTANCE_FILES = Object.freeze(['candidate-acceptance.json']);
 
-const SCALE_FILES = 851;
-const SCALE_DIRECTORIES = 454;
-const SCALE_BYTES = 270_532_608;
-const SCALE_MANIFEST_SHA256 = '905968a14268ec5e8ec38ae1d6b24749e855cac035976a87a65ef43f6612a55a';
+const SCALE_FILES = QUALIFICATION_SCALE.files;
+const SCALE_DIRECTORIES = QUALIFICATION_SCALE.directories;
+const SCALE_BYTES = QUALIFICATION_SCALE.bytes;
+const SCALE_MANIFEST_SHA256 = QUALIFICATION_SCALE.manifestSha256;
 
 const SHA40 = /^[a-f0-9]{40}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -144,17 +146,24 @@ async function verifyExactRegularFiles(directory, allFiles) {
     throw new Error('qualification artifact has an unexpected exact file set');
   }
   for (const file of actualFiles) {
-    const info = await lstat(path.join(root, file));
-    if (!info.isFile()) {
-      throw new Error(`qualification artifact entry is not a regular file: ${file}`);
-    }
+    await readRegularFileNoFollow(path.join(root, file), {
+      label: `qualification artifact ${file}`,
+      maxBytes: 64 * 1024 * 1024,
+    });
   }
   return root;
 }
 
 async function verifySealedDirectory(directory, expected, allFiles, sealedFiles) {
   const root = await verifyExactRegularFiles(directory, allFiles);
-  const seal = JSON.parse(await readFile(path.join(root, 'qualification.seal.json'), 'utf8'));
+  const seal = JSON.parse(
+    (
+      await readRegularFileNoFollow(path.join(root, 'qualification.seal.json'), {
+        label: 'qualification seal',
+        maxBytes: 1024 * 1024,
+      })
+    ).bytes.toString('utf8')
+  );
   exactKeys(seal, ['schemaVersion', 'runId', 'runAttempt', 'sourceGitSha', 'files'], 'qualification seal');
   if (
     seal.schemaVersion !== 1 ||
@@ -175,7 +184,12 @@ async function verifySealedDirectory(directory, expected, allFiles, sealedFiles)
   for (const entry of entries) {
     exactKeys(entry, ['file', 'sha256'], `qualification seal file ${String(entry?.file)}`);
     if (!SHA256.test(entry.sha256 ?? '')) throw new Error('qualification seal digest is invalid');
-    const bytes = await readFile(path.join(root, entry.file));
+    const bytes = (
+      await readRegularFileNoFollow(path.join(root, entry.file), {
+        label: `qualification artifact ${entry.file}`,
+        maxBytes: 64 * 1024 * 1024,
+      })
+    ).bytes;
     if (sha256(bytes) !== entry.sha256) throw new Error(`qualification file changed: ${entry.file}`);
   }
   return seal;
@@ -186,8 +200,18 @@ export async function verifyCloudSnapshotArtifact(directory, expected) {
     (file) => !['qualification.seal.json', 'qualification.json.sha256'].includes(file)
   );
   const seal = await verifySealedDirectory(directory, expected, CLOUD_FILES, sealed);
-  const qualificationBytes = await readFile(path.join(path.resolve(directory), 'qualification.json'));
-  const checksum = await readFile(path.join(path.resolve(directory), 'qualification.json.sha256'), 'utf8');
+  const qualificationBytes = (
+    await readRegularFileNoFollow(path.join(path.resolve(directory), 'qualification.json'), {
+      label: 'Cloud qualification',
+      maxBytes: 64 * 1024 * 1024,
+    })
+  ).bytes;
+  const checksum = (
+    await readRegularFileNoFollow(path.join(path.resolve(directory), 'qualification.json.sha256'), {
+      label: 'Cloud qualification checksum',
+      maxBytes: 1024,
+    })
+  ).bytes.toString('utf8');
   if (checksum.trim() !== `${sha256(qualificationBytes)}  .artifacts/qualification.json`) {
     throw new Error('Cloud qualification checksum sidecar is invalid');
   }
@@ -455,7 +479,12 @@ export function validateCloudSnapshotAcceptanceEvidence(value, expected) {
 
 export async function verifyCloudSnapshotAcceptanceArtifact(directory, expected) {
   const root = await verifyExactRegularFiles(directory, CLOUD_ACCEPTANCE_FILES);
-  const bytes = await readFile(path.join(root, CLOUD_ACCEPTANCE_FILES[0]));
+  const bytes = (
+    await readRegularFileNoFollow(path.join(root, CLOUD_ACCEPTANCE_FILES[0]), {
+      label: 'Cloud acceptance artifact',
+      maxBytes: 64 * 1024 * 1024,
+    })
+  ).bytes;
   if (!SHA256.test(expected.evidenceSha256 ?? '') || sha256(bytes) !== expected.evidenceSha256) {
     throw new Error('Cloud candidate acceptance evidence digest changed');
   }
@@ -474,8 +503,22 @@ async function main() {
       'usage: qualification-producer-artifacts.mjs <cloud|cloud-acceptance|relayfile-cloud> --run ...'
     );
   }
-  const run = JSON.parse(await readFile(path.resolve(flag('--run')), 'utf8'));
-  const artifactDocument = JSON.parse(await readFile(path.resolve(flag('--artifacts')), 'utf8'));
+  const run = JSON.parse(
+    (
+      await readRegularFileNoFollow(path.resolve(flag('--run')), {
+        label: 'producer run evidence',
+        maxBytes: 4 * 1024 * 1024,
+      })
+    ).bytes.toString('utf8')
+  );
+  const artifactDocument = JSON.parse(
+    (
+      await readRegularFileNoFollow(path.resolve(flag('--artifacts')), {
+        label: 'producer artifact listing',
+        maxBytes: 16 * 1024 * 1024,
+      })
+    ).bytes.toString('utf8')
+  );
   const expected = {
     runId: flag('--run-id'),
     runAttempt: flag('--run-attempt'),

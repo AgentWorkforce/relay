@@ -16,6 +16,7 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
+import path from 'node:path';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
@@ -24,20 +25,42 @@ import { REQUIRED_NPM_VERSION } from '../scripts/verify-features/relay-candidate
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { fleetReviewerNetwork, preflightPermissions } from '../scripts/verify-features/fleet-permissions.mjs';
 
-const MATRIX = 'tests/relayflows/cleanroom/fleet-daytona.matrix.json';
+const TRUSTED_ROOT = path.resolve(process.env.VERIFY_FLEET_TRUSTED_ROOT ?? process.cwd());
+const MATRIX = path.join(TRUSTED_ROOT, 'tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 const FLEET_OPERATION_COUNT = JSON.parse(readFileSync(MATRIX, 'utf8')).operations.length;
-const EXPECTED_CLI_INVENTORY = 'tests/relayflows/cleanroom/fleet-cli-inventory.json';
-const CLI_INVENTORY_RUNNER = 'scripts/verify-features/fleet-cli-inventory.mjs';
-const RUNNER = 'scripts/verify-features/fleet-daytona.mjs';
+const EXPECTED_CLI_INVENTORY = path.join(TRUSTED_ROOT, 'tests/relayflows/cleanroom/fleet-cli-inventory.json');
+const CLI_INVENTORY_RUNNER = path.join(TRUSTED_ROOT, 'scripts/verify-features/fleet-cli-inventory.mjs');
+const RUNNER = path.join(TRUSTED_ROOT, 'scripts/verify-features/fleet-daytona.mjs');
 const NONCE = process.env.VERIFY_FLEET_NONCE ?? randomBytes(16).toString('hex');
 const ATTEMPT_NONCES = [`${NONCE}-a`, `${NONCE}-b`];
 const STEP_TIMEOUT = 14_400_000;
-const CANDIDATE_INSTALL_ROOT = `.workflow-artifacts/verify-fleet-daytona/${NONCE}/candidate-install`;
+const INSTALL_ROOT = path.resolve(
+  process.env.VERIFY_FLEET_INSTALL_ROOT ??
+    path.join(process.env.RUNNER_TEMP ?? TRUSTED_ROOT, 'relay-candidate-install')
+);
+const CANDIDATE_EXEC_ROOT = path.resolve(
+  process.env.VERIFY_FLEET_UNTRUSTED_ROOT ??
+    path.join(process.env.RUNNER_TEMP ?? TRUSTED_ROOT, `relay-fleet-untrusted-${NONCE}`)
+);
+const CANDIDATE_ARTIFACT_ROOT = path.join(CANDIDATE_EXEC_ROOT, '.workflow-artifacts', 'verify-fleet-daytona');
+const TRUSTED_ARTIFACT_ROOT = path.join(TRUSTED_ROOT, '.workflow-artifacts', 'verify-fleet-daytona');
+const CANDIDATE_INSTALL_ROOT = INSTALL_ROOT;
 const CONFIGURED_CANDIDATE_CLI = process.env.VERIFY_FLEET_CLI?.trim();
 const CONFIGURED_CANDIDATE_ATTESTATION = process.env.VERIFY_FLEET_CANDIDATE_ATTESTATION?.trim();
 const FLEET_CODEX_MODEL = process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || CodexModels.GPT_5_1_CODEX_MINI;
-const SAFE_WORKFLOW_PATH = /^[A-Za-z0-9_./-]+$/;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+
+function rootedInstallPath(value: string, label: string): string {
+  if (value.split(/[\\/]/u).includes('..')) {
+    throw new Error(`${label} must not contain parent-directory segments`);
+  }
+  const resolved = path.resolve(INSTALL_ROOT, value);
+  const relative = path.relative(INSTALL_ROOT, resolved);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${label} must remain inside the expected candidate install root`);
+  }
+  return resolved;
+}
 
 if (Boolean(CONFIGURED_CANDIDATE_CLI) !== Boolean(CONFIGURED_CANDIDATE_ATTESTATION)) {
   throw new Error('VERIFY_FLEET_CLI and VERIFY_FLEET_CANDIDATE_ATTESTATION must be configured together');
@@ -46,16 +69,18 @@ for (const [label, value] of [
   ['VERIFY_FLEET_CLI', CONFIGURED_CANDIDATE_CLI],
   ['VERIFY_FLEET_CANDIDATE_ATTESTATION', CONFIGURED_CANDIDATE_ATTESTATION],
 ] as const) {
-  if (value && !SAFE_WORKFLOW_PATH.test(value)) throw new Error(`${label} is not a safe path`);
+  if (value) rootedInstallPath(value, label);
 }
 if (!SAFE_MODEL.test(FLEET_CODEX_MODEL)) {
   throw new Error('VERIFY_FLEET_CODEX_MODEL is not a safe model identifier');
 }
 
-const CANDIDATE_CLI =
-  CONFIGURED_CANDIDATE_CLI ?? `${CANDIDATE_INSTALL_ROOT}/install/node_modules/agent-relay/dist/cli/index.js`;
-const CANDIDATE_ATTESTATION =
-  CONFIGURED_CANDIDATE_ATTESTATION ?? `${CANDIDATE_INSTALL_ROOT}/candidate-install-attestation.json`;
+const CANDIDATE_CLI = CONFIGURED_CANDIDATE_CLI
+  ? rootedInstallPath(CONFIGURED_CANDIDATE_CLI, 'VERIFY_FLEET_CLI')
+  : path.join(CANDIDATE_INSTALL_ROOT, 'install/node_modules/agent-relay/dist/cli/index.js');
+const CANDIDATE_ATTESTATION = CONFIGURED_CANDIDATE_ATTESTATION
+  ? rootedInstallPath(CONFIGURED_CANDIDATE_ATTESTATION, 'VERIFY_FLEET_CANDIDATE_ATTESTATION')
+  : path.join(CANDIDATE_INSTALL_ROOT, 'candidate-install-attestation.json');
 const CANDIDATE_PREPARE_COMMAND = CONFIGURED_CANDIDATE_CLI
   ? `node scripts/verify-features/relay-candidate-install.mjs verify --attestation ${CANDIDATE_ATTESTATION}`
   : `node scripts/verify-features/relay-candidate-install.mjs prepare --output ${CANDIDATE_INSTALL_ROOT}`;
@@ -64,12 +89,16 @@ if (!/^[a-z0-9][a-z0-9-]{0,60}$/.test(NONCE)) {
   throw new Error('VERIFY_FLEET_NONCE must be at most 61 lowercase letters, digits, or hyphens');
 }
 
-function command(action: string, extra = '', nonce = NONCE): string {
-  return `node ${RUNNER} ${action} --matrix ${MATRIX} --nonce ${nonce}${extra}`;
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function command(action: string, extra = '', nonce = NONCE, artifactRoot = TRUSTED_ARTIFACT_ROOT): string {
+  return `node ${shellQuote(RUNNER)} ${action} --matrix ${shellQuote(MATRIX)} --artifact-root ${shellQuote(artifactRoot)} --nonce ${nonce}${extra}`;
 }
 
 function candidateCommand(action: string, extra = '', nonce = NONCE): string {
-  return `env VERIFY_FLEET_CLI=${CANDIDATE_CLI} VERIFY_FLEET_CANDIDATE_ATTESTATION=${CANDIDATE_ATTESTATION} VERIFY_FLEET_CODEX_MODEL=${FLEET_CODEX_MODEL} ${command(action, extra, nonce)}`;
+  return `cd ${shellQuote(CANDIDATE_EXEC_ROOT)} && env VERIFY_FLEET_CLI=${shellQuote(CANDIDATE_CLI)} VERIFY_FLEET_CANDIDATE_ATTESTATION=${shellQuote(CANDIDATE_ATTESTATION)} VERIFY_FLEET_CODEX_MODEL=${shellQuote(FLEET_CODEX_MODEL)} ${command(action, extra, nonce, CANDIDATE_ARTIFACT_ROOT)}`;
 }
 
 function reviewTask(role: string, kind: 'supervisor' | 'fix' | 'review', priorRoles: string[]): string {
@@ -350,9 +379,9 @@ async function main() {
     type: 'deterministic',
     dependsOn: ['prepare-clean-installed-candidate'],
     command:
-      `node ${CLI_INVENTORY_RUNNER} verify --cli ${CANDIDATE_CLI} ` +
-      `--expected ${EXPECTED_CLI_INVENTORY} ` +
-      `--output .workflow-artifacts/verify-fleet-daytona/${NONCE}/candidate-cli-inventory.json`,
+      `node ${shellQuote(CLI_INVENTORY_RUNNER)} verify --cli ${shellQuote(CANDIDATE_CLI)} ` +
+      `--expected ${shellQuote(EXPECTED_CLI_INVENTORY)} ` +
+      `--output ${shellQuote(path.join(CANDIDATE_ARTIFACT_ROOT, NONCE, 'candidate-cli-inventory.json'))}`,
     captureOutput: true,
     failOnError: true,
     timeoutMs: 120_000,
@@ -368,9 +397,25 @@ async function main() {
       timeoutMs: 180_000,
     });
   }
-  wf.step('run-daytona-board-attempt-a', {
+  wf.step('seal-trusted-fleet-inputs', {
     type: 'deterministic',
     dependsOn: ['preflight-opencode-model', 'preflight-codex-model', 'preflight-claude-model'],
+    command: `set -eu
+mkdir -p ${shellQuote(CANDIDATE_EXEC_ROOT)} ${shellQuote(CANDIDATE_ARTIFACT_ROOT)}
+chmod -R a-w ${shellQuote(TRUSTED_ROOT)} ${shellQuote(CANDIDATE_INSTALL_ROOT)}
+test "$(id -u nobody)" -gt 0
+echo "VERIFY_FLEET_CANDIDATE_UID=$(id -u nobody)" >> "$GITHUB_ENV"
+echo "VERIFY_FLEET_CANDIDATE_GID=$(id -g nobody)" >> "$GITHUB_ENV"
+test ! -w ${shellQuote(path.join(TRUSTED_ROOT, 'package.json'))}
+test ! -w ${shellQuote(path.join(TRUSTED_ROOT, 'node_modules'))}
+test ! -w ${shellQuote(CANDIDATE_INSTALL_ROOT)}`,
+    captureOutput: true,
+    failOnError: true,
+    timeoutMs: 120_000,
+  });
+  wf.step('run-daytona-board-attempt-a', {
+    type: 'deterministic',
+    dependsOn: ['seal-trusted-fleet-inputs'],
     command: candidateCommand(
       'run',
       ' --workspace-credential-env VERIFY_FLEET_WORKSPACE_KEY_FILE_A',
@@ -408,9 +453,18 @@ async function main() {
     failOnError: true,
     timeoutMs: 120_000,
   });
-  wf.step('aggregate-reliability-campaign', {
+  wf.step('materialize-trusted-fleet-evidence', {
     type: 'deterministic',
     dependsOn: ['gate-attempt-b-evidence'],
+    command: `chmod -R u+w ${shellQuote(path.join(TRUSTED_ROOT, '.workflow-artifacts'))} 2>/dev/null || true
+node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-fleet-evidence.mjs'))} --source ${shellQuote(CANDIDATE_ARTIFACT_ROOT)} --destination ${shellQuote(TRUSTED_ARTIFACT_ROOT)}`,
+    captureOutput: true,
+    failOnError: true,
+    timeoutMs: 120_000,
+  });
+  wf.step('aggregate-reliability-campaign', {
+    type: 'deterministic',
+    dependsOn: ['materialize-trusted-fleet-evidence'],
     command: command('aggregate', ` --attempts ${ATTEMPT_NONCES.join(',')}`),
     captureOutput: true,
     failOnError: true,

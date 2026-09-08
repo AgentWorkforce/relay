@@ -38,6 +38,7 @@ import {
   cleanroomLaneWritePaths,
   cleanroomReviewNetwork,
   MODEL_TRANSPORT_HOSTS,
+  validateStrictHostPort,
 } from '../../scripts/verify-features/fleet-permissions.mjs';
 
 const NONCE = 'a'.repeat(32);
@@ -603,7 +604,9 @@ describe('clean-room verification catalog', () => {
   it('grants each cleanroom agent only its exact output and required model transport', () => {
     const writes = cleanroomLaneWritePaths(NONCE, 'polyglot-plugins');
     const evidenceScopes = cleanroomLaneEvidenceScopes(NONCE, 'polyglot-plugins');
-    expect(writes).toContain('packages/sdk-swift/.build/**');
+    expect(writes).toContain(
+      `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/workspace/packages/sdk-swift/.build/**`
+    );
     expect(writes).toContain(
       `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`
     );
@@ -643,6 +646,19 @@ describe('clean-room verification catalog', () => {
     expect(() => cleanroomReviewNetwork('unknown-role')).toThrow(/unknown cleanroom reviewer/);
   });
 
+  it('rejects cloud network hosts that are not strict host:port values', () => {
+    expect(validateStrictHostPort('cloud.example.test:443')).toBe('cloud.example.test:443');
+    for (const value of [
+      'https://cloud.example.test:443',
+      'cloud.example.test:0',
+      'cloud.example.test:65536',
+      'cloud.example.test/path',
+      'cloud.example.test',
+    ]) {
+      expect(() => validateStrictHostPort(value)).toThrow(/host|port|strict/);
+    }
+  });
+
   it('compiles an exact writable scope for a write-once lane artifact that does not exist yet', async () => {
     const projectDir = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-permissions-'));
     try {
@@ -669,7 +685,7 @@ describe('clean-room verification catalog', () => {
         },
       });
 
-      expect(compiled.readwritePaths).toEqual([mountAnchor, target, 'packages/fixture/dist/placeholder']);
+      expect(compiled.readwritePaths).toEqual([mountAnchor, target]);
       expect(compiled.scopes).toEqual(
         expect.arrayContaining([`relayfile:fs:read:/${target}`, `relayfile:fs:write:/${target}`])
       );

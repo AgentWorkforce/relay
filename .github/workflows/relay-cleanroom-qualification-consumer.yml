@@ -209,7 +209,7 @@ jobs:
           const relayArtifacts = JSON.parse(fs.readFileSync('qualification/relay-package-artifacts.json')).artifacts;
           const relayWorkflowPath = String(relayRun.path ?? '').split('@')[0];
           const relayWorkflowRef = String(relayRun.path ?? '').split('@')[1];
-          const qualificationBranch = /^qualification\/[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
+          const qualificationBranch = /^(?!.*\.\.)qualification\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
           const expectedRelayRef = `refs/heads/${relayRun.head_branch}`;
           const safeBranchSegments = String(relayRun.head_branch ?? '').split('/').every((segment) => segment !== '.' && segment !== '..');
           if (relayRun.id !== Number(process.env.RELAY_PACKAGE_RUN_ID) || relayRun.run_attempt !== Number(process.env.RELAY_PACKAGE_RUN_ATTEMPT) || relayRun.head_sha !== process.env.RELAY_SHA || relayRun.status !== 'completed' || relayRun.conclusion !== 'success' || relayRun.name !== 'Relay package qualification' || relayWorkflowPath !== '.github/workflows/relay-package-qualification.yml' || (relayWorkflowRef !== undefined && relayWorkflowRef !== expectedRelayRef) || relayRun.event !== 'workflow_dispatch' || !qualificationBranch.test(relayRun.head_branch ?? '') || expectedRelayRef.includes('//') || !safeBranchSegments) throw new Error('Relay package producer is not the exact successful manual qualification-branch prerelease run');
@@ -399,13 +399,18 @@ jobs:
           export VERIFY_FLEET_EXPECTED_RELAY_SHA="${{ steps.manifest.outputs.relay_sha }}"
           npx relayflows run workflows/verify-fleet-daytona.ts
 
-      - name: Verify candidate execution did not modify the trusted verifier
+      - name: Verify candidate execution remained outside trusted inputs
         if: always()
         working-directory: relay-verifier
         run: |
           set -euo pipefail
-          git diff --exit-code -- workflows/verify-fleet-daytona.ts scripts/verify-features packages/cli/src packages/cli/dist tests/relayflows/cleanroom
-          test -z "$(git status --short --untracked-files=all -- workflows/verify-fleet-daytona.ts scripts/verify-features packages/cli/src packages/cli/dist tests/relayflows/cleanroom)"
+          test ! -w package.json
+          test ! -w node_modules
+          test ! -w workflows/verify-fleet-daytona.ts
+          test ! -w scripts/verify-features/fleet-daytona.mjs
+          test ! -w packages/cli/dist/cli/index.js
+          test -s "$RUNNER_TEMP/relay-candidate-install/candidate-install-attestation.json"
+          test -s "$RUNNER_TEMP/relay-fleet-untrusted-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/.workflow-artifacts/verify-fleet-daytona/qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a/evidence.json"
 
       - name: Resolve exact owned workspace IDs for cleanup
         id: cleanup_ids
@@ -413,26 +418,40 @@ jobs:
         env:
           WORKSPACE_A_OUTPUT: ${{ steps.workspace_a.outputs.cloud_workspace_id }}
           WORKSPACE_B_OUTPUT: ${{ steps.workspace_b.outputs.cloud_workspace_id }}
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          RELAY_QUALIFICATION_DEPLOYMENT_ID: ${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}
         run: |
+          set -euo pipefail
+          for suffix in a b; do
+            idempotency="relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${suffix}"
+            name="relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+            node relay-verifier/packages/cli/dist/cli/index.js cloud workspace reconcile \
+              --idempotency-key "$idempotency" \
+              --name "$name" \
+              --relayfile-cloud-deployment "$RELAY_QUALIFICATION_DEPLOYMENT_ID" \
+              --json > "$RUNNER_TEMP/workspace-reconcile-$suffix.json"
+          done
           node - <<'NODE'
           const fs = require('node:fs');
-          const path = require('node:path');
           const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-          function fromFile(file) {
-            try {
-              const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-              return uuid.test(value.workspaceId || '') ? value.workspaceId : '';
-            } catch {
-              return '';
-            }
-          }
           for (const suffix of ['a', 'b']) {
             const prior = process.env[`WORKSPACE_${suffix.toUpperCase()}_OUTPUT`] || '';
-            const value = uuid.test(prior)
-              ? prior
-              : fromFile(path.join(process.env.RUNNER_TEMP, `workspace-create-${suffix}.json`)) ||
-                fromFile(path.join(process.env.RUNNER_TEMP, `relay-workspace-${suffix}.json`));
-            if (value) fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${value}\n`);
+            const value = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/workspace-reconcile-${suffix}.json`, 'utf8'));
+            if (value.idempotencyKey !== `relay-qualification:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}:${suffix}` ||
+                value.expectedName !== `relay-qualification-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-${suffix}` ||
+                (!value.absent && !uuid.test(value.workspaceId || '')) ||
+                (value.absent && value.workspaceId !== null)) throw new Error(`invalid ${suffix} reconciliation proof`);
+            if (uuid.test(prior)) {
+              if (!value.absent && value.workspaceId !== prior) throw new Error(`reconciled ${suffix} workspace differs from the create output`);
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${prior}\n`);
+            } else if (value.absent === true) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}_absent=true\n`);
+            } else {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${value.workspaceId}\n`);
+            }
           }
           NODE
 

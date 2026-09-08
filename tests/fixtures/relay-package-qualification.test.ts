@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
 import {
   PACKAGE_NAMES,
@@ -243,19 +244,18 @@ describe('Relay package qualification producer', () => {
     expect(normalized).not.toContain('GH_TOKEN:');
     expect(normalized).not.toContain('repos/AgentWorkforce/cloud/dispatches');
     expect(normalized).not.toContain('secrets.');
-    const uploadAttestation = workflow.indexOf('- name: Upload immutable package attestation');
-    const createCloudRequest = workflow.indexOf('- name: Create the bounded Cloud qualification request');
-    const uploadCloudRequest = workflow.indexOf('- name: Upload the bounded Cloud qualification request');
-    const setupNode = workflow.indexOf('- name: Set up exact Node.js');
-    const requirePrerelease = workflow.indexOf('- name: Require prerelease package version');
-    expect(uploadAttestation).toBeGreaterThan(-1);
-    expect(createCloudRequest).toBeGreaterThan(-1);
-    expect(uploadCloudRequest).toBeGreaterThan(-1);
-    expect(setupNode).toBeGreaterThan(-1);
-    expect(requirePrerelease).toBeGreaterThan(-1);
-    expect(uploadAttestation).toBeLessThan(createCloudRequest);
-    expect(createCloudRequest).toBeLessThan(uploadCloudRequest);
-    expect(setupNode).toBeLessThan(requirePrerelease);
+    const workflowDocument = parse(workflow) as {
+      jobs?: { attest?: { steps?: Array<{ name?: unknown }> } };
+    };
+    const stepNames = (workflowDocument.jobs?.attest?.steps ?? []).map((step) => step.name);
+    const stepIndex = (name: string) => stepNames.indexOf(name);
+    expect(stepIndex('Upload immutable package attestation')).toBeLessThan(
+      stepIndex('Create the bounded Cloud qualification request')
+    );
+    expect(stepIndex('Create the bounded Cloud qualification request')).toBeLessThan(
+      stepIndex('Upload the bounded Cloud qualification request')
+    );
+    expect(stepIndex('Set up exact Node.js')).toBeLessThan(stepIndex('Require prerelease package version'));
     expect(RELAY_PACKAGE_PRODUCER).toMatchObject({
       event: 'workflow_dispatch',
       ref: 'refs/heads/qualification/',

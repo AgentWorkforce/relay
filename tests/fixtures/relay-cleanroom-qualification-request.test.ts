@@ -124,14 +124,18 @@ describe('trusted cleanroom qualification request', () => {
     });
   });
 
-  it('binds an approved candidate ref as data without executing that ref', () => {
+  it('binds an approved candidate ref as data through the complete trusted request validator', () => {
     const context = validateQualificationRequestEvent(
       event({ head_branch: 'qualification/malicious-ref', head_sha: relaySha }),
       '["approved-operator"]'
     );
 
-    expect(context.headBranch).toBe('qualification/malicious-ref');
-    expect(context.headSha).toBe(relaySha);
+    const selection = selectQualificationRequestArtifact(context, [
+      { total_count: 1, artifacts: [artifact()] },
+    ]);
+    const normalized = validateQualificationRequest(request(context), context, selection);
+    expect(normalized.producer.headSha).toBe(relaySha);
+    expect(normalized.manifest.relaySha).toBe(relaySha);
   });
 
   it('accepts a default-branch repository dispatch while keeping candidate identity in the manifest', () => {
