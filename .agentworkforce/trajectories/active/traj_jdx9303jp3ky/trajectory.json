@@ -31,6 +31,18 @@
             "reasoning": "Registry presence and channel arrival cannot prove an agent can act. Keep unique events retryable, preserve exact recipient identity and require correlated GitHub-to-actor evidence."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788874450499,
+          "type": "decision",
+          "content": "Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup: Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup",
+          "raw": {
+            "question": "Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup",
+            "chosen": "Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup",
+            "alternatives": [],
+            "reasoning": "Independent Claude review exposed empty-channel defaulting, absent-generation cleanup and raw-hook overflow gaps. Repaired them, added actual D1 concurrent overflow/retry and real command startup cleanup proofs. Unverified acknowledgements and undeployed source do not satisfy the nine live gates."
+          },
+          "significance": "high"
         }
       ]
     }

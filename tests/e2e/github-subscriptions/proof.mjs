@@ -112,3 +112,13 @@ export function hasContinuousCoverage(coverage, channel, start, durationMs, maxG
   }
   return false;
 }
+
+/** Captured cases pass only when positive and observed negative arms both exist. */
+export function capturedStimuliPass(results, negatives) {
+  return (
+    results.length > 0 &&
+    negatives.length > 0 &&
+    results.every((r) => r.pass) &&
+    negatives.every((r) => r.pass)
+  );
+}

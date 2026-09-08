@@ -77,7 +77,7 @@ const VERIFIED_SPAWN_TIMEOUT_MS = 130_000;
 const VERIFIED_SPAWN_POLL_MS = 250;
 const VERIFIED_SPAWN_TIMEOUT_MESSAGE = 'Spawn timed out before broker registration and harness readiness.';
 const VERIFIED_SPAWN_MISSING_READY_MESSAGE =
-  'Spawn completed without broker registration and harness readiness proof.';
+  'Spawn completed without broker registration and harness readiness proof. The selected broker must support top-level verify_ready (Relay PR #1708); upgrade the selected broker before retrying.';
 const VERIFIED_SPAWN_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
 const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled', 'denied']);
 
@@ -1073,7 +1073,7 @@ function registerAgentRelayTools(
         '"spawn an opus claude agent" → cli:"claude", model:"claude-opus-4-8"; ' +
         '"spawn a sonnet claude agent" → cli:"claude", model:"claude-sonnet-4-6". ' +
         'Do NOT use the built-in Agent/Task tool for relay workers. ' +
-        'Returns the spawn record for the new worker, including the name it registered under. The worker boots asynchronously, so a successful return means the spawn was accepted, not that the worker is ready — watch for its messages or poll "list_agents" to confirm it came online.',
+        'Returns the registered worker name. Raw CLI spawns return only after the broker confirms registration and harness readiness. Persona spawns follow their registered handler completion contract.',
       inputSchema: {
         name: z.string().describe('Worker agent name'),
         cli: z

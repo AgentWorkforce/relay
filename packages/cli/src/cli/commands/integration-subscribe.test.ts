@@ -1707,6 +1707,23 @@ describe('confirmed agent subscription setup', () => {
     expect(h.relayfile.bind).not.toHaveBeenCalled();
   });
 
+  it('reports an undeployed routing endpoint before resource creation and rolls back its owned worker', async () => {
+    const rollback = vi.fn(async () => {});
+    const h = harness({ recipientDeps: { launchRecipient: async () => ({ rollback, close: vi.fn() }) } });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 }))
+    );
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('HTTP 404'));
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('relaycast PR #387'));
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(h.relay.integrations.subscriptions.create).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(h.relayfile.bind).not.toHaveBeenCalled();
+  });
+
   it('confirms the worker and exact membership before creating resources', async () => {
     const rollback = vi.fn(async () => {});
     const close = vi.fn();

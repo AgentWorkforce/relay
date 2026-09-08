@@ -68,13 +68,13 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
     process.kill(ready.pid, 0);
     return {
       rollback: async () => {
-        await owned!.release('subscription setup failed');
+        await owned!.release('subscription setup failed', { deleteIdentity: true });
       },
       close: () => client.disconnect(),
     };
   } catch (error) {
     try {
-      if (owned) await owned.release('subscription startup failed');
+      if (owned) await owned.release('subscription startup failed', { deleteIdentity: true });
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
@@ -104,7 +104,7 @@ export async function resolveSubscriptionAgentChannel(
   );
   if (!response.ok)
     throw new Error(
-      `Could not provision @${name} subscription routing (HTTP ${response.status}); the server must support agent subscription channels.`
+      `Could not provision @${name} subscription routing (HTTP ${response.status}); upgrade the selected Relaycast deployment to a release containing agent subscription channels (relaycast PR #387) before retrying. No subscription resources were created.`
     );
   const body = (await response.json()) as {
     data?: { name?: string; members?: Array<{ agent_name?: string }> };

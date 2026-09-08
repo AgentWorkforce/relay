@@ -1250,7 +1250,8 @@ describe('process timeout contract', () => {
       ].join('');
       const result = await runProcess(process.execPath, ['-e', script], {
         echo: false,
-        timeoutMs: 100,
+        // Allow the fixture to start and print its PID before testing forced cleanup.
+        timeoutMs: 1_000,
         terminationGraceMs: 100,
       });
       const descendantPid = Number(result.stdout.trim());

@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { correlate, receiverTask, hasContinuousCoverage } from './proof.mjs';
+import { correlate, receiverTask, hasContinuousCoverage, capturedStimuliPass } from './proof.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const [command, configFile, ...args] = process.argv.slice(2);
@@ -38,6 +38,8 @@ if (
   config.repos.some((r) => !allowed.has(r))
 )
   throw new Error('Specify each of the three authorized fixture repositories exactly once');
+config.actors ??= {};
+config.actorIds ??= {};
 const out = path.resolve(config.outputDir);
 mkdirSync(out, { recursive: true });
 const manifestPath = path.join(out, 'manifest.json');
@@ -297,7 +299,7 @@ async function subscriptions(remove = false) {
         if (current && current.generation !== manifest.worker.generation)
           throw new Error('Worker generation changed; refusing to clean up its replacement');
         if (current)
-          await broker.release(current.name, 'owned GitHub demo cleanup', manifest.worker.generation);
+          await broker.release(current.name, 'owned GitHub demo cleanup', manifest.worker.generation, true);
         manifest.worker.released = true;
         save();
       }
@@ -586,7 +588,7 @@ function assertProof() {
     environment: config.environment,
     // This command proves only captured stimuli. Nine-gate signoff requires the entire acceptance matrix.
     ready: false,
-    capturedStimuliPass: results.length > 0 && results.every((r) => r.pass) && negatives.every((r) => r.pass),
+    capturedStimuliPass: capturedStimuliPass(results, negatives),
     results,
     negatives,
   };

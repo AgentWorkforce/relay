@@ -14,6 +14,7 @@ use relaycast::{
     RelayCastOptions, RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
@@ -932,6 +933,7 @@ impl RelaycastHttpClient {
         &self,
         agent_name: &str,
         reason: Option<&str>,
+        delete_identity: bool,
     ) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
@@ -943,10 +945,44 @@ impl RelaycastHttpClient {
             let request = ReleaseAgentRequest {
                 name: agent_name.to_string(),
                 reason: Some(attributed_reason),
-                // The owning broker already stopped (or failed to launch) this process.
-                // Permit authoritative identity cleanup even if its host binding is gone.
-                delete_agent: Some(true),
+                // Deletion is opt-in for an owned disposable identity. Ordinary
+                // release and attached identities retain the existing lifecycle policy.
+                delete_agent: delete_identity.then_some(true),
             };
+            if delete_identity {
+                let token = self.registration.as_ref().as_ref()
+                    .and_then(|registration| registration.cached_agent_token(agent_name))
+                    .context("owned identity cleanup requires its cached credential; refusing name-only deletion")?;
+                let mut body = serde_json::to_value(&request)?;
+                body["expected_token_hash"] =
+                    Value::String(format!("{:x}", Sha256::digest(token.as_bytes())));
+                let response = reqwest::Client::new()
+                    .post(format!(
+                        "{}/v1/agents/release",
+                        self.base_url
+                            .as_deref()
+                            .unwrap_or("https://cast.agentrelay.com")
+                            .trim_end_matches('/')
+                    ))
+                    .bearer_auth(&self.api_key)
+                    .json(&body)
+                    .timeout(Duration::from_secs(30))
+                    .send()
+                    .await
+                    .context("owned identity cleanup request failed")?;
+                if !response.status().is_success() {
+                    anyhow::bail!("owned identity cleanup rejected (HTTP {}); retry/reconcile without deleting a replacement", response.status());
+                }
+                let result: Value = response
+                    .json()
+                    .await
+                    .context("invalid identity cleanup response")?;
+                self.invalidate_cached_registration(agent_name);
+                if result["data"]["status"] != "completed" {
+                    anyhow::bail!("owned identity cleanup queued but unconfirmed; reconcile lifecycle invocation {}", result["data"]["invocation_id"]);
+                }
+                return Ok(());
+            }
             // Invalidate the cached token before the call so an ambiguous
             // response (e.g. a timeout after Relaycast committed the release)
             // can never leave a dead token cached for reuse. Worst case on
@@ -1146,20 +1182,32 @@ impl RelaycastHttpClient {
                 .await
             {
                 Ok(outcome) => {
-                    match agent_client.channel_members(name).await {
-                        Ok(members)
-                            if members.iter().any(|member| member.agent_name == agent_name) => {}
-                        Ok(_) => {
-                            failures.push(format!(
-                                "{name}: join acknowledged but worker membership is absent"
-                            ));
-                            continue;
+                    let mut verification_error = None;
+                    for attempt in 0..3 {
+                        match agent_client.channel_members(name).await {
+                            Ok(members)
+                                if members.iter().any(|member| member.agent_name == agent_name) =>
+                            {
+                                verification_error = None;
+                                break;
+                            }
+                            Ok(_) => {
+                                verification_error = Some(
+                                    "join acknowledged but worker membership is absent".to_string(),
+                                )
+                            }
+                            Err(error) => {
+                                verification_error =
+                                    Some(format!("membership verification failed: {error}"))
+                            }
                         }
-                        Err(error) => {
-                            failures
-                                .push(format!("{name}: membership verification failed: {error}"));
-                            continue;
+                        if attempt < 2 {
+                            tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
                         }
+                    }
+                    if let Some(error) = verification_error {
+                        failures.push(format!("{name}: {error}"));
+                        continue;
                     }
                     tracing::info!(
                         worker = %agent_name,
@@ -1807,8 +1855,7 @@ mod tests {
                 .header("authorization", "Bearer rk_live_test")
                 .json_body(json!({
                     "name": "worker-a",
-                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)",
-                    "delete_agent": true
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
                 }));
             then.status(200).json_body(json!({
                 "ok": true,
@@ -1830,11 +1877,40 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .release_agent_identity("worker-a", None)
+            .release_agent_identity("worker-a", None, false)
             .await
             .expect("explicit release should succeed");
 
         release.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_requires_token_generation_and_terminal_ack() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .json_body_partial(
+                    json!({"name":"owned-worker", "delete_agent":true,
+                    "expected_token_hash":format!("{:x}", Sha256::digest(b"owned-token"))})
+                    .to_string(),
+                );
+            then.status(200)
+                .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        assert!(client
+            .release_agent_identity("owned-worker", None, true)
+            .await
+            .is_err());
+        cleanup.assert_hits(0);
+        client.seed_agent_token("owned-worker", "owned-token");
+        client
+            .release_agent_identity("owned-worker", None, true)
+            .await
+            .unwrap();
+        cleanup.assert_hits(1);
     }
 
     #[tokio::test]
@@ -1977,6 +2053,65 @@ mod tests {
         join_mock.assert_hits(1);
         members_mock.assert_hits(1);
         spawn_mock.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn worker_membership_retries_a_transient_read_but_rejects_permanent_absence() {
+        for recover in [true, false] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/channels");
+                then.status(409).json_body(json!({"ok":false,"error":{"code":"channel_already_exists","message":"exists"}}));
+            });
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/channels/proof/join");
+                then.status(409).json_body(
+                    json!({"ok":false,"error":{"code":"already_member","message":"joined"}}),
+                );
+            });
+            let mut first = server.mock(|when, then| {
+                when.method(GET).path("/v1/channels/proof/members");
+                if recover {
+                    then.status(503).json_body(
+                        json!({"ok":false,"error":{"code":"unavailable","message":"retry"}}),
+                    );
+                } else {
+                    then.status(200).json_body(json!({"ok":true,"data":[]}));
+                }
+            });
+            let client = seeded_http_client(&server.base_url());
+            client.seed_agent_token("worker", "owned-token");
+            let channels = [ChannelName::from("proof")];
+            if recover {
+                let repair = async {
+                    while first.hits() == 0 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    first.delete();
+                    server.mock(|when, then| {
+                        when.method(GET).path("/v1/channels/proof/members");
+                        then.status(200).json_body(json!({"ok":true,"data":[{"agent_id":"worker-id","agent_name":"worker","role":"member","joined_at":"2026-09-08T00:00:00Z"}]}));
+                    });
+                };
+                let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+                    tokio::join!(
+                        client.ensure_agent_channels("worker", None, &channels),
+                        repair
+                    )
+                })
+                .await
+                .unwrap();
+                result.unwrap();
+            } else {
+                assert!(client
+                    .ensure_agent_channels("worker", None, &channels)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("absent"));
+                first.assert_hits(3);
+            }
+        }
     }
 
     #[tokio::test]

@@ -47,7 +47,7 @@ pub enum ListenApiRequest {
         args: Vec<String>,
         task: Option<String>,
         registration_metadata: AgentRegistrationMetadata,
-        channels: Vec<ChannelName>,
+        channels: Option<Vec<ChannelName>>,
         cwd: Option<String>,
         team: Option<String>,
         shadow_of: Option<WorkerName>,
@@ -76,6 +76,7 @@ pub enum ListenApiRequest {
         name: WorkerName,
         reason: Option<String>,
         expected_generation: Option<String>,
+        delete_identity: bool,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
@@ -1040,16 +1041,21 @@ async fn listen_api_spawn(
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
     let registration_metadata = AgentRegistrationMetadata::from_spawn_input(&body, task.as_deref());
-    let channels: Vec<String> = body
-        .get("channels")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
+    let channels: Option<Vec<ChannelName>> = match body.get("channels") {
+        None => None,
+        Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some(
+            values
+                .iter()
+                .map(|value| ChannelName::from(value.as_str().unwrap()))
+                .collect(),
+        ),
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error": "channels must be an array of strings"})),
+            )
+        }
+    };
     let cwd = body.get("cwd").and_then(Value::as_str).map(String::from);
     let team = body.get("team").and_then(Value::as_str).map(String::from);
     let shadow_of = body
@@ -1153,7 +1159,7 @@ async fn listen_api_spawn(
             args,
             task,
             registration_metadata,
-            channels: channels.into_iter().map(ChannelName::from).collect(),
+            channels,
             cwd,
             team,
             shadow_of: shadow_of.map(WorkerName::from),
@@ -1392,6 +1398,19 @@ async fn listen_api_release(
             )
         }
     };
+    let delete_identity = body
+        .as_ref()
+        .and_then(|b| b.get("delete_identity"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if delete_identity && expected_generation.is_none() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(
+                json!({"success": false, "error": "delete_identity requires expected_generation"}),
+            ),
+        );
+    }
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
@@ -1399,6 +1418,7 @@ async fn listen_api_release(
             name: WorkerName::new(name.clone()),
             reason,
             expected_generation,
+            delete_identity,
             reply: reply_tx,
         })
         .await
@@ -4067,6 +4087,41 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn spawn_channels_preserve_omitted_and_explicit_empty() {
+        for (body, expected) in [
+            (json!({"name":"worker"}), None),
+            (json!({"name":"worker","channels":[]}), Some(vec![])),
+        ] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let reply_task = tokio::spawn(async move {
+                match rx.recv().await {
+                    Some(ListenApiRequest::Spawn {
+                        channels, reply, ..
+                    }) => {
+                        assert_eq!(channels, expected);
+                        let _ = reply.send(Ok(json!({"success":true})));
+                    }
+                    _ => panic!("spawn expected"),
+                }
+            });
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawn")
+                        .method("POST")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            reply_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn spawn_route_forwards_extended_fields() {
         let (router, mut rx) = test_router(Some("secret"));
         let spawn_replier = tokio::spawn(async move {
@@ -4111,10 +4166,7 @@ mod auth_tests {
                             objective: Some("Publish registration metadata".to_string()),
                         }
                     );
-                    assert_eq!(
-                        channels,
-                        vec!["general".to_string(), "engineering".to_string()]
-                    );
+                    assert_eq!(channels, Some(vec!["general".into(), "engineering".into()]));
                     assert_eq!(cwd.as_deref(), Some("/tmp/project"));
                     assert_eq!(team.as_deref(), Some("core"));
                     assert_eq!(shadow_of.as_deref(), Some("Lead"));

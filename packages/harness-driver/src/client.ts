@@ -658,7 +658,14 @@ export class HarnessDriverClient {
     return this.spawnCli({ ...input, cli: 'opencode' });
   }
 
-  async release(name: string, reason?: string, expectedGeneration?: string): Promise<{ name: string }> {
+  async release(
+    name: string,
+    reason?: string,
+    expectedGeneration?: string,
+    deleteIdentity = false
+  ): Promise<{ name: string }> {
+    if (deleteIdentity && !expectedGeneration)
+      throw new Error('Owned identity deletion requires a worker generation');
     const beforeCtx: BeforeAgentReleaseContext = { name, reason, baseUrl: this.baseUrl };
     const t0 = Date.now();
     await this.eventBus.emit('beforeAgentRelease', beforeCtx);
@@ -668,7 +675,13 @@ export class HarnessDriverClient {
         {
           method: 'DELETE',
           ...(reason || expectedGeneration
-            ? { body: JSON.stringify({ reason, expected_generation: expectedGeneration }) }
+            ? {
+                body: JSON.stringify({
+                  reason,
+                  expected_generation: expectedGeneration,
+                  ...(deleteIdentity ? { delete_identity: true } : {}),
+                }),
+              }
             : {}),
         }
       );

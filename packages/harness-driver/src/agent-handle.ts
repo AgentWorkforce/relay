@@ -271,10 +271,14 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   }
 
   /** Release the agent via the broker. */
-  release(reason?: string): Promise<{ name: string }> {
+  release(reason?: string, options?: { deleteIdentity?: boolean }): Promise<{ name: string }> {
+    if (options?.deleteIdentity && !this.generation)
+      return Promise.reject(new Error('Owned identity deletion requires a worker generation'));
     return this.generation === undefined
       ? this.client.release(this.name, reason)
-      : this.client.release(this.name, reason, this.generation);
+      : options?.deleteIdentity
+        ? this.client.release(this.name, reason, this.generation, true)
+        : this.client.release(this.name, reason, this.generation);
   }
 
   private isCurrentGeneration(event: BrokerEvent): boolean {

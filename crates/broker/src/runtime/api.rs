@@ -340,11 +340,8 @@ impl BrokerRuntime {
                 replay_buffer,
                 reply,
             } => {
-                let effective_channels = if channels.is_empty() {
-                    default_spawn_channels()
-                } else {
-                    channels.clone()
-                };
+                let owns_identity = agent_token.is_none();
+                let effective_channels = channels.unwrap_or_else(default_spawn_channels);
                 let effective_channels = match super::relaycast_events::relaycast_spawn_channels(
                     &json!({"channels": effective_channels}),
                     None,
@@ -544,6 +541,18 @@ impl BrokerRuntime {
                             &name,
                         )
                         .await;
+                        let cleanup = match cleanup {
+                            Ok(_) if owns_identity => relaycast_http
+                                .release_agent_identity(
+                                    &name,
+                                    Some("subscription worker membership failed before launch"),
+                                    true,
+                                )
+                                .await
+                                .map_err(|error| error.to_string()),
+                            Ok(_) => Ok(()),
+                            Err(error) => Err(error),
+                        };
                         let error = match cleanup {
                             Ok(_) => {
                                 super::fleet::prune_fleet_agent_state(
@@ -826,7 +835,41 @@ impl BrokerRuntime {
                             agent_result_tokens.remove(&config.token);
                         }
                         eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
-                        let _ = reply.send(Err(e.to_string()));
+                        let mut message = e.to_string();
+                        if owns_identity && worker_relay_key.is_some() {
+                            let cleanup = super::fleet::deregister_fleet_agent(
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                            .await;
+                            let cleanup = match cleanup {
+                                Ok(_) => relaycast_http
+                                    .release_agent_identity(
+                                        &name,
+                                        Some("worker process failed before startup completed"),
+                                        true,
+                                    )
+                                    .await
+                                    .map_err(|error| error.to_string()),
+                                Err(error) => Err(error),
+                            };
+                            match cleanup {
+                                Ok(()) => {
+                                    super::fleet::prune_fleet_agent_state(
+                                        fleet_control_tx,
+                                        fleet_inventory,
+                                        fleet_delivery_book,
+                                        &name,
+                                    )
+                                    .await
+                                }
+                                Err(error) => message.push_str(&format!(
+                                    "; owned identity cleanup unconfirmed: {error}"
+                                )),
+                            }
+                        }
+                        let _ = reply.send(Err(message));
                     }
                 }
             }
@@ -920,17 +963,19 @@ impl BrokerRuntime {
                 name,
                 reason,
                 expected_generation,
+                delete_identity,
                 reply,
             } => {
                 if let Some(expected) = expected_generation.as_deref() {
-                    if let Some(worker) = workers.workers.get(&name) {
-                        if worker.generation.to_string() != expected {
-                            let _ = reply.send(Err(
-                                "worker generation changed; refusing to release its replacement"
-                                    .to_string(),
-                            ));
-                            return;
-                        }
+                    if workers
+                        .workers
+                        .get(&name)
+                        .map(|worker| worker.generation.to_string())
+                        .as_deref()
+                        != Some(expected)
+                    {
+                        let _ = reply.send(Err("worker generation changed or is absent; refusing to release an unverified identity".to_string()));
+                        return;
                     }
                 }
                 if let Some(ref r) = reason {
@@ -957,7 +1002,7 @@ impl BrokerRuntime {
                             );
                         }
                         let relaycast_release_error = match relaycast_http
-                            .release_agent_identity(&name, reason.as_deref())
+                            .release_agent_identity(&name, reason.as_deref(), delete_identity)
                             .await
                         {
                             Ok(()) => None,
@@ -1083,7 +1128,7 @@ impl BrokerRuntime {
                             // token, or a retry can never actually free the
                             // seat.
                             let relaycast_release_error = match relaycast_http
-                                .release_agent_identity(&name, reason.as_deref())
+                                .release_agent_identity(&name, reason.as_deref(), false)
                                 .await
                             {
                                 Ok(()) => None,

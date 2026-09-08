@@ -121,3 +121,10 @@ test('duplicate actor actions do not pass exactly-once evidence', () => {
   f.messages.push({ ...f.messages[1], id: 'duplicate-action' });
   assert.equal(correlate(f).pass, false);
 });
+
+test('captured success requires an observed negative arm', async () => {
+  const { capturedStimuliPass } = await import('./proof.mjs');
+  assert.equal(capturedStimuliPass([{ pass: true }], []), false);
+  assert.equal(capturedStimuliPass([{ pass: true }], [{ pass: false }]), false);
+  assert.equal(capturedStimuliPass([{ pass: true }], [{ pass: true }]), true);
+});

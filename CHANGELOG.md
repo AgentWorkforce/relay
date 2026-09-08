@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
 - Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
-- MCP raw CLI spawns wait for harness readiness and report terminal startup errors.
+
+### Changed
+
+- MCP raw CLI spawns wait for harness readiness and report terminal startup errors; the selected broker must support the readiness contract.
 
 ## [11.10.4] - 2026-09-08
 

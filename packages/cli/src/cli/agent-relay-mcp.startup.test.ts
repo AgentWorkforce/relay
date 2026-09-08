@@ -1047,7 +1047,9 @@ describe('createAgentRelayMcpServer', () => {
         cli: 'codex',
         target_node: 'node-a',
       })
-    ).rejects.toThrow('Spawn completed without broker registration and harness readiness proof.');
+    ).rejects.toThrow(
+      'Spawn completed without broker registration and harness readiness proof. The selected broker must support top-level verify_ready (Relay PR #1708); upgrade the selected broker before retrying.'
+    );
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
       name: 'RawWorker',
       cli: 'codex',
