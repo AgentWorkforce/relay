@@ -1,6 +1,6 @@
 # GitHub subscription demo validation
 
-This runner uses real GitHub fixtures and observes the receiving harness. It never sends an event nonce to the receiver outside GitHub. A successful HTTP request or a channel message is insufficient: `assert` requires the trusted webhook agent ID, exact authenticated provider semantics, correlated broker `delivery_injected`, and an exact digest response from the pinned actor ID. The observer polls channel history; the receiving agent must not poll.
+This runner uses real GitHub fixtures and observes the receiving harness. It never sends an event nonce to the receiver outside GitHub. A successful HTTP request or a channel message is insufficient: `assert` requires the trusted webhook agent ID, exact authenticated provider semantics, correlated broker `delivery_injected`, and an exact digest response from the pinned actor ID. The observer polls channel history; the receiving agent must not poll. Fresh Claude proof workers are launched with inbox/history/search/resource-read tools disabled through repeatable `--spawn-arg` arguments; capture their tool-call names to verify that no receiver polling occurred. An existing worker must have equivalent verified restrictions before its results qualify.
 
 Use Node 22+, `gh` authenticated for the three demo repositories, a built Relay CLI/harness driver/broker, and the reviewed Relaycast engine deployed in the intended environment. Record observed deployed revisions, not merely source or package versions. Shared Relayfile rollout remains with its incident owner. Product PRs must be approved and released normally.
 
@@ -91,3 +91,18 @@ an older broker before launching; it also checks the effective channel list in
 the spawn response. Existing confirmed local workers are reused without claiming
 ownership. For new-worker cleanup, deploy the engine's correlated
 `agent.deregister` acknowledgement support before upgrading the broker.
+
+The isolated `local-startup.mjs` rehearsal reads live agent memberships, including an empty channel set, and exercises delayed pre-ready exit, same-name retry, idempotent cleanup, replacement-generation protection, and fleet action failure cleanup. The engine must support `auto_join_general: false` and acknowledged node deregistration. Registration defaults remain compatible for other clients; recovery preserves the current membership set. Cached channel metadata is not accepted as proof of isolation.
+
+The isolated Claude rehearsal used `RELAY_INJECT_RATE_MS=0` on its disposable broker: default paced typing exceeded the initial-task deadline on the test host. Record this setting if used for the intended disposable demo broker; it is not permission to change a shared broker. Two idle responses alone do not validate default pacing.
+
+Run the real Claude rehearsal against local candidate builds with a fresh output directory:
+
+```sh
+RELAYCAST_ENGINE_DIR=/absolute/relaycast \
+BROKER_BINARY_PATH=/absolute/agent-relay-broker \
+LOCAL_AI_INJECT_RATE_MS=0 \
+node tests/e2e/github-subscriptions/local-ai.mjs /absolute/fresh-ai-evidence
+```
+
+This starts one actual Claude worker. Keep the assignment's independent reviewer stopped until cleanup completes. It verifies two successive idle actions, a600-second idle interval, ten distinct burst events, duplicate idempotency, no pre-join replay and an actual node WebSocket reconnect. Its signed producer is synthetic; these results cannot satisfy the real GitHub or actual-chief gates. It retains broker events, source/binary hashes, sanitized logs, channel messages and receiver tool-call names. Missing tool evidence, history/network polling, cleanup failure or missing digest action fails the run. `LOCAL_AI_LONG_IDLE_MS` may shorten a repair rerun, but such a run is not ten-minute idle proof.

@@ -219,6 +219,12 @@ pub struct NodeDeregister {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRegister {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_join_general: Option<bool>,
     pub v: FleetWireVersion,
     #[serde(
         default,
@@ -767,6 +773,7 @@ mod tests {
     #[test]
     fn skips_absent_optional_fields() {
         let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+            auto_join_general: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             name: "codex-1".to_string(),
@@ -797,6 +804,7 @@ mod tests {
     #[test]
     fn agent_register_carries_no_keys_the_engine_schema_rejects() {
         let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+            auto_join_general: None,
             v: FLEET_WIRE_VERSION,
             id: Some("register-1".to_string()),
             name: "fleet-worker".to_string(),

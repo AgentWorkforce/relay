@@ -13,6 +13,7 @@ export interface RecipientLaunch {
 export interface RecipientLaunchInput {
   name: string;
   cli: string;
+  args?: string[];
   provider: string;
   resource: string;
   cwd?: string;
@@ -62,6 +63,7 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
       name: input.name,
       cli: input.cli,
       channels: [],
+      ...(input.args ? { args: input.args } : {}),
       ...(workerCwd ? { cwd: workerCwd } : {}),
       task:
         input.task ??
@@ -79,6 +81,25 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
       );
     }
     process.kill(ready.pid, 0);
+    const membership = await fetch(
+      new URL(
+        `/v1/agents/${encodeURIComponent(input.name)}`,
+        resolveBaseUrl(input.options) ?? 'https://cast.agentrelay.com'
+      ),
+      {
+        headers: { authorization: `Bearer ${resolveWorkspaceKey(input.options)}` },
+        signal: AbortSignal.timeout(15_000),
+      }
+    );
+    const detail = membership.ok
+      ? ((await membership.json()) as { data?: { channels?: unknown[] } })
+      : undefined;
+    if (!Array.isArray(detail?.data?.channels) || detail.data.channels.length !== 0) {
+      throw new Error(
+        `Recipient ${input.name} live channel isolation did not verify (HTTP ${membership.status}); no subscription resources were created.`
+      );
+    }
+
     return {
       rollback: async () => {
         await owned!.release('subscription setup failed', { deleteIdentity: true });

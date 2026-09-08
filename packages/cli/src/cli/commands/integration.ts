@@ -1430,6 +1430,7 @@ async function runSubscribeSetup(
       ...(typeof opts.cwd === 'string' ? { cwd: opts.cwd } : {}),
       ...(typeof opts.brokerConnection === 'string' ? { brokerConnectionPath: opts.brokerConnection } : {}),
       ...(typeof opts.task === 'string' ? { task: opts.task } : {}),
+      ...(Array.isArray(opts.spawnArg) ? { args: opts.spawnArg as string[] } : {}),
     });
   } else if (recipientName && !(await relay.agents.list()).some((agent) => agent.name === recipientName)) {
     throw new Error(`Recipient @${recipientName} does not exist; use --spawn <cli> to launch it.`);
@@ -1860,6 +1861,12 @@ export function registerIntegrationCommands(
       .option('--resource <value>', 'Provider-native resource (channel, project, label, etc.)')
       .option('--to <target>', 'Relay recipient, e.g. @agent or #channel')
       .option('--spawn <cli>', 'Launch and confirm a live recipient before subscribing the explicit resource')
+      .option(
+        '--spawn-arg <value>',
+        'Literal harness argument, repeatable (use --spawn-arg=--flag for flags)',
+        (value: string, prior: string[]) => [...prior, value],
+        []
+      )
       .option('--cwd <path>', 'Working directory for the spawned recipient')
       .option(
         '--broker-connection <path>',

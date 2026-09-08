@@ -41,23 +41,51 @@ describe('subscription recipient launch', () => {
     mocks.connect.mockReturnValue(client);
     mocks.directConnect.mockReturnValue(client);
     vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ data: { channels: [] } }), { status: 200 }))
+    );
   });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
   it('waits for a ready PID and passes only the explicit resource task', async () => {
-    const launched = await launchSubscriptionRecipient(input);
+    const launched = await launchSubscriptionRecipient({
+      ...input,
+      args: ['--disallowedTools', 'mcp__agent-relay__check_inbox'],
+    });
     expect(handle.waitForReady).toHaveBeenCalledWith(90_000);
     expect(process.kill).toHaveBeenCalledWith(123, 0);
     expect(client.spawnCli).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'fresh', channels: [], task: expect.stringContaining(input.resource) })
+      expect.objectContaining({
+        name: 'fresh',
+        channels: [],
+        args: ['--disallowedTools', 'mcp__agent-relay__check_inbox'],
+        task: expect.stringContaining(input.resource),
+      })
     );
     expect(handle.release).not.toHaveBeenCalled();
     await launched.rollback();
     launched.close();
     expect(handle.release).toHaveBeenCalledOnce();
     expect(client.disconnect).toHaveBeenCalledOnce();
+  });
+  it('rejects echoed empty channels when the live identity joined general', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              data: { channels: [{ name: 'general' }] },
+            }),
+            { status: 200 }
+          )
+      )
+    );
+    await expect(launchSubscriptionRecipient(input)).rejects.toThrow('live channel isolation');
+    expect(handle.release).toHaveBeenCalledWith('subscription startup failed', { deleteIdentity: true });
   });
   it.each(['exited', 'timeout'])('cleans up a worker whose startup is %s', async (reason) => {
     handle.waitForReady.mockResolvedValue({ reason });

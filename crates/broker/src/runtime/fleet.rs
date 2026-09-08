@@ -1719,7 +1719,7 @@ fn fleet_spawn_action_result(
             output: json!({ "spawned": true, "name": name.as_str() }),
         }),
         Err(error) => ActionResultPayload::Error(ActionResultError {
-            error: format!("spawn_failed: {error}"),
+            error: format!("spawn_failed: {error:#}"),
         }),
     };
     ActionResult {
@@ -1970,6 +1970,7 @@ pub(super) async fn register_node_agent_token(
     fleet_control_tx
         .send(FleetControlCommand::RegisterAgent {
             request: AgentRegister {
+                auto_join_general: Some(false),
                 v: FLEET_WIRE_VERSION,
                 id: None,
                 name: name.to_string(),
@@ -2060,6 +2061,22 @@ pub(super) async fn deregister_fleet_agent(
 /// binding. Enqueue alone cannot establish the release action's local-completion
 /// precondition. The node-control task resolves the acknowledgement independently
 /// of the runtime API actor; no dispatched release is polled by its own handler.
+/// Delete only a newly created identity after its node binding is confirmed gone.
+pub(super) async fn cleanup_failed_spawn_identity(
+    tx: &mpsc::Sender<FleetControlCommand>,
+    book: &mut FleetDeliveryBook,
+    inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    http: &RelaycastHttpClient,
+    name: &WorkerName,
+) -> Result<(), String> {
+    deregister_fleet_agent_confirmed(tx, book, inventory, name).await?;
+    http.release_agent_identity(name, Some("owned spawn failed before readiness"), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    prune_fleet_agent_state(tx, inventory, book, name).await;
+    Ok(())
+}
+
 pub(super) async fn deregister_fleet_agent_confirmed(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &FleetDeliveryBook,

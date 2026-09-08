@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -254,6 +254,10 @@ pub(crate) struct WorkerRegistry {
     worker_logs_dir: PathBuf,
     commit_hooks_dir: Option<tempfile::TempDir>,
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
+    // Ownership outlives reaping so a failed pre-ready handle can clean up safely.
+    pub(crate) owned_spawn_generations:
+        HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
+    pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
 }
@@ -359,6 +363,8 @@ impl WorkerRegistry {
             worker_logs_dir,
             commit_hooks_dir: None,
             initial_tasks: HashMap::new(),
+            owned_spawn_generations: HashMap::new(),
+            completed_owned_releases: VecDeque::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
         }

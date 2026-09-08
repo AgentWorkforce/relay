@@ -521,9 +521,18 @@ impl BrokerRuntime {
                     // as the worker so channel reconciliation cannot rotate an
                     // already-live identity's token.
                     seed_supplied_agent_token(relaycast_http, &name, token);
-                    if let Err(error) = relaycast_http
-                        .ensure_agent_channels(&name, Some(&cli), &effective_channels)
-                        .await
+                    if let Err(error) = async {
+                        relaycast_http
+                            .ensure_agent_channels(&name, Some(&cli), &effective_channels)
+                            .await?;
+                        if owns_identity {
+                            relaycast_http
+                                .verify_agent_channel_scope(&name, &effective_channels)
+                                .await?;
+                        }
+                        anyhow::Ok(())
+                    }
+                    .await
                     {
                         tracing::error!(
                             worker = %name,
@@ -705,6 +714,14 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        if owns_identity {
+                            if let Some(worker) = workers.workers.get(&name) {
+                                workers.owned_spawn_generations.insert(
+                                    name.clone(),
+                                    (worker.generation, relaycast_http.clone()),
+                                );
+                            }
+                        }
                         if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
                         {
                             super::fleet::record_fleet_inventory_agent(
@@ -967,17 +984,61 @@ impl BrokerRuntime {
                 delete_identity,
                 reply,
             } => {
+                // Bounded tombstones make an acknowledged cleanup retry safe:
+                // no remote mutation, and never release a replacement worker.
+                if delete_identity
+                    && !workers.has_worker(&name)
+                    && expected_generation.as_deref().is_some_and(|expected| {
+                        workers.completed_owned_releases.iter().any(
+                            |(released_name, generation)| {
+                                released_name == &name && generation.to_string() == expected
+                            },
+                        )
+                    })
+                {
+                    let _ = reply.send(Ok(json!({"success": true, "name": name})));
+                    return;
+                }
+                let owned_http = workers
+                    .owned_spawn_generations
+                    .get(&name)
+                    .map(|(_, http)| http.clone());
+                let relaycast_http = owned_http.as_ref().unwrap_or(relaycast_http);
+                let retired_owned = delete_identity
+                    && !workers.has_worker(&name)
+                    && expected_generation.as_deref().is_some_and(|expected| {
+                        workers
+                            .owned_spawn_generations
+                            .get(&name)
+                            .is_some_and(|(generation, _)| generation.to_string() == expected)
+                    });
                 if let Some(expected) = expected_generation.as_deref() {
-                    if workers
-                        .workers
-                        .get(&name)
-                        .map(|worker| worker.generation.to_string())
-                        .as_deref()
-                        != Some(expected)
+                    if !retired_owned
+                        && workers
+                            .workers
+                            .get(&name)
+                            .map(|worker| worker.generation.to_string())
+                            .as_deref()
+                            != Some(expected)
                     {
                         let _ = reply.send(Err("worker generation changed or is absent; refusing to release an unverified identity".to_string()));
                         return;
                     }
+                }
+                if delete_identity
+                    && !workers
+                        .owned_spawn_generations
+                        .get(&name)
+                        .is_some_and(|(generation, _)| {
+                            Some(generation.to_string()).as_deref()
+                                == expected_generation.as_deref()
+                        })
+                {
+                    let _ = reply.send(Err(
+                        "identity was not created by this worker generation; refusing deletion"
+                            .to_string(),
+                    ));
+                    return;
                 }
                 if let Some(ref r) = reason {
                     tracing::info!(worker = %name, reason = %r, "releasing agent via HTTP API");
@@ -986,7 +1047,11 @@ impl BrokerRuntime {
                 // auto-restart of intentionally released agents.
                 workers.supervisor.unregister(&name);
                 workers.metrics.on_release(&name);
-                match workers.release(&name).await {
+                match if retired_owned {
+                    Ok(())
+                } else {
+                    workers.release(&name).await
+                } {
                     Ok(()) => {
                         let fleet_deregistration_error = if delete_identity {
                             super::fleet::deregister_fleet_agent_confirmed(
@@ -1108,6 +1173,22 @@ impl BrokerRuntime {
                             Some("http_api_release"),
                         )
                         .await;
+                        if fleet_deregistration_error.is_none() && relaycast_release_error.is_none()
+                        {
+                            if delete_identity {
+                                if let Some((generation, _)) =
+                                    workers.owned_spawn_generations.get(&name)
+                                {
+                                    workers
+                                        .completed_owned_releases
+                                        .push_back((name.clone(), *generation));
+                                    if workers.completed_owned_releases.len() > 1024 {
+                                        workers.completed_owned_releases.pop_front();
+                                    }
+                                }
+                            }
+                            workers.owned_spawn_generations.remove(&name);
+                        }
                         let response = match (fleet_deregistration_error, relaycast_release_error)
                         {
                             (Some(error), _) => Err(format!(

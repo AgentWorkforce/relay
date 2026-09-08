@@ -38,7 +38,7 @@ use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
-use crate::util::terminal::detect_codex_trust_prompt;
+use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_prompt};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
@@ -185,6 +185,7 @@ const PROMPT_WINDOW_BYTES: usize = 800;
 #[derive(Default)]
 struct StartupReadinessState {
     ready_sent: bool,
+    fallback_sent: bool,
     wait_warned: bool,
 }
 
@@ -295,7 +296,9 @@ fn evaluate_startup_gate(
     // composer, so the generic prompt detector would otherwise release the
     // queued brief before the auto-responder's Enter takes effect. Every gate
     // path (output, init, and timer tick) passes through this exclusion.
-    if detect_codex_trust_prompt(grid.screen) {
+    if detect_codex_trust_prompt(grid.screen)
+        || detect_claude_trust_prompt(grid.screen) == (true, true)
+    {
         return false;
     }
 
@@ -335,7 +338,8 @@ pub(crate) enum StartupGate {
 /// typing into it would answer a security question on the operator's behalf.
 /// `evaluate_startup_gate` vetoes it for exactly that reason.
 fn startup_gate_blocked(pty: &PtySession) -> bool {
-    detect_codex_trust_prompt(&pty.screen_text())
+    let screen = pty.screen_text();
+    detect_codex_trust_prompt(&screen) || detect_claude_trust_prompt(&screen) == (true, true)
 }
 
 fn startup_gate_ready(
@@ -500,7 +504,8 @@ async fn try_emit_worker_ready(
     // A deliberate veto is not a blind spot: never time out past a known
     // blocking dialog, or the brief is typed into a trust prompt and answers a
     // security question nobody asked us to answer.
-    let timed_out = gate != StartupGate::Blocked
+    let timed_out = !readiness.fallback_sent
+        && gate != StartupGate::Blocked
         && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
@@ -534,10 +539,11 @@ async fn try_emit_worker_ready(
         out_tx,
         "worker_ready",
         request_id,
-        json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
+        json!({"name": worker_name, "runtime": "pty", "pid": child_pid, "readiness_proven": startup_ready}),
     )
     .await;
-    readiness.ready_sent = true;
+    readiness.ready_sent = startup_ready;
+    readiness.fallback_sent |= !startup_ready;
 }
 
 async fn emit_harness_started(
@@ -2371,11 +2377,24 @@ mod tests {
         .await;
 
         assert!(
-            readiness.ready_sent,
-            "past the deadline the brief must go out; a held brief is a total loss"
+            !readiness.ready_sent,
+            "elapsed time must not establish confirmed readiness"
         );
         let frame = rx.try_recv().expect("worker_ready must be emitted");
         assert_eq!(frame.msg_type, "worker_ready");
+        assert_eq!(frame.payload["readiness_proven"], false);
+        try_emit_worker_ready(
+            &tx,
+            "unrecognised-prompt",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            StartupGate::Ready,
+        )
+        .await;
+        assert!(readiness.ready_sent);
+        assert_eq!(rx.try_recv().unwrap().payload["readiness_proven"], true);
     }
 
     #[tokio::test]

@@ -30,11 +30,11 @@ const server = startServer({
 });
 if (!server.server.listening) await once(server.server, 'listening');
 const baseUrl = `http://127.0.0.1:${server.server.address().port}`;
-let key, client;
+let key, client, actionToken;
 const request = async (route, method = 'GET', body) => {
   const response = await fetch(baseUrl + route, {
     method,
-    headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
+    headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${route.startsWith('/v1/actions/') ? actionToken : key}` } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(15000),
   });
@@ -157,6 +157,51 @@ try {
     pass: true,
   });
 
+  // Exit well after the broker's startup stability window but before native
+  // readiness. Reaping must retain immutable ownership for guarded cleanup.
+  const delayed = await client.spawnCli({
+    name: 'delayed-pre-ready',
+    cli: 'process-fixture',
+    channels: [],
+    cwd: work,
+    harnessConfig: {
+      runtime: 'native',
+      command: '/bin/sh',
+      args: ['-c', 'sleep 2; exit 7'],
+      sessionId: 'delayed-pre-ready',
+    },
+  });
+  const delayedReady = await delayed.waitForReady(15_000);
+  assert.equal(delayedReady.reason, 'exited');
+  await assert.rejects(
+    client.release(delayed.name, 'wrong generation', '00000000-0000-0000-0000-000000000000', true),
+    /generation changed/
+  );
+  await delayed.release('delayed startup failed', { deleteIdentity: true });
+  await delayed.release('idempotent retry after confirmed cleanup', { deleteIdentity: true });
+  assert(!(await request('/v1/agents')).some((agent) => agent.name === delayed.name));
+  const retry = await client.spawnCli({
+    name: delayed.name,
+    cli: 'process-fixture',
+    channels: [],
+    cwd: work,
+    harnessConfig: { runtime: 'native', command: '/bin/cat', args: [], sessionId: 'delayed-pre-ready-retry' },
+  });
+  assert.notEqual(retry.generation, delayed.generation);
+  await assert.rejects(
+    delayed.release('stale retry cleanup', { deleteIdentity: true }),
+    /generation changed/
+  );
+  process.kill(retry.pid, 0);
+  await retry.release('owned retry cleanup', { deleteIdentity: true });
+  assert.deepEqual(await request('/v1/webhooks'), before);
+  assert.deepEqual(await request('/v1/subscriptions'), []);
+  assert.deepEqual(bindingMutations, []);
+  report.checks.push({
+    name: 'delayed pre-ready exit cleanup, same-name retry and stale-generation rejection',
+    pass: true,
+  });
+
   const incumbent = await request('/v1/agents', 'POST', { name: 'incumbent-fixture' });
   const incumbentChannel = await request('/v1/agents/incumbent-fixture/subscription-channel', 'POST');
   const incumbentError = await failSubscribe('incumbent-fixture', work);
@@ -191,13 +236,11 @@ try {
     harnessConfig: { runtime: 'native', command: '/bin/cat', args: [], sessionId: 'empty-channels-process' },
   });
   assert.deepEqual(isolated.channels, [], 'broker must confirm effective empty channels');
-  for (const channel of await request('/v1/channels')) {
-    const detail = await request(`/v1/channels/${channel.name}`);
-    assert(
-      !detail.members.some((m) => m.agent_name === isolated.name),
-      `explicit empty joined ${channel.name}`
-    );
-  }
+  assert.deepEqual(
+    (await request(`/v1/agents/${isolated.name}`)).channels,
+    [],
+    'live agent membership must be empty; cached channel metadata is not isolation evidence'
+  );
   await isolated.release('owned isolated fixture cleanup', { deleteIdentity: true });
   report.checks.push({
     name: 'explicit empty channels remain isolated; absent-generation cleanup cannot release another identity',
@@ -240,6 +283,88 @@ try {
     false
   );
   report.checks.push({ name: 'real plural membership and generation-safe release', pass: true });
+  actionToken = (await request('/v1/agents', 'POST', { name: 'owned-fleet-test-caller', auto_join_general: false })).token;
+  const pluralAction = await request('/v1/actions/spawn/invoke', 'POST', {
+    input: {
+      name: 'fleet-plural',
+      cli: 'claude',
+      task: '',
+      channels: ['fleet-one', 'fleet-two'],
+      worker_cwd: work,
+      harnessConfig: { runtime: 'native', command: '/bin/cat', args: [], sessionId: 'fleet-plural' },
+    },
+  });
+  let pluralResult;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    pluralResult = await request(`/v1/actions/spawn/invocations/${pluralAction.invocation_id}`);
+    if (['completed', 'failed'].includes(pluralResult.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  assert.equal(pluralResult.status, 'completed', JSON.stringify(pluralResult));
+  assert.deepEqual(
+    (await request('/v1/agents/fleet-plural')).channels.map((channel) => channel.name).sort(),
+    ['fleet-one', 'fleet-two']
+  );
+  const pluralWorker = (await client.listAgents()).find((agent) => agent.name === 'fleet-plural');
+  assert(pluralWorker?.generation);
+  await client.release('fleet-plural', 'owned fleet plural fixture cleanup', pluralWorker.generation, true);
+  report.checks.push({
+    name: 'real fleet/action plural channels independently verified, no default general',
+    pass: true,
+  });
+
+  for (const fixture of [
+    { name: 'fleet-invalid-cwd', command: '/bin/cat', args: [], cwd: path.join(work, 'missing-fleet-cwd') },
+    { name: 'fleet-immediate-exit', command: '/bin/false', args: [], cwd: work },
+    { name: 'fleet-delayed-exit', command: '/bin/sh', args: ['-c', 'sleep 2; exit 7'], cwd: work },
+    {
+      name: 'fleet-membership-failure',
+      command: '/bin/cat',
+      args: [],
+      cwd: work,
+      channels: ['agent-events-forbidden'],
+    },
+  ]) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const invocation = await request('/v1/actions/spawn/invoke', 'POST', {
+        input: {
+          name: fixture.name,
+          cli: 'claude',
+          task: '',
+          channels: fixture.channels ?? [],
+          worker_cwd: fixture.cwd,
+          verify_ready: true,
+          harnessConfig: {
+            runtime: 'native',
+            command: fixture.command,
+            args: fixture.args,
+            sessionId: `${fixture.name}-${attempt}`,
+          },
+        },
+      });
+      let result;
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        result = await request(`/v1/actions/spawn/invocations/${invocation.invocation_id}`);
+        if (['completed', 'failed'].includes(result.status)) break;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      assert.equal(result.status, 'failed', JSON.stringify({ fixture: fixture.name, result }));
+      assert(result.error, 'terminal failure must be actionable');
+      assert(
+        !(await request('/v1/agents')).some((agent) => agent.name === fixture.name),
+        `failed fleet spawn retained identity ${fixture.name}: ${result.error}`
+      );
+      assert(!(await client.listAgents()).some((agent) => agent.name === fixture.name));
+      assert.deepEqual(await request('/v1/webhooks'), before);
+      assert.deepEqual(await request('/v1/subscriptions'), []);
+      report.checks.push({
+        name: `${fixture.name} attempt ${attempt + 1}: terminal failure, no identity/resources`,
+        pass: true,
+        error: result.error,
+      });
+    }
+  }
   report.pass = true;
 } catch (error) {
   report.pass = false;

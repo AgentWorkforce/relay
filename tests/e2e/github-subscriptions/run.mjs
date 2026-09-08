@@ -4,7 +4,13 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { correlate, receiverTask, hasContinuousCoverage, capturedStimuliPass } from './proof.mjs';
+import {
+  correlate,
+  receiverTask,
+  claudeReceiverArgs,
+  hasContinuousCoverage,
+  capturedStimuliPass,
+} from './proof.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const [command, configFile, ...args] = process.argv.slice(2);
@@ -334,6 +340,14 @@ async function subscriptions(remove = false) {
           '--task',
           receiverTask
         );
+      if (config.spawnReceiver !== false) {
+        const receiverArgs =
+          config.receiverArgs ?? ((config.receiverCli ?? 'claude') === 'claude' ? claudeReceiverArgs : []);
+        if (!Array.isArray(receiverArgs) || receiverArgs.some((a) => typeof a !== 'string'))
+          throw new Error('receiverArgs must be an array of literal harness arguments');
+        argv.push(...receiverArgs.map((a) => '--spawn-arg=' + a));
+        manifest.receiverArgs = receiverArgs;
+      }
       manifest.subscriptionIntent = { pathGlob, actor: config.receiver, at: new Date().toISOString() };
       save();
       invoke(argv);
@@ -372,6 +386,13 @@ async function subscriptions(remove = false) {
       }
       const actor = await cast(`/v1/agents/${encodeURIComponent(config.receiver)}`);
       const channel = await cast(`/v1/channels/${encodeURIComponent(binding.channel)}`);
+      if (
+        manifest.worker?.name === config.receiver &&
+        (!Array.isArray(actor.channels) ||
+          actor.channels.length !== 1 ||
+          actor.channels[0].name !== binding.channel)
+      )
+        throw new Error('Owned recipient live membership contains unintended channels');
       if (channel.members.length !== 1 || channel.members[0].agent_id !== actor.id)
         throw new Error('Exact recipient channel membership did not verify');
       config.actors[config.receiver] = binding.channel;

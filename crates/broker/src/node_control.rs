@@ -3669,6 +3669,7 @@ mod tests {
         command_tx
             .send(FleetControlCommand::RegisterAgent {
                 request: AgentRegister {
+                    auto_join_general: Some(false),
                     v: FLEET_WIRE_VERSION,
                     id: None,
                     name: "agent-a".to_string(),
@@ -3897,6 +3898,7 @@ mod tests {
         command_tx
             .send(FleetControlCommand::RegisterAgent {
                 request: AgentRegister {
+                    auto_join_general: Some(false),
                     v: FLEET_WIRE_VERSION,
                     id: None,
                     name: "agent-a".to_string(),

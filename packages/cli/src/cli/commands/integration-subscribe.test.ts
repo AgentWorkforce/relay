@@ -1730,10 +1730,25 @@ describe('confirmed agent subscription setup', () => {
     const launchRecipient = vi.fn(async () => ({ rollback, close }));
     const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
     const h = harness({ recipientDeps: { launchRecipient, resolveAgentChannel } });
-    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    await h.program.parseAsync(
+      ARGS([
+        '--to',
+        '@new-worker',
+        '--spawn',
+        'claude',
+        '--spawn-arg=--disallowedTools',
+        '--spawn-arg=mcp__agent-relay__check_inbox',
+      ]),
+      { from: 'user' }
+    );
     expect(h.error).not.toHaveBeenCalled();
     expect(launchRecipient).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'new-worker', cli: 'claude', resource: RESOURCE })
+      expect.objectContaining({
+        name: 'new-worker',
+        cli: 'claude',
+        resource: RESOURCE,
+        args: ['--disallowedTools', 'mcp__agent-relay__check_inbox'],
+      })
     );
     expect(launchRecipient.mock.invocationCallOrder[0]).toBeLessThan(
       resolveAgentChannel.mock.invocationCallOrder[0]

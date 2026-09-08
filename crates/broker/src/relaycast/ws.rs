@@ -977,10 +977,10 @@ impl RelaycastHttpClient {
                     .json()
                     .await
                     .context("invalid identity cleanup response")?;
-                self.invalidate_cached_registration(agent_name);
                 if result["data"]["status"] != "completed" {
                     anyhow::bail!("owned identity cleanup queued but unconfirmed; reconcile lifecycle invocation {}", result["data"]["invocation_id"]);
                 }
+                self.invalidate_cached_registration(agent_name);
                 return Ok(());
             }
             // Invalidate the cached token before the call so an ambiguous
@@ -1234,6 +1234,47 @@ impl RelaycastHttpClient {
                 failures.join("; ")
             );
         }
+        Ok(())
+    }
+
+    /// Read the live agent detail, not the cached channel metadata. This also
+    /// detects an older engine silently ignoring the registration opt-out.
+    pub(crate) async fn verify_agent_channel_scope(
+        &self,
+        name: &str,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        let relay = self
+            .relay
+            .as_ref()
+            .as_ref()
+            .context("SDK relay client not initialized")?;
+        let client = relay.as_agent(&self.api_key)?;
+        let agent: Value = client
+            .http_client()
+            .get(&format!("/v1/agents/{name}"), None, None)
+            .await?;
+        let memberships = agent
+            .get("channels")
+            .and_then(Value::as_array)
+            .context("live agent membership response is missing channels")?;
+        let actual = memberships
+            .iter()
+            .map(|member| {
+                member
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("live membership is missing channel name")
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        let expected = channels
+            .iter()
+            .map(|channel| channel.as_str())
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            actual == expected,
+            "worker '{name}' live channel isolation failed: expected {expected:?}, got {actual:?}"
+        );
         Ok(())
     }
 
@@ -1535,12 +1576,52 @@ pub async fn register_new_spawn_identity(
             detail: "SDK relay client not initialized".to_string(),
         })
     })?;
-    // A fresh registration client intentionally has no cached incumbent token.
-    // The server's atomic create-only operation arbitrates name collisions.
-    let registration = AgentRegistrationClient::new(relay.clone(), http.default_cli.clone());
-    let token = sdk_retry_agent_registration(&registration, name, cli).await?;
-    http.seed_agent_token(name, &token);
-    Ok(token)
+    // Use the SDK transport with the extended registration contract. Do not
+    // consult the identity cache: success must prove a newly created identity.
+    let client = relay
+        .as_agent(&http.api_key)
+        .map_err(|error| RegRetryOutcome::Fatal(registration_metadata_error(name, error)))?;
+    let body = serde_json::json!({
+        "name": name, "type": "agent", "auto_join_general": false,
+        "metadata": {"cli": cli.unwrap_or(&http.default_cli)}
+    });
+    for attempt in 0..3 {
+        match client
+            .http_client()
+            .post::<relaycast::CreateAgentResponse>("/v1/agents", Some(&body), None)
+            .await
+        {
+            Ok(agent) if !agent.token.trim().is_empty() => {
+                http.seed_agent_token(name, &agent.token);
+                return Ok(agent.token);
+            }
+            Ok(_) => {
+                return Err(RegRetryOutcome::Fatal(
+                    RelaycastRegistrationError::MissingToken {
+                        agent_name: name.to_string(),
+                    },
+                ))
+            }
+            Err(RelayError::Api { status: 409, .. }) => {
+                return Err(RegRetryOutcome::Fatal(
+                    RelaycastRegistrationError::AlreadyExists {
+                        agent_name: name.to_string(),
+                    },
+                ))
+            }
+            Err(error) => {
+                let error = registration_metadata_error(name, error);
+                if !relaycast::registration_is_retryable(&error) {
+                    return Err(RegRetryOutcome::Fatal(error));
+                }
+                if attempt == 2 {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+    unreachable!()
 }
 
 /// The declared fields alone, trimmed, with blanks omitted.
@@ -1830,6 +1911,29 @@ mod tests {
     /// running, and left an unattributable `release.reason = null` record. The
     /// exact wire assertion matters here: a successful helper return alone
     /// would not prove the destructive endpoint was avoided.
+    #[tokio::test]
+    async fn live_channel_scope_rejects_implicit_general_even_when_spec_is_empty() {
+        let server = MockServer::start();
+        let detail = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({"ok": true, "data": {
+                "channels": [{"name": "general"}]
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        assert!(client
+            .verify_agent_channel_scope("worker-a", &[])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("live channel isolation failed"));
+        client
+            .verify_agent_channel_scope("worker-a", &["general".into()])
+            .await
+            .unwrap();
+        detail.assert_hits(2);
+    }
+
     #[tokio::test]
     async fn mark_agent_offline_updates_presence_without_releasing_the_identity() {
         let server = MockServer::start();

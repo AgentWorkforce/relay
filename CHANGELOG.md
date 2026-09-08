@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails.
+- `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails. Repeatable `--spawn-arg` forwards literal harness options.
 
 ### Fixed
 
-- Subscription worker cleanup removes its identity after the owned process stops, even when its host binding is already gone; `--broker-connection` selects an explicit node connection file with workspace verification.
-
+- Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
+- Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
 - Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
 - Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
 

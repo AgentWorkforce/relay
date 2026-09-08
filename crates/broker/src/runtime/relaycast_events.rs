@@ -647,12 +647,14 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let mut fleet_registration = None;
+    let mut owns_identity = true;
     let registration_metadata =
         crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
     let worker_relay_key = {
         if let Some(token) = relaycast_ws_spawn_token(ws_value)
             .filter(|_| !require_node_registration && !relaycast_spawn_verifies_ready(ws_value))
         {
+            owns_identity = false;
             seed_supplied_agent_token(workspace_http, &name, &token);
             match super::fleet::resolve_fleet_agent_token_identity(
                 workspace_http,
@@ -715,14 +717,14 @@ pub(super) async fn spawn_worker_from_request(
                         error = %node_error,
                         "node agent.register unavailable; falling back to HTTP pre-registration"
                     );
-                    const REG_TIMEOUT: Duration = Duration::from_secs(3);
-                    match tokio::time::timeout(
-                        REG_TIMEOUT,
-                        workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                    match crate::relaycast::register_new_spawn_identity(
+                        workspace_http,
+                        &name,
+                        Some(cli.as_str()),
                     )
                     .await
                     {
-                        Ok(Ok(token)) => {
+                        Ok(token) => {
                             // Declared metadata is published over the agent API
                             // exactly as on the node path; registration itself
                             // stays on the cache- and rate-limit-aware call.
@@ -772,21 +774,7 @@ pub(super) async fn spawn_worker_from_request(
                             }
                             Some(token)
                         }
-                        Ok(Err(error)) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "WS spawn pre-registration failed; agent will self-register"
-                            );
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                worker = %name,
-                                "WS spawn pre-registration timed out (3s); agent will self-register"
-                            );
-                            None
-                        }
+                        Err(error) => anyhow::bail!("WS spawn registration failed: {error:?}"),
                     }
                 }
             }
@@ -795,9 +783,18 @@ pub(super) async fn spawn_worker_from_request(
     let channel_membership_warning: Option<String> =
         if let Some(token) = worker_relay_key.as_deref() {
             seed_supplied_agent_token(workspace_http, &name, token);
-            if let Err(error) = workspace_http
-                .ensure_agent_channels(&name, Some(&cli), &channels)
-                .await
+            if let Err(error) = async {
+                workspace_http
+                    .ensure_agent_channels(&name, Some(&cli), &channels)
+                    .await?;
+                if owns_identity {
+                    workspace_http
+                        .verify_agent_channel_scope(&name, &channels)
+                        .await?;
+                }
+                anyhow::Ok(())
+            }
+            .await
             {
                 tracing::error!(
                     worker = %name,
@@ -805,6 +802,19 @@ pub(super) async fn spawn_worker_from_request(
                     error = %error,
                     "worker channel membership reconciliation failed for Relaycast spawn"
                 );
+                if owns_identity {
+                    super::fleet::cleanup_failed_spawn_identity(
+                        fleet_control_tx,
+                        fleet_delivery_book,
+                        fleet_inventory,
+                        workspace_http,
+                        &name,
+                    )
+                    .await
+                    .map_err(|cleanup| {
+                        anyhow::anyhow!("{error}; owned identity cleanup needs retry: {cleanup}")
+                    })?;
+                }
                 anyhow::bail!("worker channel membership was not fully reconciled: {error}");
             } else {
                 None
@@ -827,6 +837,13 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            if owns_identity {
+                if let Some(worker) = workers.workers.get(&name) {
+                    workers
+                        .owned_spawn_generations
+                        .insert(name.clone(), (worker.generation, workspace_http.clone()));
+                }
+            }
             if let Some((token, invocation_id, session_ref)) = fleet_registration.take() {
                 super::fleet::record_fleet_inventory_agent(
                     fleet_control_tx,
@@ -923,6 +940,20 @@ pub(super) async fn spawn_worker_from_request(
             Ok(())
         }
         Err(e) => {
+            if owns_identity {
+                super::fleet::cleanup_failed_spawn_identity(
+                    fleet_control_tx,
+                    fleet_delivery_book,
+                    fleet_inventory,
+                    workspace_http,
+                    &name,
+                )
+                .await
+                .map_err(|cleanup| {
+                    anyhow::anyhow!("{e}; owned identity cleanup needs retry: {cleanup}")
+                })?;
+            }
+
             let msg = e.to_string();
             if msg.contains("already exists") {
                 tracing::debug!(child = %name, "agent already spawned via SDK, skipping duplicate relaycast WS spawn");

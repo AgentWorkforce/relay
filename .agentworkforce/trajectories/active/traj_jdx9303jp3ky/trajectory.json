@@ -55,6 +55,30 @@
             "reasoning": "Round2 review exposed cached identity provenance and enqueue-versus-completion races; fail closed on older brokers lacking empty-channel confirmation."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788881024561,
+          "type": "decision",
+          "content": "Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions: Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions",
+          "raw": {
+            "question": "Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions",
+            "chosen": "Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions",
+            "alternatives": [],
+            "reasoning": "Live DB membership and delayed process exit revealed gaps hidden by successful request echoes and immediate-exit mocks. Production capacity boundary remains preserved."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788883689149,
+          "type": "decision",
+          "content": "Require stable Claude trust selection and explicit proof-worker tool restrictions: Require stable Claude trust selection and explicit proof-worker tool restrictions",
+          "raw": {
+            "question": "Require stable Claude trust selection and explicit proof-worker tool restrictions",
+            "chosen": "Require stable Claude trust selection and explicit proof-worker tool restrictions",
+            "alternatives": [],
+            "reasoning": "Real Claude tests exposed a transient Yes-to-No repaint and receiver inbox polling despite its task. A delayed-reset regression fails before the stable-grid repair. The proof worker disables history tools and uses the recorded zero-delay input setting; two synthetic pushed events now have correlated actor digest replies. Real GitHub and chief evidence remain pending."
+          },
+          "significance": "high"
         }
       ]
     }

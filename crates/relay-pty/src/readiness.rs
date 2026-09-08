@@ -77,7 +77,10 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
 }
 
 fn claude_grid_ready(grid: GridReadinessSnapshot<'_>) -> bool {
-    let has_welcome = grid.screen.contains("Welcome back") || grid.screen.contains("Welcome to ");
+    let has_welcome = grid.screen.contains("Welcome back")
+        || grid.screen.contains("Welcome to ")
+        || grid.screen.contains("Claude Code v")
+        || grid.screen.contains("ClaudeCodev");
     has_welcome && claude_prompt_row(grid)
 }
 
@@ -118,6 +121,20 @@ fn snapshot_for_grid(grid: GridReadinessSnapshot<'_>) -> WaitSnapshot<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versioned_claude_banner_with_real_composer_is_ready_without_greeting() {
+        let screen = "Claude Code v2.1.263\nOpus 5 · Claude Max\n────────────────\n❯ \n────────────────\n⏵⏵ bypass permissions on";
+        assert!(detect_cli_ready(
+            "claude",
+            "",
+            1600,
+            GridReadinessSnapshot {
+                screen,
+                cursor: Some((4, 3))
+            }
+        ));
+    }
 
     #[test]
     fn detect_cli_ready_prompt_patterns() {

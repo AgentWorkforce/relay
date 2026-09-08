@@ -556,7 +556,8 @@ export type BrokerEvent =
       channels: string[];
     }
   | {
-      kind: 'worker_ready';
+      /** Fallback releases queued legacy startup work but does not establish readiness. */
+      kind: 'worker_ready' | 'worker_startup_fallback';
       name: string;
       runtime: AgentRuntime;
       provider?: HeadlessProvider;
@@ -690,7 +691,7 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; sessionId?: string };
+      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; sessionId?: string; readiness_proven?: boolean };
     }
   | {
       type: 'delivery_ack';

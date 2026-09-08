@@ -229,9 +229,25 @@ impl BrokerRuntime {
                 terminal_input_requests,
             )
             .await;
-            match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
+            let owned = workers.owned_spawn_generations.get(name).cloned();
+            let cleanup = if let Some((_, http)) = owned {
+                super::fleet::cleanup_failed_spawn_identity(
+                    fleet_control_tx,
+                    fleet_delivery_book,
+                    fleet_inventory,
+                    &http,
+                    name,
+                )
                 .await
-            {
+                .map(|_| true)
+            } else {
+                super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
+                    .await
+            };
+            if cleanup.is_ok() {
+                workers.owned_spawn_generations.remove(name);
+            }
+            match cleanup {
                 Ok(_) => {
                     super::fleet::prune_fleet_agent_state(
                         fleet_control_tx,
@@ -272,7 +288,15 @@ impl BrokerRuntime {
         };
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
-            let mut retain_fleet_identity = false;
+            let mut retain_fleet_identity = workers
+                .owned_spawn_generations
+                .get(name)
+                .is_some_and(|(owned_generation, _)| owned_generation == generation);
+            if retain_fleet_identity {
+                tracing::info!(worker = %name, %generation,
+                    binding_retained = fleet_delivery_book.active_agent_id(name.as_str()).is_some(),
+                    "retaining reaped owned generation and fleet binding for confirmed cleanup");
+            }
             let pending = pending_verified_spawns
                 .get(name)
                 .is_some_and(|pending| pending.generation == *generation)
@@ -282,13 +306,34 @@ impl BrokerRuntime {
                 // A failed verified launch has no owner after its action is
                 // failed. Do not let the normal supervisor revive it later.
                 workers.supervisor.unregister(name);
-                match super::fleet::deregister_fleet_agent(
-                    fleet_control_tx,
-                    fleet_delivery_book,
-                    name,
-                )
-                .await
-                {
+                let owned = workers
+                    .owned_spawn_generations
+                    .get(name)
+                    .filter(|(owned_generation, _)| owned_generation == generation)
+                    .cloned();
+                let cleanup = if let Some((_, http)) = owned {
+                    super::fleet::cleanup_failed_spawn_identity(
+                        fleet_control_tx,
+                        fleet_delivery_book,
+                        fleet_inventory,
+                        &http,
+                        name,
+                    )
+                    .await
+                    .map(|_| true)
+                } else {
+                    super::fleet::deregister_fleet_agent(
+                        fleet_control_tx,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await
+                };
+                if cleanup.is_ok() {
+                    workers.owned_spawn_generations.remove(name);
+                    retain_fleet_identity = false;
+                }
+                match cleanup {
                     Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(worker = %name, %error, "retaining fleet identity after early verified-spawn exit");

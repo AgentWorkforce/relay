@@ -58,10 +58,6 @@ pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(1
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
-/// The trust dialog renders ~1.3 KB of box drawing and can take tens of
-/// seconds to paint, so the window has to outlive several partial frames.
-const CLAUDE_TRUST_BUF_MAX: usize = 8000;
-const CLAUDE_TRUST_BUF_KEEP: usize = 6000;
 /// Pause between moving the trust-menu highlight and confirming it.
 const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
 /// Gap between successive trust-menu arrow keys, so a multi-row move repaints
@@ -294,7 +290,6 @@ pub(crate) struct PtyAutoState {
     pub(crate) gemini_untrusted_buffer: String,
     pub(crate) gemini_untrusted_handled: bool,
     // Claude Code folder trust prompt
-    pub(crate) claude_trust_buffer: String,
     pub(crate) claude_trust_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
@@ -335,7 +330,6 @@ impl PtyAutoState {
             gemini_trust_handled: false,
             gemini_untrusted_buffer: String::new(),
             gemini_untrusted_handled: false,
-            claude_trust_buffer: String::new(),
             claude_trust_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
@@ -604,7 +598,7 @@ impl PtyAutoState {
     /// confirming. Relay previously assumed the affirmative option was already
     /// selected and sent a bare Enter — on Claude Code 2.1.259+ that confirmed
     /// `No, exit`, killing the worker while its roster row survived.
-    pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+    pub(crate) async fn handle_claude_trust(&mut self, _text: &str, pty: &PtySession) {
         if self.interactive_hold {
             return;
         }
@@ -612,70 +606,49 @@ impl PtyAutoState {
             return;
         }
 
-        Self::append_buf(
-            &mut self.claude_trust_buffer,
-            text,
-            CLAUDE_TRUST_BUF_MAX,
-            CLAUDE_TRUST_BUF_KEEP,
-        );
-        let clean = strip_ansi(&self.claude_trust_buffer);
-
-        let steps = match plan_claude_trust_response(&clean) {
+        // Read the terminal grid, which incorporates cursor-only repaints.
+        // Concatenated old menu text is not the current highlighted choice.
+        let steps = match plan_claude_trust_response(&pty.screen_text()) {
             ClaudeTrustPlan::Confirm { steps } => steps,
-            // Partial or unrecognizable frame: wait for a fuller repaint rather
-            // than guessing which row Enter would confirm.
             ClaudeTrustPlan::Ambiguous | ClaudeTrustPlan::Absent => return,
         };
-
-        tracing::info!(
-            steps,
-            "Detected Claude Code folder trust prompt, selecting affirmative option by label"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Navigation and confirmation must reach the child as one queue entry.
-        // Submitting them separately lets a full write queue reject the
-        // navigation and then accept the Enter once a slot frees, which
-        // confirms the still-selected decline row — the exact failure this
-        // handler exists to prevent. `submit_write_paced_with_followup` keeps
-        // the arrow keys and the trailing `\r` adjacent on the FIFO, paces one
-        // VT atom at a time so the menu repaints between moves, and either
-        // admits the whole compound write or none of it.
-        let submitted = if steps == 0 {
-            pty.submit_write(b"\r".to_vec())
-        } else {
-            let key: &[u8] = if steps > 0 {
-                b"\x1b[B" // cursor down
-            } else {
-                b"\x1b[A" // cursor up
+        tracing::info!(steps, "Detected Claude Code folder trust prompt; verifying affirmative selection before confirmation");
+        if steps != 0 {
+            let key: &[u8] = if steps > 0 { b"\x1b[B" } else { b"\x1b[A" };
+            let nav = key.repeat(steps.unsigned_abs() as usize);
+            let submitted = pty.submit_write_paced(nav, CLAUDE_TRUST_KEY_PACE);
+            let Ok(ack) = submitted else {
+                return;
             };
-            let mut nav = Vec::with_capacity(key.len() * steps.unsigned_abs() as usize);
-            for _ in 0..steps.unsigned_abs() {
-                nav.extend_from_slice(key);
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(1), ack).await,
+                Ok(Ok(Ok(())))
+            ) {
+                return;
             }
-            pty.submit_write_paced_with_followup(
-                nav,
-                CLAUDE_TRUST_KEY_PACE,
-                CLAUDE_TRUST_NAV_SETTLE,
-                b"\r".to_vec(),
-            )
-        };
-
-        match submitted {
-            Ok(_) => {
-                self.claude_trust_buffer.clear();
-                self.claude_trust_handled = true;
-            }
-            Err(error) => {
-                // Nothing was admitted, so nothing was confirmed. Leave the
-                // prompt unhandled and retry on the next output chunk rather
-                // than stranding the worker on an unanswered dialog.
-                tracing::warn!(
-                    target: "agent_relay::worker::pty",
-                    context = "claude_trust",
-                    error = %error,
-                    "trust-menu write rejected; leaving prompt unhandled for retry"
+        }
+        // Require an affirmative selection to survive several independent
+        // repaints. Startup terminal negotiation can briefly select Yes and
+        // then reset No after the first navigation readback.
+        for sample in 0..4 {
+            tokio::time::sleep(CLAUDE_TRUST_NAV_SETTLE).await;
+            let confirmation_plan = plan_claude_trust_response(&pty.screen_text());
+            tracing::debug!(
+                sample,
+                ?confirmation_plan,
+                "Claude trust live confirmation sample"
+            );
+            if !matches!(confirmation_plan, ClaudeTrustPlan::Confirm { steps: 0 }) {
+                tracing::info!(
+                    "Claude trust selection changed or is incomplete; waiting for its next repaint"
                 );
+                return;
+            }
+        }
+        match pty.submit_write(b"\r".to_vec()) {
+            Ok(_) => self.claude_trust_handled = true,
+            Err(error) => {
+                tracing::warn!(%error, "trust confirmation write rejected; leaving prompt unhandled")
             }
         }
     }
@@ -852,6 +825,75 @@ mod idle_tests {
 #[cfg(test)]
 mod hold_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trust_confirmation_requires_observed_affirmative_after_navigation() {
+        let temp = tempfile::tempdir().unwrap();
+        let enabled = temp.path().join("allow-navigation");
+        let inputs = temp.path().join("inputs");
+        let script = r#"import os,sys,tty,threading
+from pathlib import Path
+tty.setraw(0)
+enabled,inputs=map(Path,sys.argv[1:])
+def paint(yes=False):
+ sys.stdout.write('\x1b[2J\x1b[HTrust this folder?\r\n'+('  No, exit\r\n❯ Yes, I trust this folder' if yes else '❯ No, exit\r\n  Yes, I trust this folder')+'\r\nEnter to confirm');sys.stdout.flush()
+paint()
+while True:
+ data=os.read(0,1024)
+ with inputs.open('ab') as f:f.write(data)
+ if b'\x1b[B' in data:
+  paint(enabled.exists())
+  if enabled.exists() and enabled.read_bytes()==b'reset':threading.Timer(0.25,paint).start()
+ if b'\r' in data:break
+"#;
+        let args = vec![
+            "-u".into(),
+            "-c".into(),
+            script.into(),
+            enabled.display().to_string(),
+            inputs.display().to_string(),
+        ];
+        let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        for _ in 0..40 {
+            if pty.screen_text().contains("Yes, I trust this folder") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let mut state = PtyAutoState::new();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let first = std::fs::read(&inputs).unwrap();
+        assert!(
+            !first.contains(&b'\r'),
+            "never confirm when navigation was ignored/reset"
+        );
+        assert!(!state.claude_trust_handled);
+        std::fs::write(&enabled, b"allow").unwrap();
+        // A repaint can briefly show Yes, then reset later than the first
+        // readback. Do not submit during that transient affirmative frame.
+        std::fs::write(&enabled, b"reset").unwrap();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(
+            !state.claude_trust_handled,
+            "transient affirmative is not stable confirmation"
+        );
+        assert!(!std::fs::read(&inputs).unwrap().contains(&b'\r'));
+        std::fs::write(&enabled, b"allow").unwrap();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(state.claude_trust_handled);
+        assert_eq!(
+            std::fs::read(&inputs)
+                .unwrap()
+                .iter()
+                .filter(|byte| **byte == b'\r')
+                .count(),
+            1
+        );
+        let _ = pty.shutdown();
+    }
 
     /// While an interactive hold is active, `try_auto_enter` must not press
     /// Enter (which would submit a human driver's half-typed input). Releasing
