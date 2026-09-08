@@ -286,6 +286,72 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     };
   }) as any;
 
+  const telemetryConfig = (): Record<string, string> => {
+    const nonEmpty = (value: string | undefined): string | undefined => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+    const originActor =
+      nonEmpty(process.env.AGENT_RELAY_ORIGIN_ACTOR) ??
+      ['AGENT_RELAY_HARNESS', 'AGENT_RELAY_ORCHESTRATOR_HARNESS', 'RELAYCAST_HARNESS', 'X_RELAYCAST_HARNESS']
+        .map((key) => nonEmpty(process.env[key]))
+        .find((value): value is string => Boolean(value))
+        ?.replace(/^/, 'agent-relay-cli/agent/');
+    const userId = nonEmpty(process.env.AGENT_RELAY_USER_ID);
+    const machineId = nonEmpty(process.env.AGENT_RELAY_MACHINE_ID);
+    return {
+      ...(originActor ? { originActor } : {}),
+      ...(nonEmpty(process.env.AGENT_RELAY_DISTINCT_ID) || userId || machineId
+        ? { agentRelayDistinctId: nonEmpty(process.env.AGENT_RELAY_DISTINCT_ID) ?? userId ?? machineId }
+        : {}),
+      ...(userId ? { agentRelayUserId: userId } : {}),
+      ...(machineId ? { agentRelayMachineId: machineId } : {}),
+      ...(nonEmpty(process.env.AGENT_RELAY_ORG_ID)
+        ? { agentRelayOrgId: nonEmpty(process.env.AGENT_RELAY_ORG_ID) as string }
+        : {}),
+      ...(nonEmpty(process.env.AGENT_RELAY_ORG_SLUG)
+        ? { agentRelayOrgSlug: nonEmpty(process.env.AGENT_RELAY_ORG_SLUG) as string }
+        : {}),
+    };
+  };
+
+  // Keep the test at the @agent-relay/sdk boundary. Its thin-client factories
+  // close over @relaycast/sdk when that package is loaded, and a publish-style
+  // npm install can resolve a second copy under packages/sdk. Mocking only the
+  // root @relaycast/sdk module therefore leaves those factories using a real
+  // client and leaking requests to the network. Construct every thin client
+  // from the local RelayCast fake instead, so this remains independent of npm's
+  // hoisting/layout decisions.
+  const createWorkspaceClientFactory = vi.fn(
+    (options: { workspaceKey: string; baseUrl?: string }) =>
+      new RelayCast({
+        apiKey: options.workspaceKey,
+        ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+        ...telemetryConfig(),
+      })
+  );
+  const createAgentClientFactory = vi.fn(
+    (options: { agentToken: string; baseUrl?: string; autoHeartbeatMs?: number | false }) => {
+      const relay = new RelayCast({
+        apiKey: options.agentToken,
+        ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+        ...telemetryConfig(),
+      });
+      return relay.as(options.agentToken, { autoHeartbeatMs: options.autoHeartbeatMs ?? false });
+    }
+  );
+  const createWorkspaceFactory = vi.fn((name: string, options?: { baseUrl?: string }) =>
+    RelayCast.createWorkspace(name, {
+      ...(options ?? {}),
+      ...Object.fromEntries(Object.entries(telemetryConfig()).filter(([key]) => key !== 'originActor')),
+    })
+  );
+  const createRealtimeClientFactory = vi.fn(() => ({
+    on: vi.fn(() => () => undefined),
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  }));
+
   vi.doMock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
     McpServer: FakeMcpServer,
     ResourceTemplate: class ResourceTemplate {
@@ -307,7 +373,14 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }));
   vi.doMock('@agent-relay/sdk', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@agent-relay/sdk');
-    return { ...actual, AgentRelay: AgentRelayMock };
+    return {
+      ...actual,
+      AgentRelay: AgentRelayMock,
+      createAgentClient: createAgentClientFactory,
+      createRealtimeClient: createRealtimeClientFactory,
+      createWorkspace: createWorkspaceFactory,
+      createWorkspaceClient: createWorkspaceClientFactory,
+    };
   });
   vi.doMock('./telemetry/index.js', () => ({
     initTelemetry: telemetryInit,
@@ -344,6 +417,10 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       RelayCast,
       FakeTransport,
       agentRelayMessagingCommands,
+      createAgentClient: createAgentClientFactory,
+      createRealtimeClient: createRealtimeClientFactory,
+      createWorkspace: createWorkspaceFactory,
+      createWorkspaceClient: createWorkspaceClientFactory,
     },
   };
 }
@@ -468,6 +545,30 @@ describe('agent-relay-mcp startup helpers', () => {
 });
 
 describe('createAgentRelayMcpServer', () => {
+  it('keeps thin-client startup calls local when npm nests @relaycast/sdk', async () => {
+    const fetchMock = vi.fn(() => {
+      throw new Error('unexpected network request from startup test');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+    });
+    const server = mocks.serverInstances[0];
+
+    await server.tools.get('post_message')?.handler({ channel: 'general', text: 'offline startup' });
+    await server.tools.get('create_workspace')?.handler({ name: 'Offline Workspace' });
+    await server.tools.get('register_agent')?.handler({ name: 'OfflineWorker' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.createAgentClient).toHaveBeenCalled();
+    expect(mocks.createWorkspace).toHaveBeenCalled();
+    expect(mocks.createWorkspaceClient).toHaveBeenCalled();
+  });
+
   it('registers owned tools, prompt text, fleet tools, and strips execution metadata from tools/list', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
 
