@@ -17,6 +17,7 @@ const LEGACY_REFRESHABLE_AUTH_KEYS = [
 ];
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_LIVE_OUTPUT_BYTES = 256 * 1024;
+const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -52,6 +53,33 @@ function parseJsonOutput(output, label) {
     if (first >= 0 && last > first) return JSON.parse(output.slice(first, last + 1));
     throw new Error(`${label} did not return JSON`);
   }
+}
+
+function boundedDiagnostic(value) {
+  const text = String(value ?? '');
+  if (Buffer.byteLength(text, 'utf8') <= MAX_DIAGNOSTIC_BYTES) return text;
+  return `${text.slice(-MAX_DIAGNOSTIC_BYTES)}\n[... diagnostic output truncated ...]`;
+}
+
+export function formatCloudRunDiagnostics({
+  runId,
+  terminalStatus,
+  lastStatusOutput,
+  statusPollFailures,
+  logs,
+}) {
+  const logOutput = `${logs?.stdout ?? ''}${logs?.stderr ?? ''}`;
+  return [
+    'Cloud RelayFlow diagnostics',
+    `run_id=${runId}`,
+    `terminal_status=${terminalStatus ?? 'unknown'}`,
+    `status_poll_failures=${statusPollFailures}`,
+    `last_status_response=${boundedDiagnostic(lastStatusOutput) || '<empty>'}`,
+    `cloud_logs_exit_code=${logs?.exitCode ?? 'unknown'}`,
+    `cloud_logs_timed_out=${logs?.timedOut === true}`,
+    `cloud_logs_output=${logOutput ? 'present' : 'empty'}`,
+    '',
+  ].join('\n');
 }
 
 function statusFrom(payload) {
@@ -149,6 +177,8 @@ export async function main() {
   let shuttingDown = false;
   let activeCommandController = null;
   let launchProgressError = null;
+  let lastStatusOutput = '';
+  let statusPollFailures = 0;
 
   const notePreparedRunId = (preparedRunId) => {
     try {
@@ -252,12 +282,20 @@ export async function main() {
         timeoutMs: commandTimeoutMs,
       });
       if (statusResult.timedOut) {
+        lastStatusOutput = statusResult.stderr.trim() || statusResult.stdout.trim();
         throw new Error(`Cloud status command timed out for run ${runId}`);
       }
       if (statusResult.exitCode !== 0) {
-        console.warn(`Cloud status poll failed (${statusResult.exitCode}); retrying`);
+        statusPollFailures += 1;
+        lastStatusOutput = statusResult.stderr.trim() || statusResult.stdout.trim();
+        console.warn(
+          `Cloud status poll failed (${statusResult.exitCode}); retrying${
+            lastStatusOutput ? `: ${boundedDiagnostic(lastStatusOutput)}` : ''
+          }`
+        );
         continue;
       }
+      lastStatusOutput = statusResult.stdout.trim();
       const status = statusFrom(parseJsonOutput(statusResult.stdout, 'Cloud status'));
       console.log(`Cloud RelayFlow status: ${status}`);
       if (TERMINAL_SUCCESS.has(status) || TERMINAL_FAILURE.has(status)) {
@@ -278,7 +316,18 @@ export async function main() {
       quiet: true,
       timeoutMs: commandTimeoutMs,
     });
-    await writeFile(logsPath, logs.stdout + logs.stderr);
+    await writeFile(
+      logsPath,
+      formatCloudRunDiagnostics({
+        runId,
+        terminalStatus,
+        lastStatusOutput,
+        statusPollFailures,
+        logs,
+      }) +
+        logs.stdout +
+        logs.stderr
+    );
     if (logs.stdout) process.stdout.write(logs.stdout);
     if (logs.stderr) process.stderr.write(logs.stderr);
     if (logs.timedOut) throw new Error(`Cloud log retrieval timed out for run ${runId}`);

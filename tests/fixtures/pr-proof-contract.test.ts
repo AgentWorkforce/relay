@@ -47,6 +47,7 @@ import {
   boundedDuration,
   createPreparedRunProgressParser,
   createCliApiKeyEnvironment,
+  formatCloudRunDiagnostics,
   preparedRunIdFromOutput,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -436,6 +437,22 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(() => preparedRunIdFromOutput('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=invalid run\n')).toThrow(
       /invalid run ID/
     );
+  });
+
+  it('retains terminal status diagnostics when Cloud logs are empty', () => {
+    const diagnostics = formatCloudRunDiagnostics({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed","error":"step timeout"}',
+      statusPollFailures: 2,
+      logs: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+    });
+
+    expect(diagnostics).toContain('run_id=cloud-run-123');
+    expect(diagnostics).toContain('terminal_status=failed');
+    expect(diagnostics).toContain('status_poll_failures=2');
+    expect(diagnostics).toContain('step timeout');
+    expect(diagnostics).toContain('cloud_logs_output=empty');
   });
 
   it('waits for a complete prepared-run progress line split across stderr chunks', () => {
