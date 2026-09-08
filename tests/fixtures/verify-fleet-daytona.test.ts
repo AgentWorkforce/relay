@@ -14,6 +14,7 @@ import {
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
+  cleanupDaytonaSandbox,
   compareDaytonaSandboxBaseline,
   convergeDaytonaSandboxDeletion,
   deriveFleetVerdict,
@@ -746,12 +747,15 @@ describe('complete Daytona Fleet board', () => {
     ).toMatchObject({ restored: true, countMatches: true });
 
     for (const state of ['started', 'stopped', 'error']) {
-      const unexpected = { ...destroying, state, desiredState: undefined };
+      const unexpected = { ...destroying, state, desiredState: 'destroyed' };
       expect(isDaytonaDeletionAccepted(unexpected)).toBe(false);
       expect(
         compareDaytonaSandboxBaseline({ count: 0, sandboxIdHashes: [], sandboxNameHashes: [] }, [unexpected])
       ).toMatchObject({ restored: false, countMatches: false });
     }
+    expect(isDaytonaDeletionAccepted({ ...destroying, state: 'destroyed', desiredState: 'destroyed' })).toBe(
+      true
+    );
   });
 
   it('proves deterministic Daytona deletion convergence evidence for every provider outcome', async () => {
@@ -763,7 +767,7 @@ describe('complete Daytona Fleet board', () => {
     const absent = await convergeDaytonaSandboxDeletion({
       deleteResult: { exitCode: 0 },
       listSandbox: async () => undefined,
-      slaMs: 10,
+      slaMs: 11,
       pollIntervalMs: 5,
       sleep: async () => undefined,
     });
@@ -798,7 +802,7 @@ describe('complete Daytona Fleet board', () => {
       sleep: async (milliseconds) => {
         stuckNow += milliseconds;
       },
-      slaMs: 10,
+      slaMs: 11,
       pollIntervalMs: 5,
     });
     expect(stuck).toMatchObject({ cleanupState: 'deletion-not-converged', converged: false, accepted: true });
@@ -812,6 +816,135 @@ describe('complete Daytona Fleet board', () => {
       sleep: async () => undefined,
     });
     expect(failed).toMatchObject({ cleanupState: 'delete-failed', converged: false, polls: 0 });
+
+    const activeDespiteDesiredDestroy = await convergeDaytonaSandboxDeletion({
+      deleteResult: { exitCode: 0 },
+      listSandbox: async () => ({ ...sandbox, state: 'started', desiredState: 'destroyed' }),
+      slaMs: 0,
+      pollIntervalMs: 5,
+      sleep: async () => undefined,
+    });
+    expect(activeDespiteDesiredDestroy).toMatchObject({
+      cleanupState: 'leaked',
+      converged: false,
+      accepted: false,
+    });
+  });
+
+  it('bounds a never-resolving Daytona inspection and records a distinct verification failure', async () => {
+    let timerCalls = 0;
+    const inspection = await convergeDaytonaSandboxDeletion({
+      deleteResult: { exitCode: 0 },
+      listSandbox: () => new Promise(() => undefined),
+      slaMs: 10,
+      pollIntervalMs: 5,
+      setTimeoutFn: (callback) => {
+        timerCalls += 1;
+        callback();
+        return timerCalls;
+      },
+      clearTimeoutFn: () => undefined,
+    });
+    expect(inspection).toMatchObject({
+      cleanupState: 'inspection-failed',
+      converged: false,
+      polls: 0,
+    });
+    expect(inspection.inspectionFailure).toMatch(/timed out|inspection deadline/);
+    expect(timerCalls).toBe(1);
+  });
+
+  it('resumes cleanup observation without issuing a second Daytona delete', async () => {
+    const resource = {
+      id: '66666666-6666-4666-8666-666666666666',
+      cleanupState: 'owned',
+    };
+    let deleteCalls = 0;
+    const persistStates: string[] = [];
+    const deleteOnce = async () => {
+      deleteCalls += 1;
+      return { exitCode: 0 };
+    };
+    const first = await cleanupDaytonaSandbox({
+      resource,
+      issueDelete: deleteOnce,
+      persistState: async () => persistStates.push(resource.cleanupState),
+      listSandbox: async () => ({ state: 'destroying', desiredState: 'destroyed' }),
+      now: () => 0,
+      sleep: async () => undefined,
+      slaMs: 0,
+      pollIntervalMs: 5,
+    });
+    expect(first).toMatchObject({
+      resumed: false,
+      deleteIssued: true,
+      attemptType: 'daytona-delete',
+      cleanupState: 'deletion-not-converged',
+    });
+    expect(deleteCalls).toBe(1);
+    expect(persistStates).toEqual(['deletion-requested']);
+
+    const second = await cleanupDaytonaSandbox({
+      resource,
+      issueDelete: deleteOnce,
+      listSandbox: async () => undefined,
+      slaMs: 10,
+      pollIntervalMs: 5,
+      sleep: async () => undefined,
+    });
+    expect(second).toMatchObject({
+      resumed: true,
+      deleteIssued: false,
+      attemptType: 'daytona-delete-observation',
+      cleanupState: 'absent',
+    });
+    expect(deleteCalls).toBe(1);
+
+    const alreadyAccepted = {
+      id: '88888888-8888-4888-8888-888888888888',
+      cleanupState: 'deletion-accepted',
+    };
+    const resumedAccepted = await cleanupDaytonaSandbox({
+      resource: alreadyAccepted,
+      issueDelete: async () => {
+        throw new Error('delete must not be reissued for accepted state');
+      },
+      listSandbox: async () => undefined,
+      slaMs: 10,
+      pollIntervalMs: 5,
+      sleep: async () => undefined,
+    });
+    expect(resumedAccepted).toMatchObject({
+      resumed: true,
+      deleteIssued: false,
+      attemptType: 'daytona-delete-observation',
+      cleanupState: 'absent',
+    });
+  });
+
+  it('records inspection failures separately from ownership refusal', async () => {
+    const resource = {
+      id: '77777777-7777-4777-8777-777777777777',
+      cleanupState: 'owned',
+    };
+    const failure = await cleanupDaytonaSandbox({
+      resource,
+      issueDelete: async () => ({ exitCode: 0 }),
+      listSandbox: () => new Promise(() => undefined),
+      slaMs: 10,
+      pollIntervalMs: 5,
+      setTimeoutFn: (callback) => {
+        callback();
+        return 1;
+      },
+      clearTimeoutFn: () => undefined,
+    });
+    expect(failure).toMatchObject({
+      cleanupState: 'inspection-failed',
+      attemptType: 'daytona-delete-inspection-failed',
+      deleteIssued: true,
+    });
+    expect(resource.cleanupState).toBe('inspection-failed');
   });
 
   it('rejects an unauthorized Daytona cleanup target in final recovery evidence', async () => {
