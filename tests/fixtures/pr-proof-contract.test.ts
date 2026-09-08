@@ -48,8 +48,11 @@ import {
   boundedDuration,
   createPreparedRunProgressParser,
   createCliApiKeyEnvironment,
+  formatCloudRunArtifact,
   formatCloudRunDiagnostics,
   preparedRunIdFromOutput,
+  recognizedCloudRunStatus,
+  sanitizeCloudCommandOutput,
   sanitizeCloudStatusDiagnostic,
   writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
@@ -454,7 +457,7 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(diagnostics).toContain('run_id=cloud-run-123');
     expect(diagnostics).toContain('terminal_status=failed');
     expect(diagnostics).toContain('status_poll_failures=2');
-    expect(diagnostics).toContain('step timeout');
+    expect(diagnostics).not.toContain('step timeout');
     expect(diagnostics).toContain('cloud_logs_output=empty');
   });
 
@@ -464,10 +467,9 @@ describe('Cloud dispatcher API key lifecycle', () => {
       status: 'failed',
       updatedAt: '2026-09-08T10:00:00.000Z',
       workflow: 'return process.env.SECRET',
-      error: {
-        message: 'nested-error-must-not-survive',
-        apiKey: 'ci-key',
-      },
+      error: 'top-level-error-must-not-survive ci-key',
+      message: 'top-level-message-must-not-survive',
+      dispatchType: 'arbitrary free text must not survive',
       result: {
         error: {
           token: 'rk_live_0123456789abcdef',
@@ -477,7 +479,8 @@ describe('Cloud dispatcher API key lifecycle', () => {
       failure: {
         phase: 'launch',
         code: 'workflow_launch_failed',
-        message: 'request ci-key failed for rk_live_0123456789abcdef',
+        message: 'failure-message-must-not-survive ci-key rk_live_0123456789abcdef',
+        sandboxId: 'sandbox id with arbitrary free text',
         causeChain: ['nested-cause-must-not-survive'],
       },
     });
@@ -490,11 +493,13 @@ describe('Cloud dispatcher API key lifecycle', () => {
       failure: {
         phase: 'launch',
         code: 'workflow_launch_failed',
-        message: 'request [redacted] failed for rk_live_…',
       },
     });
     expect(diagnostic).not.toContain('nested-result-must-not-survive');
-    expect(diagnostic).not.toContain('nested-error-must-not-survive');
+    expect(diagnostic).not.toContain('top-level-error-must-not-survive');
+    expect(diagnostic).not.toContain('top-level-message-must-not-survive');
+    expect(diagnostic).not.toContain('failure-message-must-not-survive');
+    expect(diagnostic).not.toContain('arbitrary free text');
     expect(diagnostic).not.toContain('nested-cause-must-not-survive');
     expect(diagnostic).not.toContain('0123456789abcdef');
 
@@ -508,17 +513,52 @@ describe('Cloud dispatcher API key lifecycle', () => {
     });
     expect(persisted).toContain('workflow_launch_failed');
     expect(persisted).not.toContain('nested-result-must-not-survive');
-    expect(persisted).not.toContain('nested-error-must-not-survive');
+    expect(persisted).not.toContain('top-level-error-must-not-survive');
+    expect(persisted).not.toContain('top-level-message-must-not-survive');
+    expect(persisted).not.toContain('failure-message-must-not-survive');
+    expect(persisted).not.toContain('arbitrary free text');
     expect(persisted).not.toContain('ci-key');
   });
 
-  it('redacts configured short secrets from non-JSON status errors', () => {
+  it('omits non-JSON status errors even when they contain configured secrets', () => {
     const diagnostic = sanitizeCloudStatusDiagnostic('Status request failed: upstream rejected short-key', [
       'short-key',
     ]);
 
-    expect(diagnostic).toBe('Status request failed: upstream rejected [redacted]');
+    expect(diagnostic).toBe('<non-JSON status response omitted>');
     expect(diagnostic).not.toContain('short-key');
+  });
+
+  it('accepts only known Cloud run statuses', () => {
+    expect(recognizedCloudRunStatus('RUNNING')).toBe('running');
+    expect(recognizedCloudRunStatus('failed')).toBe('failed');
+    expect(recognizedCloudRunStatus('running-opaque-secret')).toBeNull();
+    expect(recognizedCloudRunStatus(null)).toBeNull();
+  });
+
+  it('redacts configured and recognized credentials from raw command output and artifacts', () => {
+    const raw = 'stdout ci-api-key rk_live_0123456789abcdef';
+    expect(sanitizeCloudCommandOutput(raw, ['ci-api-key'])).toBe('stdout [redacted] rk_live_…');
+
+    const artifact = formatCloudRunArtifact({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed","error":"opaque-status-secret"}',
+      statusPollFailures: 0,
+      logs: {
+        stdout: `workflow output ci-api-key\n`,
+        stderr: 'failure rth_at_0123456789abcdef\n',
+        exitCode: 0,
+        timedOut: false,
+      },
+      diagnosticSecretValues: ['ci-api-key'],
+    });
+
+    expect(artifact).toContain('workflow output [redacted]');
+    expect(artifact).toContain('failure rth_at_…');
+    expect(artifact).not.toContain('ci-api-key');
+    expect(artifact).not.toContain('0123456789abcdef');
+    expect(artifact).not.toContain('opaque-status-secret');
   });
 
   it('omits malformed JSON status payloads instead of falling back to raw output', () => {
@@ -1845,6 +1885,15 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
+    expect(source).toContain('formatCloudRunArtifact({');
+    expect(source).toContain('sanitizeCloudCommandOutput(launch.stderr');
+    expect(source).toContain('sanitizeCloudCommandOutput(logs.stdout');
+    expect(source).toContain('sanitizeCloudCommandOutput(logs.stderr');
+    expect(source).toContain('sanitizeCloudCommandOutput(error.message');
+    expect(source).toContain("console.warn('Cloud RelayFlow status: <unrecognized>')");
+    expect(source).not.toContain('process.stderr.write(launch.stderr)');
+    expect(source).not.toContain('process.stdout.write(logs.stdout)');
+    expect(source).not.toContain('process.stderr.write(logs.stderr)');
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {
