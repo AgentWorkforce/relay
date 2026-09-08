@@ -359,8 +359,10 @@ export function formatCloudRunDiagnostics({
 export function formatCloudRunArtifact(input) {
   return (
     formatCloudRunDiagnostics(input) +
-    sanitizeCloudCommandOutput(input.logs?.stdout, input.diagnosticSecretValues) +
-    sanitizeCloudCommandOutput(input.logs?.stderr, input.diagnosticSecretValues)
+    sanitizeCloudCommandOutput(
+      `${input.logs?.stdout ?? ''}${input.logs?.stderr ?? ''}`,
+      input.diagnosticSecretValues
+    )
   );
 }
 
@@ -721,11 +723,12 @@ export async function main() {
         diagnosticSecretValues: auth.diagnosticSecretValues,
       })
     );
-    if (logs.stdout) {
-      process.stdout.write(sanitizeCloudCommandOutput(logs.stdout, auth.diagnosticSecretValues));
-    }
-    if (logs.stderr) {
-      process.stderr.write(sanitizeCloudCommandOutput(logs.stderr, auth.diagnosticSecretValues));
+    const sanitizedLogs = sanitizeCloudCommandOutput(
+      `${logs.stdout ?? ''}${logs.stderr ?? ''}`,
+      auth.diagnosticSecretValues
+    );
+    if (sanitizedLogs) {
+      process.stdout.write(sanitizedLogs);
     }
     if (logs.timedOut) throw new Error(`Cloud log retrieval timed out for run ${runId}`);
     if (logs.exitCode !== 0) throw new Error(`Cloud log retrieval failed with exit ${logs.exitCode}`);

@@ -597,6 +597,29 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(artifact).not.toContain(credentialSuffix);
   });
 
+  it('redacts credentials reconstructed across captured stdout and stderr', () => {
+    const configuredArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-split-secret',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: { stdout: 'split-', stderr: 'secret', exitCode: 1, timedOut: false },
+      diagnosticSecretValues: ['split-secret'],
+    });
+    expect(configuredArtifact).toContain('[redacted]');
+    expect(configuredArtifact).not.toContain('split-secret');
+
+    const prefixedArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-split-prefix',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: { stdout: 'rk_', stderr: 'live_token', exitCode: 1, timedOut: false },
+    });
+    expect(prefixedArtifact).toContain('rk_live_…');
+    expect(prefixedArtifact).not.toContain('rk_live_token');
+  });
+
   it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {
     const redactor = createCredentialRedactor(['split-secret']);
     const sanitized =
@@ -624,6 +647,17 @@ describe('Cloud dispatcher API key lifecycle', () => {
   it('preserves large credential-free output without pathological rescanning', () => {
     const cleanOutput = `head ${'ordinary-output '.repeat(20_000)}tail`;
     expect(sanitizeCloudCommandOutput(cleanOutput, ['configured-secret'])).toBe(cleanOutput);
+  });
+
+  it('rejects and terminates when an output transform throws', async () => {
+    await expect(
+      runBoundedProcess(process.execPath, ['-e', "process.stdout.write('trigger')"], {
+        echo: false,
+        transformChunk: () => {
+          throw new Error('transform failed');
+        },
+      })
+    ).rejects.toThrow('transform failed');
   });
 
   it('omits malformed JSON status payloads instead of falling back to raw output', () => {
@@ -1986,8 +2020,8 @@ describe('trusted dispatcher source contract', () => {
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
     expect(source).toContain('formatCloudRunArtifact({');
     expect(source).toContain('sanitizeCloudCommandOutput(launch.stderr');
-    expect(source).toContain('sanitizeCloudCommandOutput(logs.stdout');
-    expect(source).toContain('sanitizeCloudCommandOutput(logs.stderr');
+    expect(source).toContain('const sanitizedLogs = sanitizeCloudCommandOutput(');
+    expect(source).toContain("`${logs.stdout ?? ''}${logs.stderr ?? ''}`");
     expect(source).toContain('sanitizeCloudCommandOutput(error.message');
     expect(source).toContain("console.warn('Cloud RelayFlow status: <unrecognized>')");
     expect(source).not.toContain('process.stderr.write(launch.stderr)');

@@ -138,6 +138,14 @@ export function runBoundedProcess(command, args, options = {}) {
       options.signal?.removeEventListener('abort', abortHandler);
     };
 
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      forceKill();
+      reject(error);
+    };
+
     const writeLiveOutput = (stream, text) => {
       if (options.echo === false || !text) return;
       if (liveOutputBytes >= maximumLiveOutput) {
@@ -174,28 +182,41 @@ export function runBoundedProcess(command, args, options = {}) {
       }
     };
 
-    child.stdout.on('data', (chunk) => consumeOutput('stdout', stdoutDecoder.write(chunk)));
-    child.stderr.on('data', (chunk) => consumeOutput('stderr', stderrDecoder.write(chunk)));
-    child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
+    child.stdout.on('data', (chunk) => {
+      try {
+        consumeOutput('stdout', stdoutDecoder.write(chunk));
+      } catch (error) {
+        fail(error);
+      }
     });
+    child.stderr.on('data', (chunk) => {
+      try {
+        consumeOutput('stderr', stderrDecoder.write(chunk));
+      } catch (error) {
+        fail(error);
+      }
+    });
+    child.on('error', fail);
     child.on('close', (code, signal) => {
       if (settled) return;
-      settled = true;
       // The process-group leader can exit after SIGTERM while a descendant
       // with detached stdio remains alive. Force-kill the group before
       // clearing the grace timer so that descendant cannot escape cleanup.
       if (timedOut || aborted) forceKill();
       cleanup();
-      const stdoutTail = stdoutDecoder.end();
-      const stderrTail = stderrDecoder.end();
-      consumeOutput('stdout', stdoutTail);
-      consumeOutput('stderr', stderrTail);
-      consumeOutput('stdout', '', true);
-      consumeOutput('stderr', '', true);
+      try {
+        const stdoutTail = stdoutDecoder.end();
+        const stderrTail = stderrDecoder.end();
+        consumeOutput('stdout', stdoutTail);
+        consumeOutput('stderr', stderrTail);
+        consumeOutput('stdout', '', true);
+        consumeOutput('stderr', '', true);
+      } catch (error) {
+        settled = true;
+        reject(error);
+        return;
+      }
+      settled = true;
       resolve({ exitCode: code ?? 1, signal, stdout, stderr, timedOut, aborted });
     });
   });
