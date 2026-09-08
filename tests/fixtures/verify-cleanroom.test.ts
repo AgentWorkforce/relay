@@ -518,6 +518,7 @@ describe('clean-room verification catalog', () => {
     expect(source).toMatch(/const laneAgent\s*=\s*`lane-\$\{lane\}`/);
     expect(source).toMatch(/wf\.agent\(laneAgent/);
     expect(source).toMatch(/agent:\s*laneAgent/);
+    expect(source).toMatch(/verification:\s*\{ type: 'output_contains',[\s\S]*?\},\s*failOnError: false/);
     expect(source).toMatch(/command\(\s*["']review-export["']/);
     expect(source).toMatch(/command\(\s*["']storage-preflight["']\s*\)/);
     expect(source).toMatch(/command\(\s*["']review-upload["']/);

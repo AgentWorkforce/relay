@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
 - `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
-- Relayflow agent permissions now grant an exact `files.write` rule that names a not-yet-created file, so a write-once output path is writable when its parent directory exists. Glob write rules are unchanged and still cover only existing files.
+- Relayflow agents can now write a write-once output file before it exists when its parent directory is present.
 
 ### Changed
 
@@ -33,8 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
-- Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
+- Compiled Relayflow agent permissions deny project symlinks that could grant access outside the project.
+- Updated published Relayflow and Pi adapter dependencies prevent unbounded brace expansion and private-cache cross-user disclosure.
+- Cloud API clients require HTTPS endpoints and reject redirects, keeping credentialed requests on the configured origin.
 
 ## [11.10.3] - 2026-09-05
 

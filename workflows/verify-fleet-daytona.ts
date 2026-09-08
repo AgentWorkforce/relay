@@ -303,7 +303,7 @@ async function main() {
   wf.step('install-dependencies', {
     type: 'deterministic',
     dependsOn: ['validate-catalog'],
-    command: 'npm ci',
+    command: 'npm ci --ignore-scripts',
     captureOutput: true,
     failOnError: true,
     timeoutMs: 600_000,

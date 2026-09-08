@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  expectedCoverageRowCount,
   isPromotionBlockingBug,
   snapshotRepo,
 } from '../../scripts/verify-features/relay-orchestration-diagnostic-gates.mjs';
@@ -20,6 +21,15 @@ afterEach(async () => {
 });
 
 describe('diagnosis source provenance', () => {
+  it('derives coverage rows from the inventories and executable Fleet matrix', async () => {
+    const matrix = JSON.parse(await readFile('tests/relayflows/cleanroom/fleet-daytona.matrix.json', 'utf8'));
+    const original = expectedCoverageRowCount(matrix);
+    expect(original).toBe(142);
+    expect(
+      expectedCoverageRowCount({ ...matrix, operations: [...matrix.operations, { id: 'future' }] })
+    ).toBe(original + 1);
+  });
+
   it('wires the package dry-run command into the Relayflow runner', async () => {
     const [packageJson, workflow] = await Promise.all([
       readFile('package.json', 'utf8').then(JSON.parse),

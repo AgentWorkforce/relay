@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -84,6 +84,16 @@ describe('diagnosis artifact sealing', () => {
     );
     await writeFile(path.join(directory, 'reproduce.mjs'), 'export const expected = false;\n');
     await expect(validateDiagnosisSeal(directory)).rejects.toThrow(/does not match/);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses to seal a symlinked artifact', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'diagnosis-seal-symlink-test-'));
+    temporaryDirectories.push(directory);
+    await Promise.all(
+      sealFiles.map((file, index) => writeFile(path.join(directory, file), `fixture-${index}\n`))
+    );
+    await symlink('bug-ledger.json', path.join(directory, 'linked.json'));
+    await expect(diagnosisSealPayload(directory)).rejects.toThrow(/must not be a symbolic link/);
   });
 
   it('accepts final review only when it signs the exact seal with zero findings', async () => {

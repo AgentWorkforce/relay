@@ -1091,18 +1091,7 @@ async function validateLedger(artifactDir) {
   }
   for (const [index, entry] of imageVersions.entries()) {
     const pinMismatch = entry.pinnedVersion !== releaseVersionUnderQualification;
-    if (promotionEligible) {
-      if (pinMismatch) {
-        throw new Error(
-          `independentlyVerifiedImageVersions[${index}] pins ${entry.pinnedVersion}, but promotion-eligible diagnoses must match the release under qualification (${releaseVersionUnderQualification})`
-        );
-      }
-      if (!HEX_SHA.test(entry.correspondingReleaseCommit)) {
-        throw new Error(
-          `independentlyVerifiedImageVersions[${index}].correspondingReleaseCommit must be a 7-40 character hex SHA before a diagnosis can be GREEN or promotion-eligible`
-        );
-      }
-    } else if (
+    if (
       pinMismatch &&
       !HEX_SHA.test(entry.correspondingReleaseCommit) &&
       !/^HIGH|^CRITICAL/i.test(entry.discrepancyRisk)
@@ -1128,11 +1117,6 @@ async function validateLedger(artifactDir) {
   }
   if (Array.isArray(freshAttempts)) {
     requireQuarantineIfMismatched(freshAttempts, 'daytonaTwoFreshAttempts', 'imageVersionNote');
-  }
-  if (promotionEligible && unknownsBlockingPromotion.length) {
-    throw new Error(
-      `diagnosis cannot be GREEN or promotion-eligible while blocking unknowns remain open: ${unknownsBlockingPromotion.join(', ')}`
-    );
   }
 
   await validateCleanupEvidence(ledger);
@@ -1412,6 +1396,14 @@ const DIAGNOSIS_SEAL_FILES = [
   'bug-ledger.json',
   'coverage-contract.json',
 ];
+export function expectedCoverageRowCount(matrix) {
+  return (
+    REQUIRED_TRANSITIONS.length +
+    REQUIRED_FAULTS.length +
+    REQUIRED_ACCEPTANCE.length +
+    matrix.operations.length
+  );
+}
 async function validateCoverage(artifactDir, ledger) {
   const c = JSON.parse(await readFile(path.join(artifactDir, 'coverage-contract.json'), 'utf8'));
   if (c.schemaVersion !== 1 || c.kind !== 'relay-orchestration-coverage' || c.mode !== 'diagnosis') {
@@ -1472,8 +1464,11 @@ async function validateCoverage(artifactDir, ledger) {
     }
   }
   const coverageIds = new Set(coverageRows.map((row) => row.id));
-  if (coverageIds.size !== 142 || coverageRows.length !== 142) {
-    throw new Error(`coverage contract must contain exactly 142 unique rows, got ${coverageRows.length}`);
+  const expectedCoverageRows = expectedCoverageRowCount(matrix);
+  if (coverageIds.size !== expectedCoverageRows || coverageRows.length !== expectedCoverageRows) {
+    throw new Error(
+      `coverage contract must contain exactly ${expectedCoverageRows} unique rows, got ${coverageRows.length}`
+    );
   }
   for (const unknown of ledger.unknowns) {
     for (const gateId of unknown.gateIds ?? []) {

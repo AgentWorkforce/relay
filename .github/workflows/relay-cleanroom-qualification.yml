@@ -299,6 +299,8 @@ jobs:
           CLOUD_ACCEPTANCE_ARTIFACT_NAME: ${{ steps.manifest.outputs.cloud_acceptance_artifact_name }}
           CLOUD_ACCEPTANCE_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.cloud_acceptance_artifact_digest }}
           CLOUD_ACCEPTANCE_EVIDENCE_SHA256: ${{ steps.manifest.outputs.cloud_acceptance_evidence_sha256 }}
+          SNAPSHOT_NAME: ${{ steps.manifest.outputs.snapshot_name }}
+          SNAPSHOT_ID: ${{ steps.manifest.outputs.snapshot_id }}
           RELAYFILE_CLOUD_RUN_ID: ${{ steps.manifest.outputs.relayfile_cloud_run_id }}
           RELAYFILE_CLOUD_RUN_ATTEMPT: ${{ steps.manifest.outputs.relayfile_cloud_run_attempt }}
           RELAYFILE_CLOUD_SHA: ${{ steps.manifest.outputs.relayfile_cloud_sha }}
@@ -353,8 +355,8 @@ jobs:
             --qualification-run-id "$CLOUD_RUN_ID" \
             --qualification-run-attempt "$CLOUD_RUN_ATTEMPT" \
             --qualification-artifact-digest "$CLOUD_ARTIFACT_DIGEST" \
-            --snapshot-name "${{ steps.manifest.outputs.snapshot_name }}" \
-            --snapshot-id "${{ steps.manifest.outputs.snapshot_id }}" \
+            --snapshot-name "$SNAPSHOT_NAME" \
+            --snapshot-id "$SNAPSHOT_ID" \
             --relayfile-cloud-source-sha "$RELAYFILE_CLOUD_SHA" \
             --relayfile-cloud-run-id "$RELAYFILE_CLOUD_RUN_ID" \
             --relayfile-cloud-run-attempt "$RELAYFILE_CLOUD_RUN_ATTEMPT" \
@@ -427,13 +429,16 @@ jobs:
           claude --version | grep -F 2.1.260
           codex --version | grep -F 0.153.3
           test "$(opencode --version | tail -1)" = 1.18.25
-          npm ci
+          npm ci --ignore-scripts
           npm run build:core
 
       - name: Hydrate the exact producer-packed Relay candidate
         working-directory: relay
         run: |
           chmod 700 "$RUNNER_TEMP"
+          chmod 0600 \
+            ../qualification/relay-packages/payload/candidate-install-attestation.json \
+            ../qualification/relay-packages/payload/candidate-package-lock.json
           node scripts/verify-features/relay-candidate-install.mjs hydrate \
             --attestation ../qualification/relay-packages/payload/candidate-install-attestation.json \
             --tarballs ../qualification/relay-packages/payload/tarballs \
@@ -647,6 +652,11 @@ jobs:
         with:
           name: relay-candidate-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            qualification/*.json
+            qualification/relay-packages/
+            qualification/cloud/
+            qualification/cloud-acceptance/
+            qualification/relayfile-cloud/
             qualification/normalized.json
             qualification/cloud-acceptance/candidate-acceptance.json
             qualification/relay-candidate-install-attestation.json
@@ -688,7 +698,7 @@ jobs:
         run: |
           npm install --global npm@10.9.7
           test "$(npm --version)" = "10.9.7"
-          npm ci
+          npm ci --ignore-scripts
           npm run build:core
           mkdir -p qualification-cleanup
 

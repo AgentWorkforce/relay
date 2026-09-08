@@ -63,6 +63,23 @@ describe('fixed cross-repository qualification producers', () => {
       'qualification-producer-artifacts.mjs cloud-acceptance \\\n            --run qualification/cloud-acceptance-run.json'
     );
     expect(workflow).toContain('qualification/cloud-acceptance/candidate-acceptance.json');
+    expect(workflow).toContain('--snapshot-name "$SNAPSHOT_NAME"');
+    expect(workflow).toContain('--snapshot-id "$SNAPSHOT_ID"');
+    expect(workflow).not.toContain('--snapshot-name "${{ steps.manifest.outputs.snapshot_name }}"');
+    expect(workflow).not.toContain('--snapshot-id "${{ steps.manifest.outputs.snapshot_id }}"');
+  });
+
+  it('retains every downloaded qualification input when the runtime gate fails', async () => {
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    for (const path of [
+      'qualification/*.json',
+      'qualification/relay-packages/',
+      'qualification/cloud/',
+      'qualification/cloud-acceptance/',
+      'qualification/relayfile-cloud/',
+    ]) {
+      expect(workflow).toContain(path);
+    }
   });
 
   it('rejects workflow, event, branch, name, and artifact substitutions', () => {

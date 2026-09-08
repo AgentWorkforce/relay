@@ -507,6 +507,21 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
         return;
       }
 
+      try {
+        validateCloudApiUrl(returnedApiUrl);
+      } catch {
+        redirectToHostedCliAuthPage(response, apiUrl, {
+          status: 'error',
+          detail: 'The CLI login returned an invalid Cloud API URL.',
+        });
+        if (!settled) {
+          settled = true;
+          server.close();
+          reject(new Error('CLI login callback returned an invalid Cloud API URL'));
+        }
+        return;
+      }
+
       redirectToHostedCliAuthPage(response, returnedApiUrl, {
         status: 'success',
         detail: `API endpoint: ${returnedApiUrl}`,

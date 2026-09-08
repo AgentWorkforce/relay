@@ -5,6 +5,8 @@ import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  SHA256_PATTERN,
+  SNAPSHOT_ID_PATTERN,
   type CloudFleetSandboxProviderId,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
@@ -47,9 +49,6 @@ const SERVE_REPLACEMENT_MESSAGE =
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
 
 const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']);
-const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-
 export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;

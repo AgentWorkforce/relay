@@ -277,6 +277,12 @@ describe('qualification runtime effect composer', () => {
     );
     expect(workflow).toContain('Hydrate the exact producer-packed Relay candidate');
     expect(workflow).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION:');
+    const composerSource = fs.readFileSync(
+      'scripts/verify-features/qualification-effect-evidence.mjs',
+      'utf8'
+    );
+    expect(composerSource).toContain('const fleetSignoffVerified = enforced.status === 0;');
+    expect(composerSource).not.toContain('fleetSignoffVerified: true');
     expect(workflow.match(/--ttl 24h/g)).toHaveLength(2);
     expect(workflow).toContain("VERIFY_FLEET_MIN_CREDENTIAL_LIFETIME_SECONDS: '21600'");
     expect(workflow).toContain('git/ref/tags/${encodeURIComponent(tag)}');

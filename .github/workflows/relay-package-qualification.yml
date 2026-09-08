@@ -62,7 +62,7 @@ jobs:
       - name: Install and build the exact producer source
         run: |
           npm install --global npm@10.9.7
-          npm ci
+          npm ci --ignore-scripts
           npm run build:core
 
       - name: Pack and clean-install the complete Linux candidate closure

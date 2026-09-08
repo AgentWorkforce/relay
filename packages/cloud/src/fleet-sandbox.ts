@@ -5,8 +5,8 @@ import { defaultApiUrl } from './types.js';
 type JsonRecord = Record<string, unknown>;
 
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+export const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // Mounted provisioning can spend up to 240s completing the initial Relayfile
 // sync, then up to 90s waiting for the enrolled node to report ready. Leave a

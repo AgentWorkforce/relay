@@ -408,6 +408,32 @@ describe('ensureAuthenticated', () => {
     logSpy.mockRestore();
   });
 
+  it('rejects an invalid callback API URL without crashing the callback server', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const authPromise = ensureAuthenticated('https://example.com/cloud', { force: true });
+    const authRejection = expect(authPromise).rejects.toThrow('invalid Cloud API URL');
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Opening browser for cloud login: '));
+    });
+    const loginLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.startsWith('Opening browser for cloud login: '));
+    const loginUrl = new URL(String(loginLine).slice('Opening browser for cloud login: '.length));
+    const callbackUrl = new URL(String(loginUrl.searchParams.get('redirect_uri')));
+    callbackUrl.searchParams.set('state', String(loginUrl.searchParams.get('state')));
+    callbackUrl.searchParams.set('access_token', 'access-token');
+    callbackUrl.searchParams.set('refresh_token', 'refresh-token');
+    callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('api_url', 'http://attacker.example/cloud');
+
+    const response = await fetch(callbackUrl, { redirect: 'manual' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('https://example.com/cloud/cli/auth-result');
+    await authRejection;
+    logSpy.mockRestore();
+  });
+
   it('falls back to the device flow on a host that cannot open a browser', async () => {
     // barry over ssh: no browser here, so the loopback callback the browser
     // flow depends on is unreachable and would only hang until it timed out.

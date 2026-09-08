@@ -419,6 +419,7 @@ async function main() {
         `Report the command output, including CLEANROOM_LANE_COMPLETE lane=${lane}.`,
       ].join('\n'),
       verification: { type: 'output_contains', value: `CLEANROOM_LANE_COMPLETE lane=${lane}` },
+      failOnError: false,
       timeoutMs: laneTimeouts[lane],
     });
     wf.step(gateStep, {

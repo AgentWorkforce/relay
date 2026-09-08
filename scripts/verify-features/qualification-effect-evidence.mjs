@@ -94,17 +94,15 @@ function validateCreate(entry, expected) {
   ) {
     throw new Error(`${entry.label} credential does not match the created workspace`);
   }
+  const relay = object(credential.relay, `${entry.label} credential.relay`);
   if (
     !object(credential.cloud, `${entry.label} credential.cloud`).accessToken ||
     !credential.cloud.refreshToken ||
-    !secureHttpsUrl(
-      object(credential.relay, `${entry.label} credential.relay`).baseUrl,
-      `${entry.label} credential.relay.baseUrl`
-    ) ||
-    !credential.relay.workspaceKey
+    !relay.workspaceKey
   ) {
     throw new Error(`${entry.label} credential is incomplete`);
   }
+  secureHttpsUrl(relay.baseUrl, `${entry.label} credential.relay.baseUrl`);
   if (entry.mode !== '0600') throw new Error(`${entry.label} credential file is not mode 0600`);
   if (
     path.resolve(string(result.credentialFile, `${entry.label}.credentialFile`)) !==
@@ -529,7 +527,8 @@ async function main() {
       env: { PATH: process.env.PATH, HOME: process.env.HOME, NO_COLOR: '1' },
     }
   );
-  if (enforced.status !== 0) {
+  const fleetSignoffVerified = enforced.status === 0;
+  if (!fleetSignoffVerified) {
     throw new Error(`Fleet campaign/signoff enforcement failed: ${String(enforced.stderr ?? '').trim()}`);
   }
   const validatedFleet = await readAndValidateCampaign(
@@ -566,7 +565,7 @@ async function main() {
     cloudAcceptanceBytes,
     fleetCampaign: validatedFleet.campaign,
     fleetAttempts: validatedFleet.attempts,
-    fleetSignoffVerified: true,
+    fleetSignoffVerified,
     workspaceCreates: await Promise.all([
       credentialEntry('a', required('create-a'), required('credential-a')),
       credentialEntry('b', required('create-b'), required('credential-b')),

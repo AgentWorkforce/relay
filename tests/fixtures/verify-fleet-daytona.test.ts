@@ -570,9 +570,10 @@ describe('complete Daytona Fleet board', () => {
     expect(prepare!.offset).toBeGreaterThan(stageBroker!.offset);
     expect(inventory!.offset).toBeGreaterThan(prepare!.offset);
     expect(attemptA!.offset).toBeGreaterThan(inventory!.offset);
-    // install-dependencies runs `npm ci` so build-current-cli never builds
+    // install-dependencies runs a script-free `npm ci` so build-current-cli never builds
     // against a sandbox snapshot's stale pre-baked node_modules.
     expect(installDeps!.dependsOn).toEqual(['validate-catalog']);
+    expect(source).toMatch(/wf\.step\('install-dependencies'[\s\S]*?command:\s*'npm ci --ignore-scripts'/);
     expect(build!.dependsOn).toEqual(['install-dependencies']);
     expect(installNpm!.dependsOn).toEqual(['build-current-cli']);
     expect(stageBroker!.dependsOn).toEqual(['install-candidate-npm']);
@@ -1245,9 +1246,7 @@ describe('complete Daytona Fleet board', () => {
   it('accepts exact two-node provenance, monotonic timings, and exact cleanup', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const evidence = completeEvidence(matrix);
-    evidence.provenance.matrixSha256 = await import('node:crypto').then(({ createHash }) =>
-      createHash('sha256').update(JSON.stringify(matrix)).digest('hex')
-    );
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
 
     expect(validateFleetEvidence(evidence, matrix)).toBe(evidence);
 
@@ -1291,9 +1290,7 @@ describe('complete Daytona Fleet board', () => {
   it('binds release qualification evidence to the exact candidate snapshot manifest', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const evidence = completeEvidence(matrix);
-    evidence.provenance.matrixSha256 = await import('node:crypto').then(({ createHash }) =>
-      createHash('sha256').update(JSON.stringify(matrix)).digest('hex')
-    );
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
     evidence.environment.releaseQualificationRequested = true;
     evidence.environment.expectedSnapshotId = 'snap_qualified_deadbeef';
     evidence.environment.expectedSnapshotName = 'relay-candidate-11.10.3-rc.1-deadbeef';
@@ -1362,9 +1359,7 @@ describe('complete Daytona Fleet board', () => {
   it('rejects reused node identity, dirty cleanup, non-monotonic time, and secret argv', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const base = completeEvidence(matrix);
-    base.provenance.matrixSha256 = await import('node:crypto').then(({ createHash }) =>
-      createHash('sha256').update(JSON.stringify(matrix)).digest('hex')
-    );
+    base.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
     base.resources[1].nodeId = 'same';
     base.resources[0].nodeId = 'same';
     expect(() => validateFleetEvidence(structuredClone(base), matrix)).toThrow(/node ids are not unique/);
@@ -1469,9 +1464,7 @@ describe('complete Daytona Fleet board', () => {
   it('classifies mixed repeated outcomes as flaky and rejects sandbox reuse', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const first = completeEvidence(matrix);
-    first.provenance.matrixSha256 = await import('node:crypto').then(({ createHash }) =>
-      createHash('sha256').update(JSON.stringify(matrix)).digest('hex')
-    );
+    first.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
     const second = structuredClone(first);
     second.nonce = 'b'.repeat(32);
     second.provenance.resolvedWorkspaceId = 'workspace_fixture_b';

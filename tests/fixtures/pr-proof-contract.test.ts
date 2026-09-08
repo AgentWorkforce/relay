@@ -202,6 +202,8 @@ describe('RelayFlow case manifest', () => {
     expect(source).toMatch(/NODE_EXTRA_CA_CERTS\s*:\s*tlsCertificatePath/);
     expect(source).toMatch(/TLS_CERTIFICATE_TIMEOUT_MS\s*=\s*30_000/);
     expect(source).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
+    expect(source).not.toMatch(/rejectUnauthorized\s*:\s*false/i);
+    expect(source).not.toMatch(/checkServerIdentity\s*:/i);
   });
 
   it('identifies case directories without treating shared case docs as cases', () => {
