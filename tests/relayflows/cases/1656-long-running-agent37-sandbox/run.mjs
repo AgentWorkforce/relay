@@ -223,7 +223,9 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
     });
 
   const errors: string[] = [];
-  const cliOutput: string[] = [];
+  // A progress line ahead of the JSON result proves the observation does not
+  // depend on the result being the first (or only) CLI output call.
+  const cliOutput: string[] = ['Preparing sandbox dispatch'];
   const replayArgs =
     process.env.RELAY_PR_PROOF_ARM === 'head'
       ? ['--sandbox-id', REPLAY_SANDBOX_ID, '--sandbox-name', REPLAY_SANDBOX_NAME]
@@ -249,8 +251,17 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
       // Capture the real CLI serialization, then fail so this same invocation
       // exercises cleanup without sourcing evidence from the network mock.
       log: (...args: unknown[]) => {
-        cliOutput.push(args.join(' '));
-        throw new Error('CLI output sink failed after capture');
+        const line = args.join(' ');
+        cliOutput.push(line);
+        let candidate: { sandbox?: { sandboxId?: unknown } } | null = null;
+        try {
+          candidate = JSON.parse(line);
+        } catch {
+          // Auxiliary CLI output is allowed; only the sandbox result drives cleanup.
+        }
+        if (candidate?.sandbox?.sandboxId === REPLAY_SANDBOX_ID) {
+          throw new Error('CLI output sink failed after capture');
+        }
       },
       error: (...args: unknown[]) => errors.push(args.join(' ')),
       exit: (() => {
@@ -289,7 +300,21 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
   // The command really reached successful dispatch and serialized its result;
   // without this a probe that never reached the sandbox path could report a false base.
   expect(errors.join('\n')).toContain('CLI output sink failed after capture');
-  expect(cliOutput).toHaveLength(1);
+  const sandboxResults = cliOutput.flatMap((line) => {
+    try {
+      const candidate = JSON.parse(line);
+      return candidate?.sandbox?.sandboxId === REPLAY_SANDBOX_ID ? [candidate] : [];
+    } catch {
+      return [];
+    }
+  });
+  if (sandboxResults.length !== 1) {
+    throw new Error(
+      'Expected exactly one serialized sandbox result, found ' +
+        String(sandboxResults.length) +
+        '.'
+    );
+  }
 
   const ensureRequest = mocks.authorizedApiFetch.mock.calls[1]?.[2];
   const deleteRequest = mocks.authorizedApiFetch.mock.calls[2]?.[2];
@@ -297,7 +322,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
   expect(deleteRequest?.body).toEqual(expect.any(String));
   const ensureBody = JSON.parse(ensureRequest.body);
   const deleteBody = JSON.parse(deleteRequest.body);
-  const cliResult = JSON.parse(cliOutput[0]);
+  const [cliResult] = sandboxResults;
 
   await writeFile(
     output,

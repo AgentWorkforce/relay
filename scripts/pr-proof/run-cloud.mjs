@@ -213,11 +213,13 @@ export function formatCloudRunArtifact(input) {
   );
 }
 
-export async function writeStatusPollTimeoutDiagnostics({
+async function writeStatusPollDiagnostics({
   logsPath,
   runId,
   lastStatusOutput,
   statusPollFailures,
+  terminalStatus,
+  logsTimedOut,
   diagnosticSecretValues = [],
 }) {
   await mkdir(path.dirname(logsPath), { recursive: true });
@@ -225,13 +227,31 @@ export async function writeStatusPollTimeoutDiagnostics({
     logsPath,
     formatCloudRunDiagnostics({
       runId,
-      terminalStatus: 'status_poll_timeout',
+      terminalStatus,
       lastStatusOutput,
       statusPollFailures,
-      logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: true },
+      logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: logsTimedOut },
       diagnosticSecretValues,
     })
   );
+}
+
+export async function writeStatusPollTimeoutDiagnostics({
+  logsPath,
+  runId,
+  lastStatusOutput,
+  statusPollFailures,
+  diagnosticSecretValues = [],
+}) {
+  await writeStatusPollDiagnostics({
+    logsPath,
+    runId,
+    lastStatusOutput,
+    statusPollFailures,
+    terminalStatus: 'status_poll_timeout',
+    logsTimedOut: true,
+    diagnosticSecretValues,
+  });
 }
 
 export async function writeStatusPollDeadlineDiagnostics({
@@ -241,18 +261,15 @@ export async function writeStatusPollDeadlineDiagnostics({
   statusPollFailures,
   diagnosticSecretValues = [],
 }) {
-  await mkdir(path.dirname(logsPath), { recursive: true });
-  await writeFile(
+  await writeStatusPollDiagnostics({
     logsPath,
-    formatCloudRunDiagnostics({
-      runId,
-      terminalStatus: 'status_poll_deadline_exceeded',
-      lastStatusOutput,
-      statusPollFailures,
-      logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: false },
-      diagnosticSecretValues,
-    })
-  );
+    runId,
+    lastStatusOutput,
+    statusPollFailures,
+    terminalStatus: 'status_poll_deadline_exceeded',
+    logsTimedOut: false,
+    diagnosticSecretValues,
+  });
 }
 
 export function recognizedCloudRunStatus(value) {
