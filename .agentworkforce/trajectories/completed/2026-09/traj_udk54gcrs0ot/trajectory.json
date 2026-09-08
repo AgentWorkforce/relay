@@ -1,0 +1,88 @@
+{
+  "id": "traj_udk54gcrs0ot",
+  "version": 1,
+  "task": {
+    "title": "Audit and repair PR #1691 unreadable diff classification",
+    "source": {
+      "system": "plain",
+      "id": "PR-1691"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-08T14:19:33.476Z",
+  "completedAt": "2026-09-08T14:23:09.000Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T14:20:43.980Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_k8jd8pj3clz2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T14:20:43.980Z",
+      "endedAt": "2026-09-08T14:23:09.000Z",
+      "events": [
+        {
+          "ts": 1788877243983,
+          "type": "decision",
+          "content": "Treat the cubic P3 as valid and preserve declared bugfix kinds while clearing the synthetic fallback only for unreadable non-functional declarations: Treat the cubic P3 as valid and preserve declared bugfix kinds while clearing the synthetic fallback only for unreadable non-functional declarations",
+          "raw": {
+            "question": "Treat the cubic P3 as valid and preserve declared bugfix kinds while clearing the synthetic fallback only for unreadable non-functional declarations",
+            "chosen": "Treat the cubic P3 as valid and preserve declared bugfix kinds while clearing the synthetic fallback only for unreadable non-functional declarations",
+            "alternatives": [],
+            "reasoning": "The contract knows a declared bugfix kind even when the diff is unavailable; the defect is coercing non-functional plus unknown diff to bugfix. This is the narrowest semantic repair and avoids widening unrelated behavior."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788877372174,
+          "type": "reflection",
+          "content": "Audit confirmed the single hosted P3 is valid: unreadable non-functional declarations were required but mislabeled as bugfix by the fallback. Rebased cleanly onto origin/main, narrowed kind to null only for that unverifiable path, preserved explicit bugfix metadata, and corrected the Trail metadata to the two PR commits and six-file scope.",
+          "raw": {
+            "focalPoints": [
+              "classification semantics",
+              "hosted feedback",
+              "rebase"
+            ],
+            "confidence": 0.94
+          },
+          "significance": "high",
+          "tags": [
+            "focal:classification semantics",
+            "focal:hosted feedback",
+            "focal:rebase",
+            "confidence:0.94"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Repaired PR #1691 so unreadable non-functional declarations require proof without a fabricated bugfix kind, preserved explicit feature/bugfix kinds, added regression coverage, and corrected the Trail scope metadata.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [
+    "8051b4dae9e41fd666b6c8222dbbf08a28cb72ad",
+    "2138f756447f42f268ab0b6b1ccc5a229fb29880"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot.trace.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/trajectory.json",
+    "scripts/pr-proof/contract.mjs",
+    "scripts/pr-proof/prepare.mjs",
+    "tests/fixtures/pr-proof-contract.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d",
+    "endRef": "2138f756447f42f268ab0b6b1ccc5a229fb29880",
+    "traceId": "50e106cb-ac6a-4e53-b765-2d2793de3351"
+  }
+}
