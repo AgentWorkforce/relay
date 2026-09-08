@@ -1736,6 +1736,152 @@ function boundedAppend(current, chunk, limit) {
   return bytes.byteLength <= limit ? combined : bytes.subarray(bytes.byteLength - limit).toString('utf8');
 }
 
+const STREAM_TOKEN_SPECS = [
+  {
+    prefixes: [
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ],
+    body: /[A-Za-z0-9._~+/=-]/,
+  },
+  {
+    prefixes: ['ghp_', 'gho_', 'ghu_', 'ghr_', 'ghs_', 'github_pat_'],
+    body: /[A-Za-z0-9_]/,
+  },
+  { prefixes: ['sk-proj-', 'sk-ant-'], body: /[A-Za-z0-9._~+/=-]/ },
+];
+const STREAM_TOKEN_PREFIXES = STREAM_TOKEN_SPECS.flatMap(({ prefixes }) => prefixes);
+const STREAM_TOKEN_MIN_BODY_LENGTH = 8;
+
+function splitStringAtBytes(value, maxBytes) {
+  const bytes = Buffer.from(value);
+  if (bytes.byteLength <= maxBytes) return [value, ''];
+  const prefix = bytes.subarray(0, maxBytes).toString('utf8');
+  return [prefix, value.slice(prefix.length)];
+}
+
+function partialSecretStart(value, secrets) {
+  for (const secret of secrets) {
+    const completeStarts = [];
+    let completeStart = value.indexOf(secret);
+    while (completeStart >= 0) {
+      completeStarts.push(completeStart);
+      completeStart = value.indexOf(secret, completeStart + 1);
+    }
+    const firstPossibleIndex = Math.max(0, value.length - secret.length + 1);
+    for (let index = firstPossibleIndex; index < value.length; index += 1) {
+      if (completeStarts.some((start) => index > start && index < start + secret.length)) continue;
+      const suffix = value.slice(index);
+      if (suffix.length < secret.length && secret.startsWith(suffix)) return index;
+    }
+  }
+  return -1;
+}
+
+function partialTokenStart(value) {
+  const completeTokenRanges = [];
+  const incompleteTokenStarts = [];
+  for (const { prefixes, body } of STREAM_TOKEN_SPECS) {
+    for (const prefix of prefixes) {
+      let start = value.indexOf(prefix);
+      while (start >= 0) {
+        let bodyLength = 0;
+        while (body.test(value[start + prefix.length + bodyLength] ?? '')) bodyLength += 1;
+        if (
+          bodyLength < STREAM_TOKEN_MIN_BODY_LENGTH &&
+          start + prefix.length + bodyLength === value.length
+        ) {
+          incompleteTokenStarts.push(start);
+        }
+        if (bodyLength >= STREAM_TOKEN_MIN_BODY_LENGTH) {
+          completeTokenRanges.push({ start, end: start + prefix.length + bodyLength });
+        }
+        start = value.indexOf(prefix, start + 1);
+      }
+    }
+  }
+  const validIncompleteStarts = incompleteTokenStarts.filter(
+    (start) => !completeTokenRanges.some((range) => start >= range.start && start < range.end)
+  );
+  if (validIncompleteStarts.length > 0) return Math.min(...validIncompleteStarts);
+  for (const { prefixes } of STREAM_TOKEN_SPECS) {
+    for (const prefix of prefixes) {
+      const firstPossibleIndex = Math.max(0, value.length - prefix.length + 1);
+      for (let index = firstPossibleIndex; index < value.length; index += 1) {
+        if (completeTokenRanges.some((range) => index >= range.start && index < range.end)) continue;
+        const suffix = value.slice(index);
+        if (suffix.length < prefix.length && prefix.startsWith(suffix)) return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function redactStreamingSegment(value, extraSecrets) {
+  const trailingToken = new RegExp(
+    `(?:${LIVE_CREDENTIAL_PREFIX_SOURCE}|${GITHUB_TOKEN_SOURCE}|${PROVIDER_SECRET_SOURCE})$`
+  ).test(value);
+  if (!trailingToken) return redactFleetEvidence(value, extraSecrets);
+  const marked = redactFleetEvidence(`${value} `, extraSecrets);
+  return marked.endsWith(' ') ? marked.slice(0, -1) : marked;
+}
+
+function createStreamingEvidenceCapture(limit, extraSecrets = []) {
+  const secrets = secretValues(extraSecrets);
+  const overlap = Math.max(
+    64,
+    ...secrets.map((secret) => Buffer.byteLength(secret)),
+    ...STREAM_TOKEN_PREFIXES.map((prefix) => Buffer.byteLength(prefix) + STREAM_TOKEN_MIN_BODY_LENGTH)
+  );
+  let pending = '';
+  let captured = '';
+
+  const flush = (force = false) => {
+    if (!pending) return;
+    const candidateStarts = [partialSecretStart(pending, secrets), partialTokenStart(pending)].filter(
+      (index) => index >= 0
+    );
+    let holdStart = candidateStarts.length > 0 ? Math.min(...candidateStarts) : -1;
+    if (holdStart < 0 && !force) {
+      const split = splitStringAtBytes(pending, Math.max(0, Buffer.byteLength(pending) - overlap));
+      captured = boundedAppend(captured, redactStreamingSegment(split[0], extraSecrets), limit);
+      pending = split[1];
+      return;
+    }
+    if (holdStart < 0) holdStart = pending.length;
+    if (holdStart > 0) {
+      captured = boundedAppend(
+        captured,
+        redactStreamingSegment(pending.slice(0, holdStart), extraSecrets),
+        limit
+      );
+      pending = pending.slice(holdStart);
+    }
+    if (force && pending) {
+      captured = boundedAppend(captured, redactStreamingSegment(pending, extraSecrets), limit);
+      pending = '';
+    }
+  };
+
+  return {
+    append(chunk) {
+      pending += String(chunk);
+      flush();
+    },
+    finish() {
+      flush(true);
+      return captured;
+    },
+  };
+}
+
 function childEnvironment(overrides = {}) {
   const allowedExact = new Set([
     'PATH',
@@ -1787,6 +1933,8 @@ async function execute(argv, options = {}) {
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
   let stderr = '';
+  const stdoutEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
+  const stderrEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
   let stdoutBytes = 0;
   let stderrBytes = 0;
   let stdoutTruncated = false;
@@ -1857,6 +2005,7 @@ async function execute(argv, options = {}) {
       stdoutTruncated ||= stdoutBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stdoutCaptureTruncated ||= stdoutBytes > captureLimit;
       stdout = boundedAppend(stdout, chunk, captureLimit);
+      stdoutEvidence.append(chunk);
     });
     child.stderr.on('data', (chunk) => {
       if (settled) return;
@@ -1864,6 +2013,7 @@ async function execute(argv, options = {}) {
       stderrTruncated ||= stderrBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stderrCaptureTruncated ||= stderrBytes > captureLimit;
       stderr = boundedAppend(stderr, chunk, captureLimit);
+      stderrEvidence.append(chunk);
     });
     child.on('error', (error) => {
       spawnError = error;
@@ -1912,8 +2062,8 @@ async function execute(argv, options = {}) {
     stderrTruncated,
     stdoutCaptureTruncated,
     stderrCaptureTruncated,
-    stdout: boundedAppend('', redactFleetEvidence(stdout, options.extraSecrets), MAX_CAPTURE_BYTES),
-    stderr: boundedAppend('', redactFleetEvidence(stderr, options.extraSecrets), MAX_CAPTURE_BYTES),
+    stdout: boundedAppend('', stdoutEvidence.finish(), MAX_CAPTURE_BYTES),
+    stderr: boundedAppend('', stderrEvidence.finish(), MAX_CAPTURE_BYTES),
     ...(stdinChunks === undefined
       ? {}
       : { stdinBytes: stdinChunks.reduce((total, entry) => total + entry.bytes.length, 0) }),

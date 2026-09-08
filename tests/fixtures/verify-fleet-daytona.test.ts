@@ -2370,24 +2370,23 @@ describe('complete Daytona Fleet board', () => {
 
   it('redacts a credential whose prefix falls in the dropped output prefix (RED-1 adversarial)', async () => {
     // MAX_CAPTURE_BYTES = 16 * 1024 internally.
-    // Use maxCaptureBytes: 2 * MAX_CAPTURE to trigger the second truncation.
     const MAX_CAPTURE = 16 * 1024;
     const secretBody = 'dead1234dead1234dead1234'; // 24 chars — distinctive
     const secret = 'rk_live_' + secretBody; // 32 chars total
-    // Place secret 16 chars before the second-truncation boundary so that the
-    // 8-char prefix 'rk_live_' plus the first 8 body chars end up in the
-    // dropped half and only the trailing body survives.
-    const fillLen = MAX_CAPTURE - 16; // 16368 chars
-    const script = `process.stdout.write('${'x'.repeat(fillLen)}' + ${JSON.stringify(secret)} + 'x'.repeat(${fillLen}))`;
-    const result = await executeFleetCommand([process.execPath, '-e', script], {
-      maxCaptureBytes: 2 * MAX_CAPTURE,
-    });
+    // Place the secret across the default 16 KiB raw-capture boundary. The
+    // raw tail therefore contains only its suffix, which used to bypass the
+    // token regex after truncation.
+    const prefixLen = 100;
+    const suffixLen = MAX_CAPTURE + 8 - prefixLen - secret.length;
+    const script = `process.stdout.write('${'x'.repeat(prefixLen)}' + ${JSON.stringify(secret)} + 'x'.repeat(${suffixLen}))`;
+    const result = await executeFleetCommand([process.execPath, '-e', script]);
     // Raw capture still has the full secret — sanity check.
-    expect(result._rawStdout).toContain(secret);
-    // After fix: full secret is redacted before truncation.
-    // Before fix (current): 16 trailing body chars survive unredacted.
+    expect(result._rawStdout).toContain('dead1234');
+    // Redaction must happen before the 16 KiB bounded public evidence tail is
+    // selected; neither the dropped prefix nor retained suffix may leak.
     expect(result.stdout).not.toContain('dead1234');
     expect(result.stdout).not.toContain('rk_live_');
+    expect(result.stdout).toContain('[REDACTED_TOKEN]');
   });
 
   it('catches credentials embedded adjacent to leading word characters (RED-2 adversarial)', () => {
