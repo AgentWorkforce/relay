@@ -1428,6 +1428,7 @@ async function runSubscribeSetup(
       resource: pathGlob,
       options: effectiveRelayOptions,
       ...(typeof opts.cwd === 'string' ? { cwd: opts.cwd } : {}),
+      ...(typeof opts.brokerConnection === 'string' ? { brokerConnectionPath: opts.brokerConnection } : {}),
       ...(typeof opts.task === 'string' ? { task: opts.task } : {}),
     });
   } else if (recipientName && !(await relay.agents.list()).some((agent) => agent.name === recipientName)) {
@@ -1860,6 +1861,10 @@ export function registerIntegrationCommands(
       .option('--to <target>', 'Relay recipient, e.g. @agent or #channel')
       .option('--spawn <cli>', 'Launch and confirm a live recipient before subscribing the explicit resource')
       .option('--cwd <path>', 'Working directory for the spawned recipient')
+      .option(
+        '--broker-connection <path>',
+        'Explicit broker connection.json for --spawn; workspace must match'
+      )
       .option('--task <text>', 'Task for the spawned recipient; resource scope comes only from --resource')
       .option('--events <list>', 'Comma-separated relay event names', 'message.created,thread.reply')
       .option('--bridge-url <url>', 'Writeback bridge URL')

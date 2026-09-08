@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Subscription worker cleanup removes its identity after the owned process stops, even when its host binding is already gone; `--broker-connection` selects an explicit node connection file with workspace verification.
+
 - Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
 - Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
 - MCP raw CLI spawns wait for harness readiness and report terminal startup errors.

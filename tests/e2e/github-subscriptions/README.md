@@ -13,6 +13,15 @@ node tests/e2e/github-subscriptions/run.mjs prepare /absolute/demo-config.json
 
 `prepare` creates one clearly labelled PR per repository, each targeting its own disposable base branch. It records every acknowledged mutation immediately in `manifest.json`; it never updates main. If interrupted between a server mutation and the manifest write, reconcile the deterministic branch/PR names before retrying. Never adopt an unrelated existing fixture. Comments and reviews remain on closed disposable PRs as evidence after cleanup.
 
+The runner can provision and update its owned subscriptions using `subscribe`, and retire them using `unsubscribe`. It refuses unowned binding replacements and verifies old resource IDs disappear. Set `brokerProjectRoot`, `receiverCwd`, `receiverCli`, `subscriptionScope` (`issue`, `pr`, or `repo`) and `spawnReceiver` explicitly. For chief, set `spawnReceiver: false`. Start `collect` before `subscribe`; it reloads channel configuration after provisioning.
+
+```sh
+node tests/e2e/github-subscriptions/run.mjs subscribe /absolute/demo-config.json
+# Repeat to exercise create-first replacement and retirement of prior IDs.
+node tests/e2e/github-subscriptions/run.mjs subscribe /absolute/demo-config.json
+node tests/e2e/github-subscriptions/run.mjs unsubscribe /absolute/demo-config.json
+```
+
 Provision subscriptions with the built CLI from the project attached to the intended broker. Before changing anything, record `RelayfileControlPlaneClient.listBindings()` and `listWebhookSubscriptions(workspace)` and the Relaycast webhook inventory. An inventory timeout is a failed preflight, not permission to overwrite unknown configuration. The current binding key is `(provider, resolved path glob)`: subscribing to the same resource replaces its route. Use fresh fixture scopes and record the previous binding before testing an update.
 
 For explicit context use a canonical VFS glob. `owner/repo` resolves repository scope; provider URLs are not currently accepted by the Relayfile resolver. Examples below are syntax examples; replace `123` with the owned manifest number.
@@ -21,7 +30,7 @@ For explicit context use a canonical VFS glob. `owner/repo` resolves repository 
 # A real, confirmed harness is launched before the subscription is created.
 agent-relay integration subscribe github \
   --resource '/github/repos/AgentWorkforce/relay/issues/123/**' \
-  --to @ghsub-demo-worker --spawn claude --cwd /absolute/fixture-workdir \
+  --to @ghsub-demo-worker --spawn claude --broker-connection /absolute/node/state/connection.json --cwd /absolute/fixture-workdir \
   --task "$(node /absolute/relay/tests/e2e/github-subscriptions/run.mjs receiver-task /absolute/demo-config.json)"
 
 # PR metadata context and repository context are explicit separate scopes.
@@ -73,3 +82,5 @@ Run assertion regression tests without credentials or outward mutations:
 ```sh
 node --test tests/e2e/github-subscriptions/proof.test.mjs
 ```
+
+For an isolated HTTP/WebSocket/broker rehearsal of invalid cwd, early process exit, two-channel membership and generation-safe release, run `local-startup.mjs` with `RELAYCAST_ENGINE_DIR` and `BROKER_BINARY_PATH` pointing to candidate builds. It uses native process fixtures, not an AI harness or real GitHub delivery, and never marks live readiness.

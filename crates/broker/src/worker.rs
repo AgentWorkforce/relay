@@ -415,6 +415,7 @@ impl WorkerRegistry {
                     "context_budget_pct": handle.context_budget_pct,
                     "current_state": handle.state.as_str(),
                     "ready": handle.ready_at.is_some(),
+                    "generation": handle.generation.to_string(),
                     "pending_messages": pending_messages.get(name).copied().unwrap_or(0),
                     "runtime_kind": if native_harness.is_some() { "native" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
                     "native_harness_protocol_version": native_harness.as_ref().map(|(version, _)| *version),

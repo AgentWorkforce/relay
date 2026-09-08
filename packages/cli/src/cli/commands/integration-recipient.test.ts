@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ connect: vi.fn() }));
+const mocks = vi.hoisted(() => ({ connect: vi.fn(), directConnect: vi.fn() }));
+vi.mock('@agent-relay/harness-driver', () => ({ HarnessDriverClient: { connect: mocks.directConnect } }));
 vi.mock('../lib/project-broker-client.js', () => ({ connectProjectBrokerClient: mocks.connect }));
 import { launchSubscriptionRecipient, resolveSubscriptionAgentChannel } from './integration-recipient.js';
 
@@ -30,6 +31,7 @@ describe('subscription recipient launch', () => {
       disconnect: vi.fn(),
     };
     mocks.connect.mockReturnValue(client);
+    mocks.directConnect.mockReturnValue(client);
     vi.spyOn(process, 'kill').mockReturnValue(true);
   });
   afterEach(() => {
@@ -71,6 +73,14 @@ describe('subscription recipient launch', () => {
     await expect(launchSubscriptionRecipient(input)).rejects.toThrow('different workspace');
     expect(client.spawnCli).not.toHaveBeenCalled();
     expect(handle.release).not.toHaveBeenCalled();
+  });
+  it('checks the workspace even when an explicit broker connection file is selected', async () => {
+    client.getSession.mockResolvedValue({ workspace_key: 'rk_live_other' });
+    await expect(
+      launchSubscriptionRecipient({ ...input, brokerConnectionPath: '/tmp/owned-broker/connection.json' })
+    ).rejects.toThrow('different workspace');
+    expect(mocks.directConnect).toHaveBeenCalledWith({ connectionPath: '/tmp/owned-broker/connection.json' });
+    expect(client.spawnCli).not.toHaveBeenCalled();
   });
   it('does not release an existing live worker on a later setup failure', async () => {
     client.listAgents.mockResolvedValue([{ name: 'fresh', cli: 'claude', pid: 123, ready: true }]);

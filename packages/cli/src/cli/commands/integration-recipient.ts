@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { getProjectPaths } from '@agent-relay/config';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { resolveBaseUrl, resolveWorkspaceKey, type SdkClientOptions } from '../lib/sdk-client.js';
@@ -15,6 +16,7 @@ export interface RecipientLaunchInput {
   provider: string;
   resource: string;
   cwd?: string;
+  brokerConnectionPath?: string;
   task?: string;
   options: SdkClientOptions;
 }
@@ -29,7 +31,9 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
       throw new Error(`Invalid recipient cwd: ${workerCwd} must be an existing directory`);
     }
   }
-  const client = connectProjectBrokerClient(getProjectPaths().projectRoot);
+  const client = input.brokerConnectionPath
+    ? HarnessDriverClient.connect({ connectionPath: resolve(input.brokerConnectionPath) })
+    : connectProjectBrokerClient(getProjectPaths().projectRoot);
   let owned: Awaited<ReturnType<typeof client.spawnCli>> | undefined;
   try {
     const session = await client.getSession();

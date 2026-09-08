@@ -943,7 +943,9 @@ impl RelaycastHttpClient {
             let request = ReleaseAgentRequest {
                 name: agent_name.to_string(),
                 reason: Some(attributed_reason),
-                delete_agent: None,
+                // The owning broker already stopped (or failed to launch) this process.
+                // Permit authoritative identity cleanup even if its host binding is gone.
+                delete_agent: Some(true),
             };
             // Invalidate the cached token before the call so an ambiguous
             // response (e.g. a timeout after Relaycast committed the release)
@@ -1805,7 +1807,8 @@ mod tests {
                 .header("authorization", "Bearer rk_live_test")
                 .json_body(json!({
                     "name": "worker-a",
-                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)",
+                    "delete_agent": true
                 }));
             then.status(200).json_body(json!({
                 "ok": true,

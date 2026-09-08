@@ -10,10 +10,20 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const [command, configFile, ...args] = process.argv.slice(2);
 if (
   !configFile ||
-  !['preflight', 'prepare', 'collect', 'emit', 'assert', 'cleanup', 'receiver-task'].includes(command)
+  ![
+    'preflight',
+    'prepare',
+    'subscribe',
+    'unsubscribe',
+    'collect',
+    'emit',
+    'assert',
+    'cleanup',
+    'receiver-task',
+  ].includes(command)
 ) {
   console.error(
-    'Usage: node tests/e2e/github-subscriptions/run.mjs <preflight|prepare|collect|emit|assert|cleanup|receiver-task> config.json [arguments]'
+    'Usage: node tests/e2e/github-subscriptions/run.mjs <preflight|prepare|subscribe|unsubscribe|collect|emit|assert|cleanup|receiver-task> config.json [arguments]'
   );
   process.exit(2);
 }
@@ -198,6 +208,187 @@ function prepare() {
       save();
     }
     console.log(JSON.stringify({ repo, pr: fixture.url, head: fixture.head, base: fixture.base }));
+  }
+}
+
+const publicBinding = (b) =>
+  Object.fromEntries(
+    [
+      'provider',
+      'pathGlob',
+      'channel',
+      'webhookId',
+      'subscriptionId',
+      'webhookSubscriptionId',
+      'webhookSubscriptionWorkspaceId',
+    ]
+      .filter((k) => b[k] !== undefined)
+      .map((k) => [k, b[k]])
+  );
+const sameBinding = (a, b) =>
+  ['provider', 'pathGlob', 'channel', 'webhookId', 'subscriptionId', 'webhookSubscriptionId'].every(
+    (k) => a[k] === b[k]
+  );
+async function subscriptions(remove = false) {
+  const { RelayfileControlPlaneClient } = await import('@relayfile/client');
+  const { HarnessDriverClient } = await import(path.join(root, 'packages/harness-driver/dist/index.js'));
+  if (!config.brokerProjectRoot || !config.receiverCwd)
+    throw new Error('Configure brokerProjectRoot and receiverCwd explicitly');
+  if (config.receiver === 'chief' && config.spawnReceiver !== false)
+    throw new Error('Chief must already exist; never spawn a substitute chief');
+  const cp = new RelayfileControlPlaneClient({ autoStart: false, requestTimeoutMs: 15000 });
+  const broker = HarnessDriverClient.connect({ connectionPath: config.brokerConnectionPath });
+  try {
+    const session = await broker.getSession();
+    if (session.workspace_key !== process.env.RELAY_WORKSPACE_KEY)
+      throw new Error('Explicit workspace differs from broker workspace');
+    const before = (await cp.listBindings()).map(publicBinding);
+    const remote = await cp.listWebhookSubscriptions(session.default_workspace_id);
+    const remoteSubscriptions = remote.subscriptions ?? [];
+    const hooksBefore = (await cast('/v1/webhooks')).map((h) => ({ id: h.webhook_id ?? h.id }));
+    const subscriptionsBefore = (await cast('/v1/subscriptions')).map((x) => ({ id: x.id }));
+    // No resources or workers are created before all inventories succeed.
+    record('subscription-inventory-before', {
+      at: new Date().toISOString(),
+      bindings: before,
+      hooks: hooksBefore,
+      relaySubscriptions: subscriptionsBefore,
+      subscriptions: remoteSubscriptions.map((x) => ({ id: x.subscriptionId, pathGlobs: x.pathGlobs })),
+    });
+    const cli = path.join(root, 'packages/cli/dist/cli/index.js');
+    const invoke = (argv) =>
+      execFileSync(process.execPath, [cli, 'integration', ...argv, '--base-url', config.castUrl], {
+        cwd: config.brokerProjectRoot,
+        env: { ...process.env, RELAY_AGENT_TOKEN: '', RELAY_BASE_URL: config.castUrl },
+        encoding: 'utf8',
+        timeout: 180000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    if (remove) {
+      for (const owned of manifest.subscriptions.filter((s) => !s.removed)) {
+        const current = (await cp.listBindings())
+          .map(publicBinding)
+          .find((b) => b.provider === 'github' && b.pathGlob === owned.pathGlob);
+        if (!current || !sameBinding(current, owned.binding))
+          throw new Error(
+            `Binding changed outside this run: ${owned.pathGlob}; reconcile ownership before cleanup`
+          );
+        invoke(['unsubscribe', '--provider', 'github', '--resource', owned.pathGlob]);
+        const remaining = await cp.listBindings();
+        if (remaining.some((b) => b.provider === 'github' && b.pathGlob === owned.pathGlob))
+          throw new Error('Owned binding survived unsubscribe');
+        const remoteAfter = await cp.listWebhookSubscriptions(session.default_workspace_id);
+        if (
+          (remoteAfter.subscriptions ?? []).some(
+            (s) => s.subscriptionId === owned.binding.webhookSubscriptionId
+          )
+        )
+          throw new Error('Owned webhook subscription survived unsubscribe');
+        if (
+          (await cast('/v1/webhooks')).some((h) => (h.webhook_id ?? h.id) === owned.binding.webhookId) ||
+          (await cast('/v1/subscriptions')).some((s) => s.id === owned.binding.subscriptionId)
+        )
+          throw new Error('Owned Relaycast hook/subscription survived unsubscribe');
+        owned.removed = true;
+        save();
+      }
+      if (manifest.worker && !manifest.worker.released) {
+        const current = (await broker.listAgents()).find((w) => w.name === manifest.worker.name);
+        if (current && current.generation !== manifest.worker.generation)
+          throw new Error('Worker generation changed; refusing to clean up its replacement');
+        if (current)
+          await broker.release(current.name, 'owned GitHub demo cleanup', manifest.worker.generation);
+        manifest.worker.released = true;
+        save();
+      }
+      return;
+    }
+    for (const fixture of manifest.fixtures) {
+      if (!fixture.pr) throw new Error('Prepare the fixture PRs before subscribing');
+      const scope = config.subscriptionScope ?? 'issue';
+      if (!['issue', 'pr', 'repo'].includes(scope))
+        throw new Error('subscriptionScope must be issue, pr or repo');
+      const pathGlob = `/github/repos/${fixture.repo}/${scope === 'repo' ? '**' : `${scope === 'pr' ? 'pulls' : 'issues'}/${fixture.pr}/**`}`;
+      const owned = manifest.subscriptions.find((s) => s.pathGlob === pathGlob && !s.removed);
+      const current = (await cp.listBindings())
+        .map(publicBinding)
+        .find((b) => b.provider === 'github' && b.pathGlob === pathGlob);
+      if (current && (!owned || !sameBinding(current, owned.binding)))
+        throw new Error(`Refusing to replace an unowned binding: ${pathGlob}`);
+      if (!owned && remoteSubscriptions.some((s) => s.pathGlobs?.includes(pathGlob)))
+        throw new Error(`An unowned remote subscription already uses ${pathGlob}`);
+      const existingWorker = (await broker.listAgents()).find((w) => w.name === config.receiver);
+      if (!existingWorker && config.spawnReceiver === false)
+        throw new Error(`Required existing actor ${config.receiver} is missing`);
+      const argv = ['subscribe', 'github', '--resource', pathGlob, '--to', `@${config.receiver}`];
+      if (config.spawnReceiver !== false)
+        argv.push(
+          '--spawn',
+          config.receiverCli ?? 'claude',
+          '--broker-connection',
+          config.brokerConnectionPath,
+          '--cwd',
+          config.receiverCwd,
+          '--task',
+          receiverTask
+        );
+      manifest.subscriptionIntent = { pathGlob, actor: config.receiver, at: new Date().toISOString() };
+      save();
+      invoke(argv);
+      const binding = (await cp.listBindings())
+        .map(publicBinding)
+        .find((b) => b.provider === 'github' && b.pathGlob === pathGlob);
+      if (!binding?.webhookSubscriptionId)
+        throw new Error('Subscribe returned without a verifiable binding and webhook subscription');
+      if (owned) {
+        owned.previousBindings ??= [];
+        owned.previousBindings.push(owned.binding);
+        owned.binding = binding;
+      } else manifest.subscriptions.push({ pathGlob, binding, createdAt: new Date().toISOString() });
+      delete manifest.subscriptionIntent;
+      save();
+      const worker = (await broker.listAgents()).find((w) => w.name === config.receiver);
+      if (!worker?.ready || !worker.pid || !worker.generation)
+        throw new Error('Subscribed worker is not confirmed ready with PID and generation');
+      process.kill(worker.pid, 0);
+      if (!existingWorker) {
+        manifest.worker = { name: worker.name, generation: worker.generation, pid: worker.pid };
+        save();
+      }
+      const remoteAfter = await cp.listWebhookSubscriptions(session.default_workspace_id);
+      if (!(remoteAfter.subscriptions ?? []).some((s) => s.subscriptionId === binding.webhookSubscriptionId))
+        throw new Error('New producer subscription is absent from inventory');
+      for (const previous of owned?.previousBindings ?? []) {
+        if (
+          (remoteAfter.subscriptions ?? []).some(
+            (s) => s.subscriptionId === previous.webhookSubscriptionId
+          ) ||
+          (await cast('/v1/webhooks')).some((h) => (h.webhook_id ?? h.id) === previous.webhookId) ||
+          (await cast('/v1/subscriptions')).some((s) => s.id === previous.subscriptionId)
+        )
+          throw new Error('Superseded resources remain; retry recorded CLI cleanup before lifecycle signoff');
+      }
+      const actor = await cast(`/v1/agents/${encodeURIComponent(config.receiver)}`);
+      const channel = await cast(`/v1/channels/${encodeURIComponent(binding.channel)}`);
+      if (channel.members.length !== 1 || channel.members[0].agent_id !== actor.id)
+        throw new Error('Exact recipient channel membership did not verify');
+      config.actors[config.receiver] = binding.channel;
+      config.actorIds[config.receiver] = actor.id;
+      writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');
+      console.log(
+        JSON.stringify({
+          repo: fixture.repo,
+          pathGlob,
+          actor: worker.name,
+          channel: binding.channel,
+          pid: worker.pid,
+          generation: worker.generation,
+          subscriptionId: binding.webhookSubscriptionId,
+        })
+      );
+    }
+  } finally {
+    broker.disconnect();
   }
 }
 
@@ -431,6 +622,8 @@ function cleanup() {
 try {
   if (command === 'preflight') await preflight();
   if (command === 'prepare') prepare();
+  if (command === 'subscribe') await subscriptions();
+  if (command === 'unsubscribe') await subscriptions(true);
   if (command === 'collect') await collect();
   if (command === 'emit') emit();
   if (command === 'assert') assertProof();

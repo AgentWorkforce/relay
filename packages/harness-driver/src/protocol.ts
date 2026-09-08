@@ -240,6 +240,8 @@ export interface ListAgent {
   pid?: number;
   /** True only after the broker observed worker_ready for this process generation. */
   ready?: boolean;
+  /** Immutable identity for generation-checked cleanup. */
+  generation?: string;
   last_activity_at?: string;
   last_activity_ms?: number;
   context_budget_pct?: number | null;
