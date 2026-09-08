@@ -247,6 +247,14 @@ function statusFrom(payload) {
   throw new Error('Cloud status response did not contain a status');
 }
 
+export function recognizedCloudStatusFromOutput(output) {
+  try {
+    return statusFrom(parseJsonOutput(output, 'Cloud status'));
+  } catch {
+    return null;
+  }
+}
+
 function requiredCredential(env, name) {
   const value = env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
@@ -476,7 +484,7 @@ export async function main() {
         continue;
       }
       lastStatusOutput = statusResult.stdout.trim();
-      const status = statusFrom(parseJsonOutput(statusResult.stdout, 'Cloud status'));
+      const status = recognizedCloudStatusFromOutput(statusResult.stdout);
       if (!status) {
         statusPollFailures += 1;
         console.warn('Cloud RelayFlow status: <unrecognized>');

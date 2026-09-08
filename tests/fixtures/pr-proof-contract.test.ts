@@ -52,6 +52,7 @@ import {
   formatCloudRunDiagnostics,
   parseJsonOutput,
   preparedRunIdFromOutput,
+  recognizedCloudStatusFromOutput,
   recognizedCloudRunStatus,
   sanitizeCloudCommandOutput,
   sanitizeCloudStatusDiagnostic,
@@ -535,6 +536,12 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(recognizedCloudRunStatus('failed')).toBe('failed');
     expect(recognizedCloudRunStatus('running-opaque-secret')).toBeNull();
     expect(recognizedCloudRunStatus(null)).toBeNull();
+  });
+
+  it('treats malformed and status-less successful poll output as retryable', () => {
+    expect(recognizedCloudStatusFromOutput('{"status":unknown-secret}')).toBeNull();
+    expect(recognizedCloudStatusFromOutput('{"runId":"still-running"}')).toBeNull();
+    expect(recognizedCloudStatusFromOutput('{"workflowRun":{"status":"running"}}')).toBe('running');
   });
 
   it('redacts configured and recognized credentials from raw command output and artifacts', () => {
