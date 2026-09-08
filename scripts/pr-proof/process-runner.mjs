@@ -104,6 +104,14 @@ export function runBoundedProcess(command, args, options = {}) {
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
 
+    // Transforms run before capture, live output, and callbacks. A transform
+    // may retain a small streaming boundary and is called once more with
+    // `final=true` after the decoder has been flushed.
+    const transformOutput = (stream, text, final = false) => {
+      if (typeof options.transformChunk !== 'function') return text;
+      return options.transformChunk(text, stream, final) ?? '';
+    };
+
     const forceKill = () => {
       if (forced) return;
       forced = true;
@@ -152,20 +160,22 @@ export function runBoundedProcess(command, args, options = {}) {
       }
     };
 
-    child.stdout.on('data', (chunk) => {
-      const text = stdoutDecoder.write(chunk);
-      if (!text) return;
-      stdout = appendBounded(stdout, text, maximum);
-      options.onStdout?.(text);
-      writeLiveOutput(process.stdout, text);
-    });
-    child.stderr.on('data', (chunk) => {
-      const text = stderrDecoder.write(chunk);
-      if (!text) return;
-      stderr = appendBounded(stderr, text, maximum);
-      options.onStderr?.(text);
-      writeLiveOutput(process.stderr, text);
-    });
+    const consumeOutput = (stream, text, final = false) => {
+      const transformed = transformOutput(stream, text, final);
+      if (!transformed) return;
+      if (stream === 'stdout') {
+        stdout = appendBounded(stdout, transformed, maximum);
+        options.onStdout?.(transformed);
+        writeLiveOutput(process.stdout, transformed);
+      } else {
+        stderr = appendBounded(stderr, transformed, maximum);
+        options.onStderr?.(transformed);
+        writeLiveOutput(process.stderr, transformed);
+      }
+    };
+
+    child.stdout.on('data', (chunk) => consumeOutput('stdout', stdoutDecoder.write(chunk)));
+    child.stderr.on('data', (chunk) => consumeOutput('stderr', stderrDecoder.write(chunk)));
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
@@ -182,16 +192,10 @@ export function runBoundedProcess(command, args, options = {}) {
       cleanup();
       const stdoutTail = stdoutDecoder.end();
       const stderrTail = stderrDecoder.end();
-      stdout = appendBounded(stdout, stdoutTail, maximum);
-      stderr = appendBounded(stderr, stderrTail, maximum);
-      if (stdoutTail) {
-        options.onStdout?.(stdoutTail);
-        writeLiveOutput(process.stdout, stdoutTail);
-      }
-      if (stderrTail) {
-        options.onStderr?.(stderrTail);
-        writeLiveOutput(process.stderr, stderrTail);
-      }
+      consumeOutput('stdout', stdoutTail);
+      consumeOutput('stderr', stderrTail);
+      consumeOutput('stdout', '', true);
+      consumeOutput('stderr', '', true);
       resolve({ exitCode: code ?? 1, signal, stdout, stderr, timedOut, aborted });
     });
   });

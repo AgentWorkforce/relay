@@ -480,6 +480,19 @@ export async function ensureCloudFleetSandbox(
       });
     }
     const error = endpointError('provision the fleet sandbox', response, payload);
+    if (
+      response.status >= 500 &&
+      sandboxIdentity.sandboxId !== undefined &&
+      returnedSandboxId === undefined
+    ) {
+      throw new CloudFleetSandboxProvisionError(error.message, {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
+        outcomeUnknown: true,
+        cause: error,
+      });
+    }
     if (isObject(payload) && readString(payload, 'sandboxId')) {
       throw new CloudFleetSandboxProvisionError(error.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,

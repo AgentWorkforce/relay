@@ -31,8 +31,17 @@ const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const DIAGNOSTIC_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
-const LIVE_CREDENTIAL_RE =
-  /(rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
+const LIVE_CREDENTIAL_PREFIXES = [
+  'rk_live_',
+  'rjt_live_',
+  'at_live_',
+  'nt_live_',
+  'ot_live_',
+  'cld_at_',
+  'rth_at_',
+  'ocl_node_enr_',
+  'br_',
+];
 const STATUS_DIAGNOSTIC_FIELDS = [
   'runId',
   'status',
@@ -45,6 +54,9 @@ const STATUS_DIAGNOSTIC_FIELDS = [
 const STATUS_FAILURE_DIAGNOSTIC_FIELDS = ['phase', 'code', 'dispatchType', 'sandboxId', 'occurredAt'];
 
 function run(command, args, options = {}) {
+  const diagnosticSecretValues = options.diagnosticSecretValues ?? [];
+  const stdoutRedactor = createCredentialRedactor(diagnosticSecretValues);
+  const stderrRedactor = createCredentialRedactor(diagnosticSecretValues);
   return runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
@@ -54,6 +66,8 @@ function run(command, args, options = {}) {
     signal: options.signal,
     onStdout: options.onStdout,
     onStderr: options.onStderr,
+    transformChunk: (text, stream, final) =>
+      (stream === 'stdout' ? stdoutRedactor : stderrRedactor).push(text, final),
   });
 }
 
@@ -98,13 +112,144 @@ export function boundedDiagnostic(value) {
   return `${tail}${marker}`;
 }
 
-export function sanitizeCloudCommandOutput(value, secretValues = []) {
-  let text = String(value ?? '').replace(LIVE_CREDENTIAL_RE, (_match, prefix) => `${prefix}…`);
-  for (const secretValue of secretValues) {
-    const secret = typeof secretValue === 'string' ? secretValue : '';
-    if (secret) text = text.split(secret).join('[redacted]');
+function longestSuffixThatStartsSecret(value, secrets) {
+  const maximum = Math.min(value.length, Math.max(...secrets.map((secret) => secret.length), 0) - 1);
+  for (let length = maximum; length > 0; length -= 1) {
+    const suffix = value.slice(value.length - length);
+    if (secrets.some((secret) => secret.startsWith(suffix))) return length;
   }
-  return text;
+  return 0;
+}
+
+function createCredentialPrefixRedactor() {
+  let pending = '';
+  let active = null;
+
+  return {
+    push(value, final = false) {
+      const input = pending + String(value ?? '');
+      pending = '';
+      let output = '';
+      let index = 0;
+
+      while (index < input.length) {
+        if (active) {
+          if (!active.emitted) {
+            if (/[A-Za-z0-9_%-]/.test(input[index])) {
+              output += `${active.prefix}…`;
+              active.emitted = true;
+            } else {
+              output += active.prefix;
+              active = null;
+              continue;
+            }
+          }
+          while (index < input.length && /[A-Za-z0-9_%.%-]/.test(input[index])) index += 1;
+          if (index === input.length) {
+            if (final) active = null;
+            break;
+          }
+          active = null;
+          continue;
+        }
+
+        let prefixIndex = -1;
+        let prefix;
+        for (let candidateIndex = index; candidateIndex < input.length; candidateIndex += 1) {
+          const candidate = LIVE_CREDENTIAL_PREFIXES.find((value) => input.startsWith(value, candidateIndex));
+          if (candidate) {
+            prefixIndex = candidateIndex;
+            prefix = candidate;
+            break;
+          }
+        }
+        if (prefix) {
+          output += input.slice(index, prefixIndex);
+          index = prefixIndex;
+          active = { prefix, emitted: false };
+          index += prefix.length;
+          continue;
+        }
+
+        if (!final) {
+          const suffixLength = longestSuffixThatStartsSecret(input.slice(index), LIVE_CREDENTIAL_PREFIXES);
+          if (suffixLength > 0) {
+            const end = input.length - suffixLength;
+            output += input.slice(index, end);
+            pending = input.slice(end);
+            break;
+          }
+        }
+        output += input[index];
+        index += 1;
+      }
+
+      if (final && active && !active.emitted) output += active.prefix;
+      if (final) {
+        active = null;
+        if (pending) {
+          output += pending;
+          pending = '';
+        }
+      }
+      return output;
+    },
+  };
+}
+
+function createConfiguredSecretRedactor(secretValues) {
+  const secrets = [...new Set(secretValues.filter((value) => typeof value === 'string' && value))];
+  let pending = '';
+
+  return {
+    push(value, final = false) {
+      if (secrets.length === 0) return String(value ?? '');
+      const input = pending + String(value ?? '');
+      pending = '';
+      let output = '';
+      let index = 0;
+      while (index < input.length) {
+        const secret = secrets.find((candidate) => input.startsWith(candidate, index));
+        if (secret) {
+          output += '[redacted]';
+          index += secret.length;
+          continue;
+        }
+        if (!final) {
+          const suffixLength = longestSuffixThatStartsSecret(input.slice(index), secrets);
+          if (suffixLength > 0) {
+            const end = input.length - suffixLength;
+            output += input.slice(index, end);
+            pending = input.slice(end);
+            break;
+          }
+        }
+        output += input[index];
+        index += 1;
+      }
+      if (final) {
+        output += pending;
+        pending = '';
+      }
+      return output;
+    },
+  };
+}
+
+/** Redact credentials across subprocess chunks before bounded capture. */
+export function createCredentialRedactor(secretValues = []) {
+  const prefixRedactor = createCredentialPrefixRedactor();
+  const secretRedactor = createConfiguredSecretRedactor(secretValues);
+  return {
+    push(value, final = false) {
+      const prefixed = prefixRedactor.push(value, final);
+      return secretRedactor.push(prefixed, final);
+    },
+  };
+}
+
+export function sanitizeCloudCommandOutput(value, secretValues = []) {
+  return createCredentialRedactor(secretValues).push(value, true);
 }
 
 function structuralDiagnosticValue(field, value, secretValues) {
@@ -407,7 +552,11 @@ export async function main() {
     const controller = new AbortController();
     activeCommandController = controller;
     try {
-      return await run(command, args, { ...options, signal: controller.signal });
+      return await run(command, args, {
+        ...options,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
+        signal: controller.signal,
+      });
     } finally {
       if (activeCommandController === controller) activeCommandController = null;
     }
@@ -426,6 +575,7 @@ export async function main() {
         env: auth.cliEnv,
         quiet: true,
         timeoutMs: commandTimeoutMs,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
       });
       if (result.exitCode !== 0 || result.timedOut) {
         console.warn(

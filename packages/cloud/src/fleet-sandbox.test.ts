@@ -458,6 +458,61 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('marks an identifier-less server failure unknown without exposing a cleanup ID', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'provider timed out after allocation' }, { status: 504 }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      providerId: 'e2b',
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      providerId: 'e2b',
+      outcomeUnknown: true,
+      sandboxId: undefined,
+    });
+    expect(String(error)).toContain('provider timed out after allocation');
+  });
+
+  it('keeps a proven client error ordinary when a stable sandbox ID was supplied', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'invalid capability' }, { status: 422 }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).not.toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({ message: expect.stringContaining('invalid capability') });
+  });
+
   it('does not expose a matching sandbox identity from a malformed success for cleanup', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({

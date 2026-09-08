@@ -47,6 +47,7 @@ import {
   boundedDiagnostic,
   boundedDuration,
   createPreparedRunProgressParser,
+  createCredentialRedactor,
   createCliApiKeyEnvironment,
   formatCloudRunArtifact,
   formatCloudRunDiagnostics,
@@ -59,6 +60,8 @@ import {
   writeStatusPollDeadlineDiagnostics,
   writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { runBoundedProcess } from '../../scripts/pr-proof/process-runner.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   openVerifiedBrokerExecutable,
@@ -592,6 +595,30 @@ describe('Cloud dispatcher API key lifecycle', () => {
 
     expect(artifact).toContain('workflow output [redacted]…');
     expect(artifact).not.toContain(credentialSuffix);
+  });
+
+  it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {
+    const redactor = createCredentialRedactor(['split-secret']);
+    const sanitized =
+      redactor.push('prefix rk_', false) +
+      redactor.push('live_0123456789 split-', false) +
+      redactor.push('secret tail', true);
+    expect(sanitized).toBe('prefix rk_live_… [redacted] tail');
+
+    const longCredential = 'a'.repeat(200_000);
+    const capture = await runBoundedProcess(
+      process.execPath,
+      ['-e', `process.stdout.write('head rk_live_${longCredential} tail')`],
+      {
+        echo: false,
+        maxCaptureBytes: 128,
+        maxLiveOutputBytes: 128,
+        transformChunk: (text, stream, final) => redactor.push(text, final),
+      }
+    );
+
+    expect(capture.stdout).toBe('head rk_live_… tail');
+    expect(capture.stdout).not.toContain(longCredential);
   });
 
   it('omits malformed JSON status payloads instead of falling back to raw output', () => {

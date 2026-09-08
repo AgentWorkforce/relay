@@ -1209,7 +1209,7 @@ describe('fleet command support', () => {
     });
   });
 
-  it('identifies the requested node when the provisioning response is interrupted', async () => {
+  it('keeps the caller sandbox ID for replay guidance after an identifier-less server failure', async () => {
     const warnings: string[] = [];
     const deleteCloudFleetSandbox = vi.fn();
     const program = new Command();
@@ -1231,6 +1231,7 @@ describe('fleet command support', () => {
         throw new CloudFleetSandboxProvisionError('request interrupted', {
           cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
           nodeName: 'daytona-codex',
+          providerId: 'e2b',
           outcomeUnknown: true,
         });
       }),
@@ -1248,6 +1249,8 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-provider',
+          'e2b',
           '--sandbox-id',
           REPLAY_SANDBOX_ID,
           '--sandbox-name',
