@@ -59,6 +59,7 @@ import {
 } from '../../scripts/verify-features/fleet-cli-inventory.mjs';
 
 const NONCE = 'a'.repeat(32);
+const SECRET_OPTION_TOKENS = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
 const execFileAsync = promisify(execFile);
 
 type WorkflowStepDeclaration = {
@@ -212,7 +213,7 @@ function operationRecord(operation: {
       }
       const index = argv.indexOf(entry.argvToken ?? entry.option);
       if (index >= 0 && (argv[index + 1] === undefined || argv[index + 1].startsWith('--'))) {
-        argv.splice(index + 1, 0, 'fixture-value');
+        argv.splice(index + 1, 0, SECRET_OPTION_TOKENS.has(entry.option) ? '[REDACTED]' : 'fixture-value');
       }
     }
   }
@@ -918,6 +919,7 @@ describe('complete Daytona Fleet board', () => {
         agentName: 'worker',
         task: 'task',
         sandbox: true,
+        sandboxName: 'sandbox-scoped',
         mountPaths: ['/tests/**'],
       })
     );
