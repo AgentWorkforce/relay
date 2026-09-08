@@ -85,6 +85,7 @@ jobs:
         working-directory: relay-verifier
         run: |
           set -euo pipefail
+          chmod 600 "${RUNNER_TEMP}/relay-cleanroom-qualification-request/relay-cleanroom-qualification-request.json"
           node scripts/verify-features/relay-cleanroom-qualification-request.mjs validate-request \
             --context "${RUNNER_TEMP}/request-context.json" \
             --selection "${RUNNER_TEMP}/request-artifact-selection.json" \
@@ -335,14 +336,13 @@ jobs:
       - name: Create isolated ephemeral Cloud workspace A
         id: workspace_a
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
           CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
         run: |
           chmod 0700 "$RUNNER_TEMP"
-          node "$VERIFY_FLEET_CLI" cloud workspace create \
+          node relay-verifier/packages/cli/dist/cli/index.js cloud workspace create \
             --ephemeral \
             --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a" \
             --ttl 24h \
@@ -355,13 +355,12 @@ jobs:
       - name: Create isolated ephemeral Cloud workspace B
         id: workspace_b
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
           CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
         run: |
-          node "$VERIFY_FLEET_CLI" cloud workspace create \
+          node relay-verifier/packages/cli/dist/cli/index.js cloud workspace create \
             --ephemeral \
             --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b" \
             --ttl 24h \
@@ -400,6 +399,14 @@ jobs:
           export VERIFY_FLEET_EXPECTED_RELAY_SHA="${{ steps.manifest.outputs.relay_sha }}"
           npx relayflows run workflows/verify-fleet-daytona.ts
 
+      - name: Verify candidate execution did not modify the trusted verifier
+        if: always()
+        working-directory: relay-verifier
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- workflows/verify-fleet-daytona.ts scripts/verify-features packages/cli/src packages/cli/dist tests/relayflows/cleanroom
+          test -z "$(git status --short --untracked-files=all -- workflows/verify-fleet-daytona.ts scripts/verify-features packages/cli/src packages/cli/dist tests/relayflows/cleanroom)"
+
       - name: Resolve exact owned workspace IDs for cleanup
         id: cleanup_ids
         if: always()
@@ -432,7 +439,6 @@ jobs:
       - name: Delete exact ephemeral workspace B and verify cascade
         if: always() && steps.cleanup_ids.outputs.workspace_b != ''
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -440,7 +446,7 @@ jobs:
           WORKSPACE_ID: ${{ steps.cleanup_ids.outputs.workspace_b }}
         run: |
           DELETE_STARTED_AT="$(date +%s)"
-          node "$VERIFY_FLEET_CLI" cloud workspace delete "$WORKSPACE_ID" \
+          node relay-verifier/packages/cli/dist/cli/index.js cloud workspace delete "$WORKSPACE_ID" \
             --confirm "$WORKSPACE_ID" \
             --verify-cascade \
             --json > qualification/workspace-delete-b.json
@@ -458,7 +464,6 @@ jobs:
       - name: Delete exact ephemeral workspace A and verify cascade
         if: always() && steps.cleanup_ids.outputs.workspace_a != ''
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -466,7 +471,7 @@ jobs:
           WORKSPACE_ID: ${{ steps.cleanup_ids.outputs.workspace_a }}
         run: |
           DELETE_STARTED_AT="$(date +%s)"
-          node "$VERIFY_FLEET_CLI" cloud workspace delete "$WORKSPACE_ID" \
+          node relay-verifier/packages/cli/dist/cli/index.js cloud workspace delete "$WORKSPACE_ID" \
             --confirm "$WORKSPACE_ID" \
             --verify-cascade \
             --json > qualification/workspace-delete-a.json
@@ -513,8 +518,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: relay-candidate-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          name: 'relay-candidate-qualification-${{ github.run_id }}-${{ github.run_attempt }}'
           path: |
+            qualification/*.json
+            qualification/**/*.json
+            qualification/relay-packages/
+            qualification/cloud/
+            qualification/cloud-acceptance/
+            qualification/relayfile-cloud/
             qualification/normalized.json
             qualification/cloud-acceptance/candidate-acceptance.json
             qualification/relay-candidate-install-attestation.json

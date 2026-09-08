@@ -50,6 +50,8 @@ function validEffect(id, effects) {
       ids.length === 2 &&
       new Set(ids).size === 2 &&
       ids.every((value) => UUID.test(value)) &&
+      effect.ephemeral === true &&
+      effect.ttlSeconds === 86_400 &&
       Array.isArray(files) &&
       files.length === 2 &&
       new Set(files.map((entry) => entry.workspaceId)).size === 2 &&

@@ -558,6 +558,8 @@ export function registerCloudWorkspaceCommands(
           const result = {
             workspaceId: created.workspaceId,
             relayWorkspaceId: created.relayWorkspaceId,
+            ephemeral: true,
+            ttlSeconds: options.ttl,
             expiresAt: created.expiresAt,
             state: created.state,
             credentialFile: reserved.absolutePath,

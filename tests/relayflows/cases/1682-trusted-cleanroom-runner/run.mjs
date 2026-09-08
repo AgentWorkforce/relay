@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -75,7 +76,32 @@ if (present.every((value) => !value)) {
       triggering_actor: { login: 'approved-operator' },
     },
   };
-  const context = validator.validateQualificationRequestEvent(validEvent, '["approved-operator"]');
+  const cliRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-request-'));
+  const runRequestCli = (args) =>
+    execFileSync(process.execPath, [scriptPath, ...args], {
+      cwd: targetDir,
+      env: { PATH: process.env.PATH, HOME: cliRoot },
+      encoding: 'utf8',
+      timeout: COMMAND_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  const eventPath = path.join(cliRoot, 'event.json');
+  const contextPath = path.join(cliRoot, 'context.json');
+  const outputPath = path.join(cliRoot, 'github-output');
+  await writeFile(eventPath, `${JSON.stringify(validEvent)}\n`);
+  await writeFile(outputPath, '');
+  runRequestCli([
+    'validate-event',
+    '--event',
+    eventPath,
+    '--approved-actors-json',
+    '["approved-operator"]',
+    '--output',
+    contextPath,
+    '--github-output',
+    outputPath,
+  ]);
+  const context = JSON.parse(await readFile(contextPath, 'utf8'));
   if (context.headBranch !== 'qualification/malicious-ref' || context.headSha !== relaySha) {
     throw new Error('Trusted validator did not bind the candidate ref as immutable data.');
   }
@@ -108,8 +134,20 @@ if (present.every((value) => !value)) {
   ]) {
     const changed = structuredClone(validEvent);
     mutate(changed);
+    await writeFile(eventPath, `${JSON.stringify(changed)}\n`);
     assertThrows(
-      () => validator.validateQualificationRequestEvent(changed, '["approved-operator"]'),
+      () =>
+        runRequestCli([
+          'validate-event',
+          '--event',
+          eventPath,
+          '--approved-actors-json',
+          '["approved-operator"]',
+          '--output',
+          contextPath,
+          '--github-output',
+          outputPath,
+        ]),
       label,
       message
     );
@@ -123,15 +161,43 @@ if (present.every((value) => !value)) {
     digest: `sha256:${'7'.repeat(64)}`,
     workflow_run: { id: context.runId },
   };
-  validator.selectQualificationRequestArtifact(context, [{ total_count: 1, artifacts: [artifact] }]);
+  const artifactPagesPath = path.join(cliRoot, 'artifact-pages.json');
+  const selectionPath = path.join(cliRoot, 'selection.json');
+  await writeFile(artifactPagesPath, JSON.stringify({ total_count: 1, artifacts: [artifact] }));
+  runRequestCli([
+    'select-artifact',
+    '--context',
+    contextPath,
+    '--artifact-pages',
+    artifactPagesPath,
+    '--output',
+    selectionPath,
+    '--github-output',
+    outputPath,
+  ]);
+  const selection = JSON.parse(await readFile(selectionPath, 'utf8'));
+  if (selection.artifactId !== artifact.id) throw new Error('CLI did not select the exact request artifact.');
+  await writeFile(
+    artifactPagesPath,
+    JSON.stringify({ total_count: 1, artifacts: [{ ...artifact, workflow_run: { id: 902 } }] })
+  );
   assertThrows(
     () =>
-      validator.selectQualificationRequestArtifact(context, [
-        { total_count: 1, artifacts: [{ ...artifact, workflow_run: { id: 902 } }] },
+      runRequestCli([
+        'select-artifact',
+        '--context',
+        contextPath,
+        '--artifact-pages',
+        artifactPagesPath,
+        '--output',
+        selectionPath,
+        '--github-output',
+        outputPath,
       ]),
     'wrong-run artifact',
     /triggering run/
   );
+  await rm(cliRoot, { recursive: true, force: true });
 
   const requestSource = await readFile(requestWorkflowPath, 'utf8');
   const consumerSource = await readFile(consumerWorkflowPath, 'utf8');
@@ -189,11 +255,12 @@ if (present.every((value) => !value)) {
     ...consumer.jobs.qualification_cleanup.steps,
   ].filter((step) => String(step.uses ?? '').startsWith('actions/checkout@'));
   if (checkouts.length !== 3) throw new Error('Trusted consumer checkout count changed.');
-  for (const checkout of checkouts) {
+  const expectedCheckoutPaths = ['relay-verifier', 'relay-verifier', 'relay-cleanup'];
+  for (const [index, checkout] of checkouts.entries()) {
     assertDeepEqual(
       checkout.with,
       {
-        path: checkout.with.path,
+        path: expectedCheckoutPaths[index],
         ref: '${{ github.workflow_sha }}',
         'persist-credentials': false,
       },
@@ -269,7 +336,10 @@ function assertThrows(operation, label, expectedMessage) {
     rejection = error;
   }
   if (!rejection) throw new Error(`Trusted validator accepted ${label}.`);
-  const message = rejection instanceof Error ? rejection.message : String(rejection);
+  const message =
+    rejection instanceof Error
+      ? `${rejection.message}\n${rejection.stderr?.toString?.() ?? ''}`
+      : String(rejection);
   if (!expectedMessage.test(message)) {
     throw new Error(`Trusted validator rejected ${label} for the wrong reason: ${message}.`);
   }

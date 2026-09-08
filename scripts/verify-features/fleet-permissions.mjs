@@ -120,7 +120,6 @@ export function cleanroomLaneWritePaths(nonce, lane) {
     'plugins/*/dist/**',
     'plugins/*/node_modules/**',
     'tests/integration/broker/dist/**',
-    '.agentworkforce/trajectories/**',
     cleanroomLaneMountAnchorPath(nonce, lane),
     evidencePath,
   ];

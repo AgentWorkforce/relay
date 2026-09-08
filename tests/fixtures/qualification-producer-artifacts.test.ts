@@ -52,25 +52,25 @@ function artifacts(name = expected.artifactName) {
 
 describe('fixed cross-repository qualification producers', () => {
   it('is an enforced gate in the cleanroom qualification workflow', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
-    expect(workflow).toContain(
-      'qualification-producer-artifacts.mjs cloud \\\n            --run qualification/cloud-run.json'
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
+    const normalized = workflow.replace(/\\\r?\n\s*/g, ' ').replace(/\s+/g, ' ');
+    expect(normalized).toContain(
+      'qualification-producer-artifacts.mjs cloud --run qualification/cloud-run.json'
     );
-    expect(workflow).toContain(
-      'qualification-producer-artifacts.mjs relayfile-cloud \\\n            --run qualification/relayfile-cloud-run.json'
+    expect(normalized).toContain(
+      'qualification-producer-artifacts.mjs relayfile-cloud --run qualification/relayfile-cloud-run.json'
     );
-    expect(workflow).toContain(
-      'qualification-producer-artifacts.mjs cloud-acceptance \\\n            --run qualification/cloud-acceptance-run.json'
+    expect(normalized).toContain(
+      'qualification-producer-artifacts.mjs cloud-acceptance --run qualification/cloud-acceptance-run.json'
     );
     expect(workflow).toContain('qualification/cloud-acceptance/candidate-acceptance.json');
-    expect(workflow).toContain('--snapshot-name "$SNAPSHOT_NAME"');
-    expect(workflow).toContain('--snapshot-id "$SNAPSHOT_ID"');
-    expect(workflow).not.toContain('--snapshot-name "${{ steps.manifest.outputs.snapshot_name }}"');
-    expect(workflow).not.toContain('--snapshot-id "${{ steps.manifest.outputs.snapshot_id }}"');
+    expect(workflow).toContain('--snapshot-name "${{ steps.manifest.outputs.snapshot_name }}"');
+    expect(workflow).toContain('--snapshot-id "${{ steps.manifest.outputs.snapshot_id }}"');
   });
 
   it('retains every downloaded qualification input when the runtime gate fails', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
+    const normalized = workflow.replace(/\s+/g, ' ');
     for (const path of [
       'qualification/*.json',
       'qualification/relay-packages/',
@@ -78,7 +78,7 @@ describe('fixed cross-repository qualification producers', () => {
       'qualification/cloud-acceptance/',
       'qualification/relayfile-cloud/',
     ]) {
-      expect(workflow).toContain(path);
+      expect(normalized).toContain(path);
     }
   });
 

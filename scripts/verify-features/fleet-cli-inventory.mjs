@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { lstat, open, readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { lstat, mkdir, mkdtemp, open, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -110,6 +111,45 @@ export async function collectFleetCliInventory(cliPath) {
     const info = await lstat(target);
     if (!info.isFile()) throw new Error(`${label} must be a regular file`);
   }
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(import.meta.url), 'collect-child', '--cli', cli],
+    {
+      cwd: path.dirname(cli),
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 120_000,
+      env: isolatedCandidateEnvironment(),
+    }
+  );
+  if (result.error) throw new Error(`candidate CLI inventory isolation failed: ${result.error.message}`);
+  if (result.status !== 0) {
+    throw new Error(
+      `candidate CLI inventory child failed: ${result.stderr.trim() || `exit ${result.status}`}`
+    );
+  }
+  const marker = result.stdout
+    .split('\n')
+    .findLast((line) => line.startsWith('RELAY_FLEET_CLI_INVENTORY_CHILD='));
+  if (!marker) throw new Error('candidate CLI inventory child did not return an inventory');
+  const encoded = marker.slice('RELAY_FLEET_CLI_INVENTORY_CHILD='.length);
+  let inventory;
+  try {
+    inventory = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+  } catch (error) {
+    throw new Error('candidate CLI inventory child returned invalid JSON', { cause: error });
+  }
+  return validateFleetCliInventory(inventory);
+}
+
+function isolatedCandidateEnvironment() {
+  const environment = { PATH: process.env.PATH ?? '', LANG: 'C', LC_ALL: 'C' };
+  return environment;
+}
+
+async function collectFleetCliInventoryInProcess(cliPath) {
+  const cli = path.resolve(cliPath);
+  const bootstrap = path.join(path.dirname(cli), 'bootstrap.js');
   const module = await import(`${pathToFileURL(bootstrap).href}?inventory=${Date.now()}`);
   if (typeof module.createProgram !== 'function') {
     throw new Error('candidate CLI bootstrap does not export createProgram');
@@ -154,17 +194,34 @@ function flag(name) {
 }
 
 async function writePrivate(target, value) {
-  const handle = await open(path.resolve(target), 'wx', 0o600);
+  const resolved = path.resolve(target);
+  const parent = path.dirname(resolved);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const temporaryDirectory = await mkdtemp(path.join(parent, '.fleet-cli-inventory-'));
+  const temporaryFile = path.join(temporaryDirectory, 'snapshot.json');
+  const handle = await open(temporaryFile, 'wx', 0o600);
   try {
     await handle.writeFile(value);
     await handle.sync();
   } finally {
     await handle.close();
   }
+  await rename(temporaryFile, resolved);
+  await rm(temporaryDirectory, { recursive: true, force: true });
+}
+
+async function runChild() {
+  const cli = flag('--cli');
+  if (!cli) throw new Error('collect-child requires --cli');
+  const inventory = await collectFleetCliInventoryInProcess(cli);
+  process.stdout.write(
+    `RELAY_FLEET_CLI_INVENTORY_CHILD=${Buffer.from(JSON.stringify(inventory)).toString('base64')}\n`
+  );
 }
 
 async function main() {
   const action = process.argv[2];
+  if (action === 'collect-child') return runChild();
   const cli = flag('--cli');
   const output = flag('--output');
   if (!['snapshot', 'verify'].includes(action) || !cli) {

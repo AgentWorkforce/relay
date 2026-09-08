@@ -19,6 +19,8 @@ const effects = {
   },
   'ephemeral-cloud-workspace-create': {
     status: 'PASS',
+    ephemeral: true,
+    ttlSeconds: 86_400,
     workspaceIds,
     credentialFiles: workspaceIds.map((workspaceId) => ({ workspaceId, mode: '0600' })),
   },
@@ -192,6 +194,8 @@ describe('release qualification capability gate', () => {
     const duplicateEffects = structuredClone(effects);
     duplicateEffects['ephemeral-cloud-workspace-create'] = {
       status: 'PASS',
+      ephemeral: true,
+      ttlSeconds: 86_400,
       workspaceIds: [workspaceIds[0], workspaceIds[0]],
       credentialFiles: [
         { workspaceId: workspaceIds[0], mode: '0600' },

@@ -2,13 +2,14 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadFleetMatrix, readAndValidateCampaign } from './fleet-daytona.mjs';
 import { relayfileCloudEndpointIdentitySha256 } from './qualification-manifest.mjs';
 import { validateCloudSnapshotAcceptanceEvidence } from './qualification-producer-artifacts.mjs';
+import { readRegularFileNoFollow } from './safe-file.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RELAY_WORKSPACE_ID = /^rw_[a-z0-9]{8}$/;
@@ -50,7 +51,7 @@ function secureHttpsUrl(value, label) {
   } catch {
     throw new Error(`${label} is invalid`);
   }
-  if (url.protocol !== 'https:' || url.username || url.password) {
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
     throw new Error(`${label} must be a credential-free HTTPS URL`);
   }
   return raw;
@@ -87,6 +88,12 @@ function validateCreate(entry, expected) {
     `${entry.label}.relayWorkspaceId`,
     RELAY_WORKSPACE_ID
   );
+  if (result.ephemeral !== true || result.ttlSeconds !== 86_400) {
+    throw new Error(`${entry.label} create result did not prove a 24-hour ephemeral workspace`);
+  }
+  if (!Number.isFinite(Date.parse(result.expiresAt ?? ''))) {
+    throw new Error(`${entry.label} create result has an invalid expiration`);
+  }
   if (
     credential.version !== 1 ||
     credential.workspaceId !== workspaceId ||
@@ -135,6 +142,8 @@ function validateCreate(entry, expected) {
   return {
     workspaceId,
     relayWorkspaceId,
+    ephemeral: true,
+    ttlSeconds: 86_400,
     credentialFile: { workspaceId, mode: entry.mode },
     requestedDeploymentId,
     observedDeploymentId,
@@ -490,22 +499,19 @@ async function jsonFile(file, label) {
 }
 
 async function credentialEntry(label, resultPath, credentialPath) {
-  const info = await lstat(path.resolve(credentialPath));
-  if (
-    !info.isFile() ||
-    info.size <= 0 ||
-    info.size > 64 * 1024 ||
-    (info.mode & 0o077) !== 0 ||
-    (typeof process.getuid === 'function' && info.uid !== process.getuid())
-  ) {
-    throw new Error(`${label} credential file is not a bounded regular file`);
-  }
+  const credentialRead = await readRegularFileNoFollow(path.resolve(credentialPath), {
+    label: `${label} credential file`,
+    maxBytes: 64 * 1024,
+    privateMode: true,
+    currentUserOwned: true,
+  });
+  if (credentialRead.size <= 0) throw new Error(`${label} credential file is not a bounded regular file`);
   return {
     label,
     result: await jsonFile(resultPath, `${label} create result`),
-    credential: await jsonFile(credentialPath, `${label} credential`),
+    credential: JSON.parse(credentialRead.bytes.toString('utf8')),
     credentialPath,
-    mode: (info.mode & 0o777).toString(8).padStart(4, '0'),
+    mode: credentialRead.mode.toString(8).padStart(4, '0'),
   };
 }
 

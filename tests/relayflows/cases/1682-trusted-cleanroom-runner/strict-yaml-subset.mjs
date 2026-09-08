@@ -116,8 +116,11 @@ function tokenize(source) {
       for (; next < lines.length; next += 1) {
         const candidate = lines[next];
         const candidateIndent = candidate.match(/^ */)[0].length;
-        if (candidate.trim() && candidateIndent <= indent) break;
-        if (candidate.trim() && blockIndent === undefined) blockIndent = candidateIndent;
+        if (candidate.trim()) {
+          if (candidateIndent <= indent) break;
+          if (blockIndent === undefined) blockIndent = candidateIndent;
+          else if (candidateIndent < blockIndent) break;
+        }
         block.push(candidate);
       }
       if (blockIndent === undefined) throw syntaxError(token, 'literal block has no content');
@@ -162,7 +165,14 @@ function mappingColon(value) {
     else if (!quote && (character === "'" || character === '"')) quote = character;
     else if (!quote && character === '[') squareDepth += 1;
     else if (!quote && character === ']') squareDepth -= 1;
-    else if (!quote && squareDepth === 0 && character === ':') return index;
+    else if (
+      !quote &&
+      squareDepth === 0 &&
+      character === ':' &&
+      (index + 1 === value.length || /\s/.test(value[index + 1]))
+    ) {
+      return index;
+    }
   }
   return -1;
 }

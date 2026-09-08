@@ -67,4 +67,34 @@ jobs:
       /flow mappings are not supported/
     );
   });
+
+  it('treats URL colons in sequence scalars as scalar text', () => {
+    expect(
+      parseStrictWorkflowYaml(`
+jobs:
+  verify:
+    needs:
+      - https://api.example.test
+      - https://api.example.test/path:with-colon
+`)
+    ).toEqual({
+      jobs: {
+        verify: { needs: ['https://api.example.test', 'https://api.example.test/path:with-colon'] },
+      },
+    });
+  });
+
+  it('stops a literal block before a less-indented sibling key', () => {
+    expect(
+      parseStrictWorkflowYaml(`
+jobs:
+  verify:
+    run: |
+      echo trusted
+    timeout-minutes: 5
+`)
+    ).toEqual({
+      jobs: { verify: { run: 'echo trusted\n', 'timeout-minutes': 5 } },
+    });
+  });
 });

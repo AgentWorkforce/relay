@@ -1,0 +1,77 @@
+{
+  "id": "traj_cn9jz986m2zc",
+  "version": 1,
+  "task": {
+    "title": "Continue PR #1665 repair from b309a10983; audit PR #1683 review threads and qualify trusted workflow"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-08T14:11:28.782Z",
+  "completedAt": "2026-09-08T14:37:57.326Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T14:37:53.503Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_k1uex7433uf0",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T14:37:53.503Z",
+      "endedAt": "2026-09-08T14:37:57.326Z",
+      "events": [
+        {
+          "ts": 1788878273504,
+          "type": "decision",
+          "content": "Moved structural qualification assertions to the trusted workflow_run consumer and kept the dispatch bootstrap inert: Moved structural qualification assertions to the trusted workflow_run consumer and kept the dispatch bootstrap inert",
+          "raw": {
+            "question": "Moved structural qualification assertions to the trusted workflow_run consumer and kept the dispatch bootstrap inert",
+            "chosen": "Moved structural qualification assertions to the trusted workflow_run consumer and kept the dispatch bootstrap inert",
+            "alternatives": [],
+            "reasoning": "The repository deliberately separates no-secret request dispatch from secret-bearing verification; tests must inspect the trusted consumer without weakening that boundary."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788878274749,
+          "type": "decision",
+          "content": "Isolated candidate CLI inventory discovery in a secret-free child process and switched workspace lifecycle calls to the trusted CLI: Isolated candidate CLI inventory discovery in a secret-free child process and switched workspace lifecycle calls to the trusted CLI",
+          "raw": {
+            "question": "Isolated candidate CLI inventory discovery in a secret-free child process and switched workspace lifecycle calls to the trusted CLI",
+            "chosen": "Isolated candidate CLI inventory discovery in a secret-free child process and switched workspace lifecycle calls to the trusted CLI",
+            "alternatives": [],
+            "reasoning": "Candidate bootstrap and workspace lifecycle code must not execute with verifier credentials."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788878275758,
+          "type": "decision",
+          "content": "Raised only the identified heavy fixture test budgets to 20 seconds: Raised only the identified heavy fixture test budgets to 20 seconds",
+          "raw": {
+            "question": "Raised only the identified heavy fixture test budgets to 20 seconds",
+            "chosen": "Raised only the identified heavy fixture test budgets to 20 seconds",
+            "alternatives": [],
+            "reasoning": "Each timeout reproduced as an isolated test completing under 5 seconds to 4.30 seconds, while full-suite scheduling exceeded Vitest's default 5-second test budget."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Repaired PR 1665 qualification workflow/test architecture, candidate isolation, bounded evidence handling, strict manifest/request/YAML validation, and explicit heavy-test budgets; verified Node 22 full suite, actionlint, typecheck, lint, format, and diff.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b309a10983b18b78141408011420aa70abb8e16b",
+    "endRef": "b309a10983b18b78141408011420aa70abb8e16b"
+  }
+}

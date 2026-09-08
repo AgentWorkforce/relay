@@ -854,40 +854,44 @@ describe('complete Daytona Fleet board', () => {
     expect(claude.args.join(' ')).toContain('channel general');
   });
 
-  it('derives exact command, option, argument, and hidden-surface coverage from the built CLI', async () => {
-    const [matrix, expected] = await Promise.all([
-      loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
-      readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(JSON.parse),
-    ]);
-    const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
-    expect(compareFleetCliInventory(actual, expected)).toBe(actual);
-    expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
-    expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
-    const missingDeferredDeclaration = structuredClone(matrix);
-    missingDeferredDeclaration.deferredCommandSurface = [];
-    expect(() => validateFleetCommandCoverage(missingDeferredDeclaration, actual)).toThrow(
-      /commandSurface must exactly cover every candidate/
-    );
-    expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
-      hidden: true,
-      leaf: true,
-    });
-    expect(
-      actual.commands
-        .find(({ path }: { path: string }) => path === 'node up')
-        ?.options.find(({ flags }: { flags: string }) => flags === '--background-child')
-    ).toMatchObject({ hidden: true });
+  it(
+    'derives exact command, option, argument, and hidden-surface coverage from the built CLI',
+    { timeout: 20_000 },
+    async () => {
+      const [matrix, expected] = await Promise.all([
+        loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
+        readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(JSON.parse),
+      ]);
+      const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
+      expect(compareFleetCliInventory(actual, expected)).toBe(actual);
+      expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
+      expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
+      const missingDeferredDeclaration = structuredClone(matrix);
+      missingDeferredDeclaration.deferredCommandSurface = [];
+      expect(() => validateFleetCommandCoverage(missingDeferredDeclaration, actual)).toThrow(
+        /commandSurface must exactly cover every candidate/
+      );
+      expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
+        hidden: true,
+        leaf: true,
+      });
+      expect(
+        actual.commands
+          .find(({ path }: { path: string }) => path === 'node up')
+          ?.options.find(({ flags }: { flags: string }) => flags === '--background-child')
+      ).toMatchObject({ hidden: true });
 
-    const missingCommand = structuredClone(expected);
-    missingCommand.commands = missingCommand.commands.filter(
-      ({ path }: { path: string }) => path !== 'fleet nodes'
-    );
-    expect(() => compareFleetCliInventory(actual, missingCommand)).toThrow('inventory changed');
+      const missingCommand = structuredClone(expected);
+      missingCommand.commands = missingCommand.commands.filter(
+        ({ path }: { path: string }) => path !== 'fleet nodes'
+      );
+      expect(() => compareFleetCliInventory(actual, missingCommand)).toThrow('inventory changed');
 
-    const changedOption = structuredClone(expected);
-    changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
-    expect(() => compareFleetCliInventory(actual, changedOption)).toThrow('inventory changed');
-  });
+      const changedOption = structuredClone(expected);
+      changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
+      expect(() => compareFleetCliInventory(actual, changedOption)).toThrow('inventory changed');
+    }
+  );
 
   it('rejects duplicate operations and an incomplete provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');

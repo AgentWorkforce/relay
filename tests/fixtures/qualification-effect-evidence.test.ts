@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -15,6 +17,7 @@ const relaySha = 'a'.repeat(40);
 const cloudSha = 'd'.repeat(40);
 const relayfileCloudSha = 'f'.repeat(40);
 const relayfileCloudBaseUrl = 'https://candidate-relayfile.example.test';
+const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const endpointIdentitySha256 = relayfileCloudEndpointIdentitySha256(relayfileCloudBaseUrl);
 const scaleManifestSha256 = '905968a14268ec5e8ec38ae1d6b24749e855cac035976a87a65ef43f6612a55a';
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -235,6 +238,9 @@ function fixture() {
       result: {
         workspaceId,
         relayWorkspaceId: relayWorkspaceIds[index],
+        ephemeral: true,
+        ttlSeconds: 86_400,
+        expiresAt: '2026-09-06T12:00:00.000Z',
         credentialFile: `/tmp/credential-${index}.json`,
         requestedRelayfileCloudDeploymentId: deploymentId,
         observedRelayfileCloudDeploymentId: deploymentId,
@@ -262,7 +268,10 @@ function fixture() {
 
 describe('qualification runtime effect composer', () => {
   it('is an invoked release gate after both timed cleanup operations', () => {
-    const workflow = fs.readFileSync('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const workflow = fs.readFileSync(
+      path.join(repositoryRoot, '.github/workflows/relay-cleanroom-qualification-consumer.yml'),
+      'utf8'
+    );
     const composer = workflow.indexOf('qualification-effect-evidence.mjs');
     expect(workflow.indexOf('workspace-delete-a-timing.json')).toBeGreaterThan(-1);
     expect(workflow.indexOf('workspace-delete-b-timing.json')).toBeGreaterThan(-1);
@@ -285,10 +294,10 @@ describe('qualification runtime effect composer', () => {
     expect(composerSource).not.toContain('fleetSignoffVerified: true');
     expect(workflow.match(/--ttl 24h/g)).toHaveLength(2);
     expect(workflow).toContain("VERIFY_FLEET_MIN_CREDENTIAL_LIFETIME_SECONDS: '21600'");
-    expect(workflow).toContain('git/ref/tags/${encodeURIComponent(tag)}');
-    expect(workflow).toContain("object?.type !== 'commit' || object.sha !== expected");
-    expect(workflow).not.toContain('node relay/packages/cli/dist/cli/index.js cloud workspace create');
-    expect(workflow).not.toContain('node relay/packages/cli/dist/cli/index.js cloud workspace delete');
+    expect(workflow).toContain('workflow_run:');
+    expect(workflow).toContain('ref: ${{ github.workflow_sha }}');
+    expect(workflow).toContain('persist-credentials: false');
+    expect(workflow).toContain('node-version: 22.22.0');
   });
 
   it('emits only non-secret PASS effects after all exact runtime identities agree', () => {

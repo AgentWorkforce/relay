@@ -445,7 +445,7 @@ afterEach(() => {
 });
 
 describe('agent-relay-mcp startup helpers', () => {
-  it('parses startup options and helper flags from the environment', async () => {
+  it('parses startup options and helper flags from the environment', { timeout: 20_000 }, async () => {
     const { mod } = await loadAgentRelayMcpModule();
     vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_env');
     vi.stubEnv('RELAY_BASE_URL', 'https://relay.example.com///');

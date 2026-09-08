@@ -126,7 +126,7 @@ describe('Relay candidate clean-install attestation', () => {
   it('makes the candidate output parent private in producer and hydration workflows', async () => {
     const [producer, hydration] = await Promise.all([
       readFile('.github/workflows/relay-package-qualification.yml', 'utf8'),
-      readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8'),
+      readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8'),
     ]);
     for (const workflow of [producer, hydration]) {
       expect(workflow).toContain('chmod 700 "$RUNNER_TEMP"');

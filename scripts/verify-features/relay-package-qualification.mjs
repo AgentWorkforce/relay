@@ -101,7 +101,7 @@ function parseExactSemver(value) {
   return { prerelease };
 }
 
-function validExactSemver(value) {
+export function validExactSemver(value) {
   return parseExactSemver(value) !== null;
 }
 

@@ -212,6 +212,7 @@ function lanePermissions(lane: string) {
         '**/*_credential.json',
         '**/*_credentials.json',
         '**/.git/**',
+        '.agentworkforce/trajectories/**',
       ],
     },
     network: cleanroomLaneNetwork(),

@@ -10,6 +10,7 @@ import {
   RELAY_PACKAGE_POLICY,
   validateRelayPackageEnvelope,
   validateRelayPackagePayload,
+  validExactSemver,
   verifyRelayPackageFiles,
 } from './relay-package-qualification.mjs';
 import { validateCloudSnapshotAcceptanceEvidence } from './qualification-producer-artifacts.mjs';
@@ -40,6 +41,10 @@ function positiveInteger(value, label) {
 }
 
 function normalizePositiveInteger(value, label) {
+  const accepted =
+    (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) ||
+    (typeof value === 'string' && /^[1-9][0-9]*$/.test(value));
+  if (!accepted) throw new Error(`${label} must be a positive integer`);
   const resolved = Number(value);
   if (!Number.isSafeInteger(resolved) || resolved <= 0) {
     throw new Error(`${label} must be a positive integer`);
@@ -85,7 +90,7 @@ export function validateQualificationManifest(value, expected = {}) {
   }
   const releaseId = positiveInteger(value.releaseId, 'releaseId');
   const releaseTag = requiredString(value.releaseTag, 'releaseTag');
-  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseTag)) {
+  if (!releaseTag.startsWith('v') || !validExactSemver(releaseTag.slice(1))) {
     throw new Error('releaseTag must be an exact semver tag');
   }
   const cloud = requiredObject(value.cloudQualification, 'cloudQualification');

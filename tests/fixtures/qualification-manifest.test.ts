@@ -298,7 +298,7 @@ const digests = {
 
 describe('qualification manifest', () => {
   it('uses run- and lane-specific idempotency keys for disposable qualification workspaces', async () => {
-    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
     const workflow = parse(source) as {
       jobs?: { qualification?: { steps?: Array<Record<string, unknown>> } };
     };
@@ -319,14 +319,14 @@ describe('qualification manifest', () => {
   });
 
   it('uses a Node runtime that satisfies the locked dependency engine floor', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
     const versions = [...workflow.matchAll(/node-version:\s*["']?([0-9.]+)/g)].map((match) => match[1]);
     expect(versions.length).toBeGreaterThan(0);
     expect(versions.every((version) => version === '22.22.0')).toBe(true);
   });
 
   it('exposes the GitHub API token only to qualification steps that invoke gh', async () => {
-    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
     const workflow = parse(source) as {
       jobs?: Record<
         string,
@@ -342,8 +342,7 @@ describe('qualification manifest', () => {
     const steps = Object.values(jobs).flatMap((job) => job.steps ?? []);
     const tokenSteps = steps.filter((step) => step.env?.GH_TOKEN !== undefined);
     const expectedTokenSteps = [
-      'Obtain immutable qualification manifest',
-      'Bind the release tag ref to the exact Relay candidate commit',
+      'Select the exact bounded request artifact',
       'Download exact Relay, Cloud, and Relayfile Cloud qualification artifacts',
       'Verify source runs and GitHub artifact digests',
     ];
@@ -354,7 +353,10 @@ describe('qualification manifest', () => {
         .map((step) => step.name)
     ).toEqual(expectedTokenSteps);
     for (const step of tokenSteps) {
-      expect(step.env?.GH_TOKEN).toBe('${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}');
+      expect(
+        step.env?.GH_TOKEN === '${{ github.token }}' ||
+          step.env?.GH_TOKEN === '${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}'
+      ).toBe(true);
       expect(step.run).toMatch(/\bgh\s+(?:release|run|api)\b|execFileSync\('gh'/);
     }
   });

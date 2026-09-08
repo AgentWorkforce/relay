@@ -124,7 +124,7 @@ describe('trusted cleanroom qualification request', () => {
     });
   });
 
-  it('lets the trusted consumer fire for an approved malicious candidate ref without executing that ref', () => {
+  it('binds an approved candidate ref as data without executing that ref', () => {
     const context = validateQualificationRequestEvent(
       event({ head_branch: 'qualification/malicious-ref', head_sha: relaySha }),
       '["approved-operator"]'
@@ -255,7 +255,9 @@ describe('trusted cleanroom qualification request', () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-request-'));
     const outside = path.join(directory, '..', `${path.basename(directory)}-outside.json`);
     try {
-      await writeFile(path.join(directory, REQUEST_FILE_NAME), `${JSON.stringify(request(context))}\n`);
+      await writeFile(path.join(directory, REQUEST_FILE_NAME), `${JSON.stringify(request(context))}\n`, {
+        mode: 0o600,
+      });
       await expect(readQualificationRequestDirectory(directory, context, selection)).resolves.toMatchObject({
         manifest: { relaySha },
       });

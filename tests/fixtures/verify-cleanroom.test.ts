@@ -610,6 +610,7 @@ describe('clean-room verification catalog', () => {
     expect(writes).toContain(
       `.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/.mount-write-anchor`
     );
+    expect(writes).not.toContain('.agentworkforce/trajectories/**');
     expect(writes).not.toContain(`.workflow-artifacts/verify-cleanroom/${NONCE}/**`);
     expect(evidenceScopes).toEqual([
       `relayfile:fs:read:/.workflow-artifacts/verify-cleanroom/${NONCE}/lanes/polyglot-plugins/evidence.json`,
@@ -896,24 +897,24 @@ describe('clean-room verification catalog', () => {
     }
   });
 
-  it('accepts GitHub workflow paths with or without an attached ref while verifying any present ref', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
-    expect(workflow).toMatch(/release:\s*\n\s*types:\s*\[prereleased, published\]/);
-    expect(workflow).toContain('github.event.release.prerelease == false');
-    expect(workflow).toContain('github.event.release.prerelease == true');
-    expect(workflow).toContain('Verify the exact published Relay package closure');
-    expect(workflow).toContain('npm install --global npm@11.19.1');
-    expect(workflow).toMatch(
-      /relayWorkflowRef\s*!==\s*undefined\s*&&\s*relayWorkflowRef\s*!==\s*expectedRelayRef/
-    );
+  it('keeps the dispatch bootstrap inert and binds qualification to the trusted workflow_run consumer', async () => {
+    const bootstrap = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
+    expect(bootstrap).toMatch(/workflow_dispatch:/);
+    expect(bootstrap).toContain('Refuse to claim cleanroom qualification from the bootstrap');
+    expect(bootstrap).not.toContain('CLOUD_API_ACCESS_TOKEN');
+    expect(workflow).toContain('workflow_run:');
+    expect(workflow).toContain('Relay cleanroom qualification request');
+    expect(workflow).toContain('ref: ${{ github.workflow_sha }}');
+    expect(workflow).toContain('persist-credentials: false');
   });
 
   it('runs exact-ID workspace reconciliation in an independent post-qualification job', async () => {
-    const source = await readFile('.github/workflows/relay-cleanroom-qualification.yml', 'utf8');
+    const source = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
     const parsed = parse(source);
     const cleanup = parsed.jobs.qualification_cleanup;
 
-    expect(cleanup.needs).toBe('qualification');
+    expect(cleanup.needs).toEqual(['verify-request', 'qualification']);
     expect(cleanup.if).toContain('always()');
     expect(cleanup['runs-on']).toBe('ubuntu-24.04');
     expect(cleanup['timeout-minutes']).toBe(60);

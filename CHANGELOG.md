@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Cleanroom qualification now validates only the trusted `workflow_run` consumer, isolates candidate CLI inventory discovery from verifier secrets, and retains bounded qualification evidence for failed runtime gates.
+
 ## [11.10.4] - 2026-09-08
 
 ### Added
