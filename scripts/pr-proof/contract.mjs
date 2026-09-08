@@ -230,7 +230,11 @@ export function classifyPullRequest({ title = '', body = '', changedFiles = null
       : metadata.changeType === 'non-functional'
         ? false
         : Boolean(metadataKind || titleKind);
-  const kind = required ? (metadataKind ?? titleKind ?? 'bugfix') : null;
+  // An unreadable diff makes a non-functional declaration unverifiable. Keep
+  // its kind unknown rather than manufacturing a bug-fix classification from
+  // the required proof fallback. Explicit feature/bug-fix metadata remains
+  // meaningful even while the changed-file list is unavailable.
+  const kind = required && !unverifiableNonFunctional ? (metadataKind ?? titleKind ?? 'bugfix') : null;
   // A PR held open only by an unreadable diff declared `n/a` consistently with
   // its own change type. Demanding a case id from it would bury the one error
   // that matters — the unreadable diff, already reported above — under a

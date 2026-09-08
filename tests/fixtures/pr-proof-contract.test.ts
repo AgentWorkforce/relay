@@ -1883,7 +1883,11 @@ describe('classification reads the diff, not the title', () => {
       body: nonFunctional(),
       changedFiles: null,
     });
-    expect(result.required).toBe(true);
+    expect(result).toMatchObject({
+      required: true,
+      kind: null,
+      reason: 'changed-file list unavailable',
+    });
     expect(result.reason).toBe('changed-file list unavailable');
     expect(result.errors.join(' ')).toContain('changed-file list could not be read');
     // The declared `n/a` case is consistent with the declared change type, so
