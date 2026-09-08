@@ -56,6 +56,7 @@ import {
   recognizedCloudRunStatus,
   sanitizeCloudCommandOutput,
   sanitizeCloudStatusDiagnostic,
+  writeStatusPollDeadlineDiagnostics,
   writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -602,6 +603,32 @@ describe('Cloud dispatcher API key lifecycle', () => {
       expect(diagnostics).toContain('terminal_status=status_poll_timeout');
       expect(diagnostics).toContain('status_poll_failures=3');
       expect(diagnostics).toContain('cloud_logs_timed_out=true');
+      expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['nonzero', 'Status request failed: unknown-secret'],
+    ['malformed', '{"status":unknown-secret}'],
+    ['status-less', '{"runId":"cloud-run-deadline","result":{"token":"unknown-secret"}}'],
+  ])('persists safe bounded diagnostics when %s polls exhaust the deadline', async (_case, output) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-deadline-'));
+    const logsPath = path.join(root, 'nested', 'cloud.log');
+    try {
+      await writeStatusPollDeadlineDiagnostics({
+        logsPath,
+        runId: 'cloud-run-deadline',
+        lastStatusOutput: output,
+        statusPollFailures: 4,
+      });
+
+      const diagnostics = await readFile(logsPath, 'utf8');
+      expect(diagnostics).toContain('run_id=cloud-run-deadline');
+      expect(diagnostics).toContain('terminal_status=status_poll_deadline_exceeded');
+      expect(diagnostics).toContain('status_poll_failures=4');
+      expect(diagnostics).not.toContain('unknown-secret');
       expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
     } finally {
       await rm(root, { recursive: true, force: true });

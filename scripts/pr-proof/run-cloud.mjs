@@ -234,6 +234,27 @@ export async function writeStatusPollTimeoutDiagnostics({
   );
 }
 
+export async function writeStatusPollDeadlineDiagnostics({
+  logsPath,
+  runId,
+  lastStatusOutput,
+  statusPollFailures,
+  diagnosticSecretValues = [],
+}) {
+  await mkdir(path.dirname(logsPath), { recursive: true });
+  await writeFile(
+    logsPath,
+    formatCloudRunDiagnostics({
+      runId,
+      terminalStatus: 'status_poll_deadline_exceeded',
+      lastStatusOutput,
+      statusPollFailures,
+      logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: false },
+      diagnosticSecretValues,
+    })
+  );
+}
+
 export function recognizedCloudRunStatus(value) {
   if (typeof value !== 'string') return null;
   const status = value.toLowerCase();
@@ -498,6 +519,13 @@ export async function main() {
       }
     }
     if (!terminalStatus) {
+      await writeStatusPollDeadlineDiagnostics({
+        logsPath,
+        runId,
+        lastStatusOutput,
+        statusPollFailures,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
+      });
       await cancelRemote('deadline exceeded');
       terminal = true;
       throw new Error(`Cloud RelayFlow exceeded ${timeoutMs}ms`);

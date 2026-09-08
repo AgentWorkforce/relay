@@ -29,8 +29,9 @@
  *
  * The probe deliberately requests NO `--sandbox-provider`. That is the feature:
  * Cloud picks the provider, and `agent37` must survive back out into cleanup.
- * Dispatch is then failed on purpose, because the cleanup call is what carries
- * the attribution.
+ * After dispatch succeeds, the probe captures the CLI's JSON output and makes
+ * that output sink fail on purpose. This observes the normalized Cloud response
+ * and drives the same command into cleanup, where provider attribution is used.
  *
  * Base: the CLI sends no sandbox identity, while the existing long-running
  * profile and Cloud-selected `agent37` response and cleanup attribution are
@@ -215,13 +216,14 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
       ),
       auth,
     })
-    // 3. cleanup, triggered by the deliberate dispatch failure below
+    // 3. cleanup, triggered by the deliberate output-sink failure below
     .mockResolvedValueOnce({
       response: Response.json({ sandboxId: REPLAY_SANDBOX_ID, deleted: true }),
       auth,
     });
 
   const errors: string[] = [];
+  const cliOutput: string[] = [];
   const replayArgs =
     process.env.RELAY_PR_PROOF_ARM === 'head'
       ? ['--sandbox-id', REPLAY_SANDBOX_ID, '--sandbox-name', REPLAY_SANDBOX_NAME]
@@ -230,14 +232,13 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
   program.exitOverride();
   registerFleetCommands(program, {
     sdk: {
-      // Dispatch fails on purpose: the cleanup call is what carries provider
-      // attribution, and it only happens on this path.
       createAgentRelay: vi.fn(() => ({
         messaging: {
           placement: {
-            spawn: vi.fn(async () => {
-              throw new Error('dispatch failed');
-            }),
+            spawn: vi.fn(async () => ({
+              invocationId: 'inv_relayflow',
+              node: { name: REPLAY_SANDBOX_NAME },
+            })),
           },
         },
       })) as never,
@@ -245,7 +246,12 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
         workspace: { info: vi.fn(async () => ({ id: 'rw_relayflow' })) },
       })) as never,
       createWorkspace: vi.fn() as never,
-      log: vi.fn(),
+      // Capture the real CLI serialization, then fail so this same invocation
+      // exercises cleanup without sourcing evidence from the network mock.
+      log: (...args: unknown[]) => {
+        cliOutput.push(args.join(' '));
+        throw new Error('CLI output sink failed after capture');
+      },
       error: (...args: unknown[]) => errors.push(args.join(' ')),
       exit: (() => {
         throw new Error('__exit__');
@@ -280,9 +286,10 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
     )
   ).rejects.toThrow('__exit__');
 
-  // The command really ran and really failed dispatch; without this a probe
-  // that never reached the sandbox path could report a false base.
-  expect(errors.join('\n')).toContain('dispatch failed');
+  // The command really reached successful dispatch and serialized its result;
+  // without this a probe that never reached the sandbox path could report a false base.
+  expect(errors.join('\n')).toContain('CLI output sink failed after capture');
+  expect(cliOutput).toHaveLength(1);
 
   const ensureRequest = mocks.authorizedApiFetch.mock.calls[1]?.[2];
   const deleteRequest = mocks.authorizedApiFetch.mock.calls[2]?.[2];
@@ -290,6 +297,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
   expect(deleteRequest?.body).toEqual(expect.any(String));
   const ensureBody = JSON.parse(ensureRequest.body);
   const deleteBody = JSON.parse(deleteRequest.body);
+  const cliResult = JSON.parse(cliOutput[0]);
 
   await writeFile(
     output,
@@ -299,15 +307,15 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
       ensureForceProvision: ensureBody.forceProvision ?? null,
       ensureName: ensureBody.name ?? null,
       ensureProviderId: ensureBody.providerId ?? null,
-      responseSandboxId: provisionedResponse.sandboxId,
-      responseProviderSandboxId: provisionedResponse.providerSandboxId,
-      responseProviderId: provisionedResponse.providerId,
-      responseNodeName: provisionedResponse.nodeName,
+      responseSandboxId: cliResult.sandbox?.sandboxId ?? null,
+      responseProviderSandboxId: cliResult.sandbox?.providerSandboxId ?? null,
+      responseProviderId: cliResult.sandbox?.providerId ?? null,
+      responseNodeName: cliResult.sandbox?.nodeName ?? null,
       deleteSandboxId: decodeURIComponent(
         String(mocks.authorizedApiFetch.mock.calls[2]?.[1] ?? '').split('/').pop() ?? ''
       ) || null,
       deleteProviderId: deleteBody.providerId ?? null,
-      dispatchFailureObserved: errors.join('\n').includes('dispatch failed'),
+      outputFailureObserved: errors.join('\n').includes('CLI output sink failed after capture'),
     }),
     'utf8'
   );
@@ -338,8 +346,8 @@ try {
   );
 
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
-  if (observation.dispatchFailureObserved !== true) {
-    throw new Error('The probe did not reach the sandbox dispatch path, so it observed nothing.');
+  if (observation.outputFailureObserved !== true) {
+    throw new Error('The probe did not serialize the CLI sandbox result, so it observed nothing.');
   }
   // The command line named no provider on either arm. If this ever stops being
   // true the case is proving provider pinning, not capability routing.

@@ -174,6 +174,58 @@ describe('Cloud fleet sandbox client', () => {
     expect(ensureBody).not.toHaveProperty('sandboxId');
   });
 
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'accepts an older Cloud %s response without providerSandboxId when the exact public identity matches',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-legacy',
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                  providerId: 'agent37',
+                }
+              : {
+                  outcome,
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  waitedMs: 90_000,
+                  providerId: 'agent37',
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      const result = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      });
+
+      expect(result).toMatchObject({
+        outcome,
+        sandboxId: SANDBOX_ID,
+        nodeName: SANDBOX_NAME,
+        providerId: 'agent37',
+      });
+      expect(result).not.toHaveProperty('providerSandboxId');
+    }
+  );
+
   it('requires a deterministic name whenever a sandbox identity is supplied', async () => {
     await expect(
       ensureCloudFleetSandbox({
@@ -206,14 +258,12 @@ describe('Cloud fleet sandbox client', () => {
                   nodeId: 'node-other',
                   nodeName: SANDBOX_NAME,
                   sandboxId: 'sbx_223e4567-e89b-42d3-a456-426614174000',
-                  providerSandboxId: 'provider-sandbox-other',
                   relayWorkspaceId: 'rw_abc',
                   relayfileMounted: true,
                 }
               : {
                   outcome,
                   sandboxId: 'sbx_223e4567-e89b-42d3-a456-426614174000',
-                  providerSandboxId: 'provider-sandbox-other',
                   relayWorkspaceId: 'rw_abc',
                   nodeName: SANDBOX_NAME,
                   waitedMs: 90_000,
@@ -259,14 +309,12 @@ describe('Cloud fleet sandbox client', () => {
                   nodeId: 'node-other',
                   nodeName: 'fleet-sandbox-other',
                   sandboxId: SANDBOX_ID,
-                  providerSandboxId: 'provider-sandbox-other',
                   relayWorkspaceId: 'rw_abc',
                   relayfileMounted: true,
                 }
               : {
                   outcome,
                   sandboxId: SANDBOX_ID,
-                  providerSandboxId: 'provider-sandbox-other',
                   relayWorkspaceId: 'rw_abc',
                   nodeName: 'fleet-sandbox-other',
                   waitedMs: 90_000,

@@ -116,7 +116,7 @@ export type CloudFleetSandboxReady = {
   nodeId: string;
   nodeName: string;
   sandboxId: string;
-  providerSandboxId: string;
+  providerSandboxId?: string;
   relayWorkspaceId: string;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
@@ -138,7 +138,7 @@ export type CloudFleetSandboxProvisioningTimeout = {
   outcome: 'provisioning_timeout';
   cloudWorkspaceId: string;
   sandboxId: string;
-  providerSandboxId: string;
+  providerSandboxId?: string;
   relayWorkspaceId: string;
   nodeName: string;
   waitedMs: number;
@@ -350,13 +350,14 @@ function normalizeEnsureResult(
       throw new Error('Cloud fleet sandbox response is missing relayfileMounted.');
     }
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
+    const providerSandboxId = readString(payload, 'providerSandboxId');
     return {
       outcome,
       cloudWorkspaceId,
       nodeId: requiredString(payload, 'nodeId', 'Cloud fleet sandbox'),
       nodeName,
       sandboxId,
-      providerSandboxId: requiredString(payload, 'providerSandboxId', 'Cloud fleet sandbox'),
+      ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
@@ -381,11 +382,12 @@ function normalizeEnsureResult(
 
   if (outcome === 'provisioning_timeout') {
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
+    const providerSandboxId = readString(payload, 'providerSandboxId');
     return {
       outcome,
       cloudWorkspaceId,
       sandboxId,
-      providerSandboxId: requiredString(payload, 'providerSandboxId', 'Cloud fleet sandbox'),
+      ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
