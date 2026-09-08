@@ -72,6 +72,25 @@ const MATERIAL_OPTION_PATHS = {
   'node agent message auto': ['--broker-url', '--api-key', '--state-dir', '--workspace-key'],
 };
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
+// Kept local and dependency-free (like scripts/pr-proof/run-cloud.mjs's
+// LIVE_CREDENTIAL and scripts/verify-features/escalation-status.mjs's
+// redactAlertText) so this standalone runner never depends on workspace
+// package resolution. The live-credential prefix set must stay aligned with
+// the canonical SECRET_PREFIX in packages/cli/src/cli/lib/redact.ts.
+const LIVE_CREDENTIAL_PREFIX_SOURCE =
+  '(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9._~+/=-]{8,}';
+// GitHub token prefixes use an underscore separator (ghp_..., gho_...,
+// github_pat_...), not a hyphen.
+const GITHUB_TOKEN_SOURCE = '(?:gh[opurs]_|github_pat_)[A-Za-z0-9_]{8,}';
+const PROVIDER_SECRET_SOURCE = '(?:sk-proj|sk-ant)-[A-Za-z0-9._~+/=-]{8,}';
+const LIVE_CREDENTIAL_RE = new RegExp(`\\b${LIVE_CREDENTIAL_PREFIX_SOURCE}\\b`, 'g');
+const GITHUB_TOKEN_RE = new RegExp(`\\b${GITHUB_TOKEN_SOURCE}\\b`, 'g');
+const PROVIDER_SECRET_RE = new RegExp(`\\b${PROVIDER_SECRET_SOURCE}\\b`, 'g');
+// Non-global by design: reused via .test() in validateFleetEvidence, where a
+// global regex's stateful lastIndex would make repeated calls unreliable.
+const UNREDACTED_CREDENTIAL_RE = new RegExp(
+  `\\b(?:${LIVE_CREDENTIAL_PREFIX_SOURCE}|${GITHUB_TOKEN_SOURCE}|${PROVIDER_SECRET_SOURCE})\\b`
+);
 const KNOWN_SECRET_ENV = [
   'RELAY_AGENT_TOKEN',
   'RELAY_BROKER_API_KEY',
@@ -1558,8 +1577,9 @@ export function redactFleetEvidence(value, extraSecrets = []) {
   let text = String(value ?? '');
   for (const secret of secretValues(extraSecrets)) text = text.split(secret).join('[REDACTED_SECRET]');
   text = text
-    .replace(/\b(?:at|nt|rk|wk)_[A-Za-z0-9._~+/=-]{8,}\b/g, '[REDACTED_TOKEN]')
-    .replace(/\b(?:gh[opurs]|sk-proj|sk-ant)-[A-Za-z0-9._~+/=-]{8,}\b/g, '[REDACTED_TOKEN]')
+    .replace(LIVE_CREDENTIAL_RE, '[REDACTED_TOKEN]')
+    .replace(GITHUB_TOKEN_RE, '[REDACTED_TOKEN]')
+    .replace(PROVIDER_SECRET_RE, '[REDACTED_TOKEN]')
     .replace(
       /((?:authorization|api[_-]?key|join[_-]?ticket|token|workspace[_-]?key)\s*[:=]\s*)(?:bearer\s+)?[^\s,;"']+/gi,
       '$1[REDACTED]'
@@ -2529,7 +2549,7 @@ export function validateFleetEvidence(evidence, matrix) {
       }
     }
     const serialized = JSON.stringify(operation);
-    if (/\b(?:at|nt|rk|wk)_[A-Za-z0-9._~+/=-]{8,}\b/.test(serialized)) {
+    if (UNREDACTED_CREDENTIAL_RE.test(serialized)) {
       throw new Error(`operation ${operation.id} contains an unredacted token`);
     }
     if (operation.id.startsWith('initial-task-sentinel-')) {

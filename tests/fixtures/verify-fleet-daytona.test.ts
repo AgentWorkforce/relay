@@ -1258,6 +1258,65 @@ describe('complete Daytona Fleet board', () => {
     }
   });
 
+  it('redacts every canonical live-credential prefix, not just at_/nt_/rk_/wk_', () => {
+    // These prefixes are the same set packages/cli/src/cli/lib/redact.ts's
+    // SECRET_PREFIX masks for display. A prior version of the local fallback
+    // regex here only covered at_/nt_/rk_/wk_ and silently let br_ (broker
+    // API key), rjt_live_, ot_live_, cld_at_, rth_at_, and ocl_node_enr_
+    // shaped credentials straight through into recorded evidence.
+    const bodies = ['0123456789abcdef', 'deadBEEF12345678'];
+    for (const prefix of [
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ]) {
+      for (const body of bodies) {
+        const token = `${prefix}${body}`;
+        const redacted = redactFleetEvidence(`credential=${token} in output`);
+        expect(redacted, `expected ${token} to be redacted`).not.toContain(token);
+        expect(redacted).toContain('[REDACTED_TOKEN]');
+      }
+    }
+  });
+
+  it('redacts GitHub tokens by their real underscore separator, not a hyphen', () => {
+    // GitHub PAT/app-token prefixes (ghp_, gho_, ghu_, ghr_, ghs_,
+    // github_pat_) are underscore-separated. A prior version of the local
+    // fallback regex here required a hyphen after the prefix (gh[opurs]-),
+    // which never matches a real GitHub token and was silently inert.
+    for (const token of [
+      'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+      'gho_abcdefghijklmnopqrstuvwxyz0123456789',
+      'ghu_abcdefghijklmnopqrstuvwxyz0123456789',
+      'ghr_abcdefghijklmnopqrstuvwxyz0123456789',
+      'ghs_abcdefghijklmnopqrstuvwxyz0123456789',
+      'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz',
+    ]) {
+      const redacted = redactFleetEvidence(`Authorization: token ${token}`);
+      expect(redacted, `expected ${token} to be redacted`).not.toContain(token);
+      expect(redacted).toContain('[REDACTED_TOKEN]');
+    }
+    // A hyphenated look-alike must not be treated as a match either way; it
+    // simply is not a GitHub token shape and is left to the generic
+    // key=value redaction pass if it appears next to a credential label.
+    expect(redactFleetEvidence('ghp-not-a-real-github-token-shape')).toContain(
+      'ghp-not-a-real-github-token-shape'
+    );
+    // Neighboring provider-key shapes that were already correctly handled
+    // (hyphen-separated) must keep working after narrowing the GitHub branch.
+    for (const token of ['sk-proj-0123456789abcdefghijklmnop', 'sk-ant-0123456789abcdefghijklmnop']) {
+      const redacted = redactFleetEvidence(`key=${token}`);
+      expect(redacted).not.toContain(token);
+      expect(redacted).toContain('[REDACTED_TOKEN]');
+    }
+  });
+
   it('marks oversized command output as truncated instead of parsing a misleading tail', async () => {
     const result = await executeFleetCommand(
       [process.execPath, '-e', "process.stdout.write('x'.repeat(4096))"],
@@ -1709,6 +1768,22 @@ describe('complete Daytona Fleet board', () => {
     leaked.resources[1].nodeId = 'different';
     leaked.operations[0].argv = ['agent-relay', '--token', 'at_live_secretvalue'];
     expect(() => validateFleetEvidence(leaked, matrix)).toThrow(/unredacted credential argument/);
+
+    // A credential shaped like a broker API key (br_...) or a GitHub-style
+    // token, sitting outside the argv-specific --token/--api-key check (e.g.
+    // surfaced through a recorded summary line), must still be caught by the
+    // generic serialized-evidence scan. This is the "independent" second
+    // layer FLEET_ACCEPTANCE_AUDIT.md describes; it previously shared the
+    // same incomplete prefix set as the primary redactor and let br_/gh*_
+    // shaped tokens straight through.
+    for (const token of ['br_0123456789abcdef', 'rjt_live_0123456789abcdef', 'ghp_0123456789abcdefghij']) {
+      const brokerKeyLeak = structuredClone(base);
+      brokerKeyLeak.resources[1].nodeId = 'different';
+      brokerKeyLeak.operations[0].summary = `${brokerKeyLeak.operations[0].summary ?? ''} token=${token}`;
+      expect(() => validateFleetEvidence(brokerKeyLeak, matrix), `expected ${token} to fail closed`).toThrow(
+        /unredacted token/
+      );
+    }
 
     const hiddenReleaseFailure = structuredClone(base);
     hiddenReleaseFailure.resources[1].nodeId = 'different';
