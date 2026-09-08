@@ -622,6 +622,36 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(prefixedArtifact).not.toContain('rk_live_token');
   });
 
+  it('never releases cross-stream credential fragments at finalization', () => {
+    const redactor = createCredentialRedactor(['split-secret'], {
+      maskPendingOnFinal: true,
+    });
+
+    // Model the OS reporting stdout before an earlier stderr write. The suffix
+    // cannot be recognized on its own, but the trailing prefix must not be
+    // released when the shared stream closes.
+    const sanitized =
+      redactor.push('secret', false) +
+      redactor.push('split-', false) +
+      redactor.push('', true);
+
+    expect(sanitized).toBe('secret[redacted]');
+    expect(sanitized).not.toContain('split-');
+    expect(sanitized).not.toContain('split-secret');
+
+    const prefixRedactor = createCredentialRedactor([], {
+      maskPendingOnFinal: true,
+    });
+    const sanitizedPrefix =
+      prefixRedactor.push('live_token', false) +
+      prefixRedactor.push('rk_', false) +
+      prefixRedactor.push('', true);
+
+    expect(sanitizedPrefix).toBe('live_token[redacted]');
+    expect(sanitizedPrefix).not.toContain('rk_');
+    expect(sanitizedPrefix).not.toContain('rk_live_token');
+  });
+
   it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {
     const redactor = createCredentialRedactor(['split-secret']);
     const sanitized =

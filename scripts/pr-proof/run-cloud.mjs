@@ -65,8 +65,12 @@ const STATUS_FAILURE_DIAGNOSTIC_FIELDS = ['phase', 'code', 'dispatchType', 'sand
 
 function run(command, args, options = {}) {
   const diagnosticSecretValues = options.diagnosticSecretValues ?? [];
-  const stdoutRedactor = createCredentialRedactor(diagnosticSecretValues);
-  const stderrRedactor = createCredentialRedactor(diagnosticSecretValues);
+  // One ordering-aware redactor covers both pipes. If the OS reports the two
+  // streams in the opposite order, conservatively mask any trailing fragment
+  // that could begin a credential instead of releasing it at finalization.
+  const outputRedactor = createCredentialRedactor(diagnosticSecretValues, {
+    maskPendingOnFinal: true,
+  });
   return runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
@@ -76,8 +80,7 @@ function run(command, args, options = {}) {
     signal: options.signal,
     onStdout: options.onStdout,
     onStderr: options.onStderr,
-    transformChunk: (text, stream, final) =>
-      (stream === 'stdout' ? stdoutRedactor : stderrRedactor).push(text, final),
+    transformChunk: (text, _stream, final) => outputRedactor.push(text, final),
   });
 }
 
@@ -131,7 +134,7 @@ function longestSuffixThatStartsSecret(value, secrets) {
   return 0;
 }
 
-function createCredentialPrefixRedactor() {
+function createCredentialPrefixRedactor(maskPendingOnFinal = false) {
   let pending = '';
   let active = null;
 
@@ -175,9 +178,10 @@ function createCredentialPrefixRedactor() {
           continue;
         }
 
-        const suffixLength = final
-          ? 0
-          : longestSuffixThatStartsSecret(input.slice(index), LIVE_CREDENTIAL_PREFIXES);
+        const suffixLength =
+          final && !maskPendingOnFinal
+            ? 0
+            : longestSuffixThatStartsSecret(input.slice(index), LIVE_CREDENTIAL_PREFIXES);
         const end = input.length - suffixLength;
         output += input.slice(index, end);
         if (suffixLength > 0) {
@@ -186,11 +190,13 @@ function createCredentialPrefixRedactor() {
         break;
       }
 
-      if (final && active && !active.emitted) output += active.prefix;
+      if (final && active && !active.emitted) {
+        output += maskPendingOnFinal ? '[redacted]' : active.prefix;
+      }
       if (final) {
         active = null;
         if (pending) {
-          output += pending;
+          output += maskPendingOnFinal ? '[redacted]' : pending;
           pending = '';
         }
       }
@@ -199,7 +205,7 @@ function createCredentialPrefixRedactor() {
   };
 }
 
-function createConfiguredSecretRedactor(secretValues) {
+function createConfiguredSecretRedactor(secretValues, maskPendingOnFinal = false) {
   const secrets = [...new Set(secretValues.filter((value) => typeof value === 'string' && value))];
   let pending = '';
 
@@ -231,7 +237,10 @@ function createConfiguredSecretRedactor(secretValues) {
           index = secretIndex + secret.length;
           continue;
         }
-        const suffixLength = final ? 0 : longestSuffixThatStartsSecret(input.slice(index), secrets);
+        const suffixLength =
+          final && !maskPendingOnFinal
+            ? 0
+            : longestSuffixThatStartsSecret(input.slice(index), secrets);
         const end = input.length - suffixLength;
         output += input.slice(index, end);
         if (suffixLength > 0) {
@@ -240,7 +249,7 @@ function createConfiguredSecretRedactor(secretValues) {
         break;
       }
       if (final) {
-        output += pending;
+        output += pending && maskPendingOnFinal ? '[redacted]' : pending;
         pending = '';
       }
       return output;
@@ -249,9 +258,9 @@ function createConfiguredSecretRedactor(secretValues) {
 }
 
 /** Redact credentials across subprocess chunks before bounded capture. */
-export function createCredentialRedactor(secretValues = []) {
-  const prefixRedactor = createCredentialPrefixRedactor();
-  const secretRedactor = createConfiguredSecretRedactor(secretValues);
+export function createCredentialRedactor(secretValues = [], { maskPendingOnFinal = false } = {}) {
+  const prefixRedactor = createCredentialPrefixRedactor(maskPendingOnFinal);
+  const secretRedactor = createConfiguredSecretRedactor(secretValues, maskPendingOnFinal);
   return {
     push(value, final = false) {
       const prefixed = prefixRedactor.push(value, final);
