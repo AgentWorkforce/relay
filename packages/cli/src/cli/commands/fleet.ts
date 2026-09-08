@@ -204,7 +204,7 @@ export function registerFleetCommands(
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
       if (sandboxIdOption !== undefined && !CLOUD_SANDBOX_ID_PATTERN.test(sandboxIdOption)) {
-        throw new Error('--sandbox-id must match sbx_<UUID> using an RFC 4122 UUID.');
+        throw new Error('--sandbox-id must match lowercase sbx_<UUID> using an RFC 4122 UUID.');
       }
       const sandboxProviderText = optionalText(options.sandboxProvider, 'Sandbox provider');
       const sandboxProvider: CloudFleetSandboxProviderId | undefined =
@@ -267,14 +267,19 @@ export function registerFleetCommands(
         if (!relayWorkspaceId) {
           throw new Error('The current Relay workspace did not report an ID for Cloud provisioning.');
         }
-        const sandboxId = sandboxIdOption ?? `sbx_${randomUUID()}`;
-        const sandboxGenerationUuid = sandboxId.slice('sbx_'.length);
-        const deterministicSandboxName = `fleet-sandbox-${sandboxGenerationUuid}`;
-        if (sandboxName !== undefined && sandboxName !== deterministicSandboxName) {
+        const sandboxId = sandboxIdOption ?? (sandboxName === undefined ? `sbx_${randomUUID()}` : undefined);
+        const deterministicSandboxName =
+          sandboxId === undefined ? undefined : `fleet-sandbox-${sandboxId.slice('sbx_'.length)}`;
+        if (
+          sandboxIdOption !== undefined &&
+          sandboxName !== undefined &&
+          sandboxName !== deterministicSandboxName
+        ) {
           throw new Error(
-            `--sandbox-name must be '${deterministicSandboxName}' for a long-running sandbox; custom names cannot preserve the one-to-one sandbox identity.`
+            `--sandbox-name must be '${deterministicSandboxName}' when --sandbox-id is supplied; custom names cannot preserve the one-to-one sandbox identity.`
           );
         }
+        const effectiveSandboxName = deterministicSandboxName ?? sandboxName;
         try {
           sandbox = await deps.ensureCloudFleetSandbox({
             workspaceId: relayWorkspaceId,
@@ -282,12 +287,12 @@ export function registerFleetCommands(
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
             ...(sandboxRelayfilePaths === undefined ? {} : { relayfilePaths: sandboxRelayfilePaths }),
-            sandboxId,
+            ...(sandboxId === undefined ? {} : { sandboxId }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
             workloadProfile: 'long-running-agent',
             waitTimeoutMs: 90_000,
-            name: deterministicSandboxName,
+            ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
           });
         } catch (error) {
           if (error instanceof CloudFleetSandboxProvisionError && error.cloudWorkspaceId && error.sandboxId) {
@@ -307,8 +312,10 @@ export function registerFleetCommands(
           } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
-                error.nodeName ?? deterministicSandboxName
-              }' before retrying with --sandbox-id '${sandboxId}' so a sandbox is not left running.`
+                error.nodeName ?? effectiveSandboxName ?? 'the requested sandbox'
+              }'${
+                sandboxId === undefined ? '' : ` before retrying with --sandbox-id '${sandboxId}'`
+              } so a sandbox is not left running.`
             );
           }
           throw error;

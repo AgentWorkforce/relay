@@ -116,22 +116,65 @@ describe('Cloud fleet sandbox client', () => {
         sandboxId: 'sandbox-1',
         forceProvision: true,
       })
-    ).rejects.toThrow('sandboxId must match sbx_<UUID>');
+    ).rejects.toThrow('sandboxId must match lowercase sbx_<UUID>');
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: 'sbx_123E4567-e89b-42d3-a456-426614174000',
+        forceProvision: true,
+      })
+    ).rejects.toThrow('sandboxId must match lowercase sbx_<UUID>');
 
     expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
     expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
   });
 
-  it('requires a stable identity and deterministic name for long-running requests', async () => {
+  it('preserves legacy long-running requests with a custom name and no sandbox identity', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-legacy',
+            nodeName: 'legacy-custom-node',
+            sandboxId: 'legacy-public-sandbox',
+            providerSandboxId: 'legacy-provider-sandbox',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
     await expect(
       ensureCloudFleetSandbox({
         workspaceId: 'rw_abc',
         requiredCapability: 'spawn:codex',
-        forceProvision: true,
+        name: 'legacy-custom-node',
         workloadProfile: 'long-running-agent',
       })
-    ).rejects.toThrow('require sandboxId');
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      sandboxId: 'legacy-public-sandbox',
+      providerSandboxId: 'legacy-provider-sandbox',
+    });
 
+    const ensureBody = JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body));
+    expect(ensureBody).toMatchObject({
+      name: 'legacy-custom-node',
+      workloadProfile: 'long-running-agent',
+    });
+    expect(ensureBody).not.toHaveProperty('sandboxId');
+  });
+
+  it('requires a deterministic name whenever a sandbox identity is supplied', async () => {
     await expect(
       ensureCloudFleetSandbox({
         workspaceId: 'rw_abc',

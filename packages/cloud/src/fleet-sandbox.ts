@@ -235,7 +235,7 @@ function validateSandboxIdentity(input: EnsureCloudFleetSandboxInput): {
   const sandboxId = input.sandboxId?.trim();
   const name = input.name?.trim();
   if (input.sandboxId !== undefined && (!sandboxId || !CLOUD_SANDBOX_ID_PATTERN.test(sandboxId))) {
-    throw new Error('Cloud fleet sandbox sandboxId must match sbx_<UUID> using an RFC 4122 UUID.');
+    throw new Error('Cloud fleet sandbox sandboxId must match lowercase sbx_<UUID> using an RFC 4122 UUID.');
   }
   if (sandboxId !== undefined && input.forceProvision !== true) {
     throw new Error('Cloud fleet sandbox sandboxId requires forceProvision: true.');
@@ -246,10 +246,7 @@ function validateSandboxIdentity(input: EnsureCloudFleetSandboxInput): {
 
   const longRunning =
     input.workloadProfile === 'long-running-agent' || input.workloadProfile === 'standard-long-running-agent';
-  if (longRunning) {
-    if (sandboxId === undefined) {
-      throw new Error('Long-running Cloud fleet sandbox requests require sandboxId.');
-    }
+  if (longRunning && sandboxId !== undefined) {
     if (input.forceProvision !== true) {
       throw new Error('Long-running Cloud fleet sandbox requests require forceProvision: true.');
     }
