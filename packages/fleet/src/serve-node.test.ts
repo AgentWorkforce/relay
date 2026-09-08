@@ -186,9 +186,11 @@ describe('serveNode', () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const controller = new AbortController();
       const nativeTimeout = AbortSignal.timeout;
-      vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) =>
-        ms === 130000 ? controller.signal : nativeTimeout(ms)
-      );
+      vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+        if (ms !== 130000) return nativeTimeout(ms);
+        if (kind === 'deadline') setTimeout(() => controller.abort(), ms);
+        return controller.signal;
+      });
       vi.stubGlobal(
         'fetch',
         vi.fn(async () => Response.json({ data: { status: 'dispatched' } }))
@@ -203,8 +205,8 @@ describe('serveNode', () => {
       );
       const rejected = expect(result).rejects.toThrow('spawn_confirmation_interrupted: child');
       await vi.advanceTimersByTimeAsync(0);
-      controller.abort();
-      await vi.advanceTimersByTimeAsync(0);
+      if (kind === 'external') controller.abort();
+      await vi.advanceTimersByTimeAsync(kind === 'deadline' ? 130000 : 0);
       await rejected;
     }
   );
