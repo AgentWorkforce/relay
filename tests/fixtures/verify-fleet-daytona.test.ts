@@ -11,6 +11,7 @@ import * as ts from 'typescript';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   assertGreenRunVerdict,
+  assertFleetLivePrerequisites,
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
@@ -537,9 +538,13 @@ function completeEvidence(matrix: {
         pass: true,
         processInventoryComplete: true,
         processInventoryEmpty: true,
+        processInventoriesCoverNodes: true,
         processInventoriesCoverOnlineNodes: true,
+        ownedNodeRecordsAbsent: true,
+        fleetNodeRecordsAbsent: true,
         processInventoryErrors: [],
-        processInventoryNodeNames: boardResources.map(({ nodeName }) => nodeName),
+        processInventoryNodeNames: [],
+        ownedNodeNames: [],
       },
     },
     verdict: 'GREEN',
@@ -898,6 +903,55 @@ describe('complete Daytona Fleet board', () => {
     }
   });
 
+  it('requires explicit immutable snapshot qualification inputs for live runs', () => {
+    expect(() => assertFleetLivePrerequisites({})).toThrow(
+      /VERIFY_FLEET_RELEASE_QUALIFICATION=1.*immutable snapshot inputs/
+    );
+    expect(() => assertFleetLivePrerequisites({ VERIFY_FLEET_RELEASE_QUALIFICATION: '1' })).toThrow(
+      /VERIFY_FLEET_SNAPSHOT_ID/
+    );
+    expect(() =>
+      assertFleetLivePrerequisites({
+        VERIFY_FLEET_RELEASE_QUALIFICATION: '1',
+        VERIFY_FLEET_SNAPSHOT_ID: 'snap_candidate_1666',
+        VERIFY_FLEET_SNAPSHOT_NAME: 'relay-candidate-11.10.3',
+        VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256: 'not-a-digest',
+      })
+    ).toThrow(/VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256/);
+    expect(() =>
+      assertFleetLivePrerequisites({
+        VERIFY_FLEET_RELEASE_QUALIFICATION: '1',
+        VERIFY_FLEET_SNAPSHOT_ID: 'snap_candidate_1666',
+        VERIFY_FLEET_SNAPSHOT_NAME: 'relay-candidate-11.10.3',
+        VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256: 'a'.repeat(64),
+        VERIFY_FLEET_EXPECTED_RELAY_VERSION: '11.10.3',
+      })
+    ).not.toThrow();
+  });
+
+  it('fails the default live runner before workspace access when qualification is not configured', async () => {
+    const env = { ...process.env };
+    for (const key of [
+      'DRY_RUN',
+      'VERIFY_FLEET_RELEASE_QUALIFICATION',
+      'VERIFY_FLEET_SNAPSHOT_ID',
+      'VERIFY_FLEET_SNAPSHOT_NAME',
+      'VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256',
+      'VERIFY_FLEET_EXPECTED_RELAY_VERSION',
+    ]) {
+      delete env[key];
+    }
+    await expect(
+      execFileAsync(
+        process.execPath,
+        ['scripts/verify-features/fleet-daytona.mjs', 'run', '--nonce', 'live-prerequisite-test'],
+        { cwd: path.resolve('.'), env }
+      )
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('VERIFY_FLEET_RELEASE_QUALIFICATION=1'),
+    });
+  });
+
   it('fails closed on malformed list/status payloads and final board leaks', () => {
     expect(() =>
       validateFleetNodesPayload({ nodes: [{ name: 'node-a', status: 'online', activeAgents: -1 }] })
@@ -907,15 +961,21 @@ describe('complete Daytona Fleet board', () => {
     ).toThrow(/wrong node/);
     expect(
       validateFleetFinalCleanup({
-        brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
+        brokerNodes: [],
         brokerAgents: [],
         workspaceAgents: [],
         processAgents: [],
-        processInventories: [{ nodeName: 'node-a', agents: [] }],
+        processInventories: [],
         processInventoryComplete: true,
         processInventoryErrors: [],
       })
-    ).toMatchObject({ pass: true, brokerNodeCount: 1 });
+    ).toMatchObject({
+      pass: true,
+      brokerNodeCount: 0,
+      ownedNodeRecordsAbsent: true,
+      fleetNodeRecordsAbsent: true,
+      processInventoriesCoverNodes: true,
+    });
     expect(
       validateFleetFinalCleanup({
         brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
@@ -927,6 +987,26 @@ describe('complete Daytona Fleet board', () => {
         processInventoryErrors: [],
       }).pass
     ).toBe(false);
+    for (const status of ['offline', 'stale']) {
+      expect(
+        validateFleetFinalCleanup({
+          brokerNodes: [{ name: 'owned-node', status, live: false, handlersLive: false }],
+          brokerAgents: [],
+          workspaceAgents: [],
+          processAgents: [],
+          processInventories: [],
+          processInventoryComplete: true,
+          processInventoryErrors: [],
+          ownedNodeNames: ['owned-node'],
+        }),
+        `an ${status} owned Fleet node record must not pass final cleanup`
+      ).toMatchObject({
+        pass: false,
+        ownedNodeRecordsAbsent: false,
+        fleetNodeRecordsAbsent: false,
+        processInventoriesCoverNodes: false,
+      });
+    }
     expect(
       validateFleetFinalCleanup({
         brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
@@ -1081,6 +1161,37 @@ describe('complete Daytona Fleet board', () => {
         mountPaths: ['/tests/**'],
       })
     );
+    const rootMountArgs = buildFleetSpawnArgs(
+      {
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        sandbox: true,
+        snapshotRequired: true,
+      },
+      {
+        expectedSnapshotId: 'snap_candidate_1666',
+        expectedSnapshotManifestSha256: 'a'.repeat(64),
+      }
+    );
+    validate('fleet-spawn-sandbox-root-mount', rootMountArgs);
+    expect(rootMountArgs).toEqual(
+      expect.arrayContaining([
+        '--sandbox-snapshot',
+        'snap_candidate_1666',
+        '--sandbox-snapshot-manifest-sha256',
+        'a'.repeat(64),
+      ])
+    );
+    expect(() =>
+      buildFleetSpawnArgs({
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        sandbox: true,
+        snapshotRequired: true,
+      })
+    ).toThrow(/requires VERIFY_FLEET_SNAPSHOT_ID/);
     expect(
       buildFleetSpawnArgs({
         provider: 'codex',
@@ -1296,6 +1407,25 @@ describe('complete Daytona Fleet board', () => {
       else process.env.CLOUD_API_ACCESS_TOKEN = previousAccess;
       if (previousRefresh === undefined) delete process.env.CLOUD_API_REFRESH_TOKEN;
       else process.env.CLOUD_API_REFRESH_TOKEN = previousRefresh;
+    }
+  });
+
+  it('redacts configured credentials at every nonempty length boundary', () => {
+    const previousNodeToken = process.env.RELAY_NODE_TOKEN;
+    const previousWorkspaceKey = process.env.RELAY_WORKSPACE_KEY;
+    try {
+      process.env.RELAY_NODE_TOKEN = 'q';
+      process.env.RELAY_WORKSPACE_KEY = 'seven77';
+      const redacted = redactFleetEvidence('q\nseven77\n12345678', ['12345678']);
+      expect(redacted).not.toContain('q');
+      expect(redacted).not.toContain('seven77');
+      expect(redacted).not.toContain('12345678');
+      expect(redacted.match(/\[REDACTED_SECRET\]/g)).toHaveLength(3);
+    } finally {
+      if (previousNodeToken === undefined) delete process.env.RELAY_NODE_TOKEN;
+      else process.env.RELAY_NODE_TOKEN = previousNodeToken;
+      if (previousWorkspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
+      else process.env.RELAY_WORKSPACE_KEY = previousWorkspaceKey;
     }
   });
 

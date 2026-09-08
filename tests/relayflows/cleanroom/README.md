@@ -94,8 +94,15 @@ npm run verify:fleet-daytona:dry-run
 npm run verify:fleet-daytona
 ```
 
-Run the live command only from a Linux operator host that is already authenticated
-to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
+The live command is a release-qualification run and requires all of
+`VERIFY_FLEET_RELEASE_QUALIFICATION=1`, `VERIFY_FLEET_SNAPSHOT_ID`,
+`VERIFY_FLEET_SNAPSHOT_NAME`, `VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256`, and
+`VERIFY_FLEET_EXPECTED_RELAY_VERSION` for the immutable candidate snapshot.
+It fails before workspace access with an actionable prerequisite when those
+inputs are absent; there are no safe provider defaults for a snapshot ID or
+manifest digest. The qualification workflow supplies these values from its
+sealed manifest. Run it only from a Linux operator host that is already
+authenticated to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
 on platforms without descriptor-bound directory I/O. The runner never persists
 unredacted credentials in recorded evidence. The explicit `--api-key` and
 `--workspace-key` option probes necessarily place an ephemeral, sandbox-local

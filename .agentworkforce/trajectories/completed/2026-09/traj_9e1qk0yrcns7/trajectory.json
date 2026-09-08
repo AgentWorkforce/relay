@@ -9,8 +9,9 @@
       "id": "cdbfa60e5594b06da6af46ef"
     }
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-04T20:37:17.326Z",
+  "completedAt": "2026-09-08T15:01:42.299Z",
   "agents": [
     {
       "name": "orchestrator",
@@ -237,6 +238,7 @@
       "title": "Execution: cloud-diagnosis",
       "agentName": "cloud-specialist",
       "startedAt": "2026-09-04T20:43:42.704Z",
+      "endedAt": "2026-09-08T15:01:42.299Z",
       "events": [
         {
           "ts": 1788554622704,
@@ -656,10 +658,39 @@
             "focal:external-ci",
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1788879573276,
+          "type": "decision",
+          "content": "Require explicit qualification inputs for live Fleet runs and bind snapshot args to root-mount intent: Require explicit qualification inputs for live Fleet runs and bind snapshot args to root-mount intent",
+          "raw": {
+            "question": "Require explicit qualification inputs for live Fleet runs and bind snapshot args to root-mount intent",
+            "chosen": "Require explicit qualification inputs for live Fleet runs and bind snapshot args to root-mount intent",
+            "alternatives": [],
+            "reasoning": "The 108-operation matrix requires immutable snapshot tokens for fleet-spawn-sandbox-root-mount, and no safe provider defaults exist; failing before workspace access keeps standalone behavior honest while the qualification workflow remains compatible."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788879574242,
+          "type": "decision",
+          "content": "Treat any final Fleet node record as cleanup residue and inspect every returned node: Treat any final Fleet node record as cleanup residue and inspect every returned node",
+          "raw": {
+            "question": "Treat any final Fleet node record as cleanup residue and inspect every returned node",
+            "chosen": "Treat any final Fleet node record as cleanup residue and inspect every returned node",
+            "alternatives": [],
+            "reasoning": "Baseline qualification requires zero Fleet node records, so offline/stale records must fail rather than be skipped by an online-only inventory loop."
+          },
+          "significance": "high"
         }
       ]
     }
   ],
+  "retrospective": {
+    "summary": "Repaired Fleet Daytona cleanroom candidate: final cleanup now rejects all remaining Fleet node records and inspects every returned node, configured credentials of any nonempty length are redacted, and live runs fail early without explicit immutable snapshot qualification inputs. Added offline/stale, secret-boundary, root-mount argv, and live-prerequisite tests; validation, dry-run, focused and broader fixtures, typecheck, lint, Prettier, and diff checks pass.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
   "commits": [],
   "filesChanged": [],
   "tags": []

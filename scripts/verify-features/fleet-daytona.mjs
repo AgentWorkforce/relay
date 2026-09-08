@@ -261,6 +261,19 @@ export function compareDaytonaSandboxBaseline(baseline, finalSandboxes) {
 
 export function buildFleetSpawnArgs(options, qualification = {}) {
   const sandboxProvider = options.sandboxProvider ?? 'daytona';
+  const snapshotRequired = options.snapshotRequired === true;
+  if (snapshotRequired && sandboxProvider !== 'daytona') {
+    throw new Error('immutable snapshot arguments are supported only for Daytona sandbox root mounts');
+  }
+  if (
+    snapshotRequired &&
+    (!SAFE_SNAPSHOT_ID.test(qualification.expectedSnapshotId ?? '') ||
+      !SHA256.test(qualification.expectedSnapshotManifestSha256 ?? ''))
+  ) {
+    throw new Error(
+      'fleet sandbox root mount requires VERIFY_FLEET_SNAPSHOT_ID and VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256'
+    );
+  }
   return [
     'fleet',
     'spawn',
@@ -271,7 +284,7 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
     options.task,
     ...(options.node ? [options.nodeFlag ?? '--node', options.node] : []),
     ...(options.sandbox ? ['--sandbox', '--sandbox-provider', sandboxProvider] : []),
-    ...(options.sandbox && sandboxProvider === 'daytona' && qualification.releaseQualificationRequested
+    ...(options.sandbox && sandboxProvider === 'daytona' && snapshotRequired
       ? [
           '--sandbox-snapshot',
           qualification.expectedSnapshotId,
@@ -1294,6 +1307,7 @@ export function validateFleetFinalCleanup({
   processInventories,
   processInventoryComplete,
   processInventoryErrors,
+  ownedNodeNames = [],
 }) {
   const inventoriesPresent =
     Array.isArray(brokerNodes) &&
@@ -1306,6 +1320,7 @@ export function validateFleetFinalCleanup({
   const processAgentList = Array.isArray(processAgents) ? processAgents : [];
   const processInventoryList = Array.isArray(processInventories) ? processInventories : [];
   const processErrors = Array.isArray(processInventoryErrors) ? processInventoryErrors : [];
+  const ownedNodeNameList = Array.isArray(ownedNodeNames) ? ownedNodeNames : [];
   const nodeRecordsValid = nodeList.every(
     (node) => node && typeof node.name === 'string' && node.name && typeof node.status === 'string'
   );
@@ -1328,15 +1343,17 @@ export function validateFleetFinalCleanup({
     new Set(processInventoryList.map((inventory) => inventory.nodeName)).size === processInventoryList.length;
   const processAgentNamesUnique =
     new Set(processAgentList.map((agent) => agent?.name)).size === processAgentList.length;
-  const onlineNodeNames = new Set(
-    nodeList.filter((node) => node?.status === 'online' || node?.live === true).map((node) => node.name)
-  );
+  const ownedNodeNamesValid =
+    ownedNodeNameList.every((name) => typeof name === 'string' && name) &&
+    new Set(ownedNodeNameList).size === ownedNodeNameList.length;
+  const ownedNodeNameSet = new Set(ownedNodeNameList);
+  const ownedNodeRecords = nodeList.filter((node) => ownedNodeNameSet.has(node?.name));
+  const ownedNodeRecordsAbsent = ownedNodeRecords.length === 0;
+  const fleetNodeRecordsAbsent = nodeList.length === 0;
+  const finalNodeNames = new Set(nodeList.map((node) => node.name));
   const inspectedNodeNames = new Set(processInventoryList.map((inventory) => inventory.nodeName));
-  const processInventoriesCoverOnlineNodes = [...onlineNodeNames].every((name) =>
-    inspectedNodeNames.has(name)
-  );
+  const processInventoriesCoverNodes = [...finalNodeNames].every((name) => inspectedNodeNames.has(name));
   const processInventoryEmpty = processInventoryList.every((inventory) => inventory.agents.length === 0);
-  const onlineNodes = nodeList.filter((node) => node?.status === 'online' || node?.live === true);
   const pass =
     inventoriesPresent &&
     nodeRecordsValid &&
@@ -1346,11 +1363,13 @@ export function validateFleetFinalCleanup({
     processInventoryRecordsValid &&
     processInventoryNodeNamesUnique &&
     processAgentNamesUnique &&
+    ownedNodeNamesValid &&
+    ownedNodeRecordsAbsent &&
+    fleetNodeRecordsAbsent &&
     processInventoryComplete === true &&
     processErrors.length === 0 &&
-    processInventoriesCoverOnlineNodes &&
+    processInventoriesCoverNodes &&
     processInventoryEmpty &&
-    onlineNodes.every((node) => node.handlersLive === true) &&
     brokerAgentList.length === 0 &&
     workspaceAgentList.length === 0 &&
     processAgentList.length === 0;
@@ -1370,10 +1389,16 @@ export function validateFleetFinalCleanup({
     processInventoryNodeNames: [...inspectedNodeNames].sort(),
     processInventoryNodeNamesUnique,
     processAgentNamesUnique,
-    processInventoriesCoverOnlineNodes,
+    ownedNodeNames: [...ownedNodeNameSet].sort(),
+    ownedNodeRecordsAbsent,
+    fleetNodeRecordsAbsent,
+    processInventoriesCoverNodes,
+    // Kept as a compatibility alias for older evidence readers. The value now
+    // covers every final Fleet node record, including offline/stale records.
+    processInventoriesCoverOnlineNodes: processInventoriesCoverNodes,
     processInventoryEmpty,
     brokerNodeCount: nodeList.length,
-    onlineNodeCount: onlineNodes.length,
+    onlineNodeCount: nodeList.filter((node) => node?.status === 'online' || node?.live === true).length,
     brokerAgentNames: brokerAgentList
       .map((agent) => agent?.name)
       .filter(Boolean)
@@ -1635,10 +1660,30 @@ export function validateRecoveryEvidence(evidence, matrix, nonce) {
 function secretValues(extra = []) {
   return [
     ...KNOWN_SECRET_ENV.map((name) => process.env[name]).filter(
-      (value) => typeof value === 'string' && value.length >= 8
+      (value) => typeof value === 'string' && value.length > 0
     ),
-    ...extra.filter((value) => typeof value === 'string' && value.length >= 8),
+    ...extra.filter((value) => typeof value === 'string' && value.length > 0),
   ];
+}
+
+export function assertFleetLivePrerequisites(env = process.env) {
+  if (String(env.VERIFY_FLEET_RELEASE_QUALIFICATION ?? '') !== '1') {
+    throw new Error(
+      'Fleet Daytona live runs require VERIFY_FLEET_RELEASE_QUALIFICATION=1 plus the immutable snapshot inputs; use verify:fleet-daytona:dry-run for local checks'
+    );
+  }
+  if (!SAFE_SNAPSHOT_ID.test(String(env.VERIFY_FLEET_SNAPSHOT_ID ?? '').trim())) {
+    throw new Error('VERIFY_FLEET_SNAPSHOT_ID is required for a live Fleet Daytona run');
+  }
+  if (!SAFE_SNAPSHOT.test(String(env.VERIFY_FLEET_SNAPSHOT_NAME ?? '').trim())) {
+    throw new Error('VERIFY_FLEET_SNAPSHOT_NAME is required for a live Fleet Daytona run');
+  }
+  if (!SHA256.test(String(env.VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256 ?? '').trim())) {
+    throw new Error('VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256 is required for a live Fleet Daytona run');
+  }
+  if (!String(env.VERIFY_FLEET_EXPECTED_RELAY_VERSION ?? '').trim()) {
+    throw new Error('VERIFY_FLEET_EXPECTED_RELAY_VERSION is required for a live Fleet Daytona run');
+  }
 }
 
 export function redactFleetEvidence(value, extraSecrets = []) {
@@ -2835,7 +2880,9 @@ export function validateFleetEvidence(evidence, matrix) {
     if (
       finalBoard.processInventoryComplete !== true ||
       finalBoard.processInventoryEmpty !== true ||
-      finalBoard.processInventoriesCoverOnlineNodes !== true ||
+      finalBoard.processInventoriesCoverNodes !== true ||
+      finalBoard.ownedNodeRecordsAbsent !== true ||
+      finalBoard.fleetNodeRecordsAbsent !== true ||
       !Array.isArray(finalBoard.processInventoryErrors) ||
       finalBoard.processInventoryErrors.length !== 0
     ) {
@@ -4568,6 +4615,7 @@ class FleetBoard {
         name: `relay-fleetboard-root-${this.short}`,
         paths: undefined,
         noMount: false,
+        snapshotRequired: true,
         mountProof: { scope: present(scopeMarkerBytes), rootOnly: present(rootOnlyMarkerBytes) },
       },
       {
@@ -4597,6 +4645,7 @@ class FleetBoard {
         sandboxRole: scenario.id.replace('fleet-spawn-sandbox-', '') + '-probe',
         mountPaths: scenario.paths,
         noMount: scenario.noMount,
+        snapshotRequired: scenario.snapshotRequired,
         mountProof: scenario.mountProof,
         model: process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna',
         sentinel,
@@ -6350,9 +6399,14 @@ class FleetBoard {
     const finalProcessAgents = [];
     const processInventories = [];
     const processInventoryErrors = [];
-    for (const node of (finalBoardNodes ?? []).filter(
-      ({ status, live }) => status === 'online' || live === true
-    )) {
+    const ownedNodeNames = [
+      this.nodeA?.nodeName,
+      this.nodeB?.nodeName,
+      ...this.evidence.resources
+        .filter(({ type, role }) => type === 'daytona-sandbox' && role === 'board-node')
+        .map(({ nodeName }) => nodeName),
+    ].filter(Boolean);
+    for (const node of finalBoardNodes ?? []) {
       try {
         const agents = await this.listNodeAgents(node, true);
         processInventories.push({ nodeName: node.name, agents });
@@ -6369,6 +6423,7 @@ class FleetBoard {
       processInventories,
       processInventoryComplete: Array.isArray(finalBoardNodes) && processInventoryErrors.length === 0,
       processInventoryErrors,
+      ownedNodeNames: [...new Set(ownedNodeNames)],
     });
     this.evidence.cleanup.finalBoard = finalCleanup;
     await this.derived('daytona-baseline-restored', {
@@ -6758,6 +6813,7 @@ async function main() {
     process.stdout.write(`FLEET_DAYTONA_DRY_RUN_NOOP command=${command ?? '(missing)'}\n`);
     return;
   }
+  if (command === 'run') assertFleetLivePrerequisites();
   if (['run', 'cleanup'].includes(command)) {
     const credentialEnv = options['workspace-credential-env'];
     if (credentialEnv !== undefined) {
