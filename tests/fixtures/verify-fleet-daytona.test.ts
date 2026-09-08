@@ -15,6 +15,7 @@ import {
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
   compareDaytonaSandboxBaseline,
+  convergeDaytonaSandboxDeletion,
   deriveFleetVerdict,
   evaluateFleetIdentityReconciliation,
   executeFleetCommand,
@@ -25,6 +26,7 @@ import {
   matchesSandboxFileInspection,
   operationStatus,
   ownedBoardNodes,
+  isDaytonaDeletionAccepted,
   redactFleetEvidence,
   sanitizeFleetArgv,
   summarizeFleetCampaign,
@@ -729,6 +731,105 @@ describe('complete Daytona Fleet board', () => {
       unexpectedIdHashes: [createHash('sha256').update(unexpected.id).digest('hex')],
       unexpectedNameHashes: [createHash('sha256').update(unexpected.name).digest('hex')],
     });
+  });
+
+  it('classifies accepted Daytona deletion tombstones without treating them as runnable leaks', async () => {
+    const destroying = {
+      id: '33333333-3333-4333-8333-333333333333',
+      name: 'relay-fleetboard-a-test',
+      state: 'destroying',
+      desiredState: 'destroyed',
+    };
+    expect(isDaytonaDeletionAccepted(destroying)).toBe(true);
+    expect(
+      compareDaytonaSandboxBaseline({ count: 0, sandboxIdHashes: [], sandboxNameHashes: [] }, [destroying])
+    ).toMatchObject({ restored: true, countMatches: true });
+
+    for (const state of ['started', 'stopped', 'error']) {
+      const unexpected = { ...destroying, state, desiredState: undefined };
+      expect(isDaytonaDeletionAccepted(unexpected)).toBe(false);
+      expect(
+        compareDaytonaSandboxBaseline({ count: 0, sandboxIdHashes: [], sandboxNameHashes: [] }, [unexpected])
+      ).toMatchObject({ restored: false, countMatches: false });
+    }
+  });
+
+  it('proves deterministic Daytona deletion convergence evidence for every provider outcome', async () => {
+    const sandbox = {
+      id: '44444444-4444-4444-8444-444444444444',
+      state: 'destroying',
+      desiredState: 'destroyed',
+    };
+    const absent = await convergeDaytonaSandboxDeletion({
+      deleteResult: { exitCode: 0 },
+      listSandbox: async () => undefined,
+      slaMs: 10,
+      pollIntervalMs: 5,
+      sleep: async () => undefined,
+    });
+    expect(absent).toMatchObject({ cleanupState: 'absent', converged: true, polls: 0 });
+
+    let acceptedNow = 0;
+    const acceptedStates = [sandbox, undefined];
+    const accepted = await convergeDaytonaSandboxDeletion({
+      deleteResult: { exitCode: 0 },
+      listSandbox: async () => acceptedStates.shift(),
+      now: () => acceptedNow,
+      sleep: async (milliseconds) => {
+        acceptedNow += milliseconds;
+      },
+      slaMs: 10,
+      pollIntervalMs: 5,
+    });
+    expect(accepted).toMatchObject({
+      cleanupState: 'absent',
+      converged: true,
+      accepted: true,
+      acceptedState: 'deletion-accepted',
+      polls: 1,
+    });
+    expect(accepted.observations[0]).toMatchObject({ presence: 'deletion-accepted' });
+
+    let stuckNow = 0;
+    const stuck = await convergeDaytonaSandboxDeletion({
+      deleteResult: { exitCode: 0 },
+      listSandbox: async () => sandbox,
+      now: () => stuckNow,
+      sleep: async (milliseconds) => {
+        stuckNow += milliseconds;
+      },
+      slaMs: 10,
+      pollIntervalMs: 5,
+    });
+    expect(stuck).toMatchObject({ cleanupState: 'deletion-not-converged', converged: false, accepted: true });
+    expect(stuck.polls).toBe(2);
+
+    const failed = await convergeDaytonaSandboxDeletion({
+      deleteResult: { exitCode: 1 },
+      listSandbox: async () => ({ ...sandbox, state: 'started', desiredState: 'running' }),
+      slaMs: 10,
+      pollIntervalMs: 5,
+      sleep: async () => undefined,
+    });
+    expect(failed).toMatchObject({ cleanupState: 'delete-failed', converged: false, polls: 0 });
+  });
+
+  it('rejects an unauthorized Daytona cleanup target in final recovery evidence', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    const unauthorized = structuredClone(evidence);
+    unauthorized.resources.push({
+      type: 'daytona-sandbox',
+      id: '55555555-5555-4555-8555-555555555555',
+      provider: 'daytona',
+      nodeName: 'unrelated-sandbox',
+      ownership: 'created-by-run',
+      cleanupState: 'absent',
+    });
+    unauthorized.ownershipIntents.push({ type: 'daytona-sandbox', name: 'unrelated-sandbox', nonce: NONCE });
+    expect(() => validateRecoveryEvidence(unauthorized, matrix, NONCE)).toThrow(
+      /not authorized for recovery cleanup/
+    );
   });
 
   it('binds matrix argv contracts to the actual Fleet and direct-node argument builders', async () => {
