@@ -320,6 +320,15 @@ function cleanupProviderId(
     : requestedProviderId;
 }
 
+function assertExpectedSandboxIdentity(payload: JsonRecord, expectedSandboxId: string): void {
+  const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
+  if (sandboxId !== expectedSandboxId) {
+    throw new CloudFleetSandboxIdentityMismatchError(
+      `Cloud returned sandboxId ${sandboxId} instead of requested sandboxId ${expectedSandboxId}.`
+    );
+  }
+}
+
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
@@ -327,6 +336,12 @@ function normalizeEnsureResult(
   requestedProviderId?: CloudFleetSandboxProviderId
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
+  // A caller-declared identity is the cleanup authority. Validate it before
+  // reading any other response field so malformed and future outcomes cannot
+  // make an untrusted public ID eligible for automatic deletion.
+  if (expectedSandboxId !== undefined) {
+    assertExpectedSandboxIdentity(payload, expectedSandboxId);
+  }
   const outcome = readString(payload, 'outcome');
   const nodeName = requiredString(payload, 'nodeName', 'Cloud fleet sandbox');
   const providerId = readProviderId(payload, requestedProviderId !== undefined);
@@ -343,11 +358,6 @@ function normalizeEnsureResult(
       throw new Error('Cloud fleet sandbox response is missing relayfileMounted.');
     }
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
-    if (expectedSandboxId !== undefined && sandboxId !== expectedSandboxId) {
-      throw new CloudFleetSandboxIdentityMismatchError(
-        `Cloud returned sandboxId ${sandboxId} instead of requested sandboxId ${expectedSandboxId}.`
-      );
-    }
     return {
       outcome,
       cloudWorkspaceId,
@@ -379,11 +389,6 @@ function normalizeEnsureResult(
 
   if (outcome === 'provisioning_timeout') {
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
-    if (expectedSandboxId !== undefined && sandboxId !== expectedSandboxId) {
-      throw new CloudFleetSandboxIdentityMismatchError(
-        `Cloud returned sandboxId ${sandboxId} instead of requested sandboxId ${expectedSandboxId}.`
-      );
-    }
     return {
       outcome,
       cloudWorkspaceId,
@@ -463,6 +468,23 @@ export async function ensureCloudFleetSandbox(
   }
   const payload = await readJson(response);
   if (!response.ok) {
+    const returnedSandboxId = isObject(payload) ? readString(payload, 'sandboxId') : undefined;
+    if (
+      sandboxIdentity.sandboxId !== undefined &&
+      returnedSandboxId !== undefined &&
+      returnedSandboxId !== sandboxIdentity.sandboxId
+    ) {
+      const mismatch = new CloudFleetSandboxIdentityMismatchError(
+        `Cloud returned sandboxId ${returnedSandboxId} instead of requested sandboxId ${sandboxIdentity.sandboxId}.`
+      );
+      throw new CloudFleetSandboxProvisionError(mismatch.message, {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
+        outcomeUnknown: true,
+        cause: mismatch,
+      });
+    }
     const error = endpointError('provision the fleet sandbox', response, payload);
     if (isObject(payload) && readString(payload, 'sandboxId')) {
       const providerId = cleanupProviderId(payload, input.providerId);

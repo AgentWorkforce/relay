@@ -200,6 +200,81 @@ describe('Cloud fleet sandbox client', () => {
     }
   );
 
+  it.each([
+    ['malformed success', { outcome: 'provisioned' }],
+    ['unknown success outcome', { outcome: 'future_cloud_outcome', nodeName: SANDBOX_NAME }],
+  ])('rejects a mismatched sandbox identity before parsing a %s response', async (_case, responseFields) => {
+    const returnedSandboxId = 'sbx_223e4567-e89b-42d3-a456-426614174000';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ...responseFields, sandboxId: returnedSandboxId }, { status: 201 }),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: undefined,
+    });
+    expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+  });
+
+  it('does not trust a mismatched sandbox identity from a non-OK response for cleanup', async () => {
+    const returnedSandboxId = 'sbx_223e4567-e89b-42d3-a456-426614174000';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'provider rejected request',
+            nodeName: 'untrusted-node-name',
+            sandboxId: returnedSandboxId,
+            providerSandboxId: 'untrusted-provider-sandbox',
+            providerId: 'agent37',
+          },
+          { status: 502 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      nodeName: SANDBOX_NAME,
+      outcomeUnknown: true,
+      sandboxId: undefined,
+      providerId: undefined,
+    });
+    expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
+  });
+
   it('forwards a repos list into the ensure request body when the caller opts in', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({

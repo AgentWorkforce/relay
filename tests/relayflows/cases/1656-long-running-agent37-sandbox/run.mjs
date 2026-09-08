@@ -33,8 +33,8 @@
  * the attribution.
  *
  * Base: the CLI sends no sandbox identity, while the existing long-running
- * profile and Cloud-selected `agent37` response are present; the older client
- * drops provider attribution during cleanup. Head: an explicit replay
+ * profile and Cloud-selected `agent37` response and cleanup attribution are
+ * present. Head: an explicit replay
  * `sbx_<UUID>` identity, deterministic node name, and long-running profile
  * reach the ensure body, while the exact public identity reaches cleanup and
  * the separate physical provider sandbox ID is returned as evidence. Base does
@@ -217,7 +217,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
     })
     // 3. cleanup, triggered by the deliberate dispatch failure below
     .mockResolvedValueOnce({
-      response: Response.json({ sandboxId: PROVIDER_SANDBOX_ID, deleted: true }),
+      response: Response.json({ sandboxId: REPLAY_SANDBOX_ID, deleted: true }),
       auth,
     });
 
