@@ -79,6 +79,18 @@
             "reasoning": "Real Claude tests exposed a transient Yes-to-No repaint and receiver inbox polling despite its task. A delayed-reset regression fails before the stable-grid repair. The proof worker disables history tools and uses the recorded zero-delay input setting; two synthetic pushed events now have correlated actor digest replies. Real GitHub and chief evidence remain pending."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788884625629,
+          "type": "reflection",
+          "content": "Synthetic Claude push proof passed two idle actions, ten-minute idle, ten unique burst events and a real node reconnect. Source and deployed readiness remain separate; engine bot races are repaired and final review is pending.",
+          "raw": {
+            "confidence": 0.85
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.85"
+          ]
         }
       ]
     }
