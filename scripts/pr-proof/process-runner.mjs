@@ -142,7 +142,14 @@ export function runBoundedProcess(command, args, options = {}) {
       if (settled) return;
       settled = true;
       cleanup();
-      forceKill();
+      try {
+        forceKill();
+      } catch {
+        // Preserve the transform/spawn failure as the rejection reason. The
+        // parent-side pipes still must close even if process signaling fails.
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
       reject(error);
     };
 
