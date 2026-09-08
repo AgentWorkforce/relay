@@ -122,7 +122,10 @@ export async function waitFor<T>(
   opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  const intervalMs = opts.intervalMs ?? 400;
+  // The observer shares the workspace's real free-plan API budget with broker
+  // registration and served-spawn confirmation. Poll at most once per second so
+  // the scenario driver does not itself starve membership/cleanup requests.
+  const intervalMs = opts.intervalMs ?? 1_000;
   const deadline = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < deadline) {

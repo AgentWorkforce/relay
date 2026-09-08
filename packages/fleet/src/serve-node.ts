@@ -353,10 +353,14 @@ async function waitForDelegatedSpawn(options: ServeNodeOptions, placement: unkno
   if (typeof invocationId !== 'string' || !invocationId) {
     throw new Error('spawn_confirmation_missing: engine returned no delegated invocation ID');
   }
-  const baseUrl = (options.connection.baseUrl ?? 'https://cast.agentrelay.com')
+  const configuredBase = (options.connection.baseUrl ?? 'https://cast.agentrelay.com')
     .replace(/^ws:/, 'http:')
-    .replace(/^wss:/, 'https:')
-    .replace(/\/+$/, '');
+    .replace(/^wss:/, 'https:');
+  // Scan once: an unanchored /\/+$/ trim can backtrack quadratically on a
+  // caller-controlled long run of slashes followed by another character.
+  let end = configuredBase.length;
+  while (end > 0 && configuredBase[end - 1] === '/') end--;
+  const baseUrl = configuredBase.slice(0, end);
   const url = `${baseUrl}/v1/actions/spawn/invocations/${encodeURIComponent(invocationId)}`;
   // Broker readiness is bounded at 120 seconds. Include a finite reporting grace
   // period; a missing result is an actionable failure, never inferred success.

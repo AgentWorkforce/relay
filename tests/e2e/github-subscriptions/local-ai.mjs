@@ -12,7 +12,10 @@ import {
   rmSync,
   existsSync,
   readdirSync,
-  statSync,
+  openSync,
+  closeSync,
+  fstatSync,
+  constants,
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -462,22 +465,22 @@ try {
   if (server) await server.stop();
   // Retain only sanitized evidence; the temporary broker/MCP configuration carries local test credentials.
   const diagnostic = [];
-  const scan = (directory) => {
-    for (const file of readdirSync(directory)) {
-      const full = path.join(directory, file);
-      const info = statSync(full);
-      if (info.isDirectory()) scan(full);
-      else if (file.endsWith('.log'))
-        diagnostic.push({
-          file: path.relative(work, full),
-          tail: readFileSync(full, 'utf8')
-            .slice(-12000)
-            .replace(/(?:rk_live_|at_live_|sk-ant-|sk-)[A-Za-z0-9_-]+/g, '[redacted]'),
-        });
-    }
-  };
   try {
-    scan(work);
+    // Read only this owned actor's log. Open without following a final symlink,
+    // then inspect and read the same descriptor, avoiding a stat/path-read race.
+    const full = path.join(work, '.agentworkforce', 'relay', 'team', 'worker-logs', `${name}.log`);
+    const descriptor = openSync(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      assert(fstatSync(descriptor).isFile(), 'Owned actor diagnostic must be a regular file');
+      diagnostic.push({
+        file: path.relative(work, full),
+        tail: readFileSync(descriptor, 'utf8')
+          .slice(-12000)
+          .replace(/(?:rk_live_|at_live_|nt_live_|sk-ant-|sk-)[A-Za-z0-9_-]+/g, '[redacted]'),
+      });
+    } finally {
+      closeSync(descriptor);
+    }
     writeFileSync(path.join(output, 'diagnostics.json'), JSON.stringify(diagnostic, null, 2) + '\n');
   } catch (error) {
     report.diagnosticError = error.message;
