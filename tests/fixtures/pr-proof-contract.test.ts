@@ -621,6 +621,11 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(capture.stdout).not.toContain(longCredential);
   });
 
+  it('preserves large credential-free output without pathological rescanning', () => {
+    const cleanOutput = `head ${'ordinary-output '.repeat(20_000)}tail`;
+    expect(sanitizeCloudCommandOutput(cleanOutput, ['configured-secret'])).toBe(cleanOutput);
+  });
+
   it('omits malformed JSON status payloads instead of falling back to raw output', () => {
     const diagnostic = sanitizeCloudStatusDiagnostic(
       '{"status":"failed","result":{"token":"unknown-secret"}'

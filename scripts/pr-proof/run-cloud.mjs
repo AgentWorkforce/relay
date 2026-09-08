@@ -42,6 +42,10 @@ const LIVE_CREDENTIAL_PREFIXES = [
   'ocl_node_enr_',
   'br_',
 ];
+const LIVE_CREDENTIAL_PREFIX_RE = new RegExp(
+  `(${LIVE_CREDENTIAL_PREFIXES.map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,
+  'g'
+);
 const STATUS_DIAGNOSTIC_FIELDS = [
   'runId',
   'status',
@@ -153,17 +157,11 @@ function createCredentialPrefixRedactor() {
           continue;
         }
 
-        let prefixIndex = -1;
-        let prefix;
-        for (let candidateIndex = index; candidateIndex < input.length; candidateIndex += 1) {
-          const candidate = LIVE_CREDENTIAL_PREFIXES.find((value) => input.startsWith(value, candidateIndex));
-          if (candidate) {
-            prefixIndex = candidateIndex;
-            prefix = candidate;
-            break;
-          }
-        }
-        if (prefix) {
+        LIVE_CREDENTIAL_PREFIX_RE.lastIndex = index;
+        const match = LIVE_CREDENTIAL_PREFIX_RE.exec(input);
+        if (match) {
+          const prefixIndex = match.index;
+          const prefix = match[0];
           output += input.slice(index, prefixIndex);
           index = prefixIndex;
           active = { prefix, emitted: false };
@@ -171,17 +169,15 @@ function createCredentialPrefixRedactor() {
           continue;
         }
 
-        if (!final) {
-          const suffixLength = longestSuffixThatStartsSecret(input.slice(index), LIVE_CREDENTIAL_PREFIXES);
-          if (suffixLength > 0) {
-            const end = input.length - suffixLength;
-            output += input.slice(index, end);
-            pending = input.slice(end);
-            break;
-          }
+        const suffixLength = final
+          ? 0
+          : longestSuffixThatStartsSecret(input.slice(index), LIVE_CREDENTIAL_PREFIXES);
+        const end = input.length - suffixLength;
+        output += input.slice(index, end);
+        if (suffixLength > 0) {
+          pending = input.slice(end);
         }
-        output += input[index];
-        index += 1;
+        break;
       }
 
       if (final && active && !active.emitted) output += active.prefix;
@@ -209,23 +205,33 @@ function createConfiguredSecretRedactor(secretValues) {
       let output = '';
       let index = 0;
       while (index < input.length) {
-        const secret = secrets.find((candidate) => input.startsWith(candidate, index));
-        if (secret) {
-          output += '[redacted]';
-          index += secret.length;
-          continue;
-        }
-        if (!final) {
-          const suffixLength = longestSuffixThatStartsSecret(input.slice(index), secrets);
-          if (suffixLength > 0) {
-            const end = input.length - suffixLength;
-            output += input.slice(index, end);
-            pending = input.slice(end);
-            break;
+        let secret;
+        let secretIndex = -1;
+        for (const candidate of secrets) {
+          const candidateIndex = input.indexOf(candidate, index);
+          if (
+            candidateIndex !== -1 &&
+            (secretIndex === -1 ||
+              candidateIndex < secretIndex ||
+              (candidateIndex === secretIndex && candidate.length > (secret?.length ?? 0)))
+          ) {
+            secret = candidate;
+            secretIndex = candidateIndex;
           }
         }
-        output += input[index];
-        index += 1;
+        if (secret !== undefined) {
+          output += input.slice(index, secretIndex);
+          output += '[redacted]';
+          index = secretIndex + secret.length;
+          continue;
+        }
+        const suffixLength = final ? 0 : longestSuffixThatStartsSecret(input.slice(index), secrets);
+        const end = input.length - suffixLength;
+        output += input.slice(index, end);
+        if (suffixLength > 0) {
+          pending = input.slice(end);
+        }
+        break;
       }
       if (final) {
         output += pending;
