@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
 - Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
 - Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
 - Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- SDK `waitForReady` reports `startup_fallback` at its deadline when `worker_startup_fallback` occurred without a proven readiness handshake.
 - MCP raw CLI spawns wait for harness readiness and report terminal startup errors; the selected broker must support the readiness contract.
 
 ## [11.10.4] - 2026-09-08

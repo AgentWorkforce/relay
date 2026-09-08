@@ -1259,6 +1259,7 @@ impl BrokerRuntime {
         };
         if self.workers.workers.contains_key(&name)
             || self.pending_verified_spawns.contains_key(&name)
+            || self.workers.identity_cleanups.contains_key(&name)
         {
             self.reply_action_error(&invoke.invocation_id, "spawn_agent_name_in_use")
                 .await;
@@ -1403,6 +1404,14 @@ impl BrokerRuntime {
                 .await;
             }
             Err(error) => {
+                if let Some(pending) = self.workers.identity_cleanups.get_mut(&name) {
+                    pending
+                        .completions
+                        .push(super::identity_cleanup::CleanupCompletion::Fleet(
+                            fleet_spawn_action_result(&invoke.invocation_id, &name, Err(error)),
+                        ));
+                    return;
+                }
                 // A registration can succeed before process creation fails. Undo
                 // that authoritative identity before reporting the failed launch.
                 match deregister_fleet_agent(
@@ -1963,6 +1972,7 @@ pub(super) async fn register_node_agent_token(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
     name: &str,
+    channels: &[ChannelName],
     invocation_id: Option<String>,
     session_ref: Option<String>,
 ) -> Result<crate::node_control::AgentRegistrationToken, String> {
@@ -1970,7 +1980,10 @@ pub(super) async fn register_node_agent_token(
     fleet_control_tx
         .send(FleetControlCommand::RegisterAgent {
             request: AgentRegister {
-                auto_join_general: Some(false),
+                // Preserve the legacy strict wire schema when its default
+                // membership already matches the requested scope.
+                auto_join_general: (!channels.iter().any(|channel| channel.as_str() == "general"))
+                    .then_some(false),
                 v: FLEET_WIRE_VERSION,
                 id: None,
                 name: name.to_string(),
@@ -2057,26 +2070,7 @@ pub(super) async fn deregister_fleet_agent(
     Ok(true)
 }
 
-/// Owned identity deletion must wait until the engine has removed the live
-/// binding. Enqueue alone cannot establish the release action's local-completion
-/// precondition. The node-control task resolves the acknowledgement independently
-/// of the runtime API actor; no dispatched release is polled by its own handler.
-/// Delete only a newly created identity after its node binding is confirmed gone.
-pub(super) async fn cleanup_failed_spawn_identity(
-    tx: &mpsc::Sender<FleetControlCommand>,
-    book: &mut FleetDeliveryBook,
-    inventory: &mut HashMap<WorkerName, InventoryAgent>,
-    http: &RelaycastHttpClient,
-    name: &WorkerName,
-) -> Result<(), String> {
-    deregister_fleet_agent_confirmed(tx, book, inventory, name).await?;
-    http.release_agent_identity(name, Some("owned spawn failed before readiness"), true)
-        .await
-        .map_err(|error| error.to_string())?;
-    prune_fleet_agent_state(tx, inventory, book, name).await;
-    Ok(())
-}
-
+#[cfg(test)]
 pub(super) async fn deregister_fleet_agent_confirmed(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &FleetDeliveryBook,
@@ -3356,6 +3350,7 @@ mod tests {
                 &tx,
                 &mut delivery_book,
                 "agent-a",
+                &[ChannelName::from("general")],
                 Some("inv-42".to_string()),
                 session_ref,
             )
@@ -3367,6 +3362,10 @@ mod tests {
         let FleetControlCommand::RegisterAgent { request, reply } = command else {
             panic!("expected RegisterAgent command");
         };
+        assert_eq!(
+            request.auto_join_general, None,
+            "default spawn must work with legacy strict engines"
+        );
         assert_eq!(request.invocation_id.as_deref(), Some("inv-42"));
         assert_eq!(request.session_ref.as_deref(), Some("sess-resume-7"));
         // A session ref implies the spawn is resumable.
@@ -3405,15 +3404,20 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
         let register_handle = tokio::spawn(async move {
             let mut delivery_book = FleetDeliveryBook::default();
-            register_node_agent_token(&tx, &mut delivery_book, "agent-a", None, None).await?;
+            register_node_agent_token(&tx, &mut delivery_book, "agent-a", &[], None, None).await?;
             Ok::<_, String>(delivery_book)
         });
 
-        let FleetControlCommand::RegisterAgent { reply, .. } =
+        let FleetControlCommand::RegisterAgent { request, reply } =
             rx.recv().await.expect("register command emitted")
         else {
             panic!("expected RegisterAgent command");
         };
+        assert_eq!(
+            request.auto_join_general,
+            Some(false),
+            "empty channels require explicit isolation support"
+        );
         reply
             .send(Ok(crate::node_control::AgentRegistrationToken {
                 name: "agent-a".to_string(),

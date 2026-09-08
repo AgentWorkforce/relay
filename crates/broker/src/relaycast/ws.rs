@@ -935,6 +935,36 @@ impl RelaycastHttpClient {
         reason: Option<&str>,
         delete_identity: bool,
     ) -> Result<()> {
+        let expected_token_hash = if delete_identity {
+            Some(self.owned_identity_token_hash(agent_name)?)
+        } else {
+            None
+        };
+        self.release_agent_identity_guarded(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash.as_deref(),
+        )
+        .await
+    }
+
+    /// Capture before yielding the runtime; background cleanup must not adopt a
+    /// later cache entry belonging to a same-name replacement.
+    pub(crate) fn owned_identity_token_hash(&self, agent_name: &str) -> Result<String> {
+        let token = self.registration.as_ref().as_ref()
+            .and_then(|registration| registration.cached_agent_token(agent_name))
+            .context("owned identity cleanup requires its cached credential; refusing name-only deletion")?;
+        Ok(format!("{:x}", Sha256::digest(token.as_bytes())))
+    }
+
+    pub(crate) async fn release_agent_identity_guarded(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+    ) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
                 .map(str::trim)
@@ -950,12 +980,10 @@ impl RelaycastHttpClient {
                 delete_agent: delete_identity.then_some(true),
             };
             if delete_identity {
-                let token = self.registration.as_ref().as_ref()
-                    .and_then(|registration| registration.cached_agent_token(agent_name))
-                    .context("owned identity cleanup requires its cached credential; refusing name-only deletion")?;
+                let expected_token_hash =
+                    expected_token_hash.context("owned cleanup has no captured credential hash")?;
                 let mut body = serde_json::to_value(&request)?;
-                body["expected_token_hash"] =
-                    Value::String(format!("{:x}", Sha256::digest(token.as_bytes())));
+                body["expected_token_hash"] = Value::String(expected_token_hash.to_string());
                 let response = reqwest::Client::new()
                     .post(format!(
                         "{}/v1/agents/release",
@@ -980,7 +1008,11 @@ impl RelaycastHttpClient {
                 if result["data"]["status"] != "completed" {
                     anyhow::bail!("owned identity cleanup queued but unconfirmed; reconcile lifecycle invocation {}", result["data"]["invocation_id"]);
                 }
-                self.invalidate_cached_registration(agent_name);
+                if self.owned_identity_token_hash(agent_name).ok().as_deref()
+                    == Some(expected_token_hash)
+                {
+                    self.invalidate_cached_registration(agent_name);
+                }
                 return Ok(());
             }
             // Invalidate the cached token before the call so an ambiguous
@@ -2078,6 +2110,35 @@ mod tests {
             .await
             .unwrap();
         cleanup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn deferred_owned_cleanup_uses_captured_hash_and_preserves_newer_cache_entry() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .json_body_partial(
+                    json!({"expected_token_hash":format!("{:x}", Sha256::digest(b"owned-token"))})
+                        .to_string(),
+                );
+            then.status(200)
+                .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let captured = client.owned_identity_token_hash("owned-worker").unwrap();
+        client.seed_agent_token("owned-worker", "replacement-token");
+        client
+            .release_agent_identity_guarded("owned-worker", None, true, Some(&captured))
+            .await
+            .unwrap();
+        cleanup.assert_hits(1);
+        assert_eq!(
+            client.owned_identity_token_hash("owned-worker").unwrap(),
+            format!("{:x}", Sha256::digest(b"replacement-token"))
+        );
     }
 
     #[tokio::test]

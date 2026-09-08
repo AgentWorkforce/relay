@@ -383,7 +383,9 @@ pub(super) async fn release_worker_locally(
     workers.metrics.on_release(&name);
     let outcome = match workers.release(&name).await {
         Ok(()) => {
-            workspace_http.forget_agent_registration(&name);
+            if !workers.owned_spawn_generations.contains_key(&name) {
+                workspace_http.forget_agent_registration(&name);
+            }
             let dropped = take_pending_for_worker(pending_deliveries, &name);
             if !dropped.is_empty() {
                 let _ = send_event(
@@ -428,7 +430,9 @@ pub(super) async fn release_worker_locally(
         Err(error) => {
             let message = error.to_string();
             if is_unknown_worker_error_message(&message) {
-                workspace_http.forget_agent_registration(&name);
+                if !workers.owned_spawn_generations.contains_key(&name) {
+                    workspace_http.forget_agent_registration(&name);
+                }
                 state.agents.remove(&name);
                 if paths.persist {
                     if let Err(save_error) = state.save(&paths.state) {
@@ -511,6 +515,9 @@ pub(super) async fn spawn_worker_from_request(
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
 ) -> Result<()> {
+    if workers.identity_cleanups.contains_key(&name) {
+        anyhow::bail!("worker name has pending owned cleanup; complete it before reuse");
+    }
     let workspace_http = &workspace_state.http_client;
     eprintln!(
         "[agent-relay] received spawn request for '{}' (cli: {})",
@@ -682,6 +689,7 @@ pub(super) async fn spawn_worker_from_request(
                 fleet_control_tx,
                 fleet_delivery_book,
                 name.as_str(),
+                &channels,
                 invocation_id.clone(),
                 session_ref.clone(),
             )
@@ -780,6 +788,9 @@ pub(super) async fn spawn_worker_from_request(
             }
         }
     };
+    if owns_identity {
+        workers.owned_spawn_generations.remove(&name);
+    }
     let channel_membership_warning: Option<String> =
         if let Some(token) = worker_relay_key.as_deref() {
             seed_supplied_agent_token(workspace_http, &name, token);
@@ -803,17 +814,16 @@ pub(super) async fn spawn_worker_from_request(
                     "worker channel membership reconciliation failed for Relaycast spawn"
                 );
                 if owns_identity {
-                    super::fleet::cleanup_failed_spawn_identity(
+                    super::identity_cleanup::schedule_identity_cleanup(
+                        workers,
                         fleet_control_tx,
                         fleet_delivery_book,
                         fleet_inventory,
                         workspace_http,
                         &name,
-                    )
-                    .await
-                    .map_err(|cleanup| {
-                        anyhow::anyhow!("{error}; owned identity cleanup needs retry: {cleanup}")
-                    })?;
+                        true,
+                        None,
+                    );
                 }
                 anyhow::bail!("worker channel membership was not fully reconciled: {error}");
             } else {
@@ -941,17 +951,16 @@ pub(super) async fn spawn_worker_from_request(
         }
         Err(e) => {
             if owns_identity {
-                super::fleet::cleanup_failed_spawn_identity(
+                super::identity_cleanup::schedule_identity_cleanup(
+                    workers,
                     fleet_control_tx,
                     fleet_delivery_book,
                     fleet_inventory,
                     workspace_http,
                     &name,
-                )
-                .await
-                .map_err(|cleanup| {
-                    anyhow::anyhow!("{e}; owned identity cleanup needs retry: {cleanup}")
-                })?;
+                    true,
+                    None,
+                );
             }
 
             let msg = e.to_string();

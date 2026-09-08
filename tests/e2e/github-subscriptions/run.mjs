@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   correlate,
+  releaseOwnedWorker,
   receiverTask,
   claudeReceiverArgs,
   hasContinuousCoverage,
@@ -301,11 +302,7 @@ async function subscriptions(remove = false) {
         save();
       }
       if (manifest.worker && !manifest.worker.released) {
-        const current = (await broker.listAgents()).find((w) => w.name === manifest.worker.name);
-        if (current && current.generation !== manifest.worker.generation)
-          throw new Error('Worker generation changed; refusing to clean up its replacement');
-        if (current)
-          await broker.release(current.name, 'owned GitHub demo cleanup', manifest.worker.generation, true);
+        await releaseOwnedWorker(broker, manifest.worker);
         manifest.worker.released = true;
         save();
       }

@@ -102,7 +102,10 @@ Run the real Claude rehearsal against local candidate builds with a fresh output
 RELAYCAST_ENGINE_DIR=/absolute/relaycast \
 BROKER_BINARY_PATH=/absolute/agent-relay-broker \
 LOCAL_AI_INJECT_RATE_MS=0 \
+LOCAL_AI_EXPECTED_HEAD=FULL_REVIEWED_COMMIT_SHA \
 node tests/e2e/github-subscriptions/local-ai.mjs /absolute/fresh-ai-evidence
 ```
 
-This starts one actual Claude worker. Keep the assignment's independent reviewer stopped until cleanup completes. It verifies two successive idle actions, a600-second idle interval, ten distinct burst events, duplicate idempotency, no pre-join replay and an actual node WebSocket reconnect. Its signed producer is synthetic; these results cannot satisfy the real GitHub or actual-chief gates. It retains broker events, source/binary hashes, sanitized logs, channel messages and receiver tool-call names. Missing tool evidence, history/network polling, cleanup failure or missing digest action fails the run. `LOCAL_AI_LONG_IDLE_MS` may shorten a repair rerun, but such a run is not ten-minute idle proof.
+This starts one actual Claude worker. Keep the assignment's independent reviewer stopped until cleanup completes. It verifies two successive idle actions, a600-second idle interval, ten distinct burst events, duplicate idempotency, no pre-join replay and an actual node WebSocket reconnect. Its signed producer is synthetic; these results cannot satisfy the real GitHub or actual-chief gates. It retains broker events, source/binary and runner/helper hashes, sanitized logs, channel messages and receiver tool-call names. Missing tool evidence, history/network polling, cleanup failure or missing digest action fails the run. `LOCAL_AI_LONG_IDLE_MS` may shorten a repair rerun, but such a run is not ten-minute idle proof.
+
+Owned cleanup runs independently of the broker API loop. The name and generation remain reserved until confirmed deletion; failed attempts retry up to five times at five-second intervals. A generation-guarded release retries retained cleanup. API failures identify unconfirmed cleanup and its generation; they do not claim resources are gone. Shutdown waits up to one second for pending cleanup and logs any generation still requiring reconciliation.

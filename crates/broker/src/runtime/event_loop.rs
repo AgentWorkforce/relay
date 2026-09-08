@@ -462,6 +462,7 @@ impl BrokerRuntime {
     }
 
     async fn shutdown_runtime(mut self) -> Result<()> {
+        self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
             if let Err(error) = self.crash_insights.save(&self.crash_insights_path) {

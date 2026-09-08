@@ -547,6 +547,7 @@ pub(crate) struct AgentRegistrationToken {
 
 #[derive(Debug)]
 struct PendingAgentRegistration {
+    isolates_channels: bool,
     name: String,
     reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
     created_at: Instant,
@@ -1962,6 +1963,7 @@ async fn run_connected_once(
                         pending_agent_registrations.insert(
                             request_id,
                             PendingAgentRegistration {
+                                isolates_channels: request.auto_join_general == Some(false),
                                 name: request.name.clone(),
                                 reply,
                                 created_at: Instant::now(),
@@ -2117,6 +2119,9 @@ where
                     id = %error.id,
                     "engine rejected a node control frame"
                 );
+                if error.code == "invalid_message" {
+                    fail_unsupported_channel_isolation(&error.message, pending_agent_registrations);
+                }
                 fail_agent_registration(
                     &error.id,
                     format!("{}: {}", error.code, error.message),
@@ -2229,6 +2234,41 @@ fn fail_agent_registration(
 ) {
     if let Some(pending) = pending_agent_registrations.remove(id) {
         let _ = pending.reply.send(Err(reason));
+    }
+}
+
+/// Older strict schemas cannot echo the request id when parsing fails. Only
+/// reject registrations using the specifically rejected extension; unrelated
+/// schema errors and legacy registrations keep their normal correlation.
+fn fail_unsupported_channel_isolation(
+    message: &str,
+    pending: &mut HashMap<String, PendingAgentRegistration>,
+) {
+    let Ok(serde_json::Value::Array(issues)) = serde_json::from_str::<serde_json::Value>(message)
+    else {
+        return;
+    };
+    let rejected = issues.iter().any(|issue| {
+        issue["code"] == "unrecognized_keys"
+            && issue["path"].as_array().is_some_and(Vec::is_empty)
+            && issue["keys"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|key| key == "auto_join_general"))
+    });
+    if !rejected {
+        return;
+    }
+    let incompatible: Vec<_> = pending
+        .iter()
+        .filter(|(_, entry)| entry.isolates_channels)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in incompatible {
+        fail_agent_registration(
+            &id,
+            "agent_register_unsupported_channel_isolation: engine upgrade required".to_string(),
+            pending,
+        );
     }
 }
 
@@ -3272,6 +3312,62 @@ mod tests {
         assert!(seen.contains("dup"));
     }
 
+    #[tokio::test]
+    async fn uncorrelated_strict_schema_error_fails_only_isolated_registration_promptly() {
+        let (isolated_tx, mut isolated_rx) = oneshot::channel();
+        let (legacy_tx, mut legacy_rx) = oneshot::channel();
+        let mut pending = HashMap::from([
+            (
+                "isolated".to_string(),
+                PendingAgentRegistration {
+                    isolates_channels: true,
+                    name: "isolated".to_string(),
+                    reply: isolated_tx,
+                    created_at: Instant::now(),
+                },
+            ),
+            (
+                "legacy".to_string(),
+                PendingAgentRegistration {
+                    isolates_channels: false,
+                    name: "legacy".to_string(),
+                    reply: legacy_tx,
+                    created_at: Instant::now(),
+                },
+            ),
+        ]);
+        let (events, _) = mpsc::channel(1);
+        let mut deregistrations = HashMap::new();
+        let mut sink = futures_util::sink::drain();
+        for key in ["unrelated_extension", "auto_join_general"] {
+            let error = json!({"v":1,"type":"error","ok":false,"id":"fresh-engine-id","code":"invalid_message","message":json!([{"code":"unrecognized_keys","path":[],"keys":[key]}]).to_string()});
+            assert!(
+                handle_server_message(
+                    Message::Text(error.to_string()),
+                    &events,
+                    &mut pending,
+                    &mut deregistrations,
+                    &mut sink
+                )
+                .await
+            );
+            assert!(matches!(
+                legacy_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            if key == "unrelated_extension" {
+                assert!(matches!(
+                    isolated_rx.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+            }
+        }
+        assert!(
+            matches!(isolated_rx.try_recv(), Ok(Err(reason)) if reason.starts_with("agent_register_unsupported_channel_isolation"))
+        );
+        assert_eq!(pending.len(), 1);
+    }
+
     #[test]
     fn expire_agent_registrations_bounds_pending_map() {
         let created_at = Instant::now();
@@ -3279,6 +3375,7 @@ mod tests {
         let mut pending = HashMap::from([(
             "agent_register_1".to_string(),
             PendingAgentRegistration {
+                isolates_channels: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at,
@@ -3309,6 +3406,7 @@ mod tests {
         let mut pending = HashMap::from([(
             "agent_register_req".to_string(),
             PendingAgentRegistration {
+                isolates_channels: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at: Instant::now(),
@@ -3352,6 +3450,7 @@ mod tests {
         let mut pending = HashMap::from([(
             "agent_register_req".to_string(),
             PendingAgentRegistration {
+                isolates_channels: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at: Instant::now(),

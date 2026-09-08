@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { releaseOwnedWorker } from './proof.mjs';
 // Real local HTTP/WebSocket/broker/process wiring; deliberately NOT a real AI/GitHub action proof.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -180,8 +181,8 @@ try {
     client.release(delayed.name, 'wrong generation', '00000000-0000-0000-0000-000000000000', true),
     /generation changed/
   );
-  await delayed.release('delayed startup failed', { deleteIdentity: true });
-  await delayed.release('idempotent retry after confirmed cleanup', { deleteIdentity: true });
+  await releaseOwnedWorker(client, delayed);
+  await releaseOwnedWorker(client, delayed);
   assert(!(await request('/v1/agents')).some((agent) => agent.name === delayed.name));
   const retry = await client.spawnCli({
     name: delayed.name,
@@ -379,6 +380,7 @@ try {
   process.chdir(repo);
   if (client)
     await client.shutdown().catch((error) => {
+      report.pass = false;
       report.cleanupError = error.message;
       process.exitCode = 1;
     });

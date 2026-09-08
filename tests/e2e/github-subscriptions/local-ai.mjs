@@ -44,12 +44,10 @@ const report = {
   stimuli: [],
 };
 let server, client, worker, key, base, aborted;
-const work = mkdtempSync(path.join(tmpdir(), 'ghsub-local-ai-'));
 const name = 'ghsub-local-ai-' + randomBytes(4).toString('hex');
 const events = [];
 const sockets = new Set();
 let nodeConnections = 0;
-report.workDir = work;
 report.sourceHeads = {};
 for (const [name, directory] of [
   ['relay', root],
@@ -62,6 +60,31 @@ for (const [name, directory] of [
     diffSha256: createHash('sha256').update(diff).digest('hex'),
   };
 }
+const expectedHead = process.env.LOCAL_AI_EXPECTED_HEAD;
+assert(expectedHead, 'Set LOCAL_AI_EXPECTED_HEAD to the committed Relay revision under test');
+assert.equal(report.sourceHeads.relay.head, expectedHead, 'Relay HEAD differs from expected revision');
+for (const [name, directory] of [
+  ['relay', root],
+  ['relaycast', path.resolve(engineDir)],
+]) {
+  assert.equal(
+    execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], {
+      cwd: directory,
+      encoding: 'utf8',
+    }).trim(),
+    '',
+    `${name} must be clean for reproducible proof`
+  );
+}
+report.scriptSha256 = {};
+for (const script of ['local-ai.mjs', 'proof.mjs']) {
+  report.scriptSha256[script] = createHash('sha256')
+    .update(readFileSync(path.join(root, 'tests/e2e/github-subscriptions', script)))
+    .digest('hex');
+}
+report.expectedHead = expectedHead;
+const work = mkdtempSync(path.join(tmpdir(), 'ghsub-local-ai-'));
+report.workDir = work;
 report.sourceHeads.brokerBinarySha256 = createHash('sha256').update(readFileSync(binaryPath)).digest('hex');
 report.runtimeProof = 'candidate broker/CLI and engine builds; synthetic producer only';
 report.inputPacingMs = process.env.LOCAL_AI_INJECT_RATE_MS ?? 'default';

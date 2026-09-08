@@ -257,6 +257,7 @@ pub(crate) struct WorkerRegistry {
     // Ownership outlives reaping so a failed pre-ready handle can clean up safely.
     pub(crate) owned_spawn_generations:
         HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
+    pub(crate) identity_cleanups: HashMap<WorkerName, crate::runtime::PendingIdentityCleanup>,
     pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
@@ -365,6 +366,7 @@ impl WorkerRegistry {
             initial_tasks: HashMap::new(),
             owned_spawn_generations: HashMap::new(),
             completed_owned_releases: VecDeque::new(),
+            identity_cleanups: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
         }
@@ -583,6 +585,9 @@ impl WorkerRegistry {
         commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
+        if self.identity_cleanups.contains_key(&spec.name) {
+            anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
+        }
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }

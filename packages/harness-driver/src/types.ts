@@ -83,7 +83,7 @@ export interface SpawnAgentResult {
   pid?: number;
   /** Immutable broker-assigned identity for this same-name worker generation. */
   generation?: string;
-  /** Effective channels verified by the broker during spawn. */
+  /** Effective requested channels; verify live engine membership independently. */
   channels?: string[];
 }
 

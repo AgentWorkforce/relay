@@ -4,6 +4,7 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        self.reconcile_identity_cleanups().await;
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -230,53 +231,42 @@ impl BrokerRuntime {
             )
             .await;
             let owned = workers.owned_spawn_generations.get(name).cloned();
-            let cleanup = if let Some((_, http)) = owned {
-                super::fleet::cleanup_failed_spawn_identity(
+            let completion = super::fleet::verified_spawn_failed_result(
+                invocation_id.clone(),
+                "spawn_readiness_timeout",
+            );
+            if let Some((_, http)) = owned {
+                super::identity_cleanup::schedule_identity_cleanup(
+                    workers,
                     fleet_control_tx,
                     fleet_delivery_book,
                     fleet_inventory,
                     &http,
                     name,
-                )
-                .await
-                .map(|_| true)
+                    true,
+                    Some(super::identity_cleanup::CleanupCompletion::Fleet(
+                        completion,
+                    )),
+                );
             } else {
-                super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
+                if super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
                     .await
-            };
-            if cleanup.is_ok() {
-                workers.owned_spawn_generations.remove(name);
-            }
-            match cleanup {
-                Ok(_) => {
+                    .is_ok()
+                {
                     super::fleet::prune_fleet_agent_state(
                         fleet_control_tx,
                         fleet_inventory,
                         fleet_delivery_book,
                         name,
                     )
-                    .await
-                }
-                Err(error) => {
-                    tracing::warn!(worker = %name, %error, "retaining fleet identity after readiness timeout cleanup");
-                    super::fleet::prune_fleet_inventory_entry(
-                        fleet_control_tx,
-                        fleet_inventory,
-                        name,
-                    )
                     .await;
                 }
+                let _ = fleet_control_tx
+                    .send(FleetControlCommand::Send(
+                        crate::fleet_wire::BrokerToRelaycast::ActionResult(completion),
+                    ))
+                    .await;
             }
-            let _ = fleet_control_tx
-                .send(FleetControlCommand::Send(
-                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                        super::fleet::verified_spawn_failed_result(
-                            invocation_id.clone(),
-                            "spawn_readiness_timeout",
-                        ),
-                    ),
-                ))
-                .await;
         }
 
         let exited = match workers.reap_exited().await {
@@ -311,45 +301,38 @@ impl BrokerRuntime {
                     .get(name)
                     .filter(|(owned_generation, _)| owned_generation == generation)
                     .cloned();
-                let cleanup = if let Some((_, http)) = owned {
-                    super::fleet::cleanup_failed_spawn_identity(
+                let completion = super::fleet::verified_spawn_failed_result(
+                    pending.invocation_id,
+                    "spawn_harness_not_ready",
+                );
+                if let Some((_, http)) = owned {
+                    super::identity_cleanup::schedule_identity_cleanup(
+                        workers,
                         fleet_control_tx,
                         fleet_delivery_book,
                         fleet_inventory,
                         &http,
                         name,
-                    )
-                    .await
-                    .map(|_| true)
+                        true,
+                        Some(super::identity_cleanup::CleanupCompletion::Fleet(
+                            completion,
+                        )),
+                    );
+                    retain_fleet_identity = true;
                 } else {
-                    super::fleet::deregister_fleet_agent(
+                    retain_fleet_identity = super::fleet::deregister_fleet_agent(
                         fleet_control_tx,
                         fleet_delivery_book,
                         name,
                     )
                     .await
-                };
-                if cleanup.is_ok() {
-                    workers.owned_spawn_generations.remove(name);
-                    retain_fleet_identity = false;
+                    .is_err();
+                    let _ = fleet_control_tx
+                        .send(FleetControlCommand::Send(
+                            crate::fleet_wire::BrokerToRelaycast::ActionResult(completion),
+                        ))
+                        .await;
                 }
-                match cleanup {
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(worker = %name, %error, "retaining fleet identity after early verified-spawn exit");
-                        retain_fleet_identity = true;
-                    }
-                }
-                let _ = fleet_control_tx
-                    .send(FleetControlCommand::Send(
-                        crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                            super::fleet::verified_spawn_failed_result(
-                                pending.invocation_id,
-                                "spawn_harness_not_ready",
-                            ),
-                        ),
-                    ))
-                    .await;
             }
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
             if (code.is_some_and(|code| code != 0) || signal.is_some())
@@ -751,7 +734,11 @@ impl BrokerRuntime {
             }
         }
 
-        let live_fleet_workers = workers.live_fleet_inventory_candidates();
+        let live_fleet_workers = workers
+            .live_fleet_inventory_candidates()
+            .into_iter()
+            .filter(|worker| !workers.identity_cleanups.contains_key(&worker.name))
+            .collect();
         if super::fleet::reconcile_fleet_inventory_with_live_workers(
             fleet_control_tx,
             relaycast_http,

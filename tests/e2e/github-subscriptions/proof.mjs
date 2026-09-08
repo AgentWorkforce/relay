@@ -128,3 +128,11 @@ export function capturedStimuliPass(results, negatives) {
     negatives.every((r) => r.pass)
   );
 }
+
+/** Retired workers still retain an owned identity; absence is not cleanup proof. */
+export async function releaseOwnedWorker(broker, owned) {
+  const current = (await broker.listAgents()).find((worker) => worker.name === owned.name);
+  if (current && current.generation !== owned.generation)
+    throw new Error('Worker generation changed; refusing to clean up its replacement');
+  await broker.release(owned.name, 'owned GitHub demo cleanup', owned.generation, true);
+}

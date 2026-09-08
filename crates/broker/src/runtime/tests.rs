@@ -204,6 +204,209 @@ struct WorkerEventRuntimeFixture {
     _temp_dir: tempfile::TempDir,
 }
 
+#[tokio::test]
+async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(json!({"name":"retired", "delete_agent":true}).to_string());
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("retired");
+    let generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    http.seed_agent_token(&name, "owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "retired-id".to_string());
+    fixture.runtime.fleet_inventory.insert(
+        name.clone(),
+        crate::fleet_wire::InventoryAgent {
+            name: name.to_string(),
+            agent_id: "retired-id".to_string(),
+            invocation_id: None,
+            session_ref: None,
+        },
+    );
+    let (reply, mut released) = oneshot::channel();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        fixture
+            .runtime
+            .handle_api_request(ListenApiRequest::Release {
+                name: name.clone(),
+                reason: None,
+                expected_generation: Some(generation.to_string()),
+                delete_identity: true,
+                reply,
+            }),
+    )
+    .await
+    .expect("unacknowledged remote cleanup must not occupy the runtime actor");
+    let ack = loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            break reply;
+        }
+    };
+    assert!(matches!(
+        released.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    release.assert_hits(0);
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::ActionInvoke(crate::fleet_wire::ActionInvoke {
+                v: FLEET_WIRE_VERSION,
+                invocation_id: "replacement-attempt".into(),
+                action: "spawn".into(),
+                input: json!({"name":"retired", "cli":"claude"}),
+                agent_name: Some("retired".into()),
+                agent_id: None,
+            }),
+        ))
+        .await;
+    loop {
+        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            assert_eq!(result.invocation_id, "replacement-attempt");
+            assert!(
+                matches!(result.result, crate::fleet_wire::ActionResultPayload::Error(error) if error.error.contains("name_in_use"))
+            );
+            break;
+        }
+    }
+    let mut replacement_spec = fixture.runtime.workers.workers["unrelated"].spec.clone();
+    replacement_spec.name = name.clone();
+    assert!(fixture
+        .runtime
+        .workers
+        .spawn(replacement_spec, None, None, None, false, None, None, None)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("pending owned cleanup"));
+    let (reply, listed) = oneshot::channel();
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        fixture
+            .runtime
+            .handle_api_request(ListenApiRequest::List { reply }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        listed.await.unwrap().is_ok(),
+        "GET /api/spawned remains serviceable while ACK is withheld"
+    );
+    fixture.runtime.handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+        crate::fleet_wire::RelaycastToBroker::Deliver(Deliver {
+            v: FLEET_WIRE_VERSION, agent: "unrelated".into(), agent_id: "unrelated-id".into(),
+            delivery_id: "cleanup-parallel-delivery".into(), msg_id: "cleanup-parallel-message".into(), seq: 1,
+            mode: DeliveryMode::Wait, payload: json!({"type":"message.created", "text":"independent delivery", "from":"sender", "channel":"general"}),
+        })
+    )).await;
+    assert!(
+        fixture
+            .runtime
+            .pending_deliveries
+            .values()
+            .any(|delivery| delivery.worker_name.as_str() == "unrelated"),
+        "unrelated delivery must be admitted while cleanup waits"
+    );
+    ack.send(Err("fixture rejection".to_string())).unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    fixture.runtime.reconcile_identity_cleanups().await;
+    assert!(released
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("cleanup unconfirmed"));
+    assert!(fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+    assert!(fixture
+        .runtime
+        .fleet_delivery_book
+        .active_agent_id(&name)
+        .is_some());
+    assert!(!fixture.runtime.fleet_inventory.contains_key(&name));
+    release.assert_hits(0);
+
+    // A later book update must never redirect retry teardown to another ID.
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "replacement-id".to_string());
+    let (reply, mut retried) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    fixture.runtime.reconcile_identity_cleanups().await;
+    loop {
+        if let FleetControlCommand::DeregisterAgent { request, reply } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            assert_eq!(request.agent_id, "retired-id");
+            reply.send(Ok(())).unwrap();
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(result) = retried.try_recv() {
+                assert!(result.is_ok());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    release.assert_hits(1);
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+    assert_eq!(
+        fixture.runtime.fleet_delivery_book.active_agent_id(&name),
+        Some("replacement-id")
+    );
+    assert!(fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .contains(&(name, generation)));
+    fixture.runtime.workers.shutdown_all().await.unwrap();
+}
+
 fn worker_event_runtime_fixture(
     workers: WorkerRegistry,
     pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
