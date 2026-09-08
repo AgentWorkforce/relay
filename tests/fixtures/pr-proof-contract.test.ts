@@ -50,6 +50,7 @@ import {
   createCliApiKeyEnvironment,
   formatCloudRunDiagnostics,
   preparedRunIdFromOutput,
+  sanitizeCloudStatusDiagnostic,
   writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -457,6 +458,78 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(diagnostics).toContain('cloud_logs_output=empty');
   });
 
+  it('allowlists status diagnostics without retaining nested workflow output', () => {
+    const rawStatus = JSON.stringify({
+      runId: 'cloud-run-123',
+      status: 'failed',
+      updatedAt: '2026-09-08T10:00:00.000Z',
+      workflow: 'return process.env.SECRET',
+      error: {
+        message: 'nested-error-must-not-survive',
+        apiKey: 'ci-key',
+      },
+      result: {
+        error: {
+          token: 'rk_live_0123456789abcdef',
+          detail: 'nested-result-must-not-survive',
+        },
+      },
+      failure: {
+        phase: 'launch',
+        code: 'workflow_launch_failed',
+        message: 'request ci-key failed for rk_live_0123456789abcdef',
+        causeChain: ['nested-cause-must-not-survive'],
+      },
+    });
+    const diagnostic = sanitizeCloudStatusDiagnostic(`status response follows\n${rawStatus}`, ['ci-key']);
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'cloud-run-123',
+      status: 'failed',
+      updatedAt: '2026-09-08T10:00:00.000Z',
+      failure: {
+        phase: 'launch',
+        code: 'workflow_launch_failed',
+        message: 'request [redacted] failed for rk_live_…',
+      },
+    });
+    expect(diagnostic).not.toContain('nested-result-must-not-survive');
+    expect(diagnostic).not.toContain('nested-error-must-not-survive');
+    expect(diagnostic).not.toContain('nested-cause-must-not-survive');
+    expect(diagnostic).not.toContain('0123456789abcdef');
+
+    const persisted = formatCloudRunDiagnostics({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: rawStatus,
+      statusPollFailures: 0,
+      logs: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+      diagnosticSecretValues: ['ci-key'],
+    });
+    expect(persisted).toContain('workflow_launch_failed');
+    expect(persisted).not.toContain('nested-result-must-not-survive');
+    expect(persisted).not.toContain('nested-error-must-not-survive');
+    expect(persisted).not.toContain('ci-key');
+  });
+
+  it('redacts configured short secrets from non-JSON status errors', () => {
+    const diagnostic = sanitizeCloudStatusDiagnostic('Status request failed: upstream rejected short-key', [
+      'short-key',
+    ]);
+
+    expect(diagnostic).toBe('Status request failed: upstream rejected [redacted]');
+    expect(diagnostic).not.toContain('short-key');
+  });
+
+  it('omits malformed JSON status payloads instead of falling back to raw output', () => {
+    const diagnostic = sanitizeCloudStatusDiagnostic(
+      '{"status":"failed","result":{"token":"unknown-secret"}'
+    );
+
+    expect(diagnostic).toBe('<malformed JSON status response omitted>');
+    expect(diagnostic).not.toContain('unknown-secret');
+  });
+
   it('persists bounded diagnostics when a Cloud status poll times out', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-timeout-'));
     const logsPath = path.join(root, 'nested', 'cloud.log');
@@ -507,6 +580,7 @@ describe('Cloud dispatcher API key lifecycle', () => {
 
     expect(auth.cliEnv.CLOUD_API_URL).toBe(credentialEnv.CLOUD_API_URL);
     expect(auth.cliEnv.CLOUD_API_KEY).toBe(credentialEnv.CLOUD_API_KEY);
+    expect(auth.diagnosticSecretValues).toEqual([credentialEnv.CLOUD_API_KEY]);
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT).toBeUndefined();

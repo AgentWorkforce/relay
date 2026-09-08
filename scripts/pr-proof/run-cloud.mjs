@@ -21,6 +21,27 @@ const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const LIVE_CREDENTIAL_RE =
+  /(rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
+const STATUS_DIAGNOSTIC_FIELDS = [
+  'runId',
+  'status',
+  'sandboxId',
+  'dispatchType',
+  'relayflowVersion',
+  'createdAt',
+  'updatedAt',
+  'error',
+  'message',
+];
+const STATUS_FAILURE_DIAGNOSTIC_FIELDS = [
+  'phase',
+  'code',
+  'message',
+  'dispatchType',
+  'sandboxId',
+  'occurredAt',
+];
 
 function run(command, args, options = {}) {
   return runBoundedProcess(command, args, {
@@ -70,12 +91,79 @@ export function boundedDiagnostic(value) {
   return `${tail}${marker}`;
 }
 
+function redactDiagnosticText(value, secretValues = []) {
+  let text = String(value ?? '');
+  for (const secretValue of secretValues) {
+    const secret = typeof secretValue === 'string' ? secretValue : '';
+    if (secret) text = text.split(secret).join('[redacted]');
+  }
+  return text.replace(LIVE_CREDENTIAL_RE, (_match, prefix) => `${prefix}…`);
+}
+
+function diagnosticRecord(value, secretValues) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const diagnostic = {};
+  for (const field of STATUS_DIAGNOSTIC_FIELDS) {
+    if (typeof value[field] === 'string') {
+      diagnostic[field] = redactDiagnosticText(value[field], secretValues);
+    }
+  }
+  if (value.failure && typeof value.failure === 'object' && !Array.isArray(value.failure)) {
+    const failure = {};
+    for (const field of STATUS_FAILURE_DIAGNOSTIC_FIELDS) {
+      if (typeof value.failure[field] === 'string') {
+        failure[field] = redactDiagnosticText(value.failure[field], secretValues);
+      }
+    }
+    if (Object.keys(failure).length > 0) diagnostic.failure = failure;
+  }
+  return diagnostic;
+}
+
+/**
+ * Reduce `cloud status --json` to the structural fields useful for triage.
+ * Workflow source, result payloads, nested errors, and cause chains are never
+ * copied because they can contain arbitrary workflow-provided credentials.
+ */
+export function sanitizeCloudStatusDiagnostic(output, secretValues = []) {
+  const text = String(output ?? '').trim();
+  if (!text) return '';
+  try {
+    const payload = parseJsonOutput(text, 'Cloud status diagnostic');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return '<non-object status response omitted>';
+    }
+    const source =
+      typeof payload.status === 'string'
+        ? payload
+        : payload.run && typeof payload.run === 'object' && !Array.isArray(payload.run)
+          ? payload.run
+          : payload.workflowRun &&
+              typeof payload.workflowRun === 'object' &&
+              !Array.isArray(payload.workflowRun)
+            ? payload.workflowRun
+            : payload;
+    const diagnostic = diagnosticRecord(source, secretValues);
+    return boundedDiagnostic(
+      diagnostic && Object.keys(diagnostic).length > 0
+        ? JSON.stringify(diagnostic)
+        : '<status response omitted: no allowlisted diagnostic fields>'
+    );
+  } catch {
+    if (text.includes('{') || text.includes('}')) {
+      return '<malformed JSON status response omitted>';
+    }
+    return boundedDiagnostic(redactDiagnosticText(text, secretValues));
+  }
+}
+
 export function formatCloudRunDiagnostics({
   runId,
   terminalStatus,
   lastStatusOutput,
   statusPollFailures,
   logs,
+  diagnosticSecretValues = [],
 }) {
   const logOutput = `${logs?.stdout ?? ''}${logs?.stderr ?? ''}`;
   return [
@@ -83,7 +171,9 @@ export function formatCloudRunDiagnostics({
     `run_id=${runId}`,
     `terminal_status=${terminalStatus ?? 'unknown'}`,
     `status_poll_failures=${statusPollFailures}`,
-    `last_status_response=${boundedDiagnostic(lastStatusOutput) || '<empty>'}`,
+    `last_status_response=${
+      sanitizeCloudStatusDiagnostic(lastStatusOutput, diagnosticSecretValues) || '<empty>'
+    }`,
     `cloud_logs_exit_code=${logs?.exitCode ?? 'unknown'}`,
     `cloud_logs_timed_out=${logs?.timedOut === true}`,
     `cloud_logs_output=${logOutput ? 'present' : 'empty'}`,
@@ -96,6 +186,7 @@ export async function writeStatusPollTimeoutDiagnostics({
   runId,
   lastStatusOutput,
   statusPollFailures,
+  diagnosticSecretValues = [],
 }) {
   await mkdir(path.dirname(logsPath), { recursive: true });
   await writeFile(
@@ -106,6 +197,7 @@ export async function writeStatusPollTimeoutDiagnostics({
       lastStatusOutput,
       statusPollFailures,
       logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: true },
+      diagnosticSecretValues,
     })
   );
 }
@@ -173,7 +265,7 @@ export function createCliApiKeyEnvironment(env = process.env) {
 
   const cliEnv = { ...env, CLOUD_API_URL: apiUrl, CLOUD_API_KEY: apiKey };
   for (const key of LEGACY_REFRESHABLE_AUTH_KEYS) delete cliEnv[key];
-  return { cliEnv };
+  return { cliEnv, diagnosticSecretValues: [apiKey] };
 }
 
 export async function main() {
@@ -317,6 +409,7 @@ export async function main() {
           runId,
           lastStatusOutput,
           statusPollFailures,
+          diagnosticSecretValues: auth.diagnosticSecretValues,
         });
         throw new Error(`Cloud status command timed out for run ${runId}`);
       }
@@ -325,7 +418,9 @@ export async function main() {
         lastStatusOutput = statusResult.stderr.trim() || statusResult.stdout.trim();
         console.warn(
           `Cloud status poll failed (${statusResult.exitCode}); retrying${
-            lastStatusOutput ? `: ${boundedDiagnostic(lastStatusOutput)}` : ''
+            lastStatusOutput
+              ? `: ${sanitizeCloudStatusDiagnostic(lastStatusOutput, auth.diagnosticSecretValues)}`
+              : ''
           }`
         );
         continue;
@@ -359,6 +454,7 @@ export async function main() {
         lastStatusOutput,
         statusPollFailures,
         logs,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
       }) +
         logs.stdout +
         logs.stderr
