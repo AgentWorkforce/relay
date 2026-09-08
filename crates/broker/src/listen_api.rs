@@ -75,6 +75,7 @@ pub enum ListenApiRequest {
     Release {
         name: WorkerName,
         reason: Option<String>,
+        expected_generation: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
@@ -1376,13 +1377,28 @@ async fn listen_api_release(
     axum::extract::Path(name): axum::extract::Path<String>,
     body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let reason = body.and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let reason = body
+        .as_ref()
+        .and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let expected_generation = match body.as_ref().and_then(|b| b.get("expected_generation")) {
+        None => None,
+        Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(
+                    json!({ "success": false, "error": "expected_generation must be a nonempty string" }),
+                ),
+            )
+        }
+    };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::Release {
             name: WorkerName::new(name.clone()),
             reason,
+            expected_generation,
             reply: reply_tx,
         })
         .await
@@ -4714,6 +4730,29 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn release_rejects_invalid_generation_without_dispatch() {
+        for generation in [json!(null), json!(""), json!(123)] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawned/owned-worker")
+                        .method("DELETE")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"expected_generation": generation}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
     }
 
     // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----

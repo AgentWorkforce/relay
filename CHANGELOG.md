@@ -5,7 +5,18 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails.
+
+### Fixed
+
+- Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
+- Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
+- MCP raw CLI spawns wait for harness readiness and report terminal startup errors.
+
 
 ## [11.10.4] - 2026-09-08
 

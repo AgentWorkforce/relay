@@ -1,0 +1,75 @@
+# GitHub subscription demo validation
+
+This runner uses real GitHub fixtures and observes the receiving harness. It never sends an event nonce to the receiver outside GitHub. A successful HTTP request or a channel message is insufficient: `assert` requires the trusted webhook agent ID, exact authenticated provider semantics, correlated broker `delivery_injected`, and an exact digest response from the pinned actor ID. The observer polls channel history; the receiving agent must not poll.
+
+Use Node 22+, `gh` authenticated for the three demo repositories, a built Relay CLI/harness driver/broker, and the reviewed Relaycast engine deployed in the intended environment. Record observed deployed revisions, not merely source or package versions. Shared Relayfile rollout remains with its incident owner. Product PRs must be approved and released normally.
+
+Copy `config.example.json` outside the repository and choose a unique run ID/output directory. Keep credentials in `RELAY_WORKSPACE_KEY`, never in the config, command line, transcript, or committed files. Pin the real recipient's agent ID and the webhook system agent ID from authenticated roster/history reads. The chief row must reference actual `chief` on its own node; a disposable worker cannot satisfy gate 9.
+
+```sh
+node tests/e2e/github-subscriptions/run.mjs receiver-task /absolute/demo-config.json
+node tests/e2e/github-subscriptions/run.mjs prepare /absolute/demo-config.json
+```
+
+`prepare` creates one clearly labelled PR per repository, each targeting its own disposable base branch. It records every acknowledged mutation immediately in `manifest.json`; it never updates main. If interrupted between a server mutation and the manifest write, reconcile the deterministic branch/PR names before retrying. Never adopt an unrelated existing fixture. Comments and reviews remain on closed disposable PRs as evidence after cleanup.
+
+Provision subscriptions with the built CLI from the project attached to the intended broker. Before changing anything, record `RelayfileControlPlaneClient.listBindings()` and `listWebhookSubscriptions(workspace)` and the Relaycast webhook inventory. An inventory timeout is a failed preflight, not permission to overwrite unknown configuration. The current binding key is `(provider, resolved path glob)`: subscribing to the same resource replaces its route. Use fresh fixture scopes and record the previous binding before testing an update.
+
+For explicit context use a canonical VFS glob. `owner/repo` resolves repository scope; provider URLs are not currently accepted by the Relayfile resolver. Examples below are syntax examples; replace `123` with the owned manifest number.
+
+```sh
+# A real, confirmed harness is launched before the subscription is created.
+agent-relay integration subscribe github \
+  --resource '/github/repos/AgentWorkforce/relay/issues/123/**' \
+  --to @ghsub-demo-worker --spawn claude --cwd /absolute/fixture-workdir \
+  --task "$(node /absolute/relay/tests/e2e/github-subscriptions/run.mjs receiver-task /absolute/demo-config.json)"
+
+# PR metadata context and repository context are explicit separate scopes.
+agent-relay integration subscribe github \
+  --resource '/github/repos/AgentWorkforce/relay/pulls/123/**' --to @ghsub-demo-worker
+```
+
+Issue comments on a PR use GitHub's issue-comment path; do not assume a `/pulls/123/**` subscription includes `/issues/123/comments/**`. Use the resolved path and authenticated resource reference printed in evidence. For chief's full PR/CI/review matrix, record prior configuration and use the approved repository/event scopes that cover the actual producer's paths. Do not replace chief or manually invite workers to repair failed spawn membership. The owner-authorized subscription endpoint provisions the recipient's identity-bound channel. Normal channel history is not a privacy boundary.
+
+Start the collector before launching the receiver so readiness and the first idle boundary are observed. Configure receiver and negative channels in advance. Use a separate collector on chief's node for its broker delivery evidence; the same run format supports `receiver: "chief"`. Bound each collector to 1,800 seconds, a stimulus response wait to 180 seconds, and negative observation to at least 120 seconds. Keep collectors continuous during each case; a missing interval invalidates a negative assertion.
+
+```sh
+node tests/e2e/github-subscriptions/run.mjs collect /absolute/demo-config.json
+# In another terminal, after a fresh observed idle boundary:
+node tests/e2e/github-subscriptions/run.mjs preflight /absolute/demo-config.json
+node tests/e2e/github-subscriptions/run.mjs emit /absolute/demo-config.json relay comment
+node tests/e2e/github-subscriptions/run.mjs assert /absolute/demo-config.json
+# Wait for a NEW idle boundary, then repeat:
+node tests/e2e/github-subscriptions/run.mjs emit /absolute/demo-config.json relay comment
+```
+
+Complete this finite acceptance schedule and attach the results to the scoreboard:
+
+| Gate | Required run |
+| --- | --- |
+| 1 | Three repositories, scoped must-fire and off-scope must-not-fire, create → update → unsubscribe; compare inventories and exact replaced IDs. |
+| 2 | Two successive events separated by observed idle boundaries; another after 600 seconds of uninterrupted idle; another when every real channel member is idle. No poke, DM, mention or PTY injection between events. |
+| 3 | Create one pre-join event, then subscribe a new identity: no delivery row for that old message. Send ten unique events while the receiver is busy and require all ten digest actions. Test a duplicate ID at the signed ingress boundary, capacity overflow/503/retry, and inspect dead letters. Record oldest event age and latency; FIFO preserves all unique events rather than silently coalescing them. |
+| 4 | Exact recipient and a nonmember negative agent; leave/rejoin, delete/recreate identity; new name must not inherit old identity subscriptions. |
+| 5 | Exact hyphenated muted target, muted prefix negative, duplicate and escaped mentions, invalid authorization. These are direct message conformance tests, separate from the unmentioned GitHub wake proof. |
+| 6 | Supported local API, SDK and raw/persona fleet spawn paths with two explicit channels; independently read channel members without a manual invite. |
+| 7 | Invalid cwd, early harness exit, unavailable target, retry/idempotency and generation-safe cleanup; compare before/after subscriptions, hooks and bindings, all zero additions on failure. |
+| 8 | Explicit issue, PR and repository resource contexts with confirmed ready PID/membership; explicit workspace credentials plus ambient agent token; ambiguous prose must not broaden scope. |
+| 9 | Actual chief: each repository × merged PR, CI conclusion, submitted review, newly created review thread. Use a separate chief collector and require chief's exact actor ID/action. Off-scope events must not arrive. |
+
+`emit` supports `comment`, `review`, `thread`, `ci`, and `merge`. Reviews use COMMENT, including on the operator's own PR; they do not approve code. `thread` creates a root diff comment (GitHub `pull_request_review_comment.created`, no `in_reply_to_id`), which is the semantic creation of a review thread. GitHub's `pull_request_review_thread` webhook reports resolution changes, not creation. `ci` adds a minimal GitHub Actions workflow only to the fixture head, generating a real completed check. It requires workflow write permission and an enabled Actions runner. `merge` verifies both owned fixture refs and merges only into the disposable base; run it last. `--busy` permits a stimulus without a new idle boundary and marks that fact in evidence; it cannot pass an idle case.
+
+Replay/reconnect must use only the disposable receiver. Record its generation and reconnect boundary; repeat a real stimulus after reconnection and require exactly one action for each unique event. Do not touch alpha, beta, gamma, chief's process, or the incident broker. Keep the assignment's concurrent worker limit while reviewing/testing.
+
+```sh
+node tests/e2e/github-subscriptions/run.mjs assert /absolute/demo-config.json
+node tests/e2e/github-subscriptions/run.mjs cleanup /absolute/demo-config.json
+```
+
+Unsubscribe only owned resources, verify their binding/subscription/webhook IDs disappeared, restore recorded prior routes when applicable, then release only the owned receiver generation. Fixture cleanup intentionally does not delete subscriptions by guessed name or delete chief. Preserve evidence before cleanup. The runner's `capturedStimuliPass` is scoped to its captured events and **never sets nine-gate READY**. Final signoff additionally requires complete continuous observation, independent review and all nine target-environment gates.
+
+Run assertion regression tests without credentials or outward mutations:
+
+```sh
+node --test tests/e2e/github-subscriptions/proof.test.mjs
+```

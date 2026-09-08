@@ -1144,6 +1144,21 @@ impl RelaycastHttpClient {
                 .await
             {
                 Ok(outcome) => {
+                    match agent_client.channel_members(name).await {
+                        Ok(members)
+                            if members.iter().any(|member| member.agent_name == agent_name) => {}
+                        Ok(_) => {
+                            failures.push(format!(
+                                "{name}: join acknowledged but worker membership is absent"
+                            ));
+                            continue;
+                        }
+                        Err(error) => {
+                            failures
+                                .push(format!("{name}: membership verification failed: {error}"));
+                            continue;
+                        }
+                    }
                     tracing::info!(
                         worker = %agent_name,
                         channel = %outcome.name,
@@ -1929,6 +1944,12 @@ mod tests {
                 }
             }));
         });
+        let members_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/channels/pa-fixes-hardening/members");
+            then.status(200).json_body(json!({"ok": true, "data": [{
+                "agent_id": "lead-id", "agent_name": "lead", "role": "member", "joined_at": "2026-09-08T00:00:00Z"
+            }]}));
+        });
         let spawn_mock = server.mock(|when, then| {
             when.method(POST).path("/v1/agents");
             then.status(500).json_body(json!({
@@ -1951,6 +1972,7 @@ mod tests {
 
         create_mock.assert_hits(1);
         join_mock.assert_hits(1);
+        members_mock.assert_hits(1);
         spawn_mock.assert_hits(0);
     }
 

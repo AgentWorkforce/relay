@@ -43,6 +43,24 @@ function projectDataDir(): string {
 }
 
 describe('sdk client option resolution', () => {
+  it('honors an explicit workspace key over an ambient agent token', () => {
+    const relay = createAgentRelay({
+      workspaceKey: 'rk_live_explicit',
+      env: { RELAY_AGENT_TOKEN: 'at_live_ambient', AGENT_RELAY_HOME: dir },
+    }) as { workspaceKey?: string };
+    expect(relay.workspaceKey).toBe('rk_live_explicit');
+  });
+
+  it('rejects conflicting explicit credentials instead of silently choosing authority', () => {
+    expect(() =>
+      createAgentRelay({
+        workspaceKey: 'rk_live_explicit',
+        token: 'at_live_explicit',
+        env: {},
+      })
+    ).toThrow('Pass either --workspace-key or --token');
+  });
+
   it('falls through blank workspace-key candidates and trims the chosen key', () => {
     setWorkspaceKey('ops', ' rk_store ');
 

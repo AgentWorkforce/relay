@@ -238,6 +238,8 @@ export interface ListAgent {
   channels: string[];
   parent?: string;
   pid?: number;
+  /** True only after the broker observed worker_ready for this process generation. */
+  ready?: boolean;
   last_activity_at?: string;
   last_activity_ms?: number;
   context_budget_pct?: number | null;

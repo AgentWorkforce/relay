@@ -345,6 +345,16 @@ impl BrokerRuntime {
                 } else {
                     channels.clone()
                 };
+                let effective_channels = match super::relaycast_events::relaycast_spawn_channels(
+                    &json!({"channels": effective_channels}),
+                    None,
+                ) {
+                    Ok(channels) => channels,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                        return;
+                    }
+                };
                 let spec = match build_http_api_spawn_spec(
                     name.clone(),
                     cli.clone(),
@@ -528,10 +538,29 @@ impl BrokerRuntime {
                         );
                         let membership_warning =
                             format!("worker channel membership was not fully reconciled: {error}");
-                        preregistration_warning = Some(match preregistration_warning.take() {
-                            Some(existing) => format!("{existing}; {membership_warning}"),
-                            None => membership_warning,
-                        });
+                        let cleanup = super::fleet::deregister_fleet_agent(
+                            fleet_control_tx,
+                            fleet_delivery_book,
+                            &name,
+                        )
+                        .await;
+                        let error = match cleanup {
+                            Ok(_) => {
+                                super::fleet::prune_fleet_agent_state(
+                                    fleet_control_tx,
+                                    fleet_inventory,
+                                    fleet_delivery_book,
+                                    &name,
+                                )
+                                .await;
+                                membership_warning
+                            }
+                            Err(error) => format!(
+                                "{membership_warning}; identity cleanup needs retry: {error}"
+                            ),
+                        };
+                        let _ = reply.send(Err(error));
+                        return;
                     }
                 }
 
@@ -890,8 +919,20 @@ impl BrokerRuntime {
             ListenApiRequest::Release {
                 name,
                 reason,
+                expected_generation,
                 reply,
             } => {
+                if let Some(expected) = expected_generation.as_deref() {
+                    if let Some(worker) = workers.workers.get(&name) {
+                        if worker.generation.to_string() != expected {
+                            let _ = reply.send(Err(
+                                "worker generation changed; refusing to release its replacement"
+                                    .to_string(),
+                            ));
+                            return;
+                        }
+                    }
+                }
                 if let Some(ref r) = reason {
                     tracing::info!(worker = %name, reason = %r, "releasing agent via HTTP API");
                 }

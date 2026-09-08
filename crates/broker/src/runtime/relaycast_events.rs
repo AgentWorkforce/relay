@@ -196,12 +196,74 @@ fn harness_metadata_flag(config: &ResolvedHarnessConfig, snake: &str, camel: &st
         .unwrap_or(false)
 }
 
+/// Resolve the channel contract for both fleet action and firehose spawn payloads.
+pub(super) fn relaycast_spawn_channels(
+    value: &Value,
+    channel: Option<&str>,
+) -> Result<Vec<ChannelName>> {
+    if let Some(requested) = value
+        .get("channels")
+        .or_else(|| value.pointer("/agent/channels"))
+    {
+        let requested = requested
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("channels must be an array of channel names"))?;
+        let mut channels = Vec::new();
+        for item in requested {
+            let raw = item
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("each channels entry must be a string"))?;
+            let name = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+            if name.is_empty()
+                || !name.as_bytes()[0].is_ascii_alphanumeric()
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            {
+                anyhow::bail!(
+                    "invalid channel name: expected lowercase letters, digits or hyphens"
+                );
+            }
+            let candidate = ChannelName::from(name);
+            if !channels.contains(&candidate) {
+                channels.push(candidate);
+            }
+        }
+        return Ok(channels);
+    }
+    let mut channels = default_spawn_channels();
+    if let Some(channel) = channel {
+        let candidate = ChannelName::from(channel);
+        if !channels.contains(&candidate) {
+            channels.push(candidate);
+        }
+    }
+    Ok(channels)
+}
+
 pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
-    relaycast_harness_config(value)
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
+    let request_flag = value
+        .get("verify_ready")
+        .or_else(|| value.get("verifyReady"))
+        .or_else(|| {
+            value
+                .get("agent")
+                .and_then(|agent| agent.get("verify_ready"))
+        })
+        .or_else(|| {
+            value
+                .get("agent")
+                .and_then(|agent| agent.get("verifyReady"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    request_flag
+        || relaycast_harness_config(value)
+            .ok()
+            .flatten()
+            .as_ref()
+            .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
 }
 
 /// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
@@ -535,17 +597,7 @@ pub(super) async fn spawn_worker_from_request(
     );
 
     tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
-    let channels = channel
-        .as_deref()
-        .map(|ch| {
-            let mut chs = default_spawn_channels();
-            let candidate = ChannelName::from(ch);
-            if !chs.contains(&candidate) {
-                chs.push(candidate);
-            }
-            chs
-        })
-        .unwrap_or_else(default_spawn_channels);
+    let channels = relaycast_spawn_channels(ws_value, channel.as_deref())?;
     let spec = AgentSpec {
         name: name.clone(),
         runtime: runtime.clone(),
@@ -732,27 +784,26 @@ pub(super) async fn spawn_worker_from_request(
             }
         }
     };
-    let channel_membership_warning = if let Some(token) = worker_relay_key.as_deref() {
-        seed_supplied_agent_token(workspace_http, &name, token);
-        if let Err(error) = workspace_http
-            .ensure_agent_channels(&name, Some(&cli), &channels)
-            .await
-        {
-            tracing::error!(
-                worker = %name,
-                channels = ?channels,
-                error = %error,
-                "worker channel membership reconciliation failed for Relaycast spawn"
-            );
-            Some(format!(
-                "worker channel membership was not fully reconciled: {error}"
-            ))
+    let channel_membership_warning: Option<String> =
+        if let Some(token) = worker_relay_key.as_deref() {
+            seed_supplied_agent_token(workspace_http, &name, token);
+            if let Err(error) = workspace_http
+                .ensure_agent_channels(&name, Some(&cli), &channels)
+                .await
+            {
+                tracing::error!(
+                    worker = %name,
+                    channels = ?channels,
+                    error = %error,
+                    "worker channel membership reconciliation failed for Relaycast spawn"
+                );
+                anyhow::bail!("worker channel membership was not fully reconciled: {error}");
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     match workers
         .spawn(
@@ -1131,6 +1182,7 @@ mod tests {
         let name = WorkerName::from("failed-native-worker-1430");
         let ws_value = json!({
             "token": "at_live_test_worker",
+            "channels": [],
             "agent": {
                 "harnessConfig": {
                     "runtime": "native",
@@ -1199,6 +1251,40 @@ mod tests {
         assert!(!workers.has_worker(&name));
         assert_eq!(agent_spawn_count, 0);
         assert!(!state.agents.contains_key(&name));
+    }
+
+    #[test]
+    fn plural_spawn_channels_are_exact_and_deduplicated() {
+        let value = json!({"channels": ["#demo-pr", "demo-ci", "demo-pr"]});
+        let got = relaycast_spawn_channels(&value, Some("ignored")).unwrap();
+        assert_eq!(
+            got,
+            vec![ChannelName::from("demo-pr"), ChannelName::from("demo-ci")]
+        );
+        assert!(
+            relaycast_spawn_channels(&json!({"agent": {"channels": []}}), None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            relaycast_spawn_channels(&json!({}), None).unwrap(),
+            default_spawn_channels()
+        );
+    }
+
+    #[test]
+    fn plural_spawn_channels_reject_malformed_members_before_registration() {
+        for value in [
+            json!({"channels": "demo"}),
+            json!({"channels": ["demo", 3]}),
+            json!({"channels": ["#"]}),
+            json!({"channels": ["bad name"]}),
+        ] {
+            assert!(
+                relaycast_spawn_channels(&value, None).is_err(),
+                "accepted {value}"
+            );
+        }
     }
 
     #[test]
@@ -1318,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_spawn_contract_is_read_from_harness_metadata() {
+    fn verified_spawn_contract_is_read_from_request_or_harness_metadata() {
         let verified = json!({
             "harness_config": {
                 "runtime": "pty",
@@ -1337,8 +1423,12 @@ mod tests {
                 "args": []
             }
         });
+        let flattened = json!({ "verify_ready": true });
+        let nested_camel = json!({ "agent": { "verifyReady": true } });
 
         assert!(relaycast_spawn_verifies_ready(&verified));
+        assert!(relaycast_spawn_verifies_ready(&flattened));
+        assert!(relaycast_spawn_verifies_ready(&nested_camel));
         assert!(!relaycast_spawn_verifies_ready(&ordinary));
     }
 

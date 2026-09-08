@@ -1,0 +1,46 @@
+{
+  "id": "traj_jdx9303jp3ky",
+  "version": 1,
+  "task": {
+    "title": "Implement and prove all nine GitHub subscription demo gates"
+  },
+  "status": "active",
+  "startedAt": "2026-09-08T10:53:01.139Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T12:25:49.567Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vyfds5ougg3w",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T12:25:49.567Z",
+      "events": [
+        {
+          "ts": 1788870349573,
+          "type": "decision",
+          "content": "Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure: Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure",
+          "raw": {
+            "question": "Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure",
+            "chosen": "Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure",
+            "alternatives": [],
+            "reasoning": "Registry presence and channel arrival cannot prove an agent can act. Keep unique events retryable, preserve exact recipient identity and require correlated GitHub-to-actor evidence."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d",
+    "endRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d"
+  }
+}

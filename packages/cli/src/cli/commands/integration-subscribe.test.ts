@@ -157,6 +157,7 @@ function attemptEntry(overrides: Partial<PendingCleanupEntry> = {}): PendingClea
 
 function harness(
   opts: {
+    recipientDeps?: Partial<Pick<IntegrationCommandDependencies, 'launchRecipient' | 'resolveAgentChannel'>>;
     relay?: ReturnType<typeof createRelayMock>;
     relayfile?: ReturnType<typeof createRelayfileMock>;
     journal?: ReturnType<typeof memoryJournal>;
@@ -191,6 +192,7 @@ function harness(
   const program = new Command();
   program.exitOverride();
   registerIntegrationCommands(program, {
+    ...opts.recipientDeps,
     createAgentRelay: () => relay as never,
     relayfile: relayfile as never,
     cleanupJournal: journal,
@@ -1687,5 +1689,63 @@ describe('integration unsubscribe', () => {
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
     expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
+  });
+});
+
+describe('confirmed agent subscription setup', () => {
+  it('creates no subscription, webhook or binding when launch fails', async () => {
+    const launchRecipient = vi.fn(async () => {
+      throw new Error('invalid cwd or harness exited before ready');
+    });
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const h = harness({ recipientDeps: { launchRecipient, resolveAgentChannel } });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('invalid cwd'));
+    expect(resolveAgentChannel).not.toHaveBeenCalled();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(h.relayfile.bind).not.toHaveBeenCalled();
+  });
+
+  it('confirms the worker and exact membership before creating resources', async () => {
+    const rollback = vi.fn(async () => {});
+    const close = vi.fn();
+    const launchRecipient = vi.fn(async () => ({ rollback, close }));
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const h = harness({ recipientDeps: { launchRecipient, resolveAgentChannel } });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).not.toHaveBeenCalled();
+    expect(launchRecipient).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'new-worker', cli: 'claude', resource: RESOURCE })
+    );
+    expect(launchRecipient.mock.invocationCallOrder[0]).toBeLessThan(
+      resolveAgentChannel.mock.invocationCallOrder[0]
+    );
+    expect(resolveAgentChannel.mock.invocationCallOrder[0]).toBeLessThan(
+      h.relay.webhooks.createInbound.mock.invocationCallOrder[0]
+    );
+    expect(h.relayfile.bind).toHaveBeenCalledWith(expect.objectContaining({ channel: 'agent-events-a1' }));
+    expect(h.relay.agents.register).not.toHaveBeenCalled();
+    expect(rollback).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('releases only the newly owned worker if membership cannot be verified', async () => {
+    const rollback = vi.fn(async () => {});
+    const close = vi.fn();
+    const h = harness({
+      recipientDeps: {
+        launchRecipient: async () => ({ rollback, close }),
+        resolveAgentChannel: async () => {
+          throw new Error('membership mismatch');
+        },
+      },
+    });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('membership mismatch'));
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.relayfile.bind).not.toHaveBeenCalled();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
 });

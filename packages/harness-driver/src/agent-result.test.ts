@@ -213,6 +213,16 @@ describe('SpawnedAgentHandle lifecycle helpers', () => {
     await expect(pending).resolves.toEqual({ reason: 'exited', exit: { reason: 'exited' } });
   });
 
+  it('guards cleanup against a later worker generation with the same name', async () => {
+    const stub = createStubClient();
+    const handle = new SpawnedAgentHandle(
+      { name: 'worker', runtime: 'pty', generation: 'owned-generation' },
+      stub as unknown as HarnessDriverClient
+    );
+    await handle.release('setup failed');
+    expect(stub.release).toHaveBeenCalledWith('worker', 'setup failed', 'owned-generation');
+  });
+
   it('forwards release requests to the client', async () => {
     const stub = createStubClient();
     const handle = createHandle(stub);
