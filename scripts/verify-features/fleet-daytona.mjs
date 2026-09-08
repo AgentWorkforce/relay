@@ -38,6 +38,7 @@ const DAYTONA_CLEANUP_OBSERVATION_STATES = new Set([
   'deletion-not-converged',
   'inspection-failed',
   'delete-failed',
+  'delete-timeout',
   'leaked',
 ]);
 const OWNED_AGENT_STATES = new Set(['created-by-run', 'ambiguous-after-checkpointed-absence']);
@@ -336,6 +337,30 @@ export function isDaytonaCleanupObservationState(cleanupState) {
   return DAYTONA_CLEANUP_OBSERVATION_STATES.has(cleanupState);
 }
 
+export function summarizeDaytonaCleanupStates(resources) {
+  const sandboxes = resources.filter(({ type }) => type === 'daytona-sandbox');
+  return {
+    deletionNotConvergedSandboxIds: sandboxes
+      .filter(({ cleanupState }) => cleanupState === 'deletion-not-converged')
+      .map(({ id }) => id),
+    failedDeleteSandboxIds: sandboxes
+      .filter(({ cleanupState }) => cleanupState === 'delete-failed')
+      .map(({ id }) => id),
+    deleteTimeoutSandboxIds: sandboxes
+      .filter(({ cleanupState }) => cleanupState === 'delete-timeout')
+      .map(({ id }) => id),
+    inspectionFailedSandboxIds: sandboxes
+      .filter(({ cleanupState }) => cleanupState === 'inspection-failed')
+      .map(({ id }) => id),
+    leakedSandboxIds: sandboxes.filter(({ cleanupState }) => cleanupState === 'leaked').map(({ id }) => id),
+    unauthorizedSandboxIds: sandboxes
+      .filter(({ cleanupState }) =>
+        ['unauthorized-not-deleted', 'unowned-not-deleted'].includes(cleanupState)
+      )
+      .map(({ id }) => id),
+  };
+}
+
 /**
  * Issue no provider mutations. This helper only polls a Daytona list result
  * after a delete request or during recovery of a previously persisted delete.
@@ -482,17 +507,57 @@ export async function cleanupDaytonaSandbox({
   issueDelete,
   listSandbox,
   persistState,
+  now = Date.now,
+  cleanupSlaMs = DAYTONA_DELETE_CONVERGENCE_SLA_MS,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
   ...convergenceOptions
 }) {
   if (!resource || typeof resource !== 'object') throw new Error('Daytona cleanup resource is required');
   if (typeof issueDelete !== 'function') throw new Error('Daytona delete operation is required');
   if (typeof listSandbox !== 'function') throw new Error('Daytona cleanup inspection is required');
+  if (!Number.isSafeInteger(cleanupSlaMs) || cleanupSlaMs < 0) {
+    throw new Error('Daytona cleanup SLA is invalid');
+  }
+  const deadlineMs = now() + cleanupSlaMs;
+  const runWithinDeadline = async (operation, timeoutCode, timeoutMessage) => {
+    const remainingMs = Math.max(0, deadlineMs - now());
+    const operationPromise = Promise.resolve(operation({ timeoutMs: remainingMs }));
+    let timer;
+    try {
+      return await Promise.race([
+        operationPromise,
+        new Promise((_, reject) => {
+          timer = setTimeoutFn(() => {
+            const error = new Error(timeoutMessage);
+            error.code = timeoutCode;
+            reject(error);
+          }, remainingMs);
+          timer?.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeoutFn(timer);
+    }
+  };
+  const runDeleteWithinDeadline = () =>
+    runWithinDeadline(
+      () => issueDelete({ timeoutMs: Math.max(0, deadlineMs - now()) }),
+      'DAYTONA_DELETE_TIMEOUT',
+      'Daytona sandbox delete exceeded the cleanup SLA'
+    );
   const resumed = isDaytonaCleanupObservationState(resource.cleanupState);
   if (!resumed) {
     const previousCleanupState = resource.cleanupState;
     resource.cleanupState = 'deletion-requested';
     try {
-      if (persistState) await persistState();
+      if (persistState) {
+        await runWithinDeadline(
+          () => persistState(),
+          'DAYTONA_CLEANUP_STATE_PERSISTENCE_TIMEOUT',
+          'Daytona cleanup state persistence exceeded the cleanup SLA'
+        );
+      }
     } catch (error) {
       resource.cleanupState = previousCleanupState;
       error.code = 'DAYTONA_CLEANUP_STATE_PERSISTENCE_FAILED';
@@ -500,13 +565,55 @@ export async function cleanupDaytonaSandbox({
       throw error;
     }
   }
-  const deleteResult = resumed ? { exitCode: 0, resumed: true } : await issueDelete();
-  const convergence = await convergeDaytonaSandboxDeletion({
-    deleteResult,
-    deleteIssued: !resumed,
-    listSandbox,
-    ...convergenceOptions,
-  });
+  let deleteResult = { exitCode: 0, resumed: true };
+  let convergence;
+  if (resumed) {
+    convergence = await convergeDaytonaSandboxDeletion({
+      deleteResult,
+      deleteIssued: false,
+      listSandbox,
+      now,
+      setTimeoutFn,
+      clearTimeoutFn,
+      ...convergenceOptions,
+      slaMs: Math.min(
+        convergenceOptions.slaMs ?? DAYTONA_DELETE_CONVERGENCE_SLA_MS,
+        Math.max(0, deadlineMs - now())
+      ),
+    });
+  } else {
+    try {
+      deleteResult = await runDeleteWithinDeadline();
+    } catch (error) {
+      if (error?.code !== 'DAYTONA_DELETE_TIMEOUT') throw error;
+      deleteResult = { exitCode: null, timedOut: true };
+      convergence = {
+        cleanupState: 'delete-timeout',
+        converged: false,
+        accepted: false,
+        acceptedState: null,
+        polls: 0,
+        observations: [],
+        timedOut: true,
+        inspectionFailure: error.message,
+      };
+    }
+    if (!convergence) {
+      convergence = await convergeDaytonaSandboxDeletion({
+        deleteResult,
+        deleteIssued: true,
+        listSandbox,
+        now,
+        setTimeoutFn,
+        clearTimeoutFn,
+        ...convergenceOptions,
+        slaMs: Math.min(
+          convergenceOptions.slaMs ?? DAYTONA_DELETE_CONVERGENCE_SLA_MS,
+          Math.max(0, deadlineMs - now())
+        ),
+      });
+    }
+  }
   resource.cleanupState = convergence.cleanupState;
   resource.cleanupOutcome = {
     resumed,
@@ -514,6 +621,7 @@ export async function cleanupDaytonaSandbox({
     acceptedState: convergence.acceptedState,
     converged: convergence.converged,
     polls: convergence.polls,
+    ...(convergence.timedOut ? { timedOut: true } : {}),
     observations: convergence.observations,
     ...(convergence.inspectionFailure ? { inspectionFailure: convergence.inspectionFailure } : {}),
   };
@@ -524,11 +632,13 @@ export async function cleanupDaytonaSandbox({
     deleteExitCode: deleteResult.exitCode ?? null,
     deleteStderr: deleteResult.stderr,
     attemptType:
-      convergence.cleanupState === 'inspection-failed'
-        ? 'daytona-delete-inspection-failed'
-        : resumed
-          ? 'daytona-delete-observation'
-          : 'daytona-delete',
+      convergence.cleanupState === 'delete-timeout'
+        ? 'daytona-delete-timeout'
+        : convergence.cleanupState === 'inspection-failed'
+          ? 'daytona-delete-inspection-failed'
+          : resumed
+            ? 'daytona-delete-observation'
+            : 'daytona-delete',
   };
 }
 
@@ -5308,7 +5418,10 @@ class FleetBoard {
     const convergence = await cleanupDaytonaSandbox({
       resource,
       persistState: () => this.checkpoint(),
-      issueDelete: () => execute(this.daytonaArgv('sandbox', 'delete', resource.id), { timeoutMs: 60_000 }),
+      issueDelete: ({ timeoutMs }) =>
+        execute(this.daytonaArgv('sandbox', 'delete', resource.id), {
+          timeoutMs: Math.min(60_000, Math.max(1, timeoutMs)),
+        }),
       listSandbox: async ({ timeoutMs }) =>
         (await this.listDaytona({ timeoutMs })).find(({ id }) => id === resource.id),
     });
@@ -5324,6 +5437,7 @@ class FleetBoard {
       acceptedState: convergence.acceptedState,
       converged: convergence.converged,
       polls: convergence.polls,
+      ...(convergence.timedOut ? { timedOut: true } : {}),
       ...(convergence.inspectionFailure
         ? { inspectionFailure: redactFleetEvidence(convergence.inspectionFailure) }
         : {}),
@@ -5387,32 +5501,21 @@ class FleetBoard {
         const sandbox = finalSandboxById.get(id);
         return sandbox && !isDaytonaDeletionAccepted(sandbox);
       });
-    const deletionNotConvergedSandboxIds = ownedSandboxResources
-      .filter(({ cleanupState }) => cleanupState === 'deletion-not-converged')
-      .map(({ id }) => id);
-    const failedDeleteSandboxIds = ownedSandboxResources
-      .filter(({ cleanupState }) => cleanupState === 'delete-failed')
-      .map(({ id }) => id);
-    const inspectionFailedSandboxIds = ownedSandboxResources
-      .filter(({ cleanupState }) => cleanupState === 'inspection-failed')
-      .map(({ id }) => id);
-    const unauthorizedSandboxIds = ownedSandboxResources
-      .filter(({ cleanupState }) =>
-        ['unauthorized-not-deleted', 'unowned-not-deleted'].includes(cleanupState)
-      )
-      .map(({ id }) => id);
+    const cleanupStateSummary = summarizeDaytonaCleanupStates(ownedSandboxResources);
     await this.derived('owned-sandbox-cleanup', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
       exitCode:
         sandboxesClean &&
         activeOwnedSandboxIds.length === 0 &&
-        deletionNotConvergedSandboxIds.length === 0 &&
-        failedDeleteSandboxIds.length === 0 &&
-        inspectionFailedSandboxIds.length === 0 &&
-        unauthorizedSandboxIds.length === 0
+        cleanupStateSummary.deletionNotConvergedSandboxIds.length === 0 &&
+        cleanupStateSummary.failedDeleteSandboxIds.length === 0 &&
+        cleanupStateSummary.deleteTimeoutSandboxIds.length === 0 &&
+        cleanupStateSummary.inspectionFailedSandboxIds.length === 0 &&
+        cleanupStateSummary.leakedSandboxIds.length === 0 &&
+        cleanupStateSummary.unauthorizedSandboxIds.length === 0
           ? 0
           : 1,
-      summary: `activeOwnedSandboxIds=${JSON.stringify(activeOwnedSandboxIds)} deletionNotConvergedSandboxIds=${JSON.stringify(deletionNotConvergedSandboxIds)} failedDeleteSandboxIds=${JSON.stringify(failedDeleteSandboxIds)} inspectionFailedSandboxIds=${JSON.stringify(inspectionFailedSandboxIds)} unauthorizedSandboxIds=${JSON.stringify(unauthorizedSandboxIds)}`,
+      summary: `activeOwnedSandboxIds=${JSON.stringify(activeOwnedSandboxIds)} deletionNotConvergedSandboxIds=${JSON.stringify(cleanupStateSummary.deletionNotConvergedSandboxIds)} failedDeleteSandboxIds=${JSON.stringify(cleanupStateSummary.failedDeleteSandboxIds)} deleteTimeoutSandboxIds=${JSON.stringify(cleanupStateSummary.deleteTimeoutSandboxIds)} inspectionFailedSandboxIds=${JSON.stringify(cleanupStateSummary.inspectionFailedSandboxIds)} leakedSandboxIds=${JSON.stringify(cleanupStateSummary.leakedSandboxIds)} unauthorizedSandboxIds=${JSON.stringify(cleanupStateSummary.unauthorizedSandboxIds)}`,
     });
     const exactPrefixLeaks = finalSandboxes
       .filter(
@@ -5438,10 +5541,12 @@ class FleetBoard {
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&
       activeOwnedSandboxIds.length === 0 &&
-      deletionNotConvergedSandboxIds.length === 0 &&
-      failedDeleteSandboxIds.length === 0 &&
-      inspectionFailedSandboxIds.length === 0 &&
-      unauthorizedSandboxIds.length === 0 &&
+      cleanupStateSummary.deletionNotConvergedSandboxIds.length === 0 &&
+      cleanupStateSummary.failedDeleteSandboxIds.length === 0 &&
+      cleanupStateSummary.deleteTimeoutSandboxIds.length === 0 &&
+      cleanupStateSummary.inspectionFailedSandboxIds.length === 0 &&
+      cleanupStateSummary.leakedSandboxIds.length === 0 &&
+      cleanupStateSummary.unauthorizedSandboxIds.length === 0 &&
       exactPrefixLeaks.length === 0 &&
       baselinePreserved
         ? 'pass'

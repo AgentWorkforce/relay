@@ -30,6 +30,7 @@ import {
   isDaytonaDeletionAccepted,
   redactFleetEvidence,
   sanitizeFleetArgv,
+  summarizeDaytonaCleanupStates,
   summarizeFleetCampaign,
   tryParseJson,
   validateFleetEvidence,
@@ -854,6 +855,50 @@ describe('complete Daytona Fleet board', () => {
     expect(timerCalls).toBe(1);
   });
 
+  it('bounds a never-resolving delete callback inside the cleanup primitive', async () => {
+    let observedTimeoutMs = null;
+    const resource = {
+      id: '99999999-9999-4999-8999-999999999999',
+      cleanupState: 'owned',
+    };
+    const deletion = await cleanupDaytonaSandbox({
+      resource,
+      persistState: async () => undefined,
+      issueDelete: ({ timeoutMs }: { timeoutMs: number }) => {
+        observedTimeoutMs = timeoutMs;
+        return new Promise(() => undefined);
+      },
+      listSandbox: async () => undefined,
+      now: () => 0,
+      cleanupSlaMs: 25,
+      setTimeoutFn: (callback) => {
+        callback();
+        return 1;
+      },
+      clearTimeoutFn: () => undefined,
+    });
+    expect(deletion).toMatchObject({
+      cleanupState: 'delete-timeout',
+      attemptType: 'daytona-delete-timeout',
+      deleteIssued: true,
+      converged: false,
+    });
+    expect(observedTimeoutMs).toBe(25);
+    expect(resource.cleanupState).toBe('delete-timeout');
+  });
+
+  it('fails closed when a prior leaked resource is absent from the final provider list', () => {
+    expect(
+      summarizeDaytonaCleanupStates([
+        {
+          type: 'daytona-sandbox',
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          cleanupState: 'leaked',
+        },
+      ])
+    ).toMatchObject({ leakedSandboxIds: ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'] });
+  });
+
   it('resumes cleanup observation without issuing a second Daytona delete', async () => {
     const resource = {
       id: '66666666-6666-4666-8666-666666666666',
@@ -927,6 +972,7 @@ describe('complete Daytona Fleet board', () => {
       id: '77777777-7777-4777-8777-777777777777',
       cleanupState: 'owned',
     };
+    let timerCalls = 0;
     const failure = await cleanupDaytonaSandbox({
       resource,
       issueDelete: async () => ({ exitCode: 0 }),
@@ -934,8 +980,9 @@ describe('complete Daytona Fleet board', () => {
       slaMs: 10,
       pollIntervalMs: 5,
       setTimeoutFn: (callback) => {
-        callback();
-        return 1;
+        timerCalls += 1;
+        if (timerCalls > 1) callback();
+        return timerCalls;
       },
       clearTimeoutFn: () => undefined,
     });
