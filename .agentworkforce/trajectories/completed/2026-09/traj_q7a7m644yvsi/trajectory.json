@@ -1,0 +1,77 @@
+{
+  "id": "traj_q7a7m644yvsi",
+  "version": 1,
+  "task": {
+    "title": "Retry transient Relaycast workspace_busy admission failures"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T22:33:18.944Z",
+  "completedAt": "2026-09-09T22:42:11.347Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T22:42:04.687Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_73p4he5ty41v",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T22:42:04.687Z",
+      "endedAt": "2026-09-09T22:42:11.347Z",
+      "events": [
+        {
+          "ts": 1788993724688,
+          "type": "decision",
+          "content": "Retry only the exact HTTP 429 workspace_busy admission code: Retry only the exact HTTP 429 workspace_busy admission code",
+          "raw": {
+            "question": "Retry only the exact HTTP 429 workspace_busy admission code",
+            "chosen": "Retry only the exact HTTP 429 workspace_busy admission code",
+            "alternatives": [],
+            "reasoning": "Generic 429s may represent credential or quota policy and must remain terminal; RelayError 8.0.0 does not retain Retry-After, so the existing bounded 200ms/400ms startup backoff is the safest available fallback."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788993726731,
+          "type": "decision",
+          "content": "Keep complete startup handshake fail-closed after admission retry exhaustion: Keep complete startup handshake fail-closed after admission retry exhaustion",
+          "raw": {
+            "question": "Keep complete startup handshake fail-closed after admission retry exhaustion",
+            "chosen": "Keep complete startup handshake fail-closed after admission retry exhaustion",
+            "alternatives": [],
+            "reasoning": "Replaying startup would repeat unkeyed workspace and agent registration POSTs and could create duplicate or orphaned identities."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788993728782,
+          "type": "reflection",
+          "content": "The broker now retries exact workspace_busy admission failures at the request boundary, while preserving terminal behavior for unrelated 429s and complete-handshake replay safety. Focused, full broker library tests and clippy are green.",
+          "raw": {
+            "confidence": 0.92
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.92"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added bounded Relaycast workspace_busy startup/admission retry with diagnostics-preserving exhaustion tests, unrelated-429 terminal coverage, explicit fail-closed session boundary documentation, and a patch changelog entry.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4306bb29be696ec84a4e3844f86fdc4a91584407",
+    "endRef": "4306bb29be696ec84a4e3844f86fdc4a91584407"
+  }
+}

@@ -1,4 +1,5 @@
 use super::*;
+use crate::relaycast::is_workspace_busy_anyhow;
 
 /// Shared Relaycast connection state used by run_init and run_wrap.
 #[derive(Clone)]
@@ -313,14 +314,18 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     // timeout: a returned error is a definite server response, and replaying
     // `startup_session_set_with_options` would re-run workspace creation and
     // agent registration from scratch — risking duplicate Relaycast resources —
-    // so returned errors surface immediately (preserving the pre-retry
-    // behavior). The residual for a timeout retry is narrow (the backend both
-    // completed the request AND failed to answer within the deadline); the
-    // per-attempt deadline is scaled by the configured workspace count so a
-    // healthy multi-workspace startup, which registers each membership serially,
-    // is not cut off mid-flight. The final attempt is shortened to whatever
-    // remains of HANDSHAKE_TOTAL_TIMEOUT so membership scaling and environment
-    // overrides cannot move exhaustion past the SDK startup deadline.
+    // so returned errors surface immediately. AuthClient retries only the
+    // narrowly safe 429 `workspace_busy` admission response (and transient
+    // 5xx responses) at the individual request boundary. If that bounded
+    // admission retry is exhausted, this loop deliberately does not replay the
+    // complete startup operation. The residual for a timeout retry is narrow
+    // (the backend both completed the request AND failed to answer within the
+    // deadline); the per-attempt deadline is scaled by the configured workspace
+    // count so a healthy multi-workspace startup, which registers each
+    // membership serially, is not cut off mid-flight. The final attempt is
+    // shortened to whatever remains of HANDSHAKE_TOTAL_TIMEOUT so membership
+    // scaling and environment overrides cannot move exhaustion past the SDK
+    // startup deadline.
     let membership_count = configured_membership_count();
     let attempt_timeout = handshake_attempt_timeout().saturating_mul(membership_count);
     let max_attempts = handshake_max_attempts();
@@ -362,7 +367,20 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             {
                 // Success, or a definite failure from the backend: return
                 // immediately in both cases (never replay a returned error).
+                // AuthClient has already exhausted its safe, request-scoped
+                // workspace_busy retries; replaying the whole handshake here
+                // would repeat unkeyed POSTs. Keep this explicit in the
+                // startup boundary so future handshake retry changes cannot
+                // accidentally widen that admission retry.
                 Ok(result) => {
+                    if let Err(error) = &result {
+                        if is_workspace_busy_anyhow(error) {
+                            tracing::error!(
+                                error = %error,
+                                "workspace admission remained busy after bounded startup retries; refusing to replay the complete handshake"
+                            );
+                        }
+                    }
                     break result.context("failed to initialize relaycast session")?;
                 }
                 Err(_elapsed) => {

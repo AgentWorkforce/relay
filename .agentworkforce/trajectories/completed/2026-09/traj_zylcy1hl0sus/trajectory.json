@@ -1,0 +1,73 @@
+{
+  "id": "traj_zylcy1hl0sus",
+  "version": 1,
+  "task": {
+    "title": "Add RelayFlow proof for workspace_busy startup admission"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T22:57:20.071Z",
+  "completedAt": "2026-09-09T22:57:35.297Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T22:57:31.069Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_rsah9jnq4u84",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T22:57:31.069Z",
+      "endedAt": "2026-09-09T22:57:35.297Z",
+      "events": [
+        {
+          "ts": 1788994651070,
+          "type": "decision",
+          "content": "Used a dedicated real-broker RelayFlow case with an ephemeral HTTP admission server: Used a dedicated real-broker RelayFlow case with an ephemeral HTTP admission server",
+          "raw": {
+            "question": "Used a dedicated real-broker RelayFlow case with an ephemeral HTTP admission server",
+            "chosen": "Used a dedicated real-broker RelayFlow case with an ephemeral HTTP admission server",
+            "alternatives": [],
+            "reasoning": "This gives deterministic base/head evidence for exact 429 workspace_busy behavior while checking unrelated 429 terminal handling and bounded request-scoped exhaustion without replaying registration."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788994653138,
+          "type": "reflection",
+          "content": "The cleanroom proof distinguishes the pre-fix terminal 429 from the retrying head and confirms unrelated throttles remain terminal; both compiled binaries passed their intended arm.",
+          "raw": {
+            "focalPoints": [
+              "base-head proof",
+              "request bounds",
+              "diagnostics"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:base-head proof",
+            "focal:request bounds",
+            "focal:diagnostics",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added workspace-busy-startup-retry-429 RelayFlow proof covering baseline failure, head retry success, unrelated 429 terminal behavior, bounded exhaustion, and no whole-handshake replay.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8f1f4059716d1a9aad91eaa18f33c4dceadd454a",
+    "endRef": "8f1f4059716d1a9aad91eaa18f33c4dceadd454a"
+  }
+}
