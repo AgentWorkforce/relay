@@ -25,6 +25,7 @@ const MAX_CAPTURE_BYTES = 16 * 1024;
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
+const SHA40 = /^[0-9a-f]{40}$/;
 const SAFE_SNAPSHOT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const SAFE_SNAPSHOT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const APP_WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -2088,10 +2089,13 @@ export function validateFleetEvidence(evidence, matrix) {
     if (typeof environment.expectedRelayVersion !== 'string' || !environment.expectedRelayVersion) {
       throw new Error('release qualification has no expected Relay version');
     }
+    if (!SHA40.test(environment.expectedRelaySha ?? '')) {
+      throw new Error('release qualification has no expected Relay source commit');
+    }
     if (
       provenance.candidateCleanInstall !== true ||
       !SHA256.test(provenance.candidateInstallAttestationSha256 ?? '') ||
-      provenance.candidateInstallSourceSha !== provenance.sourceCommit ||
+      provenance.candidateInstallSourceSha !== environment.expectedRelaySha ||
       provenance.candidateInstallVersion !== provenance.cliVersion.replace(/^agent-relay v/, '') ||
       provenance.candidateInstallVersion !== environment.expectedRelayVersion ||
       provenance.candidateInstallPlatform !== 'linux' ||
@@ -2439,6 +2443,7 @@ export function summarizeFleetCampaign(attempts, matrix) {
     'requestedSnapshotName',
     'requestedSnapshotManifestSha256',
     'expectedRelayVersion',
+    'expectedRelaySha',
     'candidateCleanInstall',
     'candidateInstallAttestationSha256',
     'candidateInstallSourceSha',
@@ -2634,6 +2639,7 @@ class FleetBoard {
           (process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1'
             ? null
             : matrix.requiredSnapshotRelayVersion),
+        expectedRelaySha: process.env.VERIFY_FLEET_EXPECTED_RELAY_SHA?.trim() || null,
       },
       cleanup: { status: 'pending', attempts: [] },
       verdict: 'INFRA_BLOCKED',
@@ -2661,6 +2667,9 @@ class FleetBoard {
       }
       if (!this.evidence.environment.expectedRelayVersion) {
         throw new Error('VERIFY_FLEET_EXPECTED_RELAY_VERSION is required');
+      }
+      if (!SHA40.test(this.evidence.environment.expectedRelaySha ?? '')) {
+        throw new Error('VERIFY_FLEET_EXPECTED_RELAY_SHA must be 40 lowercase hex characters');
       }
     }
   }
@@ -2754,7 +2763,9 @@ class FleetBoard {
       });
       candidateInstallAttestationSha256 = createHash('sha256').update(bytes).digest('hex');
       candidateAttestation = validateCandidateInstallAttestation(JSON.parse(bytes.toString('utf8')), {
-        sourceSha: head._rawStdout.trim(),
+        sourceSha: this.evidence.environment.releaseQualificationRequested
+          ? this.evidence.environment.expectedRelaySha
+          : head._rawStdout.trim(),
         cliEntrypoint: this.cli,
         cliSha256,
       });

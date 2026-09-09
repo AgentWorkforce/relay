@@ -1730,12 +1730,13 @@ describe('complete Daytona Fleet board', () => {
     evidence.environment.expectedSnapshotName = 'relay-candidate-11.10.3-rc.1-deadbeef';
     evidence.environment.expectedSnapshotManifestSha256 = 'c'.repeat(64);
     evidence.environment.expectedRelayVersion = '11.10.3-rc.1';
+    evidence.environment.expectedRelaySha = '9'.repeat(40);
     evidence.environment.expectedRelayWorkspaceId = 'rw_1234abcd';
     evidence.provenance.cliVersion = 'agent-relay v11.10.3-rc.1';
     Object.assign(evidence.provenance, {
       candidateCleanInstall: true,
       candidateInstallAttestationSha256: 'd'.repeat(64),
-      candidateInstallSourceSha: evidence.provenance.sourceCommit,
+      candidateInstallSourceSha: evidence.environment.expectedRelaySha,
       candidateInstallVersion: evidence.environment.expectedRelayVersion,
       candidateInstallPlatform: 'linux',
       candidateInstallArch: 'x64',
@@ -1780,6 +1781,13 @@ describe('complete Daytona Fleet board', () => {
     const sourceBuild = structuredClone(evidence);
     sourceBuild.provenance.candidateCleanInstall = false;
     expect(() => validateFleetEvidence(sourceBuild, matrix)).toThrow(/clean-installed Relay candidate/);
+
+    const trustedCheckoutInsteadOfCandidate = structuredClone(evidence);
+    trustedCheckoutInsteadOfCandidate.provenance.candidateInstallSourceSha =
+      trustedCheckoutInsteadOfCandidate.provenance.sourceCommit;
+    expect(() => validateFleetEvidence(trustedCheckoutInsteadOfCandidate, matrix)).toThrow(
+      /source-bound clean-installed Relay candidate/
+    );
 
     const stale = structuredClone(evidence);
     stale.resources[0].snapshotManifest.sha256 = 'd'.repeat(64);
