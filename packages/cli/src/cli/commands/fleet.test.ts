@@ -1286,7 +1286,8 @@ describe('fleet command support', () => {
     expect(errors.join('\n')).toContain('--sandbox-id must match lowercase sbx_<UUID>');
   });
 
-  it('cleans up when Cloud reports a post-provision response failure with a sandbox ID', async () => {
+  it('preserves the stable sandbox ID for replay when Cloud reports an unknown outcome', async () => {
+    const warnings: string[] = [];
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const program = new Command();
     program.exitOverride();
@@ -1306,15 +1307,15 @@ describe('fleet command support', () => {
       ensureCloudFleetSandbox: vi.fn(async () => {
         throw new CloudFleetSandboxProvisionError('malformed response', {
           cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
-          sandboxId: 'sandbox-1',
-          nodeName: 'daytona-codex',
+          sandboxId: REPLAY_SANDBOX_ID,
+          nodeName: REPLAY_SANDBOX_NAME,
           outcomeUnknown: true,
         });
       }),
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
-      warn: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
       error: () => undefined,
     });
 
@@ -1342,13 +1343,12 @@ describe('fleet command support', () => {
       )
     ).rejects.toThrow('__exit__');
 
-    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
-      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
-      sandboxId: 'sandbox-1',
-    });
+    expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(warnings.join('\n')).toContain(`check Cloud Fleet for node '${REPLAY_SANDBOX_NAME}'`);
+    expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
-  it('pins cleanup to the requested E2B provider when Cloud fails closed after provisioning', async () => {
+  it('pins cleanup to the requested E2B provider for a known post-provision failure', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const program = new Command();
     program.exitOverride();
@@ -1371,7 +1371,6 @@ describe('fleet command support', () => {
           sandboxId: 'sandbox-e2b',
           nodeName: 'e2b-codex',
           providerId: 'e2b',
-          outcomeUnknown: true,
         });
       }),
       deleteCloudFleetSandbox,

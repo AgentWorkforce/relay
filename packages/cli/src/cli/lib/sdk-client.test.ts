@@ -141,12 +141,51 @@ describe('sdk client option resolution', () => {
       })
     ).toBe(true);
     expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
-      workspaceKey: 'rk_live_agent37',
+      workspaceKey: 'rk_live_canonical',
       workspaceId: 'rw_abc',
       enrolledNodeId: 'node_1',
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
     });
+
+    const replayOptions = {
+      workspaceKey: 'rk_live_canonical',
+      env: { AGENT_RELAY_HOME: dir },
+    };
+    expect(resolveWorkspaceSelection(replayOptions)).toMatchObject({
+      key: 'rk_live_canonical',
+      source: 'flag',
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+    expect(resolveWorkspaceKey(replayOptions)).toBe('rk_live_agent37');
+    expect(resolveBaseUrl(replayOptions)).toBe('https://agent37-cast.agentrelay.com');
+  });
+
+  it('keeps legacy persisted targets usable when no separate Relaycast key exists', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_legacy_agent37', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+
+    const options = { env: { AGENT_RELAY_HOME: dir } };
+    expect(resolveWorkspaceKey(options)).toBe('rk_live_legacy_agent37');
+    expect(resolveBaseUrl(options)).toBe('https://agent37-cast.agentrelay.com');
+  });
+
+  it('rejects a separate Relaycast key without a complete persisted route', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    const options = { env: { AGENT_RELAY_HOME: dir } };
+    expect(() => resolveWorkspaceKey(options)).toThrow(/persisted Relaycast workspace route is incomplete/);
+    expect(() => resolveBaseUrl(options)).toThrow(/persisted Relaycast workspace route is incomplete/);
   });
 
   it('rejects a persisted route that is not the exact server-owned origin', () => {

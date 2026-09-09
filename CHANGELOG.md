@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Operators can keep using custom `--sandbox-name` values with `agent-relay fleet spawn --sandbox`; launches without a custom name generate a stable `sbx_<UUID>` identity automatically, while only `--sandbox-id` replay requires the matching deterministic lowercase `fleet-sandbox-<UUID>` name.
 
+### Fixed
+
+- Ambiguous Cloud sandbox responses retain their stable `--sandbox-id` for replay instead of automatically deleting an allocation whose outcome is unknown.
+- Persisting an Agent37 Relaycast target keeps the canonical Cloud workspace key as the durable selector and stores the route-scoped transport credential separately, so later commands can reuse the original explicit key.
+- Standalone package smoke workspaces remain valid for five minutes, leaving enough lease time for the full broker startup budget and cleanup verification.
+
 ## [11.10.4] - 2026-09-08
 
 ### Changed

@@ -58,7 +58,7 @@ fi
     `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "-cn" ]; then
-  echo '{"name":"fake","expires_in_seconds":60}'
+  echo '{"name":"fake","expires_in_seconds":300}'
 elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *api_key* ]]; then
   echo 'rk_live_fake_smoke_key'
 elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *workspace_id* ]]; then
@@ -153,7 +153,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
   it('creates an ephemeral workspace on the trusted engine and wires its base URL explicitly', () => {
     const script = readFileSync(smokeScript, 'utf8');
     expect(script).toContain('TRUSTED_RELAY_BASE_URL="https://cast.agentrelay.com"');
-    expect(script).toContain('expires_in_seconds: 60');
+    expect(script).toContain('expires_in_seconds: 300');
     expect(script).toContain('printf \'::add-mask::%s\\n\' "$WORKSPACE_KEY"');
     expect(script).toContain('--request DELETE');
     expect(script).toContain('Ephemeral workspace deletion verified');

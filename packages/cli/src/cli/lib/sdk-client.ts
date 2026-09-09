@@ -4,7 +4,6 @@ import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
 import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
-  resolveWorkspaceKeyWithSource as resolveCloudWorkspaceKeyWithSource,
   readProjectWorkspaceSession,
   writeProjectWorkspaceKey,
   type WorkspaceSelection,
@@ -51,11 +50,17 @@ export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
   key: string;
   source: WorkspaceKeySource;
 } {
-  const resolved = resolveCloudWorkspaceKeyWithSource({
-    workspaceKey: options.workspaceKey,
-    env: env(options),
-  });
-  if (resolved) return resolved;
+  const selection = resolveWorkspaceSelection(options);
+  if (selection) {
+    // A Cloud workspace key remains the durable selector and Cloud credential.
+    // A persisted Relaycast target may carry a different route-scoped transport
+    // credential for SDK traffic on the same workspace.
+    validatePersistedRelaycastBaseUrl(selection);
+    return {
+      key: trimOrUndefined(selection.relaycastApiKey) ?? selection.key,
+      source: selection.source,
+    };
+  }
   throw new Error(
     'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
   );
@@ -78,7 +83,8 @@ export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefin
 function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undefined): string | undefined {
   const baseUrl = trimOrUndefined(selection?.relaycastBaseUrl);
   const route = selection?.relaycastRoute;
-  if (!baseUrl && !route) return undefined;
+  const relaycastApiKey = trimOrUndefined(selection?.relaycastApiKey);
+  if (!baseUrl && !route && !relaycastApiKey) return undefined;
   if (!baseUrl || !route) {
     throw new Error('The persisted Relaycast workspace route is incomplete.');
   }
@@ -133,18 +139,21 @@ export function persistWorkspaceRelaycastTarget(
       ...(existing.workspaceId ? { workspaceId: existing.workspaceId } : {}),
       ...(existing.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
       ...(existing.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
+      ...(existing.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
     });
   };
   try {
-    writeProjectWorkspaceKey(dataDir, target.relaycastApiKey, {
+    writeProjectWorkspaceKey(dataDir, existing.workspaceKey, {
       ...(existing.enrolledNodeId ? { enrolledNodeId: existing.enrolledNodeId } : {}),
       workspaceId: target.workspaceId,
       relaycastRoute: target.route,
       relaycastBaseUrl: target.baseUrl,
+      relaycastApiKey: target.relaycastApiKey,
     });
     const persisted = readProjectWorkspaceSession(dataDir);
     if (
-      persisted?.workspaceKey === target.relaycastApiKey &&
+      persisted?.workspaceKey === existing.workspaceKey &&
+      persisted.relaycastApiKey === target.relaycastApiKey &&
       persisted.workspaceId === target.workspaceId &&
       persisted.relaycastRoute === target.route &&
       persisted.relaycastBaseUrl === target.baseUrl

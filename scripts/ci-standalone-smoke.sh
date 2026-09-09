@@ -158,7 +158,7 @@ WORKSPACE_NAME="relay-standalone-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTE
 CREATE_STATUS="$(curl --silent --show-error --output "$WORKSPACE_RESPONSE" --write-out '%{http_code}' \
   --request POST \
   --header 'Content-Type: application/json' \
-  --data "$(jq -cn --arg name "$WORKSPACE_NAME" '{name: $name, expires_in_seconds: 60}')" \
+  --data "$(jq -cn --arg name "$WORKSPACE_NAME" '{name: $name, expires_in_seconds: 300}')" \
   "$TRUSTED_RELAY_BASE_URL/v1/workspaces" 2>/dev/null || true)"
 # Mask the key before extracting or using any other response field. Never log
 # the response body: it contains the administrative workspace credential.

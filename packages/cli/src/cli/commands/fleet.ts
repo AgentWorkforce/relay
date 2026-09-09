@@ -325,7 +325,19 @@ export function registerFleetCommands(
             ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
           });
         } catch (error) {
-          if (error instanceof CloudFleetSandboxProvisionError && error.cloudWorkspaceId && error.sandboxId) {
+          if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
+            deps.warn(
+              `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
+                error.nodeName ?? effectiveSandboxName ?? 'the requested sandbox'
+              }'${
+                sandboxId === undefined ? '' : ` before retrying with --sandbox-id '${sandboxId}'`
+              } so a sandbox is not left running.`
+            );
+          } else if (
+            error instanceof CloudFleetSandboxProvisionError &&
+            error.cloudWorkspaceId &&
+            error.sandboxId
+          ) {
             await deps
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: error.cloudWorkspaceId,
@@ -339,14 +351,6 @@ export function registerFleetCommands(
                   }`
                 );
               });
-          } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
-            deps.warn(
-              `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
-                error.nodeName ?? effectiveSandboxName ?? 'the requested sandbox'
-              }'${
-                sandboxId === undefined ? '' : ` before retrying with --sandbox-id '${sandboxId}'`
-              } so a sandbox is not left running.`
-            );
           }
           throw error;
         }

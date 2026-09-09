@@ -24,6 +24,8 @@ export interface ProjectWorkspaceSession {
   /** Last server-selected Relaycast route for follow-up commands in this session. */
   relaycastRoute?: 'canonical' | 'agent37-isolated';
   relaycastBaseUrl?: string;
+  /** Route-scoped transport credential; the canonical Cloud workspace key remains `workspaceKey`. */
+  relaycastApiKey?: string;
 }
 
 export type ProjectWorkspaceSessionMetadata = Omit<ProjectWorkspaceSession, 'workspaceKey'>;
@@ -60,6 +62,7 @@ export interface WorkspaceSelection {
   workspaceId?: string;
   relaycastRoute?: 'canonical' | 'agent37-isolated';
   relaycastBaseUrl?: string;
+  relaycastApiKey?: string;
   /** Project session directory that can durably carry a server-selected target. */
   projectDataDir?: string;
 }
@@ -94,12 +97,14 @@ export function readProjectWorkspaceSession(
         ? parsed.relaycastRoute
         : undefined;
     const relaycastBaseUrl = trimOrUndefined(parsed.relaycastBaseUrl);
+    const relaycastApiKey = trimOrUndefined(parsed.relaycastApiKey);
     return {
       workspaceKey,
       ...(enrolledNodeId ? { enrolledNodeId } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(relaycastRoute ? { relaycastRoute } : {}),
       ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
+      ...(relaycastApiKey ? { relaycastApiKey } : {}),
     };
   } catch {
     return undefined;
@@ -118,6 +123,7 @@ export function writeProjectWorkspaceKey(
     workspaceId?: string;
     relaycastRoute?: 'canonical' | 'agent37-isolated';
     relaycastBaseUrl?: string;
+    relaycastApiKey?: string;
   } = {}
 ): void {
   const key = trimOrUndefined(workspaceKey);
@@ -126,6 +132,7 @@ export function writeProjectWorkspaceKey(
   const workspaceId = trimOrUndefined(options.workspaceId);
   const relaycastRoute = options.relaycastRoute;
   const relaycastBaseUrl = trimOrUndefined(options.relaycastBaseUrl);
+  const relaycastApiKey = trimOrUndefined(options.relaycastApiKey);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = projectWorkspaceKeyPath(dataDir);
   // Worker threads share a PID, so include a per-write nonce as well as the PID.
@@ -137,6 +144,7 @@ export function writeProjectWorkspaceKey(
       ...(workspaceId ? { workspaceId } : {}),
       ...(relaycastRoute ? { relaycastRoute } : {}),
       ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
+      ...(relaycastApiKey ? { relaycastApiKey } : {}),
     } satisfies ProjectWorkspaceSession,
     null,
     2
@@ -192,6 +200,7 @@ export function writeProjectWorkspaceKeyPreservingSession(
         ...(existing?.workspaceId ? { workspaceId: existing.workspaceId } : {}),
         ...(existing?.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
         ...(existing?.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
+        ...(existing?.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
       }
     : {};
 
@@ -204,6 +213,9 @@ export function writeProjectWorkspaceKeyPreservingSession(
     ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
     ...(trimOrUndefined(options.relaycastBaseUrl)
       ? { relaycastBaseUrl: trimOrUndefined(options.relaycastBaseUrl) }
+      : {}),
+    ...(trimOrUndefined(options.relaycastApiKey)
+      ? { relaycastApiKey: trimOrUndefined(options.relaycastApiKey) }
       : {}),
   });
 }
@@ -245,6 +257,9 @@ export function resolveWorkspaceSelection(
       ...(project?.workspaceKey === flag && project.relaycastBaseUrl
         ? { relaycastBaseUrl: project.relaycastBaseUrl }
         : {}),
+      ...(project?.workspaceKey === flag && project.relaycastApiKey
+        ? { relaycastApiKey: project.relaycastApiKey }
+        : {}),
       ...(project?.workspaceKey === flag && dataDir ? { projectDataDir: dataDir } : {}),
     };
   }
@@ -265,6 +280,9 @@ export function resolveWorkspaceSelection(
         ...(project?.workspaceKey === envKey && project.relaycastBaseUrl
           ? { relaycastBaseUrl: project.relaycastBaseUrl }
           : {}),
+        ...(project?.workspaceKey === envKey && project.relaycastApiKey
+          ? { relaycastApiKey: project.relaycastApiKey }
+          : {}),
         ...(project?.workspaceKey === envKey && dataDir ? { projectDataDir: dataDir } : {}),
       };
     }
@@ -278,6 +296,7 @@ export function resolveWorkspaceSelection(
       ...(project.workspaceId ? { workspaceId: project.workspaceId } : {}),
       ...(project.relaycastRoute ? { relaycastRoute: project.relaycastRoute } : {}),
       ...(project.relaycastBaseUrl ? { relaycastBaseUrl: project.relaycastBaseUrl } : {}),
+      ...(project.relaycastApiKey ? { relaycastApiKey: project.relaycastApiKey } : {}),
       ...(dataDir ? { projectDataDir: dataDir } : {}),
     };
   }
