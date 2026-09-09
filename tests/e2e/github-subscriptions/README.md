@@ -29,16 +29,16 @@ For explicit context use a canonical VFS glob. `owner/repo` resolves repository 
 ```sh
 # A real, confirmed harness is launched before the subscription is created.
 agent-relay integration subscribe github \
-  --resource '/github/repos/AgentWorkforce/relay/issues/123/**' \
+  --resource '/github/repos/AgentWorkforce/relay/issues/123__example-title/**' \
   --to @ghsub-demo-worker --spawn claude --broker-connection /absolute/node/state/connection.json --cwd /absolute/fixture-workdir \
   --task "$(node /absolute/relay/tests/e2e/github-subscriptions/run.mjs receiver-task /absolute/demo-config.json)"
 
 # PR metadata context and repository context are explicit separate scopes.
 agent-relay integration subscribe github \
-  --resource '/github/repos/AgentWorkforce/relay/pulls/123/**' --to @ghsub-demo-worker
+  --resource '/github/repos/AgentWorkforce/relay/pulls/123__example-title/**' --to @ghsub-demo-worker
 ```
 
-Issue comments on a PR use GitHub's issue-comment path; do not assume a `/pulls/123/**` subscription includes `/issues/123/comments/**`. Use the resolved path and authenticated resource reference printed in evidence. For chief's full PR/CI/review matrix, record prior configuration and use the approved repository/event scopes that cover the actual producer's paths. Do not replace chief or manually invite workers to repair failed spawn membership. The owner-authorized subscription endpoint provisions the recipient's identity-bound channel. Normal channel history is not a privacy boundary.
+Issue comments on a PR use GitHub's issue-comment path; do not assume a `/pulls/123__example-title/**` subscription includes `/issues/123/comments/**`. Use the resolved path and authenticated resource reference printed in evidence. For chief's full PR/CI/review matrix, record prior configuration and use the approved repository/event scopes that cover the actual producer's paths. Do not replace chief or manually invite workers to repair failed spawn membership. The owner-authorized subscription endpoint provisions the recipient's identity-bound channel. Normal channel history is not a privacy boundary.
 
 Start the collector before launching the receiver so readiness and the first idle boundary are observed. Configure receiver and negative channels in advance. Use a separate collector on chief's node for its broker delivery evidence; the same run format supports `receiver: "chief"`. Bound each collector to 1,800 seconds, a stimulus response wait to 180 seconds, and negative observation to at least 120 seconds. Keep collectors continuous during each case; a missing interval invalidates a negative assertion.
 
@@ -136,3 +136,42 @@ acknowledged while harness acceptance remains unconfirmed. A body parked in a
 composer cannot pass this runner: each stimulus still requires the exact actor's
 digest action within its deadline. Startup failures retain sanitized actor logs
 in `diagnostics.json` even when the first idle boundary was never reached.
+
+## Real GitHub with locally built services
+
+`selfhost-live.mjs` starts a local SQLite Relaycast engine and broker, creates three
+owned fixture PRs/hooks and exact adapter-resolved issue-comment subscriptions,
+and forwards genuine signed GitHub hooks through candidate Cloud ingestion into
+hosted Relayfile. Nango is bypassed in this candidate rehearsal. The runner verifies
+the app-to-runtime workspace binding through the supported Cloud API. It does not
+establish a production deployment or actual-chief acceptance. PR metadata events
+use a separate signed bulk endpoint; validate that path with Relayfile Cloud's
+`local/provider-writes.test.ts` before deploying Relayfile, then Cloud.
+
+Build all three candidate checkouts and commit the reviewed source first. Use a
+fresh evidence directory outside the checkouts, Node 22, `gh`, `cloudflared`, Python3,
+and a logged-in Codex. Start an owned Relayfile control plane on the specified socket.
+The Cloud environment file needs its existing internal Relayfile signing credential;
+it is loaded in memory and cleared from the receiver environment. Never copy it into
+the fixture config or evidence. Example (paths and workspace IDs must be supplied):
+
+```sh
+GHSUB_ENGINE_ROOT=/absolute/relaycast \
+GHSUB_CLOUD_ROOT=/absolute/cloud \
+GHSUB_CLOUD_ENV_FILE=/absolute/cloud/.env \
+GHSUB_APP_WORKSPACE=APPLICATION_UUID \
+GHSUB_RELAYFILE_WORKSPACE=rw_RUNTIME_ID \
+GHSUB_CONTROL_SOCKET="$HOME/.ghsub-cp.sock" \
+GHSUB_EVIDENCE_DIR=/absolute/fresh-evidence \
+node --import /absolute/cloud/node_modules/tsx/dist/loader.mjs \
+  tests/e2e/github-subscriptions/selfhost-live.mjs
+```
+
+The finite schedule is three successive idle actions, a 600-second no-input idle,
+ten unique burst events, and a node reconnect with the same actor/PID. It audits
+the receiver's tool calls and broker control writes, rejects stale pre-join replay,
+and checks a nonmember has zero deliveries. The observer may poll; the receiver
+cannot. Allow roughly 20 minutes. Keep the independent reviewer stopped while the
+receiver runs. Cleanup deletes only recorded owned hooks, subscriptions and fixture
+branches and verifies all original subscriptions remain. After an abrupt process
+loss, reconcile the manifest and pending mutation intents before retrying.

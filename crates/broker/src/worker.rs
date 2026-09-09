@@ -1472,6 +1472,10 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
+        anyhow::ensure!(
+            !self.initial_tasks.contains_key(name),
+            "worker initial task has not been queued"
+        );
         tracing::debug!(
             target = "broker::deliver",
             worker = %name,

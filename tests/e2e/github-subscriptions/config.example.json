@@ -34,5 +34,6 @@
   "receiverCwd": "/absolute/fixture-workdir",
   "receiverCli": "claude",
   "subscriptionScope": "issue",
-  "spawnReceiver": true
+  "spawnReceiver": true,
+  "relayfileWorkspaceId": "rw_REPLACE_WITH_CLOUD_BOUND_WORKSPACE"
 }

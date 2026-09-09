@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixturePathGlob, fixtureTitle, assertProducerWorkspace } from './fixture-scope.mjs';
 import {
   correlate,
   releaseOwnedWorker,
@@ -207,7 +208,7 @@ function prepare() {
     }
     if (!fixture.pr) {
       const pr = gh(`repos/${repo}/pulls`, 'POST', {
-        title: `[DISPOSABLE DEMO ${config.runId}] GitHub subscriptions`,
+        title: fixtureTitle(config.runId),
         head: fixture.head,
         base: fixture.base,
         body: `Owned fixture for GitHub subscription validation. Only a disposable base branch may receive a fixture merge. No product changes or main merge. Run: ${config.runId}.`,
@@ -252,7 +253,9 @@ async function subscriptions(remove = false) {
     if (session.workspace_key !== process.env.RELAY_WORKSPACE_KEY)
       throw new Error('Explicit workspace differs from broker workspace');
     const before = (await cp.listBindings()).map(publicBinding);
-    const remote = await cp.listWebhookSubscriptions(session.default_workspace_id);
+    const activeProducer = await cp.listWebhookSubscriptions();
+    assertProducerWorkspace(config.relayfileWorkspaceId, activeProducer.workspaceId);
+    const remote = await cp.listWebhookSubscriptions(config.relayfileWorkspaceId);
     const remoteSubscriptions = remote.subscriptions ?? [];
     const hooksBefore = (await cast('/v1/webhooks')).map((h) => ({ id: h.webhook_id ?? h.id }));
     const subscriptionsBefore = (await cast('/v1/subscriptions')).map((x) => ({ id: x.id }));
@@ -286,7 +289,7 @@ async function subscriptions(remove = false) {
         const remaining = await cp.listBindings();
         if (remaining.some((b) => b.provider === 'github' && b.pathGlob === owned.pathGlob))
           throw new Error('Owned binding survived unsubscribe');
-        const remoteAfter = await cp.listWebhookSubscriptions(session.default_workspace_id);
+        const remoteAfter = await cp.listWebhookSubscriptions(config.relayfileWorkspaceId);
         if (
           (remoteAfter.subscriptions ?? []).some(
             (s) => s.subscriptionId === owned.binding.webhookSubscriptionId
@@ -313,7 +316,7 @@ async function subscriptions(remove = false) {
       const scope = config.subscriptionScope ?? 'issue';
       if (!['issue', 'pr', 'repo'].includes(scope))
         throw new Error('subscriptionScope must be issue, pr or repo');
-      const pathGlob = `/github/repos/${fixture.repo}/${scope === 'repo' ? '**' : `${scope === 'pr' ? 'pulls' : 'issues'}/${fixture.pr}/**`}`;
+      const pathGlob = fixturePathGlob(fixture, scope, config.runId);
       const owned = manifest.subscriptions.find((s) => s.pathGlob === pathGlob && !s.removed);
       const current = (await cp.listBindings())
         .map(publicBinding)
@@ -368,7 +371,7 @@ async function subscriptions(remove = false) {
         manifest.worker = { name: worker.name, generation: worker.generation, pid: worker.pid };
         save();
       }
-      const remoteAfter = await cp.listWebhookSubscriptions(session.default_workspace_id);
+      const remoteAfter = await cp.listWebhookSubscriptions(config.relayfileWorkspaceId);
       if (!(remoteAfter.subscriptions ?? []).some((s) => s.subscriptionId === binding.webhookSubscriptionId))
         throw new Error('New producer subscription is absent from inventory');
       for (const previous of owned?.previousBindings ?? []) {

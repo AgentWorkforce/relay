@@ -6058,3 +6058,42 @@ async fn observer_token_fallback_respects_the_supplied_timeout() {
     list_mock.assert_hits(1);
     rotate_mock.assert_hits(0);
 }
+
+#[tokio::test]
+async fn startup_queues_initial_task_before_early_events_without_exhausting_retries() {
+    let name = "startup-order-proof";
+    let mut workers = make_worker_registry_with_worker(name).await;
+    workers
+        .initial_tasks
+        .insert(WorkerName::from(name), "Initial assignment".into());
+    let mut incoming = make_pending_delivery("early-github", name);
+    incoming.attempts = 0;
+    let delivery = incoming.delivery.clone();
+    let id = delivery.delivery_id.clone();
+    let mut pending = HashMap::from([(id.clone(), incoming)]);
+    for _ in 0..100 {
+        let result =
+            retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_millis(10))
+                .await
+                .unwrap();
+        assert!(matches!(result, DeliveryAttemptOutcome::Noop));
+    }
+    assert_eq!(pending[&id].attempts, 0);
+    assert_eq!(pending[&id].failed_attempts, 0);
+    assert!(
+        workers.deliver(name, delivery.clone()).await.is_err(),
+        "manual delivery must obey startup ordering too"
+    );
+    // worker_ready removes the assignment and enqueues it synchronously before
+    // maintenance can retry any previously parked external delivery.
+    workers.initial_tasks.remove(name);
+    let mut initial = delivery.clone();
+    initial.event_id = EventId::new("init_assignment");
+    workers.deliver(name, initial).await.unwrap();
+    let result = retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert!(matches!(result, DeliveryAttemptOutcome::Attempted { .. }));
+    assert_eq!(pending[&id].attempts, 1);
+    workers.release(name).await.unwrap();
+}

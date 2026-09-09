@@ -955,6 +955,15 @@ pub(crate) async fn retry_pending_delivery(
         });
     }
 
+    // Keep early channel traffic out of the PTY until worker_ready queues the
+    // initial task. Startup waiting does not consume the transport retry budget.
+    if workers.initial_tasks.contains_key(&pending.worker_name) {
+        if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+            current.next_retry_at = Instant::now() + retry_interval;
+        }
+        return Ok(DeliveryAttemptOutcome::Noop);
+    }
+
     match workers
         .deliver(&pending.worker_name, pending.delivery.clone())
         .await

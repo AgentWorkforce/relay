@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Worker startup queues the initial task before incoming events without consuming delivery retry attempts while waiting.
+
 - Codex startup requires its cursor in the composer, no loading or busy indicator, and one second of quiet output. It no longer depends on transient MCP server labels or historical prompt glyphs; timeout fallback remains unverified.
 
 - `node status` bounds local API probes and reports unavailable details, so a stalled broker cannot hang the command for the default 30-second request timeout.

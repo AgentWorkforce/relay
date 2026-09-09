@@ -49,6 +49,9 @@ jobs:
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
+      - name: Check subscription proof guards
+        run: npm run test:subscriptions:proof
+
       - name: Run tests
         run: npm test
 
