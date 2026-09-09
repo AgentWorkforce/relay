@@ -1182,6 +1182,7 @@ export function inferWorkflowLaunchTimeoutMs(
     fileType === 'ts'
       ? /\b(const|let|var|function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g
       : /(?:^|[;\n])[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n;]+)?=(?!=)/g;
+  const pythonAssignmentDepth = fileType === 'py' ? pythonDelimiterDepth(source) : undefined;
   let declaration: RegExpExecArray | null;
   while ((declaration = declarationPattern.exec(source)) !== null) {
     const declarationKind = fileType === 'ts' ? declaration[1] : undefined;
@@ -1190,6 +1191,10 @@ export function inferWorkflowLaunchTimeoutMs(
       fileType === 'ts'
         ? declaration.index + declaration[0].lastIndexOf(declarationName)
         : declaration.index + declaration[0].indexOf(declarationName);
+    // A Python assignment nested inside delimiters is a keyword argument or
+    // function default, not a binding in the surrounding scope. Delimiter
+    // depth is precomputed once so this remains linear across all matches.
+    if (fileType === 'py' && pythonAssignmentDepth?.[declarationNameIndex] !== 0) continue;
     const scopeId = masked.scopeAt[declarationNameIndex] ?? 0;
     const bindingScope =
       declarationKind === 'var' ? nearestFunctionScope(scopeId, varScopes, masked.scopeParents) : scopeId;

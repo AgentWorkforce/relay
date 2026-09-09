@@ -153,6 +153,27 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
+  it('does not treat multiline Python call keyword arguments as assignments', () => {
+    const source = [
+      'from library import wf',
+      'register(',
+      '  wf=workflow("real"),',
+      ')',
+      'wf.timeout(900_000)',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+  });
+
+  it('does not treat multiline Python function defaults as assignments', () => {
+    const source = ['def build(', '  wf=workflow("fake"),', '):', '  pass', 'wf.timeout(900_000)'].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+  });
+
+  it('keeps multiline Python assignments as builder bindings', () => {
+    const source = ['wf = workflow(', '  "real",', '  option=other,', ')', 'wf.timeout(900_000)'].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
   it('does not let a shadowed non-builder identifier create an ambiguous timeout', () => {
     const source = [
       "const wf = workflow('real');",
