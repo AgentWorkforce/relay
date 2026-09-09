@@ -1,0 +1,64 @@
+{
+  "id": "traj_5ellsvzejuxq",
+  "version": 1,
+  "task": {
+    "title": "Repair parentless adopted PTYs for relay #1602",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1602 review"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-25T08:03:20.298Z",
+  "completedAt": "2026-08-25T08:03:24.303Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-25T08:03:22.360Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_127rww64racw",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-25T08:03:22.360Z",
+      "endedAt": "2026-08-25T08:03:24.303Z",
+      "events": [
+        {
+          "ts": 1787645002362,
+          "type": "decision",
+          "content": "Do not use the transient parent marker as roster eligibility: Do not use the transient parent marker as roster eligibility",
+          "raw": {
+            "question": "Do not use the transient parent marker as roster eligibility",
+            "chosen": "Do not use the transient parent marker as roster eligibility",
+            "alternatives": [],
+            "reasoning": "The #1555 reconciler shipped before the incident but excluded parentless live handles before identity lookup. Adopted/migrated PTYs can lose that spawn metadata; the existing read-only workspace-scoped lookup, exact-name check, and immutable-ID guard are the safe eligibility boundary."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Included parentless live adopted PTYs in identity-safe reconciliation and proved the real WorkerRegistry-to-reconnect path end to end.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  },
+  "commits": [
+    "75f92f4474dc621a7b8e461e121c24605c40bccc"
+  ],
+  "filesChanged": [
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/worker.rs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4a695b26e9022756f1729be31b929fa61535b0a4",
+    "endRef": "75f92f4474dc621a7b8e461e121c24605c40bccc",
+    "traceId": "60d228aa-be88-43f6-b386-88de5bd5d1ef"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1602-parentless-worker-inventory",
+  "kind": "bugfix",
+  "title": "Parentless adopted workers remain in reconnect inventory",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1602-parentless-worker-inventory/run.mjs"]
+  },
+  "timeoutSeconds": 1800,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "parentless_worker_excluded_from_reconnect_inventory"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "parentless_worker_in_sync_and_heartbeat_after_reconnect"
+    }
+  }
+}

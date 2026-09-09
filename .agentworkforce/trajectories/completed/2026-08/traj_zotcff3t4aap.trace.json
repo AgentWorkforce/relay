@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "id": "2bc5d818-b00d-483a-9bf0-922e95ac2de4",
+  "timestamp": "2026-08-25T07:49:18.312Z",
+  "trajectory": "traj_zotcff3t4aap",
+  "files": [
+    {
+      "path": "crates/broker/src/fleet_wire.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/node_control.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [{ "contributor": { "type": "ai" }, "ranges": [] }]
+    }
+  ]
+}

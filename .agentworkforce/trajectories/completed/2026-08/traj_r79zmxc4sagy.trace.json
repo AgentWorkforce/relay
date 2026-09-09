@@ -1,0 +1,127 @@
+{
+  "version": "1.0.0",
+  "id": "6b089b86-9d34-4b0a-9786-31a4242fd7b8",
+  "timestamp": "2026-08-25T12:51:26.496Z",
+  "trajectory": "traj_r79zmxc4sagy",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_0c4k1s4nyzg3.trace.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 32,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_0c4k1s4nyzg3/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 66,
+              "end_line": 87,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_5ellsvzejuxq.trace.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 20,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_5ellsvzejuxq/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 46,
+              "end_line": 64,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_zotcff3t4aap.trace.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 20,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-08/traj_zotcff3t4aap/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 46,
+              "end_line": 64,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/fleet.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 3459,
+              "end_line": 3465,
+              "revision": "9f907408fede5a2315b6662739f62c6e5e32e30a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
