@@ -1,0 +1,37 @@
+{
+  "id": "compact_18o9rbaz9o7j",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-09T20:29:01.876Z",
+  "sourceTrajectories": [
+    "traj_oieyheda4zoc"
+  ],
+  "dateRange": {
+    "start": "2026-09-09T20:22:14.865Z",
+    "end": "2026-09-09T20:29:01.092Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Preserve and validate each harness vocabulary; reject native runtime reasoning before connecting",
+          "chosen": "Preserve and validate each harness vocabulary; reject native runtime reasoning before connecting",
+          "reasoning": "Harness help and parser probes confirm distinct argv and level sets. Existing PTY args carry overrides; native settings currently omit these CLI controls, so explicit rejection prevents silent defaults.",
+          "fromTrajectory": "traj_oieyheda4zoc"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

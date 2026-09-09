@@ -22,6 +22,7 @@ import {
   type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
+import { spawnReasoningArgs } from '../lib/spawn-reasoning.js';
 import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
 import { redeemJoinTicket } from '../lib/join-ticket.js';
@@ -709,6 +710,7 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--reasoning <level>', 'Reasoning effort override (codex, claude, grok; PTY runtime only)')
     .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
@@ -717,6 +719,13 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, opts.runtime);
       const spawnMode = parseSpawnModeOption(deps, opts.spawnMode);
       if (!runtime || !spawnMode) return;
+      try {
+        spawnReasoningArgs(provider, opts.reasoning as string | undefined, runtime.selected);
+      } catch (error) {
+        deps.error(describeError(error));
+        deps.exit(1);
+        return;
+      }
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -739,6 +748,7 @@ export function registerLocalAgentCommands(
           channels: (opts.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
+          reasoning: opts.reasoning as string | undefined,
           cwd: opts.cwd as string | undefined,
           spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
@@ -761,6 +771,7 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
+    .option('--reasoning <level>', 'Reasoning effort override (codex, claude, grok; PTY runtime only)')
     .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
@@ -775,6 +786,13 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, options.runtime);
       const spawnMode = parseSpawnModeOption(deps, options.spawnMode);
       if (!runtime || !spawnMode) return;
+      try {
+        spawnReasoningArgs(provider, options.reasoning as string | undefined, runtime.selected);
+      } catch (error) {
+        deps.error(describeError(error));
+        deps.exit(1);
+        return;
+      }
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -798,6 +816,7 @@ export function registerLocalAgentCommands(
           channels: (options.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
+          reasoning: options.reasoning as string | undefined,
           cwd: options.cwd as string | undefined,
           spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,

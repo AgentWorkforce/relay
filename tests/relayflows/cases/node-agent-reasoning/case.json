@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "node-agent-reasoning",
+  "kind": "feature",
+  "title": "Per-spawn reasoning is translated or explicitly rejected",
+  "runner": { "command": ["node", "tests/relayflows/cases/node-agent-reasoning/run.mjs"] },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "absent", "signature": "reasoning_option_absent" },
+    "head": { "outcome": "fixed", "signature": "reasoning_translated_or_rejected" }
+  }
+}

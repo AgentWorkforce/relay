@@ -649,6 +649,65 @@ describe('local agent subtree', () => {
     expect(result[1]).toMatchObject({ name: 'broken', delivery_mode: undefined });
   });
 
+  for (const command of ['spawn', 'new']) {
+    it.each([
+      ['codex', 'xhigh', ['-c', 'model_reasoning_effort="xhigh"']],
+      ['claude', 'max', ['--effort', 'max']],
+      ['grok', 'high', ['--reasoning-effort', 'high']],
+    ])(`${command} translates --reasoning for %s alongside --model`, async (provider, level, args) => {
+      const { program, client, attach, error } = harness();
+      await program.parseAsync(
+        [
+          'local',
+          'agent',
+          command,
+          provider as string,
+          '--model',
+          'test-model',
+          '--reasoning',
+          level as string,
+        ],
+        { from: 'user' }
+      );
+      expect(client.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cli: provider,
+          model: 'test-model',
+          args,
+        })
+      );
+      expect(client.spawnPty).not.toHaveBeenCalledWith(expect.objectContaining({ reasoning: level }));
+      expect(error).not.toHaveBeenCalled();
+      expect(attach).toHaveBeenCalledTimes(command === 'new' ? 1 : 0);
+    });
+
+    it.each([
+      ['cursor-agent', 'high', 'auto', 'not supported'],
+      ['gemini', 'high', 'auto', 'not supported'],
+      ['codex', 'ultra', 'auto', 'Expected one of:'],
+      ['claude', 'minimal', 'auto', 'Expected one of:'],
+      ['grok', 'max', 'auto', 'Expected one of:'],
+      ['grok', '', 'auto', 'Expected one of:'],
+      ['codex', 'HIGH', 'auto', 'Expected one of:'],
+      ['codex', 'xhigh', 'native', 'use --runtime pty'],
+      ['claude', 'high', 'native', 'use --runtime pty'],
+    ])(`${command} rejects unappliable reasoning: %s %s %s`, async (provider, level, runtime, message) => {
+      const connect = vi.fn();
+      const { program, client, attach, error, exit, log } = harness({ connect });
+      await program.parseAsync(
+        ['local', 'agent', command, provider, '--reasoning', level, '--runtime', runtime],
+        { from: 'user' }
+      );
+      expect(error).toHaveBeenCalledWith(expect.stringContaining(message));
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(connect).not.toHaveBeenCalled();
+      expect(client.spawnPty).not.toHaveBeenCalled();
+      expect(client.spawnHeadless).not.toHaveBeenCalled();
+      expect(attach).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    });
+  }
+
   it('spawn forwards task-exit lifecycle options', async () => {
     const { program, client } = harness();
     await program.parseAsync(

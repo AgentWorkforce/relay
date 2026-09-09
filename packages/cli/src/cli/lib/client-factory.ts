@@ -6,6 +6,8 @@ import {
   type SelectedHarnessRuntime,
 } from '@agent-relay/harnesses';
 
+import { spawnReasoningArgs } from './spawn-reasoning.js';
+
 export interface CreateRuntimeClientOptions {
   cwd: string;
   channels?: string[];
@@ -28,6 +30,7 @@ export interface ClientSpawnOptions {
   task?: string;
   team?: string;
   model?: string;
+  reasoning?: string;
   cwd?: string;
   shadowOf?: string;
   shadowMode?: 'subagent' | 'process';
@@ -97,8 +100,12 @@ export async function spawnAgentWithClient(
   options: ClientSpawnOptions
 ): Promise<void> {
   const runtime = resolvedSpawnRuntime(options);
+  const reasoningArgs = spawnReasoningArgs(options.cli, options.reasoning, runtime);
   if (runtime === 'pty') {
-    const { runtime: _runtime, ...ptyOptions } = options;
+    const { runtime: _runtime, reasoning: _reasoning, ...ptyOptions } = options;
+    if (reasoningArgs.length > 0) {
+      ptyOptions.args = [...(options.args ?? []), ...reasoningArgs];
+    }
     await client.spawnPty(ptyOptions);
     return;
   }

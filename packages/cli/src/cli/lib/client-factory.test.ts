@@ -125,6 +125,47 @@ describe('client-factory', () => {
     expect(spawnPty).toHaveBeenCalledWith(options);
   });
 
+  it('appends reasoning overrides without mutating existing argv', async () => {
+    const spawnPty = vi.fn(async () => undefined);
+    const args = ['--search'];
+    await spawnAgentWithClient({ spawnPty } as any, {
+      name: 'reasoner',
+      cli: 'codex',
+      channels: ['general'],
+      args,
+      reasoning: 'xhigh',
+    });
+    expect(spawnPty).toHaveBeenCalledWith({
+      name: 'reasoner',
+      cli: 'codex',
+      channels: ['general'],
+      args: ['--search', '-c', 'model_reasoning_effort="xhigh"'],
+    });
+    expect(args).toEqual(['--search']);
+  });
+
+  it.each([
+    ['cursor-agent', 'high', 'pty'],
+    ['codex', 'invalid', 'pty'],
+    ['claude', 'high', 'native'],
+  ] as const)(
+    'rejects unappliable reasoning for direct callers: %s %s %s',
+    async (cli, reasoning, runtime) => {
+      const client = { spawnPty: vi.fn(), spawnHeadless: vi.fn() };
+      await expect(
+        spawnAgentWithClient(client as any, {
+          name: 'reasoner',
+          cli,
+          channels: ['general'],
+          reasoning,
+          runtime,
+        })
+      ).rejects.toThrow('--reasoning');
+      expect(client.spawnPty).not.toHaveBeenCalled();
+      expect(client.spawnHeadless).not.toHaveBeenCalled();
+    }
+  );
+
   it('spawns an explicit native runtime through the AI SDK sidecar launch', async () => {
     const spawnHeadless = vi.fn(async () => undefined);
 

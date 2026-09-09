@@ -46,6 +46,21 @@ agent-relay node agent release <name>
 
 `node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
 
+Set effort for an individual PTY session with `--reasoning <level>` on either command:
+
+```bash
+agent-relay node agent spawn codex --name investigator --model gpt-6-astra --reasoning xhigh
+agent-relay node agent new claude --reasoning max
+```
+
+| Harness     | Accepted levels                                            | Per-session override                    |
+| ----------- | ---------------------------------------------------------- | --------------------------------------- |
+| Codex       | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `-c 'model_reasoning_effort="<level>"'` |
+| Claude Code | `low`, `medium`, `high`, `xhigh`, `max`                    | `--effort <level>`                      |
+| Grok        | `low`, `medium`, `high`, `xhigh`                           | `--reasoning-effort <level>`            |
+
+Levels are case-sensitive and passed through without normalization. Unsupported levels and harnesses (including Cursor Agent) fail before connecting to the broker. Native runtimes reject this option; select `--runtime pty` to use it. Omitting `--reasoning` preserves the harness default. The selected model and installed harness version must support the requested level.
+
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
 ### Workspace binding and recovery
