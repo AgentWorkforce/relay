@@ -847,7 +847,10 @@ export function registerLocalAgentCommands(
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
     .option('--node <node>', 'Canonical authenticated fleet-node terminal attach (physical or Daytona)')
-    .option('--base-url <url>', 'Relaycast API base URL for --node (defaults to the selected workspace route)')
+    .option(
+      '--base-url <url>',
+      'Relaycast API base URL for --node (defaults to the selected workspace route)'
+    )
     .option('--ssh-host <host>', 'SSH host fallback for a physical fleet node')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
