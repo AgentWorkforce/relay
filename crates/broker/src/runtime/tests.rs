@@ -51,15 +51,14 @@ use super::{
     persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
     relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
     relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
-    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
-    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    retain_model_receipt, retry_pending_delivery, save_dead_letters, seed_supplied_agent_token,
+    send_broker_event, sender_is_dashboard_label, should_clear_pending_delivery_for_event,
     startup_channel_maintenance_plan, synthetic_delivery_read_ack_reason, take_pending_for_worker,
     try_inject_pending_relay_message, AgentRuntime, BrokerRuntime, DeadLetterEntry,
     DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
     ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
     ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, StartupChannelMaintenanceAction,
     StartupChannelMaintenanceKind, TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
-    retain_model_receipt,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
