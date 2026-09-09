@@ -35,18 +35,6 @@
             "reasoning": "Hosted macOS exposed EINVAL during concurrent publication; preserving all runs is fail-closed and avoids deleting an untrusted canonical target."
           },
           "significance": "high"
-        },
-        {
-          "ts": 1788991913117,
-          "type": "decision",
-          "content": "Pinned smol-toml to a patched transitive version: Pinned smol-toml to a patched transitive version",
-          "raw": {
-            "question": "Pinned smol-toml to a patched transitive version",
-            "chosen": "Pinned smol-toml to a patched transitive version",
-            "alternatives": [],
-            "reasoning": "GitHub Dependency Review disclosed GHSA-7w5x-hrqm-74c2 against <=1.7.0 after the prior push; a root override moves every closure to 1.8.0 without changing direct runtime APIs. Regenerating the lock also aligns its stale 11.10.3 workspace metadata with the branch's 11.10.4 manifests."
-          },
-          "significance": "high"
         }
       ]
     }
