@@ -263,10 +263,14 @@ function assertProviderRelaycastTarget(
   }
   if (providerId !== undefined) {
     if (!target) {
-      throw new Error(`Cloud fleet sandbox response is missing the canonical Relaycast target for ${providerId}.`);
+      throw new Error(
+        `Cloud fleet sandbox response is missing the canonical Relaycast target for ${providerId}.`
+      );
     }
     if (target.route !== 'canonical' || target.baseUrl !== CANONICAL_RELAYCAST_ORIGIN) {
-      throw new Error(`Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`);
+      throw new Error(
+        `Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`
+      );
     }
   }
 }

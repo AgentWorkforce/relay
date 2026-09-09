@@ -888,11 +888,13 @@ describe('Cloud fleet sandbox client', () => {
           requiredCapability: 'spawn:codex',
           providerId,
         })
-      ).resolves.toEqual(expect.objectContaining({
-        outcome,
-        providerId,
-        relaycastTarget: CANONICAL_RELAYCAST_TARGET,
-      }));
+      ).resolves.toEqual(
+        expect.objectContaining({
+          outcome,
+          providerId,
+          relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+        })
+      );
     }
   );
 
