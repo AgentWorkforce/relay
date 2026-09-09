@@ -136,23 +136,20 @@ describe('workflow launch timeout inference', () => {
     }
   });
 
-  it.each(['\u2028', '\u2029'])('keeps ASI regex masking after Unicode line terminator %j', (lineTerminator) => {
-    for (const keyword of ['break', 'continue', 'debugger']) {
-      const source =
-        `workflow("real").timeout(900_000); while (ready) { ${keyword}${lineTerminator}` +
-        '/workflow("fake").timeout(600_000)/.test(value); }';
-      expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  it.each(['\u2028', '\u2029'])(
+    'keeps ASI regex masking after Unicode line terminator %j',
+    (lineTerminator) => {
+      for (const keyword of ['break', 'continue', 'debugger']) {
+        const source =
+          `workflow("real").timeout(900_000); while (ready) { ${keyword}${lineTerminator}` +
+          '/workflow("fake").timeout(600_000)/.test(value); }';
+        expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+      }
     }
-  });
+  );
 
   it('does not treat multiline Python keyword arguments as assignments', () => {
-    const source = [
-      'wf = workflow(',
-      '  "real",',
-      '  option=other,',
-      ')',
-      'wf.timeout(900_000)',
-    ].join('\n');
+    const source = ['wf = workflow(', '  "real",', '  option=other,', ')', 'wf.timeout(900_000)'].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
