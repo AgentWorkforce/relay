@@ -11,6 +11,11 @@ import { overwriteRegularFileNoFollow, readRegularFileNoFollow } from './safe-fi
 
 const INVENTORY_VERSION = 1;
 const SAFE_JSON = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.json$/;
+export const INVENTORY_WORKER_TIMEOUT_MS = 30_000;
+const MOUNT_SANDBOX = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'fleet-candidate-mount-sandbox.sh'
+);
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -169,9 +174,10 @@ function permissionArgs(candidateRoot, workerRoot, worker, networkBlocker, cliPa
 /**
  * Inspect candidate bootstrap code outside the verifier process. The worker
  * has no credential-bearing environment, no network permission, no native
- * addons, and can only write its bounded result file.
+ * addons, and can only write its bounded result file. Release qualification
+ * additionally runs it in a Linux network and mount namespace.
  */
-export async function collectFleetCliInventory(cliPath) {
+export async function collectFleetCliInventory(cliPath, { timeoutMs = INVENTORY_WORKER_TIMEOUT_MS } = {}) {
   const requestedCli = path.resolve(cliPath);
   const requestedRoot = path.resolve(cliPath, '..', '..', '..', '..', '..');
   for (const [target, label] of [
@@ -192,25 +198,64 @@ export async function collectFleetCliInventory(cliPath) {
     realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-cli-network-blocker.mjs')),
   ]);
   const outputPath = path.join(outputRoot, 'inventory.json');
+  const workerArgs = [
+    ...permissionArgs(candidateRoot, outputRoot, worker, networkBlocker, resolvedCli),
+    `--import=${networkBlocker}`,
+    worker,
+    '--cli',
+    resolvedCli,
+    '--output',
+    outputPath,
+  ];
+  const releaseSandbox = process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1';
+  let childArgs = workerArgs;
+  let childCommand = process.execPath;
+  let childCwd = candidateRoot;
+  if (releaseSandbox) {
+    if (process.platform !== 'linux') {
+      throw new Error('release qualification inventory requires a Linux network and mount namespace');
+    }
+    const runnerTemp = process.env.RUNNER_TEMP?.trim();
+    if (!runnerTemp || !isWithin(runnerTemp, candidateRoot)) {
+      throw new Error('release qualification inventory candidate root must be inside RUNNER_TEMP');
+    }
+    childCommand = '/usr/bin/unshare';
+    childArgs = [
+      '--user',
+      '--map-root-user',
+      '--mount',
+      '--net',
+      '--fork',
+      '--',
+      '/bin/sh',
+      MOUNT_SANDBOX,
+      path.resolve(runnerTemp),
+      candidateRoot,
+      candidateRoot,
+      process.execPath,
+      ...workerArgs,
+    ];
+    childCwd = process.cwd();
+  }
   try {
     const result = await new Promise((resolve) => {
-      const child = spawn(
-        process.execPath,
-        [
-          ...permissionArgs(candidateRoot, outputRoot, worker, networkBlocker, resolvedCli),
-          `--import=${networkBlocker}`,
-          worker,
-          '--cli',
-          resolvedCli,
-          '--output',
-          outputPath,
-        ],
-        {
-          cwd: candidateRoot,
-          env: candidateEnvironment(workerRoot),
-          stdio: ['ignore', 'pipe', 'pipe'],
-        }
-      );
+      let settled = false;
+      let timedOut = false;
+      let timer;
+      let killTimer;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        resolve(value);
+      };
+      const child = spawn(childCommand, childArgs, {
+        cwd: childCwd,
+        env: candidateEnvironment(workerRoot),
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       let stderr = '';
       let stdout = '';
       child.stdout.on('data', (chunk) => {
@@ -219,11 +264,32 @@ export async function collectFleetCliInventory(cliPath) {
       child.stderr.on('data', (chunk) => {
         stderr = `${stderr}${chunk}`.slice(-4096);
       });
-      child.on('error', (error) => resolve({ code: null, error: error.message, stderr, stdout }));
-      child.on('close', (code) => resolve({ code, stderr, stdout }));
+      const terminate = (signal) => {
+        try {
+          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+          else child.kill(signal);
+        } catch {
+          // The child may have exited between the timeout and the signal.
+        }
+      };
+      timer = setTimeout(() => {
+        timedOut = true;
+        terminate('SIGTERM');
+        killTimer = setTimeout(() => {
+          terminate('SIGKILL');
+          child.stdout.destroy();
+          child.stderr.destroy();
+          finish({ code: null, timedOut: true, stderr, stdout });
+        }, 1_500);
+      }, timeoutMs);
+      child.on('error', (error) => finish({ code: null, error: error.message, stderr, stdout }));
+      child.on('close', (code) => finish({ code, timedOut, stderr, stdout }));
     });
+    if (result.timedOut) {
+      throw new Error(`candidate CLI inventory worker timed out after ${timeoutMs}ms`);
+    }
     if (result.code !== 0) {
-      const diagnostic = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
+      const diagnostic = [result.error, result.stderr, result.stdout].filter(Boolean).join('\n').trim();
       throw new Error(`candidate CLI inventory worker failed${diagnostic ? `: ${diagnostic}` : ''}`);
     }
     const { bytes } = await readRegularFileNoFollow(outputPath, {
@@ -236,6 +302,11 @@ export async function collectFleetCliInventory(cliPath) {
   } finally {
     await rm(workerRoot, { recursive: true, force: true });
   }
+}
+
+function isWithin(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 export function compareFleetCliInventory(actual, expected) {

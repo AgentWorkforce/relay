@@ -12,6 +12,7 @@ import { readRegularFileNoFollow } from './safe-file.mjs';
 
 const CONTRACT_VERSION = 1;
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const CANDIDATE_MOUNT_SANDBOX = path.join(SCRIPT_DIR, 'fleet-candidate-mount-sandbox.sh');
 const DEFAULT_MATRIX = path.resolve(SCRIPT_DIR, '../../tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 const DEFAULT_CLI = path.resolve('packages/cli/dist/cli/index.js');
 const MOUNT_SCOPE_MARKER = 'tests/relayflows/cleanroom/relayfile-scope-marker.txt';
@@ -727,6 +728,43 @@ function isCandidateCliArgv(argv) {
   );
 }
 
+function isWithin(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function candidateSandboxArgv(argv) {
+  if (process.platform !== 'linux') {
+    throw new Error('release qualification candidate execution requires a Linux mount namespace');
+  }
+  const runnerTemp = process.env.RUNNER_TEMP?.trim();
+  const candidateCwd = process.env.VERIFY_FLEET_CANDIDATE_CWD?.trim();
+  if (!runnerTemp || !candidateCwd) {
+    throw new Error(
+      'release qualification candidate execution requires RUNNER_TEMP and isolated working directory'
+    );
+  }
+  const candidateRoot = path.resolve(argv[1], '..', '..', '..', '..', '..');
+  if (!isWithin(runnerTemp, candidateRoot) || !isWithin(runnerTemp, candidateCwd)) {
+    throw new Error('candidate install and working directory must be inside RUNNER_TEMP');
+  }
+  return [
+    '/usr/bin/unshare',
+    '--user',
+    '--map-root-user',
+    '--mount',
+    '--fork',
+    '--',
+    '/bin/sh',
+    CANDIDATE_MOUNT_SANDBOX,
+    path.resolve(runnerTemp),
+    candidateRoot,
+    path.resolve(candidateCwd),
+    process.execPath,
+    ...argv.slice(1),
+  ];
+}
+
 function childEnvironment(overrides = {}, candidate = false) {
   const allowedExact = new Set([
     'PATH',
@@ -800,13 +838,8 @@ async function execute(argv, options = {}) {
   const monotonicStartNs = process.hrtime.bigint();
   const timeoutMs = options.timeoutMs ?? 30_000;
   const candidate = isCandidateCliArgv(argv);
-  if (
-    candidate &&
-    process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1' &&
-    !process.env.VERIFY_FLEET_CANDIDATE_CWD
-  ) {
-    throw new Error('release qualification candidate execution requires an isolated working directory');
-  }
+  const releaseCandidate = candidate && process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1';
+  const childArgv = releaseCandidate ? candidateSandboxArgv(argv) : argv;
   const env = childEnvironment(options.env, candidate);
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
@@ -850,10 +883,11 @@ async function execute(argv, options = {}) {
       resolve();
     };
     try {
-      child = spawn(argv[0], argv.slice(1), {
-        cwd:
-          options.cwd ??
-          (candidate ? process.env.VERIFY_FLEET_CANDIDATE_CWD || process.cwd() : process.cwd()),
+      child = spawn(childArgv[0], childArgv.slice(1), {
+        cwd: releaseCandidate
+          ? process.cwd()
+          : (options.cwd ??
+            (candidate ? process.env.VERIFY_FLEET_CANDIDATE_CWD || process.cwd() : process.cwd())),
         env,
         detached: process.platform !== 'win32',
         stdio: [stdinChunks === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
