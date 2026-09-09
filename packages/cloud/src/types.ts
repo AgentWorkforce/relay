@@ -191,6 +191,8 @@ export type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
   relayflowVersion?: RelayflowVersion;
+  /** Bounded outer Cloud sandbox/bootstrap budget. Literal script builder timeouts are inferred when omitted. */
+  launchTimeoutMs?: number;
   syncCode?: boolean;
   resume?: string;
   startFrom?: string;
@@ -247,6 +249,8 @@ export type ScheduleWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
   relayflowVersion?: 'v1';
+  /** Bounded outer Cloud sandbox/bootstrap budget. Literal script builder timeouts are inferred when omitted. */
+  launchTimeoutMs?: number;
   name?: string;
   description?: string;
   cron?: string;

@@ -119,6 +119,32 @@ describe('relayflow version request contract', () => {
     });
   });
 
+  it('submits a statically inferred script launch timeout as authenticated request metadata', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "const result = await workflow('proof').timeout(3_300_000).run();";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(JSON.parse(bodies[0])).toEqual({
+      workflow,
+      fileType: 'ts',
+      launchTimeoutMs: 3_300_000,
+    });
+  });
+
+  it('uses the explicit launch timeout when script configuration is dynamic', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "const result = await workflow('proof').timeout(timeoutMs).run();";
+
+    await runWorkflow(workflow, {
+      fileType: 'ts',
+      syncCode: false,
+      launchTimeoutMs: 900_000,
+    });
+
+    expect(JSON.parse(bodies[0])).toMatchObject({ launchTimeoutMs: 900_000 });
+  });
+
   it('rejects an unknown run selector before authentication, filesystem, or network access', async () => {
     await expect(
       runWorkflow('missing-workflow.yaml', {
@@ -789,6 +815,7 @@ describe('workflow schedules', () => {
       cron: '0 * * * *',
       name: 'Hourly eval',
       relayflowVersion: 'v1',
+      launchTimeoutMs: 900_000,
       envSecrets: {
         AI_CLI_UPDATES_DRY_RUN: 'true',
         AI_CLI_UPDATES_ONLY: 'codex',
@@ -804,6 +831,7 @@ describe('workflow schedules', () => {
       workflowRequest: {
         fileType: 'yaml',
         relayflowVersion: 'v1',
+        launchTimeoutMs: 900_000,
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
