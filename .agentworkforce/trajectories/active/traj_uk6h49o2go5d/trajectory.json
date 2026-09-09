@@ -1,0 +1,50 @@
+{
+  "id": "traj_uk6h49o2go5d",
+  "version": 1,
+  "task": {
+    "title": "Finish PR 1665 comprehensive Relay and Fleet cleanroom qualification",
+    "source": {
+      "system": "plain",
+      "id": "relay#1665"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-09-09T21:47:25.815Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T21:50:52.599Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_0b6kshczxal7",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T21:50:52.599Z",
+      "events": [
+        {
+          "ts": 1788990652600,
+          "type": "decision",
+          "content": "Treat a non-symlink current artifact pointer as a retention no-op: Treat a non-symlink current artifact pointer as a retention no-op",
+          "raw": {
+            "question": "Treat a non-symlink current artifact pointer as a retention no-op",
+            "chosen": "Treat a non-symlink current artifact pointer as a retention no-op",
+            "alternatives": [],
+            "reasoning": "Hosted macOS exposed EINVAL during concurrent publication; preserving all runs is fail-closed and avoids deleting an untrusted canonical target."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5bbe9230bfb90cc59da7f96cfc92cf20210096f1",
+    "endRef": "5bbe9230bfb90cc59da7f96cfc92cf20210096f1"
+  }
+}

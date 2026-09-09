@@ -172,6 +172,14 @@ export function pruneRunArtifacts(
     const resolvedTarget = path.resolve(root, currentTarget);
     if (path.dirname(resolvedTarget) === path.resolve(runs)) canonicalRunId = path.basename(resolvedTarget);
   } catch (error) {
+    if (error.code === 'EINVAL') {
+      // A concurrent publisher may expose a non-link `current` inode on file
+      // systems whose rename semantics are not the POSIX symlink replacement
+      // we expect (observed on hosted macOS). Without a trustworthy canonical
+      // target, pruning must fail closed: preserve every run and let the next
+      // invocation retry retention cleanup.
+      return [];
+    }
     if (error.code !== 'ENOENT') throw error;
   }
   let entries;

@@ -849,6 +849,25 @@ exit "$FAKE_CURL_EXIT_STATUS"
     await expect(stat(canonical)).resolves.toBeDefined();
   });
 
+  it('fails pruning closed when the canonical pointer is temporarily not a symlink', async () => {
+    const root = await artifacts();
+    const runs = path.join(root, 'runs');
+    await mkdir(runs);
+    await mkdir(path.join(root, 'current'));
+    for (let index = 0; index < 3; index += 1) {
+      const directory = path.join(runs, `verify-preserved-${index}`);
+      await mkdir(directory);
+      markRunArtifactsComplete(directory, `verify-preserved-${index}`);
+    }
+
+    expect(pruneRunArtifacts(root, { keepCompleted: 1 })).toEqual([]);
+    expect((await readdir(runs)).sort()).toEqual([
+      'verify-preserved-0',
+      'verify-preserved-1',
+      'verify-preserved-2',
+    ]);
+  });
+
   it('rejects invalid incomplete-run retention windows', async () => {
     const root = await artifacts();
     for (const incompleteMaxAgeMs of [-1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
