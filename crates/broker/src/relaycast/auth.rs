@@ -901,6 +901,20 @@ fn is_rate_limited(err: &anyhow::Error) -> bool {
     auth_http_status(err).is_some_and(|status| status == StatusCode::TOO_MANY_REQUESTS)
 }
 
+/// `connect_relay` uses this to keep an exhausted workspace admission retry
+/// distinct from a handshake timeout. The complete startup operation must not
+/// be replayed after admission has exhausted its own bounded request retries:
+/// it contains unkeyed workspace and agent-registration POSTs.
+pub(crate) fn is_workspace_busy_anyhow(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AuthHttpError>().is_some_and(|error| {
+        error.status == StatusCode::TOO_MANY_REQUESTS
+            && error
+                .code
+                .as_deref()
+                .is_some_and(|code| code.trim().eq_ignore_ascii_case(WORKSPACE_BUSY_CODE))
+    })
+}
+
 fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
     err.downcast_ref::<AuthHttpError>()
         .map(|e| e.status)
@@ -932,11 +946,19 @@ const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// a single upstream 503 exits the broker process with code 1. Publish run
 /// 34099838274 lost three jobs to exactly that.
 const TRANSIENT_STARTUP_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
+/// Relaycast returns this admission code while a workspace is being
+/// provisioned or resumed by another request. Unlike a generic 429, this is
+/// a bounded, server-side busy signal and is safe to replay for startup.
+/// `RelayError` does not retain the response's `Retry-After` header, so the
+/// broker uses the bounded backoff above when the SDK cannot expose it.
+const WORKSPACE_BUSY_CODE: &str = "workspace_busy";
 
-/// The server-side statuses worth replaying: 500, 502, 503, 504. A 501 is a
+/// The server-side failures worth replaying: 500, 502, 503, 504, plus the
+/// narrowly-scoped 429 `workspace_busy` admission response. A 501 is a
 /// contract mismatch rather than a transient and is deliberately excluded, as
-/// are transport errors — a timed-out `POST /v1/agents` may already have
-/// created the agent, and re-sending it is the AR-448 duplicate shape.
+/// are unrelated 429s and transport errors — a timed-out `POST /v1/agents` may
+/// already have created the agent, and re-sending it is the AR-448 duplicate
+/// shape.
 fn is_transient_server_error(error: &RelayError) -> bool {
     matches!(
         error,
@@ -944,6 +966,17 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             status: 500 | 502 | 503 | 504,
             ..
         }
+    ) || is_workspace_busy_error(error)
+}
+
+fn is_workspace_busy_error(error: &RelayError) -> bool {
+    matches!(
+        error,
+        RelayError::Api {
+            code,
+            status: 429,
+            ..
+        } if code.trim().eq_ignore_ascii_case(WORKSPACE_BUSY_CODE)
     )
 }
 
@@ -1535,10 +1568,10 @@ mod tests {
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
-        is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
-        relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
-        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
-        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        is_agent_token_invalid_code, is_workspace_busy_error, reclaim_legacy_identity,
+        relay_error_to_anyhow, relay_request_with_timeout, resolve_relaycast_base_url,
+        retry_transient_relay_error, stable_node_identity_key, AuthClient, AuthHttpError,
+        CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -2074,6 +2107,88 @@ mod tests {
             }
             other => panic!("expected a terminal API error, got {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_busy_is_retried_until_admission_clears() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let result = retry_transient_relay_error("admitting a workspace", || {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    return Err::<_, _>(RelayError::api(
+                        "workspace_busy",
+                        "workspace admission is busy",
+                        429,
+                    ));
+                }
+                Ok::<_, RelayError>("admitted")
+            }
+        })
+        .await
+        .expect("workspace_busy should be replayed once");
+
+        assert_eq!(result, "admitted");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn workspace_busy_retry_budget_is_bounded_and_preserves_diagnostics() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error::<(), _, _>("admitting a workspace", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(RelayError::api(
+                    "workspace_busy",
+                    "workspace admission is busy",
+                    429,
+                ))
+            }
+        })
+        .await
+        .expect_err("a persistent workspace_busy must eventually be terminal");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        match error {
+            RelayError::Api {
+                code,
+                status,
+                attempts,
+                ..
+            } => {
+                assert_eq!(code, "workspace_busy");
+                assert_eq!(status, 429);
+                assert_eq!(attempts, 3);
+            }
+            other => panic!("expected a terminal API error, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_rate_limit_is_terminal_without_replay() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error("admitting a workspace", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err::<(), _>(RelayError::api(
+                    "registration_rate_limited",
+                    "registration rate limit exceeded",
+                    429,
+                ))
+            }
+        })
+        .await
+        .expect_err("an unrelated 429 must not be replayed");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!is_workspace_busy_error(&error));
+        assert!(matches!(error, RelayError::Api { status: 429, .. }));
     }
 
     /// The retry budget is bounded, and the terminal error still carries the
