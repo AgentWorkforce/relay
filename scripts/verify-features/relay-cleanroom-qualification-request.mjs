@@ -2,11 +2,12 @@
 
 import assert from 'node:assert/strict';
 import { constants as fsConstants } from 'node:fs';
-import { appendFile, open, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { validateQualificationManifest } from './qualification-manifest.mjs';
+import { readRegularFileNoFollow } from './safe-file.mjs';
 
 export const RELAY_REPOSITORY = 'AgentWorkforce/relay';
 export const REQUEST_WORKFLOW_NAME = 'Relay cleanroom qualification request';
@@ -15,7 +16,8 @@ export const REQUEST_ARTIFACT_NAME = 'relay-cleanroom-qualification-request';
 export const REQUEST_FILE_NAME = 'relay-cleanroom-qualification-request.json';
 
 const DEFAULT_BRANCH = 'main';
-const QUALIFICATION_BRANCH = /^qualification\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
+const DEFAULT_BRANCH_PATTERN = new RegExp(`^${DEFAULT_BRANCH}$`);
+const QUALIFICATION_BRANCH = /^qualification\/(?!.*\.\.)[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/;
 const GIT_SHA = /^[a-f0-9]{40}$/;
 const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$/;
@@ -104,7 +106,7 @@ export function validateQualificationRequestEvent(value, approvedActorsJson) {
 
   const headBranch = boundedString(
     run.head_branch,
-    run.event === 'workflow_dispatch' ? QUALIFICATION_BRANCH : /^main$/,
+    run.event === 'workflow_dispatch' ? QUALIFICATION_BRANCH : DEFAULT_BRANCH_PATTERN,
     'workflow_run.head_branch'
   );
   return {
@@ -209,26 +211,12 @@ export async function readQualificationRequestDirectory(directory, context, sele
   );
   assert(entries[0].isFile(), 'qualification request entry must be a regular file');
   assert(Number.isInteger(fsConstants.O_NOFOLLOW), 'qualification request validation requires O_NOFOLLOW');
-  const handle = await open(
-    path.join(directory, REQUEST_FILE_NAME),
-    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW
-  );
-  try {
-    const metadata = await handle.stat();
-    assert(metadata.isFile(), 'qualification request must be a regular file');
-    assert(
-      metadata.size > 0 && metadata.size <= REQUEST_SIZE_LIMIT,
-      'qualification request exceeds its size bound'
-    );
-    const source = await handle.readFile('utf8');
-    assert(
-      Buffer.byteLength(source, 'utf8') <= REQUEST_SIZE_LIMIT,
-      'qualification request content exceeds its size bound'
-    );
-    return validateQualificationRequest(JSON.parse(source), context, selection);
-  } finally {
-    await handle.close();
-  }
+  const { bytes } = await readRegularFileNoFollow(path.join(directory, REQUEST_FILE_NAME), {
+    label: 'qualification request',
+    maxBytes: REQUEST_SIZE_LIMIT,
+  });
+  assert(bytes.length > 0, 'qualification request exceeds its size bound');
+  return validateQualificationRequest(JSON.parse(bytes.toString('utf8')), context, selection);
 }
 
 function parseArguments(argv) {

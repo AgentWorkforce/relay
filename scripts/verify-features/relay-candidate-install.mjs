@@ -1060,7 +1060,7 @@ async function main() {
     );
     return;
   }
-  throw new Error('command must be prepare, hydrate, or verify');
+  throw new Error('command must be stage-source-broker, prepare, hydrate, or verify');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

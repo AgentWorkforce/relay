@@ -1,6 +1,8 @@
 import { constants as fsConstants } from 'node:fs';
 import { open } from 'node:fs/promises';
 
+const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
+
 function identity(stat) {
   return {
     dev: stat.dev,
@@ -42,7 +44,7 @@ async function openNoFollow(target, flags, label) {
  */
 export async function readRegularFileNoFollow(
   target,
-  { label = 'file', maxBytes, privateMode = false, currentUserOwned = false } = {}
+  { label = 'file', maxBytes = DEFAULT_MAX_BYTES, privateMode = false, currentUserOwned = false } = {}
 ) {
   const handle = await openNoFollow(target, fsConstants.O_RDONLY, label);
   try {

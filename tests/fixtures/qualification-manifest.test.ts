@@ -388,6 +388,30 @@ describe('qualification manifest', () => {
     }
   });
 
+  it('rejects non-canonical producer run counters and malformed exact semver tags', () => {
+    const malformedRun = structuredClone(cloudQualification);
+    malformedRun.qualification.runId = true;
+    expect(() =>
+      validateQualificationBundle(
+        valid,
+        malformedRun,
+        snapshotManifest,
+        relayfileCloudAttestation,
+        relayPackagePayload,
+        relayPackageEnvelope,
+        digests,
+        cloudAcceptance
+      )
+    ).toThrow(/positive integer/);
+
+    for (const releaseTag of ['v01.11.0', 'v11.11.0-', 'v11.11.0-01', 'v11.11.0+', 'v11.11.0+one+two']) {
+      expect(() => validateQualificationManifest({ ...valid, releaseTag })).toThrow(/exact semver/);
+    }
+    expect(
+      validateQualificationManifest({ ...valid, releaseTag: 'v11.11.0-beta.1+build.7' }).releaseTag
+    ).toBe('v11.11.0-beta.1+build.7');
+  });
+
   it.each([
     ['promotion', { ...valid, promotion: 'production' }],
     ['release identity', { ...valid, releaseId: 43 }],

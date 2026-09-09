@@ -173,6 +173,7 @@ describe('trusted cleanroom qualification request', () => {
       /triggering_actor.login is not approved/,
     ],
     ['nested branch', event({ head_branch: 'qualification/attacker/nested' }), () => {}, /head_branch/],
+    ['dot-dot branch', event({ head_branch: 'qualification/attacker..ref' }), () => {}, /head_branch/],
     ['default branch manual run', event({ head_branch: 'main' }), () => {}, /head_branch/],
   ])('rejects %s', (_label, source, mutate, message) => {
     const value = structuredClone(source);

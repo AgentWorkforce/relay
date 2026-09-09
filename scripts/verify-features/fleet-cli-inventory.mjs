@@ -148,7 +148,7 @@ function candidateEnvironment(home) {
   };
 }
 
-function permissionArgs(candidateRoot, workerRoot, worker, cliPath) {
+function permissionArgs(candidateRoot, workerRoot, worker, networkBlocker, cliPath) {
   if (process.platform !== 'linux' && process.platform !== 'darwin') {
     throw new Error('candidate CLI inventory requires a permission-capable POSIX runner');
   }
@@ -160,6 +160,7 @@ function permissionArgs(candidateRoot, workerRoot, worker, cliPath) {
     `--allow-fs-read=${path.join(path.dirname(path.resolve(cliPath)), 'bootstrap.js')}`,
     `--allow-fs-read=${fileURLToPath(import.meta.url)}`,
     `--allow-fs-read=${worker}`,
+    `--allow-fs-read=${networkBlocker}`,
     `--allow-fs-read=${path.join(path.dirname(fileURLToPath(import.meta.url)), 'safe-file.mjs')}`,
     `--allow-fs-write=${workerRoot}`,
   ];
@@ -183,11 +184,12 @@ export async function collectFleetCliInventory(cliPath) {
     }
   }
   const workerRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-'));
-  const [candidateRoot, resolvedCli, outputRoot, worker] = await Promise.all([
+  const [candidateRoot, resolvedCli, outputRoot, worker, networkBlocker] = await Promise.all([
     realpath(requestedRoot),
     realpath(requestedCli),
     realpath(workerRoot),
     realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-cli-inventory-worker.mjs')),
+    realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-cli-network-blocker.mjs')),
   ]);
   const outputPath = path.join(outputRoot, 'inventory.json');
   try {
@@ -195,7 +197,8 @@ export async function collectFleetCliInventory(cliPath) {
       const child = spawn(
         process.execPath,
         [
-          ...permissionArgs(candidateRoot, outputRoot, worker, resolvedCli),
+          ...permissionArgs(candidateRoot, outputRoot, worker, networkBlocker, resolvedCli),
+          `--import=${networkBlocker}`,
           worker,
           '--cli',
           resolvedCli,

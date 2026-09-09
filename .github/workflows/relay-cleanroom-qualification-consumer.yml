@@ -572,19 +572,52 @@ jobs:
           npm run build:core
           mkdir -p qualification-cleanup
 
+      - name: Discover run-scoped workspaces before resolving create outputs
+        id: discover
+        working-directory: relay-cleanup
+        env:
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
+          CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
+          CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
+          CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          VERIFY_FLEET_CLI: ${{ github.workspace }}/relay-cleanup/packages/cli/dist/cli/index.js
+        run: |
+          set -euo pipefail
+          for suffix in a b; do
+            name="relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+            node "$VERIFY_FLEET_CLI" cloud workspaces --json > "qualification-cleanup/workspaces-${suffix}.json"
+            WORKSPACE_NAME="$name" WORKSPACE_LIST="qualification-cleanup/workspaces-${suffix}.json" SUFFIX="$suffix" node - <<'NODE'
+            const fs = require('node:fs');
+            const value = JSON.parse(fs.readFileSync(process.env.WORKSPACE_LIST, 'utf8'));
+            const matches = (value.workspaces ?? []).filter((entry) => entry?.name === process.env.WORKSPACE_NAME);
+            if (matches.length > 1) throw new Error(`multiple Cloud workspaces matched ${process.env.WORKSPACE_NAME}`);
+            if (matches.length === 1) {
+              const id = matches[0].id;
+              if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error('discovered workspace id is invalid');
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${process.env.SUFFIX}=${id}\n`);
+            }
+          NODE
+          done
+
       - name: Bind only create-step-owned qualification workspace IDs
         id: resolve
         working-directory: relay-cleanup
         env:
           WORKSPACE_A: ${{ needs.qualification.outputs.owned_workspace_a }}
           WORKSPACE_B: ${{ needs.qualification.outputs.owned_workspace_b }}
+          DISCOVERED_A: ${{ steps.discover.outputs.workspace_a }}
+          DISCOVERED_B: ${{ steps.discover.outputs.workspace_b }}
         run: |
           node - <<'NODE'
           const fs = require('node:fs');
           const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
           const resolved = {};
           for (const suffix of ['a', 'b']) {
-            const id = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
+            const createId = process.env[`WORKSPACE_${suffix.toUpperCase()}`] || '';
+            const discoveredId = process.env[`DISCOVERED_${suffix.toUpperCase()}`] || '';
+            if (createId && discoveredId && createId !== discoveredId) throw new Error(`create and discovered workspace ${suffix} IDs differ`);
+            const id = discoveredId || createId;
             if (!id) continue;
             if (!uuid.test(id)) throw new Error(`create-step-owned workspace ${suffix} has an invalid id`);
             resolved[suffix] = id;

@@ -69,6 +69,18 @@
             "focal:regression coverage",
             "confidence:0.86"
           ]
+        },
+        {
+          "ts": 1788936733368,
+          "type": "decision",
+          "content": "Block inventory worker networking with a trusted preload across Node 22 and Node 24: Block inventory worker networking with a trusted preload across Node 22 and Node 24",
+          "raw": {
+            "question": "Block inventory worker networking with a trusted preload across Node 22 and Node 24",
+            "chosen": "Block inventory worker networking with a trusted preload across Node 22 and Node 24",
+            "alternatives": [],
+            "reasoning": "Node 22/24 permission mode exposes no net permission API but still permits fetch; filesystem permission alone does not prove no network, so the worker must fail closed at fetch and built-in network module boundaries."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -20,6 +20,8 @@ const SAFE_SNAPSHOT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const SAFE_ARTIFACT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const SAFE_DEPLOYMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const MIN_RELAYFILE_CLOUD_LIFETIME_MS = 8 * 60 * 60 * 1000;
+const SEMVER_CORE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const SEMVER_IDENTIFIER = /^[0-9A-Za-z-]+$/;
 
 function requiredString(value, label) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is required`);
@@ -40,9 +42,40 @@ function positiveInteger(value, label) {
 }
 
 function normalizePositiveInteger(value, label) {
-  const resolved = Number(value);
+  const resolved =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^[1-9]\d*$/.test(value)
+        ? Number(value)
+        : NaN;
   if (!Number.isSafeInteger(resolved) || resolved <= 0) {
     throw new Error(`${label} must be a positive integer`);
+  }
+  return resolved;
+}
+
+function exactSemverTag(value) {
+  const resolved = requiredString(value, 'releaseTag');
+  const buildParts = resolved.slice(1).split('+');
+  if (buildParts.length > 2) throw new Error('releaseTag must be an exact semver tag');
+  const [withoutBuild, build] = buildParts;
+  const [core, prerelease] = withoutBuild.split('-', 2);
+  if (!resolved.startsWith('v') || !SEMVER_CORE.test(core)) {
+    throw new Error('releaseTag must be an exact semver tag');
+  }
+  for (const section of [prerelease, build]) {
+    if (section === undefined) continue;
+    const identifiers = section.split('.');
+    if (
+      identifiers.length === 0 ||
+      identifiers.some(
+        (identifier) =>
+          !SEMVER_IDENTIFIER.test(identifier) ||
+          (/^\d+$/.test(identifier) && identifier.startsWith('0') && identifier.length > 1)
+      )
+    ) {
+      throw new Error('releaseTag must be an exact semver tag');
+    }
   }
   return resolved;
 }
@@ -84,10 +117,7 @@ export function validateQualificationManifest(value, expected = {}) {
     throw new Error('qualification manifest must declare promotion="none"');
   }
   const releaseId = positiveInteger(value.releaseId, 'releaseId');
-  const releaseTag = requiredString(value.releaseTag, 'releaseTag');
-  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseTag)) {
-    throw new Error('releaseTag must be an exact semver tag');
-  }
+  const releaseTag = exactSemverTag(value.releaseTag);
   const cloud = requiredObject(value.cloudQualification, 'cloudQualification');
   const cloudAcceptance = requiredObject(value.cloudSnapshotAcceptance, 'cloudSnapshotAcceptance');
   const relayPackages = requiredObject(value.relayPackageQualification, 'relayPackageQualification');

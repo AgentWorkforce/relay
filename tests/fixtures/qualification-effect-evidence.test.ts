@@ -285,6 +285,8 @@ describe('qualification runtime effect composer', () => {
     expect(workflow).toContain('chmod -R a-w relay-verifier');
     expect(workflow).toContain('VERIFY_FLEET_CANDIDATE_CWD: ${{ runner.temp }}/relay-candidate-cwd');
     expect(workflow).toContain('VERIFY_FLEET_CLI: relay-verifier/packages/cli/dist/cli/index.js');
+    expect(workflow).toContain('Discover run-scoped workspaces before resolving create outputs');
+    expect(workflow).toContain('cloud workspaces --json');
     expect(workflow).not.toContain('node relay/packages/cli/dist/cli/index.js cloud workspace create');
     expect(workflow).not.toContain('node relay/packages/cli/dist/cli/index.js cloud workspace delete');
   });
