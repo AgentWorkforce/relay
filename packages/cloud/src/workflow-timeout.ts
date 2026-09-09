@@ -25,6 +25,7 @@ const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch',
 type MaskedWorkflowSource = {
   source: string;
   matchingOpenParens: Map<number, number>;
+  matchingCloseParens: Map<number, number>;
 };
 
 type WorkflowRoot = { name: string; invoked: boolean };
@@ -47,6 +48,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   const controlParenStack: boolean[] = [];
   const openParenStack: number[] = [];
   const matchingOpenParens = new Map<number, number>();
+  const matchingCloseParens = new Map<number, number>();
 
   const flushIdentifier = () => {
     if (currentIdentifier) {
@@ -77,7 +79,10 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     }
     if (character === ')') {
       const openParen = openParenStack.pop();
-      if (openParen !== undefined) matchingOpenParens.set(sourceIndex, openParen);
+      if (openParen !== undefined) {
+        matchingOpenParens.set(sourceIndex, openParen);
+        matchingCloseParens.set(openParen, sourceIndex);
+      }
       closedControlParen = controlParenStack.pop() ?? false;
       lastIdentifier = undefined;
       return;
@@ -222,7 +227,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     index += 1;
   }
 
-  return { source: output, matchingOpenParens };
+  return { source: output, matchingOpenParens, matchingCloseParens };
 }
 
 function validateLaunchTimeoutMs(value: number, source: string, minimum = 1): number {
@@ -340,10 +345,11 @@ export function inferWorkflowLaunchTimeoutMs(
     let argumentStart = match.index + match[0].length;
     while (argumentStart < source.length && /\s/.test(source[argumentStart])) argumentStart += 1;
     if (source[argumentStart] !== '(') continue;
+    const argumentOpen = argumentStart;
     argumentStart += 1;
     while (argumentStart < source.length && /\s/.test(source[argumentStart])) argumentStart += 1;
-    const argumentEnd = source.indexOf(')', argumentStart);
-    if (argumentEnd < 0) continue;
+    const argumentEnd = masked.matchingCloseParens.get(argumentOpen);
+    if (argumentEnd === undefined) continue;
 
     const root = timeoutRoot(source, match.index, masked.matchingOpenParens, callRoots);
     if (root === null || (root.invoked ? root.name !== 'workflow' : !builderNames.has(root.name))) {

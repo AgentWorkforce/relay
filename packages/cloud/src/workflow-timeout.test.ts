@@ -67,6 +67,11 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
+  it('does not rescan the suffix for repeated malformed timeout candidates', () => {
+    const source = "workflow('malformed').timeout(".repeat(8_000);
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
+  });
+
   it('resolves repeated fluent timeout calls without rescanning their call chain', () => {
     const source = "workflow('root')" + '.timeout(600_000)'.repeat(12_000);
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(600_000);
