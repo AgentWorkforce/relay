@@ -2199,6 +2199,9 @@ export async function runStatusCommand(
   // Query the running broker for additional status info
   const statusDetails =
     readiness.statusDetails ?? (waitMs > 0 ? null : await readBrokerStatusDetails(readiness.conn));
+  if (!statusDetails || statusDetails.session === null) {
+    deps.warn('Broker API details unavailable (request failed or exceeded the 2s limit).');
+  }
   if (statusDetails) {
     const { status, session } = statusDetails;
     if (typeof status.agent_count === 'number') {

@@ -48,6 +48,9 @@ describe('status with an unresponsive broker API', () => {
         await runStatusCommand(deps);
         expect(requests.has(stalledPath)).toBe(true);
         expect(log).toHaveBeenCalledWith('Status: RUNNING');
+        expect(deps.warn).toHaveBeenCalledWith(
+          'Broker API details unavailable (request failed or exceeded the 2s limit).'
+        );
         expect(Date.now() - started).toBeLessThan(5000);
       } finally {
         server.closeAllConnections();
