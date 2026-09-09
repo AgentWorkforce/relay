@@ -187,6 +187,22 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it('tracks generic function parameters without executing TypeScript', () => {
+    const source = [
+      "workflow('real').timeout(900_000);",
+      "function run<T>(workflow: T): Promise<void> { workflow('fake').timeout(600_000); }",
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('tracks generic object-method parameters as lexical shadows', () => {
+    const source = [
+      "workflow('real').timeout(900_000);",
+      "const runner = { run<T>(workflow: T): void { workflow('fake').timeout(600_000); } };",
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
   it('tracks typed arrow parameters through return annotations', () => {
     const source = [
       "const wf = workflow('real');",

@@ -640,12 +640,22 @@ function collectFunctionScopes(
     addFunctionBinding(functionBindings, scopeId, source.slice(parametersStart, parametersEnd));
   };
 
-  // Function declarations and expressions.
-  const functionPattern = /\bfunction\s*\*?\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*)?\(/g;
-  let functionMatch: RegExpExecArray | null;
-  while ((functionMatch = functionPattern.exec(source)) !== null) {
-    const openParen = functionMatch.index + functionMatch[0].lastIndexOf('(');
-    register(openParen, openParen + 1, matchingCloseParens.get(openParen) ?? openParen + 1);
+  // Any parenthesized construct with a block body is structurally a function
+  // or method unless its preceding token is a control-flow keyword. This also
+  // covers generic declarations/methods (`function f<T>(...) {}` and
+  // `method<T>(...) {}`) without trying to regex the type-parameter grammar.
+  const controlBlockKeywords = new Set(['if', 'while', 'for', 'switch', 'with', 'catch']);
+  for (const [openParen, closeParen] of matchingCloseParens) {
+    const previous = previousNonWhitespace(source, openParen - 1);
+    if (previous < 0) continue;
+    const precedingIdentifier = identifierBefore(source, previous);
+    const isGeneric = source[previous] === '>';
+    const isFunctionKeyword =
+      precedingIdentifier?.name === 'function' ||
+      (source[previous] === '*' && identifierBefore(source, previous - 1)?.name === 'function');
+    const isMethod = precedingIdentifier !== null && !controlBlockKeywords.has(precedingIdentifier.name);
+    if (!isGeneric && !isFunctionKeyword && !isMethod) continue;
+    register(openParen, openParen + 1, closeParen);
   }
 
   // Catch bindings have their own lexical scope, represented by the catch
