@@ -302,6 +302,14 @@ fn evaluate_startup_gate(
     post_boot_output: &str,
     grid: GridReadinessSnapshot<'_>,
 ) -> bool {
+    tracing::debug!(target: "relay_broker::startup_gate",
+        cli = resolved_cli, wait_for_agent_relay_boot, saw_agent_relay_boot,
+        post_boot_prompt = output_has_prompt(resolved_cli, post_boot_output),
+        grid_prompt = cli_prompt_ready(resolved_cli, grid),
+        trust_blocked = detect_codex_trust_prompt(grid.screen) || detect_claude_trust_prompt(grid.screen) == (true, true),
+        mcp_starting = grid.screen.to_ascii_lowercase().contains("starting mcp server") || grid.screen.to_ascii_lowercase().contains("booting mcp server"),
+        cursor = ?grid.cursor, startup_total_bytes,
+        "harness startup gate");
     // A menu-selection glyph is not the harness input prompt. In particular,
     // Codex's directory-trust interstitial contains the same `›` glyph as its
     // composer, so the generic prompt detector would otherwise release the

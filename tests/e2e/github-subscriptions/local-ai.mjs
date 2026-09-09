@@ -275,7 +275,7 @@ try {
       CLAUDECODE: '',
       AGENT_RELAY_BROKER_LOG: 'stderr',
       RUST_LOG:
-        'relay_broker::wrap=info,relay_broker::pty_worker=info,agent_relay::worker::pty=info,relay_pty::startup_input=debug',
+        'relay_broker::wrap=info,relay_broker::pty_worker=info,agent_relay::worker::pty=info,relay_pty::startup_input=debug,relay_broker::startup_gate=debug',
       AGENT_RELAY_MCP_COMMAND: process.execPath + ' ' + root + '/packages/cli/dist/cli/index.js mcp',
     },
     startupTimeoutMs: 30000,
@@ -348,6 +348,14 @@ try {
   save();
   const ready = await worker.waitForReady(90000);
   report.readyResult = ready;
+  const startupSnapshot = await client.snapshot(name).catch((error) => ({ error: error.message }));
+  writeFileSync(
+    path.join(output, 'startup-grid.json'),
+    JSON.stringify(startupSnapshot, null, 2).replace(
+      /(?:rk_live_|at_live_|nt_live_|sk-ant-|sk-)[A-Za-z0-9_-]+/g,
+      '[redacted]'
+    ) + '\n'
+  );
   save();
   assert.equal(ready.reason, 'ready');
   process.kill(ready.pid, 0);

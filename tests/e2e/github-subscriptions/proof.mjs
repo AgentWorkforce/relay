@@ -157,6 +157,13 @@ export async function releaseOwnedWorker(broker, owned) {
 
 /** Preserve startup-failure diagnostics before attempting an idle-only audit. */
 export function persistWorkerDiagnostics(output, file, actorLog, firstIdleAt) {
+  writeFileSync(
+    path.join(output, 'startup-gates.log'),
+    actorLog
+      .split('\n')
+      .filter((line) => line.includes('harness startup gate'))
+      .join('\n') + '\n'
+  );
   const diagnostic = [
     {
       file,
