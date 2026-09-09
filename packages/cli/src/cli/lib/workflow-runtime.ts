@@ -54,14 +54,22 @@ export async function resolveRelayflowsCliEntrypoint(
 
     const execFile = deps.execFile ?? nodeExecFile;
     const node = workflowNodeExecutable(deps);
+    const cliScript = deps.cliScript ?? process.argv[1] ?? '';
+    const installedCliPath =
+      cliScript && !isBundledBunEntrypointPath(cliScript) ? path.dirname(path.resolve(cliScript)) : undefined;
+    const resolutionPaths = [
+      path.dirname(resolvedWorkflowPath),
+      ...(installedCliPath ? [installedCliPath] : []),
+    ];
     const stdout = await new Promise<string>((resolve, reject) => {
       execFile(
         node,
         [
           '-e',
-          'process.stdout.write(require.resolve(process.argv[1], { paths: [process.argv[2]] }))',
+          'const paths = process.argv[3] ? JSON.parse(process.argv[3]) : [process.argv[2]]; process.stdout.write(require.resolve(process.argv[1], { paths }))',
           '@relayflows/cli',
           path.dirname(resolvedWorkflowPath),
+          JSON.stringify(resolutionPaths),
         ],
         {
           cwd: path.dirname(resolvedWorkflowPath),

@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
 - Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
 - Standalone Bun workflow runs now execute relayflows and detached monitors with a real Node.js runtime resolved from the workflow project.
+- Standalone Bun workflow runs now use a real Node.js runtime when available, with bundled relayflows execution for Cloud archives that omit node_modules; daemon restarts and monitor failures now remain actionable.
 
 ## [11.10.4] - 2026-09-08
 

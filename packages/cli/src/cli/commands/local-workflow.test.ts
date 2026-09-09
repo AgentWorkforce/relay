@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -150,6 +151,28 @@ describe('registerLocalWorkflowCommands', () => {
 
     await program.parseAsync(['sync', 'local_test123'], { from: 'user' });
     expect(logs).toContain('Local workflow ran in this checkout; no patch sync is required.');
+  });
+
+  it('records actionable guidance when the detached monitor cannot start Node', async () => {
+    const monitor = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+    monitor.pid = 4242;
+    monitor.unref = vi.fn();
+    const spawnProcess = vi.fn(() => monitor) as never;
+    const { program, tmpRoot, errors } = createHarness({
+      spawnProcess,
+      argv: ['bun', '/$bunfs/root/cli/index.js'],
+      cliScript: '/$bunfs/root/cli/index.js',
+      execPath: '/tmp/agent-relay',
+    });
+    fs.writeFileSync(path.join(tmpRoot, 'workflow.js'), 'console.log("workflow");\n', 'utf-8');
+
+    await program.parseAsync(['run', 'workflow.js'], { from: 'user' });
+    monitor.emit('error', new Error('spawn node ENOENT'));
+
+    const record = await waitForRunStatus(tmpRoot, 'local_test123', 'failed');
+    expect(record.status).toBe('failed');
+    expect(record.error).toMatch(/Node.js executable.*AGENT_RELAY_NODE/);
+    expect(errors.join('\n')).toMatch(/Node.js executable.*AGENT_RELAY_NODE/);
   });
 
   it.each([

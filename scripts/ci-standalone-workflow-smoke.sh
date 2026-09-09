@@ -40,3 +40,31 @@ if ! printf '%s\n' "$status_output" | grep -q '"status": "completed"'; then
 fi
 
 echo "Standalone workflow smoke passed"
+
+# Cloud worker archives intentionally omit node_modules. Exercise the
+# standalone binary's bundled relayflows-core path from a project with no
+# dependency tree at all, which is the Cloud assignment shape.
+BUNDLED_ROOT="$TMP_ROOT/bundled-cloud"
+mkdir -p "$BUNDLED_ROOT"
+cat > "$BUNDLED_ROOT/workflow.yaml" <<'YAML'
+version: "1.0"
+name: "standalone-cloud-smoke"
+swarm:
+  pattern: sequential
+agents: []
+workflows:
+  - name: smoke
+    steps:
+      - name: noop
+        type: deterministic
+        command: "printf bundled-workflow-ok"
+YAML
+
+bundled_output="$(cd "$BUNDLED_ROOT" && AGENT_RELAY_TELEMETRY_DISABLED=1 "$STANDALONE_CLI" __bundled-workflow run workflow.yaml)"
+printf '%s\n' "$bundled_output"
+if ! printf '%s\n' "$bundled_output" | grep -q 'Workflow completed successfully'; then
+  echo "ERROR: standalone bundled workflow smoke did not complete" >&2
+  exit 1
+fi
+
+echo "Standalone bundled Cloud workflow smoke passed"
