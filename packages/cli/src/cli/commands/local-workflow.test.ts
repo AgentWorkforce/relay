@@ -157,7 +157,10 @@ describe('registerLocalWorkflowCommands', () => {
     const monitor = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
     monitor.pid = 4242;
     monitor.unref = vi.fn();
-    const spawnProcess = vi.fn(() => monitor) as never;
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => monitor.emit('error', new Error('spawn node ENOENT')));
+      return monitor;
+    }) as never;
     const { program, tmpRoot, errors } = createHarness({
       spawnProcess,
       argv: ['bun', '/$bunfs/root/cli/index.js'],
@@ -167,10 +170,12 @@ describe('registerLocalWorkflowCommands', () => {
     fs.writeFileSync(path.join(tmpRoot, 'workflow.js'), 'console.log("workflow");\n', 'utf-8');
 
     await program.parseAsync(['run', 'workflow.js'], { from: 'user' });
-    monitor.emit('error', new Error('spawn node ENOENT'));
 
-    const record = await waitForRunStatus(tmpRoot, 'local_test123', 'failed');
+    const record = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, '.agentworkforce/relay/local-runs/local_test123/run.json'), 'utf-8')
+    ) as Record<string, unknown>;
     expect(record.status).toBe('failed');
+    expect(record.monitorPid).toBeUndefined();
     expect(record.error).toMatch(/Node.js executable.*AGENT_RELAY_NODE/);
     expect(errors.join('\n')).toMatch(/Node.js executable.*AGENT_RELAY_NODE/);
   });
