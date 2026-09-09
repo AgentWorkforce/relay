@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "fleet-disk-reaper",
+  "kind": "feature",
+  "title": "Reclaim idle fleet dependencies while retaining unsafe lanes",
+  "requirements": [],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/fleet-disk-reaper/run.mjs"]
+  },
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": { "outcome": "absent", "signature": "fleet_disk_reaper_absent" },
+    "head": { "outcome": "fixed", "signature": "fleet_disk_reaper_safety_verified" }
+  }
+}

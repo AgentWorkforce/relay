@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/fleet/disk_reaper.py` reports and reclaims stale lane dependencies, caches, and merged worktrees with dry-run defaults and Git/activity safety checks.
 - `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails. Repeatable `--spawn-arg` forwards literal harness options.
 
 ### Fixed

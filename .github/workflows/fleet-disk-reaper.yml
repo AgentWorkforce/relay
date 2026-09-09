@@ -1,0 +1,34 @@
+name: Fleet disk reaper safety
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/fleet/**'
+      - 'tests/fleet/**'
+      - 'tests/relayflows/cases/fleet-disk-reaper/**'
+      - '.github/workflows/fleet-disk-reaper.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/fleet/**'
+      - 'tests/fleet/**'
+      - '.github/workflows/fleet-disk-reaper.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify process probe dependency
+        run: command -v lsof
+      - name: Exercise Git and active-lane retention
+        run: python3 -m unittest discover -s tests/fleet -v

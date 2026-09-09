@@ -1,0 +1,117 @@
+{
+  "captured_at": "2026-09-09T15:22:52.687512+00:00",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "command": "python3 scripts/fleet/disk_reaper.py run --root \"$HOME/lanes\" --json",
+  "attempts": 1,
+  "report": {
+    "categories": {
+      "build_cache": {
+        "kept": 0,
+        "reclaimed_bytes": 0,
+        "would_reclaim_bytes": 0
+      },
+      "node_modules": {
+        "kept": 11,
+        "reclaimed_bytes": 0,
+        "would_reclaim_bytes": 0
+      },
+      "tool_cache": {
+        "kept": 0,
+        "reclaimed_bytes": 0,
+        "would_reclaim_bytes": 0
+      },
+      "worktree": {
+        "kept": 0,
+        "reclaimed_bytes": 0,
+        "would_reclaim_bytes": 0
+      }
+    },
+    "dry_run": true,
+    "entries": [
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/broker-degraded/repo",
+        "reason": "uncommitted or untracked work",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/disk-reaper",
+        "reason": "active lane or open file",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/garden-e2e/factory-cloud",
+        "reason": "remote upstream changed; fetch before reaping",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/garden-e2e/repo",
+        "reason": "uncommitted or untracked work",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/mount-sandbox",
+        "reason": "active lane or open file",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/nightcto-autofix/repo",
+        "reason": "uncommitted or untracked work",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/nightcto-propose",
+        "reason": "active lane or open file",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/rc-retention/repo",
+        "reason": "uncommitted or untracked work",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/relayauth-mint/repo",
+        "reason": "uncommitted or untracked work",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/rf-emptymount",
+        "reason": "active lane or open file",
+        "status": "kept"
+      },
+      {
+        "bytes": 0,
+        "category": "node_modules",
+        "path": "~/lanes/sg372-hang",
+        "reason": "active lane or open file",
+        "status": "kept"
+      }
+    ],
+    "event": "fleet_disk_reaper",
+    "free_after_bytes": {
+      "~/lanes": 40592850944
+    },
+    "free_before_bytes": {
+      "~/lanes": 40593977344
+    }
+  }
+}
