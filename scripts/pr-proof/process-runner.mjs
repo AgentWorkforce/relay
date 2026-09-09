@@ -36,21 +36,24 @@ function boundedInteger(value, { fallback, minimum, label }) {
 }
 
 export function signalProcessTree(child, signal) {
+  const childExited = child.exitCode !== null || child.signalCode !== null;
   if (process.platform !== 'win32' && child.pid) {
     try {
       process.kill(-child.pid, signal);
       return;
     } catch (error) {
-      // macOS can report EPERM after the group leader exits, even though the
-      // direct child handle is still usable. Fall through to that handle so
-      // timeout cleanup remains best-effort and always closes its pipes.
-      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
+      // macOS can report EPERM after the group leader has exited. The caller
+      // still closes its pipes in that case, so an inherited descriptor cannot
+      // keep the result pending. A live child's EPERM remains actionable.
+      if (error?.code === 'EPERM' && childExited) return;
+      if (error?.code !== 'ESRCH') throw error;
     }
   }
   try {
     child.kill(signal);
   } catch (error) {
-    if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
+    if (error?.code === 'EPERM' && childExited) return;
+    if (error?.code !== 'ESRCH') throw error;
   }
 }
 
@@ -107,10 +110,24 @@ export function runBoundedProcess(command, args, options = {}) {
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
 
+    const failTermination = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reject(error);
+    };
+
     const forceKill = () => {
       if (forced) return;
       forced = true;
-      signalProcessTree(child, 'SIGKILL');
+      try {
+        signalProcessTree(child, 'SIGKILL');
+      } catch (error) {
+        failTermination(error);
+        return;
+      }
       child.stdout.destroy();
       child.stderr.destroy();
     };
@@ -119,7 +136,12 @@ export function runBoundedProcess(command, args, options = {}) {
       if (timedOut || aborted || settled) return;
       timedOut = reason === 'timeout';
       aborted = reason === 'abort';
-      signalProcessTree(child, 'SIGTERM');
+      try {
+        signalProcessTree(child, 'SIGTERM');
+      } catch (error) {
+        failTermination(error);
+        return;
+      }
       hardKill = setTimeout(forceKill, terminationGraceMs);
     };
 

@@ -1226,7 +1226,7 @@ describe('exact broker artifact handoff', () => {
 });
 
 describe('process timeout contract', () => {
-  it('falls back to the child handle when process-group teardown races with EPERM', () => {
+  it.skipIf(process.platform === 'win32')('treats EPERM as a teardown race only after child exit', () => {
     const originalKill = process.kill;
     const groupCalls: Array<[number, NodeJS.Signals]> = [];
     const childCalls: NodeJS.Signals[] = [];
@@ -1236,21 +1236,32 @@ describe('process timeout contract', () => {
       throw permissionDenied;
     }) as typeof process.kill;
     try {
+      const liveChild = {
+        pid: 4242,
+        exitCode: null,
+        signalCode: null,
+        kill(signal: NodeJS.Signals) {
+          childCalls.push(signal);
+          throw permissionDenied;
+        },
+      };
+      expect(() => signalProcessTree(liveChild, 'SIGKILL')).toThrow(permissionDenied);
+
       signalProcessTree(
         {
-          pid: 4242,
-          kill(signal: NodeJS.Signals) {
-            childCalls.push(signal);
-            throw permissionDenied;
-          },
+          ...liveChild,
+          exitCode: 0,
         },
         'SIGKILL'
       );
     } finally {
       process.kill = originalKill;
     }
-    expect(groupCalls).toEqual([[-4242, 'SIGKILL']]);
-    expect(childCalls).toEqual(['SIGKILL']);
+    expect(groupCalls).toEqual([
+      [-4242, 'SIGKILL'],
+      [-4242, 'SIGKILL'],
+    ]);
+    expect(childCalls).toEqual([]);
   });
 
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
