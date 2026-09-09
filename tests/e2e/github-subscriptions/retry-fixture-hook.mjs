@@ -1,3 +1,20 @@
+/** Node 22 preserves numeric source text in revivers; GitHub IDs exceed 2^53. */
+export function parseFixtureGitHubResponse(raw) {
+  if (!raw.trim()) return null;
+  return JSON.parse(raw, (_key, value, context) => {
+    if (typeof value !== 'number' || !Number.isInteger(value) || Number.isSafeInteger(value)) return value;
+    if (!context?.source || !/^-?\d+$/.test(context.source))
+      throw new Error('Cannot preserve unsafe GitHub integer; use Node 22 or newer');
+    return context.source;
+  });
+}
+
+export function fixtureDeliveryId(value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value);
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) return value;
+  throw new Error('Invalid GitHub delivery ID');
+}
+
 /** Retry only a failed, owned GitHub delivery; never synthesize receiver input. */
 export async function retryFailedFixtureHook({ stimulus, failure, hooks, attempts, gh, now = Date.now() }) {
   if (
@@ -18,7 +35,12 @@ export async function retryFailedFixtureHook({ stimulus, failure, hooks, attempt
   if (!Array.isArray(deliveries)) throw new Error('Invalid GitHub delivery list');
   const delivery = deliveries
     .filter((d) => d.guid === failure.deliveryId)
-    .sort((a, b) => Date.parse(b.delivered_at) - Date.parse(a.delivered_at) || b.id - a.id)[0];
+    .map((d) => ({ ...d, id: fixtureDeliveryId(d.id) }))
+    .sort(
+      (a, b) =>
+        Date.parse(b.delivered_at) - Date.parse(a.delivered_at) ||
+        (BigInt(b.id) > BigInt(a.id) ? 1 : BigInt(b.id) < BigInt(a.id) ? -1 : 0)
+    )[0];
   if (
     !delivery ||
     !(delivery.status_code === 0 || delivery.status_code === 429 || delivery.status_code >= 500)

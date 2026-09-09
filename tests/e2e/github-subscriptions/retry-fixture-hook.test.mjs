@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { retryFailedFixtureHook } from './retry-fixture-hook.mjs';
+import { retryFailedFixtureHook, parseFixtureGitHubResponse } from './retry-fixture-hook.mjs';
 const at = '2026-09-09T00:00:00Z';
 const stimulus = { repo: 'acme/demo', pr: 7, commentId: 42 };
 const failure = {
@@ -80,4 +80,48 @@ test('invalid delivery list fails loudly without requesting redelivery', async (
   args.gh = async () => null;
   await assert.rejects(retryFailedFixtureHook(args), /Invalid GitHub delivery list/);
   assert.equal(args.attempts.length, 0);
+});
+
+test('preserves GitHub delivery IDs beyond the safe integer range through the redelivery URL', async () => {
+  const raw =
+    '[{"id":3841794815601697123,"guid":"owned-guid","delivered_at":"2026-09-09T00:00:00Z","status_code":502}]';
+  const { args, calls } = setup();
+  args.gh = async (...a) => {
+    calls.push(a);
+    return a[1] === 'POST' ? null : parseFixtureGitHubResponse(raw);
+  };
+  const result = await retryFailedFixtureHook(args);
+  assert.equal(result.githubDeliveryId, '3841794815601697123');
+  assert.equal(calls[1][0], 'repos/acme/demo/hooks/12/deliveries/3841794815601697123/attempts');
+});
+
+test('rejects an already rounded or nonnumeric delivery ID before redelivery', async () => {
+  for (const id of [3841794815601697000, '../foreign', '', -1, 0]) {
+    const { args, calls } = setup();
+    args.gh = async (...a) => {
+      calls.push(a);
+      return [{ ...failedDelivery, id }];
+    };
+    await assert.rejects(retryFailedFixtureHook(args), /Invalid GitHub delivery ID/);
+    assert.equal(calls.length, 1);
+    assert.equal(args.attempts.length, 0);
+  }
+});
+
+test('orders large delivery IDs exactly when GitHub timestamps tie', async () => {
+  const { args, calls } = setup();
+  args.gh = async (...a) => {
+    calls.push(a);
+    return [
+      { ...failedDelivery, id: '3841794815601697123' },
+      { ...failedDelivery, id: '3841794815601697124', status_code: 202 },
+    ];
+  };
+  assert.equal(await retryFailedFixtureHook(args), null);
+  assert.equal(calls.length, 1);
+});
+
+test('parses safe numbers and an empty 202 response without changing their types', () => {
+  assert.deepEqual(parseFixtureGitHubResponse('{"id":99,"status_code":502}'), { id: 99, status_code: 502 });
+  assert.equal(parseFixtureGitHubResponse(''), null);
 });

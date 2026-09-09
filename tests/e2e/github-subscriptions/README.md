@@ -182,3 +182,10 @@ owned event through GitHub (maximum three, at least 30 seconds apart); it never
 injects a replacement payload or agent input. `report.githubRedeliveries` distinguishes
 such recovery from uninterrupted delivery. Hook delivery status diagnostics are saved
 before cleanup. This test-driver retry is separate from production Nango queue behavior.
+
+GitHub delivery IDs can exceed JavaScript's safe integer range. The driver retains
+those IDs as exact decimal strings and rejects already-rounded values. Before
+starting the AI worker, it requests one genuine redelivery of its owned prejoin
+probe and waits for authenticated receipt with the same message identity. This
+checks redelivery authorization and ID handling before the ten-minute idle test;
+it is recorded separately from failure-recovery attempts.

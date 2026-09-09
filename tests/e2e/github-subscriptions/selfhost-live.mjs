@@ -26,7 +26,8 @@ assert(
   existsSync(path.join(root, 'packages/cli/dist/cli/index.js')),
   'Missing candidate CLI build; run npm run build:core before creating live fixtures'
 );
-const { retryFailedFixtureHook } = await import('./retry-fixture-hook.mjs');
+const { retryFailedFixtureHook, parseFixtureGitHubResponse, fixtureDeliveryId } =
+  await import('./retry-fixture-hook.mjs');
 const failedGitHubIngress = new Map();
 const { fixturePathGlob, assertProducerWorkspace, findFixtureCommentMessage } =
   await import('./fixture-scope.mjs');
@@ -182,7 +183,7 @@ function gh(endpoint, method = 'GET', body) {
       stdio: ['pipe', 'pipe', 'pipe'],
     }
   );
-  return result.trim() ? JSON.parse(result) : null;
+  return parseFixtureGitHubResponse(result);
 }
 function ghAsync(endpoint, method = 'GET') {
   return new Promise((resolve, reject) => {
@@ -193,7 +194,7 @@ function ghAsync(endpoint, method = 'GET') {
       (error, stdout) => {
         if (error) return reject(error);
         try {
-          resolve(stdout.trim() ? JSON.parse(stdout) : null);
+          resolve(parseFixtureGitHubResponse(stdout));
         } catch (error) {
           reject(error);
         }
@@ -597,7 +598,51 @@ try {
     save();
   }
   const probe = await emit(fixtures[1], 'prejoin-real-ingress');
-  await received(probe);
+  const originalProbe = await received(probe);
+  // Verify redelivery permission and lossless GitHub ID handling BEFORE a real
+  // worker is started. This repeats only the owned prejoin event, never input.
+  const probeRows = () =>
+    readFileSync(path.join(output, 'github-ingress.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((row) => row.repo === probe.repo && row.commentId === probe.commentId && !row.error);
+  const originalDelivery = probeRows()[0];
+  assert(originalDelivery, 'Missing authenticated prejoin GitHub delivery');
+  const probeHook = ownedHooks.find((hook) => hook.repo === probe.repo);
+  const deliveryEndpoint = `repos/${probe.repo}/hooks/${probeHook.id}/deliveries`;
+  const probeDelivery = await until(
+    async () => {
+      const rows = await ghAsync(`${deliveryEndpoint}?per_page=100`);
+      assert(Array.isArray(rows), 'Invalid GitHub preflight delivery list');
+      return rows.find((row) => row.guid === originalDelivery.deliveryId);
+    },
+    45000,
+    'GitHub preflight delivery inventory'
+  );
+  report.preflightRedelivery = {
+    repo: probe.repo,
+    commentId: probe.commentId,
+    githubDeliveryId: fixtureDeliveryId(probeDelivery.id),
+    guid: originalDelivery.deliveryId,
+    at: new Date().toISOString(),
+    completed: false,
+  };
+  save();
+  await ghAsync(`${deliveryEndpoint}/${report.preflightRedelivery.githubDeliveryId}/attempts`, 'POST');
+  await until(
+    () => probeRows().filter((row) => row.deliveryId === originalDelivery.deliveryId).length >= 2,
+    90000,
+    'real GitHub prejoin redelivery'
+  );
+  const afterRedelivery = await received(probe);
+  assert.equal(
+    afterRedelivery.message.id,
+    originalProbe.message.id,
+    'Redelivery changed prejoin message identity'
+  );
+  report.preflightRedelivery.completed = true;
+  report.checks.push({ label: 'real-github-redelivery-preflight', pass: true });
   report.checks.push({ label: 'real-github-relayfile-selfhost-ingress', pass: true });
   save();
   const isolatedEnv = Object.fromEntries(
