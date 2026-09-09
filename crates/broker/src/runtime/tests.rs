@@ -6,12 +6,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::fleet_wire::{BrokerToRelaycast, Deliver, DeliveryMode, FLEET_WIRE_VERSION};
+use crate::fleet_wire::{
+    BrokerToRelaycast, ContextTopic, ContextUpdate, Deliver, DeliveryMode, RelaycastToBroker,
+    FLEET_WIRE_VERSION,
+};
 use crate::ids::{
     AgentId, ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias,
     WorkspaceId,
 };
-use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
+use crate::node_control::{FleetControlCommand, FleetControlEvent, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
     HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, ProtocolEnvelope,
@@ -1904,6 +1907,219 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
         let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
         let _ = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv()).await;
     }
+}
+
+/// Build a fleet-control event carrying one ephemeral `context.update`, as the
+/// node-control socket would hand it to the runtime.
+fn context_update_event(
+    topic: ContextTopic,
+    event: &str,
+    agent_ids: &[&str],
+    data: Value,
+) -> FleetControlEvent {
+    FleetControlEvent::Message(RelaycastToBroker::ContextUpdate(ContextUpdate {
+        v: FLEET_WIRE_VERSION,
+        topic,
+        event: event.to_string(),
+        channel_id: None,
+        agent_ids: Some(agent_ids.iter().map(|id| (*id).to_string()).collect()),
+        data,
+    }))
+}
+
+/// relay#1615: Relaycast tells the SENDING agent when a message could not
+/// land. The broker must surface that on the SDK/dashboard stream instead of
+/// dropping the frame — a broker-hosted agent that DMs an offline agent used to
+/// never learn.
+#[tokio::test]
+async fn relaycast_delivery_failure_reaches_the_sending_worker() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(worker_name, "agt_sender");
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(context_update_event(
+            ContextTopic::Agent,
+            "delivery.failed",
+            &["agt_sender"],
+            json!({
+                "delivery_id": "del_remote_1",
+                "message_id": "msg_remote_1",
+                "target_agent_id": "agt_target",
+                "target_agent_name": "planner",
+                "reason": "recipient_offline",
+                "error": "agent has no live node",
+                "retryable": false,
+            }),
+        ))
+        .await;
+
+    let frame = tokio::time::timeout(Duration::from_secs(1), fixture._sdk_out_rx.recv())
+        .await
+        .expect("a delivery failure must be emitted")
+        .expect("sdk_out_tx should remain open");
+    assert_eq!(frame.payload["kind"], "message_delivery_failed");
+    assert_eq!(frame.payload["name"], worker_name);
+    assert_eq!(frame.payload["from"], worker_name);
+    assert_eq!(frame.payload["to"], "planner");
+    assert_eq!(frame.payload["delivery_id"], "del_remote_1");
+    assert_eq!(frame.payload["event_id"], "msg_remote_1");
+    assert_eq!(
+        frame.payload["lastError"],
+        "relaycast delivery.failed: recipient_offline"
+    );
+}
+
+/// A deferred delivery is still queued for a later `available_at` retry, so it
+/// must NOT reach the sender as `message_delivery_failed` — that would invite a
+/// resend and duplicate the message the engine is still holding. The broker
+/// takes the log-only path instead and emits nothing.
+#[tokio::test]
+async fn relaycast_delivery_deferral_emits_no_event() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(worker_name, "agt_sender");
+
+    let update = ContextUpdate {
+        v: FLEET_WIRE_VERSION,
+        topic: ContextTopic::Agent,
+        event: "delivery.deferred".to_string(),
+        channel_id: None,
+        agent_ids: Some(vec!["agt_sender".to_string()]),
+        data: json!({
+            "delivery_id": "del_remote_2",
+            "message_id": "msg_remote_2",
+            "available_at": "2026-09-02T00:00:00.000Z",
+            "reason": "recipient_busy",
+        }),
+    };
+
+    // The deferral resolves to this broker's worker, so the log-only path runs
+    // rather than the `no matching worker` drop.
+    assert_eq!(
+        fixture.runtime.fleet_context_update_workers(&update),
+        vec![WorkerName::from(worker_name)]
+    );
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(FleetControlEvent::Message(
+            RelaycastToBroker::ContextUpdate(update),
+        ))
+        .await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), fixture._sdk_out_rx.recv())
+            .await
+            .is_err(),
+        "a deferred delivery is not terminal and must not emit message_delivery_failed"
+    );
+}
+
+/// Frames naming an agent this broker does not host, and events it has no use
+/// for, are dropped silently — never emitted, never logged as invalid.
+#[tokio::test]
+async fn unrelated_context_updates_emit_nothing() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(worker_name, "agt_sender");
+
+    // An agent hosted somewhere else.
+    fixture
+        .runtime
+        .handle_fleet_control_event(context_update_event(
+            ContextTopic::Agent,
+            "delivery.failed",
+            &["agt_elsewhere"],
+            json!({"reason": "recipient_offline"}),
+        ))
+        .await;
+    // A topic/event this broker does not act on.
+    fixture
+        .runtime
+        .handle_fleet_control_event(context_update_event(
+            ContextTopic::Presence,
+            "agent.status.active",
+            &["agt_sender"],
+            json!({"status": "active"}),
+        ))
+        .await;
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), fixture._sdk_out_rx.recv())
+            .await
+            .is_err(),
+        "unrelated context.update frames must not emit broker events"
+    );
+}
+
+/// `agent.identity_taken_over` means another node reclaimed this worker's
+/// identity. Drop the cached registration so the next operation re-registers
+/// instead of first spending a round trip on a 401.
+#[tokio::test]
+async fn identity_takeover_drops_the_cached_registration() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(worker_name, "agt_sender");
+    fixture
+        .runtime
+        .relaycast_http
+        .seed_agent_token(worker_name, "at_now_revoked");
+    assert_eq!(
+        fixture
+            .runtime
+            .relaycast_http
+            .cached_agent_token(worker_name),
+        Some("at_now_revoked".to_string())
+    );
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(context_update_event(
+            ContextTopic::Agent,
+            "agent.identity_taken_over",
+            &["agt_sender"],
+            json!({
+                "agent_id": "agt_sender",
+                "agent_name": worker_name,
+                "actor": "other-node",
+                "reason": "operator reclaimed the name",
+                "node_id": "node-other",
+            }),
+        ))
+        .await;
+
+    assert_eq!(
+        fixture
+            .runtime
+            .relaycast_http
+            .cached_agent_token(worker_name),
+        None,
+        "the revoked token must not survive a takeover notification"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), fixture._sdk_out_rx.recv())
+            .await
+            .is_err(),
+        "a takeover notification is a log/state change, not a delivery event"
+    );
 }
 
 // Full runtime/channel companion for the terminal-disposition coverage above.

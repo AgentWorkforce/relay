@@ -16,7 +16,14 @@ const NODE_TO_SERVER_TYPES: &[&str] = &[
     "inventory.sync",
 ];
 
-const SERVER_TO_NODE_TYPES: &[&str] = &["deliver", "action.invoke", "ping", "reply", "error"];
+const SERVER_TO_NODE_TYPES: &[&str] = &[
+    "deliver",
+    "action.invoke",
+    "context.update",
+    "ping",
+    "reply",
+    "error",
+];
 
 const EXPECTED_FIXTURE_FILES: &[&str] = &[
     "action.invoke.json",
@@ -24,6 +31,7 @@ const EXPECTED_FIXTURE_FILES: &[&str] = &[
     "action.result.output.json",
     "agent.deregister.json",
     "agent.register.json",
+    "context.update.json",
     "deliver.json",
     "delivery.ack.json",
     "error.json",
