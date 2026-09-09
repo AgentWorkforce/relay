@@ -12,6 +12,40 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   let escaped = false;
   let lineComment = false;
   let blockComment = false;
+  let regexLiteral = false;
+  let regexCharacterClass = false;
+
+  const previousSignificantCharacter = (from: number): string | undefined => {
+    for (let cursor = from - 1; cursor >= 0; cursor -= 1) {
+      if (!/\s/.test(source[cursor])) return source[cursor];
+    }
+    return undefined;
+  };
+
+  // A slash starts a TypeScript regular-expression literal after an expression
+  // boundary (or after a keyword such as `return`). Division follows an
+  // expression and therefore remains visible code. This is intentionally
+  // conservative: masking a possible regex is safer than inferring a timeout
+  // from text inside it.
+  const startsRegexLiteral = (at: number): boolean => {
+    if (fileType !== 'ts') return false;
+    const previous = previousSignificantCharacter(at);
+    if (previous === undefined || /[([{:;,!?=+\-*%&|^~<>]/.test(previous)) return true;
+    if (previous === ')') {
+      let closeIndex = at - 1;
+      while (closeIndex >= 0 && /\s/.test(source[closeIndex])) closeIndex -= 1;
+      const openIndex = findMatchingOpenParen(source, closeIndex);
+      const control = openIndex === null ? null : identifierBefore(source, openIndex - 1)?.name;
+      if (control && new Set(['if', 'while', 'for', 'switch', 'catch', 'with']).has(control)) {
+        return true;
+      }
+    }
+    const prefix = source.slice(0, at).replace(/\s+$/, '');
+    const keyword = prefix.match(
+      /(?:^|[^\w$])(return|throw|case|delete|void|typeof|instanceof|in|of|yield|await|else|do)\s*$/
+    );
+    return keyword !== null;
+  };
 
   const mask = (character: string) => (character === '\n' || character === '\r' ? character : ' ');
 
@@ -19,6 +53,26 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     const character = source[index];
     const next = source[index + 1];
     const third = source[index + 2];
+
+    if (regexLiteral) {
+      output += mask(character);
+      if (character === '\\') {
+        if (next !== undefined) {
+          output += mask(next);
+          index += 2;
+        } else {
+          index += 1;
+        }
+        continue;
+      }
+      if (character === '[') regexCharacterClass = true;
+      if (character === ']' && regexCharacterClass) regexCharacterClass = false;
+      if (character === '/' && !regexCharacterClass) {
+        regexLiteral = false;
+      }
+      index += 1;
+      continue;
+    }
 
     if (lineComment) {
       output += mask(character);
@@ -74,6 +128,13 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       blockComment = true;
       continue;
     }
+    if (character === '/' && startsRegexLiteral(index)) {
+      output += ' ';
+      index += 1;
+      regexLiteral = true;
+      regexCharacterClass = false;
+      continue;
+    }
     if (fileType === 'py' && character === '#') {
       output += ' ';
       index += 1;
@@ -108,6 +169,57 @@ function validateLaunchTimeoutMs(value: number, source: string, minimum = 1): nu
   return value;
 }
 
+export function validateExplicitWorkflowLaunchTimeoutMs(explicit?: number): number | undefined {
+  if (explicit === undefined) return undefined;
+  return validateLaunchTimeoutMs(explicit, 'launchTimeoutMs', MIN_EXPLICIT_WORKFLOW_LAUNCH_TIMEOUT_MS);
+}
+
+function findMatchingOpenParen(source: string, closeIndex: number): number | null {
+  let depth = 0;
+  for (let index = closeIndex; index >= 0; index -= 1) {
+    if (source[index] === ')') depth += 1;
+    if (source[index] === '(') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return null;
+}
+
+function identifierBefore(source: string, end: number): { name: string; start: number } | null {
+  let cursor = end;
+  while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  const finish = cursor + 1;
+  while (cursor >= 0 && /[A-Za-z0-9_$]/.test(source[cursor])) cursor -= 1;
+  if (cursor + 1 === finish) return null;
+  return { name: source.slice(cursor + 1, finish), start: cursor + 1 };
+}
+
+/**
+ * Return the root expression for a fluent call immediately before `.timeout`.
+ * The source has already had strings/comments/regex literals masked, so a
+ * small balanced-parenthesis walk is enough to distinguish `workflow(...).timeout`
+ * and a known workflow variable from `httpClient.timeout`.
+ */
+function timeoutRoot(source: string, timeoutDot: number): string | null {
+  let cursor = timeoutDot - 1;
+  while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+
+  while (cursor >= 0 && source[cursor] === ')') {
+    const open = findMatchingOpenParen(source, cursor);
+    if (open === null) return null;
+    const method = identifierBefore(source, open - 1);
+    if (method === null) return null;
+    cursor = method.start - 1;
+    while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+    if (cursor < 0 || source[cursor] !== '.') return method.name;
+    cursor -= 1;
+    while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  }
+
+  return identifierBefore(source, cursor)?.name ?? null;
+}
+
 /**
  * Infer the outer Cloud launch budget from a literal RelayFlow builder timeout
  * without evaluating submitted workflow code. Dynamic expressions are left
@@ -120,10 +232,22 @@ export function inferWorkflowLaunchTimeoutMs(
   if (fileType === 'yaml') return undefined;
 
   const source = maskNonCode(workflow, fileType);
+  const builderNames = new Set<string>(['workflow']);
+  const assignmentPattern =
+    fileType === 'ts'
+      ? /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?workflow\s*\(/g
+      : /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*workflow\s*\(/g;
+  let assignment: RegExpExecArray | null;
+  while ((assignment = assignmentPattern.exec(source)) !== null) {
+    builderNames.add(assignment[1]);
+  }
+
   const values = new Set<number>();
   const timeoutPattern = /\.timeout\s*\(\s*([0-9](?:_?[0-9])*)\s*\)/g;
   let match: RegExpExecArray | null;
   while ((match = timeoutPattern.exec(source)) !== null) {
+    const root = timeoutRoot(source, match.index);
+    if (root === null || !builderNames.has(root)) continue;
     values.add(validateLaunchTimeoutMs(Number(match[1].replaceAll('_', '')), 'workflow .timeout()'));
   }
 
@@ -142,8 +266,6 @@ export function resolveWorkflowLaunchTimeoutMs(
   fileType: WorkflowFileType,
   explicit?: number
 ): number | undefined {
-  if (explicit !== undefined) {
-    return validateLaunchTimeoutMs(explicit, 'launchTimeoutMs', MIN_EXPLICIT_WORKFLOW_LAUNCH_TIMEOUT_MS);
-  }
+  if (explicit !== undefined) return validateExplicitWorkflowLaunchTimeoutMs(explicit);
   return inferWorkflowLaunchTimeoutMs(workflow, fileType);
 }

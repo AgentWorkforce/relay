@@ -678,6 +678,23 @@ describe('registerCloudCommands', () => {
     );
   });
 
+  it('cloud run rejects a launch timeout with trailing non-numeric characters', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'run',
+        'workflow.ts',
+        '--launch-timeout-ms',
+        '900000junk',
+      ])
+    ).rejects.toThrow(/positive integer/);
+    expect(cloudMocks.runWorkflow).not.toHaveBeenCalled();
+  });
+
   it.each(['v1', 'v2'] as const)(
     'cloud run passes explicit %s with existing resume selectors',
     async (relayflowVersion) => {

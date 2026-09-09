@@ -21,7 +21,10 @@ import {
   type PathSubmission,
 } from './types.js';
 import { inferWorkflowFileType, parseWorkflowPaths, shouldSyncCodeByDefault } from './workflow-paths.js';
-import { resolveWorkflowLaunchTimeoutMs } from './workflow-timeout.js';
+import {
+  resolveWorkflowLaunchTimeoutMs,
+  validateExplicitWorkflowLaunchTimeoutMs,
+} from './workflow-timeout.js';
 
 // Re-exported so consumers (cloud package barrel, workflows tests) keep
 // importing these from './workflows.js' after the parsers moved out.
@@ -248,6 +251,7 @@ export async function runWorkflow(
   options: RunWorkflowOptions = {}
 ): Promise<RunWorkflowResponse> {
   validateRelayflowVersion(options.relayflowVersion);
+  validateExplicitWorkflowLaunchTimeoutMs(options.launchTimeoutMs);
   const apiUrl = options.apiUrl ?? defaultApiUrl();
   const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
@@ -462,6 +466,7 @@ export async function scheduleWorkflow(
   options: ScheduleWorkflowOptions = {}
 ): Promise<WorkflowSchedule> {
   validateScheduleRelayflowVersion(options.relayflowVersion);
+  validateExplicitWorkflowLaunchTimeoutMs(options.launchTimeoutMs);
   const hasCron = typeof options.cron === 'string' && options.cron.trim().length > 0;
   const hasAt = typeof options.at === 'string' && options.at.trim().length > 0;
   if (hasCron === hasAt) {

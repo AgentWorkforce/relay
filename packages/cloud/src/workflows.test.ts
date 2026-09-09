@@ -145,6 +145,19 @@ describe('relayflow version request contract', () => {
     expect(JSON.parse(bodies[0])).toMatchObject({ launchTimeoutMs: 900_000 });
   });
 
+  it('rejects an invalid explicit timeout before authentication, filesystem, or network access', async () => {
+    await expect(
+      runWorkflow('missing-workflow.ts', {
+        fileType: 'ts',
+        syncCode: false,
+        launchTimeoutMs: 1,
+      })
+    ).rejects.toThrow('launchTimeoutMs must be at least');
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects an unknown run selector before authentication, filesystem, or network access', async () => {
     await expect(
       runWorkflow('missing-workflow.yaml', {
@@ -965,6 +978,18 @@ describe('workflow schedules', () => {
     await expect(scheduleWorkflow('workflow.yaml', {})).rejects.toThrow(
       'Provide exactly one of --cron or --at.'
     );
+  });
+
+  it('rejects an invalid schedule timeout before authentication, filesystem, or network access', async () => {
+    await expect(
+      scheduleWorkflow('missing-workflow.ts', {
+        cron: '0 * * * *',
+        launchTimeoutMs: 55 * 60 * 1000 + 1,
+      })
+    ).rejects.toThrow('launchTimeoutMs must not exceed');
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects invalid one-time schedule timestamps with a clear error', async () => {

@@ -110,8 +110,11 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
 }
 
 function parsePositiveInteger(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!/^\d+$/.test(value)) {
+    throw new InvalidArgumentError('Expected a positive integer.');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new InvalidArgumentError('Expected a positive integer.');
   }
   return parsed;

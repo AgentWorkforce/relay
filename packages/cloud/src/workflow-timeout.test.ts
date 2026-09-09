@@ -25,6 +25,33 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it('ignores timeout-shaped text in TypeScript regular expressions', () => {
+    expect(
+      inferWorkflowLaunchTimeoutMs(
+        'const pattern = /foo.timeout(600_000)/; if (ready) /workflow("fake").timeout(500_000)/;',
+        'ts'
+      )
+    ).toBeUndefined();
+  });
+
+  it('ignores a regular-expression timeout while inferring the real builder timeout', () => {
+    const source = 'const pattern = /foo.timeout(600_000)/; workflow("real").timeout(900_000).run();';
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('ignores timeout methods on unrelated objects', () => {
+    expect(inferWorkflowLaunchTimeoutMs('httpClient.timeout(600_000);', 'ts')).toBeUndefined();
+  });
+
+  it('supports the fluent and assigned RelayFlow builder shapes used by workflows', () => {
+    expect(
+      inferWorkflowLaunchTimeoutMs("const wf = workflow('real').description('demo').timeout(900_000);", 'ts')
+    ).toBe(900_000);
+    expect(inferWorkflowLaunchTimeoutMs("const wf = workflow('real'); wf.timeout(600_000);", 'ts')).toBe(
+      600_000
+    );
+  });
+
   it('reads Python literals while ignoring comments and string bodies', () => {
     const source = [
       '# workflow("comment").timeout(3_300_000)',
