@@ -4,8 +4,9 @@
   "task": {
     "title": "Fix standalone Bun Agent Relay workflow execution"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-09T19:18:44.987Z",
+  "completedAt": "2026-09-09T19:36:45.006Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-09T19:32:00.507Z",
+      "endedAt": "2026-09-09T19:36:45.006Z",
       "events": [
         {
           "ts": 1788982320508,
@@ -59,12 +61,32 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Added shared compiled-Bun workflow runtime selection, Node-based project-relative relayflows resolution, local monitor and Cloud worker fixes, focused tests, and CI standalone workflow smoke.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [
+    "df9cd939b"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_94islbdz6537/trajectory.json",
+    ".github/workflows/package-validation.yml",
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/cloud-worker.ts",
+    "packages/cli/src/cli/commands/cloud.test.ts",
+    "packages/cli/src/cli/commands/local-workflow.test.ts",
+    "packages/cli/src/cli/commands/local-workflow.ts",
+    "packages/cli/src/cli/lib/workflow-runtime.test.ts",
+    "packages/cli/src/cli/lib/workflow-runtime.ts",
+    "packages/cli/src/cli/standalone-workflow.bun.test.ts",
+    "scripts/ci-standalone-workflow-smoke.sh"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "4306bb29be696ec84a4e3844f86fdc4a91584407",
-    "endRef": "4306bb29be696ec84a4e3844f86fdc4a91584407"
+    "endRef": "df9cd939b35114428c64028e15a634304186ff00",
+    "traceId": "288e2de0-78e2-4db9-9be6-b87cb46d78a9"
   }
 }
