@@ -105,7 +105,7 @@ try {
   });
   const output = `${observed.stdout ?? ''}\n${observed.stderr ?? ''}`;
   const baseObserved =
-    observed.status !== 0 && /unknown command ['"]?__bundled-workflow|error: unknown command/i.test(output);
+    observed.status !== 0 && /unknown command(?:\s+|:\s*)['"]?__bundled-workflow\b/i.test(output);
   const headObserved =
     observed.status === 0 && output.includes('Dry Run: proof') && output.includes('Validation: PASS');
 
