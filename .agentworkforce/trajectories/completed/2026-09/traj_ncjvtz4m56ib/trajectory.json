@@ -1,0 +1,89 @@
+{
+  "id": "traj_ncjvtz4m56ib",
+  "version": 1,
+  "task": {
+    "title": "Fix Relay Fleet issue #1400: align advertised commands with always-on node delivery"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T03:42:38.728Z",
+  "completedAt": "2026-09-09T03:54:49.873Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T03:53:06.830Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xifb6gcrc658",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T03:53:06.830Z",
+      "endedAt": "2026-09-09T03:54:49.873Z",
+      "events": [
+        {
+          "ts": 1788925986831,
+          "type": "decision",
+          "content": "Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API: Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API",
+          "raw": {
+            "question": "Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API",
+            "chosen": "Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API",
+            "alternatives": [],
+            "reasoning": "Relaycast now delivers to nodes unconditionally; hidden CLI shims preserve credential-safe migration diagnostics while the public SDK and feature manifest stop advertising a false remote contract."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788925987256,
+          "type": "reflection",
+          "content": "Issue #1400 implementation and cleanroom proof are green: production contains no workspace.fleetNodes dependency, legacy controls fail locally with always-on guidance, and the exact base/head RelayFlow case observes the stale contract then the fixed contract.",
+          "raw": {
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed obsolete workspace Fleet rollout controls, preserved hidden always-on migration diagnostics, updated SDK/CLI contracts and verification matrices, and added exact base/head RelayFlow proof for issue #1400.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "1957505b0"
+  ],
+  "filesChanged": [
+    ".agentworkforce/agents/relay-feature-guardian/manifest-contract.test.ts",
+    ".agentworkforce/features/manifest.yaml",
+    ".agentworkforce/features/verify/procedures.md",
+    ".agentworkforce/trajectories/active/traj_ncjvtz4m56ib/trajectory.json",
+    "CHANGELOG.md",
+    "packages/cli/src/cli/bootstrap.test.ts",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "packages/cli/src/cli/commands/fleet.ts",
+    "packages/sdk/src/__tests__/facade.test.ts",
+    "packages/sdk/src/__tests__/messaging.test.ts",
+    "packages/sdk/src/__tests__/observer-source.test.ts",
+    "packages/sdk/src/facade.ts",
+    "packages/sdk/src/messaging/relaycast-client.ts",
+    "packages/sdk/src/messaging/relaycast-translate.ts",
+    "packages/sdk/src/messaging/relaycast.ts",
+    "packages/sdk/src/messaging/types.ts",
+    "tests/e2e/fleet/harness.ts",
+    "tests/relayflows/cases/1400-fleet-rollout-contract/case.json",
+    "tests/relayflows/cases/1400-fleet-rollout-contract/run.mjs",
+    "workflows/verify-features.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4306bb29be696ec84a4e3844f86fdc4a91584407",
+    "endRef": "1957505b0fd2a4f666b99e25b14357b80df9644e",
+    "traceId": "70415843-f672-4bc9-a300-957609c99b7f"
+  }
+}
