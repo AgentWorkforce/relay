@@ -189,3 +189,17 @@ starting the AI worker, it requests one genuine redelivery of its owned prejoin
 probe and waits for authenticated receipt with the same message identity. This
 checks redelivery authorization and ID handling before the ten-minute idle test;
 it is recorded separately from failure-recovery attempts.
+
+The redelivery boundary additionally requires Relayfile's explicit HTTP 409
+`duplicate_envelope` result for the original envelope ID before worker startup.
+A second queue acceptance is insufficient. A transparent observer records only
+admission IDs/status/error code; it leaves request bytes and response behavior
+unchanged. The stale-prejoin negative is checked again at the end of the full run.
+
+For a quick check of only this fixture/auth/admission boundary, use
+`GHSUB_PREFLIGHT_ONLY=1` with the same command and a fresh evidence directory.
+This creates no AI worker and still performs owned cleanup. Its report has
+`preflightPass: true`, `pass: false`, and an explicit preflight-only scope; it cannot
+satisfy idle/burst/reconnect or intended-chief acceptance. Do not run overlapping
+fixture runners against the same workspace: each verifies preservation of its
+initial subscription inventory.

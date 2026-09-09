@@ -28,6 +28,8 @@ assert(
 );
 const { retryFailedFixtureHook, parseFixtureGitHubResponse, fixtureDeliveryId } =
   await import('./retry-fixture-hook.mjs');
+const { observeEnvelopeAdmissions, assertDuplicateAdmission, assertNoStalePrejoinAction } =
+  await import('./admission-proof.mjs');
 const failedGitHubIngress = new Map();
 const { fixturePathGlob, assertProducerWorkspace, findFixtureCommentMessage } =
   await import('./fixture-scope.mjs');
@@ -142,6 +144,16 @@ process.once('SIGTERM', () => {
 process.once('SIGINT', () => {
   stopping = true;
 });
+const admissions = [];
+const originalFetch = globalThis.fetch;
+globalThis.fetch = observeEnvelopeAdmissions(
+  originalFetch,
+  'https://file.agentrelay.com/v1/internal/webhook-envelopes',
+  (row) => {
+    admissions.push(row);
+    appendFileSync(path.join(output, 'envelope-admissions.jsonl'), JSON.stringify(row) + '\n');
+  }
+);
 const events = [],
   inbound = [],
   allowed = new Set(),
@@ -635,6 +647,10 @@ try {
     90000,
     'real GitHub prejoin redelivery'
   );
+  report.preflightRedelivery.duplicateAdmission = assertDuplicateAdmission(
+    admissions,
+    originalDelivery.deliveryId
+  );
   const afterRedelivery = await received(probe);
   assert.equal(
     afterRedelivery.message.id,
@@ -645,122 +661,130 @@ try {
   report.checks.push({ label: 'real-github-redelivery-preflight', pass: true });
   report.checks.push({ label: 'real-github-relayfile-selfhost-ingress', pass: true });
   save();
-  const isolatedEnv = Object.fromEntries(
-    Object.keys(process.env)
-      .filter((k) => k.startsWith('RELAY_') || k.startsWith('AGENT_RELAY_'))
-      .map((k) => [k, ''])
-  );
-  broker = await HarnessDriverClient.spawn({
-    binaryPath: binary,
-    cwd: work,
-    workspaceKey: key,
-    brokerName: runId,
-    binaryArgs: { persist: true, apiPort: 0 },
-    channels: [],
-    startupTimeoutMs: 30000,
-    onStderr: (line) => appendFileSync(path.join(output, 'broker-stderr.log'), redact(line) + '\n'),
-    env: {
-      ...isolatedEnv,
-      RELAYFILE_INTERNAL_HMAC_SECRET: '',
-      GHSUB_CLOUD_ENV_FILE: '',
-      RELAY_INJECT_RATE_MS: '0',
-      RELAY_AGENT_TYPE: 'system',
-      RELAY_AGENT_NAME: runId,
-      RELAY_BASE_URL: base,
-      RELAYCAST_BASE_URL: base,
-      CLAUDECODE: '',
-      AGENT_RELAY_BROKER_LOG: 'stderr',
-      RUST_LOG:
-        'relay_broker::wrap=info,relay_broker::pty_worker=info,agent_relay::worker::pty=info,relay_pty::startup_input=debug,relay_broker::startup_gate=debug',
-      AGENT_RELAY_MCP_COMMAND: process.execPath + ' ' + root + '/packages/cli/dist/cli/index.js mcp',
-    },
-  });
-  broker.onEvent((e) => {
-    if (e.name !== name) return;
-    const row = Object.fromEntries(
-      ['kind', 'name', 'generation', 'event_id', 'delivery_id', 'verification', 'reason', 'pid', 'seq']
-        .filter((k) => e[k] !== undefined)
-        .map((k) => [k, e[k]])
+  const preflightOnly = process.env.GHSUB_PREFLIGHT_ONLY === '1';
+  report.validationScope = preflightOnly
+    ? 'preflight-only; no AI acceptance'
+    : 'full local real-GitHub rehearsal';
+  if (preflightOnly) {
+    report.preflightPass = true;
+    note('Preflight-only verification passed; no AI worker started');
+  } else {
+    const isolatedEnv = Object.fromEntries(
+      Object.keys(process.env)
+        .filter((k) => k.startsWith('RELAY_') || k.startsWith('AGENT_RELAY_'))
+        .map((k) => [k, ''])
     );
-    row.observedAt = new Date().toISOString();
-    events.push(row);
-    appendFileSync(path.join(output, 'events.jsonl'), JSON.stringify(row) + '\n');
-  });
-  broker.connectEvents();
-  const start = Date.now();
-  worker = await broker.spawnCli({
-    name,
-    cli: process.env.GHSUB_CODEX_BINARY ?? 'codex',
-    channels: ['local-ai-proof'],
-    cwd: work,
-    idleThresholdSecs: 5,
-    args: [
-      ...codexReceiverArgs,
-      ...codexMcpArgs({
-        node: process.execPath,
-        cli: root + '/packages/cli/dist/cli/index.js',
-        base,
-        home: path.join(work, 'mcp-home'),
-      }),
-      '-c',
-      `projects.${JSON.stringify(work)}.trust_level="trusted"`,
-      '-c',
-      `projects.${JSON.stringify(realpathSync(work))}.trust_level="trusted"`,
-    ],
-    task:
-      receiverTask +
-      ' This is an isolated self-hosted rehearsal with real GitHub events. Do not ACK this initial task; wait for pushed events. Use functions.exec twice per event, with EXACTLY one expression each time. First: text(await tools.exec_command({cmd:"printf \'%s\' \'<nonce>\' | shasum -a 256",login:false})); substitute only the 32 hex digits. Then: text(await tools.mcp__agent_relay__post_message({channel:"local-ai-proof",text:"GHSUB_ACK <digest>"})); substitute the digest output. No variable declarations, ALL_TOOLS lookup, extra expressions, other tools, sleep, inbox, resource reads, or polling.',
-  });
-  report.actor = { name, pid: worker.pid, generation: worker.generation };
-  save();
-  const ready = await worker.waitForReady(90000);
-  report.readyResult = ready;
-  report.actor.pid = ready.pid;
-  assert.equal(ready.reason, 'ready');
-  process.kill(ready.pid, 0);
-  const identity = await req('/v1/agents/' + name);
-  actorId = identity.id;
-  report.actor.id = actorId;
-  assert.deepEqual(
-    identity.channels.map((c) => c.name),
-    ['local-ai-proof']
-  );
-  note('Real Codex ready on local build; waiting for first idle');
-  report.firstIdleAt = (await idle(Date.now())).observedAt;
-  assert(
-    !(await messages()).some((m) => m.agent_id === actorId && m.text?.includes(digest(probe.nonce))),
-    'Stale prejoin event replayed'
-  );
-  for (const [i, f] of fixtures.entries()) {
-    const action = await acted(await emit(f, 'successive-idle-' + (i + 1)));
-    await idle(Date.parse(action.created_at));
-    note('Real GitHub event acted on: ' + f.repo);
+    broker = await HarnessDriverClient.spawn({
+      binaryPath: binary,
+      cwd: work,
+      workspaceKey: key,
+      brokerName: runId,
+      binaryArgs: { persist: true, apiPort: 0 },
+      channels: [],
+      startupTimeoutMs: 30000,
+      onStderr: (line) => appendFileSync(path.join(output, 'broker-stderr.log'), redact(line) + '\n'),
+      env: {
+        ...isolatedEnv,
+        RELAYFILE_INTERNAL_HMAC_SECRET: '',
+        GHSUB_CLOUD_ENV_FILE: '',
+        RELAY_INJECT_RATE_MS: '0',
+        RELAY_AGENT_TYPE: 'system',
+        RELAY_AGENT_NAME: runId,
+        RELAY_BASE_URL: base,
+        RELAYCAST_BASE_URL: base,
+        CLAUDECODE: '',
+        AGENT_RELAY_BROKER_LOG: 'stderr',
+        RUST_LOG:
+          'relay_broker::wrap=info,relay_broker::pty_worker=info,agent_relay::worker::pty=info,relay_pty::startup_input=debug,relay_broker::startup_gate=debug',
+        AGENT_RELAY_MCP_COMMAND: process.execPath + ' ' + root + '/packages/cli/dist/cli/index.js mcp',
+      },
+    });
+    broker.onEvent((e) => {
+      if (e.name !== name) return;
+      const row = Object.fromEntries(
+        ['kind', 'name', 'generation', 'event_id', 'delivery_id', 'verification', 'reason', 'pid', 'seq']
+          .filter((k) => e[k] !== undefined)
+          .map((k) => [k, e[k]])
+      );
+      row.observedAt = new Date().toISOString();
+      events.push(row);
+      appendFileSync(path.join(output, 'events.jsonl'), JSON.stringify(row) + '\n');
+    });
+    broker.connectEvents();
+    const start = Date.now();
+    worker = await broker.spawnCli({
+      name,
+      cli: process.env.GHSUB_CODEX_BINARY ?? 'codex',
+      channels: ['local-ai-proof'],
+      cwd: work,
+      idleThresholdSecs: 5,
+      args: [
+        ...codexReceiverArgs,
+        ...codexMcpArgs({
+          node: process.execPath,
+          cli: root + '/packages/cli/dist/cli/index.js',
+          base,
+          home: path.join(work, 'mcp-home'),
+        }),
+        '-c',
+        `projects.${JSON.stringify(work)}.trust_level="trusted"`,
+        '-c',
+        `projects.${JSON.stringify(realpathSync(work))}.trust_level="trusted"`,
+      ],
+      task:
+        receiverTask +
+        ' This is an isolated self-hosted rehearsal with real GitHub events. Do not ACK this initial task; wait for pushed events. Use functions.exec twice per event, with EXACTLY one expression each time. First: text(await tools.exec_command({cmd:"printf \'%s\' \'<nonce>\' | shasum -a 256",login:false})); substitute only the 32 hex digits. Then: text(await tools.mcp__agent_relay__post_message({channel:"local-ai-proof",text:"GHSUB_ACK <digest>"})); substitute the digest output. No variable declarations, ALL_TOOLS lookup, extra expressions, other tools, sleep, inbox, resource reads, or polling.',
+    });
+    report.actor = { name, pid: worker.pid, generation: worker.generation };
+    save();
+    const ready = await worker.waitForReady(90000);
+    report.readyResult = ready;
+    report.actor.pid = ready.pid;
+    assert.equal(ready.reason, 'ready');
+    process.kill(ready.pid, 0);
+    const identity = await req('/v1/agents/' + name);
+    actorId = identity.id;
+    report.actor.id = actorId;
+    assert.deepEqual(
+      identity.channels.map((c) => c.name),
+      ['local-ai-proof']
+    );
+    note('Real Codex ready on local build; waiting for first idle');
+    report.firstIdleAt = (await idle(Date.now())).observedAt;
+    assertNoStalePrejoinAction(await messages(), actorId, digest(probe.nonce));
+    for (const [i, f] of fixtures.entries()) {
+      const action = await acted(await emit(f, 'successive-idle-' + (i + 1)));
+      await idle(Date.parse(action.created_at));
+      note('Real GitHub event acted on: ' + f.repo);
+    }
+    const idleStart = Date.now();
+    note('Beginning 600-second no-input idle interval');
+    while (Date.now() - idleStart < 600000) {
+      assert(!stopping);
+      await delay(1000);
+    }
+    report.longIdleMs = Date.now() - idleStart;
+    const long = await acted(await emit(fixtures[1], 'long-idle'));
+    await idle(Date.parse(long.created_at));
+    const burst = [];
+    for (let i = 0; i < 10; i++) burst.push(await emit(fixtures[i % 3], 'burst-' + i));
+    for (const s of burst) await acted(s);
+    await idle(Date.now());
+    const oldPid = ready.pid;
+    for (const s of nodeSockets) s.destroy();
+    await delay(5000);
+    const connected = await req('/v1/agents/' + name);
+    assert.equal(connected.id, actorId);
+    process.kill(oldPid, 0);
+    await acted(await emit(fixtures[1], 'after-node-reconnect'));
+    const negative = await req('/v1/deliveries', 'GET', undefined, negativeToken);
+    assert.equal(negative.length, 0);
+    report.checks.push({ label: 'nonmember-received-zero-deliveries', pass: true });
+    assertNoStalePrejoinAction(await messages(), actorId, digest(probe.nonce));
+    report.checks.push({ label: 'no-stale-prejoin-action-through-run-end', pass: true });
+    report.pass = true;
+    note('Real GitHub -> Relayfile -> self-hosted engine -> idle Codex proof passed');
   }
-  const idleStart = Date.now();
-  note('Beginning 600-second no-input idle interval');
-  while (Date.now() - idleStart < 600000) {
-    assert(!stopping);
-    await delay(1000);
-  }
-  report.longIdleMs = Date.now() - idleStart;
-  const long = await acted(await emit(fixtures[1], 'long-idle'));
-  await idle(Date.parse(long.created_at));
-  const burst = [];
-  for (let i = 0; i < 10; i++) burst.push(await emit(fixtures[i % 3], 'burst-' + i));
-  for (const s of burst) await acted(s);
-  await idle(Date.now());
-  const oldPid = ready.pid;
-  for (const s of nodeSockets) s.destroy();
-  await delay(5000);
-  const connected = await req('/v1/agents/' + name);
-  assert.equal(connected.id, actorId);
-  process.kill(oldPid, 0);
-  await acted(await emit(fixtures[1], 'after-node-reconnect'));
-  const negative = await req('/v1/deliveries', 'GET', undefined, negativeToken);
-  assert.equal(negative.length, 0);
-  report.checks.push({ label: 'nonmember-received-zero-deliveries', pass: true });
-  report.pass = true;
-  note('Real GitHub -> Relayfile -> self-hosted engine -> idle Codex proof passed');
 } catch (e) {
   report.error = redact(e.message);
   note('Proof failed: ' + report.error);
@@ -912,14 +936,20 @@ try {
   if (proxy) await new Promise((r) => proxy.close(r));
   if (server) await server.stop();
   await publicDispatcher.close();
-  if (report.cleanup.some((c) => !c.pass)) report.pass = false;
-  if (!report.pass) process.exitCode = 1;
+  globalThis.fetch = originalFetch;
+  if (report.cleanup.some((c) => !c.pass)) {
+    report.pass = false;
+    report.preflightPass = false;
+  }
+  if (!report.pass && !report.preflightPass) process.exitCode = 1;
   // Preserve the owned SQLite database for diagnosis on failure; contains only fixtures.
   if (report.pass) rmSync(work, { recursive: true, force: true });
   save();
   console.log(
     JSON.stringify({
       pass: report.pass,
+      preflightPass: report.preflightPass,
+      validationScope: report.validationScope,
       status: report.status,
       error: report.error,
       checks: report.checks.length,
