@@ -1,0 +1,212 @@
+{
+  "id": "traj_bwod4u1pufif",
+  "version": 1,
+  "task": {
+    "title": "Restack trusted cleanroom qualification prerequisite",
+    "source": {
+      "system": "plain",
+      "id": "relay#1683"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T06:23:26.611Z",
+  "completedAt": "2026-09-09T09:00:46.225Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T06:23:28.133Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5ged7ymz70kl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T06:23:28.133Z",
+      "endedAt": "2026-09-09T09:00:46.225Z",
+      "events": [
+        {
+          "ts": 1788935008134,
+          "type": "decision",
+          "content": "Restack PR 1683 onto current main before claiming qualification: Restack PR 1683 onto current main before claiming qualification",
+          "raw": {
+            "question": "Restack PR 1683 onto current main before claiming qualification",
+            "chosen": "Restack PR 1683 onto current main before claiming qualification",
+            "alternatives": [],
+            "reasoning": "The secret-bearing verifier must inherit every current trusted-default-branch hardening change before it can unblock PRs 1665 and 1666."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788936213696,
+          "type": "decision",
+          "content": "Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential: Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential",
+          "raw": {
+            "question": "Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential",
+            "chosen": "Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential",
+            "alternatives": [],
+            "reasoning": "The trusted verifier must not import candidate bootstrap code or expose cloud/provider credentials; immutable inventory and runtime effects remain verifier-owned."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788936214145,
+          "type": "reflection",
+          "content": "Trust blockers implemented and proportional validation is green; paid Fleet proof remains intentionally unrun.",
+          "raw": {
+            "focalPoints": [
+              "candidate isolation",
+              "credential boundary",
+              "verifier immutability",
+              "regression coverage"
+            ],
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "focal:candidate isolation",
+            "focal:credential boundary",
+            "focal:verifier immutability",
+            "focal:regression coverage",
+            "confidence:0.86"
+          ]
+        },
+        {
+          "ts": 1788936733368,
+          "type": "decision",
+          "content": "Block inventory worker networking with a trusted preload across Node 22 and Node 24: Block inventory worker networking with a trusted preload across Node 22 and Node 24",
+          "raw": {
+            "question": "Block inventory worker networking with a trusted preload across Node 22 and Node 24",
+            "chosen": "Block inventory worker networking with a trusted preload across Node 22 and Node 24",
+            "alternatives": [],
+            "reasoning": "Node 22/24 permission mode exposes no net permission API but still permits fetch; filesystem permission alone does not prove no network, so the worker must fail closed at fetch and built-in network module boundaries."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788944214447,
+          "type": "decision",
+          "content": "Mount candidate installs read-only and mask verifier checkout",
+          "raw": {
+            "question": "Mount candidate installs read-only and mask verifier checkout",
+            "chosen": "Mount candidate installs read-only and mask verifier checkout",
+            "alternatives": [],
+            "reasoning": "Candidate code can execute during Fleet discovery; its writable surface must be limited to its disposable CWD while trusted verifier code remains inaccessible."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened PR #1683 inventory path validation, candidate mount isolation, and production CLI RelayFlow coverage; resolved all 14 review threads.",
+    "approach": "Standard approach",
+    "confidence": 0.87
+  },
+  "commits": [
+    "14e2eb73b",
+    "de5f65a92",
+    "0f6cf10ad",
+    "1c0b4b060",
+    "3e02927d5",
+    "d1d7b2ccf",
+    "f99059929",
+    "67f523715",
+    "589d1ae12",
+    "b157e0708",
+    "4306bb29b",
+    "d754fff14",
+    "dadaf8531",
+    "5b1dc5c1d",
+    "b56e7b1f3",
+    "69f50ba58"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_bwod4u1pufif/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_jxsgrcq85ll0/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot.trace.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_udk54gcrs0ot/trajectory.json",
+    ".github/workflows/relay-cleanroom-qualification-consumer.yml",
+    ".gitignore",
+    "CHANGELOG.md",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/relaycast/auth.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/wrap.rs",
+    "crates/relay-pty/src/terminal.rs",
+    "crates/relay-pty/tests/claude_trust_live_captures.rs",
+    "crates/relay-pty/tests/fixtures/claude-trust-2.1.236.pty",
+    "crates/relay-pty/tests/fixtures/claude-trust-2.1.261.pty",
+    "package.json",
+    "packages/brand/package.json",
+    "packages/broker-darwin-arm64/package.json",
+    "packages/broker-darwin-x64/package.json",
+    "packages/broker-linux-arm64/package.json",
+    "packages/broker-linux-x64/package.json",
+    "packages/broker-win32-x64/package.json",
+    "packages/cli/package.json",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "packages/cli/src/cli/commands/fleet.ts",
+    "packages/cloud/package.json",
+    "packages/cloud/src/fleet-sandbox.test.ts",
+    "packages/cloud/src/fleet-sandbox.ts",
+    "packages/cloud/src/index.ts",
+    "packages/config/package.json",
+    "packages/evals/package.json",
+    "packages/fleet/package.json",
+    "packages/harness-driver/package.json",
+    "packages/harnesses/package.json",
+    "packages/integration-prompts/package.json",
+    "packages/policy/package.json",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk/package.json",
+    "packages/session/package.json",
+    "packages/utils/package.json",
+    "scripts/pr-proof/contract.mjs",
+    "scripts/pr-proof/prepare.mjs",
+    "scripts/verify-features/fleet-candidate-mount-sandbox.sh",
+    "scripts/verify-features/fleet-cli-inventory-worker.mjs",
+    "scripts/verify-features/fleet-cli-inventory.mjs",
+    "scripts/verify-features/fleet-cli-network-blocker.mjs",
+    "scripts/verify-features/fleet-daytona.mjs",
+    "scripts/verify-features/fleet-permissions.mjs",
+    "scripts/verify-features/qualification-capabilities.mjs",
+    "scripts/verify-features/qualification-effect-evidence.mjs",
+    "scripts/verify-features/qualification-manifest.mjs",
+    "scripts/verify-features/relay-candidate-install.mjs",
+    "scripts/verify-features/relay-cleanroom-qualification-request.mjs",
+    "scripts/verify-features/safe-file.mjs",
+    "tests/fixtures/pr-proof-contract.test.ts",
+    "tests/fixtures/qualification-capabilities.test.ts",
+    "tests/fixtures/qualification-effect-evidence.test.ts",
+    "tests/fixtures/qualification-manifest.test.ts",
+    "tests/fixtures/qualification-producer-artifacts.test.ts",
+    "tests/fixtures/relay-cleanroom-qualification-request.test.ts",
+    "tests/fixtures/relay-package-qualification.test.ts",
+    "tests/fixtures/strict-workflow-yaml.test.ts",
+    "tests/fixtures/verify-fleet-daytona.test.ts",
+    "tests/relayflows/cases/1654-claude-trust-menu-ordering/case.json",
+    "tests/relayflows/cases/1654-claude-trust-menu-ordering/run.mjs",
+    "tests/relayflows/cases/1654-claude-trust-menu-ordering/trust-observation.mjs",
+    "tests/relayflows/cases/1654-claude-trust-menu-ordering/trust-observation.node-test.mjs",
+    "tests/relayflows/cases/1656-long-running-agent37-sandbox/case.json",
+    "tests/relayflows/cases/1656-long-running-agent37-sandbox/run.mjs",
+    "tests/relayflows/cases/1670-gap-delivery-never-acked/case.json",
+    "tests/relayflows/cases/1670-gap-delivery-never-acked/node-control-tap.mjs",
+    "tests/relayflows/cases/1670-gap-delivery-never-acked/run.mjs",
+    "tests/relayflows/cases/1682-trusted-cleanroom-runner/run.mjs",
+    "tests/relayflows/cases/1682-trusted-cleanroom-runner/strict-yaml-subset.mjs",
+    "tests/relayflows/cases/1700-broker-startup-transient-relaycast-retry/case.json",
+    "tests/relayflows/cases/1700-broker-startup-transient-relaycast-retry/run.mjs",
+    "tests/relayflows/cleanroom/snapshot-external-package-pins.json"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2094aa093563e786fcc63b420cf4008a9f975716",
+    "endRef": "14e2eb73b981bbd8c3756f1215d2869e6707949e",
+    "traceId": "52fd2a7d-c9a7-4b14-a21e-f884a2d48db4"
+  }
+}
