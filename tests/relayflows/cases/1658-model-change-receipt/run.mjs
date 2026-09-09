@@ -8,12 +8,13 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+
+import { startFakeRelaycast } from '../1615-api-send-recipient-reachability/fake-relaycast.mjs';
 
 const CASE_ID = '1658-model-change-receipt';
 const MODEL_OPERATION_TIMEOUT_MS = 30_000;
@@ -59,7 +60,7 @@ function run(command, args, label) {
   return `${result.stdout ?? ''}${result.stderr ?? ''}`;
 }
 
-function runAsync(command, args, label) {
+function runAsync(command, args, label, timeoutMs = MODEL_OPERATION_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: targetDir,
@@ -74,8 +75,8 @@ function runAsync(command, args, label) {
         child.kill('SIGKILL');
       }, 1_000);
       child.once('close', () => clearTimeout(killTimer));
-      reject(new Error(`${label} timed out after ${MODEL_OPERATION_TIMEOUT_MS}ms`));
-    }, MODEL_OPERATION_TIMEOUT_MS);
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
     });
@@ -191,24 +192,27 @@ try {
   let help = run(process.execPath, [cliEntry, 'node', 'agent', 'set-model', '--help'], 'set-model help');
   const hasJson = /--json\b/.test(help);
   if (arm === 'head' && hasJson) {
-    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-'));
-    activeProofDirs.add(stateDir);
     const brokerStateDir = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-1658-broker-'));
     activeProofDirs.add(brokerStateDir);
-    const requestId = 'model_pr_proof_1658';
     let broker;
     let provider;
+    let relaycast;
     let providerEndpoint;
     let providerSessionId;
     let providerOutput = '';
+    let brokerOutput = '';
+    let brokerUrl;
+    let api;
+    let workerCreated = false;
     let proofFailure;
+    const previousStateDir = process.env.AGENT_RELAY_STATE_DIR;
     try {
       const providerBinary = process.env.RELAY_PR_PROOF_OPENCODE_BIN ?? 'opencode';
       const providerVersion = spawnSync(providerBinary, ['--version'], {
-        cwd: stateDir,
+        cwd: brokerStateDir,
         encoding: 'utf8',
         timeout: 10_000,
-        env: { ...process.env, HOME: stateDir },
+        env: { ...process.env, HOME: brokerStateDir },
       });
       if (providerVersion.error || providerVersion.status !== 0) {
         throw new Error(
@@ -226,10 +230,10 @@ try {
           providerBinary,
           ['serve', '--hostname', '127.0.0.1', '--port', String(providerPort), '--pure'],
           {
-            cwd: stateDir,
+            cwd: brokerStateDir,
             env: {
               ...process.env,
-              HOME: stateDir,
+              HOME: brokerStateDir,
               RELAY_SKIP_TELEMETRY: '1',
               OPENCODE_SERVER_PASSWORD: '',
             },
@@ -282,9 +286,29 @@ try {
         throw new Error(`OpenCode session creation omitted id: ${JSON.stringify(session)}`);
       }
       providerSessionId = session.id;
+      relaycast = await startFakeRelaycast({
+        recipientName: 'proof-worker',
+        offlineRecipientName: 'offline-proof-worker',
+        unknownRecipientName: 'unknown-proof-worker',
+        failedRecipientName: 'failed-proof-worker',
+      });
       broker = spawn(
         binaryPath,
-        ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', brokerStateDir],
+        [
+          'init',
+          '--instance-name',
+          'relayflow-1658-broker',
+          '--workspace-key',
+          'rk_relayflow_1658',
+          '--api-port',
+          '0',
+          '--api-bind',
+          '127.0.0.1',
+          '--state-dir',
+          brokerStateDir,
+          '--channels',
+          '',
+        ],
         {
           cwd: brokerStateDir,
           env: {
@@ -292,20 +316,22 @@ try {
             HOME: brokerStateDir,
             TMPDIR: process.env.TMPDIR ?? '/tmp',
             RELAY_BROKER_API_KEY: BROKER_API_KEY,
+            RELAYCAST_BASE_URL: relaycast.baseUrl,
+            RELAY_NODE_ID: 'node_relayflow_1658',
+            RELAY_NODE_TOKEN: 'nt_relayflow_1658',
             RELAY_SKIP_TELEMETRY: '1',
             RUST_LOG: 'info',
           },
           stdio: ['ignore', 'pipe', 'pipe'],
         }
       );
-      let brokerOutput = '';
       broker.stdout.on('data', (chunk) => {
         brokerOutput += chunk;
       });
       broker.stderr.on('data', (chunk) => {
         brokerOutput += chunk;
       });
-      const brokerUrl = await waitFor(async () => {
+      brokerUrl = await waitFor(async () => {
         if (broker.exitCode !== null) throw new Error(`broker exited early: ${brokerOutput}`);
         try {
           const connection = JSON.parse(await readFile(path.join(brokerStateDir, 'connection.json'), 'utf8'));
@@ -314,7 +340,7 @@ try {
           return null;
         }
       }, 'the exact broker to publish its connection file');
-      const api = brokerClient(brokerUrl);
+      api = brokerClient(brokerUrl);
       await waitFor(
         () => {
           if (broker.exitCode !== null) {
@@ -323,96 +349,197 @@ try {
           return api('GET', '/api/status', undefined, 2_000).then(() => true);
         },
         'the exact broker API to answer',
-        15_000
+        60_000
       );
-      await api('POST', '/api/spawn', {
-        name: 'proof-worker',
-        cli: 'opencode',
-        harness_config: {
-          runtime: 'headless',
-          protocol: 'opencode',
-          endpoint: providerEndpoint,
-          sessionId: session.id,
-          release: 'delete',
-        },
-      });
-      const admitted = await api('POST', '/api/spawned/proof-worker/model', {
-        model: 'openai/gpt-5.4',
-        timeout_ms: 30_000,
-      });
-      if (admitted.status !== 'accepted_pending' || admitted.applied !== false) {
-        throw new Error(`broker admission was not pending: ${JSON.stringify(admitted)}`);
-      }
-      if (typeof admitted.request_id !== 'string') {
-        throw new Error(`broker admission omitted request_id: ${JSON.stringify(admitted)}`);
-      }
-      const terminal = await waitFor(async () => {
-        try {
-          const receipt = await api(
-            'GET',
-            `/api/spawned/proof-worker/model?request_id=${encodeURIComponent(admitted.request_id)}`
-          );
-          return receipt.status === 'applied' ? receipt : null;
-        } catch {
-          return null;
-        }
-      }, 'the exact current-generation applied receipt');
+      process.env.AGENT_RELAY_STATE_DIR = brokerStateDir;
+      await runAsync(
+        process.execPath,
+        [
+          cliEntry,
+          'node',
+          'agent',
+          'spawn',
+          'opencode',
+          '--name',
+          'proof-worker',
+          '--runtime',
+          'headless',
+          '--protocol',
+          'opencode',
+          '--endpoint',
+          providerEndpoint,
+          '--session-id',
+          session.id,
+          '--release',
+          'delete',
+        ],
+        'compiled CLI AppServer spawn'
+      );
+      workerCreated = true;
+
+      const receiptOutput = await runAsync(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'openai/gpt-5.4', '--json'],
+        'compiled CLI set-model receipt',
+        60_000
+      );
+      const receipt = parseReceiptJson(receiptOutput, 'compiled CLI set-model receipt');
       if (
-        terminal.request_id !== admitted.request_id ||
-        terminal.requested_model !== 'openai/gpt-5.4' ||
-        terminal.effective_model !== 'openai/gpt-5.4' ||
-        terminal.applied !== true ||
-        terminal.pending !== false
+        receipt.name !== 'proof-worker' ||
+        receipt.requestedModel !== 'openai/gpt-5.4' ||
+        receipt.effectiveModel !== 'openai/gpt-5.4' ||
+        receipt.status !== 'applied' ||
+        receipt.applied !== true ||
+        receipt.accepted !== true ||
+        receipt.success !== true ||
+        receipt.pending !== false ||
+        typeof receipt.requestId !== 'string' ||
+        receipt.requestId.length === 0 ||
+        receipt.receiptId !== receipt.requestId ||
+        typeof receipt.generation !== 'string' ||
+        receipt.generation.length === 0 ||
+        !Number.isInteger(receipt.revision) ||
+        receipt.revision < 1 ||
+        receipt.effectiveRevision !== receipt.revision
       ) {
-        throw new Error(`broker returned an invalid applied receipt: ${JSON.stringify(terminal)}`);
+        throw new Error(`compiled CLI returned an invalid applied receipt: ${JSON.stringify(receipt)}`);
       }
-      const confirmedSessionResponse = await fetch(`${providerEndpoint}/session/${session.id}`, {
+      const correlated = await api(
+        'GET',
+        `/api/spawned/proof-worker/model?request_id=${encodeURIComponent(receipt.requestId)}`
+      );
+      if (
+        correlated.request_id !== receipt.requestId ||
+        correlated.receipt_id !== receipt.receiptId ||
+        correlated.requested_model !== receipt.requestedModel ||
+        correlated.effective_model !== receipt.effectiveModel ||
+        correlated.status !== 'applied' ||
+        correlated.applied !== true ||
+        correlated.pending !== false ||
+        correlated.generation !== receipt.generation ||
+        correlated.revision !== receipt.revision ||
+        correlated.effective_revision !== receipt.effectiveRevision
+      ) {
+        throw new Error(`broker correlation did not match the CLI receipt: ${JSON.stringify(correlated)}`);
+      }
+
+      const providerSessionUrl = `${providerEndpoint}/session/${session.id}`;
+      const confirmedSessionResponse = await fetch(providerSessionUrl, {
         signal: AbortSignal.timeout(5_000),
       });
       if (!confirmedSessionResponse.ok) {
         throw new Error(`OpenCode session confirmation failed: ${confirmedSessionResponse.status}`);
       }
       const confirmedSession = await confirmedSessionResponse.json();
-      if (confirmedSession.model?.providerID !== 'openai' || confirmedSession.model?.id !== 'gpt-5.4') {
+      const confirmedSessionData = confirmedSession.data ?? confirmedSession;
+      if (
+        confirmedSessionData.model?.providerID !== 'openai' ||
+        confirmedSessionData.model?.id !== 'gpt-5.4'
+      ) {
         throw new Error(
           `OpenCode session did not retain the exact model: ${JSON.stringify(confirmedSession)}`
         );
       }
-      const unsupportedAdmission = await api('POST', '/api/spawned/proof-worker/model', {
-        // OpenCode accepts arbitrary provider IDs in its session model
-        // endpoint. Use malformed model syntax so the broker's typed
-        // provider path rejects before making a provider request.
-        model: 'unsupported',
-        timeout_ms: 30_000,
-      });
-      const unsupported = await waitFor(async () => {
-        try {
-          const receipt = await api(
-            'GET',
-            `/api/spawned/proof-worker/model?request_id=${encodeURIComponent(unsupportedAdmission.request_id)}`
-          );
-          return receipt.status === 'accepted_pending' ? null : receipt;
-        } catch {
-          return null;
-        }
-      }, 'the exact unsupported terminal receipt');
+
+      const unsupportedOutput = await runAsync(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'unsupported', '--json'],
+        'compiled CLI rejected model receipt',
+        60_000
+      );
+      const unsupported = parseReceiptJson(unsupportedOutput, 'compiled CLI rejected model receipt');
       if (
+        unsupported.name !== 'proof-worker' ||
+        unsupported.requestedModel !== 'unsupported' ||
+        unsupported.effectiveModel !== 'openai/gpt-5.4' ||
         unsupported.status !== 'rejected' ||
         unsupported.applied !== false ||
         unsupported.success !== false ||
         unsupported.accepted !== true ||
+        unsupported.pending !== false ||
+        typeof unsupported.requestId !== 'string' ||
+        unsupported.requestId.length === 0 ||
+        unsupported.receiptId !== unsupported.requestId ||
+        unsupported.generation !== receipt.generation ||
+        !Number.isInteger(unsupported.revision) ||
+        unsupported.revision <= receipt.revision ||
+        unsupported.effectiveRevision !== receipt.effectiveRevision ||
         !/provider\/model syntax/.test(unsupported.error ?? '')
       ) {
-        throw new Error(`broker claimed unsupported model applied: ${JSON.stringify(unsupported)}`);
+        throw new Error(`compiled CLI claimed a rejected model applied: ${JSON.stringify(unsupported)}`);
       }
+      const rejectedCorrelated = await api(
+        'GET',
+        `/api/spawned/proof-worker/model?request_id=${encodeURIComponent(unsupported.requestId)}`
+      );
+      if (
+        rejectedCorrelated.request_id !== unsupported.requestId ||
+        rejectedCorrelated.status !== 'rejected' ||
+        rejectedCorrelated.applied !== false ||
+        rejectedCorrelated.effective_model !== 'openai/gpt-5.4' ||
+        rejectedCorrelated.effective_revision !== receipt.effectiveRevision
+      ) {
+        throw new Error(
+          `broker correlation did not preserve the last applied model: ${JSON.stringify(rejectedCorrelated)}`
+        );
+      }
+      const preservedSessionResponse = await fetch(providerSessionUrl, {
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!preservedSessionResponse.ok) {
+        throw new Error(
+          `OpenCode session disappeared after rejected model: ${preservedSessionResponse.status}`
+        );
+      }
+      const preservedSession = await preservedSessionResponse.json();
+      const preservedSessionData = preservedSession.data ?? preservedSession;
+      if (
+        preservedSessionData.model?.providerID !== 'openai' ||
+        preservedSessionData.model?.id !== 'gpt-5.4'
+      ) {
+        throw new Error(`OpenCode session changed after rejected model: ${JSON.stringify(preservedSession)}`);
+      }
+
+      await runAsync(
+        process.execPath,
+        [cliEntry, 'node', 'agent', 'release', 'proof-worker'],
+        'compiled CLI AppServer release'
+      );
+      await waitFor(
+        async () => {
+          const response = await fetch(`${brokerUrl}/api/spawned/proof-worker/model`, {
+            headers: { 'x-api-key': BROKER_API_KEY },
+            signal: AbortSignal.timeout(2_000),
+          });
+          return response.status === 404;
+        },
+        'released compiled-CLI worker to disappear',
+        15_000
+      );
+      await waitFor(
+        async () => {
+          const response = await fetch(providerSessionUrl, {
+            signal: AbortSignal.timeout(2_000),
+          });
+          return response.status === 404;
+        },
+        'release-owned OpenCode session deletion',
+        15_000
+      );
+      workerCreated = false;
+      providerSessionId = undefined;
     } catch (error) {
       proofFailure = error;
       throw error;
     } finally {
       const cleanupErrors = [];
-      if (broker && broker.exitCode === null) {
+      if (broker && broker.exitCode === null && workerCreated) {
         try {
-          await terminateChild(broker, 'broker');
+          await runAsync(
+            process.execPath,
+            [cliEntry, 'node', 'agent', 'release', 'proof-worker'],
+            'recovery AppServer release'
+          );
         } catch (error) {
           cleanupErrors.push(error.message);
         }
@@ -425,7 +552,7 @@ try {
             signal: AbortSignal.timeout(2_000),
           });
           if (![200, 204, 404].includes(deleted.status)) {
-            throw new Error(`OpenCode session deletion failed: ${deleted.status}`);
+            throw new Error(`OpenCode session recovery deletion failed: ${deleted.status}`);
           }
           await waitFor(
             async () => {
@@ -433,14 +560,19 @@ try {
                 const response = await fetch(sessionUrl, { signal: AbortSignal.timeout(2_000) });
                 return response.status === 404;
               } catch (error) {
-                // Only a closed listener proves the provider is unavailable.
-                // Timeouts and other transport errors cannot prove deletion.
                 return error?.cause?.code === 'ECONNREFUSED';
               }
             },
-            'deleted OpenCode session to disappear',
+            'recovery-deleted OpenCode session to disappear',
             5_000
           );
+        } catch (error) {
+          cleanupErrors.push(error.message);
+        }
+      }
+      if (broker && broker.exitCode === null) {
+        try {
+          await terminateChild(broker, 'broker');
         } catch (error) {
           cleanupErrors.push(error.message);
         }
@@ -452,12 +584,21 @@ try {
           cleanupErrors.push(error.message);
         }
       }
+      if (relaycast) {
+        try {
+          await relaycast.close();
+        } catch (error) {
+          cleanupErrors.push(`fake Relaycast cleanup failed: ${error.message}`);
+        }
+      }
       try {
         await rm(brokerStateDir, { recursive: true, force: true });
       } catch (error) {
         cleanupErrors.push(`broker state cleanup failed: ${error.message}`);
       }
       activeProofDirs.delete(brokerStateDir);
+      if (previousStateDir === undefined) delete process.env.AGENT_RELAY_STATE_DIR;
+      else process.env.AGENT_RELAY_STATE_DIR = previousStateDir;
       if (cleanupErrors.length > 0) {
         const cleanupMessage = `proof cleanup failed: ${cleanupErrors.join('; ')}`;
         if (proofFailure) {
@@ -468,146 +609,11 @@ try {
         throw new Error(cleanupMessage);
       }
     }
-
-    // Keep the CLI-facing check as part of the same head proof: the broker
-    // receipt above is the source of truth, while this confirms JSON output is
-    // advertised by the exact checkout used to build the probe.
-    const requests = [];
-    const server = createServer(async (request, response) => {
-      if (request.headers['x-api-key'] !== 'pr-proof-key') {
-        response.writeHead(401).end();
-        return;
-      }
-      response.setHeader('content-type', 'application/json');
-      if (request.method === 'POST') {
-        const body = await readRequestJson(request);
-        const unsupported = body.model === 'unsupported/model';
-        requests.push({ method: 'POST', model: body.model });
-        if (!unsupported) {
-          response.end(
-            JSON.stringify({
-              name: 'proof-worker',
-              requested_model: 'openai/gpt-5.4',
-              effective_model: null,
-              applied: false,
-              status: 'accepted_pending',
-              request_id: requestId,
-              receipt_id: requestId,
-              generation: 'generation-proof',
-              revision: 1,
-              success: false,
-              accepted: true,
-              pending: true,
-            })
-          );
-          return;
-        }
-        response.end(
-          JSON.stringify({
-            name: 'proof-worker',
-            requested_model: unsupported ? 'unsupported/model' : 'openai/gpt-5.4',
-            effective_model: unsupported ? null : 'openai/gpt-5.4',
-            applied: !unsupported,
-            status: unsupported ? 'unsupported' : 'applied',
-            request_id: requestId,
-            receipt_id: requestId,
-            generation: 'generation-proof',
-            revision: 1,
-            success: !unsupported,
-            accepted: !unsupported,
-            pending: false,
-            ...(unsupported ? { error: 'provider capability unavailable' } : {}),
-          })
-        );
-        return;
-      }
-      const requestIdFromQuery = new URL(request.url, 'http://127.0.0.1').searchParams.get('request_id');
-      requests.push({ method: 'GET', requestId: requestIdFromQuery });
-      response.end(
-        JSON.stringify({
-          name: 'proof-worker',
-          requested_model: 'openai/gpt-5.4',
-          effective_model: 'openai/gpt-5.4',
-          applied: true,
-          status: 'applied',
-          request_id: requestId,
-          receipt_id: requestId,
-          generation: 'generation-proof',
-          revision: 1,
-          success: true,
-          accepted: true,
-          pending: false,
-        })
-      );
-    });
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', resolve);
-    });
-    const address = server.address();
-    const port = typeof address === 'object' && address ? address.port : 0;
-    await writeFile(
-      path.join(stateDir, 'connection.json'),
-      JSON.stringify({ url: `http://127.0.0.1:${port}`, api_key: 'pr-proof-key', pid: process.pid })
-    );
-    process.env.AGENT_RELAY_STATE_DIR = stateDir;
-    try {
-      const receiptOutput = await runAsync(
-        process.execPath,
-        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'openai/gpt-5.4', '--json'],
-        'set-model receipt'
-      );
-      const receipt = parseReceiptJson(receiptOutput, 'set-model receipt');
-      const validReceipt =
-        receipt.name === 'proof-worker' &&
-        receipt.requestedModel === 'openai/gpt-5.4' &&
-        receipt.effectiveModel === 'openai/gpt-5.4' &&
-        receipt.applied === true &&
-        receipt.status === 'applied' &&
-        receipt.success === true &&
-        receipt.accepted === true &&
-        receipt.pending === false &&
-        typeof receipt.requestId === 'string' &&
-        typeof receipt.receiptId === 'string' &&
-        typeof receipt.generation === 'string';
-      if (!validReceipt) throw new Error(`set-model returned an invalid receipt: ${JSON.stringify(receipt)}`);
-      if (
-        requests.length !== 2 ||
-        requests[0].method !== 'POST' ||
-        requests[1].method !== 'GET' ||
-        requests[1].requestId !== requestId
-      ) {
-        throw new Error(`set-model did not poll its correlated receipt: ${JSON.stringify(requests)}`);
-      }
-
-      const unsupportedOutput = await runAsync(
-        process.execPath,
-        [cliEntry, 'node', 'agent', 'set-model', 'proof-worker', 'unsupported/model', '--json'],
-        'unsupported set-model receipt'
-      );
-      const unsupported = parseReceiptJson(unsupportedOutput, 'unsupported set-model receipt');
-      if (
-        unsupported.status !== 'unsupported' ||
-        unsupported.applied !== false ||
-        unsupported.success !== false ||
-        unsupported.accepted !== false
-      ) {
-        throw new Error(`unsupported set-model claimed application: ${JSON.stringify(unsupported)}`);
-      }
-      if (requests.length !== 3 || requests[2].method !== 'POST') {
-        throw new Error(`unsupported set-model unexpectedly polled: ${JSON.stringify(requests)}`);
-      }
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      await rm(stateDir, { recursive: true, force: true });
-      activeProofDirs.delete(stateDir);
-      delete process.env.AGENT_RELAY_STATE_DIR;
-    }
   }
   const outcome = hasJson ? 'fixed' : 'bug';
   const signature = hasJson ? 'set_model_exposes_json_receipt' : 'set_model_has_no_json_receipt';
   const details = hasJson
-    ? 'The head CLI advertises --json for the correlated model receipt and rejects an unsupported terminal response without claiming application; provider application remains governed by typed runtime confirmation.'
+    ? 'The exact compiled CLI spawned a real OpenCode AppServer worker, returned a correlated applied receipt matching provider state, preserved that effective model across rejection, and deleted the worker-owned provider session on release.'
     : 'The base CLI has no --json receipt surface, so callers cannot consume request/generation/effective model state.';
   await writeFile(
     resultPath,
@@ -676,10 +682,4 @@ function brokerClient(baseUrl) {
     }
     return parsed;
   };
-}
-
-async function readRequestJson(request) {
-  let body = '';
-  for await (const chunk of request) body += chunk;
-  return JSON.parse(body);
 }
