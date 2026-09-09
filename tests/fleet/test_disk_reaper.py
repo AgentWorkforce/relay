@@ -400,6 +400,17 @@ class ReaperTests(unittest.TestCase):
             (self.repo / "source").write_text("uncommitted work")
             self.assert_kept()
 
+    def test_shared_cache_cannot_bypass_another_checkouts_git_guards(self):
+        cache = self.home / ".npm" / "_cacache"
+        cache.mkdir(parents=True)
+        self.g(self.home, "init")
+        valuable = cache / "uncommitted-source"
+        valuable.write_text("precious")
+        self.args.cache = [str(cache) + "=" + str(self.repo)]
+        self.args.apply = True
+        self.report()
+        self.assertTrue(valuable.exists())
+
     def test_invalid_age_rejected(self):
         for value in ["nan", "inf", "-1"]:
             with self.assertRaises(SystemExit) as result:

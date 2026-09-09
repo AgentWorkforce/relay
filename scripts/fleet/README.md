@@ -93,7 +93,8 @@ python3 /path/to/relay/scripts/fleet/disk_reaper.py run --root "$HOME/lanes" \
 Only `~/.npm/_cacache`, Xcode `DerivedData`, and individual immediate children of
 `~/Library/Caches` are allowed. Never point this at a directory containing source
 work. The whole `~/Library/Caches` directory is not a deletion target. The owner
-must pass every lane/Git guard. Shared cache removal also takes a global exclusive
+must pass every lane/Git guard. A cache inside another checkout is retained even
+when its mapped owner is clean. Shared cache removal also takes a global exclusive
 lease and checks open files; any live leased lane keeps shared caches. All users
 of a shared cache must use the same fleet account and lease protocol. Inspection
 errors and embedded repositories keep the cache.

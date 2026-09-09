@@ -299,6 +299,18 @@ def cache_safe(repo, path, days, now, external=False):
         git(repo, "check-ignore", "--", relative + "/")
     elif not external:
         raise Keep("cache outside checkout")
+    else:
+        # An explicit owner mapping cannot waive another checkout's Git safety.
+        # lstat failures other than absence propagate and retain the cache.
+        for ancestor in (path, *path.parents):
+            try:
+                (ancestor / ".git").lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise Keep("external cache belongs to another checkout")
+            if (ancestor / "HEAD").exists() and (ancestor / "objects").is_dir():
+                raise Keep("external cache belongs to a bare repository")
     size, newest = tree_info(path)
     if now - newest < days * DAY:
         raise Keep("recent cache activity")
