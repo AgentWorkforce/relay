@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Changed
+
+- Fleet node delivery is always on; retired CLI rollout controls fail locally with migration guidance, while the deprecated SDK surface reports immutable always-on state without calling a removed API.
 
 ## [11.10.4] - 2026-09-08
 

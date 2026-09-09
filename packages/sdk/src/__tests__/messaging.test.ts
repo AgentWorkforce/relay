@@ -158,11 +158,6 @@ function createWorkspace() {
     },
     workspace: {
       info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
-      fleetNodes: {
-        get: vi.fn(async () => ({ enabled: true, default_enabled: false, override: true })),
-        set: vi.fn(async (enabled: boolean) => ({ enabled, default_enabled: false, override: enabled })),
-        inherit: vi.fn(async () => ({ enabled: false, default_enabled: false, override: null })),
-      },
     },
   };
 }
@@ -462,29 +457,16 @@ describe('RelaycastMessagingClient', () => {
     });
   });
 
-  it('delegates workspace fleet node config calls to Relaycast', async () => {
+  it('keeps workspace fleetNodes as a local immutable always-on compatibility surface', async () => {
     const workspace = createWorkspace();
     const client = new RelaycastMessagingClient({ relaycast: workspace });
+    const alwaysOn = { enabled: true, defaultEnabled: true, override: null };
 
-    await expect(client.workspace.fleetNodes.get()).resolves.toEqual({
-      enabled: true,
-      defaultEnabled: false,
-      override: true,
-    });
-    await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: false,
-    });
-    await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: null,
-    });
-
-    expect(workspace.workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
-    expect(workspace.workspace.fleetNodes.set).toHaveBeenCalledWith(false);
-    expect(workspace.workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
+    await expect(client.workspace.fleetNodes.get()).resolves.toEqual(alwaysOn);
+    await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual(alwaysOn);
+    await expect(client.workspace.fleetNodes.set(true)).resolves.toEqual(alwaysOn);
+    await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual(alwaysOn);
+    expect(Object.keys(workspace.workspace)).toEqual(['info']);
   });
 
   it('normalizes fleet node roster fields and passes node query options through', async () => {

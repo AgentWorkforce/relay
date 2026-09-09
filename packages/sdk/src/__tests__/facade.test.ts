@@ -35,9 +35,9 @@ function createMessagingMock() {
   const workspace = {
     info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
     fleetNodes: {
-      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
-      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
+      get: vi.fn(async () => ({ enabled: true, defaultEnabled: true, override: null })),
+      set: vi.fn(async () => ({ enabled: true, defaultEnabled: true, override: null })),
+      inherit: vi.fn(async () => ({ enabled: true, defaultEnabled: true, override: null })),
     },
   };
   const messaging = { messages, agents, workspace, events: {} } as unknown as RelayMessaging;
@@ -80,28 +80,16 @@ describe('AgentRelay facade (Phase A)', () => {
     expect(client.token).toBe('tok-self');
   });
 
-  it('workspace.fleetNodes delegates fleet node config calls', async () => {
+  it('preserves the deprecated workspace.fleetNodes facade', async () => {
     const { messaging, workspace } = createMessagingMock();
     const relay = new AgentRelay({ messaging });
+    const alwaysOn = { enabled: true, defaultEnabled: true, override: null };
 
-    await expect(relay.workspace.fleetNodes.get()).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: null,
-    });
-    await expect(relay.workspace.fleetNodes.set(true)).resolves.toEqual({
-      enabled: true,
-      defaultEnabled: false,
-      override: true,
-    });
-    await expect(relay.workspace.fleetNodes.inherit()).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: null,
-    });
-
+    await expect(relay.workspace.fleetNodes.get()).resolves.toEqual(alwaysOn);
+    await expect(relay.workspace.fleetNodes.set(false)).resolves.toEqual(alwaysOn);
+    await expect(relay.workspace.fleetNodes.inherit()).resolves.toEqual(alwaysOn);
     expect(workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
-    expect(workspace.fleetNodes.set).toHaveBeenCalledWith(true);
+    expect(workspace.fleetNodes.set).toHaveBeenCalledWith(false);
     expect(workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
   });
 

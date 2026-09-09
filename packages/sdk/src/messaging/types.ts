@@ -691,6 +691,13 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
+/**
+ * The legacy workspace Fleet rollout view.
+ *
+ * @deprecated Fleet node delivery is always on. The compatibility methods
+ * return `{ enabled: true, defaultEnabled: true, override: null }` locally and
+ * never mutate workspace state.
+ */
 export interface RelayWorkspaceFleetNodesConfig {
   enabled: boolean;
   defaultEnabled: boolean;
@@ -1049,6 +1056,7 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
+    /** @deprecated Fleet node delivery is always on; these methods are read-only compatibility shims. */
     fleetNodes: {
       get(): Promise<RelayWorkspaceFleetNodesConfig>;
       set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;

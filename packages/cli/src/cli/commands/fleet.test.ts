@@ -56,25 +56,55 @@ const liveAgentCapabilities = (...names: string[]) => [
 ];
 
 describe('fleet command support', () => {
-  it.each([
-    ['config', 'get', undefined],
-    ['enable', 'set', true],
-    ['disable', 'set', false],
-    ['inherit', 'inherit', undefined],
-  ] as const)('fleet %s delegates to workspace fleet node config API', async (command, method, value) => {
-    const fleetNodes = {
-      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
-      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-    };
-    const createWorkspaceRelay = vi.fn(() => ({ workspace: { fleetNodes } }));
+  it.each(['config', 'enable', 'disable', 'inherit'])(
+    'legacy fleet %s reports the always-on migration without contacting Relaycast',
+    async (command) => {
+      const createWorkspaceRelay = vi.fn();
+      const errors: string[] = [];
+      const exits: number[] = [];
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        sdk: {
+          createAgentRelay: vi.fn() as never,
+          createWorkspaceRelay: createWorkspaceRelay as never,
+          createWorkspace: vi.fn() as never,
+          log: vi.fn() as never,
+          error: (message: unknown) => errors.push(String(message)),
+          exit: vi.fn() as never,
+        },
+        error: (message: unknown) => errors.push(String(message)),
+        log: () => undefined,
+        warn: () => undefined,
+        exit: ((code: number) => {
+          exits.push(code);
+          throw new Error('__exit__');
+        }) as never,
+      });
+
+      await expect(
+        program.parseAsync(
+          ['fleet', command, '--workspace-key', 'rk_live_test', '--base-url', 'https://relay.example'],
+          { from: 'user' }
+        )
+      ).rejects.toThrow('__exit__');
+
+      expect(createWorkspaceRelay).not.toHaveBeenCalled();
+      expect(exits).toEqual([1]);
+      expect(errors.join('\n')).toContain('Fleet rollout controls were removed');
+      expect(errors.join('\n')).toContain('Fleet node delivery is always on');
+      expect(errors.join('\n')).not.toContain('rk_live_test');
+    }
+  );
+
+  it('does not advertise removed fleet rollout commands in help', () => {
     const logs: string[] = [];
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
       sdk: {
         createAgentRelay: vi.fn() as never,
-        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspaceRelay: vi.fn() as never,
         createWorkspace: vi.fn() as never,
         log: (message: unknown) => logs.push(String(message)),
         error: vi.fn(),
@@ -87,25 +117,8 @@ describe('fleet command support', () => {
       error: () => undefined,
     });
 
-    await program.parseAsync(
-      ['fleet', command, '--workspace-key', 'rk_live_test', '--base-url', 'https://relay.example'],
-      { from: 'user' }
-    );
-
-    expect(createWorkspaceRelay).toHaveBeenCalledWith({
-      workspaceKey: 'rk_live_test',
-      token: undefined,
-      baseUrl: 'https://relay.example',
-    });
-    if (method === 'set') {
-      expect(fleetNodes.set).toHaveBeenCalledWith(value);
-    } else {
-      expect(fleetNodes[method]).toHaveBeenCalledTimes(1);
-    }
-    expect(JSON.parse(logs[0]!)).toMatchObject({
-      enabled: method === 'set' ? value : false,
-      defaultEnabled: false,
-    });
+    const help = program.commands.find((command) => command.name() === 'fleet')!.helpInformation();
+    expect(help).not.toMatch(/\b(config|enable|disable|inherit)\b/);
   });
 
   it('fleet nodes accepts --wk as an alias for --workspace-key', async () => {
