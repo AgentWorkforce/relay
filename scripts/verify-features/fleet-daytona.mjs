@@ -396,8 +396,8 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 120)
-    throw new Error('matrix.operations must contain exactly 120 operations');
+  if (matrix.operations.length !== 121)
+    throw new Error('matrix.operations must contain exactly 121 operations');
   if (matrix.minimumChurnCyclesPerNode !== 10) {
     throw new Error('matrix.minimumChurnCyclesPerNode must be exactly 10');
   }
@@ -429,6 +429,7 @@ export function validateFleetMatrix(matrix) {
     'fleet-agent-list-json',
     'fleet-spawn-node',
     'fleet-release',
+    'fleet-release-timeout',
     'fleet-config',
     'fleet-enable',
     'fleet-disable',
@@ -506,7 +507,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 120 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 121 operations');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -3377,27 +3378,6 @@ class FleetBoard {
       { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
     );
     await this.assertedCommand(
-      'fleet-nodes-history',
-      this.cliArgv('fleet', 'nodes', '--all'),
-      (result) => {
-        const nodes = parseNodes(result);
-        const owned = nodes?.filter(({ name }) => availableNames.includes(name)) ?? [];
-        const historyRows =
-          nodes?.filter(
-            ({ name, status, state }) =>
-              !availableNames.includes(name) &&
-              ['offline', 'unavailable', 'stopped', 'history'].includes(
-                String(status ?? state ?? '').toLowerCase()
-              )
-          ) ?? [];
-        return {
-          pass: owned.length === availableNames.length && (nodes?.length ?? 0) >= owned.length,
-          summary: `ownedRows=${owned.length} totalRows=${nodes?.length ?? 'invalid'} observedHistoryRows=${historyRows.length}`,
-        };
-      },
-      { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
-    );
-    await this.assertedCommand(
       'fleet-agent-list-json',
       this.cliArgv('fleet', 'agent', 'list', '--json'),
       (result) => {
@@ -4721,7 +4701,7 @@ class FleetBoard {
               '--node',
               node.nodeName,
               '--mode',
-              'view',
+              'passthrough',
               '--json'
             ),
             {
@@ -4734,13 +4714,19 @@ class FleetBoard {
           );
         const first = await attach(`RECONNECT_FIRST_${this.short}`);
         const second = await attach(`RECONNECT_SECOND_${this.short}`);
-        const firstEvents = first._rawStdout.includes(controlName);
-        const secondEvents = second._rawStdout.includes(controlName);
+        const firstMarker = `RECONNECT_FIRST_${this.short}`;
+        const secondMarker = `RECONNECT_SECOND_${this.short}`;
+        const firstMarkerOnly =
+          first._rawStdout.includes(firstMarker) && !first._rawStdout.includes(secondMarker);
+        const secondMarkerOnly =
+          second._rawStdout.includes(secondMarker) && !second._rawStdout.includes(firstMarker);
+        const firstEvents = first._rawStdout.includes(controlName) && firstMarkerOnly;
+        const secondEvents = second._rawStdout.includes(controlName) && secondMarkerOnly;
         return {
           ...stripPrivateExecution(second),
           exitCode: first.exitCode === 0 && second.exitCode === 0 && firstEvents && secondEvents ? 0 : 1,
           observedStream: firstEvents && secondEvents,
-          summary: `firstExit=${first.exitCode} secondExit=${second.exitCode} firstEvents=${firstEvents} secondEvents=${secondEvents}`,
+          summary: `firstExit=${first.exitCode} secondExit=${second.exitCode} firstMarkerOnly=${firstMarkerOnly} secondMarkerOnly=${secondMarkerOnly} firstEvents=${firstEvents} secondEvents=${secondEvents}`,
         };
       });
       await this.record('node-agent-attach-local', async () => {
@@ -5502,6 +5488,66 @@ class FleetBoard {
         summary: `sandboxId=${resource.id} sandboxName=${resource.nodeName} sandboxPresentAfterRelease=${present} workerProcessAbsent=${workerProcessAbsent} workerIdentityAbsent=${workerIdentityAbsent} sandboxAbsent=${sandboxAbsent} ownershipBound=${ownershipBound}`,
       };
     });
+    await this.record('fleet-release-timeout', async () => {
+      const target = `fleet-release-timeout-${this.short}`;
+      const result = await execute(
+        this.cliArgv(
+          'fleet',
+          'release',
+          target,
+          '--reason',
+          `fleet board ${this.short} bounded absent-release probe`,
+          '--delete-agent'
+        ),
+        { timeoutMs: 5_000 }
+      );
+      const output = `${result._rawStdout}\n${result._rawStderr}`;
+      const bounded =
+        result.exitCode !== 0 &&
+        result.timedOut !== true &&
+        result.spawnError === undefined &&
+        result.durationMs <= 5_000 &&
+        /not found/i.test(output);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: bounded ? result.exitCode : 1,
+        summary: `bounded=${bounded} timedOut=${result.timedOut} durationMs=${Math.round(result.durationMs)} diagnostic=${/not found/i.test(output)}`,
+      };
+    });
+  }
+
+  async fleetNodesHistoryProbe() {
+    const availableNodes = this.availableBoardNodes();
+    if (availableNodes.length === 0) {
+      await this.derived('fleet-nodes-history', {
+        blockedReason: 'no live owned board node was available after lifecycle probes',
+      });
+      return;
+    }
+    const availableNames = availableNodes.map(({ nodeName }) => nodeName);
+    await this.assertedCommand(
+      'fleet-nodes-history',
+      this.cliArgv('fleet', 'nodes', '--all'),
+      (result) => {
+        const payload = tryParseJson(result._rawStdout);
+        const nodes = Array.isArray(payload?.nodes) ? payload.nodes : null;
+        const owned = nodes?.filter(({ name }) => availableNames.includes(name)) ?? [];
+        const historyRows =
+          nodes?.filter(
+            ({ name, status, state }) =>
+              !availableNames.includes(name) &&
+              ['offline', 'unavailable', 'stopped', 'history'].includes(
+                String(status ?? state ?? '').toLowerCase()
+              )
+          ) ?? [];
+        const pass = owned.length === availableNames.length && historyRows.length > 0;
+        return {
+          pass,
+          summary: `ownedRows=${owned.length} totalRows=${nodes?.length ?? 'invalid'} observedHistoryRows=${historyRows.length}`,
+        };
+      },
+      { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
+    );
   }
 
   async nodeLifecycle() {
@@ -5512,6 +5558,7 @@ class FleetBoard {
         'node-down-graceful',
         'node-up-after-down',
         'node-down-all',
+        'fleet-nodes-history',
       ]) {
         await this.derived(id, { blockedReason: 'board node B unavailable' });
       }
@@ -5570,6 +5617,7 @@ class FleetBoard {
         summary: `statusRunning=${running} exactNode=${after._rawStdout.includes(node.nodeName)}`,
       };
     });
+    await this.fleetNodesHistoryProbe();
     await this.record('node-up-config-failure', async () => {
       const result = await execute(
         this.inside(
@@ -5656,20 +5704,29 @@ class FleetBoard {
       const result = await execute(this.inside(node.id, 'node', 'down', '--timeout', '1'), {
         timeoutMs: 45_000,
       });
-      const stopped = !result._rawStdout.includes('Status: RUNNING');
+      const after = await readStatus();
+      const stopped =
+        after.exitCode === 0 &&
+        !after._rawStdout.includes('Status: RUNNING') &&
+        after._rawStdout.includes(node.nodeName);
       const restore = await execute(this.inside(node.id, 'node', 'up', '--background', '--no-spawn'), {
         timeoutMs: 90_000,
       });
       return {
         ...stripPrivateExecution(result),
-        exitCode: result.exitCode === 0 && restore.exitCode === 0 ? 0 : 1,
-        summary: `timeoutArgument=1 stoppedOrAccepted=${stopped} restoreExit=${restore.exitCode}`,
+        exitCode: result.exitCode === 0 && stopped && restore.exitCode === 0 ? 0 : 1,
+        summary: `timeoutArgument=1 stopped=${stopped} statusExit=${after.exitCode} restoreExit=${restore.exitCode}`,
       };
     });
     await this.record('node-down-force', async () => {
       const result = await execute(this.inside(node.id, 'node', 'down', '--force'), {
         timeoutMs: 45_000,
       });
+      const after = await readStatus();
+      const stopped =
+        after.exitCode === 0 &&
+        !after._rawStdout.includes('Status: RUNNING') &&
+        after._rawStdout.includes(node.nodeName);
       const restore = await execute(this.inside(node.id, 'node', 'up', '--background', '--no-spawn'), {
         timeoutMs: 90_000,
       });
@@ -5677,8 +5734,8 @@ class FleetBoard {
       const running = status.exitCode === 0 && status._rawStdout.includes('Status: RUNNING');
       return {
         ...stripPrivateExecution(result),
-        exitCode: result.exitCode === 0 && restore.exitCode === 0 && running ? 0 : 1,
-        summary: `forceExit=${result.exitCode} restoreExit=${restore.exitCode} runningAfterRestore=${running}`,
+        exitCode: result.exitCode === 0 && stopped && restore.exitCode === 0 && running ? 0 : 1,
+        summary: `forceExit=${result.exitCode} stopped=${stopped} statusExit=${after.exitCode} restoreExit=${restore.exitCode} runningAfterRestore=${running}`,
       };
     });
     await this.record('node-down-all', async () => {
@@ -5852,11 +5909,33 @@ class FleetBoard {
     const missingBaselineAgentNameHashes = finalAgentNameHashes
       ? (this.baseline?.agentNameHashes ?? []).filter((hash) => !finalAgentNameHashes.has(hash))
       : ['agent-list-reconciliation-failed'];
-    const baselinePreserved = sandboxBaseline.restored && missingBaselineAgentNameHashes.length === 0;
+    const unexpectedFinalAgentNameHashes = finalAgentNameHashes
+      ? [...finalAgentNameHashes].filter((hash) => !(this.baseline?.agentNameHashes ?? []).includes(hash))
+      : ['agent-list-reconciliation-failed'];
+    const finalFleetNodes = await this.listAllFleetNodes().catch(() => null);
+    const finalFleetNodeNameHashes =
+      finalFleetNodes &&
+      finalFleetNodes.every(({ name }) => typeof name === 'string' && name.length > 0)
+        ? new Set(finalFleetNodes.map(({ name }) => sha256(name)))
+        : null;
+    const missingBaselineFleetNodeNameHashes = finalFleetNodeNameHashes
+      ? (this.baseline?.fleetNodeNameHashes ?? []).filter((hash) => !finalFleetNodeNameHashes.has(hash))
+      : ['fleet-node-list-reconciliation-failed'];
+    const unexpectedFinalFleetNodeNameHashes = finalFleetNodeNameHashes
+      ? [...finalFleetNodeNameHashes].filter(
+          (hash) => !(this.baseline?.fleetNodeNameHashes ?? []).includes(hash)
+        )
+      : ['fleet-node-list-reconciliation-failed'];
+    const baselinePreserved =
+      sandboxBaseline.restored &&
+      missingBaselineAgentNameHashes.length === 0 &&
+      unexpectedFinalAgentNameHashes.length === 0 &&
+      missingBaselineFleetNodeNameHashes.length === 0 &&
+      unexpectedFinalFleetNodeNameHashes.length === 0;
     await this.derived('daytona-baseline-restored', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
       exitCode: exactPrefixLeaks.length === 0 && baselinePreserved ? 0 : 1,
-      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
+      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)} unexpectedFinalAgentNameHashes=${JSON.stringify(unexpectedFinalAgentNameHashes)} missingBaselineFleetNodeNameHashes=${JSON.stringify(missingBaselineFleetNodeNameHashes)} unexpectedFinalFleetNodeNameHashes=${JSON.stringify(unexpectedFinalFleetNodeNameHashes)}`,
     });
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&

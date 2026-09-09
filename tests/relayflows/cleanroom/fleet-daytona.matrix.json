@@ -27,7 +27,12 @@
       "fleet-nodes-all",
       "fleet-nodes-history"
     ],
-    "fleet release": ["fleet-release", "fleet-release-delete-agent", "fleet-release-reclaims-owned-sandbox"],
+    "fleet release": [
+      "fleet-release",
+      "fleet-release-delete-agent",
+      "fleet-release-timeout",
+      "fleet-release-reclaims-owned-sandbox"
+    ],
     "fleet serve": ["fleet-serve-migration"],
     "fleet spawn": [
       "fleet-spawn-node",
@@ -279,6 +284,20 @@
         "teardownAssertion": "Support cleanup removes any identity intentionally preserved by the command under test.",
         "retryAssertion": "Repeated cleanup is idempotent and cannot target a non-owned identity."
       },
+      "release-timeout": {
+        "candidateSurface": "operator-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "A release request for an absent nonce-owned identity returns a bounded, explicit diagnostic.",
+          "The release command never remains pending past its configured timeout."
+        ],
+        "negativeAssertions": [
+          "A timeout, success acknowledgement without an identity result, or unrelated identity is a failure."
+        ],
+        "lifecycleAssertion": "The release probe is monotonic-timed and bounded.",
+        "teardownAssertion": "The probe owns no resource and leaves the board cleanup ledger unchanged.",
+        "retryAssertion": "Repeating the absent-identity release remains bounded and side-effect free."
+      },
       "release-sandbox": {
         "candidateSurface": "operator-and-daytona-candidate",
         "executionScope": "owned-daytona-sandbox",
@@ -490,6 +509,7 @@
       "fleet-spawn-sandbox-no-mount": "sandbox-no-mount",
       "fleet-release": "release-process",
       "fleet-release-delete-agent": "release-process",
+      "fleet-release-timeout": "release-timeout",
       "fleet-release-reclaims-owned-sandbox": "release-sandbox",
       "fleet-config": "fleet-policy-read",
       "fleet-enable": "fleet-policy-mutation",
@@ -721,6 +741,12 @@
     },
     { "id": "fleet-release", "group": "fleet", "expect": "success" },
     { "id": "fleet-release-delete-agent", "group": "fleet", "expect": "success" },
+    {
+      "id": "fleet-release-timeout",
+      "group": "fleet",
+      "expect": "expected-failure",
+      "mustContain": "not found"
+    },
     { "id": "fleet-release-reclaims-owned-sandbox", "group": "fleet", "expect": "success" },
     { "id": "fleet-config", "group": "fleet-policy", "expect": "success" },
     {
@@ -1001,7 +1027,7 @@
       "group": "node-agent",
       "expect": "stream",
       "allowTimeout": true,
-      "argvMustContain": ["--node", "--json"]
+      "argvMustContain": ["--node", "--mode", "passthrough", "--json"]
     },
     { "id": "node-agent-attach-local", "group": "node-agent", "expect": "stream", "allowTimeout": true },
     {
