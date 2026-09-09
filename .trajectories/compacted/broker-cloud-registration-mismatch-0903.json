@@ -1,0 +1,82 @@
+{
+  "id": "compact_n5b8vxnm64k2",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-03T13:03:17.552Z",
+  "sourceTrajectories": [
+    "traj_wknqdbi4aqon",
+    "traj_3ls7b6uul5j3",
+    "traj_51m096koolsj",
+    "traj_etwqd0j7ur8a",
+    "traj_eyv1mkkepr49"
+  ],
+  "dateRange": {
+    "start": "2026-09-03T11:44:21.080Z",
+    "end": "2026-09-03T12:53:25.376Z"
+  },
+  "summary": {
+    "totalDecisions": 5,
+    "totalEvents": 6,
+    "uniqueAgents": ["default"]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Use the lookup AbortSignal for retry waits",
+          "chosen": "Use the lookup AbortSignal for retry waits",
+          "reasoning": "One shared signal enforces the total two-second diagnostic budget across fetches and backoff sleeps.",
+          "fromTrajectory": "traj_wknqdbi4aqon"
+        },
+        {
+          "question": "Use an exact-checkout public CLI proof with a fake local broker and Cloud 404",
+          "chosen": "Use an exact-checkout public CLI proof with a fake local broker and Cloud 404",
+          "reasoning": "This captures the operator-visible mismatch on base and the LOCAL-ONLY/SSH guidance on head without pretending the Cloud-only attach route is self-hostable.",
+          "fromTrajectory": "traj_etwqd0j7ur8a"
+        }
+      ]
+    },
+    {
+      "category": "naming",
+      "decisions": [
+        {
+          "question": "Cap the optional Cloud name lookup at two seconds",
+          "chosen": "Cap the optional Cloud name lookup at two seconds",
+          "reasoning": "The macOS E2E showed the 10-second lookup budget could exceed node status's established 10-second command deadline after local broker readiness; two seconds keeps the diagnostic useful while preserving local status responsiveness.",
+          "fromTrajectory": "traj_3ls7b6uul5j3"
+        },
+        {
+          "question": "Add the SSH fallback directly to node_not_found attach errors",
+          "chosen": "Add the SSH fallback directly to node_not_found attach errors",
+          "reasoning": "Option B requires both status visibility and an actionable --node failure; a conditional hint is accurate without claiming the caller's missing Cloud name definitely exists locally.",
+          "fromTrajectory": "traj_51m096koolsj"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration",
+          "chosen": "Reconcile node status against the Cloud name endpoint instead of treating websocket connectivity as registration",
+          "reasoning": "Live inspection showed the second broker eventually appears in Cloud, so multiple brokers are supported; the failure window is local readiness advertising a name before the Cloud REST lookup used by --node can resolve it. Status now reports registered, confirmed LOCAL-ONLY, or unknown and gives SSH/state-dir guidance.",
+          "fromTrajectory": "traj_eyv1mkkepr49"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/core.test.ts",
+    "packages/cli/src/cli/commands/core.ts",
+    "packages/cli/src/cli/lib/attach-fleet-node.test.ts",
+    "packages/cli/src/cli/lib/attach-fleet-node.ts",
+    "packages/cli/src/cli/lib/broker-lifecycle.ts",
+    "tests/relayflows/cases/node-status-cloud-registration/case.json",
+    "tests/relayflows/cases/node-status-cloud-registration/run.mjs"
+  ],
+  "commits": ["188542ea", "398aa808", "04c7c853"]
+}

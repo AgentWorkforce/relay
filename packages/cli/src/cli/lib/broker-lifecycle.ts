@@ -101,6 +101,8 @@ type BrokerStatusDetails = {
   session: Awaited<ReturnType<HarnessDriverClient['getSession']>> | null;
 };
 
+type CloudNodeRegistration = 'registered' | 'missing' | 'identity-mismatch' | 'unknown';
+
 type EnrolledNodeExpectation = {
   nodeId: string;
   nodeName?: string;
@@ -2209,11 +2211,77 @@ export async function runStatusCommand(
     }
     deps.log(`Node delivery: ${formatNodeDeliveryStatus(status)}`);
     if (session?.node_id) {
-      deps.log(`Node: ${session.node_name?.trim() || session.node_id} (${session.node_id})`);
+      const nodeName = session.node_name?.trim() || session.node_id;
+      const cloudRegistration = await inspectCloudNodeRegistration(
+        {
+          nodeId: session.node_id,
+          nodeName,
+          workspaceKey: session.workspace_key,
+          baseUrl: session.relay_base_url,
+        },
+        deps
+      );
+      if (cloudRegistration === 'missing' || cloudRegistration === 'identity-mismatch') {
+        deps.log(`Node: ${nodeName} (${session.node_id}; LOCAL-ONLY, not Cloud-registered)`);
+        deps.warn(
+          `Cloud cannot address this broker as "${nodeName}". Enroll that name with ` +
+            "'agent-relay cloud enroll --workspace <workspace> --name <node>' and restart it, " +
+            'or attach through SSH with ' +
+            "'agent-relay node agent attach <agent> --ssh-host <host> --state-dir <path>'."
+        );
+      } else {
+        deps.log(
+          cloudRegistration === 'unknown'
+            ? `Node: ${nodeName} (${session.node_id}; Cloud registration unknown)`
+            : `Node: ${nodeName} (${session.node_id})`
+        );
+        if (cloudRegistration === 'unknown') {
+          deps.warn(
+            'Cloud registration could not be verified; the local broker may not be addressable by --node yet.'
+          );
+        }
+      }
     }
     if (session?.workspace_key) {
       deps.log(`Workspace Key: ${maskSecret(session.workspace_key)}`);
     }
+  }
+}
+
+/**
+ * Compare the local broker identity with the Cloud row that `--node <name>`
+ * actually addresses. A node-control websocket can be connected before its
+ * register/heartbeat has become visible to the REST lookup, so transport
+ * connectivity alone must not be presented as Cloud addressability.
+ */
+async function inspectCloudNodeRegistration(
+  input: {
+    nodeId: string;
+    nodeName: string;
+    workspaceKey?: string;
+    baseUrl?: string;
+  },
+  deps: CoreDependencies
+): Promise<CloudNodeRegistration> {
+  const workspaceKey = input.workspaceKey?.trim();
+  if (!workspaceKey) {
+    return 'unknown';
+  }
+  try {
+    const node = await deps.findCloudNodeByName({
+      workspaceKey,
+      ...(input.baseUrl?.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
+      nodeName: input.nodeName,
+    });
+    if (!node) {
+      return 'missing';
+    }
+    const cloudNodeId = node.id?.trim() || node.nodeId?.trim();
+    return !cloudNodeId || cloudNodeId === input.nodeId ? 'registered' : 'identity-mismatch';
+  } catch {
+    // Cloud lookup is diagnostic. Preserve local status and report the third
+    // state rather than turning a network outage into a false LOCAL-ONLY claim.
+    return 'unknown';
   }
 }
 
