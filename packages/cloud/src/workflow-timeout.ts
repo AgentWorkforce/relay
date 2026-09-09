@@ -23,6 +23,7 @@ const REGEX_KEYWORDS = new Set([
   'continue',
   'debugger',
 ]);
+const ASI_LABEL_KEYWORDS = new Set(['break', 'continue']);
 const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch', 'with']);
 
 type MaskedWorkflowSource = {
@@ -52,6 +53,9 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   let currentIdentifier = '';
   let lastIdentifier: string | undefined;
   let closedControlParen = false;
+  let asiKeywordPending: string | undefined;
+  let asiLabelCandidate = false;
+  let lineBreakAfterAsiLabel = false;
   const controlParenStack: boolean[] = [];
   const openParenStack: number[] = [];
   const matchingOpenParens = new Map<number, number>();
@@ -63,9 +67,26 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
   const flushIdentifier = () => {
     if (currentIdentifier) {
+      if (lastIdentifier !== undefined && ASI_LABEL_KEYWORDS.has(lastIdentifier)) {
+        asiLabelCandidate = true;
+      }
+      if (asiKeywordPending !== undefined) {
+        // `break label\n/regex/` is lexically a regex after the labelled
+        // statement. Keep the ASI context until the label's line terminator
+        // has been observed; a same-line slash remains ordinary code.
+        asiLabelCandidate = true;
+        asiKeywordPending = undefined;
+      }
       lastIdentifier = currentIdentifier;
       currentIdentifier = '';
     }
+  };
+
+  const recordLineBreak = () => {
+    if (lastIdentifier !== undefined && REGEX_KEYWORDS.has(lastIdentifier)) {
+      asiKeywordPending = lastIdentifier;
+    }
+    if (asiLabelCandidate) lineBreakAfterAsiLabel = true;
   };
 
   const appendCode = (character: string, sourceIndex: number) => {
@@ -78,7 +99,16 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     }
 
     flushIdentifier();
-    if (/\s/.test(character)) return;
+    if (/\s/.test(character)) {
+      if (character === '\n' || character === '\r') recordLineBreak();
+      return;
+    }
+
+    // Any non-whitespace token other than the slash handled by the caller
+    // ends the pending ASI/label context.
+    asiKeywordPending = undefined;
+    asiLabelCandidate = false;
+    lineBreakAfterAsiLabel = false;
 
     previousSignificantCharacter = character;
     if (character === '(') {
@@ -124,6 +154,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   // from text inside it.
   const startsRegexLiteral = (): boolean => {
     if (fileType !== 'ts') return false;
+    if (asiKeywordPending !== undefined || lineBreakAfterAsiLabel) return true;
     if (
       previousSignificantCharacter === undefined ||
       REGEX_BOUNDARY_CHARACTERS.test(previousSignificantCharacter)
@@ -155,6 +186,9 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       if (character === ']' && regexCharacterClass) regexCharacterClass = false;
       if (character === '/' && !regexCharacterClass) {
         regexLiteral = false;
+        asiKeywordPending = undefined;
+        asiLabelCandidate = false;
+        lineBreakAfterAsiLabel = false;
         previousSignificantCharacter = '/';
         currentIdentifier = '';
         lastIdentifier = undefined;
@@ -166,13 +200,17 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     if (lineComment) {
       output += mask(character);
-      if (character === '\n') lineComment = false;
+      if (character === '\n' || character === '\r') {
+        recordLineBreak();
+        lineComment = false;
+      }
       index += 1;
       continue;
     }
 
     if (blockComment) {
       output += mask(character);
+      if (character === '\n' || character === '\r') recordLineBreak();
       if (character === '*' && next === '/') {
         output += ' ';
         index += 2;
@@ -225,6 +263,9 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     }
     if (character === '/' && startsRegexLiteral()) {
       output += ' ';
+      asiKeywordPending = undefined;
+      asiLabelCandidate = false;
+      lineBreakAfterAsiLabel = false;
       index += 1;
       regexLiteral = true;
       regexCharacterClass = false;
@@ -392,6 +433,93 @@ function workflowInitializerAt(
   return source[cursor] === '(';
 }
 
+function previousNonWhitespace(source: string, end: number): number {
+  let cursor = end;
+  while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  return cursor;
+}
+
+function addFunctionBinding(
+  functionBindings: Map<number, Set<string>>,
+  scopeId: number,
+  parameters: string
+): void {
+  let names = functionBindings.get(scopeId);
+  if (names === undefined) {
+    names = new Set();
+    functionBindings.set(scopeId, names);
+  }
+  // This is deliberately a conservative lexical scan. Marking names from a
+  // parameter's type/default/destructuring pattern as shadowed can omit an
+  // inference, but never turns unrelated code into a false builder timeout.
+  for (const parameter of parameters.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
+    names.add(parameter[0]);
+  }
+}
+
+function collectFunctionScopes(masked: MaskedWorkflowSource): {
+  functionScopes: Set<number>;
+  functionBindings: Map<number, Set<string>>;
+} {
+  const { source, matchingOpenParens, matchingCloseParens, scopeAt, nextNonWhitespace } = masked;
+  const functionScopes = new Set<number>();
+  const functionBindings = new Map<number, Set<string>>();
+
+  const register = (openParen: number, parametersStart: number, parametersEnd: number): void => {
+    const closeParen = matchingCloseParens.get(openParen);
+    if (closeParen === undefined) return;
+    const bodyOpen = nextNonWhitespace[closeParen + 1] ?? source.length;
+    if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) return;
+    const scopeId = scopeAt[bodyOpen + 1] ?? 0;
+    functionScopes.add(scopeId);
+    addFunctionBinding(functionBindings, scopeId, source.slice(parametersStart, parametersEnd));
+  };
+
+  // Function declarations and expressions.
+  const functionPattern = /\bfunction\s*\*?\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*)?\(/g;
+  let functionMatch: RegExpExecArray | null;
+  while ((functionMatch = functionPattern.exec(source)) !== null) {
+    const openParen = functionMatch.index + functionMatch[0].lastIndexOf('(');
+    register(openParen, openParen + 1, matchingCloseParens.get(openParen) ?? openParen + 1);
+  }
+
+  // Block-bodied arrow functions. Expression-bodied arrows introduce no
+  // lexical block that this scanner needs to model.
+  const arrowPattern = /=>/g;
+  let arrowMatch: RegExpExecArray | null;
+  while ((arrowMatch = arrowPattern.exec(source)) !== null) {
+    const bodyOpen = nextNonWhitespace[arrowMatch.index + arrowMatch[0].length] ?? source.length;
+    if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) continue;
+    const scopeId = scopeAt[bodyOpen + 1] ?? 0;
+    functionScopes.add(scopeId);
+    const parameterEnd = previousNonWhitespace(source, arrowMatch.index - 1) + 1;
+    const parameterEndCharacter = parameterEnd - 1;
+    if (source[parameterEndCharacter] === ')') {
+      const openParen = matchingOpenParens.get(parameterEndCharacter);
+      if (openParen !== undefined) {
+        addFunctionBinding(functionBindings, scopeId, source.slice(openParen + 1, parameterEndCharacter));
+      }
+    } else {
+      const parameter = identifierBefore(source, parameterEnd);
+      if (parameter !== null) addFunctionBinding(functionBindings, scopeId, parameter.name);
+    }
+  }
+
+  return { functionScopes, functionBindings };
+}
+
+function nearestFunctionScope(
+  scopeId: number,
+  functionScopes: ReadonlySet<number>,
+  scopeParents: ReadonlyMap<number, number>
+): number {
+  let currentScope = scopeId;
+  while (currentScope > 0 && !functionScopes.has(currentScope)) {
+    currentScope = scopeParents.get(currentScope) ?? 0;
+  }
+  return currentScope;
+}
+
 /**
  * Infer the outer Cloud launch budget from a literal RelayFlow builder timeout
  * without evaluating submitted workflow code. Dynamic expressions are left
@@ -405,21 +533,40 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const masked = maskNonCode(workflow, fileType);
   const source = masked.source;
+  const { functionScopes, functionBindings } = collectFunctionScopes(masked);
   const bindings = new Map<number, Map<string, WorkflowBinding>>();
   const declarationPattern =
     fileType === 'ts'
-      ? /\b(?:const|let|var|function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g
+      ? /\b(const|let|var|function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g
       : /\b([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
   let declaration: RegExpExecArray | null;
   while ((declaration = declarationPattern.exec(source)) !== null) {
     const scopeId = masked.scopeAt[declaration.index] ?? 0;
+    const declarationKind = fileType === 'ts' ? declaration[1] : undefined;
+    const declarationName = fileType === 'ts' ? declaration[2] : declaration[1];
+    const bindingScope =
+      declarationKind === 'var'
+        ? nearestFunctionScope(scopeId, functionScopes, masked.scopeParents)
+        : scopeId;
+    let scopeBindings = bindings.get(scopeId);
+    if (scopeBindings === undefined || bindingScope !== scopeId) {
+      scopeBindings = bindings.get(bindingScope);
+    }
+    if (scopeBindings === undefined) {
+      scopeBindings = new Map();
+      bindings.set(bindingScope, scopeBindings);
+    }
+    const builder = workflowInitializerAt(source, declaration.index + declaration[0].length, fileType);
+    scopeBindings.set(declarationName, { builder });
+  }
+
+  for (const [scopeId, names] of functionBindings) {
     let scopeBindings = bindings.get(scopeId);
     if (scopeBindings === undefined) {
       scopeBindings = new Map();
       bindings.set(scopeId, scopeBindings);
     }
-    const builder = workflowInitializerAt(source, declaration.index + declaration[0].length, fileType);
-    scopeBindings.set(declaration[1], { builder });
+    for (const name of names) scopeBindings.set(name, { builder: false });
   }
 
   const values = new Set<number>();

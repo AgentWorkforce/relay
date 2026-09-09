@@ -108,6 +108,21 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
+  it('masks a regular expression after a labelled ASI break', () => {
+    const source =
+      'workflow("real").timeout(900_000); while (ready) { break label\n/workflow("fake").timeout(600_000)/.test(value); }';
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('keeps ASI regex masking through comments after break and continue', () => {
+    for (const keyword of ['break', 'continue']) {
+      const source =
+        `workflow("real").timeout(900_000); while (ready) { ${keyword} /* comment\n */ label\n` +
+        '/workflow("fake").timeout(600_000)/.test(value); }';
+      expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+    }
+  });
+
   it('does not let a shadowed non-builder identifier create an ambiguous timeout', () => {
     const source = [
       "const wf = workflow('real');",
@@ -127,6 +142,57 @@ describe('workflow launch timeout inference', () => {
       '  const workflow = fakeWorkflow;',
       '  workflow("fake").timeout(600_000);',
       '}',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('does not let a function parameter shadowing a builder create an ambiguous timeout', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'function run(wf) {',
+      '  wf.timeout(600_000);',
+      '}',
+      'wf.timeout(900_000);',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('does not let a function parameter shadowing workflow create an ambiguous timeout', () => {
+    const source = [
+      "workflow('real').timeout(900_000);",
+      'function run(workflow) {',
+      '  workflow("fake").timeout(600_000);',
+      '}',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('hoists var builder bindings to the surrounding function scope', () => {
+    const source = ['{', "  var wf = workflow('real');", '}', 'wf.timeout(900_000);'].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('tracks arrow-function parameters as lexical shadows', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'const run = (wf) => {',
+      '  wf.timeout(600_000);',
+      '};',
+      'wf.timeout(900_000);',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('keeps var shadows inside a function from changing the outer binding', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'function run() {',
+      '  {',
+      '    var wf = {};',
+      '  }',
+      '  wf.timeout(600_000);',
+      '}',
+      'wf.timeout(900_000);',
     ].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
