@@ -22,7 +22,14 @@ const REGEX_KEYWORDS = new Set([
 ]);
 const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch', 'with']);
 
-function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 'py'>): string {
+type MaskedWorkflowSource = {
+  source: string;
+  matchingOpenParens: Map<number, number>;
+};
+
+type WorkflowRoot = { name: string; invoked: boolean };
+
+function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 'py'>): MaskedWorkflowSource {
   let output = '';
   let index = 0;
   let quote: "'" | '"' | '`' | null = null;
@@ -38,6 +45,8 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   let lastIdentifier: string | undefined;
   let closedControlParen = false;
   const controlParenStack: boolean[] = [];
+  const openParenStack: number[] = [];
+  const matchingOpenParens = new Map<number, number>();
 
   const flushIdentifier = () => {
     if (currentIdentifier) {
@@ -46,7 +55,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     }
   };
 
-  const appendCode = (character: string) => {
+  const appendCode = (character: string, sourceIndex: number) => {
     output += character;
     if (/[A-Za-z0-9_$]/.test(character)) {
       currentIdentifier += character;
@@ -60,12 +69,15 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     previousSignificantCharacter = character;
     if (character === '(') {
+      openParenStack.push(sourceIndex);
       controlParenStack.push(lastIdentifier !== undefined && CONTROL_PAREN_KEYWORDS.has(lastIdentifier));
       lastIdentifier = undefined;
       closedControlParen = false;
       return;
     }
     if (character === ')') {
+      const openParen = openParenStack.pop();
+      if (openParen !== undefined) matchingOpenParens.set(sourceIndex, openParen);
       closedControlParen = controlParenStack.pop() ?? false;
       lastIdentifier = undefined;
       return;
@@ -142,15 +154,20 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     if (quote) {
       output += mask(character);
-      if (triple && character === quote && next === quote && third === quote) {
-        output += '  ';
-        index += 3;
-        quote = null;
-        triple = false;
-        escaped = false;
-        continue;
-      }
-      if (!triple) {
+      if (triple) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === '\\') {
+          escaped = true;
+        } else if (character === quote && next === quote && third === quote) {
+          output += '  ';
+          index += 3;
+          quote = null;
+          triple = false;
+          escaped = false;
+          continue;
+        }
+      } else {
         if (escaped) {
           escaped = false;
         } else if (character === '\\') {
@@ -192,6 +209,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       triple = fileType === 'py' && next === character && third === character;
       quote = character;
       output += triple ? '   ' : ' ';
+      escaped = false;
       previousSignificantCharacter = character;
       currentIdentifier = '';
       lastIdentifier = undefined;
@@ -200,11 +218,11 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       continue;
     }
 
-    appendCode(character);
+    appendCode(character, index);
     index += 1;
   }
 
-  return output;
+  return { source: output, matchingOpenParens };
 }
 
 function validateLaunchTimeoutMs(value: number, source: string, minimum = 1): number {
@@ -225,18 +243,6 @@ export function validateExplicitWorkflowLaunchTimeoutMs(explicit?: number): numb
   return validateLaunchTimeoutMs(explicit, 'launchTimeoutMs', MIN_EXPLICIT_WORKFLOW_LAUNCH_TIMEOUT_MS);
 }
 
-function findMatchingOpenParen(source: string, closeIndex: number): number | null {
-  let depth = 0;
-  for (let index = closeIndex; index >= 0; index -= 1) {
-    if (source[index] === ')') depth += 1;
-    if (source[index] === '(') {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return null;
-}
-
 function identifierBefore(source: string, end: number): { name: string; start: number } | null {
   let cursor = end;
   while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
@@ -248,24 +254,54 @@ function identifierBefore(source: string, end: number): { name: string; start: n
 
 /**
  * Return the root expression for a fluent call immediately before `.timeout`.
- * The source has already had strings/comments/regex literals masked, so a
- * small balanced-parenthesis walk is enough to distinguish `workflow(...).timeout`
- * and a known workflow variable from `httpClient.timeout`.
+ * The source has already had strings/comments/regex literals masked, and the
+ * lexer has recorded balanced parentheses, so resolving a fluent call shares
+ * structural work across repeated `.timeout()` candidates.
  */
-function timeoutRoot(source: string, timeoutDot: number): { name: string; invoked: boolean } | null {
+function timeoutRoot(
+  source: string,
+  timeoutDot: number,
+  matchingOpenParens: ReadonlyMap<number, number>,
+  callRoots: Map<number, WorkflowRoot | null>
+): WorkflowRoot | null {
   let cursor = timeoutDot - 1;
   while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
 
-  while (cursor >= 0 && source[cursor] === ')') {
-    const open = findMatchingOpenParen(source, cursor);
-    if (open === null) return null;
-    const method = identifierBefore(source, open - 1);
-    if (method === null) return null;
-    cursor = method.start - 1;
-    while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
-    if (cursor < 0 || source[cursor] !== '.') return { name: method.name, invoked: true };
-    cursor -= 1;
-    while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+  if (cursor >= 0 && source[cursor] === ')') {
+    const pendingCalls: number[] = [];
+    let root: WorkflowRoot | null = null;
+    while (cursor >= 0 && source[cursor] === ')') {
+      if (callRoots.has(cursor)) {
+        root = callRoots.get(cursor) ?? null;
+        break;
+      }
+      const open = matchingOpenParens.get(cursor);
+      if (open === undefined) {
+        root = null;
+        break;
+      }
+      pendingCalls.push(cursor);
+      const method = identifierBefore(source, open - 1);
+      if (method === null) {
+        root = null;
+        break;
+      }
+      cursor = method.start - 1;
+      while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+      if (cursor < 0 || source[cursor] !== '.') {
+        root = { name: method.name, invoked: true };
+        break;
+      }
+      cursor -= 1;
+      while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
+    }
+
+    if (root === null && pendingCalls.length > 0 && (cursor < 0 || source[cursor] !== ')')) {
+      const identifier = identifierBefore(source, cursor);
+      root = identifier ? { name: identifier.name, invoked: false } : null;
+    }
+    for (const pendingCall of pendingCalls) callRoots.set(pendingCall, root);
+    return root;
   }
 
   const identifier = identifierBefore(source, cursor);
@@ -283,7 +319,8 @@ export function inferWorkflowLaunchTimeoutMs(
 ): number | undefined {
   if (fileType === 'yaml') return undefined;
 
-  const source = maskNonCode(workflow, fileType);
+  const masked = maskNonCode(workflow, fileType);
+  const source = masked.source;
   const builderNames = new Set<string>();
   const assignmentPattern =
     fileType === 'ts'
@@ -296,6 +333,7 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const values = new Set<number>();
   let hasDynamicBuilderTimeout = false;
+  const callRoots = new Map<number, WorkflowRoot | null>();
   const timeoutPattern = /\.timeout/g;
   let match: RegExpExecArray | null;
   while ((match = timeoutPattern.exec(source)) !== null) {
@@ -307,7 +345,7 @@ export function inferWorkflowLaunchTimeoutMs(
     const argumentEnd = source.indexOf(')', argumentStart);
     if (argumentEnd < 0) continue;
 
-    const root = timeoutRoot(source, match.index);
+    const root = timeoutRoot(source, match.index, masked.matchingOpenParens, callRoots);
     if (root === null || (root.invoked ? root.name !== 'workflow' : !builderNames.has(root.name))) {
       continue;
     }

@@ -60,6 +60,11 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
+  it('resolves repeated fluent timeout calls without rescanning their call chain', () => {
+    const source = "workflow('root')" + '.timeout(600_000)'.repeat(12_000);
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(600_000);
+  });
+
   it('ignores timeout methods on unrelated objects', () => {
     expect(
       inferWorkflowLaunchTimeoutMs(
@@ -97,6 +102,13 @@ describe('workflow launch timeout inference', () => {
       'workflow("real").timeout(600_000).run()',
     ].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(600_000);
+  });
+
+  it('keeps timeout-shaped text inside escaped Python triple-quoted delimiters masked', () => {
+    const doubleQuoted = String.raw`s = """abc \""" workflow("fake").timeout(600_000) still string"""`;
+    const singleQuoted = String.raw`s = '''abc \''' workflow("fake").timeout(600_000) still string'''`;
+    expect(inferWorkflowLaunchTimeoutMs(doubleQuoted, 'py')).toBeUndefined();
+    expect(inferWorkflowLaunchTimeoutMs(singleQuoted, 'py')).toBeUndefined();
   });
 
   it('ignores timeout methods on unrelated Python call expressions', () => {
