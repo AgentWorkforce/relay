@@ -8,7 +8,7 @@ import {
 } from './workflow-runtime.js';
 
 const compiled = {
-  env: { ...process.env },
+  env: {} as NodeJS.ProcessEnv,
   argv: ['bun', '/$bunfs/root/cli/index.js'],
   execPath: '/tmp/agent-relay',
   cliScript: '/$bunfs/root/cli/index.js',

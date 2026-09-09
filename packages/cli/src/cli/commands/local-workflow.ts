@@ -175,7 +175,7 @@ function runDirFor(cwd: string, runId: string): string {
 }
 
 async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await fsp.writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
   await fsp.rename(tmpPath, filePath);
 }
@@ -351,7 +351,7 @@ async function runLocalWorkflow(
   try {
     ({ command, args } = await resolveLocalWorkflowCommand(workflowPath, fileType, deps));
   } catch (error) {
-    throw describeWorkflowChildError(error, workflowPath);
+    throw describeWorkflowChildError(error, workflowNodeExecutable(deps));
   }
   const now = deps.now().toISOString();
   const logPath = path.join(runDir, 'workflow.log');
@@ -406,30 +406,60 @@ async function runLocalWorkflow(
     fs.closeSync(logFd);
   }
 
-  // A detached child can fail after spawn returns (for example when Node is
-  // missing on a Bun standalone install). Always consume that event so Node
-  // does not report a raw unhandled `spawn ... ENOENT`, and persist guidance
-  // where `workflow logs` can surface it later.
+  // A detached child reports initial spawn failures asynchronously. Wait for
+  // either `spawn` or the fully persisted `error` before marking the run
+  // active, otherwise the normal running write can overwrite the failure.
+  let settleStartup: ((record: LocalWorkflowRunRecord | null) => void) | undefined;
+  let startupSettled = false;
+  const startup =
+    typeof monitor.once === 'function'
+      ? new Promise<LocalWorkflowRunRecord | null>((resolve) => {
+          settleStartup = resolve;
+          monitor.once('spawn', () => {
+            if (startupSettled) return;
+            startupSettled = true;
+            resolve(null);
+          });
+        })
+      : Promise.resolve(null);
+
   if (typeof monitor.on === 'function') {
     monitor.on('error', (error) => {
       const message = describeWorkflowChildError(error, workflowNodeExecutable(deps)).message;
       deps.error(message);
       void readRunRecord(cwd, runId)
         .catch(() => record)
-        .then((current) =>
-          writeJsonAtomic(metadataPath, {
+        .then(async (current) => {
+          const failed: LocalWorkflowRunRecord = {
             ...current,
             status: 'failed',
             exitCode: 1,
             error: message,
             finishedAt: deps.now().toISOString(),
             updatedAt: deps.now().toISOString(),
-          })
-        )
-        .catch(() => undefined);
+          };
+          await writeJsonAtomic(metadataPath, failed);
+          return failed;
+        })
+        .catch(() => ({
+          ...record,
+          status: 'failed' as const,
+          exitCode: 1,
+          error: message,
+          finishedAt: deps.now().toISOString(),
+          updatedAt: deps.now().toISOString(),
+        }))
+        .then((failed) => {
+          if (startupSettled) return;
+          startupSettled = true;
+          settleStartup?.(failed);
+        });
     });
   }
   monitor.unref();
+
+  const startupFailure = await startup;
+  if (startupFailure) return startupFailure;
 
   const current = await readRunRecord(cwd, runId).catch(() => record);
   const next: LocalWorkflowRunRecord = {
