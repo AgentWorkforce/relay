@@ -30,6 +30,8 @@ type MaskedWorkflowSource = {
   source: string;
   matchingOpenParens: Map<number, number>;
   matchingCloseParens: Map<number, number>;
+  matchingOpenBraces: Map<number, number>;
+  matchingCloseBraces: Map<number, number>;
   scopeAt: Int32Array;
   scopeParents: Map<number, number>;
   nextNonWhitespace: Uint32Array;
@@ -58,8 +60,11 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   let lineBreakAfterAsiLabel = false;
   const controlParenStack: boolean[] = [];
   const openParenStack: number[] = [];
+  const openBraceStack: number[] = [];
   const matchingOpenParens = new Map<number, number>();
   const matchingCloseParens = new Map<number, number>();
+  const matchingOpenBraces = new Map<number, number>();
+  const matchingCloseBraces = new Map<number, number>();
   const scopeAt = new Int32Array(source.length);
   const scopeParents = new Map<number, number>([[0, -1]]);
   const scopeStack = [0];
@@ -119,6 +124,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       return;
     }
     if (character === '{') {
+      openBraceStack.push(sourceIndex);
       const scopeId = nextScopeId++;
       scopeParents.set(scopeId, scopeStack[scopeStack.length - 1]);
       scopeStack.push(scopeId);
@@ -127,6 +133,11 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       return;
     }
     if (character === '}') {
+      const openBrace = openBraceStack.pop();
+      if (openBrace !== undefined) {
+        matchingOpenBraces.set(sourceIndex, openBrace);
+        matchingCloseBraces.set(openBrace, sourceIndex);
+      }
       if (scopeStack.length > 1) scopeStack.pop();
       lastIdentifier = undefined;
       closedControlParen = false;
@@ -304,6 +315,8 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     source: output,
     matchingOpenParens,
     matchingCloseParens,
+    matchingOpenBraces,
+    matchingCloseBraces,
     scopeAt,
     scopeParents,
     nextNonWhitespace,
@@ -439,6 +452,57 @@ function previousNonWhitespace(source: string, end: number): number {
   return cursor;
 }
 
+function nextNonWhitespace(source: string, start: number): number {
+  let cursor = start;
+  while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+  return cursor;
+}
+
+function functionBodyOpen(
+  source: string,
+  closeParen: number,
+  nextNonWhitespaceByIndex: Uint32Array,
+  matchingCloseBraces: ReadonlyMap<number, number>
+): number | undefined {
+  let cursor = nextNonWhitespaceByIndex[closeParen + 1] ?? source.length;
+  if (source[cursor] === '{') return cursor;
+  // TypeScript permits a return annotation between the parameter list and
+  // body (`function f(x: T): Promise<void> { ... }`). If the annotation uses
+  // an object type, skip that balanced type literal and select the following
+  // body brace. Unterminated/ambiguous syntax is left unresolved.
+  if (source[cursor] !== ':') return undefined;
+  cursor = nextNonWhitespace(source, cursor + 1);
+  let angleDepth = 0;
+  while (cursor < source.length) {
+    const character = source[cursor];
+    if (character === '<') {
+      angleDepth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (character === '>') {
+      angleDepth = Math.max(0, angleDepth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (character !== '{') {
+      if (character === ';') return undefined;
+      cursor += 1;
+      continue;
+    }
+    const closeBrace = matchingCloseBraces.get(cursor);
+    if (closeBrace === undefined) return undefined;
+    if (angleDepth > 0) {
+      cursor = closeBrace + 1;
+      continue;
+    }
+    const afterBrace = nextNonWhitespace(source, closeBrace + 1);
+    if (source[afterBrace] === '{') return afterBrace;
+    return cursor;
+  }
+  return undefined;
+}
+
 function addFunctionBinding(
   functionBindings: Map<number, Set<string>>,
   scopeId: number,
@@ -457,19 +521,120 @@ function addFunctionBinding(
   }
 }
 
-function collectFunctionScopes(masked: MaskedWorkflowSource): {
+function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
   functionScopes: Set<number>;
   functionBindings: Map<number, Set<string>>;
 } {
-  const { source, matchingOpenParens, matchingCloseParens, scopeAt, nextNonWhitespace } = masked;
+  const { source, scopeAt, scopeParents } = masked;
   const functionScopes = new Set<number>();
   const functionBindings = new Map<number, Set<string>>();
+  const lines: Array<{ start: number; end: number; indent: number }> = [];
+  let lineStart = 0;
+  for (let cursor = 0; cursor <= source.length; cursor += 1) {
+    if (cursor !== source.length && source[cursor] !== '\n') continue;
+    let indent = 0;
+    while (lineStart + indent < cursor) {
+      const character = source[lineStart + indent];
+      if (character === ' ') indent += 1;
+      else if (character === '\t') indent += 4;
+      else break;
+    }
+    lines.push({ start: lineStart, end: cursor, indent });
+    lineStart = cursor + 1;
+  }
+
+  const pending: Array<{ indent: number; parameters: string }> = [];
+  const stack: Array<{ indent: number; scopeId: number }> = [];
+  let nextScopeId = 1;
+  for (const scopeId of scopeParents.keys()) nextScopeId = Math.max(nextScopeId, scopeId + 1);
+  for (const line of lines) {
+    const trimmed = source.slice(line.start + line.indent, line.end);
+    if (trimmed.trim() === '') continue;
+    while (stack.length > 0 && line.indent <= stack[stack.length - 1].indent) stack.pop();
+
+    while (pending.length > 0 && line.indent > pending[0].indent) {
+      const functionScope = nextScopeId++;
+      const parentScope = stack[stack.length - 1]?.scopeId ?? 0;
+      scopeParents.set(functionScope, parentScope);
+      functionScopes.add(functionScope);
+      addFunctionBinding(functionBindings, functionScope, pending.shift()!.parameters);
+      stack.push({ indent: line.indent, scopeId: functionScope });
+    }
+    pending.length = 0;
+
+    const scopeId = stack[stack.length - 1]?.scopeId ?? 0;
+    for (let cursor = line.start; cursor < line.end; cursor += 1) scopeAt[cursor] = scopeId;
+
+    const functionMatch = trimmed.match(
+      /^(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\((.*)\)\s*:\s*(?:#.*)?$/
+    );
+    if (functionMatch !== null) pending.push({ indent: line.indent, parameters: functionMatch[1] });
+  }
+
+  // Python lambdas have expression scope rather than indentation scope. For
+  // the static timeout scan, delimit their body at the first top-level
+  // separator on the source line; malformed expressions conservatively claim
+  // the remainder of that line.
+  const lambdaPattern = /\blambda\s+([^:\n]+):/g;
+  let lambdaMatch: RegExpExecArray | null;
+  while ((lambdaMatch = lambdaPattern.exec(source)) !== null) {
+    const bodyStart = nextNonWhitespace(source, lambdaMatch.index + lambdaMatch[0].length);
+    const parentScope = scopeAt[lambdaMatch.index] ?? 0;
+    const lambdaScope = nextScopeId++;
+    scopeParents.set(lambdaScope, parentScope);
+    functionScopes.add(lambdaScope);
+    addFunctionBinding(functionBindings, lambdaScope, lambdaMatch[1]);
+
+    let bodyEnd = source.indexOf('\n', bodyStart);
+    if (bodyEnd < 0) bodyEnd = source.length;
+    let parenDepth = 0;
+    let bracketDepth = 0;
+    let braceDepth = 0;
+    for (let cursor = bodyStart; cursor < bodyEnd; cursor += 1) {
+      const character = source[cursor];
+      if (character === '(') parenDepth += 1;
+      else if (character === ')') {
+        if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+          bodyEnd = cursor;
+          break;
+        }
+        parenDepth = Math.max(0, parenDepth - 1);
+      } else if (character === '[') bracketDepth += 1;
+      else if (character === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+      else if (character === '{') braceDepth += 1;
+      else if (character === '}') braceDepth = Math.max(0, braceDepth - 1);
+      else if (character === ',' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+        bodyEnd = cursor;
+        break;
+      } else if (character === ';' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
+        bodyEnd = cursor;
+        break;
+      }
+    }
+    for (let cursor = bodyStart; cursor < bodyEnd; cursor += 1) scopeAt[cursor] = lambdaScope;
+  }
+  return { functionScopes, functionBindings };
+}
+
+function collectFunctionScopes(
+  masked: MaskedWorkflowSource,
+  fileType: Extract<WorkflowFileType, 'ts' | 'py'>
+): {
+  functionScopes: Set<number>;
+  functionBindings: Map<number, Set<string>>;
+} {
+  const { source, matchingOpenParens, matchingCloseParens, matchingCloseBraces, scopeAt, nextNonWhitespace } =
+    masked;
+  const functionScopes = new Set<number>();
+  const functionBindings = new Map<number, Set<string>>();
+
+  if (fileType === 'py') return collectPythonFunctionScopes(masked);
 
   const register = (openParen: number, parametersStart: number, parametersEnd: number): void => {
     const closeParen = matchingCloseParens.get(openParen);
     if (closeParen === undefined) return;
-    const bodyOpen = nextNonWhitespace[closeParen + 1] ?? source.length;
-    if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) return;
+    const bodyOpen = functionBodyOpen(source, closeParen, nextNonWhitespace, matchingCloseBraces);
+    if (bodyOpen === undefined || bodyOpen + 1 >= source.length) return;
     const scopeId = scopeAt[bodyOpen + 1] ?? 0;
     functionScopes.add(scopeId);
     addFunctionBinding(functionBindings, scopeId, source.slice(parametersStart, parametersEnd));
@@ -483,6 +648,21 @@ function collectFunctionScopes(masked: MaskedWorkflowSource): {
     register(openParen, openParen + 1, matchingCloseParens.get(openParen) ?? openParen + 1);
   }
 
+  // Catch bindings have their own lexical scope, represented by the catch
+  // block's brace scope in the masked source.
+  const catchPattern = /\bcatch\s*\(/g;
+  let catchMatch: RegExpExecArray | null;
+  while ((catchMatch = catchPattern.exec(source)) !== null) {
+    const openParen = catchMatch.index + catchMatch[0].lastIndexOf('(');
+    const closeParen = matchingCloseParens.get(openParen);
+    if (closeParen === undefined) continue;
+    const bodyOpen = nextNonWhitespace[closeParen + 1] ?? source.length;
+    if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) continue;
+    const scopeId = scopeAt[bodyOpen + 1] ?? 0;
+    functionScopes.add(scopeId);
+    addFunctionBinding(functionBindings, scopeId, source.slice(openParen + 1, closeParen));
+  }
+
   // Block-bodied arrow functions. Expression-bodied arrows introduce no
   // lexical block that this scanner needs to model.
   const arrowPattern = /=>/g;
@@ -492,15 +672,15 @@ function collectFunctionScopes(masked: MaskedWorkflowSource): {
     if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) continue;
     const scopeId = scopeAt[bodyOpen + 1] ?? 0;
     functionScopes.add(scopeId);
-    const parameterEnd = previousNonWhitespace(source, arrowMatch.index - 1) + 1;
-    const parameterEndCharacter = parameterEnd - 1;
-    if (source[parameterEndCharacter] === ')') {
-      const openParen = matchingOpenParens.get(parameterEndCharacter);
+    let parameterClose = previousNonWhitespace(source, arrowMatch.index - 1);
+    while (parameterClose >= 0 && source[parameterClose] !== ')') parameterClose -= 1;
+    if (parameterClose >= 0) {
+      const openParen = matchingOpenParens.get(parameterClose);
       if (openParen !== undefined) {
-        addFunctionBinding(functionBindings, scopeId, source.slice(openParen + 1, parameterEndCharacter));
+        addFunctionBinding(functionBindings, scopeId, source.slice(openParen + 1, parameterClose));
       }
     } else {
-      const parameter = identifierBefore(source, parameterEnd);
+      const parameter = identifierBefore(source, previousNonWhitespace(source, arrowMatch.index - 1) + 1);
       if (parameter !== null) addFunctionBinding(functionBindings, scopeId, parameter.name);
     }
   }
@@ -533,7 +713,7 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const masked = maskNonCode(workflow, fileType);
   const source = masked.source;
-  const { functionScopes, functionBindings } = collectFunctionScopes(masked);
+  const { functionScopes, functionBindings } = collectFunctionScopes(masked, fileType);
   const bindings = new Map<number, Map<string, WorkflowBinding>>();
   const declarationPattern =
     fileType === 'ts'

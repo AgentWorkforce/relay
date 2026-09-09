@@ -167,6 +167,48 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it('tracks typed function parameters through return annotations', () => {
+    const source = [
+      "workflow('real').timeout(900_000);",
+      'function run(workflow: unknown): void {',
+      '  workflow("fake").timeout(600_000);',
+      '}',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('skips object types nested in typed function return annotations', () => {
+    const source = [
+      "workflow('real').timeout(900_000);",
+      'function run(workflow: unknown): Promise<{ ok: boolean }> {',
+      '  workflow("fake").timeout(600_000);',
+      '}',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('tracks typed arrow parameters through return annotations', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'const run = (wf: unknown): void => {',
+      '  wf.timeout(600_000);',
+      '};',
+      'wf.timeout(900_000);',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('tracks catch bindings as lexical shadows', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'try {} catch (wf) {',
+      '  wf.timeout(600_000);',
+      '}',
+      'wf.timeout(900_000);',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
   it('hoists var builder bindings to the surrounding function scope', () => {
     const source = ['{', "  var wf = workflow('real');", '}', 'wf.timeout(900_000);'].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
@@ -213,6 +255,25 @@ describe('workflow launch timeout inference', () => {
       'workflow("real").timeout(600_000).run()',
     ].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(600_000);
+  });
+
+  it('tracks Python function parameters through indentation scopes', () => {
+    const source = [
+      "workflow('real').timeout(900_000)",
+      'def run(workflow):',
+      "    workflow('fake').timeout(600_000)",
+      "workflow('real').timeout(900_000)",
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
+  it('tracks Python lambda parameters through expression scope', () => {
+    const source = [
+      "workflow('real').timeout(900_000)",
+      "run = lambda workflow: workflow('fake').timeout(600_000)",
+      "workflow('real').timeout(900_000)",
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
   it('keeps timeout-shaped text inside escaped Python triple-quoted delimiters masked', () => {
