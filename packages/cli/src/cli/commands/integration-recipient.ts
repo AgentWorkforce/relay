@@ -133,6 +133,7 @@ export async function resolveSubscriptionAgentChannel(
     ),
     {
       method: 'POST',
+      signal: AbortSignal.timeout(15_000),
       headers: { authorization: `Bearer ${resolveWorkspaceKey(options)}` },
     }
   );

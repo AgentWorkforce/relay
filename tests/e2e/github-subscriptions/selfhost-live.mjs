@@ -22,7 +22,8 @@ assert(
   engine && cloudRoot,
   'Set GHSUB_ENGINE_ROOT and GHSUB_CLOUD_ROOT to locally built candidate checkouts'
 );
-const { fixturePathGlob, assertProducerWorkspace } = await import('./fixture-scope.mjs');
+const { fixturePathGlob, assertProducerWorkspace, findFixtureCommentMessage } =
+  await import('./fixture-scope.mjs');
 const cloudModule = (m) => m.default ?? m;
 const { createGitHubWebhookIngest } = cloudModule(
   await import(cloudRoot + '/packages/web/lib/integrations/github-webhook-ingest.ts')
@@ -191,7 +192,7 @@ async function emit(fixture, label) {
 }
 async function received(stimulus) {
   const m = await until(
-    async () => (await messages()).find((m) => m.text?.includes('GHSUB_EVENT_NONCE=' + stimulus.nonce)),
+    async () => findFixtureCommentMessage(await messages(), stimulus, runId),
     240000,
     'real GitHub ingress ' + stimulus.label
   );

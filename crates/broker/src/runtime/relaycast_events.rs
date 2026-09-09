@@ -518,6 +518,7 @@ pub(super) async fn spawn_worker_from_request(
     if workers.identity_cleanups.contains_key(&name) {
         anyhow::bail!("worker name has pending owned cleanup; complete it before reuse");
     }
+    anyhow::ensure!(!workers.has_worker(&name), "agent '{name}' already exists");
     let workspace_http = &workspace_state.http_client;
     eprintln!(
         "[agent-relay] received spawn request for '{}' (cli: {})",

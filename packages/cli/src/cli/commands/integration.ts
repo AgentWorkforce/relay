@@ -483,7 +483,7 @@ async function createRelayfileInboundTarget(
   const authOptions =
     local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
   const workspaceKey = resolveWorkspaceKey(authOptions);
-  const baseUrl = resolveInboundTargetBaseUrl(options);
+  const baseUrl = resolveInboundTargetBaseUrl(authOptions);
   const response = await fetch(new URL('/v1/integrations/relayfile/inbound-target', baseUrl), {
     method: 'POST',
     headers: {
@@ -1438,7 +1438,7 @@ async function runSubscribeSetup(
   const channel = recipientName
     ? await deps.resolveAgentChannel(recipientName, {
         ...effectiveRelayOptions,
-        baseUrl: resolveInboundTargetBaseUrl(relayOptions),
+        baseUrl: resolveInboundTargetBaseUrl(effectiveRelayOptions),
       })
     : targetChannel(to);
   const events = commaList(opts.events);

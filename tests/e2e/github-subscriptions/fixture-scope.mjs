@@ -1,5 +1,6 @@
 import {
   githubIssuePath,
+  githubIssueCommentPath,
   githubPullRequestPath,
   githubRepoPrefix,
 } from '@relayfile/adapter-github/path-mapper';
@@ -29,4 +30,21 @@ export function assertProducerWorkspace(expected, actual) {
     throw new Error(
       `Relayfile producer workspace mismatch: expected ${expected || '(unset)'}, got ${actual || '(unset)'}`
     );
+}
+
+/** Ignore legacy copies while requiring the exact adapter-owned comment record. */
+export function findFixtureCommentMessage(messages, stimulus, runId) {
+  const [owner, repo] = stimulus.repo.split('/');
+  const canonicalPath = githubIssueCommentPath(
+    owner,
+    repo,
+    stimulus.pr,
+    stimulus.commentId,
+    fixtureTitle(runId)
+  );
+  return messages.find(
+    (message) =>
+      (message.metadata?.path ?? message.metadata?.relayfile?.path) === canonicalPath &&
+      message.text?.includes('GHSUB_EVENT_NONCE=' + stimulus.nonce)
+  );
 }

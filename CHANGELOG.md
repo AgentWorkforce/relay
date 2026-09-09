@@ -5,7 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased - Major]
 
 ### Added
 
@@ -28,11 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Claude and Codex workers receive a separate delayed Enter for every injected delivery. After the PTY acknowledges that write, background Enter recovery is disabled for both harnesses to avoid submitting unrelated input after idle. The structured `injection_recovery_disabled` diagnostic explicitly leaves harness acceptance unconfirmed: echoed input is not proof of an agent action.
+- Claude and Codex workers receive a separate delayed Enter for every injected delivery. After the PTY acknowledges the write, background Enter recovery is disabled for both harnesses to avoid submitting unrelated input after idle. The structured `injection_recovery_disabled` diagnostic explicitly leaves harness acceptance unconfirmed: echoed input is not proof of an agent action.
+
+### Breaking Changes
 
 - `serveNode` verifies spawns by default and requires engine support for node-owned spawn status reads; deploy the compatible engine before publishing/upgrading fleet clients. Legacy handlers can explicitly set `verifyReady: false` to receive unverified placement only.
 - SDK `waitForReady` reports `startup_fallback` at its deadline when `worker_startup_fallback` occurred without a proven readiness handshake.
 - MCP raw CLI spawns wait for harness readiness and report terminal startup errors; the selected broker must support the readiness contract.
+
+### Migration Guidance
+
+- Deploy the compatible Relaycast engine before upgrading fleet clients. Set `verifyReady: false` only when the caller explicitly accepts unverified placement.
 
 ## [11.10.4] - 2026-09-08
 

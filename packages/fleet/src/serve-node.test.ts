@@ -150,6 +150,30 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it.each(['pending', 'dispatched', 'invoked', 'running', 'read-timeout'])(
+    'keeps confirming through %s without dispatching another child',
+    async (state) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          if (state === 'read-timeout') throw new DOMException('read timed out', 'TimeoutError');
+          return Response.json({ data: { status: state } });
+        })
+        .mockResolvedValueOnce(
+          Response.json({ data: { status: 'completed', output: { spawned: true, ready: true } } })
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      const { running, sock, delegation } = await delegateForConfirmation();
+      sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(sock.sentOfType('node.spawn')).toHaveLength(1);
+      expect(sock.sentOfType('action.result')[0]?.output).toMatchObject({ spawned: true, ready: true });
+      await running.stop();
+    }
+  );
+
   it.each([429, 503])('releases HTTP %s response bodies before retrying confirmation', async (status) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const overload = new Response('retry later', { status });

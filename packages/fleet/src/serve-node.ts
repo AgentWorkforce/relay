@@ -373,15 +373,24 @@ export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement
   try {
     while (true) {
       signal.throwIfAborted();
-      const response = await fetch(url, {
-        headers: { authorization: `Bearer ${options.connection.nodeToken}` },
-        signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-      });
-      if (response.ok) {
-        const body = (await response.json()) as {
-          data?: { status?: string; output?: { spawned?: boolean; ready?: boolean }; error?: string };
-        };
-        const invocation = body.data;
+      let response: Response | undefined;
+      let body:
+        | { data?: { status?: string; output?: { spawned?: boolean; ready?: boolean }; error?: string } }
+        | undefined;
+      try {
+        response = await fetch(url, {
+          headers: { authorization: `Bearer ${options.connection.nodeToken}` },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        });
+        if (response.ok) body = (await response.json()) as typeof body;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        // A failed status read does not mean the already-dispatched child failed.
+        // Keep the same invocation until the overall confirmation deadline.
+        response = undefined;
+      }
+      if (response?.ok) {
+        const invocation = body?.data;
         if (invocation?.status === 'completed') {
           if (invocation.output?.spawned !== true || invocation.output?.ready !== true) {
             throw new Error(
@@ -393,10 +402,10 @@ export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement
         if (['failed', 'denied', 'cancelled'].includes(invocation?.status ?? '')) {
           throw new Error(`spawn_failed: ${invocationId}: ${invocation?.error ?? invocation?.status}`);
         }
-        if (!['pending', 'dispatched'].includes(invocation?.status ?? '')) {
+        if (!['pending', 'dispatched', 'invoked', 'running'].includes(invocation?.status ?? '')) {
           throw new Error(`spawn_confirmation_invalid: ${invocationId} returned an invalid status`);
         }
-      } else {
+      } else if (response) {
         await response.body?.cancel();
         if (response.status !== 429 && response.status !== 503) {
           throw new Error(

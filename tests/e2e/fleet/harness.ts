@@ -610,7 +610,7 @@ export async function getInvocation(
   agentToken: string,
   action: string,
   invocationId: string
-): Promise<{ status: string; output?: any; dispatched_node_id?: string }> {
+): Promise<{ status: string; output?: any; error?: string; dispatched_node_id?: string }> {
   const { body } = await engine.fetchJson(`/v1/actions/${action}/invocations/${invocationId}`, {
     headers: { authorization: `Bearer ${agentToken}` },
   });

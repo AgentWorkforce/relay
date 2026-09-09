@@ -458,10 +458,17 @@ async function collect() {
   );
   try {
     while (!stop && Date.now() < end) {
-      const updatedConfig = JSON.parse(readFileSync(configFile, 'utf8'));
-      channels = [
-        ...new Set([...Object.values(updatedConfig.actors ?? {}), ...(updatedConfig.negativeChannels ?? [])]),
-      ];
+      try {
+        const updatedConfig = JSON.parse(readFileSync(configFile, 'utf8'));
+        channels = [
+          ...new Set([
+            ...Object.values(updatedConfig.actors ?? {}),
+            ...(updatedConfig.negativeChannels ?? []),
+          ]),
+        ];
+      } catch {
+        // Preserve continuous observation during a concurrent config rewrite.
+      }
       for (const channel of channels) {
         const messages = await cast(`/v1/channels/${encodeURIComponent(channel)}/messages?limit=100`);
         for (const m of messages)

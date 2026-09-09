@@ -1399,11 +1399,16 @@ async fn listen_api_release(
             )
         }
     };
-    let delete_identity = body
-        .as_ref()
-        .and_then(|b| b.get("delete_identity"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let delete_identity = match body.as_ref().and_then(|b| b.get("delete_identity")) {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"success": false, "error": "delete_identity must be a boolean"})),
+            )
+        }
+    };
     if delete_identity && expected_generation.is_none() {
         return (
             axum::http::StatusCode::BAD_REQUEST,
@@ -4798,6 +4803,31 @@ mod auth_tests {
                         .header("content-type", "application/json")
                         .body(Body::from(
                             json!({"expected_generation": generation}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----
+
+    #[tokio::test]
+    async fn release_rejects_non_boolean_identity_deletion_without_dispatch() {
+        for deletion in [json!(null), json!("true"), json!(123)] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawned/owned-worker")
+                        .method("DELETE")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"expected_generation": "owned-generation", "delete_identity": deletion}).to_string(),
                         ))
                         .unwrap(),
                 )

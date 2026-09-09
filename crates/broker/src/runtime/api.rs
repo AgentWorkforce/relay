@@ -350,6 +350,10 @@ impl BrokerRuntime {
                     ));
                     return;
                 }
+                if workers.has_worker(&name) {
+                    let _ = reply.send(Err(format!("agent '{name}' already exists")));
+                    return;
+                }
                 let owns_identity = agent_token.is_none();
                 let effective_channels = channels.unwrap_or_else(default_spawn_channels);
                 let effective_channels = match super::relaycast_events::relaycast_spawn_channels(

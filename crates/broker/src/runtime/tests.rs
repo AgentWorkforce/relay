@@ -276,8 +276,18 @@ async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
                     break;
                 }
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            fixture.runtime.reconcile_identity_cleanups().await;
+            let before = Instant::now();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    fixture.runtime.reconcile_identity_cleanups().await;
+                    if fixture.runtime.workers.identity_cleanups[&name].retry_at > before {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cleanup rejection should be reconciled");
             assert_eq!(
                 fixture.runtime.workers.identity_cleanups[&name].attempts,
                 attempt
@@ -474,13 +484,18 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
         "unrelated delivery must be admitted while cleanup waits"
     );
     ack.send(Err("fixture rejection".to_string())).unwrap();
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    fixture.runtime.reconcile_identity_cleanups().await;
-    assert!(released
-        .await
-        .unwrap()
-        .unwrap_err()
-        .contains("cleanup unconfirmed"));
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = released.try_recv() {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup completion should be reported");
+    assert!(response.unwrap_err().contains("cleanup unconfirmed"));
     assert!(fixture
         .runtime
         .workers
@@ -6098,4 +6113,77 @@ async fn startup_queues_initial_task_before_early_events_without_exhausting_retr
     assert!(matches!(result, DeliveryAttemptOutcome::Attempted { .. }));
     assert_eq!(pending[&id].attempts, 1);
     workers.release(name).await.unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_http_spawn_preserves_live_identity_and_generation() {
+    use crate::listen_api::ListenApiRequest;
+    use tokio::sync::oneshot;
+    let name = WorkerName::from("duplicate-owned-worker");
+    let registry = make_worker_registry_with_worker(name.as_str()).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let generation = fixture.runtime.workers.workers[&name].generation;
+    let http = RelaycastHttpClient::new(
+        Some("http://127.0.0.1:1".into()),
+        "rk_live_fixture",
+        "broker",
+        "codex",
+    );
+    http.seed_agent_token(&name, "owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http));
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Spawn {
+            name: name.clone(),
+            cli: "codex".into(),
+            transport: None,
+            model: None,
+            args: vec![],
+            task: None,
+            registration_metadata: Default::default(),
+            channels: Some(vec![]),
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            continue_from: None,
+            idle_threshold_secs: None,
+            exit_after_task: false,
+            skip_relay_prompt: true,
+            restart_policy: Box::new(None),
+            harness_config: None,
+            agent_token: None,
+            agent_result_schema: None,
+            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+            reply,
+        })
+        .await;
+    assert!(result
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("already exists"));
+    assert_eq!(
+        fixture.runtime.workers.owned_spawn_generations[&name].0,
+        generation
+    );
+    assert_eq!(
+        fixture.runtime.workers.workers[&name].generation,
+        generation
+    );
+    assert!(!fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name));
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "duplicate must not register or deregister any identity"
+    );
+    fixture.runtime.workers.release(&name).await.unwrap();
 }

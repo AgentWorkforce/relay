@@ -395,6 +395,7 @@ try {
     note('Acted on idle event ' + index + ' and returned to idle');
   }
   const longIdleMs = Number(process.env.LOCAL_AI_LONG_IDLE_MS || 600000);
+  assert(Number.isFinite(longIdleMs) && longIdleMs > 0, 'LOCAL_AI_LONG_IDLE_MS must be positive and finite');
   const longStart = Date.now();
   note('Beginning longer idle interval: ' + longIdleMs + 'ms');
   while (Date.now() - longStart < longIdleMs) {

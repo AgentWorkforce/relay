@@ -268,7 +268,7 @@ describe('integration subscribe', () => {
     });
   });
 
-  it('does not send inbound-target provisioning to the locally stored broker base URL', async () => {
+  it('keeps the session Relaycast URL paired with its workspace key for inbound provisioning', async () => {
     const { program } = harness({
       resolveLocalRelayOptions: async () => ({
         workspaceKey: 'rk_live_local',
@@ -279,7 +279,7 @@ describe('integration subscribe', () => {
     await program.parseAsync(ARGS(), { from: 'user' });
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL('/v1/integrations/relayfile/inbound-target', 'https://cast.agentrelay.com'),
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://local-broker-session.example'),
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }),
       })
@@ -1722,6 +1722,29 @@ describe('confirmed agent subscription setup', () => {
     expect(h.relay.integrations.subscriptions.create).not.toHaveBeenCalled();
     expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
     expect(h.relayfile.bind).not.toHaveBeenCalled();
+  });
+
+  it('keeps recipient channel provisioning on the session Relaycast deployment', async () => {
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-custom');
+    const h = harness({
+      resolveLocalRelayOptions: async () => ({
+        workspaceKey: 'rk_live_custom',
+        baseUrl: 'https://custom-relaycast.example',
+      }),
+      recipientDeps: {
+        launchRecipient: async () => ({ rollback: vi.fn(), close: vi.fn() }),
+        resolveAgentChannel,
+      },
+    });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).not.toHaveBeenCalled();
+    expect(resolveAgentChannel).toHaveBeenCalledWith(
+      'new-worker',
+      expect.objectContaining({
+        workspaceKey: 'rk_live_custom',
+        baseUrl: 'https://custom-relaycast.example/',
+      })
+    );
   });
 
   it('confirms the worker and exact membership before creating resources', async () => {

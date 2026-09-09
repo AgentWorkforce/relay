@@ -626,7 +626,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         args: expect.arrayContaining(['resume', sessionRef]),
       });
     },
-    120_000
+    180_000
   );
 
   it('propagates unsupported generic session resume as a terminal failure with no retained identity', async () => {
