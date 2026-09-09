@@ -19,6 +19,9 @@ const REGEX_KEYWORDS = new Set([
   'await',
   'else',
   'do',
+  'break',
+  'continue',
+  'debugger',
 ]);
 const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch', 'with']);
 
@@ -26,9 +29,13 @@ type MaskedWorkflowSource = {
   source: string;
   matchingOpenParens: Map<number, number>;
   matchingCloseParens: Map<number, number>;
+  scopeAt: Int32Array;
+  scopeParents: Map<number, number>;
+  nextNonWhitespace: Uint32Array;
 };
 
 type WorkflowRoot = { name: string; invoked: boolean };
+type WorkflowBinding = { builder: boolean };
 
 function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 'py'>): MaskedWorkflowSource {
   let output = '';
@@ -49,6 +56,10 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   const openParenStack: number[] = [];
   const matchingOpenParens = new Map<number, number>();
   const matchingCloseParens = new Map<number, number>();
+  const scopeAt = new Int32Array(source.length);
+  const scopeParents = new Map<number, number>([[0, -1]]);
+  const scopeStack = [0];
+  let nextScopeId = 1;
 
   const flushIdentifier = () => {
     if (currentIdentifier) {
@@ -73,6 +84,20 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     if (character === '(') {
       openParenStack.push(sourceIndex);
       controlParenStack.push(lastIdentifier !== undefined && CONTROL_PAREN_KEYWORDS.has(lastIdentifier));
+      lastIdentifier = undefined;
+      closedControlParen = false;
+      return;
+    }
+    if (character === '{') {
+      const scopeId = nextScopeId++;
+      scopeParents.set(scopeId, scopeStack[scopeStack.length - 1]);
+      scopeStack.push(scopeId);
+      lastIdentifier = undefined;
+      closedControlParen = false;
+      return;
+    }
+    if (character === '}') {
+      if (scopeStack.length > 1) scopeStack.pop();
       lastIdentifier = undefined;
       closedControlParen = false;
       return;
@@ -113,6 +138,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     const character = source[index];
     const next = source[index + 1];
     const third = source[index + 2];
+    scopeAt[index] = scopeStack[scopeStack.length - 1];
 
     if (regexLiteral) {
       output += mask(character);
@@ -227,7 +253,20 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     index += 1;
   }
 
-  return { source: output, matchingOpenParens, matchingCloseParens };
+  const nextNonWhitespace = new Uint32Array(output.length + 1);
+  nextNonWhitespace[output.length] = output.length;
+  for (let cursor = output.length - 1; cursor >= 0; cursor -= 1) {
+    nextNonWhitespace[cursor] = /\s/.test(output[cursor]) ? nextNonWhitespace[cursor + 1] : cursor;
+  }
+
+  return {
+    source: output,
+    matchingOpenParens,
+    matchingCloseParens,
+    scopeAt,
+    scopeParents,
+    nextNonWhitespace,
+  };
 }
 
 function validateLaunchTimeoutMs(value: number, source: string, minimum = 1): number {
@@ -313,6 +352,46 @@ function timeoutRoot(
   return identifier ? { name: identifier.name, invoked: false } : null;
 }
 
+function bindingAt(
+  name: string,
+  scopeId: number,
+  bindings: ReadonlyMap<number, ReadonlyMap<string, WorkflowBinding>>,
+  scopeParents: ReadonlyMap<number, number>
+): WorkflowBinding | null {
+  let currentScope = scopeId;
+  while (currentScope >= 0) {
+    const scopeBindings = bindings.get(currentScope);
+    const binding = scopeBindings?.get(name);
+    if (binding !== undefined) return binding;
+    currentScope = scopeParents.get(currentScope) ?? -1;
+  }
+  return null;
+}
+
+function workflowInitializerAt(
+  source: string,
+  end: number,
+  fileType: Extract<WorkflowFileType, 'ts' | 'py'>
+): boolean {
+  let cursor = end;
+  while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+  if (fileType === 'ts') {
+    if (source[cursor] !== '=') return false;
+    cursor += 1;
+    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    if (source.startsWith('await', cursor) && !/[A-Za-z0-9_$]/.test(source[cursor + 5] ?? '')) {
+      cursor += 5;
+      while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    }
+  }
+  if (!source.startsWith('workflow', cursor)) return false;
+  const afterName = source[cursor + 'workflow'.length] ?? '';
+  if (/[A-Za-z0-9_$]/.test(afterName)) return false;
+  cursor += 'workflow'.length;
+  while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+  return source[cursor] === '(';
+}
+
 /**
  * Infer the outer Cloud launch budget from a literal RelayFlow builder timeout
  * without evaluating submitted workflow code. Dynamic expressions are left
@@ -326,14 +405,21 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const masked = maskNonCode(workflow, fileType);
   const source = masked.source;
-  const builderNames = new Set<string>();
-  const assignmentPattern =
+  const bindings = new Map<number, Map<string, WorkflowBinding>>();
+  const declarationPattern =
     fileType === 'ts'
-      ? /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?workflow\s*\(/g
-      : /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*workflow\s*\(/g;
-  let assignment: RegExpExecArray | null;
-  while ((assignment = assignmentPattern.exec(source)) !== null) {
-    builderNames.add(assignment[1]);
+      ? /\b(?:const|let|var|function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g
+      : /\b([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
+  let declaration: RegExpExecArray | null;
+  while ((declaration = declarationPattern.exec(source)) !== null) {
+    const scopeId = masked.scopeAt[declaration.index] ?? 0;
+    let scopeBindings = bindings.get(scopeId);
+    if (scopeBindings === undefined) {
+      scopeBindings = new Map();
+      bindings.set(scopeId, scopeBindings);
+    }
+    const builder = workflowInitializerAt(source, declaration.index + declaration[0].length, fileType);
+    scopeBindings.set(declaration[1], { builder });
   }
 
   const values = new Set<number>();
@@ -342,17 +428,20 @@ export function inferWorkflowLaunchTimeoutMs(
   const timeoutPattern = /\.timeout/g;
   let match: RegExpExecArray | null;
   while ((match = timeoutPattern.exec(source)) !== null) {
-    let argumentStart = match.index + match[0].length;
-    while (argumentStart < source.length && /\s/.test(source[argumentStart])) argumentStart += 1;
-    if (source[argumentStart] !== '(') continue;
-    const argumentOpen = argumentStart;
-    argumentStart += 1;
-    while (argumentStart < source.length && /\s/.test(source[argumentStart])) argumentStart += 1;
+    const afterTimeout = masked.nextNonWhitespace[match.index + match[0].length] ?? source.length;
+    if (source[afterTimeout] !== '(') continue;
+    const argumentOpen = afterTimeout;
+    const argumentStart = masked.nextNonWhitespace[argumentOpen + 1] ?? source.length;
     const argumentEnd = masked.matchingCloseParens.get(argumentOpen);
     if (argumentEnd === undefined) continue;
 
     const root = timeoutRoot(source, match.index, masked.matchingOpenParens, callRoots);
-    if (root === null || (root.invoked ? root.name !== 'workflow' : !builderNames.has(root.name))) {
+    if (root === null) continue;
+    const scopeId = masked.scopeAt[match.index] ?? 0;
+    const binding = bindingAt(root.name, scopeId, bindings, masked.scopeParents);
+    if (root.invoked) {
+      if (root.name !== 'workflow' || binding !== null) continue;
+    } else if (binding?.builder !== true) {
       continue;
     }
     const literal = source

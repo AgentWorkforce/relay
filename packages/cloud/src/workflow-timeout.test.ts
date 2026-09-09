@@ -103,6 +103,34 @@ describe('workflow launch timeout inference', () => {
     ).toBeUndefined();
   });
 
+  it.each(['break', 'continue', 'debugger'])('masks a regular expression after ASI keyword %s', (keyword) => {
+    const source = `while (ready) { ${keyword}\n/workflow("fake").timeout(600_000)/.test(value); }`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
+  });
+
+  it('does not let a shadowed non-builder identifier create an ambiguous timeout', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'wf.timeout(900_000);',
+      '{',
+      '  const wf = {};',
+      '  wf.timeout(600_000);',
+      '}',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('keeps scope-aware direct workflow calls from using a shadowed function', () => {
+    const source = [
+      "workflow('real').timeout(900_000);",
+      '{',
+      '  const workflow = fakeWorkflow;',
+      '  workflow("fake").timeout(600_000);',
+      '}',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
   it('supports the fluent and assigned RelayFlow builder shapes used by workflows', () => {
     expect(
       inferWorkflowLaunchTimeoutMs("const wf = workflow('real').description('demo').timeout(900_000);", 'ts')
@@ -147,6 +175,13 @@ describe('workflow launch timeout inference', () => {
   it('does not infer a literal when another builder timeout is dynamic', () => {
     const source = "workflow('dynamic').timeout(timeoutMs); workflow('literal').timeout(900_000);";
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
+  });
+
+  it('keeps malformed Python timeout candidates linear in their whitespace suffixes', () => {
+    const source = ('.timeout(' + '\t'.repeat(2_000)).repeat(2_000);
+    const startedAt = performance.now();
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
   });
 
   it('requires an explicit override when distinct builder timeouts are present', () => {
