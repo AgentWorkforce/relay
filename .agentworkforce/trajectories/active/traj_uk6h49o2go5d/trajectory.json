@@ -35,6 +35,18 @@
             "reasoning": "Hosted macOS exposed EINVAL during concurrent publication; preserving all runs is fail-closed and avoids deleting an untrusted canonical target."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1788993478961,
+          "type": "decision",
+          "content": "Kept the security fix dependency-delta-only: Kept the security fix dependency-delta-only",
+          "raw": {
+            "question": "Kept the security fix dependency-delta-only",
+            "chosen": "Kept the security fix dependency-delta-only",
+            "alternatives": [],
+            "reasoning": "Regenerating the full lock rewrote hundreds of unrelated records. The exact root override plus the smol-toml 1.8.0 lock entry passes npm ci and removes GHSA-7w5x-hrqm-74c2 without broad candidate dependency churn. The separate Relayfile SDK/Bun incompatibility remains independently tracked."
+          },
+          "significance": "high"
         }
       ]
     }
