@@ -67,4 +67,41 @@ jobs:
       /flow mappings are not supported/
     );
   });
+
+  it('treats URL colons as scalar content and stops literal blocks at sibling mappings', () => {
+    const workflow = parseStrictWorkflowYaml(`
+jobs:
+  verifier:
+    env:
+      CLOUD_API_URL: https://agentrelay.com/cloud
+    steps:
+      - name: Run verifier
+        run: |
+          echo https://agentrelay.com/cloud
+      - name: Follow-up
+        if: always()
+        run: node verifier.mjs
+`);
+
+    expect(workflow.jobs.verifier.env.CLOUD_API_URL).toBe('https://agentrelay.com/cloud');
+    expect(workflow.jobs.verifier.steps).toHaveLength(2);
+    expect(workflow.jobs.verifier.steps[0].run).toBe('echo https://agentrelay.com/cloud\n');
+    expect(workflow.jobs.verifier.steps[1]).toMatchObject({ name: 'Follow-up', if: 'always()' });
+
+    const continuation = parseStrictWorkflowYaml(`
+jobs:
+  verifier:
+    steps:
+      - name: Run verifier
+        run: |
+          echo verifier
+        env:
+          CLOUD_API_URL: https://agentrelay.com/cloud
+`);
+    expect(continuation.jobs.verifier.steps[0]).toMatchObject({
+      name: 'Run verifier',
+      run: 'echo verifier\n',
+      env: { CLOUD_API_URL: 'https://agentrelay.com/cloud' },
+    });
+  });
 });

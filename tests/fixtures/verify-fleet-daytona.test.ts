@@ -886,6 +886,67 @@ describe('complete Daytona Fleet board', () => {
     expect(() => compareFleetCliInventory(expected, changedOption)).toThrow('inventory changed');
   });
 
+  it('collects inventory in a secret-free, network-denied worker', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-isolation-'));
+    try {
+      const cli = path.join(root, 'install/node_modules/agent-relay/dist/cli');
+      await mkdir(cli, { recursive: true });
+      await writeFile(path.join(cli, 'index.js'), '// entrypoint\n');
+      await writeFile(
+        path.join(cli, 'bootstrap.js'),
+        `
+          const command = (name) => ({
+            name: () => name,
+            aliases: () => [],
+            commands: [],
+            options: [],
+            registeredArguments: [],
+          });
+          const root = (name) => ({ ...command(name), commands: [command('status')] });
+          const probe = await (async () => {
+            if (process.env.OPENAI_API_KEY) throw new Error('secret reached candidate inventory');
+            if (process.permission?.has('net') !== false) throw new Error('candidate inventory network was permitted');
+            try {
+              await fetch('https://example.com', { signal: AbortSignal.timeout(1000) });
+              return 'network-open';
+            } catch (error) {
+              return 'network-denied-by-permission';
+            }
+          })();
+          if (probe !== 'network-denied-by-permission') throw new Error('candidate inventory network was reachable');
+          export function createProgram() {
+            return { commands: [root('fleet'), root('node')] };
+          }
+        `
+      );
+      const inventory = await collectFleetCliInventory(path.join(cli, 'index.js'));
+      expect(inventory.commands.map(({ path: commandPath }) => commandPath)).toEqual([
+        'fleet',
+        'fleet status',
+        'node',
+        'node status',
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a candidate CLI or bootstrap symlink before permissioned inspection', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-symlink-'));
+    try {
+      const cli = path.join(root, 'install/node_modules/agent-relay/dist/cli');
+      await mkdir(cli, { recursive: true });
+      await writeFile(path.join(cli, 'real-index.js'), '// entrypoint\n');
+      await writeFile(path.join(cli, 'bootstrap.js'), 'export function createProgram() {}\n');
+      await symlink('real-index.js', path.join(cli, 'index.js'));
+      await expect(collectFleetCliInventory(path.join(cli, 'index.js'))).rejects.toThrow(
+        /candidate CLI must be a non-symlink regular file/
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects duplicate operations and an incomplete provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const duplicate = structuredClone(matrix);
@@ -931,6 +992,60 @@ describe('complete Daytona Fleet board', () => {
       else process.env.CLOUD_API_ACCESS_TOKEN = previousAccess;
       if (previousRefresh === undefined) delete process.env.CLOUD_API_REFRESH_TOKEN;
       else process.env.CLOUD_API_REFRESH_TOKEN = previousRefresh;
+    }
+  });
+
+  it('runs the candidate CLI with only a disposable workspace credential and isolated home', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-env-'));
+    const script = path.join(root, 'candidate.mjs');
+    const probe = path.join(root, 'probe.json');
+    const previous = Object.fromEntries(
+      [
+        'VERIFY_FLEET_CLI',
+        'VERIFY_FLEET_CANDIDATE_CWD',
+        'VERIFY_FLEET_PROBE',
+        'RELAY_WORKSPACE_KEY',
+        'DAYTONA_API_KEY',
+        'OPENAI_API_KEY',
+        'CLOUD_API_ACCESS_TOKEN',
+      ].map((name) => [name, process.env[name]])
+    );
+    try {
+      await writeFile(
+        script,
+        `import { writeFileSync } from 'node:fs';
+writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
+  workspace: process.env.RELAY_WORKSPACE_KEY,
+  daytona: process.env.DAYTONA_API_KEY,
+  openai: process.env.OPENAI_API_KEY,
+  cloud: process.env.CLOUD_API_ACCESS_TOKEN,
+  home: process.env.HOME,
+  cwd: process.cwd(),
+}));
+`
+      );
+      process.env.VERIFY_FLEET_CLI = script;
+      process.env.VERIFY_FLEET_CANDIDATE_CWD = root;
+      process.env.VERIFY_FLEET_PROBE = probe;
+      process.env.RELAY_WORKSPACE_KEY = 'rk_disposable_workspace';
+      process.env.DAYTONA_API_KEY = 'daytona-secret';
+      process.env.OPENAI_API_KEY = 'openai-secret';
+      process.env.CLOUD_API_ACCESS_TOKEN = 'cloud-secret';
+
+      const result = await executeFleetCommand([process.execPath, script]);
+      expect(result.exitCode).toBe(0);
+      const observed = JSON.parse(await readFile(probe, 'utf8'));
+      expect(observed).toMatchObject({ workspace: 'rk_disposable_workspace', home: root });
+      expect(observed.cwd).toMatch(new RegExp(`${path.basename(root)}$`));
+      expect(observed).not.toHaveProperty('daytona');
+      expect(observed).not.toHaveProperty('openai');
+      expect(observed).not.toHaveProperty('cloud');
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await rm(root, { recursive: true, force: true });
     }
   });
 

@@ -1,0 +1,84 @@
+{
+  "id": "traj_bwod4u1pufif",
+  "version": 1,
+  "task": {
+    "title": "Restack trusted cleanroom qualification prerequisite",
+    "source": {
+      "system": "plain",
+      "id": "relay#1683"
+    }
+  },
+  "status": "active",
+  "startedAt": "2026-09-09T06:23:26.611Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T06:23:28.133Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5ged7ymz70kl",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T06:23:28.133Z",
+      "events": [
+        {
+          "ts": 1788935008134,
+          "type": "decision",
+          "content": "Restack PR 1683 onto current main before claiming qualification: Restack PR 1683 onto current main before claiming qualification",
+          "raw": {
+            "question": "Restack PR 1683 onto current main before claiming qualification",
+            "chosen": "Restack PR 1683 onto current main before claiming qualification",
+            "alternatives": [],
+            "reasoning": "The secret-bearing verifier must inherit every current trusted-default-branch hardening change before it can unblock PRs 1665 and 1666."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788936213696,
+          "type": "decision",
+          "content": "Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential: Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential",
+          "raw": {
+            "question": "Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential",
+            "chosen": "Isolated candidate inventory in a permissioned, secret-free worker and constrained candidate execution to a disposable workspace credential",
+            "alternatives": [],
+            "reasoning": "The trusted verifier must not import candidate bootstrap code or expose cloud/provider credentials; immutable inventory and runtime effects remain verifier-owned."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788936214145,
+          "type": "reflection",
+          "content": "Trust blockers implemented and proportional validation is green; paid Fleet proof remains intentionally unrun.",
+          "raw": {
+            "focalPoints": [
+              "candidate isolation",
+              "credential boundary",
+              "verifier immutability",
+              "regression coverage"
+            ],
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "focal:candidate isolation",
+            "focal:credential boundary",
+            "focal:verifier immutability",
+            "focal:regression coverage",
+            "confidence:0.86"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2094aa093563e786fcc63b420cf4008a9f975716",
+    "endRef": "2094aa093563e786fcc63b420cf4008a9f975716"
+  }
+}

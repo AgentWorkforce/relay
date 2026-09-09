@@ -111,17 +111,5 @@ export function cleanroomLaneEvidenceScopes(nonce, lane) {
 
 export function cleanroomLaneWritePaths(nonce, lane) {
   const evidencePath = cleanroomLaneEvidencePath(nonce, lane);
-  return [
-    'node_modules/**',
-    'target/**',
-    'packages/sdk-swift/.build/**',
-    'packages/*/dist/**',
-    'packages/*/node_modules/**',
-    'plugins/*/dist/**',
-    'plugins/*/node_modules/**',
-    'tests/integration/broker/dist/**',
-    '.agentworkforce/trajectories/**',
-    cleanroomLaneMountAnchorPath(nonce, lane),
-    evidencePath,
-  ];
+  return [cleanroomLaneMountAnchorPath(nonce, lane), evidencePath];
 }

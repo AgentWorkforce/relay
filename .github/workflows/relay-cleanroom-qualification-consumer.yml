@@ -332,10 +332,18 @@ jobs:
           VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
         run: node scripts/verify-features/qualification-capabilities.mjs --availability-only --cli "$VERIFY_FLEET_CLI"
 
+      - name: Seal trusted verifier and candidate execution roots
+        run: |
+          set -euo pipefail
+          install -d -m 0700 relay-verifier/.workflow-artifacts "$RUNNER_TEMP/relay-candidate-cwd"
+          chmod -R a-w relay-verifier "$RUNNER_TEMP/relay-candidate-install/install"
+          chmod -R u+w relay-verifier/.workflow-artifacts
+          chmod u+rwx "$RUNNER_TEMP/relay-candidate-cwd"
+
       - name: Create isolated ephemeral Cloud workspace A
         id: workspace_a
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CLI: relay-verifier/packages/cli/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -355,7 +363,7 @@ jobs:
       - name: Create isolated ephemeral Cloud workspace B
         id: workspace_b
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CLI: relay-verifier/packages/cli/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -390,6 +398,7 @@ jobs:
           VERIFY_FLEET_NONCE: qualification-${{ github.run_id }}-${{ github.run_attempt }}
           VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           VERIFY_FLEET_CANDIDATE_ATTESTATION: ${{ runner.temp }}/relay-candidate-install/candidate-install-attestation.json
+          VERIFY_FLEET_CANDIDATE_CWD: ${{ runner.temp }}/relay-candidate-cwd
           VERIFY_FLEET_MIN_CREDENTIAL_LIFETIME_SECONDS: '21600'
           AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1'
           RELAYFLOWS_SANDBOX_PROVIDER: local-process
@@ -432,7 +441,7 @@ jobs:
       - name: Delete exact ephemeral workspace B and verify cascade
         if: always() && steps.cleanup_ids.outputs.workspace_b != ''
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CLI: relay-verifier/packages/cli/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -458,7 +467,7 @@ jobs:
       - name: Delete exact ephemeral workspace A and verify cascade
         if: always() && steps.cleanup_ids.outputs.workspace_a != ''
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CLI: relay-verifier/packages/cli/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}

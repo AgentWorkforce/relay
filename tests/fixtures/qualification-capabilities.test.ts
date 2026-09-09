@@ -20,7 +20,12 @@ const effects = {
   'ephemeral-cloud-workspace-create': {
     status: 'PASS',
     workspaceIds,
-    credentialFiles: workspaceIds.map((workspaceId) => ({ workspaceId, mode: '0600' })),
+    credentialFiles: workspaceIds.map((workspaceId) => ({
+      workspaceId,
+      mode: '0600',
+      ttlHours: 24,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    })),
   },
   'qualified-relayfile-cloud-binding': {
     status: 'PASS',

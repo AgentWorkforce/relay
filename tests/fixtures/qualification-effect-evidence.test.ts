@@ -235,6 +235,7 @@ function fixture() {
       result: {
         workspaceId,
         relayWorkspaceId: relayWorkspaceIds[index],
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
         credentialFile: `/tmp/credential-${index}.json`,
         requestedRelayfileCloudDeploymentId: deploymentId,
         observedRelayfileCloudDeploymentId: deploymentId,
@@ -281,6 +282,9 @@ describe('qualification runtime effect composer', () => {
     expect(workflow).toContain("VERIFY_FLEET_MIN_CREDENTIAL_LIFETIME_SECONDS: '21600'");
     expect(workflow).toContain('export VERIFY_FLEET_EXPECTED_RELAY_SHA=');
     expect(workflow).toContain('export VERIFY_FLEET_EXPECTED_RELAY_VERSION');
+    expect(workflow).toContain('chmod -R a-w relay-verifier');
+    expect(workflow).toContain('VERIFY_FLEET_CANDIDATE_CWD: ${{ runner.temp }}/relay-candidate-cwd');
+    expect(workflow).toContain('VERIFY_FLEET_CLI: relay-verifier/packages/cli/dist/cli/index.js');
     expect(workflow).not.toContain('node relay/packages/cli/dist/cli/index.js cloud workspace create');
     expect(workflow).not.toContain('node relay/packages/cli/dist/cli/index.js cloud workspace delete');
   });
@@ -328,6 +332,12 @@ describe('qualification runtime effect composer', () => {
     const insecure = fixture();
     insecure.workspaceCreates[0]!.credential.relay.baseUrl = 'http://relay.example';
     expect(() => composeQualificationEffects(insecure)).toThrow('credential-free HTTPS');
+
+    for (const suffix of ['?scope=secret', '#secret']) {
+      const ambiguous = fixture();
+      ambiguous.workspaceCreates[0]!.credential.relay.baseUrl = `${relayfileCloudBaseUrl}${suffix}`;
+      expect(() => composeQualificationEffects(ambiguous)).toThrow('credential-free HTTPS');
+    }
   });
 
   it('rejects aggregate deletion counts that target another workspace or remain readable', () => {

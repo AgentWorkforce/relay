@@ -53,7 +53,15 @@ function validEffect(id, effects) {
       Array.isArray(files) &&
       files.length === 2 &&
       new Set(files.map((entry) => entry.workspaceId)).size === 2 &&
-      files.every((entry) => ids.includes(entry.workspaceId) && entry.mode === '0600')
+      files.every(
+        (entry) =>
+          ids.includes(entry.workspaceId) &&
+          entry.mode === '0600' &&
+          entry.ttlHours === 24 &&
+          typeof entry.expiresAt === 'string' &&
+          Number.isFinite(Date.parse(entry.expiresAt)) &&
+          Date.parse(entry.expiresAt) > Date.now() + 18 * 60 * 60 * 1000
+      )
     );
   }
   if (id === 'qualified-relayfile-cloud-binding') {

@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { lstat, open, readFile } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, realpath, rm } from 'node:fs/promises';
+import os from 'node:os';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readRegularFileNoFollow } from './safe-file.mjs';
 
 const INVENTORY_VERSION = 1;
 const SAFE_JSON = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.json$/;
@@ -100,7 +103,7 @@ export function validateFleetCliInventory(value) {
   return value;
 }
 
-export async function collectFleetCliInventory(cliPath) {
+export async function collectFleetCliInventoryInProcess(cliPath) {
   const cli = path.resolve(cliPath);
   const bootstrap = path.join(path.dirname(cli), 'bootstrap.js');
   for (const [target, label] of [
@@ -131,6 +134,105 @@ export async function collectFleetCliInventory(cliPath) {
     kind: 'relay-fleet-cli-inventory',
     commands,
   });
+}
+
+function candidateEnvironment(home) {
+  return {
+    PATH: process.env.PATH ?? '',
+    HOME: home,
+    TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
+    LANG: process.env.LANG ?? 'C',
+    NO_COLOR: '1',
+    CI: process.env.CI ?? '1',
+    AGENT_RELAY_TELEMETRY_DISABLED: '1',
+  };
+}
+
+function permissionArgs(candidateRoot, workerRoot, worker, cliPath) {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
+    throw new Error('candidate CLI inventory requires a permission-capable POSIX runner');
+  }
+  return [
+    '--permission',
+    '--no-addons',
+    `--allow-fs-read=${candidateRoot}`,
+    `--allow-fs-read=${path.resolve(cliPath)}`,
+    `--allow-fs-read=${path.join(path.dirname(path.resolve(cliPath)), 'bootstrap.js')}`,
+    `--allow-fs-read=${fileURLToPath(import.meta.url)}`,
+    `--allow-fs-read=${worker}`,
+    `--allow-fs-read=${path.join(path.dirname(fileURLToPath(import.meta.url)), 'safe-file.mjs')}`,
+    `--allow-fs-write=${workerRoot}`,
+  ];
+}
+
+/**
+ * Inspect candidate bootstrap code outside the verifier process. The worker
+ * has no credential-bearing environment, no network permission, no native
+ * addons, and can only write its bounded result file.
+ */
+export async function collectFleetCliInventory(cliPath) {
+  const requestedCli = path.resolve(cliPath);
+  const requestedRoot = path.resolve(cliPath, '..', '..', '..', '..', '..');
+  for (const [target, label] of [
+    [requestedCli, 'candidate CLI'],
+    [path.join(path.dirname(requestedCli), 'bootstrap.js'), 'candidate CLI bootstrap'],
+  ]) {
+    const info = await lstat(target);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error(`${label} must be a non-symlink regular file`);
+    }
+  }
+  const workerRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-'));
+  const [candidateRoot, resolvedCli, outputRoot, worker] = await Promise.all([
+    realpath(requestedRoot),
+    realpath(requestedCli),
+    realpath(workerRoot),
+    realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-cli-inventory-worker.mjs')),
+  ]);
+  const outputPath = path.join(outputRoot, 'inventory.json');
+  try {
+    const result = await new Promise((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [
+          ...permissionArgs(candidateRoot, outputRoot, worker, resolvedCli),
+          worker,
+          '--cli',
+          resolvedCli,
+          '--output',
+          outputPath,
+        ],
+        {
+          cwd: candidateRoot,
+          env: candidateEnvironment(workerRoot),
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }
+      );
+      let stderr = '';
+      let stdout = '';
+      child.stdout.on('data', (chunk) => {
+        stdout = `${stdout}${chunk}`.slice(-4096);
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr = `${stderr}${chunk}`.slice(-4096);
+      });
+      child.on('error', (error) => resolve({ code: null, error: error.message, stderr, stdout }));
+      child.on('close', (code) => resolve({ code, stderr, stdout }));
+    });
+    if (result.code !== 0) {
+      const diagnostic = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
+      throw new Error(`candidate CLI inventory worker failed${diagnostic ? `: ${diagnostic}` : ''}`);
+    }
+    const { bytes } = await readRegularFileNoFollow(outputPath, {
+      label: 'candidate CLI inventory result',
+      maxBytes: 2 * 1024 * 1024,
+      privateMode: true,
+      currentUserOwned: true,
+    });
+    return validateFleetCliInventory(JSON.parse(bytes.toString('utf8')));
+  } finally {
+    await rm(workerRoot, { recursive: true, force: true });
+  }
 }
 
 export function compareFleetCliInventory(actual, expected) {

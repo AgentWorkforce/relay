@@ -717,7 +717,17 @@ function boundedAppend(current, chunk, limit) {
   return bytes.byteLength <= limit ? combined : bytes.subarray(bytes.byteLength - limit).toString('utf8');
 }
 
-function childEnvironment(overrides = {}) {
+function isCandidateCliArgv(argv) {
+  const configured = process.env.VERIFY_FLEET_CLI?.trim();
+  return Boolean(
+    configured &&
+    argv[0] === process.execPath &&
+    typeof argv[1] === 'string' &&
+    path.resolve(argv[1]) === path.resolve(configured)
+  );
+}
+
+function childEnvironment(overrides = {}, candidate = false) {
   const allowedExact = new Set([
     'PATH',
     'HOME',
@@ -757,6 +767,31 @@ function childEnvironment(overrides = {}) {
       env[key] = value;
     }
   }
+  if (candidate) {
+    for (const key of [
+      'DAYTONA_API_KEY',
+      'OPENAI_API_KEY',
+      'ANTHROPIC_API_KEY',
+      'GEMINI_API_KEY',
+      'CLOUD_API_ACCESS_TOKEN',
+      'CLOUD_API_REFRESH_TOKEN',
+      'CLOUD_API_ACCESS_TOKEN_EXPIRES_AT',
+      'CLOUD_API_REFRESH_TOKEN_EXPIRES_AT',
+      'VERIFY_FLEET_WORKSPACE_KEY_FILE',
+      'VERIFY_FLEET_WORKSPACE_KEY_FILE_A',
+      'VERIFY_FLEET_WORKSPACE_KEY_FILE_B',
+      'VERIFY_FLEET_CANDIDATE_ATTESTATION',
+    ]) {
+      delete env[key];
+    }
+    if (process.env.VERIFY_FLEET_CANDIDATE_CWD) {
+      env.HOME = process.env.VERIFY_FLEET_CANDIDATE_CWD;
+      delete env.XDG_CONFIG_HOME;
+      delete env.XDG_DATA_HOME;
+      delete env.AGENT_RELAY_HOME;
+      delete env.AGENT_RELAY_DATA_DIR;
+    }
+  }
   return { ...env, NO_COLOR: '1', AGENT_RELAY_TELEMETRY_DISABLED: '1', ...overrides };
 }
 
@@ -764,7 +799,15 @@ async function execute(argv, options = {}) {
   const startedAt = new Date().toISOString();
   const monotonicStartNs = process.hrtime.bigint();
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const env = childEnvironment(options.env);
+  const candidate = isCandidateCliArgv(argv);
+  if (
+    candidate &&
+    process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1' &&
+    !process.env.VERIFY_FLEET_CANDIDATE_CWD
+  ) {
+    throw new Error('release qualification candidate execution requires an isolated working directory');
+  }
+  const env = childEnvironment(options.env, candidate);
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
   let stderr = '';
@@ -808,7 +851,9 @@ async function execute(argv, options = {}) {
     };
     try {
       child = spawn(argv[0], argv.slice(1), {
-        cwd: options.cwd ?? process.cwd(),
+        cwd:
+          options.cwd ??
+          (candidate ? process.env.VERIFY_FLEET_CANDIDATE_CWD || process.cwd() : process.cwd()),
         env,
         detached: process.platform !== 'win32',
         stdio: [stdinChunks === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
