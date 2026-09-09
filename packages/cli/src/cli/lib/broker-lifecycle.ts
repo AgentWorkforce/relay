@@ -2229,7 +2229,13 @@ function parseWaitForMs(rawValue: string | undefined, deps: CoreDependencies): n
 }
 
 async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
-  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  // Status is a local liveness probe. The driver's 30s mutation timeout would
+  // make a live but stalled broker hang CLI status and readiness polling.
+  const client = new HarnessDriverClient({
+    baseUrl: conn.url,
+    apiKey: conn.api_key,
+    requestTimeoutMs: 2000,
+  });
   try {
     const status = await client.getStatus();
     const session = await client.getSession().catch(() => null);

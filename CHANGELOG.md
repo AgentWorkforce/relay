@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `node status` bounds local API probes so a stalled broker cannot hang the command for the default 30-second request timeout.
+
 - Codex subscription deliveries submit pasted input with a separate Enter write and stop background Enter recovery after acknowledgment, so handled events do not keep poking idle workers.
 - Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
 - Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
