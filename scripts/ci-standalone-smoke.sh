@@ -22,7 +22,10 @@ unset RELAY_WORKSPACES_JSON RELAY_WORKSPACE_KEY AGENT_RELAY_WORKSPACE_KEY RELAY_
 # least ten seconds above that bound so an override cannot reintroduce the race
 # this smoke is meant to catch.
 MIN_STARTUP_TIMEOUT_SECONDS=50
-MAX_STARTUP_TIMEOUT_SECONDS=86400
+# Keep every accepted startup override inside the ephemeral workspace lease,
+# with a full minute left for shutdown and deletion verification.
+WORKSPACE_LEASE_SECONDS=300
+MAX_STARTUP_TIMEOUT_SECONDS=240
 STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-60}"
 if ! [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,4}$ ]]; then
   echo "ERROR: AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS must be a base-10 integer between ${MIN_STARTUP_TIMEOUT_SECONDS}s and ${MAX_STARTUP_TIMEOUT_SECONDS}s without leading zeros." >&2
@@ -158,7 +161,7 @@ WORKSPACE_NAME="relay-standalone-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTE
 CREATE_STATUS="$(curl --silent --show-error --output "$WORKSPACE_RESPONSE" --write-out '%{http_code}' \
   --request POST \
   --header 'Content-Type: application/json' \
-  --data "$(jq -cn --arg name "$WORKSPACE_NAME" '{name: $name, expires_in_seconds: 300}')" \
+  --data "$(jq -cn --arg name "$WORKSPACE_NAME" --argjson expires "$WORKSPACE_LEASE_SECONDS" '{name: $name, expires_in_seconds: $expires}')" \
   "$TRUSTED_RELAY_BASE_URL/v1/workspaces" 2>/dev/null || true)"
 # Mask the key before extracting or using any other response field. Never log
 # the response body: it contains the administrative workspace credential.

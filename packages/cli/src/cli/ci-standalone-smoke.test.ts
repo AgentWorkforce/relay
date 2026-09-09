@@ -153,7 +153,8 @@ describe('ci-standalone-smoke workspace reuse', () => {
   it('creates an ephemeral workspace on the trusted engine and wires its base URL explicitly', () => {
     const script = readFileSync(smokeScript, 'utf8');
     expect(script).toContain('TRUSTED_RELAY_BASE_URL="https://cast.agentrelay.com"');
-    expect(script).toContain('expires_in_seconds: 300');
+    expect(script).toContain('WORKSPACE_LEASE_SECONDS=300');
+    expect(script).toContain('expires_in_seconds: $expires');
     expect(script).toContain('printf \'::add-mask::%s\\n\' "$WORKSPACE_KEY"');
     expect(script).toContain('--request DELETE');
     expect(script).toContain('Ephemeral workspace deletion verified');
@@ -166,6 +167,8 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const script = readFileSync(smokeScript, 'utf8');
     const brokerSession = readFileSync(resolve('crates/broker/src/runtime/session.rs'), 'utf8');
     const minimumSeconds = Number(script.match(/MIN_STARTUP_TIMEOUT_SECONDS=([0-9]+)/)?.[1]);
+    const maximumSeconds = Number(script.match(/MAX_STARTUP_TIMEOUT_SECONDS=([0-9]+)/)?.[1]);
+    const leaseSeconds = Number(script.match(/WORKSPACE_LEASE_SECONDS=([0-9]+)/)?.[1]);
     const smokeSeconds = Number(
       script.match(/AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-([0-9]+)}/)?.[1]
     );
@@ -175,6 +178,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
 
     expect(minimumSeconds).toBeGreaterThanOrEqual(brokerSeconds + 10);
     expect(smokeSeconds).toBeGreaterThanOrEqual(minimumSeconds);
+    expect(leaseSeconds - maximumSeconds).toBeGreaterThanOrEqual(60);
   });
 
   it('rejects unsafe startup-timeout overrides before invoking binaries', () => {
@@ -183,8 +187,9 @@ describe('ci-standalone-smoke workspace reuse', () => {
       ['050', 'without leading zeros'],
       ['060', 'without leading zeros'],
       ['08', 'without leading zeros'],
-      ['99999', 'must be no more than 86400s'],
-      ['9223372036854775808', 'between 50s and 86400s'],
+      ['241', 'must be no more than 240s'],
+      ['99999', 'must be no more than 240s'],
+      ['9223372036854775808', 'between 50s and 240s'],
     ]) {
       const { cli, broker, invocationLog } = createFakeBinaries();
       const result = spawnSync('bash', [smokeScript, cli, broker], {
