@@ -16,6 +16,7 @@ for (const name of [
   'node:dns',
   'node:dns/promises',
   'node:http',
+  'node:http2',
   'node:https',
   'node:net',
   'node:tls',
