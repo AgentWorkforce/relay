@@ -155,6 +155,9 @@
     "js-yaml": "^4.3.0",
     "postcss": "^8.5.23",
     "shell-quote": "^1.10.0",
-    "tar": "^7.5.22"
+    "tar": "^7.5.22",
+    "@vitejs/devtools-vitest": {
+      "vitest": "^4.1.0"
+    }
   }
 }

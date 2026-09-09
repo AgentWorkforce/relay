@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "id": "82c0908d-132f-4835-b47e-e76385858bb9",
+  "timestamp": "2026-09-03T14:45:29.548Z",
+  "trajectory": "traj_pwl779phg4f3",
+  "files": [
+    {
+      "path": "package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 155,
+              "end_line": 163,
+              "revision": "8334fbf7efd9f983bb0712c13783e91096f25390"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
