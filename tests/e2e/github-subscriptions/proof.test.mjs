@@ -164,6 +164,11 @@ test('startup failure retains sanitized diagnostics without inventing an idle au
     );
     const data = JSON.parse(readFileSync(path.join(dir, 'diagnostics.json'), 'utf8'));
     assert.equal(data[0].tail, 'Login failed: [redacted]');
+    persistWorkerDiagnostics(dir, 'owned.log', 'harness startup gate rk_live_private', undefined);
+    assert.equal(
+      readFileSync(path.join(dir, 'startup-gates.log'), 'utf8'),
+      'harness startup gate [redacted]\n'
+    );
     assert.throws(
       () => persistWorkerDiagnostics(dir, 'owned.log', 'bad audit boundary', 'invalid'),
       /idle boundary/

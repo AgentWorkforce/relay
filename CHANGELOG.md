@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Codex startup recognizes MCP boot markers in rendered terminal redraws and waits for MCP startup to finish before releasing queued input.
+- Codex startup recognizes MCP boot markers in rendered terminal redraws and waits for MCP startup to finish before releasing queued input; a ready rendered prompt does not need to be reprinted in the output stream.
 
 - `node status` bounds local API probes and reports unavailable details, so a stalled broker cannot hang the command for the default 30-second request timeout.
 

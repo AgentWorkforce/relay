@@ -330,9 +330,11 @@ fn evaluate_startup_gate(
         {
             return false;
         }
-        saw_agent_relay_boot
-            && output_has_prompt(resolved_cli, post_boot_output)
-            && cli_prompt_ready(resolved_cli, grid)
+        // Codex can leave its input glyph on screen while repainting only
+        // other cells. Requiring that glyph again in the bounded historical
+        // output can veto a genuinely ready composer forever. After observing
+        // MCP boot and its completion, use the current rendered prompt.
+        saw_agent_relay_boot && cli_prompt_ready(resolved_cli, grid)
     } else {
         detect_cli_ready(resolved_cli, startup_output, startup_total_bytes, grid)
     }
@@ -2266,6 +2268,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_boot_gate_accepts_current_prompt_without_a_repainted_glyph() {
+        // A captured diagnostic transition had boot=true, grid_prompt=true,
+        // mcp_starting=false, but post_boot_prompt=false. Cursor-only redraws
+        // can retain the input glyph indefinitely without printing it again.
+        assert!(evaluate_startup_gate(
+            "codex",
+            "MCP startup completed",
+            100,
+            true,
+            true,
+            "",
+            GridReadinessSnapshot {
+                screen: "OpenAI Codex\n› ",
+                cursor: Some((2, 3))
+            },
+        ));
+    }
+
+    #[test]
     fn codex_boot_gate_does_not_release_while_mcp_is_starting() {
         assert!(!evaluate_startup_gate(
             "codex",
@@ -2297,7 +2318,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_gate_requires_visible_post_boot_prompt() {
+    fn startup_gate_requires_observed_boot_and_visible_prompt() {
         let startup_output = "Welcome\n› ";
         let post_boot_output = "done\n› ";
         let loading_grid = GridReadinessSnapshot {
@@ -2327,7 +2348,7 @@ mod tests {
             post_boot_output,
             ready_grid,
         ));
-        assert!(!evaluate_startup_gate(
+        assert!(evaluate_startup_gate(
             "codex",
             startup_output,
             startup_output.len(),
