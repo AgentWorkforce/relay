@@ -397,7 +397,7 @@ export async function verifyRelayPackageFiles(value, directory) {
   for (const entry of candidate.packages) {
     const tarballPath = path.join(tarballRoot, entry.tarballFile);
     const { bytes } = await readRegularFileNoFollow(tarballPath, {
-      label: `candidate tarball is not a regular file: ${entry.name}`,
+      label: `candidate tarball ${entry.name}`,
     });
     if (sha256(bytes) !== entry.tarballSha256) {
       throw new Error(`${entry.name} candidate tarball bytes changed`);

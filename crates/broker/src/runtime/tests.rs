@@ -372,6 +372,32 @@ fn delivery_lifecycle_worker_event(
 }
 
 #[tokio::test]
+async fn get_model_unknown_receipt_keeps_the_canonical_wire_shape() {
+    let registry = make_app_server_registry_with_worker(
+        "model-worker",
+        "opencode",
+        "http://127.0.0.1:1",
+        "test-session",
+    )
+    .await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::GetModel {
+            name: WorkerName::new("model-worker"),
+            request_id: None,
+            reply: reply_tx,
+        })
+        .await;
+    let receipt = reply_rx.await.unwrap().unwrap();
+    assert_eq!(receipt["status"], "unknown");
+    assert_eq!(receipt["receipt_id"], serde_json::Value::Null);
+    assert_eq!(receipt["effective_revision"], 0);
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn set_model_requires_exact_provider_receipt_before_reporting_applied() {
     let registry = make_app_server_registry_with_worker(
         "model-worker",

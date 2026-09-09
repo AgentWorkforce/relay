@@ -209,6 +209,7 @@ describe('RelayFlow case manifest', () => {
     expect(source).toMatch(/cliEntry, 'node', 'agent', 'release', 'proof-worker'/);
     expect(source).toContain('`${providerEndpoint}/session/${session.id}`');
     expect(source).toContain('RELAYCAST_BASE_URL: relaycast.baseUrl');
+    expect(source).toContain("start = start > 0 ? text.lastIndexOf('{', start - 1) : -1");
     expect(source).not.toContain("await api('POST', '/api/spawned/proof-worker/model'");
     expect(source).not.toContain('const server = createServer(async (request, response) =>');
   });
@@ -1336,6 +1337,7 @@ describe('process timeout contract', () => {
         signal: abort.signal,
         onStdout: (chunk: string) => {
           output += chunk;
+          if (!output.endsWith('\n')) return;
           const parsed = Number(output.trim());
           if (Number.isSafeInteger(parsed) && parsed > 0) {
             descendantPid = parsed;

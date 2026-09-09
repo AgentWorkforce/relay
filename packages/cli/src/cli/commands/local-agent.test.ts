@@ -1055,7 +1055,7 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('applied=false'));
   });
 
-  it('set-model polls an accepted receipt even when its request id is empty', async () => {
+  it('set-model preserves an uncorrelated pending receipt without polling', async () => {
     const { program, client } = harness();
     client.setModel = vi.fn(async () => ({
       name: 'lead',
@@ -1071,17 +1071,24 @@ describe('local agent subtree', () => {
       accepted: true,
       pending: true,
     }));
+    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
+    expect(client.getModel).not.toHaveBeenCalled();
+  });
+
+  it('set-model stops polling when a newer correlated receipt replaces its request', async () => {
+    const { program, client, log } = harness();
     client.getModel = vi.fn(async () => ({
       name: 'lead',
-      model: 'opus',
-      requested_model: 'opus',
-      effective_model: 'opus',
+      model: 'haiku',
+      requested_model: 'haiku',
+      effective_model: 'haiku',
       applied: true,
       status: 'applied',
-      request_id: '',
-      receipt_id: '',
+      request_id: 'model_2',
+      receipt_id: 'model_2',
       generation: 'generation-1',
-      revision: 1,
+      revision: 2,
+      effective_revision: 2,
       success: true,
       accepted: true,
       pending: false,
@@ -1096,7 +1103,9 @@ describe('local agent subtree', () => {
     } finally {
       vi.useRealTimers();
     }
-    expect(client.getModel).toHaveBeenCalledWith('lead', '');
+    expect(client.getModel).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('request model_1'));
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('request model_2'));
   });
 
   it('message flush drains a local broker agent queue', async () => {

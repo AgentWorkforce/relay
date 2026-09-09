@@ -461,7 +461,7 @@ describe('Relay package qualification producer', () => {
       await rm(linkedTarball);
       await symlink(outsideTarball, linkedTarball);
       await expect(verifyRelayPackageFiles(portablePayload, root)).rejects.toThrow(
-        'tarball is not a regular file'
+        /candidate tarball .* must not be a symbolic link/
       );
       await rm(linkedTarball);
       await writeFile(linkedTarball, candidatePackages[2]!.tarball);

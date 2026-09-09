@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
-### Fixed
-
-- Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
-- Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
-- Fleet Daytona live verification now fails early unless immutable candidate snapshot qualification inputs are explicit.
-
-## [11.10.4] - 2026-09-08
-
 ### Added
 
 - `node agent spawn` can attach to existing headless sessions so model changes report provider-confirmed results.
@@ -24,18 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
 - Relayflow agent permissions now grant an exact `files.write` rule that names a not-yet-created file, so a write-once output path is writable when its parent directory exists. Glob write rules are unchanged and still cover only existing files.
 
-### Changed
-
-- `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.
-
 ### Fixed
 
 - `node agent set-model` returns correlated model-change receipts, preserves uncertain outcomes, and exposes the last confirmed effective model.
-- `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
-- `agent-relay node up` no longer exits when Relaycast answers a startup request with a transient 5xx. The broker retries workspace creation and agent registration up to three times before failing.
-- A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
-- Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
-- PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
+- Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
+- Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
+- Fleet Daytona live verification now fails early unless immutable candidate snapshot qualification inputs are explicit.
 - `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
 - Relayflow agents can create permitted new files inside an existing Relayfile mount without a permission failure.
 
@@ -43,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
 - Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
+
+## [11.10.4] - 2026-09-08
+
+### Changed
+
+- `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.
+
+### Fixed
+
+- `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
+- `agent-relay node up` no longer exits when Relaycast answers a startup request with a transient 5xx. The broker retries workspace creation and agent registration up to three times before failing.
+- A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
+- Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
+- PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
 
 ## [11.10.3] - 2026-09-05
 

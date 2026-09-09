@@ -132,7 +132,11 @@ function waitForChildClose(child, timeoutMs) {
 
 function parseReceiptJson(output, label) {
   const text = String(output ?? '');
-  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+  for (
+    let start = text.lastIndexOf('{');
+    start >= 0;
+    start = start > 0 ? text.lastIndexOf('{', start - 1) : -1
+  ) {
     let depth = 0;
     let inString = false;
     let escaped = false;

@@ -47,6 +47,11 @@ interface WorkerInputFrame extends ProtocolEnvelope<unknown> {
   v: 2;
 }
 
+interface SetModelFrame extends WorkerInputFrame {
+  type: 'set_model';
+  request_id: string;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -79,6 +84,10 @@ function isCommandFrame(value: unknown): value is NativeHarnessCommandFrame {
 
 function isWorkerInputFrame(value: unknown): value is WorkerInputFrame {
   return Boolean(value && typeof value === 'object' && (value as WorkerInputFrame).v === 2);
+}
+
+function isSetModelFrame(value: WorkerInputFrame): value is SetModelFrame {
+  return value.type === 'set_model' && typeof value.request_id === 'string' && value.request_id.trim() !== '';
 }
 
 function eventPayload(event: AgentSessionEvent, sequence: number, timestamp: string): AgentEventPayload {
@@ -263,7 +272,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       }
       continue;
     }
-    if (frame.type === 'set_model') {
+    if (isSetModelFrame(frame)) {
       await write({
         v: 2,
         type: 'set_model_response',
