@@ -48,6 +48,62 @@ agent-relay node agent release <name>
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
+### Local operation during a Relaycast outage
+
+```bash
+agent-relay node up --local-only
+agent-relay node status
+agent-relay node agent spawn claude --runtime pty
+agent-relay node agent attach <name> --mode view
+```
+
+`--local-only` deliberately starts a **DEGRADED** broker without waiting for
+Relaycast. Startup, `/health`, `/api/status`, and `node status` report that mode.
+The authenticated `/api/session` exposes `operation_mode: "local_only"` and
+`degraded: true`; its existing `mode` still describes persistence.
+The standalone broker accepts `init --local-only --persist`; SDK callers can
+set `AGENT_RELAY_LOCAL_ONLY=1` and enable persistence. The API must bind to a
+loopback IP, and the mode supports a single workspace key.
+
+Local spawn, terminal view/input, and the durable automatic delivery queue
+remain available. `POST /api/send` accepts only a worker currently running on
+this broker; channel, cross-workspace, and remote destinations are rejected.
+It reports `delivery_status: "queued_local"`, `local: true`, and
+`relaycast_published: false`. Acceptance means the work was saved, not that an
+agent has read it. Pending work uses the broker's normal retry, acknowledgement,
+and dead-letter lifecycle, including restart recovery. Manual-flush mode is
+unavailable and returns `capability_disabled` explicitly.
+
+Fleet routing, worker presence, remote terminal attachment, node capability
+providers, and injected Relaycast messaging tools are disabled. Local agents
+receive a degraded-mode notice. Their model provider and any tools they
+configure themselves still have their own connectivity requirements.
+
+When a workspace key is configured through the normal workspace selection,
+the broker retries an independent audit connection in the background. Queued
+local delivery records are persisted in `state-<name>.local-outbox.json` beside
+broker state, then reconciled as `local.delivery.queued` events under a separate
+broker audit identity when Relaycast responds. These events contain the
+original delivery/event IDs, sender, recipient, body, and queue timestamp.
+They record local acceptance, not model completion. They are **audit replay**,
+not re-sent messages: replay must never execute the work twice or address a
+local worker name on another machine. Reconciliation is at least once; consumers
+can deduplicate by `event_id` after an ambiguous response or crash.
+
+`node status` reports the reconciliation backlog and the last connection
+result. Without a workspace key, local work still runs and records remain on
+disk until a key is configured on restart; no workspace is created. The outbox
+is bounded to 10,000 records / 32 MiB and rejects new sends when full. A digest
+pins a configured backlog to its original workspace key and Relaycast base URL;
+restore that configuration to drain it before rotating keys or changing the
+destination. Corrupt outboxes cause an explicit startup failure rather than
+being discarded. Preserve the state directory until reconciliation completes.
+
+Recovery never silently enables fleet capabilities. Stop the broker and start
+normally (without the flag or environment opt-in) to enable them; a normal
+restart also drains any retained audit backlog. Restart local workers as needed
+to give them Relaycast messaging tools and registered identities.
+
 ### Workspace binding and recovery
 
 `agent-relay up` and `agent-relay node up` resolve the workspace through one

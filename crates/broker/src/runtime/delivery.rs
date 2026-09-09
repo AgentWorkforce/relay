@@ -338,6 +338,9 @@ pub(crate) fn synthetic_delivery_read_ack_reason(event_id: &EventId) -> Option<&
     if event_id.is_empty() {
         return Some("blank_event_id");
     }
+    if event_id.starts_with("local_") {
+        return Some("local_only_synthetic_event_id");
+    }
     if event_id.starts_with("http_") {
         return Some("http_api_synthetic_event_id");
     }
@@ -948,6 +951,17 @@ pub(crate) async fn retry_pending_delivery(
     }
 
     if !workers.has_worker(&pending.worker_name) {
+        // A local-only queue can outlive its broker process. Wait for the
+        // operator to respawn the local recipient; loss of connectivity or a
+        // restart must not terminally fail this durable work. Explicit release
+        // still moves the worker's pending deliveries to dead letters.
+        if pending.delivery.event_id.as_str().starts_with("local_") {
+            if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+                current.next_retry_at = Instant::now() + retry_interval;
+                current.last_error = Some("waiting for local recipient to reconnect".into());
+            }
+            return Ok(DeliveryAttemptOutcome::Noop);
+        }
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
         return Ok(DeliveryAttemptOutcome::Failed {
             pending: Box::new(removed),

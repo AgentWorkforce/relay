@@ -288,6 +288,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
 
 /** Options accepted by the `up` command action (shared by `local`/`node`). */
 export interface UpCommandOptions {
+  localOnly?: boolean;
   spawn?: boolean;
   background?: boolean;
   /** Internal marker set only on the detached child re-exec. */
@@ -309,6 +310,7 @@ export interface UpCommandOptions {
 export function addUpCommandOptions(command: Command): Command {
   return (
     command
+      .option('--local-only', 'DEGRADED: local agents and durable delivery only; disable fleet routing')
       .option('--spawn', 'Force spawn all agents from teams.json')
       .option('--no-spawn', 'Do not auto-spawn agents (just start broker)')
       .option('--background', 'Run broker in the background (detached)')

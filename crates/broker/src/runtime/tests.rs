@@ -608,6 +608,7 @@ fn worker_event_runtime_fixture(
         tokio::signal::windows::ctrl_shutdown().expect("install test Ctrl+Shutdown listener");
 
     let runtime = BrokerRuntime {
+        degraded: None,
         persist: false,
         broker_start: Instant::now(),
         agent_spawn_count: 0,
@@ -6346,4 +6347,44 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
         .owned_spawn_generations
         .contains_key(&name));
     fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn local_only_queued_work_survives_restart_and_replays_when_recipient_reconnects() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pending.json");
+    let id = DeliveryId::new("del_local_reconnect");
+    let mut pending = HashMap::from([(
+        id.clone(),
+        pending_delivery("local-worker", id.as_str(), "local_reconnect"),
+    )]);
+    pending.get_mut(&id).unwrap().attempts = 0;
+    pending.get_mut(&id).unwrap().delivery.workspace_id = Some(WorkspaceId::new("local"));
+    pending.get_mut(&id).unwrap().delivery.workspace_alias = None;
+    super::save_pending_deliveries(&path, &pending).unwrap();
+    pending = load_pending_deliveries(&path);
+    let (tx, _rx) = mpsc::channel(8);
+    let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
+    assert!(matches!(
+        retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap(),
+        DeliveryAttemptOutcome::Noop
+    ));
+    assert_eq!(pending[&id].attempts, 0);
+    assert!(pending[&id]
+        .last_error
+        .as_deref()
+        .unwrap()
+        .contains("reconnect"));
+    let mut reconnected = make_worker_registry_with_worker("local-worker").await;
+    assert!(matches!(
+        retry_pending_delivery(&id, &mut reconnected, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap(),
+        DeliveryAttemptOutcome::Attempted { .. }
+    ));
+    assert_eq!(pending[&id].attempts, 1);
+    assert_eq!(pending[&id].delivery.event_id.as_str(), "local_reconnect");
+    cleanup_worker_registry(reconnected).await;
 }

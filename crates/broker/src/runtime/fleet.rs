@@ -622,6 +622,14 @@ impl BrokerRuntime {
                             blocked_reason: ok.blocked_reason,
                         });
                     }
+                    Ok(Err(error @ DeliveryRouteError::CapabilityDisabled)) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "capability_disabled".into(),
+                            message: error.to_string(),
+                            request_id,
+                        });
+                    }
                     Ok(Err(DeliveryRouteError::WorkerNotFound(name))) => {
                         self.send_terminal(TerminalToCloud::Error {
                             session_id,
@@ -724,6 +732,14 @@ impl BrokerRuntime {
                             flushed: ok.flushed,
                             matched: ok.matched,
                             revision: ok.revision.to_string(),
+                        });
+                    }
+                    Ok(Err(error @ DeliveryRouteError::CapabilityDisabled)) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "capability_disabled".into(),
+                            message: error.to_string(),
+                            request_id,
                         });
                     }
                     Ok(Err(DeliveryRouteError::WorkerNotFound(name))) => {

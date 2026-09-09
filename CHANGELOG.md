@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay node up --local-only` runs local agents during Relaycast outages, visibly reports degraded capabilities, and retains local delivery records for reconciliation after reconnect.
 - `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails. Repeatable `--spawn-arg` forwards literal harness options.
 
 ### Fixed
