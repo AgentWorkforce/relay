@@ -155,7 +155,12 @@ describe('workspace session persistence', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
     const env = isolatedEnv(root);
-    writeProjectWorkspaceKey(projectDataDir, 'rk_live_enrolled', { enrolledNodeId: 'node_abc' });
+    writeProjectWorkspaceKey(projectDataDir, 'rk_live_enrolled', {
+      enrolledNodeId: 'node_abc',
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
 
     const result = persistWorkspaceSession({
       workspaceKey: 'rk_live_enrolled',
@@ -169,6 +174,9 @@ describe('workspace session persistence', () => {
     expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
       workspaceKey: 'rk_live_enrolled',
       enrolledNodeId: 'node_abc',
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
     });
     expect(result.clearedEnrolledNodeId).toBeUndefined();
   });
@@ -227,6 +235,8 @@ describe('workspace session persistence', () => {
     writeProjectWorkspaceKey(projectDataDir, 'rk_live_old', {
       enrolledNodeId: 'node_old',
       workspaceId: 'rw_old',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
     });
 
     pinProjectWorkspaceSession({ workspaceKey: 'rk_live_default', projectDataDir, env });

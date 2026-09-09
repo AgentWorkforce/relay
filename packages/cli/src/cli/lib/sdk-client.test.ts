@@ -6,13 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createAgentRelay,
+  persistWorkspaceRelaycastTarget,
   resolveAgentToken,
   resolveBaseUrl,
   resolveWorkspaceKey,
   resolveWorkspaceKeyWithSource,
+  resolveWorkspaceSelection,
 } from './sdk-client.js';
 import { setWorkspaceKey } from './workspace-store.js';
-import { writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { readProjectWorkspaceSession, writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 let dir: string;
 let projectRoot: string;
@@ -122,5 +124,38 @@ describe('sdk client option resolution', () => {
     expect(JSON.stringify(relay)).not.toContain('rk_live_owner_secret');
     expect(JSON.stringify(relay)).not.toContain('rk_live_project_owner_secret');
     expect(JSON.stringify(relay)).not.toContain('at_live_participant_scoped');
+  });
+
+  it('durably records an isolated target while preserving the enrolled node session', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      enrolledNodeId: 'node_1',
+    });
+    const selection = resolveWorkspaceSelection({ env: { AGENT_RELAY_HOME: dir } });
+    expect(
+      persistWorkspaceRelaycastTarget(selection, {
+        route: 'agent37-isolated',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+        workspaceId: 'rw_abc',
+        relaycastApiKey: 'rk_live_agent37',
+      })
+    ).toBe(true);
+    expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+      workspaceKey: 'rk_live_agent37',
+      workspaceId: 'rw_abc',
+      enrolledNodeId: 'node_1',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+  });
+
+  it('rejects a persisted route that is not the exact server-owned origin', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_agent37', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://evil.example',
+    });
+
+    expect(() => resolveBaseUrl({ env: { AGENT_RELAY_HOME: dir } })).toThrow(/not trusted/);
   });
 });

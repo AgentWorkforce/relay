@@ -3,7 +3,7 @@ import { getProjectPaths } from '@agent-relay/config';
 import {
   projectWorkspaceKeyPath,
   readProjectWorkspaceSession,
-  writeProjectWorkspaceKey,
+  writeProjectWorkspaceKeyPreservingSession,
 } from './project-workspace-key.js';
 
 /** Outcome of reconciling a fresh enrollment against the project workspace pin. */
@@ -63,6 +63,6 @@ export function linkEnrolledNodeToProjectPin(
     return { status: 'conflict', nodeId, pinnedNodeId: session.enrolledNodeId, pinPath };
   }
 
-  writeProjectWorkspaceKey(dataDir, session.workspaceKey, { enrolledNodeId: nodeId });
+  writeProjectWorkspaceKeyPreservingSession(dataDir, session.workspaceKey, { enrolledNodeId: nodeId });
   return { status: 'linked', nodeId, pinPath };
 }

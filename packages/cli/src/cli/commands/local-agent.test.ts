@@ -171,6 +171,29 @@ describe('local agent subtree', () => {
     );
   });
 
+  it('attach --node forwards an explicit base URL for an isolated fleet workspace', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'attach',
+        'sandbox-worker',
+        '--node',
+        'agent37-codex',
+        '--base-url',
+        'https://agent37-cast.agentrelay.com',
+      ],
+      { from: 'user' }
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'sandbox-worker',
+      'view',
+      'agent37-codex',
+      expect.objectContaining({ baseUrl: 'https://agent37-cast.agentrelay.com' })
+    );
+  });
+
   it('attach --node without --workspace-key leaves the precedence ladder to resolve it', async () => {
     const { program, attachNode } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'sf-mini'], { from: 'user' });

@@ -106,6 +106,28 @@ describe('workspace precedence ladder diagnostics', () => {
     ).toBe('rw_pinned');
   });
 
+  it('carries a persisted Relaycast target when an explicit key matches the project pin', () => {
+    writeProjectWorkspaceKey(dataDir, 'rk_agent37', {
+      workspaceId: 'rw_pinned',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+
+    expect(
+      resolveWorkspaceSelection({
+        workspaceKey: 'rk_agent37',
+        projectDataDir: dataDir,
+        env: { AGENT_RELAY_HOME: home },
+      })
+    ).toMatchObject({
+      key: 'rk_agent37',
+      source: 'flag',
+      workspaceId: 'rw_pinned',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+  });
+
   it('names each source without leaking key material', () => {
     const env = { AGENT_RELAY_HOME: home, AGENT_RELAY_WORKSPACE_KEY: 'rk_env' };
     setWorkspaceKey('global', 'rk_global', env);

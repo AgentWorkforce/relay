@@ -1,7 +1,11 @@
 import { getProjectPaths } from '@agent-relay/config';
 import { resolveWorkspaceKeyWithSource } from '@agent-relay/cloud/workspace-key';
 
-import { readProjectWorkspaceSession, writeProjectWorkspaceKey } from './project-workspace-key.js';
+import {
+  readProjectWorkspaceSession,
+  writeProjectWorkspaceKey,
+  writeProjectWorkspaceKeyPreservingSession,
+} from './project-workspace-key.js';
 import { setWorkspaceKey, switchWorkspace, validateWorkspaceName } from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
@@ -99,10 +103,16 @@ export function persistWorkspaceSession(
   // for an ordinary switch/join/create that happens to stay on the same key.
   const keepsWorkspace = existing?.workspaceKey === workspaceKey;
   const enrolledNodeId = keepsWorkspace ? existing?.enrolledNodeId : undefined;
-  writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
-    ...(enrolledNodeId ? { enrolledNodeId } : {}),
-    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
-  });
+  if (keepsWorkspace) {
+    writeProjectWorkspaceKeyPreservingSession(projectDataDir, workspaceKey, {
+      ...(enrolledNodeId ? { enrolledNodeId } : {}),
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+    });
+  } else {
+    writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+    });
+  }
 
   if (name) {
     setWorkspaceKey(name, workspaceKey, options.env);

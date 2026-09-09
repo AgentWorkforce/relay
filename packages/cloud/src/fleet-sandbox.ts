@@ -7,6 +7,14 @@ type JsonRecord = Record<string, unknown>;
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/**
+ * Cloud may hand back the gateway route owned by a provisioned sandbox. This
+ * is deliberately an exact-origin allowlist: a route is control-plane input,
+ * not a caller-controlled SDK override.
+ */
+export const CANONICAL_RELAYCAST_ORIGIN = 'https://cast.agentrelay.com';
+export const AGENT37_RELAYCAST_ORIGIN = 'https://agent37-cast.agentrelay.com';
+const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
 const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // Mounted provisioning can spend up to 240s completing the initial Relayfile
 // sync, then up to 90s waiting for the enrolled node to report ready. Leave a
@@ -118,6 +126,8 @@ export type CloudFleetSandboxReady = {
   sandboxId: string;
   providerSandboxId?: string;
   relayWorkspaceId: string;
+  /** Closed server-owned Relaycast contract for the provisioned node. */
+  relaycastTarget: CloudFleetRelaycastTarget;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
@@ -132,6 +142,8 @@ export type CloudFleetSandboxReused = {
   activeAgents: number | null;
   maxAgents: number | null;
   providerId?: CloudFleetSandboxProviderId;
+  /** Required when Cloud reused an Agent37-isolated node. */
+  relaycastTarget?: CloudFleetRelaycastTarget;
 };
 
 export type CloudFleetSandboxProvisioningTimeout = {
@@ -140,6 +152,7 @@ export type CloudFleetSandboxProvisioningTimeout = {
   sandboxId: string;
   providerSandboxId?: string;
   relayWorkspaceId: string;
+  relaycastTarget?: CloudFleetRelaycastTarget;
   nodeName: string;
   waitedMs: number;
   providerId?: CloudFleetSandboxProviderId;
@@ -156,6 +169,15 @@ export type DeleteCloudFleetSandboxInput = {
   providerId?: CloudFleetSandboxProviderId;
 };
 
+export type CloudFleetRelaycastRoute = 'canonical' | 'agent37-isolated';
+
+export type CloudFleetRelaycastTarget = {
+  route: CloudFleetRelaycastRoute;
+  baseUrl: string;
+  workspaceId: string;
+  relaycastApiKey: string;
+};
+
 function isObject(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -163,6 +185,56 @@ function isObject(value: unknown): value is JsonRecord {
 function readString(payload: JsonRecord, key: string): string | undefined {
   const value = payload[key];
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeRelaycastOrigin(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Cloud fleet sandbox response has an invalid ${field}.`);
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new Error(`Cloud fleet sandbox response has an invalid ${field}.`);
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.pathname !== '' && parsed.pathname !== '/') ||
+    !TRUSTED_RELAYCAST_ORIGINS.has(parsed.origin)
+  ) {
+    throw new Error(`Cloud fleet sandbox response has an untrusted ${field}.`);
+  }
+  return parsed.origin;
+}
+
+/** Validate Cloud's closed Relaycast route, identity, and scoped credential contract. */
+export function normalizeRelaycastTarget(value: unknown): CloudFleetRelaycastTarget {
+  if (!isObject(value)) {
+    throw new Error('Cloud fleet sandbox response is missing relaycastTarget.');
+  }
+  const route = readString(value, 'route');
+  if (route !== 'canonical' && route !== 'agent37-isolated') {
+    throw new Error('Cloud fleet sandbox response has an unknown Relaycast route.');
+  }
+  const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl');
+  const expectedOrigin = route === 'canonical' ? CANONICAL_RELAYCAST_ORIGIN : AGENT37_RELAYCAST_ORIGIN;
+  if (baseUrl !== expectedOrigin) {
+    throw new Error('Cloud fleet sandbox response mapped Relaycast route to the wrong origin.');
+  }
+  const workspaceId = readString(value, 'workspaceId');
+  if (!workspaceId) {
+    throw new Error('Cloud fleet sandbox response is missing relaycastTarget.workspaceId.');
+  }
+  const relaycastApiKey = readString(value, 'relaycastApiKey');
+  if (!relaycastApiKey || !/^rk_live_[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
+    throw new Error('Cloud fleet sandbox response has an invalid Relaycast API key.');
+  }
+  return { route, baseUrl, workspaceId, relaycastApiKey };
 }
 
 function readNumber(payload: JsonRecord, key: string): number | undefined {
@@ -174,6 +246,19 @@ function requiredNumber(payload: JsonRecord, key: string, context: string): numb
   const value = readNumber(payload, key);
   if (value === undefined) throw new Error(`${context} response is missing ${key}.`);
   return value;
+}
+
+function assertProviderRelaycastTarget(
+  providerId: CloudFleetSandboxProviderId | undefined,
+  target: CloudFleetRelaycastTarget | undefined
+): void {
+  if (providerId !== 'agent37') return;
+  if (!target) {
+    throw new Error('Cloud fleet sandbox response is missing the Agent37 Relaycast target.');
+  }
+  if (target.route !== 'agent37-isolated' || target.baseUrl !== AGENT37_RELAYCAST_ORIGIN) {
+    throw new Error('Cloud fleet sandbox response mapped Agent37 to a non-isolated Relaycast target.');
+  }
 }
 
 function boundedSignal(options: CloudFleetSandboxRequestOptions, defaultTimeoutMs: number): AbortSignal {
@@ -351,6 +436,12 @@ function normalizeEnsureResult(
     }
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
     const providerSandboxId = readString(payload, 'providerSandboxId');
+    const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
+    const relaycastTarget = normalizeRelaycastTarget(payload.relaycastTarget);
+    if (relaycastTarget.workspaceId !== relayWorkspaceId) {
+      throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
+    }
+    assertProviderRelaycastTarget(providerId, relaycastTarget);
     return {
       outcome,
       cloudWorkspaceId,
@@ -358,7 +449,8 @@ function normalizeEnsureResult(
       nodeName,
       sandboxId,
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
-      relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
+      relayWorkspaceId,
+      relaycastTarget,
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
       ...(readString(payload, 'relayfileMountPath')
@@ -368,6 +460,9 @@ function normalizeEnsureResult(
   }
 
   if (outcome === 'reused') {
+    const relaycastTarget =
+      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+    assertProviderRelaycastTarget(providerId, relaycastTarget);
     return {
       outcome,
       cloudWorkspaceId,
@@ -377,18 +472,26 @@ function normalizeEnsureResult(
       activeAgents: readNumber(payload, 'activeAgents') ?? null,
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
       ...(providerId === undefined ? {} : { providerId }),
+      ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
     };
   }
 
   if (outcome === 'provisioning_timeout') {
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
     const providerSandboxId = readString(payload, 'providerSandboxId');
+    const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
+    const relaycastTarget =
+      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+    if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
+      throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
+    }
     return {
       outcome,
       cloudWorkspaceId,
       sandboxId,
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
-      relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox'),
+      relayWorkspaceId,
+      ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
       ...(providerId === undefined ? {} : { providerId }),
@@ -453,6 +556,7 @@ export async function ensureCloudFleetSandbox(
       ),
       {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(input.name ? { nodeName: input.name } : {}),
         ...(input.providerId ? { providerId: input.providerId } : {}),
         outcomeUnknown: true,
@@ -487,6 +591,7 @@ export async function ensureCloudFleetSandbox(
     if (response.status >= 500) {
       throw new CloudFleetSandboxProvisionError(error.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
         ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,
@@ -496,6 +601,7 @@ export async function ensureCloudFleetSandbox(
     if (isObject(payload) && readString(payload, 'sandboxId')) {
       throw new CloudFleetSandboxProvisionError(error.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
         ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,
@@ -517,6 +623,7 @@ export async function ensureCloudFleetSandbox(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
       {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
         ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,

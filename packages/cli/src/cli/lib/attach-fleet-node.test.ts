@@ -1121,9 +1121,12 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
   function capturingTicketFetch(remoteUrl: string): {
     fetch: typeof globalThis.fetch;
     authorization: () => string | undefined;
+    requestUrl: () => string | undefined;
   } {
     let seen: string | undefined;
-    const fetchFn = (async (_url: string, init?: RequestInit) => {
+    let requestedUrl: string | undefined;
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      requestedUrl = url;
       const headers = (init?.headers ?? {}) as Record<string, string>;
       seen = headers.Authorization;
       return {
@@ -1139,7 +1142,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
         }),
       } as unknown as Response;
     }) as unknown as typeof globalThis.fetch;
-    return { fetch: fetchFn, authorization: () => seen };
+    return { fetch: fetchFn, authorization: () => seen, requestUrl: () => requestedUrl };
   }
 
   it('presents an explicit workspace key ahead of the ambient environment', async () => {
@@ -1158,6 +1161,29 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
     cleanup.push(proxy.close);
 
     expect(ticket.authorization()).toBe('Bearer rk_live_explicit');
+  });
+
+  it('uses an explicit isolated base URL instead of the canonical fallback', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'sandbox-worker',
+      node: 'agent37-codex',
+      mode: 'view',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+      workspaceKey: 'rk_live_agent37_target',
+      env: { RELAY_WORKSPACE_KEY: 'rk_live_ambient' },
+      fetch: ticket.fetch,
+    });
+    cleanup.push(proxy.close);
+
+    expect(ticket.requestUrl()).toBe(
+      'https://agent37-cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
+    );
+    expect(ticket.requestUrl()).not.toBe(
+      'https://cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
+    );
   });
 
   it('falls back to the environment when no explicit key is supplied', async () => {

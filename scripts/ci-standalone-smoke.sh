@@ -6,16 +6,16 @@ if [ "$#" -ne 2 ]; then
   exit 2
 fi
 
-if [[ -z "${RELAY_WORKSPACE_KEY:-}" || "${RELAY_WORKSPACE_KEY:-}" =~ ^[[:space:]]+$ ]]; then
-  echo "ERROR: RELAY_WORKSPACE_KEY must name the dedicated standalone-smoke CI workspace." >&2
-  echo "Refusing to start without it because node up would create an undeletable throwaway workspace." >&2
-  exit 2
-fi
+# The standalone smoke is deliberately pinned to the trusted Agent37 shard.
+# Do not make this caller-selectable: the workspace key created below is scoped
+# to this origin and must never be sent to an arbitrary endpoint.
+TRUSTED_RELAY_BASE_URL="https://agent37-cast.agentrelay.com"
 
 # The broker gives a multi-workspace session higher precedence than the single
-# key. This smoke intentionally exercises one dedicated workspace, so do not
+# key. This smoke intentionally exercises one ephemeral workspace, so do not
 # let an ambient developer/runner session silently replace the CI credential.
-unset RELAY_WORKSPACES_JSON
+unset RELAY_WORKSPACES_JSON RELAY_WORKSPACE_KEY AGENT_RELAY_WORKSPACE_KEY RELAY_API_KEY \
+  RELAYCAST_BASE_URL RELAY_AGENT_TOKEN RELAY_WORKSPACE
 
 # Startup can legitimately consume the broker's 40-second aggregate Relaycast
 # handshake budget on a loaded macOS runner. Keep the outer supervisor at
@@ -74,28 +74,59 @@ validate_binary "BROKER" "$BROKER_BIN"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-standalone-smoke.XXXXXX")"
 HOME_DIR="$TMP_ROOT/home"
 PROJECT_DIR="$TMP_ROOT/project"
+WORKSPACE_RESPONSE="$TMP_ROOT/workspace-response.json"
 
 mkdir -p "$HOME_DIR" "$PROJECT_DIR"
 
 CLEANUP_STARTED=false
+WORKSPACE_KEY=""
+WORKSPACE_ID=""
 cleanup() {
   if [ "$CLEANUP_STARTED" = true ]; then
-    return
+    return 0
   fi
   CLEANUP_STARTED=true
+  local cleanup_status=0
   # Disarm before entering the cleanup subshell. Some Bash exit paths can
   # otherwise inherit this EXIT trap and recursively run node down again.
   trap - EXIT
   (
     cd "$PROJECT_DIR"
     HOME="$HOME_DIR" \
+      RELAY_BASE_URL="$TRUSTED_RELAY_BASE_URL" \
       AGENT_RELAY_BIN="$BROKER_BIN" \
       AGENT_RELAY_SKIP_UPDATE_CHECK=1 \
       AGENT_RELAY_STARTUP_DEBUG=1 \
       AGENT_RELAY_TELEMETRY_DISABLED=1 \
+      RELAY_WORKSPACE_KEY="$WORKSPACE_KEY" \
       "$CLI_BIN" node down --force --timeout 5000 >/dev/null 2>&1 || true
   )
+  if [ -n "$WORKSPACE_KEY" ]; then
+    local delete_status verify_status
+    delete_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+      --request DELETE \
+      --header "Authorization: Bearer $WORKSPACE_KEY" \
+      "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
+    if [ "$delete_status" != "200" ] && [ "$delete_status" != "204" ]; then
+      echo "ERROR: ephemeral workspace cleanup returned HTTP ${delete_status:-unknown}." >&2
+      echo "The workspace id is ${WORKSPACE_ID:-unknown}; remove it manually from the trusted smoke shard." >&2
+      cleanup_status=1
+    else
+      verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --request GET \
+        --header "Authorization: Bearer $WORKSPACE_KEY" \
+        "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
+      if [ "$verify_status" != "401" ]; then
+        echo "ERROR: ephemeral workspace deletion was not proved (follow-up HTTP ${verify_status:-unknown})." >&2
+        echo "The workspace id is ${WORKSPACE_ID:-unknown}; remove it manually from the trusted smoke shard." >&2
+        cleanup_status=1
+      else
+        echo "Ephemeral workspace deletion verified"
+      fi
+    fi
+  fi
   rm -rf "$TMP_ROOT"
+  return "$cleanup_status"
 }
 
 trap cleanup EXIT
@@ -104,6 +135,8 @@ run_cli() {
   (
     cd "$PROJECT_DIR"
     HOME="$HOME_DIR" \
+      RELAY_BASE_URL="$TRUSTED_RELAY_BASE_URL" \
+      RELAY_WORKSPACE_KEY="$WORKSPACE_KEY" \
       AGENT_RELAY_BIN="$BROKER_BIN" \
       AGENT_RELAY_SKIP_UPDATE_CHECK=1 \
       AGENT_RELAY_STARTUP_DEBUG=1 \
@@ -111,6 +144,46 @@ run_cli() {
       "$CLI_BIN" "$@"
   )
 }
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "ERROR: curl is required to create and delete the ephemeral smoke workspace." >&2
+  exit 2
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "ERROR: jq is required to parse the ephemeral smoke workspace response." >&2
+  exit 2
+fi
+
+WORKSPACE_NAME="relay-standalone-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
+CREATE_STATUS="$(curl --silent --show-error --output "$WORKSPACE_RESPONSE" --write-out '%{http_code}' \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data "$(jq -cn --arg name "$WORKSPACE_NAME" '{name: $name, expires_in_seconds: 60}')" \
+  "$TRUSTED_RELAY_BASE_URL/v1/workspaces" 2>/dev/null || true)"
+# Mask the key before extracting or using any other response field. Never log
+# the response body: it contains the administrative workspace credential.
+WORKSPACE_KEY="$(jq -er '.data.api_key // .api_key // empty' "$WORKSPACE_RESPONSE" 2>/dev/null || true)"
+if [ -n "$WORKSPACE_KEY" ]; then
+  printf '::add-mask::%s\n' "$WORKSPACE_KEY"
+fi
+if [ -z "$WORKSPACE_KEY" ]; then
+  echo "ERROR: ephemeral smoke workspace response did not contain an API key." >&2
+  exit 1
+fi
+if [[ ! "$WORKSPACE_KEY" =~ ^rk_live_[A-Za-z0-9_-]+$ ]]; then
+  echo "ERROR: ephemeral smoke workspace response contained an invalid API key scheme." >&2
+  exit 1
+fi
+WORKSPACE_ID="$(jq -er '.data.workspace_id // .workspace_id // empty' "$WORKSPACE_RESPONSE" 2>/dev/null || true)"
+if [ -z "$WORKSPACE_ID" ]; then
+  echo "ERROR: ephemeral smoke workspace response did not contain a workspace id." >&2
+  exit 1
+fi
+if [ "$CREATE_STATUS" != "200" ] && [ "$CREATE_STATUS" != "201" ]; then
+  echo "ERROR: ephemeral smoke workspace creation returned HTTP ${CREATE_STATUS:-unknown}." >&2
+  exit 1
+fi
+echo "Ephemeral workspace created on trusted smoke shard (id ${WORKSPACE_ID})"
 
 print_output_excerpt() {
   local output="$1"
@@ -240,4 +313,8 @@ if printf '%s\n' "$UP_OUTPUT" | grep -q 'Broker already running for this project
   exit 1
 fi
 
+if ! cleanup; then
+  echo "Standalone smoke lifecycle passed but ephemeral workspace cleanup was not proved" >&2
+  exit 1
+fi
 echo "Standalone smoke passed"

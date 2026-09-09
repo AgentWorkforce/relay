@@ -21,7 +21,12 @@ export interface ProjectWorkspaceSession {
    * source (a stored Fleet enrollment, say) points at a different workspace.
    */
   workspaceId?: string;
+  /** Last server-selected Relaycast route for follow-up commands in this session. */
+  relaycastRoute?: 'canonical' | 'agent37-isolated';
+  relaycastBaseUrl?: string;
 }
+
+export type ProjectWorkspaceSessionMetadata = Omit<ProjectWorkspaceSession, 'workspaceKey'>;
 
 export type WorkspaceKeySource = 'flag' | 'env' | 'project' | 'store';
 
@@ -53,6 +58,10 @@ export interface WorkspaceSelection {
   origin: string;
   /** Workspace id this selection is known to address, when previously recorded. */
   workspaceId?: string;
+  relaycastRoute?: 'canonical' | 'agent37-isolated';
+  relaycastBaseUrl?: string;
+  /** Project session directory that can durably carry a server-selected target. */
+  projectDataDir?: string;
 }
 
 /** Absolute path to the workspace key recorded by `agent-relay node up`. */
@@ -80,10 +89,17 @@ export function readProjectWorkspaceSession(
     if (!workspaceKey) return undefined;
     const enrolledNodeId = trimOrUndefined(parsed.enrolledNodeId);
     const workspaceId = trimOrUndefined(parsed.workspaceId);
+    const relaycastRoute =
+      parsed.relaycastRoute === 'canonical' || parsed.relaycastRoute === 'agent37-isolated'
+        ? parsed.relaycastRoute
+        : undefined;
+    const relaycastBaseUrl = trimOrUndefined(parsed.relaycastBaseUrl);
     return {
       workspaceKey,
       ...(enrolledNodeId ? { enrolledNodeId } : {}),
       ...(workspaceId ? { workspaceId } : {}),
+      ...(relaycastRoute ? { relaycastRoute } : {}),
+      ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
     };
   } catch {
     return undefined;
@@ -97,12 +113,19 @@ export function readProjectWorkspaceSession(
 export function writeProjectWorkspaceKey(
   dataDir: string,
   workspaceKey: string | undefined,
-  options: { enrolledNodeId?: string; workspaceId?: string } = {}
+  options: {
+    enrolledNodeId?: string;
+    workspaceId?: string;
+    relaycastRoute?: 'canonical' | 'agent37-isolated';
+    relaycastBaseUrl?: string;
+  } = {}
 ): void {
   const key = trimOrUndefined(workspaceKey);
   if (!key) return;
   const enrolledNodeId = trimOrUndefined(options.enrolledNodeId);
   const workspaceId = trimOrUndefined(options.workspaceId);
+  const relaycastRoute = options.relaycastRoute;
+  const relaycastBaseUrl = trimOrUndefined(options.relaycastBaseUrl);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = projectWorkspaceKeyPath(dataDir);
   // Worker threads share a PID, so include a per-write nonce as well as the PID.
@@ -112,6 +135,8 @@ export function writeProjectWorkspaceKey(
       workspaceKey: key,
       ...(enrolledNodeId ? { enrolledNodeId } : {}),
       ...(workspaceId ? { workspaceId } : {}),
+      ...(relaycastRoute ? { relaycastRoute } : {}),
+      ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
     } satisfies ProjectWorkspaceSession,
     null,
     2
@@ -142,6 +167,48 @@ export function writeProjectWorkspaceKey(
 }
 
 /**
+ * Rewrite a project session while retaining server-selected metadata when the
+ * workspace key is unchanged. A changed key is an intentional rebind, so no
+ * metadata from the old workspace is carried across.
+ *
+ * The low-level writer above deliberately replaces the complete record. This
+ * helper is for callers that update one part of an existing session (for
+ * example, linking an enrolled node) and must not accidentally discard the
+ * Relaycast target or workspace identity recorded alongside the key.
+ */
+export function writeProjectWorkspaceKeyPreservingSession(
+  dataDir: string,
+  workspaceKey: string | undefined,
+  options: ProjectWorkspaceSessionMetadata = {}
+): void {
+  const key = trimOrUndefined(workspaceKey);
+  if (!key) return;
+
+  const existing = readProjectWorkspaceSession(dataDir);
+  const sameWorkspace = existing?.workspaceKey === key;
+  const retained: ProjectWorkspaceSessionMetadata = sameWorkspace
+    ? {
+        ...(existing?.enrolledNodeId ? { enrolledNodeId: existing.enrolledNodeId } : {}),
+        ...(existing?.workspaceId ? { workspaceId: existing.workspaceId } : {}),
+        ...(existing?.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
+        ...(existing?.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
+      }
+    : {};
+
+  writeProjectWorkspaceKey(dataDir, key, {
+    ...retained,
+    ...(trimOrUndefined(options.enrolledNodeId)
+      ? { enrolledNodeId: trimOrUndefined(options.enrolledNodeId) }
+      : {}),
+    ...(trimOrUndefined(options.workspaceId) ? { workspaceId: trimOrUndefined(options.workspaceId) } : {}),
+    ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
+    ...(trimOrUndefined(options.relaycastBaseUrl)
+      ? { relaycastBaseUrl: trimOrUndefined(options.relaycastBaseUrl) }
+      : {}),
+  });
+}
+
+/**
  * Resolve which Relay workspace this process addresses.
  *
  * This is THE workspace precedence ladder — every caller (SDK clients, the CLI,
@@ -163,22 +230,55 @@ export function resolveWorkspaceSelection(
   options: ResolveWorkspaceKeyOptions = {}
 ): WorkspaceSelection | undefined {
   const env = options.env ?? process.env;
+  const dataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
+  const project = dataDir ? readProjectWorkspaceSession(dataDir, options.fileSystem ?? fs) : undefined;
   const flag = trimOrUndefined(options.workspaceKey);
-  if (flag) return { key: flag, source: 'flag', origin: '--workspace-key' };
+  if (flag) {
+    return {
+      key: flag,
+      source: 'flag',
+      origin: '--workspace-key',
+      ...(project?.workspaceKey === flag && project.workspaceId ? { workspaceId: project.workspaceId } : {}),
+      ...(project?.workspaceKey === flag && project.relaycastRoute
+        ? { relaycastRoute: project.relaycastRoute }
+        : {}),
+      ...(project?.workspaceKey === flag && project.relaycastBaseUrl
+        ? { relaycastBaseUrl: project.relaycastBaseUrl }
+        : {}),
+      ...(project?.workspaceKey === flag && dataDir ? { projectDataDir: dataDir } : {}),
+    };
+  }
 
   for (const name of WORKSPACE_KEY_ENV_VARS) {
     const envKey = trimOrUndefined(env[name]);
-    if (envKey) return { key: envKey, source: 'env', origin: `$${name}` };
+    if (envKey) {
+      return {
+        key: envKey,
+        source: 'env',
+        origin: `$${name}`,
+        ...(project?.workspaceKey === envKey && project.workspaceId
+          ? { workspaceId: project.workspaceId }
+          : {}),
+        ...(project?.workspaceKey === envKey && project.relaycastRoute
+          ? { relaycastRoute: project.relaycastRoute }
+          : {}),
+        ...(project?.workspaceKey === envKey && project.relaycastBaseUrl
+          ? { relaycastBaseUrl: project.relaycastBaseUrl }
+          : {}),
+        ...(project?.workspaceKey === envKey && dataDir ? { projectDataDir: dataDir } : {}),
+      };
+    }
   }
 
-  const dataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
-  const project = dataDir ? readProjectWorkspaceSession(dataDir, options.fileSystem ?? fs) : undefined;
   if (project) {
     return {
       key: project.workspaceKey,
       source: 'project',
       origin: projectWorkspaceKeyPath(dataDir as string),
       ...(project.workspaceId ? { workspaceId: project.workspaceId } : {}),
+      ...(project.relaycastRoute ? { relaycastRoute: project.relaycastRoute } : {}),
+      ...(project.relaycastBaseUrl ? { relaycastBaseUrl: project.relaycastBaseUrl } : {}),
+      ...(dataDir ? { projectDataDir: dataDir } : {}),
     };
   }
 

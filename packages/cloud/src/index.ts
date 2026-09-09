@@ -81,6 +81,9 @@ export {
   ensureCloudFleetSandbox,
   deleteCloudFleetSandbox,
   CloudFleetSandboxProvisionError,
+  normalizeRelaycastTarget,
+  CANONICAL_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
   type CloudFleetSandboxReady,
@@ -90,6 +93,8 @@ export {
   type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
+  type CloudFleetRelaycastRoute,
+  type CloudFleetRelaycastTarget,
 } from './fleet-sandbox.js';
 
 export {

@@ -11,9 +11,12 @@ vi.mock('./auth.js', () => ({
 }));
 
 import {
+  AGENT37_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  normalizeRelaycastTarget,
 } from './fleet-sandbox.js';
 
 const auth = {
@@ -26,6 +29,12 @@ const refreshedAuth = { ...auth, accessToken: 'refreshed' };
 const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
 const SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
 const SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
+const RELAYCAST_TARGET = {
+  route: 'agent37-isolated' as const,
+  baseUrl: AGENT37_RELAYCAST_ORIGIN,
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_agent37',
+};
 
 describe('Cloud fleet sandbox client', () => {
   beforeEach(() => {
@@ -35,6 +44,115 @@ describe('Cloud fleet sandbox client', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('normalizes a closed Agent37 Relaycast target', () => {
+    expect(
+      normalizeRelaycastTarget({ ...RELAYCAST_TARGET, baseUrl: `${AGENT37_RELAYCAST_ORIGIN}/` })
+    ).toEqual(RELAYCAST_TARGET);
+    expect(
+      normalizeRelaycastTarget({
+        route: 'canonical',
+        baseUrl: CANONICAL_RELAYCAST_ORIGIN,
+        workspaceId: 'rw_abc',
+        relaycastApiKey: 'rk_live_canonical',
+      })
+    ).toMatchObject({ route: 'canonical', baseUrl: CANONICAL_RELAYCAST_ORIGIN });
+  });
+
+  it.each([
+    { route: 'agent37-isolated', baseUrl: 'https://evil.example' },
+    { route: 'canonical', baseUrl: AGENT37_RELAYCAST_ORIGIN },
+    { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com/path' },
+    { route: 'agent37-isolated', baseUrl: 'https://user:pass@agent37-cast.agentrelay.com' },
+  ])('rejects a route mapped to an untrusted Relaycast origin', (target) => {
+    expect(() => normalizeRelaycastTarget({ ...RELAYCAST_TARGET, ...target })).toThrow(/relaycast/i);
+  });
+
+  it.each([
+    { ...RELAYCAST_TARGET, relaycastApiKey: 'rk_test_not_live' },
+    { ...RELAYCAST_TARGET, workspaceId: '' },
+    { ...RELAYCAST_TARGET, relaycastApiKey: undefined },
+  ])('rejects an incomplete Relaycast target', (target) => {
+    expect(() => normalizeRelaycastTarget(target)).toThrow(/Relaycast|workspace/);
+  });
+
+  it('rejects the legacy generic API key field', () => {
+    expect(() =>
+      normalizeRelaycastTarget({
+        route: RELAYCAST_TARGET.route,
+        baseUrl: RELAYCAST_TARGET.baseUrl,
+        workspaceId: RELAYCAST_TARGET.workspaceId,
+        apiKey: RELAYCAST_TARGET.relaycastApiKey,
+      })
+    ).toThrow(/API key/);
+  });
+
+  it('rejects a provisioned response with an untrusted server-owned Relaycast route', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'provisioned',
+          providerId: 'agent37',
+          nodeId: 'node-1',
+          nodeName: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          relayWorkspaceId: 'rw_abc',
+          relaycastTarget: { ...RELAYCAST_TARGET, baseUrl: 'https://evil.example' },
+          relayfileMounted: true,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).rejects.toThrow(/untrusted relaycastTarget.baseUrl/);
+  });
+
+  it('rejects a canonical target for an explicitly requested Agent37 provider', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'provisioned',
+          providerId: 'agent37',
+          nodeId: 'node-1',
+          nodeName: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          relayWorkspaceId: 'rw_abc',
+          relaycastTarget: {
+            route: 'canonical',
+            baseUrl: CANONICAL_RELAYCAST_ORIGIN,
+            workspaceId: 'rw_abc',
+            relaycastApiKey: 'rk_live_canonical',
+          },
+          relayfileMounted: false,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        mountRelayfile: false,
+      })
+    ).rejects.toThrow(/mapped Agent37 to a non-isolated/);
   });
 
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
@@ -52,6 +170,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: SANDBOX_ID,
             providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
             relayfileMountPath: '/workspace',
             providerId: 'agent37',
@@ -102,6 +221,7 @@ describe('Cloud fleet sandbox client', () => {
       sandboxId: SANDBOX_ID,
       providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
+      relaycastTarget: RELAYCAST_TARGET,
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
       providerId: 'agent37',
@@ -131,7 +251,7 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
   });
 
-  it('preserves legacy long-running requests with a custom name and no sandbox identity', async () => {
+  it('fails closed when a newly provisioned response omits the Relaycast target', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
@@ -160,11 +280,7 @@ describe('Cloud fleet sandbox client', () => {
         name: 'legacy-custom-node',
         workloadProfile: 'long-running-agent',
       })
-    ).resolves.toMatchObject({
-      outcome: 'provisioned',
-      sandboxId: 'legacy-public-sandbox',
-      providerSandboxId: 'legacy-provider-sandbox',
-    });
+    ).rejects.toThrow('missing relaycastTarget');
 
     const ensureBody = JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body));
     expect(ensureBody).toMatchObject({
@@ -191,6 +307,7 @@ describe('Cloud fleet sandbox client', () => {
                   nodeName: SANDBOX_NAME,
                   sandboxId: SANDBOX_ID,
                   relayWorkspaceId: 'rw_abc',
+                  relaycastTarget: RELAYCAST_TARGET,
                   relayfileMounted: true,
                   providerId: 'agent37',
                 }
@@ -287,7 +404,7 @@ describe('Cloud fleet sandbox client', () => {
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
         nodeName: SANDBOX_NAME,
         outcomeUnknown: true,
-        sandboxId: undefined,
+        sandboxId: SANDBOX_ID,
       });
       expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
     }
@@ -338,7 +455,7 @@ describe('Cloud fleet sandbox client', () => {
         cloudWorkspaceId: CLOUD_WORKSPACE_ID,
         nodeName: SANDBOX_NAME,
         outcomeUnknown: true,
-        sandboxId: undefined,
+        sandboxId: SANDBOX_ID,
       });
       expect(String(error)).toContain(`instead of requested nodeName ${SANDBOX_NAME}`);
     }
@@ -373,7 +490,7 @@ describe('Cloud fleet sandbox client', () => {
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       nodeName: SANDBOX_NAME,
       outcomeUnknown: true,
-      sandboxId: undefined,
+      sandboxId: SANDBOX_ID,
     });
     expect(String(error)).toContain(`instead of requested sandboxId ${SANDBOX_ID}`);
   });
@@ -453,7 +570,7 @@ describe('Cloud fleet sandbox client', () => {
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       nodeName: SANDBOX_NAME,
       outcomeUnknown: true,
-      sandboxId: undefined,
+      sandboxId: SANDBOX_ID,
       providerId: undefined,
     });
   });
@@ -487,7 +604,7 @@ describe('Cloud fleet sandbox client', () => {
         nodeName: SANDBOX_NAME,
         providerId: 'e2b',
         outcomeUnknown: true,
-        sandboxId: undefined,
+        sandboxId: SANDBOX_ID,
       });
       expect(String(error)).toContain('provider timed out after allocation');
     }
@@ -548,7 +665,7 @@ describe('Cloud fleet sandbox client', () => {
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       nodeName: SANDBOX_NAME,
       outcomeUnknown: true,
-      sandboxId: undefined,
+      sandboxId: SANDBOX_ID,
       providerId: undefined,
     });
   });
@@ -568,6 +685,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-9',
             providerSandboxId: 'provider-sandbox-9',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -606,6 +724,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-scoped',
             providerSandboxId: 'provider-sandbox-scoped',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -658,6 +777,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-e2b',
             providerSandboxId: 'provider-sandbox-e2b',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -714,6 +834,64 @@ describe('Cloud fleet sandbox client', () => {
     );
   });
 
+  it('requires and validates the isolated target for a reused Agent37 sandbox', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'reused',
+          providerId: 'agent37',
+          nodeId: 'node-agent37',
+          nodeName: 'agent37-reviewer',
+          status: 'online',
+          activeAgents: 0,
+          maxAgents: 1,
+          relaycastTarget: RELAYCAST_TARGET,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        mountRelayfile: false,
+      })
+    ).resolves.toEqual(expect.objectContaining({ outcome: 'reused', relaycastTarget: RELAYCAST_TARGET }));
+  });
+
+  it('rejects a reused Agent37 response that omits its isolated target', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          outcome: 'reused',
+          providerId: 'agent37',
+          nodeId: 'node-agent37',
+          nodeName: 'agent37-reviewer',
+          status: 'online',
+          activeAgents: 0,
+          maxAgents: 1,
+        }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+      })
+    ).rejects.toThrow(/missing the Agent37 Relaycast target/);
+  });
+
   it('keeps router-selected responses forward compatible when no exact provider was requested', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
@@ -730,6 +908,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-future',
             providerSandboxId: 'provider-sandbox-future',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -766,6 +945,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-1',
             providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -935,6 +1115,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-10',
             providerSandboxId: 'provider-sandbox-10',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -967,6 +1148,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-11',
             providerSandboxId: 'provider-sandbox-11',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
           },
           { status: 201 }
@@ -1000,7 +1182,6 @@ describe('Cloud fleet sandbox client', () => {
             relayWorkspaceId: 'rw_abc',
             nodeName: 'daytona-codex',
             waitedMs: 90_000,
-            providerId: 'agent37',
           },
           { status: 202 }
         ),
@@ -1044,6 +1225,7 @@ describe('Cloud fleet sandbox client', () => {
               sandboxId: 'sandbox-1',
               providerSandboxId: 'provider-sandbox-1',
               relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
               relayfileMounted: true,
               providerId: 'daytona',
             },
@@ -1084,6 +1266,7 @@ describe('Cloud fleet sandbox client', () => {
             sandboxId: 'sandbox-1',
             providerSandboxId: 'provider-sandbox-1',
             relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
             providerId: 'daytona',
           },
@@ -1188,7 +1371,7 @@ describe('Cloud fleet sandbox client', () => {
       nodeName: SANDBOX_NAME,
       outcomeUnknown: true,
     });
-    expect(error).toMatchObject({ sandboxId: undefined });
+    expect(error).toMatchObject({ sandboxId: SANDBOX_ID });
   });
 
   it('rejects a timeout response that omits waitedMs', async () => {

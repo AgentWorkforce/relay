@@ -88,6 +88,7 @@ export function runAttach(name: string, mode: AttachMode, options: NativeAttachO
  * rather than accepted and ignored.
  */
 export type FleetNodeAttachCliOptions = Pick<NativeAttachOptions, 'json' | 'reasoning' | 'diagnostics'> & {
+  baseUrl?: string;
   workspaceKey?: string;
 };
 
@@ -106,6 +107,7 @@ export async function attachFleetNode(
     agent: name,
     node,
     mode,
+    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
     ...(options.workspaceKey === undefined ? {} : { workspaceKey: options.workspaceKey }),
   });
   const jsonWriter = options.json ? createBackpressureAwareWriter(process.stdout) : undefined;
@@ -845,6 +847,7 @@ export function registerLocalAgentCommands(
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
     .option('--node <node>', 'Canonical authenticated fleet-node terminal attach (physical or Daytona)')
+    .option('--base-url <url>', 'Relaycast API base URL for --node (defaults to the selected workspace route)')
     .option('--ssh-host <host>', 'SSH host fallback for a physical fleet node')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
@@ -919,6 +922,7 @@ export function registerLocalAgentCommands(
             });
           }
           const code = await deps.attachNode(name, mode, node, {
+            baseUrl: options.baseUrl as string | undefined,
             workspaceKey: attachWorkspaceKey,
             json: options.json as boolean | undefined,
             reasoning: options.reasoning as boolean | undefined,
