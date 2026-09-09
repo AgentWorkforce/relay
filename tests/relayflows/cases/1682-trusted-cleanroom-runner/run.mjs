@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -78,6 +79,36 @@ if (present.every((value) => !value)) {
   const context = validator.validateQualificationRequestEvent(validEvent, '["approved-operator"]');
   if (context.headBranch !== 'qualification/malicious-ref' || context.headSha !== relaySha) {
     throw new Error('Trusted validator did not bind the candidate ref as immutable data.');
+  }
+  const cliHarness = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-runner-cli-'));
+  try {
+    const eventPath = path.join(cliHarness, 'event.json');
+    const cliContextPath = path.join(cliHarness, 'context.json');
+    const githubOutputPath = path.join(cliHarness, 'github-output.txt');
+    await writeFile(eventPath, `${JSON.stringify(validEvent)}\n`);
+    await writeFile(githubOutputPath, '');
+    execFileSync(
+      process.execPath,
+      [
+        scriptPath,
+        'validate-event',
+        '--event',
+        eventPath,
+        '--approved-actors-json',
+        '["approved-operator"]',
+        '--output',
+        cliContextPath,
+        '--github-output',
+        githubOutputPath,
+      ],
+      { cwd: targetDir, encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    assertDeepEqual(JSON.parse(await readFile(cliContextPath, 'utf8')), context, 'production validator CLI');
+    if ((await readFile(githubOutputPath, 'utf8')).trim() !== 'run_id=901') {
+      throw new Error('Production validator CLI did not emit the triggering run ID.');
+    }
+  } finally {
+    await rm(cliHarness, { recursive: true, force: true });
   }
   for (const [label, message, mutate] of [
     [

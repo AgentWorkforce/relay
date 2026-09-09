@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readRegularFileNoFollow } from './safe-file.mjs';
+import { overwriteRegularFileNoFollow, readRegularFileNoFollow } from './safe-file.mjs';
 
 const INVENTORY_VERSION = 1;
 const SAFE_JSON = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.json$/;
@@ -258,13 +258,23 @@ function flag(name) {
   return index < 0 ? '' : (process.argv[index + 1] ?? '');
 }
 
-async function writePrivate(target, value) {
-  const handle = await open(path.resolve(target), 'wx', 0o600);
+export async function writePrivate(target, value) {
+  const resolved = path.resolve(target);
   try {
-    await handle.writeFile(value);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    const handle = await open(resolved, 'wx', 0o600);
+    try {
+      await handle.writeFile(value);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    await overwriteRegularFileNoFollow(resolved, value, {
+      label: 'Fleet CLI inventory output',
+      mode: 0o600,
+      currentUserOwned: true,
+    });
   }
 }
 

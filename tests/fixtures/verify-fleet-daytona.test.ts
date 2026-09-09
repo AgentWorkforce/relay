@@ -51,6 +51,7 @@ import {
   collectFleetCliInventory,
   compareFleetCliInventory,
   inventorySha256,
+  writePrivate,
 } from '../../scripts/verify-features/fleet-cli-inventory.mjs';
 
 const NONCE = 'a'.repeat(32);
@@ -942,6 +943,24 @@ describe('complete Daytona Fleet board', () => {
       await expect(collectFleetCliInventory(path.join(cli, 'index.js'))).rejects.toThrow(
         /candidate CLI must be a non-symlink regular file/
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('updates an existing private inventory output without following a replacement symlink', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-output-'));
+    const output = path.join(root, 'inventory.json');
+    try {
+      await writePrivate(output, 'first\n');
+      await writePrivate(output, 'second\n');
+      expect(await readFile(output, 'utf8')).toBe('second\n');
+      await rm(output);
+      const outside = path.join(root, '..', `${path.basename(root)}-outside.json`);
+      await writeFile(outside, 'outside\n');
+      await symlink(outside, output);
+      await expect(writePrivate(output, 'replacement\n')).rejects.toThrow(/must not be a symbolic link/);
+      await rm(outside, { force: true });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
