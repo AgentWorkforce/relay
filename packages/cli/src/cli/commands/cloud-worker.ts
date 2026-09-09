@@ -3,7 +3,6 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
 import { extract } from 'tar';
 
@@ -20,6 +19,11 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import {
+  describeWorkflowChildError,
+  resolveRelayflowsCliEntrypoint,
+  workflowNodeExecutable,
+} from '../lib/workflow-runtime.js';
 
 type ExitFn = (code: number) => never;
 
@@ -32,13 +36,15 @@ export interface CloudWorkerDependencies {
   now: () => Date;
   cwd: () => string;
   fetchImpl: typeof fetch;
-  resolveRelayflowsCliEntrypoint: () => string;
+  resolveRelayflowsCliEntrypoint?: (workflowPath: string) => string | Promise<string>;
+  argv?: readonly string[];
+  execPath?: string;
+  cliScript?: string;
+  execFile?: typeof import('node:child_process').execFile;
 }
 
-const nodeRequire = createRequire(import.meta.url);
-
 function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWorkerDependencies {
-  return {
+  const deps: CloudWorkerDependencies = {
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -47,9 +53,18 @@ function withDefaults(overrides: Partial<CloudWorkerDependencies> = {}): CloudWo
     now: () => new Date(),
     cwd: () => process.cwd(),
     fetchImpl: fetch,
-    resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
+    resolveRelayflowsCliEntrypoint: async () => '',
+    execFile: undefined,
+    argv: process.argv,
+    execPath: process.execPath,
+    cliScript: process.argv[1] ?? '',
     ...overrides,
   };
+  if (!overrides.resolveRelayflowsCliEntrypoint) {
+    deps.resolveRelayflowsCliEntrypoint = (workflowPath) =>
+      resolveRelayflowsCliEntrypoint(workflowPath, deps);
+  }
+  return deps;
 }
 
 function safeFileName(value: string): string {
@@ -142,7 +157,7 @@ async function runChild(input: {
 
     child.on('error', (error) => {
       input.signal.removeEventListener('abort', stop);
-      reject(error);
+      reject(describeWorkflowChildError(error, input.command));
     });
 
     child.on('exit', (code, signal) => {
@@ -225,9 +240,11 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
       await writeSecretFile(workflowPath, payload.workflow);
 
-      const relayflowsCli = deps.resolveRelayflowsCliEntrypoint();
+      const relayflowsCli = await (deps.resolveRelayflowsCliEntrypoint
+        ? deps.resolveRelayflowsCliEntrypoint(workflowPath)
+        : resolveRelayflowsCliEntrypoint(workflowPath, deps));
       const result = await runChild({
-        command: process.execPath,
+        command: workflowNodeExecutable(deps),
         args: relayflowsArgs(relayflowsCli, workflowPath, payload),
         cwd: runDir,
         env: buildWorkerRuntimeEnv(payload, deps),

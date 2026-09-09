@@ -4,7 +4,11 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { registerLocalWorkflowCommands, type LocalWorkflowDependencies } from './local-workflow.js';
+import {
+  registerLocalWorkflowCommands,
+  resolveLocalWorkflowCommand,
+  type LocalWorkflowDependencies,
+} from './local-workflow.js';
 
 vi.mock('../telemetry/index.js', () => ({
   track: vi.fn(),
@@ -178,5 +182,74 @@ describe('registerLocalWorkflowCommands', () => {
     expect(record.command).toBe(process.execPath);
     expect(record.args).toEqual([relayflowsCliPath, 'run', workflowPath]);
     expect(record.status).toBe('running');
+  });
+
+  it('uses a real Node child and resolves relayflows from the workflow project in compiled Bun mode', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-workflow-runtime-'));
+    tmpRoots.push(tmpRoot);
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    fs.writeFileSync(workflowPath, 'version: "1.0"\n', 'utf-8');
+    const execFile = vi.fn(
+      (
+        _command: string,
+        _args: string[],
+        _options: unknown,
+        callback: (error: Error | null, stdout: string, stderr: string) => void
+      ) => callback(null, '/project/node_modules/@relayflows/cli/dist/cli.js\n', '')
+    );
+
+    const command = await resolveLocalWorkflowCommand(workflowPath, 'yaml', {
+      ...({} as LocalWorkflowDependencies),
+      argv: ['bun', '/$bunfs/root/cli/index.js'],
+      cliScript: '/$bunfs/root/cli/index.js',
+      execPath: '/tmp/agent-relay',
+      env: { AGENT_RELAY_NODE: ' /opt/node/bin/node ' },
+      execFile: execFile as never,
+    });
+
+    expect(command).toEqual({
+      command: '/opt/node/bin/node',
+      args: ['/project/node_modules/@relayflows/cli/dist/cli.js', 'run', workflowPath],
+    });
+    expect(execFile).toHaveBeenCalledWith(
+      '/opt/node/bin/node',
+      expect.arrayContaining(['@relayflows/cli', tmpRoot]),
+      expect.objectContaining({ cwd: tmpRoot }),
+      expect.any(Function)
+    );
+  });
+
+  it('keeps normal Node relayflows resolution anchored to the installed CLI for an external workflow', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'local-workflow-external-'));
+    tmpRoots.push(tmpRoot);
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    fs.writeFileSync(workflowPath, 'version: "1.0"\nworkflows: []\n', 'utf-8');
+    const spawnProcess = vi.fn(() => ({
+      pid: 42,
+      unref: vi.fn(),
+    })) as unknown as LocalWorkflowDependencies['spawnProcess'];
+    const program = new Command();
+    program.exitOverride();
+    registerLocalWorkflowCommands(program, {
+      cwd: () => tmpRoot,
+      env: { ...process.env },
+      spawnProcess,
+      randomRunId: () => 'local_external',
+      sleep: async () => undefined,
+      log: vi.fn(),
+    });
+
+    await program.parseAsync(['run', workflowPath], { from: 'user' });
+
+    expect(spawnProcess.mock.calls[0]?.[0]).toBe(process.execPath);
+    const record = JSON.parse(
+      fs.readFileSync(path.join(tmpRoot, '.agentworkforce/relay/local-runs/local_external/run.json'), 'utf-8')
+    ) as { command: string; args: string[] };
+    expect(record.command).toBe(process.execPath);
+    expect(record.args).toEqual([
+      expect.stringMatching(/node_modules[\\/]@relayflows[\\/]cli/),
+      'run',
+      workflowPath,
+    ]);
   });
 });
