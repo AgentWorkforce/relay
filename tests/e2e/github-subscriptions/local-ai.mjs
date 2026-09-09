@@ -31,7 +31,8 @@ if (process.env.LOCAL_AI_EXECUTABLE) {
   assert.equal(path.basename(receiverExecutable), receiverCli, 'Executable must match LOCAL_AI_CLI');
 }
 const receiverVersion = execFileSync(receiverExecutable, ['--version'], {
-  encoding: 'utf8', timeout: 15000,
+  encoding: 'utf8',
+  timeout: 15000,
 }).trim();
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const engineDir = process.env.RELAYCAST_ENGINE_DIR;
