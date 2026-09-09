@@ -784,7 +784,9 @@ impl BrokerRuntime {
         self.obligation_store.gc(now);
         if crate::obligation::boomerang_enabled() {
             let interval = std::time::Duration::from_millis(crate::obligation::interval_ms());
-            let due = self.obligation_store.drain_due(now, interval);
+            let due = self.obligation_store.drain_due(now, interval, |recipient| {
+                !self.workers.initial_tasks.contains_key(recipient)
+            });
             for (msg_id, recipient) in due {
                 let boomerang_body = crate::obligation::build_return_body(&msg_id);
                 let delivery_id = DeliveryId::new(uuid::Uuid::new_v4().to_string());

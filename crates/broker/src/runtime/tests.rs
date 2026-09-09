@@ -1254,7 +1254,8 @@ async fn manual_flush_cancels_the_obligation_of_a_dead_lettered_parked_message()
         obligation_store
             .drain_due(
                 Instant::now() + Duration::from_secs(1),
-                Duration::from_millis(1)
+                Duration::from_millis(1),
+                |_| true,
             )
             .len(),
         1,
@@ -1289,7 +1290,8 @@ async fn manual_flush_cancels_the_obligation_of_a_dead_lettered_parked_message()
         obligation_store
             .drain_due(
                 Instant::now() + Duration::from_secs(1),
-                Duration::from_millis(1)
+                Duration::from_millis(1),
+                |_| true,
             )
             .is_empty(),
         "a dead-lettered message must not keep boomeranging at its recipient"

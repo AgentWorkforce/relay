@@ -163,10 +163,19 @@ impl ObligationStore {
     /// `(message_id, recipient)` pairs to inject.
     ///
     /// Discharged obligations are silently skipped.
-    pub fn drain_due(&mut self, now: Instant, interval: Duration) -> Vec<(String, String)> {
+    pub fn drain_due(
+        &mut self,
+        now: Instant,
+        interval: Duration,
+        mut can_deliver: impl FnMut(&str) -> bool,
+    ) -> Vec<(String, String)> {
         let mut due = Vec::new();
         for record in self.records.values_mut() {
-            if record.discharged || record.exhausted || record.next_fire_at > now {
+            if record.discharged
+                || record.exhausted
+                || record.next_fire_at > now
+                || !can_deliver(&record.recipient)
+            {
                 continue;
             }
             due.push((record.message_id.clone(), record.recipient.clone()));
@@ -230,6 +239,23 @@ mod tests {
     }
 
     #[test]
+    fn startup_deferral_preserves_every_boomerang_attempt() {
+        let interval = Duration::from_secs(5);
+        let (mut store, now) = store_with_obligation(interval);
+        let future = now + Duration::from_secs(30);
+        for _ in 0..100 {
+            assert!(store.drain_due(future, interval, |_| false).is_empty());
+        }
+        assert_eq!(store.records["msg-1"].fire_count, 0);
+        assert!(!store.records["msg-1"].exhausted);
+        assert_eq!(
+            store.drain_due(future, interval, |_| true),
+            vec![("msg-1".to_string(), "bob".to_string())]
+        );
+        assert_eq!(store.records["msg-1"].fire_count, 1);
+    }
+
+    #[test]
     fn register_idempotent() {
         let mut store = ObligationStore::default();
         let interval = Duration::from_secs(5);
@@ -268,16 +294,16 @@ mod tests {
         let interval = Duration::from_millis(100);
         let (mut store, _now) = store_with_obligation(interval);
         // Nothing due immediately.
-        let due = store.drain_due(Instant::now(), interval);
+        let due = store.drain_due(Instant::now(), interval, |_| true);
         assert!(due.is_empty());
         // Past interval: now due.
         let future = Instant::now() + interval + Duration::from_millis(50);
-        let due = store.drain_due(future, interval);
+        let due = store.drain_due(future, interval, |_| true);
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].0, "msg-1");
         assert_eq!(due[0].1, "bob");
         // Same instant: not due again (next_fire_at advanced).
-        let due2 = store.drain_due(future, interval);
+        let due2 = store.drain_due(future, interval, |_| true);
         assert!(due2.is_empty());
     }
 
@@ -287,7 +313,7 @@ mod tests {
         let (mut store, _now) = store_with_obligation(interval);
         store.try_discharge("msg-1", "alice");
         let future = Instant::now() + interval + Duration::from_millis(50);
-        let due = store.drain_due(future, interval);
+        let due = store.drain_due(future, interval, |_| true);
         assert!(due.is_empty());
     }
 
@@ -312,12 +338,12 @@ mod tests {
         for i in 0..3u32 {
             let t =
                 Instant::now() + interval * (i + 1) + Duration::from_millis(50 * (i + 1) as u64);
-            let due = store.drain_due(t, interval);
+            let due = store.drain_due(t, interval, |_| true);
             assert_eq!(due.len(), 1, "fire {} must still drain", i);
         }
         // After 3 fires, obligation is exhausted; 4th drain returns empty.
         let t4 = Instant::now() + interval * 10;
-        let due = store.drain_due(t4, interval);
+        let due = store.drain_due(t4, interval, |_| true);
         assert!(due.is_empty(), "exhausted obligation must not drain again");
     }
 
