@@ -1,0 +1,110 @@
+{
+  "version": "1.0.0",
+  "id": "23e9f558-b9d6-47d8-85e6-21c9a81dc0ab",
+  "timestamp": "2026-09-09T12:11:11.961Z",
+  "trajectory": "traj_ckbfhqbr1ews",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_ckbfhqbr1ews/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 70,
+              "revision": "28fbcb9f245fa9c594d428c604e69cd3be877668"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "package-lock.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 13600,
+              "end_line": 13606,
+              "revision": "28fbcb9f245fa9c594d428c604e69cd3be877668"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/package.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 73,
+              "end_line": 79,
+              "revision": "28fbcb9f245fa9c594d428c604e69cd3be877668"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflow-timeout.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 15,
+              "end_line": 25,
+              "revision": "28fbcb9f245fa9c594d428c604e69cd3be877668"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/workflow-timeout.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 355,
+              "end_line": 364,
+              "revision": "28fbcb9f245fa9c594d428c604e69cd3be877668"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1712-cloud-launch-timeout/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 13,
+              "revision": "28fbcb9f245fa9c594d428c604e69cd3be877668"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
