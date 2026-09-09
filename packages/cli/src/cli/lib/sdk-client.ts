@@ -31,6 +31,12 @@ function trimOrUndefined(value: string | undefined): string | undefined {
 export type { WorkspaceKeySource };
 export type { WorkspaceSelection };
 
+export type WorkspaceTransport = {
+  workspaceKey: string;
+  baseUrl?: string;
+  source: WorkspaceKeySource;
+};
+
 /** Resolve the selected key and any previously persisted Relay workspace identity. */
 export function resolveWorkspaceSelection(options: SdkClientOptions = {}): WorkspaceSelection | undefined {
   return resolveCloudWorkspaceSelection({
@@ -50,20 +56,8 @@ export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
   key: string;
   source: WorkspaceKeySource;
 } {
-  const selection = resolveWorkspaceSelection(options);
-  if (selection) {
-    // A Cloud workspace key remains the durable selector and Cloud credential.
-    // A persisted Relaycast target may carry a different route-scoped transport
-    // credential for SDK traffic on the same workspace.
-    validatePersistedRelaycastBaseUrl(selection);
-    return {
-      key: trimOrUndefined(selection.relaycastApiKey) ?? selection.key,
-      source: selection.source,
-    };
-  }
-  throw new Error(
-    'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
-  );
+  const transport = resolveWorkspaceTransport(options);
+  return { key: transport.workspaceKey, source: transport.source };
 }
 
 export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
@@ -72,12 +66,57 @@ export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
 
 export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {
   const selection = resolveWorkspaceSelection(options);
+  return resolveBaseUrlForSelection(selection, options);
+}
+
+function resolveBaseUrlForSelection(
+  selection: WorkspaceSelection | undefined,
+  options: SdkClientOptions
+): string | undefined {
   const persisted = validatePersistedRelaycastBaseUrl(selection);
   const requested = trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
-  if (persisted && requested && requested !== persisted) {
-    throw new Error('The requested Relaycast base URL does not match the persisted workspace route.');
+  if (persisted && requested) {
+    let parsed: URL;
+    try {
+      parsed = new URL(requested);
+    } catch {
+      throw new Error('The requested Relaycast base URL is invalid.');
+    }
+    const authority = /^https:\/\/([^/?#]+)/i.exec(requested)?.[1] ?? '';
+    if (
+      !/^https:\/\/[^/?#]+\/?$/i.test(requested) ||
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      /:\d+$/.test(authority) ||
+      parsed.search ||
+      parsed.hash ||
+      (parsed.pathname !== '' && parsed.pathname !== '/')
+    ) {
+      throw new Error('The requested Relaycast base URL is not a trusted origin.');
+    }
+    if (parsed.origin !== persisted) {
+      throw new Error('The requested Relaycast base URL does not match the persisted workspace route.');
+    }
   }
   return persisted ?? requested;
+}
+
+/** Resolve one credential/origin pair from one workspace selection. */
+export function resolveWorkspaceTransport(options: SdkClientOptions = {}): WorkspaceTransport {
+  const selection = resolveWorkspaceSelection(options);
+  if (!selection) {
+    throw new Error(
+      'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
+    );
+  }
+  const baseUrl = resolveBaseUrlForSelection(selection, options);
+  return {
+    workspaceKey: trimOrUndefined(selection.relaycastApiKey) ?? selection.key,
+    ...(baseUrl ? { baseUrl } : {}),
+    source: selection.source,
+  };
 }
 
 function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undefined): string | undefined {
@@ -116,7 +155,7 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   return parsed.origin;
 }
 
-/** Persist a server-selected target only for an existing project session. */
+/** Persist a server-selected target only while the captured project selection is still current. */
 export function persistWorkspaceRelaycastTarget(
   selection: WorkspaceSelection | undefined,
   target: {
@@ -126,52 +165,44 @@ export function persistWorkspaceRelaycastTarget(
     relaycastApiKey: string;
   }
 ): boolean {
-  const selectionWithProjectDir = selection as (WorkspaceSelection & { projectDataDir?: string }) | undefined;
+  if (!selection) return false;
+  const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
   const dataDir =
     selectionWithProjectDir?.projectDataDir ??
     (selection?.source === 'project' && selection.origin ? path.dirname(selection.origin) : undefined);
   if (!dataDir) return false;
-  const existing = readProjectWorkspaceSession(dataDir);
-  if (!existing) return false;
-  const restoreExisting = (): void => {
-    writeProjectWorkspaceKey(dataDir, existing.workspaceKey, {
-      ...(existing.enrolledNodeId ? { enrolledNodeId: existing.enrolledNodeId } : {}),
-      ...(existing.workspaceId ? { workspaceId: existing.workspaceId } : {}),
-      ...(existing.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
-      ...(existing.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
-      ...(existing.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
-    });
-  };
-  try {
-    writeProjectWorkspaceKey(dataDir, existing.workspaceKey, {
-      ...(existing.enrolledNodeId ? { enrolledNodeId: existing.enrolledNodeId } : {}),
-      workspaceId: target.workspaceId,
-      relaycastRoute: target.route,
-      relaycastBaseUrl: target.baseUrl,
-      relaycastApiKey: target.relaycastApiKey,
-    });
-    const persisted = readProjectWorkspaceSession(dataDir);
-    if (
-      persisted?.workspaceKey === existing.workspaceKey &&
-      persisted.relaycastApiKey === target.relaycastApiKey &&
-      persisted.workspaceId === target.workspaceId &&
-      persisted.relaycastRoute === target.route &&
-      persisted.relaycastBaseUrl === target.baseUrl
-    ) {
-      return true;
-    }
-    restoreExisting();
+  const current = readProjectWorkspaceSession(dataDir);
+  if (selection.projectSessionPresent === false && current) return false;
+  if (
+    current &&
+    (current.workspaceKey !== selection.key ||
+      current.workspaceId !== selection.workspaceId ||
+      current.relaycastRoute !== selection.relaycastRoute ||
+      current.relaycastBaseUrl !== selection.relaycastBaseUrl ||
+      current.relaycastApiKey !== selection.relaycastApiKey)
+  ) {
     return false;
-  } catch (error) {
-    try {
-      restoreExisting();
-    } catch (restoreError) {
-      throw new Error('Could not restore the prior Relaycast project session after persistence failed.', {
-        cause: restoreError,
-      });
-    }
-    throw error;
   }
+  if (!current && (selection.projectSessionPresent === true || selection.source === 'project')) {
+    return false;
+  }
+  writeProjectWorkspaceKey(dataDir, selection.key, {
+    ...(current?.enrolledNodeId ? { enrolledNodeId: current.enrolledNodeId } : {}),
+    workspaceId: target.workspaceId,
+    relaycastRoute: target.route,
+    relaycastBaseUrl: target.baseUrl,
+    relaycastApiKey: target.relaycastApiKey,
+  });
+  const persisted = readProjectWorkspaceSession(dataDir);
+  // Never restore a stale snapshot when verification loses a race: another
+  // process may have intentionally rebound the project after our write.
+  return (
+    persisted?.workspaceKey === selection.key &&
+    persisted.relaycastApiKey === target.relaycastApiKey &&
+    persisted.workspaceId === target.workspaceId &&
+    persisted.relaycastRoute === target.route &&
+    persisted.relaycastBaseUrl === target.baseUrl
+  );
 }
 
 export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {
@@ -180,7 +211,8 @@ export function resolveAgentToken(options: SdkClientOptions = {}): string | unde
 
 /** Workspace-scoped client (no agent token). */
 export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay {
-  return new AgentRelay({ workspaceKey: resolveWorkspaceKey(options), baseUrl: resolveBaseUrl(options) });
+  const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
+  return new AgentRelay({ workspaceKey, baseUrl });
 }
 
 /**
@@ -200,8 +232,6 @@ export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgen
       baseUrl: resolveBaseUrl(options),
     });
   }
-  return new AgentRelay({
-    workspaceKey: resolveWorkspaceKey(options),
-    baseUrl: resolveBaseUrl(options),
-  });
+  const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
+  return new AgentRelay({ workspaceKey, baseUrl });
 }

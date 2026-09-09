@@ -261,7 +261,7 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
   });
 
-  it('fails closed when a newly provisioned response omits the Relaycast target', async () => {
+  it('accepts a legacy non-Agent37 provisioned response without a Relaycast target', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
@@ -290,7 +290,13 @@ describe('Cloud fleet sandbox client', () => {
         name: 'legacy-custom-node',
         workloadProfile: 'long-running-agent',
       })
-    ).rejects.toThrow('missing relaycastTarget');
+    ).resolves.toEqual(
+      expect.objectContaining({
+        outcome: 'provisioned',
+        nodeName: 'legacy-custom-node',
+        relayWorkspaceId: 'rw_abc',
+      })
+    );
 
     const ensureBody = JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body));
     expect(ensureBody).toMatchObject({
@@ -899,6 +905,54 @@ describe('Cloud fleet sandbox client', () => {
   );
 
   it.each(PROVIDER_OUTCOME_MATRIX)(
+    'accepts a legacy $providerId $outcome result without a Relaycast target',
+    async ({ providerId, outcome }) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  sandboxId: `sandbox-${providerId}`,
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                }
+              : {
+                  outcome,
+                  providerId,
+                  nodeId: `node-${providerId}`,
+                  nodeName: `${providerId}-reviewer`,
+                  status: 'online',
+                  activeAgents: 0,
+                  maxAgents: 1,
+                },
+            { status: outcome === 'provisioned' ? 201 : 200 }
+          ),
+          auth,
+        });
+
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          providerId,
+        })
+      ).resolves.toEqual(
+        expect.not.objectContaining({
+          relaycastTarget: expect.anything(),
+        })
+      );
+    }
+  );
+
+  it.each(PROVIDER_OUTCOME_MATRIX)(
     'rejects an Agent37 Relaycast target for the $providerId $outcome result',
     async ({ providerId, outcome }) => {
       mocks.authorizedApiFetch
@@ -998,6 +1052,41 @@ describe('Cloud fleet sandbox client', () => {
         workspaceId: 'rw_abc',
         requiredCapability: 'spawn:codex',
         providerId: 'agent37',
+      })
+    ).rejects.toThrow(/missing the Agent37 Relaycast target/);
+  });
+
+  it('rejects a provisioned Agent37 response that omits its isolated target', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-agent37',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
       })
     ).rejects.toThrow(/missing the Agent37 Relaycast target/);
   });

@@ -65,6 +65,8 @@ export interface WorkspaceSelection {
   relaycastApiKey?: string;
   /** Project session directory that can durably carry a server-selected target. */
   projectDataDir?: string;
+  /** Whether that project session existed when this selection was captured. */
+  projectSessionPresent?: boolean;
 }
 
 /** Absolute path to the workspace key recorded by `agent-relay node up`. */
@@ -260,7 +262,9 @@ export function resolveWorkspaceSelection(
       ...(project?.workspaceKey === flag && project.relaycastApiKey
         ? { relaycastApiKey: project.relaycastApiKey }
         : {}),
-      ...(project?.workspaceKey === flag && dataDir ? { projectDataDir: dataDir } : {}),
+      ...((!project || project.workspaceKey === flag) && dataDir
+        ? { projectDataDir: dataDir, projectSessionPresent: project !== undefined }
+        : {}),
     };
   }
 
@@ -283,7 +287,9 @@ export function resolveWorkspaceSelection(
         ...(project?.workspaceKey === envKey && project.relaycastApiKey
           ? { relaycastApiKey: project.relaycastApiKey }
           : {}),
-        ...(project?.workspaceKey === envKey && dataDir ? { projectDataDir: dataDir } : {}),
+        ...((!project || project.workspaceKey === envKey) && dataDir
+          ? { projectDataDir: dataDir, projectSessionPresent: project !== undefined }
+          : {}),
       };
     }
   }
@@ -297,7 +303,7 @@ export function resolveWorkspaceSelection(
       ...(project.relaycastRoute ? { relaycastRoute: project.relaycastRoute } : {}),
       ...(project.relaycastBaseUrl ? { relaycastBaseUrl: project.relaycastBaseUrl } : {}),
       ...(project.relaycastApiKey ? { relaycastApiKey: project.relaycastApiKey } : {}),
-      ...(dataDir ? { projectDataDir: dataDir } : {}),
+      ...(dataDir ? { projectDataDir: dataDir, projectSessionPresent: true } : {}),
     };
   }
 

@@ -6,11 +6,15 @@
  * under test is the actual runtime wiring rather than a mocked stand-in.
  */
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startFleetNodeAttachProxy, type FleetNodeAttachProxy } from './attach-fleet-node.js';
+import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 const SESSION_ID = 'session-under-test';
 const RESUME_TOKEN = 'resume-token';
@@ -1184,6 +1188,77 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
     expect(ticket.requestUrl()).not.toBe(
       'https://cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
     );
+  });
+
+  it('binds a matching explicit canonical selector to its persisted isolated key and origin', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-attach-project-'));
+    const priorProject = process.env.AGENT_RELAY_PROJECT;
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_isolated',
+    });
+
+    try {
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'sandbox-worker',
+        node: 'agent37-codex',
+        mode: 'view',
+        baseUrl: 'https://agent37-cast.agentrelay.com/',
+        workspaceKey: 'rk_live_canonical',
+        env: {},
+        fetch: ticket.fetch,
+      });
+      cleanup.push(proxy.close);
+
+      expect(ticket.authorization()).toBe('Bearer rk_live_isolated');
+      expect(ticket.requestUrl()).toBe(
+        'https://agent37-cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
+      );
+    } finally {
+      if (priorProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = priorProject;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not inherit a persisted route when an explicit key selects a different workspace', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-attach-project-'));
+    const priorProject = process.env.AGENT_RELAY_PROJECT;
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_isolated',
+    });
+
+    try {
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'other-worker',
+        node: 'other-node',
+        mode: 'view',
+        workspaceKey: 'rk_live_other',
+        env: {},
+        fetch: ticket.fetch,
+      });
+      cleanup.push(proxy.close);
+
+      expect(ticket.authorization()).toBe('Bearer rk_live_other');
+      expect(ticket.requestUrl()).toBe('https://cast.agentrelay.com/v1/nodes/other-node/terminal/sessions');
+    } finally {
+      if (priorProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = priorProject;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it.each([

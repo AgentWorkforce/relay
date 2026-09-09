@@ -18,7 +18,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import type { AttachMode } from './attach-mode.js';
 import { collectWithRetry } from './collect-with-retry.js';
-import { resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
+import { resolveWorkspaceTransport } from './sdk-client.js';
 
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES = 123;
@@ -315,8 +315,11 @@ export async function startFleetNodeAttachProxy(
 ): Promise<FleetNodeAttachProxy> {
   const env = options.env ?? process.env;
   const fetchFn = options.fetch ?? globalThis.fetch;
-  const workspaceKey = options.workspaceKey ?? resolveWorkspaceKey({ env });
-  const requestedBaseUrl = resolveBaseUrl({ baseUrl: options.baseUrl, env });
+  const { workspaceKey, baseUrl: requestedBaseUrl } = resolveWorkspaceTransport({
+    workspaceKey: options.workspaceKey,
+    baseUrl: options.baseUrl,
+    env,
+  });
   const baseUrl = validateFleetAttachBaseUrl(requestedBaseUrl ?? CANONICAL_RELAYCAST_ORIGIN);
   const nodePath = safeNodePath(options.node);
   const sessionEndpoint = `${baseUrl}/v1/nodes/${nodePath}/terminal/sessions`;

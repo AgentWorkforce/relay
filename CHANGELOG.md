@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Ambiguous Cloud sandbox responses retain their stable `--sandbox-id` for replay instead of automatically deleting an allocation whose outcome is unknown.
 - Persisting an Agent37 Relaycast target keeps the canonical Cloud workspace key as the durable selector and stores the route-scoped transport credential separately, so later commands can reuse the original explicit key.
+- Relaycast credentials and origins now resolve as one transport pair for attach, observer, Fleet, and Relayfile provisioning commands; stale sandbox responses cannot overwrite a project workspace that was rebound while provisioning was in flight.
+- Legacy non-Agent37 Cloud sandbox responses remain usable when they omit the newer Relaycast target, while any target Cloud does return is verified and persisted for both newly provisioned and reused providers.
 - Standalone package smoke workspaces remain valid for five minutes, and startup overrides are capped at four minutes so shutdown and cleanup verification always retain a full-minute lease margin.
 
 ## [11.10.4] - 2026-09-08

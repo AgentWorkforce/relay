@@ -28,11 +28,10 @@ import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
 import {
   resolveAgentToken,
-  resolveBaseUrl,
   resolveWorkspaceSelection,
   persistWorkspaceRelaycastTarget,
-  resolveWorkspaceKey,
   resolveWorkspaceKeyWithSource,
+  resolveWorkspaceTransport,
   type SdkClientOptions,
 } from '../lib/sdk-client.js';
 import {
@@ -72,11 +71,10 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
   return {
     core,
     sdk,
-    createFleetWorkspaceClient: (options) =>
-      createWorkspaceClient({
-        workspaceKey: resolveWorkspaceKey(options),
-        baseUrl: resolveBaseUrl(options),
-      }),
+    createFleetWorkspaceClient: (options) => {
+      const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
+      return createWorkspaceClient({ workspaceKey, baseUrl });
+    },
     resolveWorkspaceSelection,
     persistWorkspaceRelaycastTarget,
     ensureCloudFleetSandbox,
@@ -354,19 +352,14 @@ export function registerFleetCommands(
           }
           throw error;
         }
-        if (
-          sandbox.outcome === 'provisioned' ||
-          (sandbox.outcome === 'reused' && sandbox.providerId === 'agent37')
-        ) {
-          // A provisioned response must carry a closed, server-owned target.
+        if (sandbox.outcome !== 'provisioning_timeout' && sandbox.relaycastTarget) {
+          // When Cloud returns a closed, server-owned target, apply it for any
+          // provider and outcome before registration, spawn, or launcher release.
           // Rebuild both credentials and origin before any registration, spawn,
           // or launcher release, then prove the authenticated client sees the
           // exact workspace Cloud returned.
           try {
             const target = sandbox.relaycastTarget;
-            if (!target) {
-              throw new Error('Cloud provisioned a sandbox without a Relaycast target.');
-            }
             if (
               (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
               target.workspaceId.trim() !== relayWorkspaceId.trim() ||

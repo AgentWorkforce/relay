@@ -126,8 +126,8 @@ export type CloudFleetSandboxReady = {
   sandboxId: string;
   providerSandboxId?: string;
   relayWorkspaceId: string;
-  /** Closed server-owned Relaycast contract for the provisioned node. */
-  relaycastTarget: CloudFleetRelaycastTarget;
+  /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
+  relaycastTarget?: CloudFleetRelaycastTarget;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
@@ -142,7 +142,7 @@ export type CloudFleetSandboxReused = {
   activeAgents: number | null;
   maxAgents: number | null;
   providerId?: CloudFleetSandboxProviderId;
-  /** Required when Cloud reused a node with a known provider. */
+  /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
 };
 
@@ -261,12 +261,7 @@ function assertProviderRelaycastTarget(
     }
     return;
   }
-  if (providerId !== undefined) {
-    if (!target) {
-      throw new Error(
-        `Cloud fleet sandbox response is missing the canonical Relaycast target for ${providerId}.`
-      );
-    }
+  if (providerId !== undefined && target) {
     if (target.route !== 'canonical' || target.baseUrl !== CANONICAL_RELAYCAST_ORIGIN) {
       throw new Error(
         `Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`
@@ -451,8 +446,9 @@ function normalizeEnsureResult(
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
     const providerSandboxId = readString(payload, 'providerSandboxId');
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
-    const relaycastTarget = normalizeRelaycastTarget(payload.relaycastTarget);
-    if (relaycastTarget.workspaceId !== relayWorkspaceId) {
+    const relaycastTarget =
+      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+    if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
       throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
     }
     assertProviderRelaycastTarget(providerId, relaycastTarget);
@@ -464,7 +460,7 @@ function normalizeEnsureResult(
       sandboxId,
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId,
-      relaycastTarget,
+      ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
       ...(readString(payload, 'relayfileMountPath')

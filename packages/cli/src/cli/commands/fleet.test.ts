@@ -54,6 +54,12 @@ const AGENT37_RELAYCAST_TARGET = {
   workspaceId: 'rw_abc',
   relaycastApiKey: 'rk_live_agent37_target',
 };
+const CANONICAL_RELAYCAST_TARGET = {
+  route: 'canonical' as const,
+  baseUrl: 'https://cast.agentrelay.com',
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_canonical_target',
+};
 
 const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
 const liveAgentCapabilities = (...names: string[]) => [
@@ -874,6 +880,82 @@ describe('fleet command support', () => {
     expect(release).toHaveBeenCalled();
   });
 
+  it('applies and persists a returned target for a reused non-Agent37 provider', async () => {
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_reused_e2b', node: { name: 'e2b-codex' } })),
+    };
+    const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
+    }));
+    const persistWorkspaceRelaycastTarget = vi.fn(() => true);
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'reused' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-e2b',
+        nodeName: 'e2b-codex',
+        status: 'online',
+        activeAgents: 0,
+        maxAgents: 1,
+        providerId: 'e2b' as const,
+        relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+      })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'e2b',
+        '--workspace-id',
+        'rw_abc',
+        '--name',
+        'reused-e2b-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: CANONICAL_RELAYCAST_TARGET.relaycastApiKey,
+      baseUrl: CANONICAL_RELAYCAST_TARGET.baseUrl,
+    });
+    expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'rk_live_test' }),
+      CANONICAL_RELAYCAST_TARGET
+    );
+  });
+
   it('fleet spawn --sandbox cleans up when the target cannot be persisted', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const ensureCloudFleetSandbox = vi.fn(async () => ({
@@ -1039,15 +1121,19 @@ describe('fleet command support', () => {
     };
     const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
     const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
+    }));
+    const persistWorkspaceRelaycastTarget = vi.fn(() => true);
     const ensureCloudFleetSandbox = vi.fn(async () => ({
       outcome: 'provisioned' as const,
+      providerId: 'e2b' as const,
       cloudWorkspaceId: 'cloud-workspace',
       nodeId: 'node-legacy',
       nodeName: 'custom-node',
       sandboxId: 'legacy-public-sandbox',
       providerSandboxId: 'legacy-provider-sandbox',
       relayWorkspaceId: 'rw_abc',
-      relaycastTarget: AGENT37_RELAYCAST_TARGET,
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
     }));
@@ -1056,9 +1142,7 @@ describe('fleet command support', () => {
     registerFleetCommands(program, {
       sdk: {
         createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
-        createWorkspaceRelay: vi.fn(() => ({
-          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
-        })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
         createWorkspace: vi.fn() as never,
         log: vi.fn(),
         error: vi.fn(),
@@ -1071,7 +1155,7 @@ describe('fleet command support', () => {
         origin: 'test',
         workspaceId: 'rw_abc',
       }),
-      persistWorkspaceRelaycastTarget: () => true,
+      persistWorkspaceRelaycastTarget,
       deleteCloudFleetSandbox: vi.fn(async () => undefined),
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -1098,6 +1182,8 @@ describe('fleet command support', () => {
     );
 
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
+    expect(persistWorkspaceRelaycastTarget).not.toHaveBeenCalled();
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({ workspaceKey: 'rk_live_test' });
     expect(ensureInput).toMatchObject({
       workspaceId: 'rw_abc',
       requiredCapability: 'spawn:codex',

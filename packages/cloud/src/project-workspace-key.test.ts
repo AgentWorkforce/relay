@@ -130,6 +130,34 @@ describe('workspace precedence ladder diagnostics', () => {
     });
   });
 
+  it.each(['flag', 'env'] as const)(
+    'exposes the empty project directory for a fresh %s selection',
+    (source) => {
+      const selection = resolveWorkspaceSelection({
+        ...(source === 'flag' ? { workspaceKey: 'rk_fresh' } : {}),
+        projectDataDir: dataDir,
+        env: {
+          AGENT_RELAY_HOME: home,
+          ...(source === 'env' ? { RELAY_WORKSPACE_KEY: 'rk_fresh' } : {}),
+        },
+      });
+
+      expect(selection).toMatchObject({ key: 'rk_fresh', source, projectDataDir: dataDir });
+    }
+  );
+
+  it('does not expose a project directory when an explicit selection conflicts with its pin', () => {
+    writeProjectWorkspaceKey(dataDir, 'rk_project');
+
+    expect(
+      resolveWorkspaceSelection({
+        workspaceKey: 'rk_other',
+        projectDataDir: dataDir,
+        env: { AGENT_RELAY_HOME: home },
+      })
+    ).not.toHaveProperty('projectDataDir');
+  });
+
   it('names each source without leaking key material', () => {
     const env = { AGENT_RELAY_HOME: home, AGENT_RELAY_WORKSPACE_KEY: 'rk_env' };
     setWorkspaceKey('global', 'rk_global', env);

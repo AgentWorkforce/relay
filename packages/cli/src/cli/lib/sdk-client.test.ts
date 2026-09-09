@@ -12,6 +12,7 @@ import {
   resolveWorkspaceKey,
   resolveWorkspaceKeyWithSource,
   resolveWorkspaceSelection,
+  resolveWorkspaceTransport,
 } from './sdk-client.js';
 import { setWorkspaceKey } from './workspace-store.js';
 import { readProjectWorkspaceSession, writeProjectWorkspaceKey } from './project-workspace-key.js';
@@ -165,6 +166,109 @@ describe('sdk client option resolution', () => {
     expect(resolveBaseUrl(replayOptions)).toBe('https://agent37-cast.agentrelay.com');
   });
 
+  it.each(['flag', 'env'] as const)(
+    'creates a fresh project target pin for an unpinned %s selection',
+    (source) => {
+      const selection = resolveWorkspaceSelection({
+        ...(source === 'flag' ? { workspaceKey: 'rk_live_fresh' } : {}),
+        env: {
+          AGENT_RELAY_HOME: dir,
+          ...(source === 'env' ? { RELAY_WORKSPACE_KEY: 'rk_live_fresh' } : {}),
+        },
+      });
+      expect(selection).toMatchObject({
+        key: 'rk_live_fresh',
+        source,
+        projectDataDir: projectDataDir(),
+      });
+
+      expect(
+        persistWorkspaceRelaycastTarget(selection, {
+          route: 'agent37-isolated',
+          baseUrl: 'https://agent37-cast.agentrelay.com',
+          workspaceId: 'rw_fresh',
+          relaycastApiKey: 'rk_live_fresh_agent37',
+        })
+      ).toBe(true);
+      expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+        workspaceKey: 'rk_live_fresh',
+        workspaceId: 'rw_fresh',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_live_fresh_agent37',
+      });
+    }
+  );
+
+  it('refuses to overwrite a project session rebound after workspace selection', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_original', { workspaceId: 'rw_original' });
+    const selection = resolveWorkspaceSelection({ env: { AGENT_RELAY_HOME: dir } });
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_rebound', {
+      workspaceId: 'rw_rebound',
+      enrolledNodeId: 'node_rebound',
+    });
+
+    expect(
+      persistWorkspaceRelaycastTarget(selection, {
+        route: 'agent37-isolated',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+        workspaceId: 'rw_original',
+        relaycastApiKey: 'rk_live_original_agent37',
+      })
+    ).toBe(false);
+    expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+      workspaceKey: 'rk_live_rebound',
+      workspaceId: 'rw_rebound',
+      enrolledNodeId: 'node_rebound',
+    });
+  });
+
+  it('does not replace a project pin created while a fresh explicit selection is in flight', () => {
+    const selection = resolveWorkspaceSelection({
+      workspaceKey: 'rk_live_fresh',
+      env: { AGENT_RELAY_HOME: dir },
+    });
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_concurrent', {
+      workspaceId: 'rw_concurrent',
+      enrolledNodeId: 'node_concurrent',
+    });
+
+    expect(
+      persistWorkspaceRelaycastTarget(selection, {
+        route: 'agent37-isolated',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+        workspaceId: 'rw_fresh',
+        relaycastApiKey: 'rk_live_fresh_agent37',
+      })
+    ).toBe(false);
+    expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+      workspaceKey: 'rk_live_concurrent',
+      workspaceId: 'rw_concurrent',
+      enrolledNodeId: 'node_concurrent',
+    });
+  });
+
+  it('refuses to overwrite a target changed after workspace selection', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', { workspaceId: 'rw_abc' });
+    const selection = resolveWorkspaceSelection({ env: { AGENT_RELAY_HOME: dir } });
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: 'https://cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_newer_route',
+    });
+
+    expect(
+      persistWorkspaceRelaycastTarget(selection, {
+        route: 'agent37-isolated',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+        workspaceId: 'rw_abc',
+        relaycastApiKey: 'rk_live_stale_route',
+      })
+    ).toBe(false);
+    expect(readProjectWorkspaceSession(projectDataDir())?.relaycastApiKey).toBe('rk_live_newer_route');
+  });
+
   it('keeps legacy persisted targets usable when no separate Relaycast key exists', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_legacy_agent37', {
       workspaceId: 'rw_abc',
@@ -196,5 +300,47 @@ describe('sdk client option resolution', () => {
     });
 
     expect(() => resolveBaseUrl({ env: { AGENT_RELAY_HOME: dir } })).toThrow(/not trusted/);
+  });
+
+  it('normalizes an equivalent requested trailing slash against the persisted route', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    expect(
+      resolveWorkspaceTransport({
+        baseUrl: 'https://agent37-cast.agentrelay.com/',
+        env: { AGENT_RELAY_HOME: dir },
+      })
+    ).toEqual({
+      workspaceKey: 'rk_live_agent37',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+      source: 'project',
+    });
+  });
+
+  it.each([
+    'https://agent37-cast.agentrelay.com/path',
+    'https://agent37-cast.agentrelay.com?query=1',
+    'https://agent37-cast.agentrelay.com#fragment',
+    'https://user:pass@agent37-cast.agentrelay.com',
+    'https://agent37-cast.agentrelay.com:443',
+    'https://agent37-cast.agentrelay.com:444',
+    'https://agent37-cast.agentrelay.com/%2e%2e',
+    'https://agent37-cast.agentrelay.com.attacker.example',
+  ])('rejects an unsafe requested URL before pairing it with a persisted route-scoped key', (baseUrl) => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    expect(() => resolveWorkspaceTransport({ baseUrl, env: { AGENT_RELAY_HOME: dir } })).toThrow(
+      /trusted origin|does not match/
+    );
   });
 });

@@ -1,8 +1,12 @@
 import { Command } from 'commander';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerObserverCommands, type ObserverCommandDependencies } from './observer.js';
 import { observerUrl, resolveObserverBaseUrl } from '../lib/observer-url.js';
+import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -92,6 +96,33 @@ describe('agent-relay observer', () => {
     expect(url).toBe('https://agentrelay.com/observer?key=ot_live_secrettokenmaterial');
     // The whole point: the administrative credential never reaches the output.
     expect(logs.join('\n')).not.toContain(WORKSPACE_KEY);
+  });
+
+  it('mints through the persisted credential and origin as one transport pair', async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-observer-project-'));
+    vi.stubEnv('AGENT_RELAY_PROJECT', projectRoot);
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), WORKSPACE_KEY, {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_isolated_observer',
+    });
+    const { program, createObserverToken } = setup();
+
+    try {
+      await program.parseAsync(
+        ['observer', '--workspace-key', WORKSPACE_KEY, '--base-url', 'https://agent37-cast.agentrelay.com/'],
+        { from: 'user' }
+      );
+
+      const [call] = createObserverToken.mock.calls as unknown as [[Record<string, unknown>]];
+      expect(call[0]).toMatchObject({
+        workspaceKey: 'rk_live_isolated_observer',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+      });
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it('narrows to channels and includes DMs when asked', async () => {
