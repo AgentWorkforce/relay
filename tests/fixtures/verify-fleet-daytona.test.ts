@@ -1080,7 +1080,16 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       process.env.DAYTONA_API_KEY = 'daytona-secret';
       process.env.OPENAI_API_KEY = 'openai-secret';
       process.env.CLOUD_API_ACCESS_TOKEN = 'cloud-secret';
+      let mountSandboxAvailable = false;
       if (process.platform === 'linux') {
+        try {
+          await execFileAsync('/usr/bin/unshare', ['--user', '--map-root-user', '--mount', '--fork', 'true']);
+          mountSandboxAvailable = true;
+        } catch {
+          // The package-install test container may intentionally disallow user namespaces.
+        }
+      }
+      if (mountSandboxAvailable) {
         process.env.VERIFY_FLEET_RELEASE_QUALIFICATION = '1';
         process.env.RUNNER_TEMP = root;
       }
@@ -1090,7 +1099,7 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       const observed = JSON.parse(await readFile(probe, 'utf8'));
       expect(observed).toMatchObject({ workspace: 'rk_disposable_workspace', home: candidateCwd });
       expect(observed.cwd).toMatch(new RegExp(`${path.basename(candidateCwd)}$`));
-      expect(observed.credential).toBe(process.platform === 'linux' ? 'denied' : 'credential-secret');
+      expect(observed.credential).toBe(mountSandboxAvailable ? 'denied' : 'credential-secret');
       expect(observed).not.toHaveProperty('daytona');
       expect(observed).not.toHaveProperty('openai');
       expect(observed).not.toHaveProperty('cloud');
