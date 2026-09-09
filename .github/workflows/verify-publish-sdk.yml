@@ -17,6 +17,10 @@ name: Verify Published Harness Driver (Cross-Platform)
 # which means it can only verify versions that have already shipped. For
 # pre-publish validation of this logic, use the smoke-broker-packages job in
 # publish.yml — it runs the same assertions against locally-packed tarballs.
+# Both workflows spawn the real broker artifact against a loopback-only
+# registration stub. Production availability is operational telemetry, not an
+# artifact-integrity gate, so a slow authenticated write plane cannot block a
+# release needed to repair it.
 
 on:
   workflow_dispatch:
@@ -63,6 +67,9 @@ jobs:
             expected_pkg: '@agent-relay/broker-win32-x64'
 
     steps:
+      - name: Checkout verification helpers
+        uses: actions/checkout@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -228,6 +235,9 @@ jobs:
             console.log('OK: resolver returned executable binary from optional-dep package');
           "
 
+      - name: Start isolated Relaycast handshake stub
+        uses: ./.github/actions/start-relaycast-stub
+
       - name: Spawn smoke — HarnessDriverClient.spawn()
         shell: bash
         run: |
@@ -244,3 +254,8 @@ jobs:
             await client.shutdown();
             console.log('OK: client.shutdown() completed');
           "
+
+      - name: Stop isolated Relaycast handshake stub
+        if: always()
+        shell: bash
+        run: kill "$RELAYCAST_STUB_PID" 2>/dev/null || true
