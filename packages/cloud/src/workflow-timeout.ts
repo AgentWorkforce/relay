@@ -25,6 +25,7 @@ const REGEX_KEYWORDS = new Set([
 ]);
 const ASI_LABEL_KEYWORDS = new Set(['break', 'continue']);
 const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch', 'with']);
+const IDENTIFIER_PART = /[\p{ID_Continue}$\u200c\u200d]/u;
 
 type MaskedWorkflowSource = {
   source: string;
@@ -39,6 +40,25 @@ type MaskedWorkflowSource = {
 
 type WorkflowRoot = { name: string; invoked: boolean };
 type WorkflowBinding = { builder: boolean };
+type ExpressionScope = { start: number; end: number; parameters: string };
+
+function isIdentifierPart(character: string | undefined): boolean {
+  return character !== undefined && IDENTIFIER_PART.test(character);
+}
+
+function unicodeIdentifierEscapeLength(source: string, index: number): number {
+  if (source[index] !== '\\' || source[index + 1] !== 'u') return 0;
+  if (source[index + 2] === '{') {
+    let cursor = index + 3;
+    let digits = 0;
+    while (cursor < source.length && /[0-9A-Fa-f]/.test(source[cursor]) && digits < 6) {
+      cursor += 1;
+      digits += 1;
+    }
+    return digits > 0 && source[cursor] === '}' ? cursor - index + 1 : 0;
+  }
+  return /^[0-9A-Fa-f]{4}$/.test(source.slice(index + 2, index + 6)) ? 6 : 0;
+}
 
 function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 'py'>): MaskedWorkflowSource {
   let output = '';
@@ -96,7 +116,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
   const appendCode = (character: string, sourceIndex: number) => {
     output += character;
-    if (/[A-Za-z0-9_$]/.test(character)) {
+    if (isIdentifierPart(character)) {
       currentIdentifier += character;
       previousSignificantCharacter = character;
       closedControlParen = false;
@@ -258,6 +278,21 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       }
       index += 1;
       continue;
+    }
+
+    if (fileType === 'ts' && character === '\\') {
+      const escapeLength = unicodeIdentifierEscapeLength(source, index);
+      if (escapeLength > 0) {
+        output += source.slice(index, index + escapeLength);
+        for (let offset = 1; offset < escapeLength; offset += 1) {
+          scopeAt[index + offset] = scopeStack[scopeStack.length - 1];
+        }
+        currentIdentifier += '_';
+        previousSignificantCharacter = '_';
+        closedControlParen = false;
+        index += escapeLength;
+        continue;
+      }
     }
 
     if (fileType === 'ts' && character === '/' && next === '/') {
@@ -521,12 +556,106 @@ function addFunctionBinding(
   }
 }
 
+function resolveExpressionScopeEnds(
+  source: string,
+  scopes: ExpressionScope[],
+  fileType: Extract<WorkflowFileType, 'ts' | 'py'>
+): void {
+  const active: Array<ExpressionScope & { depth: number }> = [];
+  let scopeIndex = 0;
+  let delimiterDepth = 0;
+
+  const closeAt = (position: number): void => {
+    while (active.length > 0 && active[active.length - 1].depth === delimiterDepth) {
+      active.pop()!.end = position;
+    }
+  };
+
+  for (let cursor = 0; cursor < source.length; cursor += 1) {
+    while (scopeIndex < scopes.length && scopes[scopeIndex].start === cursor) {
+      active.push(Object.assign(scopes[scopeIndex], { depth: delimiterDepth }));
+      scopeIndex += 1;
+    }
+
+    const character = source[cursor];
+    if (character === ')' || character === ']' || character === '}') {
+      closeAt(cursor);
+      delimiterDepth = Math.max(0, delimiterDepth - 1);
+      continue;
+    }
+    if (character === '(' || character === '[' || character === '{') {
+      delimiterDepth += 1;
+      continue;
+    }
+    if (character === ';' && active.length > 0) {
+      closeAt(cursor);
+      continue;
+    }
+    if (fileType === 'py' && character === ',' && active.length > 0) {
+      closeAt(cursor);
+      continue;
+    }
+    if (fileType === 'py' && (character === '\n' || character === '\r') && delimiterDepth === 0) {
+      closeAt(cursor);
+    }
+  }
+
+  while (active.length > 0) active.pop()!.end = source.length;
+}
+
+function applyExpressionScopes(
+  masked: MaskedWorkflowSource,
+  scopes: ExpressionScope[],
+  functionScopes: Set<number>,
+  functionBindings: Map<number, Set<string>>,
+  varScopes?: Set<number>
+): void {
+  if (scopes.length === 0) return;
+
+  const registered: Array<ExpressionScope & { scopeId: number }> = [];
+  const parentStack: Array<ExpressionScope & { scopeId: number }> = [];
+  let nextScopeId = 1;
+  for (const scopeId of masked.scopeParents.keys()) nextScopeId = Math.max(nextScopeId, scopeId + 1);
+
+  for (const scope of scopes) {
+    while (parentStack.length > 0 && parentStack[parentStack.length - 1].end <= scope.start) {
+      parentStack.pop();
+    }
+    const scopeId = nextScopeId++;
+    const parentScope = parentStack[parentStack.length - 1]?.scopeId ?? masked.scopeAt[scope.start] ?? 0;
+    masked.scopeParents.set(scopeId, parentScope);
+    functionScopes.add(scopeId);
+    varScopes?.add(scopeId);
+    addFunctionBinding(functionBindings, scopeId, scope.parameters);
+    const record = { ...scope, scopeId };
+    registered.push(record);
+    parentStack.push(record);
+  }
+
+  const active: Array<ExpressionScope & { scopeId: number }> = [];
+  let scopeIndex = 0;
+  for (let cursor = 0; cursor < masked.source.length; cursor += 1) {
+    while (active.length > 0 && active[active.length - 1].end <= cursor) active.pop();
+    while (scopeIndex < registered.length && registered[scopeIndex].start === cursor) {
+      active.push(registered[scopeIndex]);
+      scopeIndex += 1;
+    }
+    if (active.length > 0) masked.scopeAt[cursor] = active[active.length - 1].scopeId;
+  }
+}
+
 function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
   functionScopes: Set<number>;
   functionBindings: Map<number, Set<string>>;
   varScopes: Set<number>;
 } {
-  const { source, scopeAt, scopeParents } = masked;
+  const {
+    source,
+    scopeAt,
+    scopeParents,
+    matchingCloseParens,
+    nextNonWhitespace: nextNonWhitespaceByIndex,
+  } = masked;
   const functionScopes = new Set<number>();
   const functionBindings = new Map<number, Set<string>>();
   const lines: Array<{ start: number; end: number; indent: number }> = [];
@@ -544,76 +673,92 @@ function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
     lineStart = cursor + 1;
   }
 
-  const pending: Array<{ indent: number; parameters: string }> = [];
+  const declarations: Array<{
+    name: string;
+    colon: number;
+    indent: number;
+    parameters: string;
+  }> = [];
+  const declarationPattern = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(/gm;
+  let declarationMatch: RegExpExecArray | null;
+  let declarationLineIndex = 0;
+  while ((declarationMatch = declarationPattern.exec(source)) !== null) {
+    const openParen = declarationMatch.index + declarationMatch[0].lastIndexOf('(');
+    const closeParen = matchingCloseParens.get(openParen);
+    if (closeParen === undefined) continue;
+    const colon = nextNonWhitespaceByIndex[closeParen + 1] ?? source.length;
+    if (source[colon] !== ':') continue;
+    while (
+      declarationLineIndex + 1 < lines.length &&
+      lines[declarationLineIndex].end < declarationMatch.index
+    ) {
+      declarationLineIndex += 1;
+    }
+    declarations.push({
+      name: declarationMatch[1],
+      colon,
+      indent: lines[declarationLineIndex]?.indent ?? 0,
+      parameters: source.slice(openParen + 1, closeParen),
+    });
+  }
+
+  const pending: Array<{ indent: number; parameters: string; parentScope: number }> = [];
   const stack: Array<{ indent: number; scopeId: number }> = [];
   let nextScopeId = 1;
   for (const scopeId of scopeParents.keys()) nextScopeId = Math.max(nextScopeId, scopeId + 1);
+  let declarationIndex = 0;
   for (const line of lines) {
     const trimmed = source.slice(line.start + line.indent, line.end);
     if (trimmed.trim() === '') continue;
     while (stack.length > 0 && line.indent <= stack[stack.length - 1].indent) stack.pop();
 
     while (pending.length > 0 && line.indent > pending[0].indent) {
+      const definition = pending.shift()!;
       const functionScope = nextScopeId++;
-      const parentScope = stack[stack.length - 1]?.scopeId ?? 0;
-      scopeParents.set(functionScope, parentScope);
+      scopeParents.set(functionScope, definition.parentScope);
       functionScopes.add(functionScope);
-      addFunctionBinding(functionBindings, functionScope, pending.shift()!.parameters);
-      stack.push({ indent: line.indent, scopeId: functionScope });
+      addFunctionBinding(functionBindings, functionScope, definition.parameters);
+      stack.push({ indent: definition.indent, scopeId: functionScope });
     }
     pending.length = 0;
 
     const scopeId = stack[stack.length - 1]?.scopeId ?? 0;
     for (let cursor = line.start; cursor < line.end; cursor += 1) scopeAt[cursor] = scopeId;
 
-    const functionMatch = trimmed.match(
-      /^(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\((.*)\)\s*:\s*(?:#.*)?$/
-    );
-    if (functionMatch !== null) pending.push({ indent: line.indent, parameters: functionMatch[1] });
+    while (declarationIndex < declarations.length && declarations[declarationIndex].colon <= line.end) {
+      const definition = declarations[declarationIndex++];
+      addFunctionBinding(functionBindings, scopeId, definition.name);
+      const inlineBodyStart = nextNonWhitespaceByIndex[definition.colon + 1] ?? source.length;
+      if (inlineBodyStart < line.end) {
+        const functionScope = nextScopeId++;
+        scopeParents.set(functionScope, scopeId);
+        functionScopes.add(functionScope);
+        addFunctionBinding(functionBindings, functionScope, definition.parameters);
+        for (let cursor = inlineBodyStart; cursor < line.end; cursor += 1) {
+          scopeAt[cursor] = functionScope;
+        }
+      } else {
+        pending.push({
+          indent: definition.indent,
+          parameters: definition.parameters,
+          parentScope: scopeId,
+        });
+      }
+    }
   }
 
   // Python lambdas have expression scope rather than indentation scope. For
-  // the static timeout scan, delimit their body at the first top-level
-  // separator on the source line; malformed expressions conservatively claim
-  // the remainder of that line.
-  const lambdaPattern = /\blambda\s+([^:\n]+):/g;
+  // the static timeout scan, resolve all expression boundaries in one pass so
+  // nested lambdas do not repeatedly rescan and rewrite the same suffix.
+  const lambdaScopes: ExpressionScope[] = [];
+  const lambdaPattern = /\blambda(?:\s+([^:\n]+))?:/g;
   let lambdaMatch: RegExpExecArray | null;
   while ((lambdaMatch = lambdaPattern.exec(source)) !== null) {
     const bodyStart = nextNonWhitespace(source, lambdaMatch.index + lambdaMatch[0].length);
-    const parentScope = scopeAt[lambdaMatch.index] ?? 0;
-    const lambdaScope = nextScopeId++;
-    scopeParents.set(lambdaScope, parentScope);
-    functionScopes.add(lambdaScope);
-    addFunctionBinding(functionBindings, lambdaScope, lambdaMatch[1]);
-
-    let bodyEnd = source.indexOf('\n', bodyStart);
-    if (bodyEnd < 0) bodyEnd = source.length;
-    let parenDepth = 0;
-    let bracketDepth = 0;
-    let braceDepth = 0;
-    for (let cursor = bodyStart; cursor < bodyEnd; cursor += 1) {
-      const character = source[cursor];
-      if (character === '(') parenDepth += 1;
-      else if (character === ')') {
-        if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
-          bodyEnd = cursor;
-          break;
-        }
-        parenDepth = Math.max(0, parenDepth - 1);
-      } else if (character === '[') bracketDepth += 1;
-      else if (character === ']') bracketDepth = Math.max(0, bracketDepth - 1);
-      else if (character === '{') braceDepth += 1;
-      else if (character === '}') braceDepth = Math.max(0, braceDepth - 1);
-      else if (character === ',' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
-        bodyEnd = cursor;
-        break;
-      } else if (character === ';' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0) {
-        bodyEnd = cursor;
-        break;
-      }
-    }
-    for (let cursor = bodyStart; cursor < bodyEnd; cursor += 1) scopeAt[cursor] = lambdaScope;
+    lambdaScopes.push({ start: bodyStart, end: source.length, parameters: lambdaMatch[1] ?? '' });
   }
+  resolveExpressionScopeEnds(source, lambdaScopes, 'py');
+  applyExpressionScopes(masked, lambdaScopes, functionScopes, functionBindings);
   return { functionScopes, functionBindings, varScopes: functionScopes };
 }
 
@@ -645,20 +790,21 @@ function collectFunctionScopes(
   };
 
   // Any parenthesized construct with a block body is structurally a function
-  // or method unless its preceding token is a control-flow keyword. This also
-  // covers generic declarations/methods (`function f<T>(...) {}` and
-  // `method<T>(...) {}`) without trying to regex the type-parameter grammar.
+  // or method unless its preceding token is a control-flow keyword. Register
+  // the structural shape instead of requiring an identifier immediately before
+  // `(` so computed and quoted class/object methods are covered as well.
   const controlBlockKeywords = new Set(['if', 'while', 'for', 'switch', 'with', 'catch']);
   for (const [openParen, closeParen] of matchingCloseParens) {
     const previous = previousNonWhitespace(source, openParen - 1);
     if (previous < 0) continue;
     const precedingIdentifier = identifierBefore(source, previous);
-    const isGeneric = source[previous] === '>';
-    const isFunctionKeyword =
-      precedingIdentifier?.name === 'function' ||
-      (source[previous] === '*' && identifierBefore(source, previous - 1)?.name === 'function');
-    const isMethod = precedingIdentifier !== null && !controlBlockKeywords.has(precedingIdentifier.name);
-    if (!isGeneric && !isFunctionKeyword && !isMethod) continue;
+    if (precedingIdentifier !== null && controlBlockKeywords.has(precedingIdentifier.name)) continue;
+    if (
+      precedingIdentifier?.name === 'await' &&
+      identifierBefore(source, precedingIdentifier.start - 1)?.name === 'for'
+    ) {
+      continue;
+    }
     register(openParen, openParen + 1, closeParen);
   }
 
@@ -677,28 +823,50 @@ function collectFunctionScopes(
     addFunctionBinding(functionBindings, scopeId, source.slice(openParen + 1, closeParen));
   }
 
-  // Block-bodied arrow functions. Expression-bodied arrows introduce no
-  // lexical block that this scanner needs to model.
+  const previousCloseParen = new Int32Array(source.length + 1);
+  previousCloseParen.fill(-1);
+  let lastCloseParen = -1;
+  for (let cursor = 0; cursor < source.length; cursor += 1) {
+    previousCloseParen[cursor] = lastCloseParen;
+    if (source[cursor] === ')') lastCloseParen = cursor;
+  }
+  previousCloseParen[source.length] = lastCloseParen;
+
+  const arrowParameters = (arrowIndex: number): string => {
+    const previous = previousNonWhitespace(source, arrowIndex - 1);
+    const parameterClose = source[previous] === ')' ? previous : previousCloseParen[arrowIndex];
+    if (parameterClose >= 0) {
+      const afterClose = nextNonWhitespace[parameterClose + 1] ?? source.length;
+      if (parameterClose === previous || source[afterClose] === ':') {
+        const parameterOpen = matchingOpenParens.get(parameterClose);
+        if (parameterOpen !== undefined) return source.slice(parameterOpen + 1, parameterClose);
+      }
+    }
+    const parameter = identifierBefore(source, previous + 1);
+    return parameter?.name ?? '';
+  };
+
+  // Track block and expression-bodied arrows. Expression bodies use compact
+  // interval scopes applied in one sweep, avoiding repeated suffix rewrites for
+  // nested arrows while preserving their parameter bindings.
+  const expressionArrowScopes: ExpressionScope[] = [];
   const arrowPattern = /=>/g;
   let arrowMatch: RegExpExecArray | null;
   while ((arrowMatch = arrowPattern.exec(source)) !== null) {
-    const bodyOpen = nextNonWhitespace[arrowMatch.index + arrowMatch[0].length] ?? source.length;
-    if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) continue;
-    const scopeId = scopeAt[bodyOpen + 1] ?? 0;
-    functionScopes.add(scopeId);
-    varScopes.add(scopeId);
-    let parameterClose = previousNonWhitespace(source, arrowMatch.index - 1);
-    while (parameterClose >= 0 && source[parameterClose] !== ')') parameterClose -= 1;
-    if (parameterClose >= 0) {
-      const openParen = matchingOpenParens.get(parameterClose);
-      if (openParen !== undefined) {
-        addFunctionBinding(functionBindings, scopeId, source.slice(openParen + 1, parameterClose));
-      }
+    const bodyStart = nextNonWhitespace[arrowMatch.index + arrowMatch[0].length] ?? source.length;
+    const parameters = arrowParameters(arrowMatch.index);
+    if (source[bodyStart] === '{') {
+      if (bodyStart + 1 >= source.length) continue;
+      const scopeId = scopeAt[bodyStart + 1] ?? 0;
+      functionScopes.add(scopeId);
+      varScopes.add(scopeId);
+      addFunctionBinding(functionBindings, scopeId, parameters);
     } else {
-      const parameter = identifierBefore(source, previousNonWhitespace(source, arrowMatch.index - 1) + 1);
-      if (parameter !== null) addFunctionBinding(functionBindings, scopeId, parameter.name);
+      expressionArrowScopes.push({ start: bodyStart, end: source.length, parameters });
     }
   }
+  resolveExpressionScopeEnds(source, expressionArrowScopes, 'ts');
+  applyExpressionScopes(masked, expressionArrowScopes, functionScopes, functionBindings, varScopes);
 
   return { functionScopes, functionBindings, varScopes };
 }

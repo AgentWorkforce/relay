@@ -114,6 +114,16 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it.each([
+    `π: while (ready) { break π\n/workflow("fake").timeout(600_000)/.test(value); }`,
+    String.raw`\u03c0: while (ready) { break \u03c0
+/workflow("fake").timeout(600_000)/.test(value); }`,
+  ])('masks a regular expression after a Unicode labelled ASI break', (statement) => {
+    expect(inferWorkflowLaunchTimeoutMs(statement, 'ts')).toBeUndefined();
+    const source = `workflow("real").timeout(900_000); ${statement}`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
   it('keeps ASI regex masking through comments after break and continue', () => {
     for (const keyword of ['break', 'continue']) {
       const source =
@@ -214,6 +224,26 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it.each([
+    'const run = (workflow) => workflow("fake").timeout(600_000);',
+    'const run = workflow => workflow("fake").timeout(600_000);',
+    'const run = <T>(workflow: T): T => workflow("fake").timeout(600_000);',
+  ])('tracks expression-bodied arrow parameters as lexical shadows: %s', (arrow) => {
+    expect(inferWorkflowLaunchTimeoutMs(arrow, 'ts')).toBeUndefined();
+    const source = [`workflow('real').timeout(900_000);`, arrow].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it.each([
+    `class Runner { ['run'](workflow: unknown) { workflow('fake').timeout(600_000); } }`,
+    `const runner = { ['run'](workflow: unknown) { workflow('fake').timeout(600_000); } };`,
+    `class Runner { [Symbol.iterator](workflow: unknown) { workflow('fake').timeout(600_000); } }`,
+  ])('tracks computed method parameters as lexical shadows: %s', (method) => {
+    expect(inferWorkflowLaunchTimeoutMs(method, 'ts')).toBeUndefined();
+    const source = [`workflow('real').timeout(900_000);`, method].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
   it('tracks catch bindings as lexical shadows', () => {
     const source = [
       "const wf = workflow('real');",
@@ -299,6 +329,26 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
+  it('tracks Python parameters declared by a multiline function signature', () => {
+    const definition = [
+      'def run(',
+      '    workflow,',
+      '):',
+      '    pass',
+      `    workflow('fake').timeout(600_000)`,
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(definition, 'py')).toBeUndefined();
+    const source = [`workflow('real').timeout(900_000)`, definition].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
+  it('tracks Python parameters in a one-line function suite', () => {
+    const definition = `def run(workflow): workflow('fake').timeout(600_000)`;
+    expect(inferWorkflowLaunchTimeoutMs(definition, 'py')).toBeUndefined();
+    const source = [`workflow('real').timeout(900_000)`, definition].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
   it('tracks Python lambda parameters through expression scope', () => {
     const source = [
       "workflow('real').timeout(900_000)",
@@ -342,6 +392,34 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
     expect(performance.now() - startedAt).toBeLessThan(2_000);
   });
+
+  it('keeps repeated single-parameter block arrows near-linear', () => {
+    const measure = (count: number): number => {
+      const source = `workflow('real').timeout(600_000);\n` + 'const f = value => {};\n'.repeat(count);
+      const startedAt = performance.now();
+      expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(600_000);
+      return performance.now() - startedAt;
+    };
+
+    measure(1_000);
+    const small = measure(4_000);
+    const large = measure(16_000);
+    expect(large / small).toBeLessThan(8);
+  }, 15_000);
+
+  it('keeps nested Python lambda scope discovery near-linear', () => {
+    const measure = (count: number): number => {
+      const source = 'run = ' + 'lambda value: '.repeat(count) + `workflow('real').timeout(600_000)`;
+      const startedAt = performance.now();
+      expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(600_000);
+      return performance.now() - startedAt;
+    };
+
+    measure(500);
+    const small = measure(2_000);
+    const large = measure(8_000);
+    expect(large / small).toBeLessThan(8);
+  }, 15_000);
 
   it('requires an explicit override when distinct builder timeouts are present', () => {
     const source = "workflow('a').timeout(600_000); workflow('b').timeout(900_000);";
