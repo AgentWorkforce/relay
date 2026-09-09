@@ -112,6 +112,27 @@ export function registerAgentCommands(
     });
   });
 
+  addSdkOptions(
+    group.command('get').description('Get one agent by exact name').argument('<name>', 'Exact agent name')
+  ).action(async (name: string, opts: Record<string, unknown>) => {
+    await runSdk(deps, async () => {
+      const relay = deps.createWorkspaceRelay(sdkOptionsFromOpts(opts));
+      const agent = await withDeadline(
+        () => relay.agents.get(name),
+        (effectiveTimeoutMs) =>
+          new Error(
+            `Looking up agent ${JSON.stringify(name)} did not complete within ${effectiveTimeoutMs}ms.`
+          )
+      ).catch((error: unknown) => {
+        // Only a confirmed 404 is absence. Authentication, transport, and 5xx
+        // failures leave existence unknown and retain their original error.
+        if (!isNotFoundError(error)) throw error;
+        throw new Error(`Agent ${JSON.stringify(name)} was not found.`);
+      });
+      printJson(deps, agent);
+    });
+  });
+
   addSdkOptions(group.command('me').description('Show the current agent identity')).action(
     async (opts: Record<string, unknown>) => {
       await runSdk(deps, async () => {

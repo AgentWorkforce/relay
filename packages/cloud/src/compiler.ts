@@ -1,5 +1,5 @@
 import ignore, { type Ignore } from 'ignore';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentPreset } from './permissions.js';
 
@@ -34,6 +34,10 @@ type CompileInputWithWorkdir = CompileInput & {
 };
 
 const SKIPPED_DIRS = new Set(['.git', '.relay', 'node_modules']);
+
+function isSkippedDirectory(name: string): boolean {
+  return SKIPPED_DIRS.has(name.toLowerCase());
+}
 
 function cleanPatterns(content: string): string[] {
   return content
@@ -141,13 +145,71 @@ function matchesAny(relativePath: string, matcher: Ignore): boolean {
   return matcher.ignores(normalizeRelativePath(relativePath));
 }
 
-function walkProjectFiles(projectDir: string, currentDir = projectDir, files: string[] = []): string[] {
+function exactFutureWritePath(projectDir: string, pattern: string): string | undefined {
+  const trimmed = String(pattern ?? '').trim();
+  if (trimmed === '' || trimmed.startsWith('!') || trimmed.endsWith('/') || /[*?[\]{}]/u.test(trimmed)) {
+    return undefined;
+  }
+
+  const relativePath = normalizeRelativePath(trimmed);
+  if (
+    relativePath === '' ||
+    relativePath === '.' ||
+    relativePath === '..' ||
+    relativePath.startsWith('../') ||
+    path.posix.normalize(relativePath) !== relativePath
+  ) {
+    return undefined;
+  }
+  if (relativePath.split('/').some(isSkippedDirectory)) {
+    return undefined;
+  }
+
+  const target = path.resolve(projectDir, ...relativePath.split('/'));
+  const relativeTarget = path.relative(projectDir, target);
+  if (relativeTarget === '' || relativeTarget === '..' || relativeTarget.startsWith(`..${path.sep}`)) {
+    return undefined;
+  }
+
+  const parent = path.dirname(target);
+  if (!existsSync(parent) || !lstatSync(parent).isDirectory()) {
+    return undefined;
+  }
+  // Validate the parent before inspecting the target. If an earlier path
+  // component is a regular file, lstatSync(target) throws ENOTDIR rather than
+  // returning the requested throwIfNoEntry sentinel.
+  if (lstatSync(target, { throwIfNoEntry: false })) {
+    return undefined;
+  }
+  const realProjectDir = realpathSync(projectDir);
+  const realParent = realpathSync(parent);
+  const relativeParent = path.relative(realProjectDir, realParent);
+  if (relativeParent === '..' || relativeParent.startsWith(`..${path.sep}`)) {
+    return undefined;
+  }
+
+  return relativePath;
+}
+
+/**
+ * Collect every project-relative file path, recording which of them are
+ * symlinks. Symlinks are walked rather than skipped: the classification loop
+ * assigns every returned path to exactly one of readonly, readwrite or denied,
+ * and buildAcl derives a directory-level deny rule from that assignment, so a
+ * path dropped here would silently leave the permission model.
+ */
+function walkProjectFiles(
+  projectDir: string,
+  currentDir = projectDir,
+  files: string[] = [],
+  symlinks = new Set<string>()
+): { files: string[]; symlinks: Set<string> } {
   const entries = readdirSync(currentDir, { withFileTypes: true }).sort((left, right) =>
     left.name.localeCompare(right.name)
   );
 
   for (const entry of entries) {
-    if (entry.isDirectory() && SKIPPED_DIRS.has(entry.name)) {
+    if (entry.isDirectory() && isSkippedDirectory(entry.name)) {
       continue;
     }
 
@@ -155,14 +217,20 @@ function walkProjectFiles(projectDir: string, currentDir = projectDir, files: st
     const relativePath = normalizeRelativePath(path.relative(projectDir, fullPath));
 
     if (entry.isDirectory()) {
-      walkProjectFiles(projectDir, fullPath, files);
+      walkProjectFiles(projectDir, fullPath, files, symlinks);
       continue;
+    }
+
+    // readdir reports lstat metadata, so a symlink is never isDirectory() and
+    // is not recursed into, whatever it points at.
+    if (entry.isSymbolicLink()) {
+      symlinks.add(relativePath);
     }
 
     files.push(relativePath);
   }
 
-  return files;
+  return { files, symlinks };
 }
 
 function buildSources(
@@ -369,7 +437,17 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
   const readwritePaths: string[] = [];
   const deniedPaths: string[] = [];
 
-  for (const relativePath of walkProjectFiles(projectDir)) {
+  const walked = walkProjectFiles(projectDir);
+
+  for (const relativePath of walked.files) {
+    // A symlink is granted by its own in-project path, which says nothing about
+    // where it resolves. Writing through one reaches the target, and a dangling
+    // link creates it. Deny them and let an explicit rule name the real path.
+    if (walked.symlinks.has(relativePath)) {
+      deniedPaths.push(relativePath);
+      continue;
+    }
+
     const dotDenied = inherited && matchesAny(relativePath, dotDenyMatcher);
     const dotReadonly = inherited && !dotDenied && matchesAny(relativePath, dotReadonlyMatcher);
     const yamlRead = matchesAny(relativePath, fileReadMatcher);
@@ -408,6 +486,22 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
     }
 
     deniedPaths.push(relativePath);
+  }
+
+  // Exact YAML write rules can intentionally name a write-once file that does
+  // not exist yet. Preserve that path in the concrete mount plan when its
+  // parent directory already exists; glob rules remain limited to files found
+  // by the project walk.
+  for (const pattern of fileRules.write) {
+    const relativePath = exactFutureWritePath(projectDir, pattern);
+    if (
+      relativePath &&
+      !walked.symlinks.has(relativePath) &&
+      !readwritePaths.includes(relativePath) &&
+      !matchesAny(relativePath, fileDenyMatcher)
+    ) {
+      readwritePaths.push(relativePath);
+    }
   }
 
   readonlyPaths.sort((left, right) => left.localeCompare(right));

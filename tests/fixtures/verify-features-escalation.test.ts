@@ -483,7 +483,7 @@ exit "$FAKE_CURL_EXIT_STATUS"
     const source = await workflowSourcePromise;
 
     expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
-    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
+    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true'");
     expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
   });
 

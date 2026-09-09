@@ -24,6 +24,8 @@ const auth = {
 };
 const refreshedAuth = { ...auth, accessToken: 'refreshed' };
 const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
+const SNAPSHOT_ID = 'snap_immutable_candidate_0905';
+const SNAPSHOT_MANIFEST_SHA256 = 'a'.repeat(64);
 
 describe('Cloud fleet sandbox client', () => {
   beforeEach(() => {
@@ -99,6 +101,116 @@ describe('Cloud fleet sandbox client', () => {
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
       providerId: 'agent37',
+    });
+  });
+
+  it('sends and verifies an inseparable immutable Daytona snapshot proof', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'daytona',
+            nodeId: 'node-candidate',
+            nodeName: 'candidate-node',
+            sandboxId: 'sandbox-candidate',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+            snapshotId: SNAPSHOT_ID,
+            snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256,
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    const result = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      forceProvision: true,
+      providerId: 'daytona',
+      snapshotId: SNAPSHOT_ID,
+      snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256,
+    });
+
+    const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
+    expect(JSON.parse(String(ensureCall?.[2]?.body))).toEqual(
+      expect.objectContaining({
+        snapshotId: SNAPSHOT_ID,
+        snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256,
+      })
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        snapshotId: SNAPSHOT_ID,
+        snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256,
+      })
+    );
+  });
+
+  it.each([
+    [{ snapshotId: SNAPSHOT_ID }, 'provided together'],
+    [{ snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256 }, 'provided together'],
+    [
+      { snapshotId: SNAPSHOT_ID, snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256, providerId: 'e2b' },
+      'requires providerId=daytona',
+    ],
+    [
+      { snapshotId: SNAPSHOT_ID, snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256 },
+      'requires providerId=daytona',
+    ],
+  ])('rejects invalid snapshot selection before Cloud access', async (selection, message) => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        ...selection,
+      })
+    ).rejects.toThrow(message);
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a successful response that does not prove the requested snapshot digest', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'daytona',
+            nodeId: 'node-candidate',
+            nodeName: 'candidate-node',
+            sandboxId: 'sandbox-candidate',
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+            snapshotId: SNAPSHOT_ID,
+            snapshotManifestSha256: 'b'.repeat(64),
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        providerId: 'daytona',
+        snapshotId: SNAPSHOT_ID,
+        snapshotManifestSha256: SNAPSHOT_MANIFEST_SHA256,
+      })
+    ).rejects.toMatchObject({
+      name: 'CloudFleetSandboxProvisionError',
+      sandboxId: 'sandbox-candidate',
+      outcomeUnknown: true,
     });
   });
 

@@ -276,6 +276,14 @@ actor BrokerCore {
         )
     }
 
+    func getModel(name: String, requestId: String? = nil) async throws -> ModelUpdateResult {
+        let query = requestId.map { "?request_id=\(escapeQueryValue($0))" } ?? ""
+        return try decodeJSON(
+            try await http.get(path: "/api/spawned/\(escapePathSegment(name))/model\(query)"),
+            as: ModelUpdateResult.self
+        )
+    }
+
     func subscribeChannels(name: String, channels: [String]) async throws {
         let body = try encodeJSON(ChannelsRequestBody(channels: channels))
         _ = try await http.post(path: "/api/spawned/\(escapePathSegment(name))/subscribe", body: body)
@@ -624,6 +632,10 @@ public final class AgentRelayBrokerClient: @unchecked Sendable {
     @discardableResult
     public func setModel(name: String, model: String, timeoutMs: Int? = nil) async throws -> ModelUpdateResult {
         try await core.setModel(name: name, model: model, timeoutMs: timeoutMs)
+    }
+
+    public func getModel(name: String, requestId: String? = nil) async throws -> ModelUpdateResult {
+        try await core.getModel(name: name, requestId: requestId)
     }
 
     /// Subscribe an agent to additional broker channels

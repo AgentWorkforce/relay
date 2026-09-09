@@ -23,7 +23,36 @@ function harness(overrides: Partial<LocalAgentDependencies> = {}) {
     spawnPty: vi.fn(async () => undefined),
     spawnHeadless: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
-    setModel: vi.fn(async () => ({ name: 'lead', model: 'opus', success: true })),
+    setModel: vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'accepted_pending',
+      request_id: 'model_1',
+      generation: 'generation-1',
+      revision: 1,
+      success: false,
+      accepted: true,
+      pending: true,
+    })),
+    getModel: vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: 'opus',
+      applied: true,
+      status: 'applied',
+      request_id: 'model_1',
+      receipt_id: 'model_1',
+      generation: 'generation-1',
+      revision: 1,
+      effective_revision: 1,
+      success: true,
+      accepted: true,
+      pending: false,
+    })),
     flushPending: vi.fn(async () => ({ flushed: 2 })),
     setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
   };
@@ -805,16 +834,278 @@ describe('local agent subtree', () => {
     );
   });
 
+  it('spawn --runtime headless forwards typed AppServer configuration', async () => {
+    const { program, client } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--name',
+        'app-server-worker',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--release',
+        'delete',
+      ],
+      { from: 'user' }
+    );
+    expect(client.spawnHeadless).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'app-server-worker',
+        cli: 'opencode',
+        harnessConfig: {
+          runtime: 'headless',
+          driver: 'app_server',
+          protocol: 'opencode',
+          endpoint: 'http://127.0.0.1:4096',
+          sessionId: 'session-1',
+          release: 'delete',
+        },
+      })
+    );
+  });
+
   it('release calls client.release', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'release', 'lead'], { from: 'user' });
     expect(client.release).toHaveBeenCalledWith('lead');
   });
 
+  it('spawn --runtime headless rejects --model before spawning', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--name',
+        'app-server-worker',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--model',
+        'openai/gpt-5.4',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('Headless AppServer workers keep the provider session model')
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('spawn --runtime headless rejects task-exit spawn mode', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--spawn-mode',
+        'task-exit',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('do not support --spawn-mode task-exit'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('spawn --runtime headless rejects --exit-after-task', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'spawn',
+        'opencode',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+        '--exit-after-task',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('do not support --exit-after-task'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('new --runtime headless is rejected before spawning or attaching', async () => {
+    const { program, client, attach, error, exit } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'new',
+        'opencode',
+        '--runtime',
+        'headless',
+        '--protocol',
+        'opencode',
+        '--endpoint',
+        'http://127.0.0.1:4096',
+        '--session-id',
+        'session-1',
+      ],
+      { from: 'user' }
+    );
+
+    expect(client.spawnHeadless).not.toHaveBeenCalled();
+    expect(client.spawnPty).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('`agent new` cannot attach to headless AppServer workers')
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('set-model forwards name and model to client.setModel', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
     expect(client.setModel).toHaveBeenCalledWith('lead', 'opus');
+  });
+
+  it('set-model --json emits a normalized correlated receipt', async () => {
+    const { program, log, client } = harness();
+    vi.useFakeTimers();
+    try {
+      const command = program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], {
+        from: 'user',
+      });
+      await vi.runAllTimersAsync();
+      await command;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(log).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          name: 'lead',
+          requestedModel: 'opus',
+          effectiveModel: 'opus',
+          applied: true,
+          status: 'applied',
+          requestId: 'model_1',
+          receiptId: 'model_1',
+          generation: 'generation-1',
+          revision: 1,
+          effectiveRevision: 1,
+          success: true,
+          accepted: true,
+          pending: false,
+        },
+        null,
+        2
+      )
+    );
+    expect(client.getModel).toHaveBeenCalledWith('lead', 'model_1');
+  });
+
+  it('set-model reports unsupported without claiming application', async () => {
+    const { program, client, log } = harness();
+    client.setModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'unsupported',
+      request_id: 'model_2',
+      generation: 'generation-1',
+      revision: 2,
+      success: false,
+      accepted: false,
+      pending: false,
+    }));
+    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('unsupported'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('applied=false'));
+  });
+
+  it('set-model preserves an uncorrelated pending receipt without polling', async () => {
+    const { program, client } = harness();
+    client.setModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'accepted_pending',
+      request_id: '',
+      generation: 'generation-1',
+      revision: 1,
+      success: false,
+      accepted: true,
+      pending: true,
+    }));
+    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
+    expect(client.getModel).not.toHaveBeenCalled();
+  });
+
+  it('set-model stops polling when a newer correlated receipt replaces its request', async () => {
+    const { program, client, log } = harness();
+    client.getModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'haiku',
+      requested_model: 'haiku',
+      effective_model: 'haiku',
+      applied: true,
+      status: 'applied',
+      request_id: 'model_2',
+      receipt_id: 'model_2',
+      generation: 'generation-1',
+      revision: 2,
+      effective_revision: 2,
+      success: true,
+      accepted: true,
+      pending: false,
+    }));
+    vi.useFakeTimers();
+    try {
+      const command = program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], {
+        from: 'user',
+      });
+      await vi.runAllTimersAsync();
+      await command;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(client.getModel).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('request model_1'));
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining('request model_2'));
   });
 
   it('message flush drains a local broker agent queue', async () => {

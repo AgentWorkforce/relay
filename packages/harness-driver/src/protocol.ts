@@ -645,6 +645,12 @@ export type BrokerToWorker =
       payload: { ts_ms: number };
     }
   | {
+      /** Typed model mutation; providers must return a set_model_response. */
+      type: 'set_model';
+      request_id: string;
+      payload: { model: string };
+    }
+  | {
       type: 'resize_pty';
       payload: { rows: number; cols: number };
     }
@@ -715,6 +721,30 @@ export type WorkerToBroker =
   | {
       type: 'pong';
       payload: { ts_ms: number };
+    }
+  | {
+      type: 'set_model_response';
+      request_id: string;
+      payload:
+        | {
+            status: 'applied';
+            applied: true;
+            effective_model: string;
+            error?: never;
+          }
+        | {
+            /** Admission succeeded, but provider confirmation is not available yet. */
+            status: 'accepted_pending';
+            applied: false;
+            effective_model?: string | null;
+            error?: string;
+          }
+        | {
+            status: 'rejected' | 'unsupported';
+            applied: false;
+            effective_model?: string | null;
+            error?: string;
+          };
     }
   | {
       type: 'agent_event';

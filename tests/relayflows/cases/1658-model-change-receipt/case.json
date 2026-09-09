@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1658-model-change-receipt",
+  "kind": "bugfix",
+  "title": "Expose truthful correlated model-change receipts",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1658-model-change-receipt/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "set_model_has_no_json_receipt"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "set_model_exposes_json_receipt"
+    }
+  }
+}

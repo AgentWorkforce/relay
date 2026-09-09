@@ -47,6 +47,8 @@ const SERVE_REPLACEMENT_MESSAGE =
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
 
 const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']);
+const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 export interface FleetCommandDependencies {
   core: CoreDependencies;
@@ -164,6 +166,14 @@ export function registerFleetCommands(
       .option('--sandbox-name <name>', 'Name for the provisioned sandbox fleet node')
       .option('--sandbox-provider <provider>', 'Sandbox provider: daytona or e2b')
       .option(
+        '--sandbox-snapshot <id>',
+        'Select an immutable Daytona candidate snapshot (qualification only)'
+      )
+      .option(
+        '--sandbox-snapshot-manifest-sha256 <sha256>',
+        'Require the selected snapshot to expose this exact in-image manifest digest'
+      )
+      .option(
         '--sandbox-relayfile-path <path...>',
         'Mount only these Relayfile subtrees (each path must end in /**)'
       )
@@ -206,6 +216,25 @@ export function registerFleetCommands(
       if (sandboxProviderText !== undefined && sandboxProvider === undefined) {
         throw new Error('--sandbox-provider must be daytona or e2b.');
       }
+      const sandboxSnapshot = optionalText(options.sandboxSnapshot, 'Sandbox snapshot');
+      const sandboxSnapshotManifestSha256 = optionalText(
+        options.sandboxSnapshotManifestSha256,
+        'Sandbox snapshot manifest SHA-256'
+      );
+      if ((sandboxSnapshot === undefined) !== (sandboxSnapshotManifestSha256 === undefined)) {
+        throw new Error(
+          '--sandbox-snapshot and --sandbox-snapshot-manifest-sha256 must be provided together.'
+        );
+      }
+      if (sandboxSnapshot !== undefined && !SNAPSHOT_ID_PATTERN.test(sandboxSnapshot)) {
+        throw new Error('--sandbox-snapshot must be a safe immutable snapshot identifier.');
+      }
+      if (
+        sandboxSnapshotManifestSha256 !== undefined &&
+        !SHA256_PATTERN.test(sandboxSnapshotManifestSha256)
+      ) {
+        throw new Error('--sandbox-snapshot-manifest-sha256 must be 64 lowercase hexadecimal characters.');
+      }
       const mountSandboxRelayfile = options.sandboxRelayfile !== false;
       const sandboxRelayfilePaths = optionalTextList(options.sandboxRelayfilePath, 'Sandbox Relayfile path');
       if (useSandbox && targetNode) {
@@ -216,6 +245,12 @@ export function registerFleetCommands(
       }
       if (!useSandbox && sandboxProvider) {
         throw new Error('--sandbox-provider requires --sandbox.');
+      }
+      if (!useSandbox && sandboxSnapshot) {
+        throw new Error('--sandbox-snapshot requires --sandbox.');
+      }
+      if (sandboxSnapshot && sandboxProvider !== 'daytona') {
+        throw new Error('--sandbox-snapshot requires an explicit --sandbox-provider daytona selection.');
       }
       if (!useSandbox && options.sandboxRelayfile === false) {
         throw new Error('--no-sandbox-relayfile requires --sandbox.');
@@ -265,6 +300,12 @@ export function registerFleetCommands(
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
             workloadProfile: 'long-running-agent',
+            ...(sandboxSnapshot === undefined
+              ? {}
+              : {
+                  snapshotId: sandboxSnapshot,
+                  snapshotManifestSha256: sandboxSnapshotManifestSha256,
+                }),
             waitTimeoutMs: 90_000,
             name: requestedSandboxName,
           });

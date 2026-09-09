@@ -5,7 +5,30 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Added
+
+- `node agent spawn` can attach to existing headless sessions so model changes report provider-confirmed results.
+- `agent-relay cloud workspace create` creates candidate-bound, time-limited disposable workspaces and saves their credential for later Fleet qualification.
+- `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
+- `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
+- `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
+- Relayflow agent permissions now grant an exact `files.write` rule that names a not-yet-created file, so a write-once output path is writable when its parent directory exists. Glob write rules are unchanged and still cover only existing files.
+
+### Fixed
+
+- `node agent set-model` returns correlated model-change receipts, preserves uncertain outcomes, and exposes the last confirmed effective model.
+- Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
+- Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
+- Fleet Daytona live verification now fails early unless immutable candidate snapshot qualification inputs are explicit.
+- `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
+- Relayflow agents can create permitted new files inside an existing Relayfile mount without a permission failure.
+
+### Security
+
+- Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
+- Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
 
 ## [11.10.4] - 2026-09-08
 
