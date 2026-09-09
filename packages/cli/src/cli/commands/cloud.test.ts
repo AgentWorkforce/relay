@@ -395,6 +395,14 @@ describe('registerCloudCommands', () => {
         registeredAt: '2026-06-13T00:00:00.000Z',
         updatedAt: '2026-06-13T00:00:00.000Z',
       };
+      const execFile = vi.fn(
+        (
+          _command: string,
+          _args: string[],
+          _options: unknown,
+          callback: (error: Error | null, stdout: string, stderr: string) => void
+        ) => callback(null, '/project/node_modules/@relayflows/cli/dist/cli.js\n', '')
+      );
       const runner = createDefaultAssignmentRunner({
         log: vi.fn(),
         error: vi.fn(),
@@ -403,12 +411,16 @@ describe('registerCloudCommands', () => {
           AGENT_RELAY_HOME: tmpHome,
           AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
           BASE_ENV: 'kept',
+          AGENT_RELAY_NODE: ' /opt/node/bin/node ',
         },
+        argv: ['bun', '/$bunfs/root/cli/index.js'],
+        cliScript: '/$bunfs/root/cli/index.js',
+        execPath: '/tmp/agent-relay',
         spawnProcess,
         now: () => new Date('2026-06-13T00:00:00.000Z'),
         cwd: () => tmpHome,
         fetchImpl: vi.fn() as never,
-        resolveRelayflowsCliEntrypoint: () => '/opt/relayflows/dist/cli.js',
+        execFile: execFile as never,
       });
 
       await runner({
@@ -460,9 +472,9 @@ describe('registerCloudCommands', () => {
       expect(spawnCalls).toHaveLength(1);
       const call = spawnCalls[0]!;
       const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_relayflows', 'workflow.yaml');
-      expect(call.command).toBe(process.execPath);
+      expect(call.command).toBe('/opt/node/bin/node');
       expect(call.args).toEqual([
-        '/opt/relayflows/dist/cli.js',
+        '/project/node_modules/@relayflows/cli/dist/cli.js',
         'run',
         workflowPath,
         '--resume',
@@ -472,6 +484,12 @@ describe('registerCloudCommands', () => {
         '--previous-run-id',
         'run_cache',
       ]);
+      expect(execFile).toHaveBeenCalledWith(
+        '/opt/node/bin/node',
+        expect.arrayContaining(['@relayflows/cli', path.dirname(workflowPath)]),
+        expect.objectContaining({ cwd: path.dirname(workflowPath) }),
+        expect.any(Function)
+      );
       expect(call.cwd).toBe(path.dirname(workflowPath));
       expect(call.env).toMatchObject({
         BASE_ENV: 'kept',
@@ -500,6 +518,59 @@ describe('registerCloudCommands', () => {
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
+  });
+
+  it('keeps normal Node relayflows resolution anchored to the installed CLI for an external assignment', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-worker-external-'));
+    const child = new EventEmitter() as EventEmitter & { killed: boolean; kill: () => void };
+    child.killed = false;
+    child.kill = vi.fn();
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    }) as never;
+    const runner = createDefaultAssignmentRunner({
+      log: vi.fn(),
+      error: vi.fn(),
+      exit: vi.fn() as never,
+      env: {
+        AGENT_RELAY_HOME: tmpHome,
+        AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
+      },
+      spawnProcess,
+      now: () => new Date('2026-06-13T00:00:00.000Z'),
+      cwd: () => tmpHome,
+      fetchImpl: vi.fn() as never,
+      argv: ['node', '/repo/packages/cli/dist/cli/index.js'],
+      execPath: process.execPath,
+      cliScript: '/repo/packages/cli/dist/cli/index.js',
+    });
+
+    await runner({
+      assignment: { runId: 'run_external' } as never,
+      payload: {
+        runId: 'run_external',
+        workspaceId: 'rw_1',
+        relayWorkspaceId: 'rw_relay',
+        relaycastApiKey: 'rk_live_secret',
+        relayfileUrl: 'https://relayfile.test',
+        relayfileToken: 'relayfile_secret',
+        workflow: 'version: "1.0"\nworkflows: []\n',
+        fileType: 'yaml',
+        sourceFileType: 'yaml',
+        workflowFileName: 'workflow.yaml',
+      },
+      worker: { workerId: 'wrk_1' } as never,
+      signal: new AbortController().signal,
+    });
+
+    const workflowPath = path.join(tmpHome, 'cloud-workers', 'runs', 'run_external', 'workflow.yaml');
+    expect(spawnProcess).toHaveBeenCalledWith(
+      process.execPath,
+      [expect.stringMatching(/node_modules[\\/]@relayflows[\\/]cli/), 'run', workflowPath],
+      expect.objectContaining({ cwd: path.dirname(workflowPath) })
+    );
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
   it('prints the canonical cloud session as JSON without interactive login', async () => {

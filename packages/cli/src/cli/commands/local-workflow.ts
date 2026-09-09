@@ -3,11 +3,15 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn as spawnProcess, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
+import {
+  describeWorkflowChildError,
+  resolveRelayflowsCliEntrypoint,
+  workflowNodeExecutable,
+} from '../lib/workflow-runtime.js';
 import { track } from '../telemetry/index.js';
 
 type ExitFn = (code: number) => never;
@@ -46,7 +50,11 @@ export interface LocalWorkflowDependencies {
   cwd: () => string;
   env: NodeJS.ProcessEnv;
   spawnProcess: typeof spawnProcess;
-  resolveRelayflowsCliEntrypoint: () => string;
+  resolveRelayflowsCliEntrypoint?: (workflowPath: string) => string | Promise<string>;
+  argv?: readonly string[];
+  execPath?: string;
+  cliScript?: string;
+  execFile?: typeof import('node:child_process').execFile;
   randomRunId: () => string;
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
@@ -59,14 +67,16 @@ export interface LocalWorkflowDependencies {
 
 const RUN_ID_RE = /^local_[A-Za-z0-9][A-Za-z0-9_-]{0,80}$/;
 const TERMINAL_STATUSES = new Set<LocalWorkflowRunStatus>(['completed', 'failed']);
-const nodeRequire = createRequire(import.meta.url);
-
 function withDefaults(overrides: Partial<LocalWorkflowDependencies> = {}): LocalWorkflowDependencies {
-  return {
+  const deps: LocalWorkflowDependencies = {
     cwd: () => process.cwd(),
     env: process.env,
     spawnProcess,
-    resolveRelayflowsCliEntrypoint: () => nodeRequire.resolve('@relayflows/cli'),
+    resolveRelayflowsCliEntrypoint: async () => '',
+    execFile: undefined,
+    argv: process.argv,
+    execPath: process.execPath,
+    cliScript: process.argv[1] ?? '',
     randomRunId: () =>
       `local_${new Date().toISOString().replace(/[-:.TZ]/g, '')}_${randomBytes(4).toString('hex')}`,
     now: () => new Date(),
@@ -86,6 +96,11 @@ function withDefaults(overrides: Partial<LocalWorkflowDependencies> = {}): Local
     exit: defaultExit,
     ...overrides,
   };
+  if (!overrides.resolveRelayflowsCliEntrypoint) {
+    deps.resolveRelayflowsCliEntrypoint = (workflowPath) =>
+      resolveRelayflowsCliEntrypoint(workflowPath, deps);
+  }
+  return deps;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -251,11 +266,15 @@ process.on('SIGTERM', () => stopChild('SIGTERM'));
 process.on('SIGINT', () => stopChild('SIGINT'));
 
 child.on('error', (error) => {
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
+  const detail = error instanceof Error ? error.stack || error.message : String(error);
+  const message = /\\bENOENT\\b|spawn .* not found|not found/i.test(detail)
+    ? detail + ' A Node.js executable is required for standalone workflow execution; install Node.js or set AGENT_RELAY_NODE to its path.'
+    : detail;
+  console.error(message);
   writeRecord({
     status: 'failed',
     exitCode: 1,
-    error: error instanceof Error ? error.message : String(error),
+    error: message,
     finishedAt: new Date().toISOString(),
   });
   process.exit(1);
@@ -274,17 +293,27 @@ child.on('exit', (code, signal) => {
 `;
 }
 
-async function resolveLocalWorkflowCommand(
+export async function resolveLocalWorkflowCommand(
   workflowPath: string,
   fileType: LocalWorkflowFileType,
   deps: LocalWorkflowDependencies
 ): Promise<{ command: string; args: string[] }> {
+  const node = workflowNodeExecutable(deps);
   if (fileType === 'yaml' || fileType === 'ts' || fileType === 'py') {
-    return { command: process.execPath, args: [deps.resolveRelayflowsCliEntrypoint(), 'run', workflowPath] };
+    return {
+      command: node,
+      args: [
+        deps.resolveRelayflowsCliEntrypoint
+          ? await deps.resolveRelayflowsCliEntrypoint(workflowPath)
+          : await resolveRelayflowsCliEntrypoint(workflowPath, deps),
+        'run',
+        workflowPath,
+      ],
+    };
   }
 
   if (fileType === 'js') {
-    return { command: process.execPath, args: [workflowPath] };
+    return { command: node, args: [workflowPath] };
   }
 
   return { command: deps.env.SHELL?.trim() || '/bin/sh', args: [workflowPath] };
@@ -317,7 +346,13 @@ async function runLocalWorkflow(
   const runDir = runDirFor(cwd, runId);
   await fsp.mkdir(runDir, { recursive: true });
 
-  const { command, args } = await resolveLocalWorkflowCommand(workflowPath, fileType, deps);
+  let command: string;
+  let args: string[];
+  try {
+    ({ command, args } = await resolveLocalWorkflowCommand(workflowPath, fileType, deps));
+  } catch (error) {
+    throw describeWorkflowChildError(error, workflowPath);
+  }
   const now = deps.now().toISOString();
   const logPath = path.join(runDir, 'workflow.log');
   const metadataPath = path.join(runDir, 'run.json');
@@ -361,7 +396,7 @@ async function runLocalWorkflow(
   const logFd = fs.openSync(logPath, 'a');
   let monitor: ChildProcess;
   try {
-    monitor = deps.spawnProcess(process.execPath, [runnerPath], {
+    monitor = deps.spawnProcess(workflowNodeExecutable(deps), [runnerPath], {
       cwd,
       detached: true,
       stdio: ['ignore', logFd, logFd],
