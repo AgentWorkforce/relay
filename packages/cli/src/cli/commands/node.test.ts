@@ -197,32 +197,124 @@ describe('registerNodeCommands', () => {
     );
   });
 
-  it('skips enrollment pickup when --workspace-key is passed', async () => {
+  it('keeps enrollment pickup when --workspace-key matches the pinned enrollment workspace', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
-    const { program, env } = createNodeHarness({ env: {}, resolveEnrollment });
+    const { program, env } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_enrolled',
+        workspaceId: 'rw_123',
+        enrolledNodeId: 'node_abc',
+      })),
+    });
+
+    await program.parseAsync(['node', 'up', '--workspace-key', 'rk_enrolled'], { from: 'user' });
+
+    expect(resolveEnrollment).toHaveBeenCalledWith(expect.objectContaining({ nodeId: 'node_abc' }));
+    expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps enrollment pickup when RELAY_WORKSPACE_KEY matches the pinned enrollment workspace', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env } = createNodeHarness({
+      env: { RELAY_WORKSPACE_KEY: 'rk_enrolled' },
+      resolveEnrollment,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_enrolled',
+        workspaceId: 'rw_123',
+      })),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(resolveEnrollment).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'rw_123' }));
+    expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a genuinely different explicit workspace win and warns that enrollment was skipped', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const listFleetEnrollments = vi.fn(() => [
+      enrollmentRecord,
+    ]) as unknown as NodeCommandDependencies['listFleetEnrollments'];
+    const { program, env, warn } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      listFleetEnrollments,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_enrolled',
+        workspaceId: 'rw_123',
+      })),
+    });
 
     await program.parseAsync(['node', 'up', '--workspace-key', 'rk_other'], { from: 'user' });
 
     expect(resolveEnrollment).not.toHaveBeenCalled();
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(env.AGENT_RELAY_ENROLLED_NODE_ID).toBeUndefined();
+    expect(warn.mock.calls.flat().join('\n')).toContain('explicit workspace key differs');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
   });
 
-  it('skips enrollment pickup when RELAY_WORKSPACE_KEY is set in the env', async () => {
+  it('lets an explicit pinned workspace win over a stale enrolled-node association', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
-    const { program, env } = createNodeHarness({
-      env: { RELAY_WORKSPACE_KEY: 'rk_env' },
+    const listFleetEnrollments = vi.fn(() => [
+      enrollmentRecord,
+    ]) as unknown as NodeCommandDependencies['listFleetEnrollments'];
+    const { program, env, error, warn } = createNodeHarness({
+      env: {},
       resolveEnrollment,
+      listFleetEnrollments,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_explicit',
+        workspaceId: 'rw_other',
+        enrolledNodeId: 'node_abc',
+      })),
+    });
+
+    await program.parseAsync(['node', 'up', '--workspace-key', 'rk_explicit'], { from: 'user' });
+
+    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(env.AGENT_RELAY_ENROLLED_NODE_ID).toBeUndefined();
+    expect(error).not.toHaveBeenCalled();
+    expect(warn.mock.calls.flat().join('\n')).toContain('explicit workspace key differs');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a different RELAY_WORKSPACE_KEY win without restoring a stale enrolled node id', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const listFleetEnrollments = vi.fn(() => [
+      enrollmentRecord,
+    ]) as unknown as NodeCommandDependencies['listFleetEnrollments'];
+    const { program, env, warn } = createNodeHarness({
+      env: { RELAY_WORKSPACE_KEY: 'rk_other' },
+      resolveEnrollment,
+      listFleetEnrollments,
+      resolveProjectWorkspaceSession: vi.fn(() => ({
+        workspaceKey: 'rk_enrolled',
+        workspaceId: 'rw_123',
+        enrolledNodeId: 'node_abc',
+      })),
     });
 
     await program.parseAsync(['node', 'up'], { from: 'user' });
 
     expect(resolveEnrollment).not.toHaveBeenCalled();
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(env.AGENT_RELAY_ENROLLED_NODE_ID).toBeUndefined();
+    expect(warn.mock.calls.flat().join('\n')).toContain('explicit workspace key differs');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
   });
 
@@ -246,17 +338,18 @@ describe('registerNodeCommands', () => {
     await program.parseAsync(['node', 'up'], { from: 'user' });
 
     expect(resolveEnrollment).not.toHaveBeenCalled();
-    expect(resolveProjectWorkspaceSession).not.toHaveBeenCalled();
+    expect(resolveProjectWorkspaceSession).toHaveBeenCalledTimes(1);
     expect(env.RELAY_WORKSPACE_KEY).toBe('rk_alias');
     expect(env.RELAY_NODE_TOKEN).toBeUndefined();
   });
 
-  it('never adopts an enrollment for a project that pinned its own workspace', async () => {
+  it('adopts an enrollment for a project pin whose workspace id matches', async () => {
     const resolveEnrollment = vi.fn(
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
     const resolveProjectWorkspaceSession = vi.fn(() => ({
       workspaceKey: 'rk_project_session',
+      workspaceId: 'rw_123',
     }));
     const { program, env } = createNodeHarness({
       env: {},
@@ -266,11 +359,8 @@ describe('registerNodeCommands', () => {
 
     await program.parseAsync(['node', 'up'], { from: 'user' });
 
-    // A pin without an enrolled node id never reaches for the machine-global
-    // enrollment store, and no node token is applied — so `runUpCommand`'s
-    // precedence ladder resolves the repository pin unopposed.
-    expect(resolveEnrollment).not.toHaveBeenCalled();
-    expect(env.RELAY_NODE_TOKEN).toBeUndefined();
+    expect(resolveEnrollment).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'rw_123' }));
+    expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
   });
 

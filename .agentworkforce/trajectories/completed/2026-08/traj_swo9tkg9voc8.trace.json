@@ -1,0 +1,248 @@
+{
+  "version": "1.0.0",
+  "id": "71e42df2-d556-49b6-afe5-4789300d40c8",
+  "timestamp": "2026-08-26T00:34:27.910Z",
+  "trajectory": "traj_swo9tkg9voc8",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 89,
+              "end_line": 102,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1789,
+              "end_line": 1865,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 1926,
+              "end_line": 1932,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 460,
+              "end_line": 488,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 1019,
+              "end_line": 1025,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 1037,
+              "end_line": 1043,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/node.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 197,
+              "end_line": 320,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 338,
+              "end_line": 355,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 359,
+              "end_line": 366,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/node.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 90,
+              "end_line": 102,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 117,
+              "end_line": 123,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 137,
+              "end_line": 152,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 171,
+              "end_line": 180,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 198,
+              "end_line": 227,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 235,
+              "end_line": 247,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 255,
+              "end_line": 261,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 288,
+              "end_line": 341,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/enrollment-pin.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 28,
+              "end_line": 87,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 98,
+              "end_line": 104,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/enrollment-pin.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 11,
+              "end_line": 35,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            },
+            {
+              "start_line": 66,
+              "end_line": 92,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1613-matching-fleet-enrollment-identity/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 20,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1613-matching-fleet-enrollment-identity/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 170,
+              "revision": "3bafddd686b219a31e4a9d99a5c291b8b61ddd16"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

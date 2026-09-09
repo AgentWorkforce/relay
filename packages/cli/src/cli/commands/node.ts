@@ -90,13 +90,13 @@ export function registerNodeCommands(
   );
 }
 
-/** Normalize workspace env aliases and report whether `node up` received an explicit workspace. */
+/** Normalize workspace env aliases and return the explicit workspace key, when present. */
 function prepareExplicitWorkspaceForNodeUp(
   options: UpCommandOptions,
   deps: NodeCommandDependencies
-): boolean {
+): string | undefined {
   const envWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.core.env);
-  return Boolean(options.workspaceKey?.trim() || envWorkspaceKey);
+  return options.workspaceKey?.trim() || envWorkspaceKey;
 }
 
 /**
@@ -117,7 +117,7 @@ function reportWorkspaceSourceConflict(
 ): boolean {
   const pinnedWorkspaceId = session?.workspaceId?.trim();
   const enrolledWorkspaceId = record.relayWorkspaceId?.trim();
-  if (!pinnedWorkspaceId || !enrolledWorkspaceId || pinnedWorkspaceId === enrolledWorkspaceId) {
+  if (!workspaceSourcesConflict(record, session)) {
     return false;
   }
 
@@ -135,6 +135,16 @@ function reportWorkspaceSourceConflict(
       'the pinned workspace.'
   );
   return true;
+}
+
+/** Whether the project pin and enrollment carry known, different workspace ids. */
+function workspaceSourcesConflict(
+  record: NonNullable<ReturnType<typeof resolveActiveFleetNodeEnrollment>>,
+  session: ProjectWorkspaceSession | undefined
+): boolean {
+  const pinnedWorkspaceId = session?.workspaceId?.trim();
+  const enrolledWorkspaceId = record.relayWorkspaceId?.trim();
+  return Boolean(pinnedWorkspaceId && enrolledWorkspaceId && pinnedWorkspaceId !== enrolledWorkspaceId);
 }
 
 /** Apply stored enrollment credentials and return the enrolled node name, when present. */
@@ -161,10 +171,10 @@ function applyEnrollment(
 /**
  * Report the enrollments a project pin without an `enrolledNodeId` shadows.
  *
- * The pin wins over the enrollment store, so the broker starts in the pinned
- * workspace and this machine never serves its Cloud fleet node. That used to be
- * completely silent: the Cloud dashboard showed the node, `fleet nodes` showed a
- * different roster, and nothing said the two were different workspaces.
+ * A legacy pin without either a workspace id or enrolled node id cannot be
+ * reconciled safely, so the broker starts in the pinned workspace and this
+ * machine does not serve a stored Cloud fleet node. Pins with a workspace id
+ * are matched in {@link resolveEnrollmentForProject} instead.
  */
 function warnPinShadowsFleetEnrollments(deps: NodeCommandDependencies): void {
   let count: number | undefined;
@@ -188,6 +198,30 @@ function warnPinShadowsFleetEnrollments(deps: NodeCommandDependencies): void {
   );
 }
 
+/**
+ * Report that an explicit workspace selection cannot be proven to match the
+ * repository's enrolled workspace. The explicit key still wins; this is the
+ * must-not-fire guard against silently carrying a node token into a different
+ * workspace.
+ */
+function warnExplicitWorkspaceShadowsFleetEnrollments(deps: NodeCommandDependencies): void {
+  let count: number | undefined;
+  try {
+    count = deps.listFleetEnrollments(deps.core.env).length;
+  } catch {
+    count = undefined;
+  }
+  if (count === 0) {
+    return;
+  }
+  const subject =
+    count === undefined ? 'stored Cloud fleet enrollments' : `${count} stored Cloud fleet enrollment(s)`;
+  deps.warn(
+    `The explicit workspace key differs from this project's enrolled workspace selection, so ${subject} will be ignored. ` +
+      'The explicit workspace still wins and this machine will not serve a stored Cloud fleet-node identity.'
+  );
+}
+
 /** Resolve the enrollment associated with a project session, avoiding ambiguous global fallback. */
 function resolveEnrollmentForProject(
   session: ProjectWorkspaceSession | undefined,
@@ -198,6 +232,13 @@ function resolveEnrollmentForProject(
     return deps.resolveEnrollment({
       ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
       nodeId: session.enrolledNodeId,
+      env,
+    });
+  }
+  if (session?.workspaceId) {
+    return deps.resolveEnrollment({
+      ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
+      workspaceId: session.workspaceId,
       env,
     });
   }
@@ -214,7 +255,7 @@ function resolveEnrollmentForProject(
 /**
  * Apply the node identity for this start.
  *
- * Workspace selection is NOT decided here — `runUpCommand` walks the shared
+ * Workspace selection is not decided here — `runUpCommand` walks the shared
  * precedence ladder (flag → env → repository pin → machine-global active) after
  * this returns. This function only settles which node identity the broker runs
  * as, so an enrollment can no longer suppress the repository's workspace.
@@ -247,34 +288,54 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
   // bind an ephemeral API port atomically unless the operator explicitly
   // selected a stable broker base port.
   env.AGENT_RELAY_BROKER_PORT ??= '0';
-  // An explicit workspace key (flag or env) is a direct workspace choice; the
-  // enrollment store records workspace ids, not keys, so a stored enrollment
-  // cannot be matched against it — skip pickup entirely rather than risk
-  // starting the broker with a token from a different workspace.
+  // An explicit workspace key (flag or env) is a direct workspace choice. It
+  // may retain a stored enrollment only when it is the same key as the project
+  // pin whose workspace id/node id proves the association.
   const explicitWorkspaceKey = prepareExplicitWorkspaceForNodeUp(options, deps);
   let enrolledNodeName: string | undefined;
   if (env.RELAY_NODE_TOKEN?.trim() && env.RELAY_NODE_ID?.trim()) {
     env.AGENT_RELAY_ENROLLED_NODE_ID ??= env.RELAY_NODE_ID.trim();
   }
-  if (!env.RELAY_NODE_TOKEN && !explicitWorkspaceKey) {
+  if (!env.RELAY_NODE_TOKEN) {
     const projectSession = deps.resolveProjectWorkspaceSession();
+    let projectSessionForIdentity = projectSession;
     let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
-    try {
-      record = resolveEnrollmentForProject(projectSession, deps);
-    } catch (err) {
-      // A missing store resolves to undefined (fine); only an ambiguous
-      // multi-match throws, which must surface as a clear CLI error.
-      deps.error(err instanceof Error ? err.message : String(err));
-      deps.exit(1);
-      return;
+    const explicitMatchesProject =
+      explicitWorkspaceKey !== undefined &&
+      projectSession !== undefined &&
+      explicitWorkspaceKey === projectSession.workspaceKey.trim();
+    if (explicitWorkspaceKey && !explicitMatchesProject) {
+      // A raw workspace key does not reveal its workspace id. Only retain an
+      // enrollment when the explicit key is byte-identical to the project pin
+      // whose persisted workspaceId/enrolledNodeId establishes the match.
+      warnExplicitWorkspaceShadowsFleetEnrollments(deps);
+      projectSessionForIdentity = undefined;
+    } else {
+      try {
+        record = resolveEnrollmentForProject(projectSession, deps);
+      } catch (err) {
+        // A missing store resolves to undefined (fine); only an ambiguous
+        // multi-match throws, which must surface as a clear CLI error.
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+        return;
+      }
     }
-    if (record && reportWorkspaceSourceConflict(record, projectSession, deps)) {
-      deps.exit(1);
-      return;
+    if (record && workspaceSourcesConflict(record, projectSession)) {
+      if (!explicitWorkspaceKey) {
+        reportWorkspaceSourceConflict(record, projectSession, deps);
+        deps.exit(1);
+        return;
+      }
+      // Explicit workspace selection remains authoritative. Drop only the
+      // mismatched node credentials, warn, and let runUpCommand use the key.
+      warnExplicitWorkspaceShadowsFleetEnrollments(deps);
+      record = undefined;
+      projectSessionForIdentity = undefined;
     }
     // Serve under the enrolled name (mirrors the old `fleet serve
     // --enrollment-token` behavior where --name beat the enrollment name).
-    enrolledNodeName = applyResolvedNodeSession(record, projectSession, deps);
+    enrolledNodeName = applyResolvedNodeSession(record, projectSessionForIdentity, deps);
   }
 
   const nodeName = options.brokerName ?? enrolledNodeName;
