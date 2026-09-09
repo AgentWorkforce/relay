@@ -323,8 +323,14 @@ export function ownedBoardNodes(nodes) {
 }
 
 export function isDaytonaDeletionAccepted(sandbox) {
+  const desiredState = String(sandbox?.desiredState ?? '').toLowerCase();
   const state = String(sandbox?.state ?? '').toLowerCase();
-  return state === 'destroying' || state === 'destroyed';
+  // A provider tombstone is safe to ignore only when Daytona has explicitly
+  // accepted destruction.  `state=destroying` by itself is not enough: an
+  // active sandbox can transiently report that state while its desired state
+  // remains `running`, and treating that observation as a tombstone would
+  // make baseline/cleanup proof silently accept a live resource.
+  return desiredState === 'destroyed' && (state === 'destroying' || state === 'destroyed');
 }
 
 export function classifyDaytonaSandboxPresence(sandbox) {

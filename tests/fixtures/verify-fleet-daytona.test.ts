@@ -754,6 +754,15 @@ describe('complete Daytona Fleet board', () => {
         compareDaytonaSandboxBaseline({ count: 0, sandboxIdHashes: [], sandboxNameHashes: [] }, [unexpected])
       ).toMatchObject({ restored: false, countMatches: false });
     }
+    for (const state of ['destroying', 'destroyed']) {
+      const contradictory = { ...destroying, state, desiredState: 'running' };
+      expect(isDaytonaDeletionAccepted(contradictory)).toBe(false);
+      expect(
+        compareDaytonaSandboxBaseline({ count: 0, sandboxIdHashes: [], sandboxNameHashes: [] }, [
+          contradictory,
+        ])
+      ).toMatchObject({ restored: false, countMatches: false });
+    }
     expect(isDaytonaDeletionAccepted({ ...destroying, state: 'destroyed', desiredState: 'destroyed' })).toBe(
       true
     );
