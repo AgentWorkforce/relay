@@ -132,6 +132,15 @@ describe('relayflow version request contract', () => {
     });
   });
 
+  it('preserves the omitted run request when a literal script timeout exceeds the metadata limit', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "const result = await workflow('verify').timeout(3_600_000).run();";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(bodies).toEqual([JSON.stringify({ workflow, fileType: 'ts' })]);
+  });
+
   it('uses the explicit launch timeout when script configuration is dynamic', async () => {
     const bodies = captureRunBodies();
     const workflow = "const result = await workflow('proof').timeout(timeoutMs).run();";
@@ -908,6 +917,36 @@ describe('workflow schedules', () => {
       }),
     ]);
     expect(scheduleBodyBytes[0]).not.toContain('relayflowVersion');
+  });
+
+  it('preserves the omitted schedule request when a literal script timeout exceeds the metadata limit', async () => {
+    const workflow = "const result = await workflow('verify').timeout(3_600_000).run();";
+    const workflowPath = path.join(tmpRoot, 'workflow.ts');
+    await writeFile(workflowPath, workflow);
+    const scheduleBodyBytes: string[] = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      expect(requestPath).toBe('/api/v1/workflows/schedules');
+      scheduleBodyBytes.push(String(init?.body));
+      return {
+        auth: { accessToken: 'token' },
+        response: new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      };
+    });
+
+    await scheduleWorkflow(workflowPath, { cron: '0 * * * *' });
+
+    expect(scheduleBodyBytes).toEqual([
+      JSON.stringify({
+        name: 'workflow.ts',
+        schedule_type: 'cron',
+        timezone: 'UTC',
+        workflowRequest: { workflow, fileType: 'ts' },
+        cron_expression: '0 * * * *',
+      }),
+    ]);
   });
 
   it('rejects unsupported v2 schedules before authentication, filesystem, or network access', async () => {

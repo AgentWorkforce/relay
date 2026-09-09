@@ -332,7 +332,7 @@ export function inferWorkflowLaunchTimeoutMs(
   }
 
   const values = new Set<number>();
-  let hasDynamicBuilderTimeout = false;
+  let hasUnresolvedBuilderTimeout = false;
   const callRoots = new Map<number, WorkflowRoot | null>();
   const timeoutPattern = /\.timeout/g;
   let match: RegExpExecArray | null;
@@ -351,16 +351,23 @@ export function inferWorkflowLaunchTimeoutMs(
     }
     const literal = source.slice(argumentStart, argumentEnd).match(/^[0-9](?:_?[0-9])*$/)?.[0];
     if (literal === undefined) {
-      hasDynamicBuilderTimeout = true;
+      hasUnresolvedBuilderTimeout = true;
       continue;
     }
-    values.add(validateLaunchTimeoutMs(Number(literal.replaceAll('_', '')), 'workflow .timeout()'));
+    try {
+      values.add(validateLaunchTimeoutMs(Number(literal.replaceAll('_', '')), 'workflow .timeout()'));
+    } catch {
+      // A script literal outside the inferred metadata contract is still user
+      // code we cannot safely evaluate. Omit inference and let callers provide
+      // an explicit, strictly validated launchTimeoutMs instead.
+      hasUnresolvedBuilderTimeout = true;
+    }
   }
 
-  // A literal and a dynamic builder timeout cannot be reconciled without
+  // A dynamic or out-of-range builder timeout cannot be reconciled without
   // evaluating user code. Leave the metadata omitted so callers can provide
   // an explicit launchTimeoutMs override when they know the runtime value.
-  if (hasDynamicBuilderTimeout) return undefined;
+  if (hasUnresolvedBuilderTimeout) return undefined;
   if (values.size === 0) return undefined;
   if (values.size > 1) {
     throw new Error(

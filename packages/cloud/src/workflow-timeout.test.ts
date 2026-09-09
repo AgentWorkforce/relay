@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import {
   DEFAULT_WORKFLOW_LAUNCH_TIMEOUT_MS,
@@ -12,6 +13,12 @@ describe('workflow launch timeout inference', () => {
   it('reads an underscored TypeScript builder timeout without executing the workflow', () => {
     const source = "const result = await workflow('proof').timeout(3_300_000).run();";
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(3_300_000);
+  });
+
+  it('omits inference for the checked-in workflow timeout beyond the metadata limit', () => {
+    const source = readFileSync(new URL('../../../workflows/verify-features.ts', import.meta.url), 'utf8');
+    expect(source).toContain('.timeout(3_600_000)');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
   it('ignores timeout-shaped text in TypeScript comments, strings, and templates', () => {
