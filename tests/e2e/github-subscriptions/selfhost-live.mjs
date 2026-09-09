@@ -26,6 +26,8 @@ assert(
   existsSync(path.join(root, 'packages/cli/dist/cli/index.js')),
   'Missing candidate CLI build; run npm run build:core before creating live fixtures'
 );
+const { retryFailedFixtureHook } = await import('./retry-fixture-hook.mjs');
+const failedGitHubIngress = new Map();
 const { fixturePathGlob, assertProducerWorkspace, findFixtureCommentMessage } =
   await import('./fixture-scope.mjs');
 const cloudModule = (m) => m.default ?? m;
@@ -107,6 +109,9 @@ const report = {
   subscriptions: [],
   stimuli: [],
   cleanup: [],
+  githubRedeliveries: [],
+  retryPolicy:
+    'At most 3 GitHub redeliveries per failed owned comment, at least 30 seconds apart; only transient Relayfile admission failures',
 };
 const save = () => writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
 const note = (status) => {
@@ -167,18 +172,34 @@ async function req(route, method = 'GET', body, token = key) {
   return data.data;
 }
 function gh(endpoint, method = 'GET', body) {
-  return JSON.parse(
-    execFileSync(
-      'gh',
-      ['api', endpoint, '--method', method, ...(body === undefined ? [] : ['--input', '-'])],
-      {
-        input: body === undefined ? undefined : JSON.stringify(body),
-        encoding: 'utf8',
-        timeout: 30000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }
-    )
+  const result = execFileSync(
+    'gh',
+    ['api', endpoint, '--method', method, ...(body === undefined ? [] : ['--input', '-'])],
+    {
+      input: body === undefined ? undefined : JSON.stringify(body),
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }
   );
+  return result.trim() ? JSON.parse(result) : null;
+}
+function ghAsync(endpoint, method = 'GET') {
+  return new Promise((resolve, reject) => {
+    execFile(
+      'gh',
+      ['api', endpoint, '--method', method],
+      { encoding: 'utf8', timeout: 30000 },
+      (error, stdout) => {
+        if (error) return reject(error);
+        try {
+          resolve(stdout.trim() ? JSON.parse(stdout) : null);
+        } catch (error) {
+          reject(error);
+        }
+      }
+    );
+  });
 }
 const messages = () => req('/v1/channels/local-ai-proof/messages?limit=100');
 async function emit(fixture, label) {
@@ -196,7 +217,19 @@ async function emit(fixture, label) {
 }
 async function received(stimulus) {
   const m = await until(
-    async () => findFixtureCommentMessage(await messages(), stimulus, runId),
+    async () => {
+      const message = findFixtureCommentMessage(await messages(), stimulus, runId);
+      if (message) return message;
+      const retried = await retryFailedFixtureHook({
+        stimulus,
+        failure: failedGitHubIngress.get(stimulus.repo + '#' + stimulus.commentId),
+        hooks: ownedHooks,
+        attempts: report.githubRedeliveries,
+        gh: ghAsync,
+      });
+      if (retried) save();
+      return undefined;
+    },
     240000,
     'real GitHub ingress ' + stimulus.label
   );
@@ -392,6 +425,7 @@ try {
           timestamp: new Date().toISOString(),
         });
         await producer.send(mutation.eventType, mutation.data);
+        failedGitHubIngress.delete(fixture.repo + '#' + event.comment.id);
         appendFileSync(
           path.join(output, 'github-ingress.jsonl'),
           JSON.stringify({
@@ -408,10 +442,16 @@ try {
         res.writeHead(202);
         res.end();
       } catch (e) {
-        appendFileSync(
-          path.join(output, 'github-ingress.jsonl'),
-          JSON.stringify({ at: new Date().toISOString(), error: redact(e.message) }) + '\n'
-        );
+        const failure = {
+          at: new Date().toISOString(),
+          repo: fixture.repo,
+          pr: fixture.pr,
+          commentId: event.comment?.id,
+          deliveryId: String(r.headers['x-github-delivery']),
+          error: redact(e.message),
+        };
+        failedGitHubIngress.set(fixture.repo + '#' + event.comment?.id, failure);
+        appendFileSync(path.join(output, 'github-ingress.jsonl'), JSON.stringify(failure) + '\n');
         res.writeHead(502);
         res.end();
       }
@@ -695,6 +735,29 @@ try {
     }
   }
   for (const hook of ownedHooks) {
+    try {
+      const deliveries = gh(`repos/${hook.repo}/hooks/${hook.id}/deliveries?per_page=100`);
+      appendFileSync(
+        path.join(output, 'github-deliveries.jsonl'),
+        JSON.stringify({
+          repo: hook.repo,
+          hookId: hook.id,
+          deliveries: deliveries.map(
+            ({ id, guid, delivered_at, status_code, event, action, redelivery }) => ({
+              id,
+              guid,
+              delivered_at,
+              status_code,
+              event,
+              action,
+              redelivery,
+            })
+          ),
+        }) + '\n'
+      );
+    } catch (e) {
+      report.githubDeliveryDiagnosticError = redact(e.message);
+    }
     try {
       execFileSync('gh', ['api', `repos/${hook.repo}/hooks/${hook.id}`, '--method', 'DELETE'], {
         stdio: ['ignore', 'pipe', 'pipe'],

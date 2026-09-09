@@ -175,3 +175,10 @@ cannot. Allow roughly 20 minutes. Keep the independent reviewer stopped while th
 receiver runs. Cleanup deletes only recorded owned hooks, subscriptions and fixture
 branches and verifies all original subscriptions remain. After an abrupt process
 loss, reconcile the manifest and pending mutation intents before retrying.
+
+The self-hosted live runner records bounded retries when Relayfile rejects a fixture
+comment with transient admission backpressure. It requests redelivery of that same
+owned event through GitHub (maximum three, at least 30 seconds apart); it never
+injects a replacement payload or agent input. `report.githubRedeliveries` distinguishes
+such recovery from uninterrupted delivery. Hook delivery status diagnostics are saved
+before cleanup. This test-driver retry is separate from production Nango queue behavior.
