@@ -58,8 +58,60 @@ use crate::worker::{WorkerEvent, WorkerHandle, WorkerRegistry};
 use crate::{broker, listen_api, worker_request};
 
 const DEFAULT_DELIVERY_RETRY_MS: u64 = 1_000;
+/// Cap on *consecutive* broker-to-worker handoff failures. A successful write
+/// resets the counter it reads, so this bounds "the worker keeps refusing the
+/// frame" and nothing else. See [`MAX_DELIVERY_AGE`] for the case where every
+/// write succeeds and the acknowledgement never comes.
 const MAX_DELIVERY_RETRIES: u32 = 10;
 const WAIT_DELIVERY_ACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Wall-clock budget for one delivery: how long a message may sit
+/// unacknowledged before the broker declares it terminally failed, even though
+/// every handoff write kept succeeding.
+///
+/// `MAX_DELIVERY_RETRIES` cannot bound this case — it gates on
+/// `failed_attempts`, which a successful write resets to zero — so a delivery
+/// to a recipient that accepts the write and never acknowledges it retried
+/// forever and never reported anything (relay#1686).
+///
+/// 30 minutes is chosen against the broker's own idea of a reasonable ack:
+/// `WAIT_DELIVERY_ACK_TIMEOUT` is 5 minutes and the steer-mode verification
+/// window is 5 seconds. A legitimate slow ACK is an agent mid-turn — the write
+/// landed in its PTY queue and is consumed when the turn ends — so the budget
+/// has to clear the longest plausible turn, not the ack timeout. 30 minutes is
+/// 6x the wait-mode ack timeout and 360x the steer window: a recipient that has
+/// swallowed a message for half an hour without a single acknowledgement is
+/// indistinguishable from a deaf one, and dead-lettering is recoverable
+/// (`node deadletters` can requeue) where retrying forever in silence is not.
+///
+/// Overridable per-deployment with `AGENT_RELAY_DELIVERY_MAX_AGE_MS`; see
+/// [`delivery_max_age`].
+const MAX_DELIVERY_AGE: Duration = Duration::from_secs(30 * 60);
+/// Floor for the *cumulative* attempt ceiling, which is otherwise scaled from
+/// the configured budget (see `delivery_attempt_ceiling`).
+///
+/// The ceiling is a backstop for [`MAX_DELIVERY_AGE`]: the deadline is
+/// wall-clock, so a frozen or backwards-stepping system clock could otherwise
+/// keep a delivery permanently young. Unlike `failed_attempts`, `attempts` is
+/// never reset by a successful write, so this can always be reached.
+///
+/// It must never fire before the deadline under a working clock, which is why
+/// it cannot be a constant: at the default 30-minute budget a fixed 1000 sits
+/// comfortably past it, but an operator raising
+/// `AGENT_RELAY_DELIVERY_MAX_AGE_MS` beyond ~83 minutes would find `Steer`
+/// deliveries dead-lettered at 1000 five-second attempts with the deadline
+/// still in the future — silently capping the setting they asked for.
+const MIN_DELIVERY_ATTEMPT_CEILING: u32 = 1_000;
+/// How far past the attempts a healthy clock would need the ceiling to sit.
+/// Retries can also be deferred (a `delivery_queued` frame pushes the next one
+/// out without consuming an attempt), so the projection is a lower bound on
+/// elapsed time per attempt; the headroom keeps the ceiling behind the
+/// deadline anyway.
+const ATTEMPT_CEILING_HEADROOM: u32 = 4;
+/// Upper bound on `AGENT_RELAY_DELIVERY_MAX_AGE_MS`. Without it, a value like
+/// `u64::MAX` would be accepted as an effectively unbounded age and defeat the
+/// wall-clock termination guarantee this whole change exists to provide — the
+/// same "retries forever, reports nothing" state, reachable by configuration.
+const MAX_CONFIGURABLE_DELIVERY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const THREAD_HISTORY_LIMIT: usize = 1_000;
 #[allow(dead_code)] // only http_api_local_delivery_timeout's default; see its own allow
 const DEFAULT_HTTP_API_LOCAL_DELIVERY_TIMEOUT_MS: u64 = 3_000;

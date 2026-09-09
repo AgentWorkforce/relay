@@ -629,6 +629,11 @@ impl BrokerRuntime {
         let terminal_input_requests = &mut self.terminal_input_requests;
 
         match worker_event {
+            WorkerEvent::MaintenanceBarrier => {
+                // Maintenance consumes its own barrier before dispatch. Keep a
+                // defensive no-op so shutdown/cancellation cannot make an
+                // internal ordering marker observable as a worker failure.
+            }
             WorkerEvent::WriterFailed {
                 name,
                 generation,

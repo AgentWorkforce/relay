@@ -1913,6 +1913,14 @@ impl BrokerRuntime {
                             "attempts": pd.attempts,
                             "queued_at_ms": pd.queued_at_ms,
                             "age_ms": unix_timestamp_millis().saturating_sub(pd.queued_at_ms),
+                            // Makes "how much acknowledgement budget is left"
+                            // answerable from outside the broker, which is the
+                            // whole diagnosis for a recipient that accepts
+                            // every write and never acknowledges (relay#1686).
+                            "expires_at_ms": pd.expires_at_ms,
+                            "expires_in_ms": pd
+                                .expires_at_ms
+                                .saturating_sub(unix_timestamp_millis()),
                             "last_error": pd.last_error,
                         })
                     })

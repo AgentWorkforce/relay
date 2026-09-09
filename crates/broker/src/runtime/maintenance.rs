@@ -3,7 +3,60 @@ use super::*;
 use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
+    /// Establish a FIFO linearization point, then apply every worker event that
+    /// acquired channel capacity before it.
+    ///
+    /// Reserving a slot is important when the bounded channel is full: the
+    /// reservation joins the send queue while this method continues receiving,
+    /// so sustained producers cannot take every newly freed slot and starve the
+    /// marker. Once inserted, normal FIFO order means confirmations before the
+    /// marker are applied before delivery expiry and events after it belong to
+    /// the next actor turn.
+    async fn drain_worker_events_through_maintenance_barrier(&mut self) {
+        let reserve = self.workers.event_sender().reserve_owned();
+        tokio::pin!(reserve);
+
+        let permit = loop {
+            tokio::select! {
+                biased;
+                result = &mut reserve => match result {
+                    Ok(permit) => break permit,
+                    Err(_) => return,
+                },
+                event = self.worker_event_rx.recv() => match event {
+                    Some(WorkerEvent::MaintenanceBarrier) => continue,
+                    Some(event) => self.handle_worker_event(event).await,
+                    None => return,
+                },
+            }
+        };
+        permit.send(WorkerEvent::MaintenanceBarrier);
+
+        while let Some(event) = self.worker_event_rx.recv().await {
+            match event {
+                WorkerEvent::MaintenanceBarrier => return,
+                event => self.handle_worker_event(event).await,
+            }
+        }
+    }
+
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        // Worker events already sitting in the channel are applied before this
+        // tick reads any worker state. `worker_event_rx` and `reap_tick` are
+        // sibling arms of one `select!`, so their order is arbitrary: without
+        // this, a `delivery_verified` that the worker has already sent but the
+        // loop has not yet handled would be invisible to the deadline sweep
+        // below, which would dead-letter a delivery the agent did receive —
+        // dropping its withheld fleet ack and making the engine redeliver a
+        // message the agent already read. Draining first makes the sweep read
+        // the freshest state the broker actually has. See relay#1686.
+        //
+        // Insert a marker through the same FIFO as worker confirmations and
+        // drain through it. The marker supplies an exact ordering boundary even
+        // when a confirmation arrives while an earlier backlog is being
+        // handled; traffic ordered after it cannot starve the sweep.
+        self.drain_worker_events_through_maintenance_barrier().await;
+
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -149,6 +202,13 @@ impl BrokerRuntime {
             );
         }
 
+        // A delivery past its acknowledgement deadline is picked up here even
+        // when its next retry is not due yet. Without this the deadline would
+        // only be noticed on the next scheduled retry, which in `Wait` mode is
+        // up to `WAIT_DELIVERY_ACK_TIMEOUT` (5 minutes) away — the bound would
+        // hold, but late. `retry_pending_delivery` still owns the decision;
+        // this only decides when it gets asked. See relay#1686.
+        let now_ms = unix_timestamp_millis();
         let due_ids: Vec<DeliveryId> = pending_deliveries
             .iter()
             .filter_map(|(delivery_id, pending)| {
@@ -156,7 +216,8 @@ impl BrokerRuntime {
                     pending.withheld_fleet_ack.as_ref().is_some_and(|deliver| {
                         fleet_delivery_book.is_delivery_confirmation_held(deliver)
                     });
-                if pending.next_retry_at <= now && !confirmation_is_held {
+                let past_deadline = now_ms >= pending.expires_at_ms;
+                if (pending.next_retry_at <= now || past_deadline) && !confirmation_is_held {
                     Some(delivery_id.clone())
                 } else {
                     None
