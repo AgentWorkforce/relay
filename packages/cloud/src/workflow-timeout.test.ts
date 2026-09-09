@@ -43,6 +43,18 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs('httpClient.timeout(600_000);', 'ts')).toBeUndefined();
   });
 
+  it('does not treat a bare workflow object identifier as a builder', () => {
+    expect(
+      inferWorkflowLaunchTimeoutMs('const workflow = {}; workflow.timeout(600_000);', 'ts')
+    ).toBeUndefined();
+  });
+
+  it('masks a regular expression after a block statement', () => {
+    expect(
+      inferWorkflowLaunchTimeoutMs('if (ready) {} /workflow("fake").timeout(500_000)/;', 'ts')
+    ).toBeUndefined();
+  });
+
   it('supports the fluent and assigned RelayFlow builder shapes used by workflows', () => {
     expect(
       inferWorkflowLaunchTimeoutMs("const wf = workflow('real').description('demo').timeout(900_000);", 'ts')
@@ -71,6 +83,11 @@ describe('workflow launch timeout inference', () => {
     expect(
       inferWorkflowLaunchTimeoutMs("workflow('dynamic').timeout(timeoutMs).run()", 'ts')
     ).toBeUndefined();
+  });
+
+  it('does not infer a literal when another builder timeout is dynamic', () => {
+    const source = "workflow('dynamic').timeout(timeoutMs); workflow('literal').timeout(900_000);";
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
   it('requires an explicit override when distinct builder timeouts are present', () => {

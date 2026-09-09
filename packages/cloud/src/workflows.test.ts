@@ -145,6 +145,15 @@ describe('relayflow version request contract', () => {
     expect(JSON.parse(bodies[0])).toMatchObject({ launchTimeoutMs: 900_000 });
   });
 
+  it('omits launch timeout metadata when literal and dynamic builders are mixed', async () => {
+    const bodies = captureRunBodies();
+    const workflow = "workflow('dynamic').timeout(timeoutMs); workflow('literal').timeout(900_000);";
+
+    await runWorkflow(workflow, { fileType: 'ts', syncCode: false });
+
+    expect(JSON.parse(bodies[0])).toEqual({ workflow, fileType: 'ts' });
+  });
+
   it('rejects an invalid explicit timeout before authentication, filesystem, or network access', async () => {
     await expect(
       runWorkflow('missing-workflow.ts', {

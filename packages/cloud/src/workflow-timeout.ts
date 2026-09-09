@@ -30,7 +30,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   const startsRegexLiteral = (at: number): boolean => {
     if (fileType !== 'ts') return false;
     const previous = previousSignificantCharacter(at);
-    if (previous === undefined || /[([{:;,!?=+\-*%&|^~<>]/.test(previous)) return true;
+    if (previous === undefined || /[([{:;,!?=+\-*%&|^~<>}]/.test(previous)) return true;
     if (previous === ')') {
       let closeIndex = at - 1;
       while (closeIndex >= 0 && /\s/.test(source[closeIndex])) closeIndex -= 1;
@@ -201,7 +201,7 @@ function identifierBefore(source: string, end: number): { name: string; start: n
  * small balanced-parenthesis walk is enough to distinguish `workflow(...).timeout`
  * and a known workflow variable from `httpClient.timeout`.
  */
-function timeoutRoot(source: string, timeoutDot: number): string | null {
+function timeoutRoot(source: string, timeoutDot: number): { name: string; invoked: boolean } | null {
   let cursor = timeoutDot - 1;
   while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
 
@@ -212,12 +212,13 @@ function timeoutRoot(source: string, timeoutDot: number): string | null {
     if (method === null) return null;
     cursor = method.start - 1;
     while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
-    if (cursor < 0 || source[cursor] !== '.') return method.name;
+    if (cursor < 0 || source[cursor] !== '.') return { name: method.name, invoked: true };
     cursor -= 1;
     while (cursor >= 0 && /\s/.test(source[cursor])) cursor -= 1;
   }
 
-  return identifierBefore(source, cursor)?.name ?? null;
+  const identifier = identifierBefore(source, cursor);
+  return identifier ? { name: identifier.name, invoked: false } : null;
 }
 
 /**
@@ -232,7 +233,7 @@ export function inferWorkflowLaunchTimeoutMs(
   if (fileType === 'yaml') return undefined;
 
   const source = maskNonCode(workflow, fileType);
-  const builderNames = new Set<string>(['workflow']);
+  const builderNames = new Set<string>();
   const assignmentPattern =
     fileType === 'ts'
       ? /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?workflow\s*\(/g
@@ -243,14 +244,24 @@ export function inferWorkflowLaunchTimeoutMs(
   }
 
   const values = new Set<number>();
-  const timeoutPattern = /\.timeout\s*\(\s*([0-9](?:_?[0-9])*)\s*\)/g;
+  let hasDynamicBuilderTimeout = false;
+  const timeoutPattern = /\.timeout\s*\(\s*([^)]*)\)/g;
   let match: RegExpExecArray | null;
   while ((match = timeoutPattern.exec(source)) !== null) {
     const root = timeoutRoot(source, match.index);
-    if (root === null || !builderNames.has(root)) continue;
-    values.add(validateLaunchTimeoutMs(Number(match[1].replaceAll('_', '')), 'workflow .timeout()'));
+    if (root === null || (!root.invoked && !builderNames.has(root.name))) continue;
+    const literal = match[1].match(/^[0-9](?:_?[0-9])*$/)?.[0];
+    if (literal === undefined) {
+      hasDynamicBuilderTimeout = true;
+      continue;
+    }
+    values.add(validateLaunchTimeoutMs(Number(literal.replaceAll('_', '')), 'workflow .timeout()'));
   }
 
+  // A literal and a dynamic builder timeout cannot be reconciled without
+  // evaluating user code. Leave the metadata omitted so callers can provide
+  // an explicit launchTimeoutMs override when they know the runtime value.
+  if (hasDynamicBuilderTimeout) return undefined;
   if (values.size === 0) return undefined;
   if (values.size > 1) {
     throw new Error(
