@@ -15,6 +15,11 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(3_300_000);
   });
 
+  it('trims whitespace and masked comments around a TypeScript builder timeout literal', () => {
+    const source = "const result = await workflow('proof').timeout( /* budget */ 600_000 /* ms */ ).run();";
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(600_000);
+  });
+
   it('omits inference for the checked-in workflow timeout beyond the metadata limit', () => {
     const source = readFileSync(new URL('../../../workflows/verify-features.ts', import.meta.url), 'utf8');
     expect(source).toContain('.timeout(3_600_000)');

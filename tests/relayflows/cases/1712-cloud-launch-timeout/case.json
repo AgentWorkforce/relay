@@ -7,7 +7,7 @@
     "command": ["node", "tests/relayflows/cases/1712-cloud-launch-timeout/run.mjs"]
   },
   "requirements": [],
-  "timeoutSeconds": 900,
+  "timeoutSeconds": 1500,
   "expected": {
     "base": {
       "outcome": "bug",

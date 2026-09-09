@@ -355,7 +355,10 @@ export function inferWorkflowLaunchTimeoutMs(
     if (root === null || (root.invoked ? root.name !== 'workflow' : !builderNames.has(root.name))) {
       continue;
     }
-    const literal = source.slice(argumentStart, argumentEnd).match(/^[0-9](?:_?[0-9])*$/)?.[0];
+    const literal = source
+      .slice(argumentStart, argumentEnd)
+      .trim()
+      .match(/^[0-9](?:_?[0-9])*$/)?.[0];
     if (literal === undefined) {
       hasUnresolvedBuilderTimeout = true;
       continue;
