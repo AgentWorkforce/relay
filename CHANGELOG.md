@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased - Patch]
+
 ### Fixed
 
 - `agent-relay node up` no longer exposes runtime-backed API routes before the broker can service them, preventing slow channel setup from timing out an otherwise healthy startup.

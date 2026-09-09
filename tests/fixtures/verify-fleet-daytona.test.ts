@@ -1719,14 +1719,14 @@ describe('complete Daytona Fleet board', () => {
   // that cold import alone exceeds the default 5s budget on a loaded machine,
   // so this test carries its own scoped timeout.
   it('derives exact command, option, argument, and hidden-surface coverage from the built CLI', async () => {
-      const [matrix, expected] = await Promise.all([
-        loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
-        readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(JSON.parse),
-      ]);
-      const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
-      expect(compareFleetCliInventory(actual, expected)).toBe(actual);
-      expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
-      expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
+    const [matrix, expected] = await Promise.all([
+      loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
+      readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(JSON.parse),
+    ]);
+    const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
+    expect(compareFleetCliInventory(actual, expected)).toBe(actual);
+    expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
+    expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
     // This board re-covers `node agent set-model` through its two AppServer
     // operations, so nothing is deferred. The coverage probe instead drops
     // a covered command leaf from the surface: exact coverage must fail.
@@ -1737,21 +1737,21 @@ describe('complete Daytona Fleet board', () => {
     expect(() => validateFleetCommandCoverage(uncoveredCommand, actual)).toThrow(
       /commandSurface must exactly cover every candidate/
     );
-      expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
-        hidden: true,
-        leaf: true,
-      });
-      expect(
-        actual.commands
-          .find(({ path }: { path: string }) => path === 'node up')
-          ?.options.find(({ flags }: { flags: string }) => flags === '--background-child')
-      ).toMatchObject({ hidden: true });
+    expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
+      hidden: true,
+      leaf: true,
+    });
+    expect(
+      actual.commands
+        .find(({ path }: { path: string }) => path === 'node up')
+        ?.options.find(({ flags }: { flags: string }) => flags === '--background-child')
+    ).toMatchObject({ hidden: true });
 
-      const missingCommand = structuredClone(expected);
-      missingCommand.commands = missingCommand.commands.filter(
-        ({ path }: { path: string }) => path !== 'fleet nodes'
-      );
-      expect(() => compareFleetCliInventory(actual, missingCommand)).toThrow('inventory changed');
+    const missingCommand = structuredClone(expected);
+    missingCommand.commands = missingCommand.commands.filter(
+      ({ path }: { path: string }) => path !== 'fleet nodes'
+    );
+    expect(() => compareFleetCliInventory(actual, missingCommand)).toThrow('inventory changed');
 
     const changedOption = structuredClone(expected);
     changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
