@@ -629,9 +629,11 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations).toHaveLength(94);
+    expect(matrix.operations).toHaveLength(120);
+    expect(matrix.minimumChurnCyclesPerNode).toBe(10);
+    expect(matrix.deferredCommandSurface).toEqual([]);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(94);
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(120);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -647,6 +649,14 @@ describe('complete Daytona Fleet board', () => {
         'node-agent-spawn-provider-pi-native',
         'node-agent-spawn-provider-deepagents-native',
         'node-agent-message-flush',
+        'node-agent-set-model-readback',
+        'node-agent-new-drive',
+        'node-agent-new-passthrough',
+        'node-agent-attach-reconnect',
+        'node-agent-churn-a',
+        'node-agent-churn-b',
+        'node-deadletters-nonempty',
+        'node-redeliver-targeted',
         'node-workflow-sync',
         'fleet-release-reclaims-owned-sandbox',
         'owned-sandbox-cleanup',
@@ -672,7 +682,7 @@ describe('complete Daytona Fleet board', () => {
 
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
-    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 94/);
+    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all 120/);
   });
 
   it('fails closed when Fleet qualification evidence loses creation, identity, or release binding', async () => {
@@ -886,7 +896,7 @@ describe('complete Daytona Fleet board', () => {
     expect(inventorySha256(expected)).toBe(matrix.inventorySha256);
     expect(() => validateFleetCommandCoverage(matrix, expected)).not.toThrow();
     const missingDeferredDeclaration = structuredClone(matrix);
-    missingDeferredDeclaration.deferredCommandSurface = [];
+    delete missingDeferredDeclaration.commandSurface['node agent set-model'];
     expect(() => validateFleetCommandCoverage(missingDeferredDeclaration, expected)).toThrow(
       /commandSurface must exactly cover every candidate/
     );
@@ -1208,14 +1218,14 @@ describe('complete Daytona Fleet board', () => {
 
     const wrongCount = structuredClone(matrix);
     wrongCount.operations.pop();
-    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 94/);
+    expect(() => validateFleetMatrix(wrongCount)).toThrow(/exactly 120/);
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 94 operations/);
+    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all 120 operations/);
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -1832,7 +1842,7 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       verdict: 'COMPREHENSIVELY_SATISFIED',
       whyPassed: 'All matrix operations and cleanup evidence were inspected.',
       endToEndWiringVerified: 'The sealed evidence connects the board to exact resources.',
-      deterministicEvidence: ['94 exact operation records'],
+      deterministicEvidence: ['120 exact operation records'],
       remainingRisks: ['Product RED is permitted as truthful evidence.'],
       findings: [],
     };
@@ -1939,8 +1949,8 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
     );
     expect(green.verdict).toBe('GREEN');
     expect(green.operationTotals).toEqual({
-      matrixOperationCount: 94,
-      independentCommandExecutionCount: 92,
+      matrixOperationCount: 120,
+      independentCommandExecutionCount: 118,
       derivedObservationCount: 2,
       derivedObservationIds: ['initial-task-sentinel-a', 'initial-task-sentinel-b'],
     });

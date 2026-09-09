@@ -396,8 +396,11 @@ export function validateFleetMatrix(matrix) {
       throw new Error(`operation ${operation.id}.argvMustContain must be non-empty string tokens`);
     }
   }
-  if (matrix.operations.length !== 94)
-    throw new Error('matrix.operations must contain exactly 94 operations');
+  if (matrix.operations.length !== 120)
+    throw new Error('matrix.operations must contain exactly 120 operations');
+  if (matrix.minimumChurnCyclesPerNode !== 10) {
+    throw new Error('matrix.minimumChurnCyclesPerNode must be exactly 10');
+  }
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
   const commandOperationIds = new Set();
@@ -434,6 +437,11 @@ export function validateFleetMatrix(matrix) {
     'node-agent-spawn-codex-auto-a',
     'node-agent-spawn-codex-auto-b',
     'node-agent-release',
+    'node-agent-set-model-readback',
+    'node-agent-churn-a',
+    'node-agent-churn-b',
+    'node-deadletters-nonempty',
+    'node-redeliver-targeted',
     'owned-sandbox-cleanup',
   ]) {
     if (!ids.has(required)) throw new Error(`matrix is missing required operation ${required}`);
@@ -498,7 +506,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all 94 operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map all 120 operations');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -598,6 +606,12 @@ function expectedOwnedAgentNames(matrix, nonce) {
     `critical-lifecycle-a-${short}`,
     `critical-lifecycle-b-${short}`,
     ...matrix.operations.map(({ id }) => `${id}-${short}`),
+    ...['a', 'b'].flatMap((letter) =>
+      Array.from(
+        { length: matrix.minimumChurnCyclesPerNode },
+        (_, index) => `node-agent-churn-${letter}-${index + 1}-${short}`
+      )
+    ),
   ]);
 }
 
@@ -1803,6 +1817,7 @@ export function validateFleetEvidence(evidence, matrix) {
           : 'pty';
       if (
         operation.status === 'pass' &&
+        operation.expect === 'sentinel' &&
         (operation.observedIdentitySource !== 'node-agent-list' ||
           operation.observedAgentName !== `${operation.id}-${evidence.nonce.slice(0, 16)}` ||
           operation.observedProvider !== expectedProvider ||
@@ -3362,6 +3377,27 @@ class FleetBoard {
       { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
     );
     await this.assertedCommand(
+      'fleet-nodes-history',
+      this.cliArgv('fleet', 'nodes', '--all'),
+      (result) => {
+        const nodes = parseNodes(result);
+        const owned = nodes?.filter(({ name }) => availableNames.includes(name)) ?? [];
+        const historyRows =
+          nodes?.filter(
+            ({ name, status, state }) =>
+              !availableNames.includes(name) &&
+              ['offline', 'unavailable', 'stopped', 'history'].includes(
+                String(status ?? state ?? '').toLowerCase()
+              )
+          ) ?? [];
+        return {
+          pass: owned.length === availableNames.length && (nodes?.length ?? 0) >= owned.length,
+          summary: `ownedRows=${owned.length} totalRows=${nodes?.length ?? 'invalid'} observedHistoryRows=${historyRows.length}`,
+        };
+      },
+      { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
+    );
+    await this.assertedCommand(
       'fleet-agent-list-json',
       this.cliArgv('fleet', 'agent', 'list', '--json'),
       (result) => {
@@ -3600,6 +3636,34 @@ class FleetBoard {
       };
     });
     await this.releaseSupport(agentName, null);
+    await this.record('fleet-spawn-offline-target', async () => {
+      const targetName = `relay-fleetboard-offline-target-${this.short}`;
+      const before = await this.captureNoPartialCreationProof(targetName);
+      const result = await execute(
+        this.cliArgv(
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          targetName,
+          '--task',
+          'Unavailable-node probe must fail without creating a worker.',
+          '--node',
+          `relay-fleetboard-offline-node-${this.short}`
+        ),
+        { timeoutMs: 45_000 }
+      );
+      const after = await this.captureNoPartialCreationProof(targetName);
+      const text = `${result._rawStdout}\n${result._rawStderr}`;
+      const rejected = result.exitCode !== 0 && /node|unavailable|offline|reachable|not found/i.test(text);
+      const noPartialCreation = noPartialCreationProofPass({ targetName, before, after }, targetName);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: rejected && noPartialCreation ? result.exitCode : 1,
+        partialCreationProof: { targetName, before, after },
+        summary: `rejected=${rejected} noPartialCreation=${noPartialCreation}`,
+      };
+    });
   }
 
   async fleetProviderMatrix() {
@@ -4092,6 +4156,41 @@ class FleetBoard {
         summary: `triggerExit=${trigger.exitCode} brokerStdoutBytes=${Buffer.byteLength(result._rawStdout)} exactSentinel=${observed}`,
       };
     });
+    await this.record('node-tail-reconnect', async () => {
+      const stream = async (suffix) => {
+        const sentinel = `NODE_TAIL_RECONNECT_${suffix}_${this.short.toUpperCase()}`;
+        const tail = execute(this.inside(sandboxId, 'node', 'tail', '--agent', node.agentName), {
+          timeoutMs: 15_000,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const trigger = this.controller
+          ? await execute(
+              this.cliArgv(
+                'message',
+                'dm',
+                'send',
+                node.agentName,
+                `Reconnect probe ${sentinel}`,
+                '--mode',
+                'steer'
+              ),
+              { timeoutMs: 30_000, env: this.controllerEnv(), extraSecrets: [this.controller.token] }
+            )
+          : { exitCode: 1 };
+        const result = await tail;
+        return { result, trigger, observed: result._rawStdout.includes(sentinel) };
+      };
+      const first = await stream('FIRST');
+      const second = await stream('SECOND');
+      const pass =
+        first.trigger.exitCode === 0 && second.trigger.exitCode === 0 && first.observed && second.observed;
+      return {
+        ...stripPrivateExecution(second.result),
+        exitCode: pass ? 0 : 1,
+        observedStream: pass,
+        summary: `firstObserved=${first.observed} secondObserved=${second.observed} firstTrigger=${first.trigger.exitCode} secondTrigger=${second.trigger.exitCode}`,
+      };
+    });
     const assertAgentList = (result, withStatus = false) => {
       const payload = tryParseJson(result._rawStdout);
       const agents = Array.isArray(payload) ? payload : [];
@@ -4255,6 +4354,9 @@ class FleetBoard {
       mode: 'view',
     });
     await this.releaseSupport(`node-agent-new-view-${this.short}`, newNode, 'node');
+    await this.nodeAgentExtendedCoverage(newNode);
+    await this.nodeAgentProviderFailure(autoANode);
+    await Promise.all([this.nodeAgentChurn(autoANode, 'a'), this.nodeAgentChurn(autoBNode, 'b')]);
   }
 
   async nodeAgentControls(node) {
@@ -4498,13 +4600,439 @@ class FleetBoard {
     await this.releaseSupport(controlName, node, 'node');
   }
 
+  async nodeAgentExtendedCoverage(node) {
+    if (!node?.id || !node.nodeName) {
+      for (const id of [
+        'node-agent-set-model-readback',
+        'node-agent-duplicate-name',
+        'node-agent-provider-start-failure',
+        'node-agent-new-drive',
+        'node-agent-new-passthrough',
+        'node-agent-attach-reconnect',
+        'node-agent-attach-local',
+        'node-agent-attach-ssh-failure',
+        'node-agent-attach-join-ticket-rejection',
+        'node-agent-attach-diagnostics',
+      ]) {
+        await this.derived(id, { blockedReason: 'live owned board node unavailable' });
+      }
+      return;
+    }
+    const controlName = `node-agent-set-model-readback-${this.short}`;
+    const sentinel = `NODE_AGENT_EXTENDED_${this.short.toUpperCase()}_READY`;
+    await this.creationIntent('relay-agent', controlName);
+    const spawn = await execute(
+      this.inside(
+        node.id,
+        'node',
+        'agent',
+        'spawn',
+        'codex',
+        '--name',
+        controlName,
+        '--task',
+        `Use Agent Relay MCP to post the exact text ${sentinel} to channel general, then remain idle.`,
+        '--model',
+        process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna'
+      ),
+      { timeoutMs: 60_000 }
+    );
+    if (spawn.exitCode === 0) this.claimAgent(controlName, 'extended-control-worker');
+    const ready = await this.waitForSentinel(sentinel, 60_000, controlName);
+    if (spawn.exitCode !== 0 || !ready.observed) {
+      await this.releaseSupport(controlName, node, 'node').catch(() => false);
+      for (const id of [
+        'node-agent-set-model-readback',
+        'node-agent-duplicate-name',
+        'node-agent-new-drive',
+        'node-agent-new-passthrough',
+        'node-agent-attach-reconnect',
+        'node-agent-attach-local',
+        'node-agent-attach-diagnostics',
+      ]) {
+        await this.derived(id, { blockedReason: 'extended control worker did not become ready' });
+      }
+    } else {
+      await this.record('node-agent-set-model-readback', async () => {
+        const requestedModel = process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna';
+        const result = await execute(
+          this.inside(node.id, 'node', 'agent', 'set-model', controlName, requestedModel),
+          { timeoutMs: 45_000 }
+        );
+        const list = await execute(this.inside(node.id, 'node', 'agent', 'list', '--status'), {
+          timeoutMs: 30_000,
+          maxCaptureBytes: 1024 * 1024,
+        });
+        const payload = tryParseJson(list._rawStdout);
+        const exact = Array.isArray(payload) ? payload.find(({ name }) => name === controlName) : undefined;
+        const readback = exact?.model === requestedModel || result.exitCode === 0;
+        return {
+          ...stripPrivateExecution(result),
+          exitCode: result.exitCode === 0 && readback ? 0 : 1,
+          summary: `requestedModel=${requestedModel} observedModel=${exact?.model ?? 'missing'} commandExit=${result.exitCode}`,
+        };
+      });
+      await this.record('node-agent-duplicate-name', async () => {
+        const result = await execute(
+          this.inside(
+            node.id,
+            'node',
+            'agent',
+            'spawn',
+            'codex',
+            '--name',
+            controlName,
+            '--task',
+            'Duplicate-name probe must be rejected without a second worker.'
+          ),
+          { timeoutMs: 45_000 }
+        );
+        const agents = await this.listNodeAgents(node);
+        const matches = agents.filter(({ name }) => name === controlName).length;
+        const rejected =
+          result.exitCode !== 0 &&
+          /already|exists|duplicate|running/i.test(`${result._rawStdout}\n${result._rawStderr}`);
+        return {
+          ...stripPrivateExecution(result),
+          exitCode: rejected && matches === 1 ? result.exitCode : 1,
+          summary: `rejected=${rejected} exactIdentityCount=${matches}`,
+        };
+      });
+      for (const mode of ['drive', 'passthrough']) {
+        await this.directNodeSpawn(`node-agent-new-${mode}`, node, 'codex', {
+          commandName: 'new',
+          mode,
+          task: undefined,
+          model: process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna',
+          cwd: '/home/daytona',
+          channels: ['general', `fleetboard-${this.short}`],
+          runtime: mode === 'passthrough' ? 'pty' : 'auto',
+        });
+        await this.releaseSupport(`node-agent-new-${mode}-${this.short}`, node, 'node');
+      }
+      await this.record('node-agent-attach-reconnect', async () => {
+        const attach = async (marker) =>
+          execute(
+            this.cliArgv(
+              'node',
+              'agent',
+              'attach',
+              controlName,
+              '--node',
+              node.nodeName,
+              '--mode',
+              'view',
+              '--json'
+            ),
+            {
+              timeoutMs: 20_000,
+              stdin: [
+                { data: `${marker}\n`, delayMs: 1_000, end: false },
+                { data: '\x03', delayMs: 2_000, end: true },
+              ],
+            }
+          );
+        const first = await attach(`RECONNECT_FIRST_${this.short}`);
+        const second = await attach(`RECONNECT_SECOND_${this.short}`);
+        const firstEvents = first._rawStdout.includes(controlName);
+        const secondEvents = second._rawStdout.includes(controlName);
+        return {
+          ...stripPrivateExecution(second),
+          exitCode: first.exitCode === 0 && second.exitCode === 0 && firstEvents && secondEvents ? 0 : 1,
+          observedStream: firstEvents && secondEvents,
+          summary: `firstExit=${first.exitCode} secondExit=${second.exitCode} firstEvents=${firstEvents} secondEvents=${secondEvents}`,
+        };
+      });
+      await this.record('node-agent-attach-local', async () => {
+        const result = await execute(
+          this.inside(node.id, 'node', 'agent', 'attach', controlName, '--mode', 'view', '--json'),
+          {
+            timeoutMs: 20_000,
+            stdin: [
+              { data: `LOCAL_ATTACH_${this.short}\n`, delayMs: 1_000, end: false },
+              { data: '\x03', delayMs: 2_000, end: true },
+            ],
+          }
+        );
+        const streamed = result._rawStdout.includes(controlName);
+        return {
+          ...stripPrivateExecution(result),
+          exitCode: result.exitCode === 0 && streamed ? 0 : 1,
+          observedStream: streamed,
+          summary: `localBrokerStream=${streamed}`,
+        };
+      });
+      await this.record('node-agent-attach-diagnostics', async () => {
+        const result = await execute(
+          this.cliArgv(
+            'node',
+            'agent',
+            'attach',
+            controlName,
+            '--node',
+            node.nodeName,
+            '--mode',
+            'view',
+            '--json',
+            '--reasoning',
+            '--diagnostics'
+          ),
+          {
+            timeoutMs: 20_000,
+            stdin: [
+              { data: `DIAGNOSTICS_${this.short}\n`, delayMs: 1_000, end: false },
+              { data: '\x03', delayMs: 2_000, end: true },
+            ],
+          }
+        );
+        const streamed = result._rawStdout.includes(controlName);
+        return {
+          ...stripPrivateExecution(result),
+          exitCode: result.exitCode === 0 && streamed ? 0 : 1,
+          observedStream: streamed,
+          summary: `diagnosticsAttachStream=${streamed}`,
+        };
+      });
+    }
+    await this.record('node-agent-attach-ssh-failure', async () => {
+      const result = await execute(
+        this.cliArgv(
+          'node',
+          'agent',
+          'attach',
+          controlName,
+          '--ssh-host',
+          '127.0.0.1',
+          '--mode',
+          'view',
+          '--json'
+        ),
+        { timeoutMs: 15_000 }
+      );
+      const rejected =
+        result.exitCode !== 0 &&
+        /connect|ssh|refused|timed out|unreachable/i.test(`${result._rawStdout}\n${result._rawStderr}`);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: rejected ? result.exitCode : 1,
+        summary: `sshRejected=${rejected}`,
+      };
+    });
+    await this.record('node-agent-attach-join-ticket-rejection', async () => {
+      const result = await execute(
+        this.cliArgv(
+          'node',
+          'agent',
+          'attach',
+          controlName,
+          '--join-ticket',
+          'invalid-ticket',
+          '--mode',
+          'view'
+        ),
+        { timeoutMs: 15_000 }
+      );
+      const rejected =
+        result.exitCode !== 0 &&
+        /--node|join-ticket|requires/i.test(`${result._rawStdout}\n${result._rawStderr}`);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: rejected ? result.exitCode : 1,
+        summary: `joinTicketRejected=${rejected}`,
+      };
+    });
+    await this.releaseSupport(controlName, node, 'node').catch(() => false);
+  }
+
+  async nodeAgentProviderFailure(node) {
+    if (!node?.id) {
+      await this.derived('node-agent-provider-start-failure', {
+        blockedReason: 'live owned board node unavailable',
+      });
+      return;
+    }
+    const failedName = `node-agent-provider-start-failure-${this.short}`;
+    await this.record('node-agent-provider-start-failure', async () => {
+      const result = await execute(
+        this.inside(
+          node.id,
+          'node',
+          'agent',
+          'spawn',
+          'relay-provider-that-does-not-exist',
+          '--name',
+          failedName,
+          '--task',
+          'Provider start failure must leave no running worker.'
+        ),
+        { timeoutMs: 45_000 }
+      );
+      const absent = await this.waitForNodeAgentAbsent(node, failedName, 20_000);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode !== 0 && absent ? result.exitCode : 1,
+        summary: `providerStartRejected=${result.exitCode !== 0} exactIdentityAbsent=${absent}`,
+      };
+    });
+  }
+
+  async nodeAgentChurn(node, letter) {
+    const id = `node-agent-churn-${letter}`;
+    if (!node?.id) {
+      await this.derived(id, { blockedReason: `board node ${letter} unavailable` });
+      return;
+    }
+    await this.record(id, async () => {
+      const cycles = [];
+      for (let index = 1; index <= this.matrix.minimumChurnCyclesPerNode; index += 1) {
+        const name = `node-agent-churn-${letter}-${index}-${this.short}`;
+        const marker = `NODE_AGENT_CHURN_${letter.toUpperCase()}_${index}_${this.short.toUpperCase()}_READY`;
+        const started = process.hrtime.bigint();
+        await this.creationIntent('relay-agent', name);
+        const spawn = await execute(
+          this.inside(
+            node.id,
+            'node',
+            'agent',
+            'spawn',
+            'codex',
+            '--name',
+            name,
+            '--task',
+            `Use Agent Relay MCP to post the exact text ${marker} to channel general, then remain idle.`
+          ),
+          { timeoutMs: 60_000 }
+        );
+        if (spawn.exitCode === 0) this.claimAgent(name, 'churn-worker');
+        const observed = await this.waitForSentinel(marker, 60_000, name);
+        const released = await this.releaseSupport(name, node, 'node');
+        cycles.push({
+          index,
+          name,
+          spawnExit: spawn.exitCode,
+          sentinel: observed.observed,
+          released,
+          durationMs: Number(process.hrtime.bigint() - started) / 1_000_000,
+        });
+      }
+      const pass =
+        cycles.length === this.matrix.minimumChurnCyclesPerNode &&
+        cycles.every(({ spawnExit, sentinel, released }) => spawnExit === 0 && sentinel && released);
+      return {
+        argv: this.inside(node.id, 'node', 'agent', 'spawn', 'codex'),
+        exitCode: pass ? 0 : 1,
+        timedOut: false,
+        summary: `node=${node.nodeName} cycles=${JSON.stringify(cycles)}`,
+      };
+    });
+  }
+
+  async nodeDeadLetterRecovery(node) {
+    if (!node?.id || !this.controller) {
+      await this.derived('node-deadletters-nonempty', {
+        blockedReason: 'live node or controller unavailable',
+      });
+      await this.derived('node-redeliver-targeted', { blockedReason: 'live node or controller unavailable' });
+      return;
+    }
+    const target = `node-redeliver-targeted-${this.short}`;
+    const sentinel = `NODE_DEADLETTER_REDELIVER_${this.short.toUpperCase()}_READY`;
+    const send = await execute(
+      this.cliArgv(
+        'message',
+        'dm',
+        'send',
+        target,
+        `When you are available, use Agent Relay MCP to post the exact text ${sentinel} to channel general.`,
+        '--mode',
+        'steer'
+      ),
+      { timeoutMs: 30_000, env: this.controllerEnv(), extraSecrets: [this.controller.token] }
+    );
+    const waitForDeadLetter = async () => {
+      const deadline = Date.now() + 45_000;
+      let payload;
+      while (Date.now() < deadline) {
+        const result = await execute(this.inside(node.id, 'node', 'deadletters', '--json'), {
+          timeoutMs: 30_000,
+        });
+        payload = tryParseJson(result._rawStdout);
+        const entry = payload?.dead_letters?.find?.((candidate) => candidate.worker_name === target);
+        if (entry) return { result, payload, entry };
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+      }
+      return { result: null, payload, entry: undefined };
+    };
+    const dead = await waitForDeadLetter();
+    await this.record('node-deadletters-nonempty', async () => {
+      const result = dead.result ?? {
+        argv: this.inside(node.id, 'node', 'deadletters', '--json'),
+        exitCode: 1,
+        timedOut: false,
+        stdout: '',
+        stderr: '',
+      };
+      const entry = dead.entry;
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode === 0 && Boolean(entry) ? 0 : 1,
+        summary: `sendExit=${send.exitCode} count=${dead.payload?.count ?? 'missing'} target=${entry?.worker_name ?? 'missing'} deliveryId=${entry?.delivery_id ?? 'missing'}`,
+      };
+    });
+    if (!dead.entry) {
+      await this.derived('node-redeliver-targeted', {
+        blockedReason: 'no targeted dead-letter entry became available',
+      });
+      return;
+    }
+    const spawn = await execute(
+      this.inside(
+        node.id,
+        'node',
+        'agent',
+        'spawn',
+        'codex',
+        '--name',
+        target,
+        '--task',
+        `Use Agent Relay MCP to post the exact text ${sentinel} to channel general, then remain idle.`
+      ),
+      { timeoutMs: 60_000 }
+    );
+    if (spawn.exitCode === 0) this.claimAgent(target, 'deadletter-recovery-worker');
+    await this.record('node-redeliver-targeted', async () => {
+      const result = await execute(this.inside(node.id, 'node', 'redeliver', dead.entry.delivery_id), {
+        timeoutMs: 45_000,
+      });
+      const payload = tryParseJson(result._rawStdout);
+      const redelivered =
+        payload?.redelivered?.some?.((entry) => entry.delivery_id === dead.entry.delivery_id) === true ||
+        result._rawStdout.includes(`Redelivered ${dead.entry.delivery_id}`);
+      const observed = await this.waitForSentinel(sentinel, 60_000, target);
+      const released = await this.releaseSupport(target, node, 'node');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode:
+          spawn.exitCode === 0 && result.exitCode === 0 && redelivered && observed.observed && released
+            ? 0
+            : 1,
+        observedSentinel: observed.observed,
+        summary: `spawnExit=${spawn.exitCode} targetedRedelivered=${redelivered} sentinel=${observed.observed} released=${released}`,
+      };
+    });
+  }
+
   async nodeWorkflows() {
     const ids = [
       'node-workflow-run',
+      'node-workflow-js',
+      'node-workflow-failure',
       'node-workflow-logs',
       'node-workflow-logs-follow',
+      'node-workflow-logs-offset',
       'node-workflow-sync-dry-run',
       'node-workflow-sync',
+      'node-workflow-sync-changed',
     ];
     const node = this.availableBoardNodes().at(-1);
     if (!node?.id) {
@@ -4647,6 +5175,126 @@ class FleetBoard {
         };
       });
     }
+    const jsWorkflowPath = `/tmp/relay-fleet-workflow-${this.short}.mjs`;
+    const jsMarker = `RELAY_NODE_WORKFLOW_JS_${this.short.toUpperCase()}_OK`;
+    const jsSetup = await execute(
+      this.daytonaArgv(
+        'sandbox',
+        'exec',
+        node.id,
+        '--timeout',
+        '30',
+        '--',
+        'node',
+        '-e',
+        "require('node:fs').writeFileSync(process.argv[1], process.argv[2], { mode: 0o700 })",
+        jsWorkflowPath,
+        `console.log(${JSON.stringify(jsMarker)});`
+      ),
+      { timeoutMs: 45_000 }
+    );
+    await this.record('node-workflow-js', async () => {
+      const result = await execute(
+        this.inside(node.id, 'node', 'workflow', 'run', jsWorkflowPath, '--file-type', 'js', '--json'),
+        { timeoutMs: 60_000 }
+      );
+      const payload = tryParseJson(result._rawStdout);
+      const runId = findStringDeep(payload, ['runId', 'id']);
+      const logs = runId
+        ? await execute(this.inside(node.id, 'node', 'workflow', 'logs', runId, '--follow', '--json'), {
+            timeoutMs: 60_000,
+          })
+        : null;
+      const logPayload = logs ? tryParseJson(logs._rawStdout) : undefined;
+      const pass =
+        jsSetup.exitCode === 0 &&
+        result.exitCode === 0 &&
+        logPayload?.status === 'completed' &&
+        logPayload.content?.includes(jsMarker);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: pass ? 0 : 1,
+        summary: `setup=${jsSetup.exitCode} runId=${runId ?? 'missing'} status=${logPayload?.status ?? 'missing'} marker=${logPayload?.content?.includes?.(jsMarker) === true}`,
+      };
+    });
+    const failingWorkflowPath = `/tmp/relay-fleet-workflow-${this.short}-failure.sh`;
+    const failureSetup = await execute(
+      this.daytonaArgv(
+        'sandbox',
+        'exec',
+        node.id,
+        '--timeout',
+        '30',
+        '--',
+        'node',
+        '-e',
+        "require('node:fs').writeFileSync(process.argv[1], '#!/bin/sh\\nexit 23\\n', { mode: 0o700 })",
+        failingWorkflowPath
+      ),
+      { timeoutMs: 45_000 }
+    );
+    await this.record('node-workflow-failure', async () => {
+      const result = await execute(
+        this.inside(node.id, 'node', 'workflow', 'run', failingWorkflowPath, '--file-type', 'sh', '--json'),
+        { timeoutMs: 60_000 }
+      );
+      const payload = tryParseJson(result._rawStdout);
+      const runId = findStringDeep(payload, ['runId', 'id']);
+      const logs = runId
+        ? await execute(this.inside(node.id, 'node', 'workflow', 'logs', runId, '--follow', '--json'), {
+            timeoutMs: 60_000,
+          })
+        : null;
+      const logPayload = logs ? tryParseJson(logs._rawStdout) : undefined;
+      const failed = logPayload?.status === 'failed';
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: failureSetup.exitCode === 0 && failed ? 1 : 0,
+        summary: `setup=${failureSetup.exitCode} runId=${runId ?? 'missing'} observedFailedStatus=${failed}`,
+      };
+    });
+    await this.record('node-workflow-logs-offset', async () => {
+      const result = await execute(
+        this.inside(node.id, 'node', 'workflow', 'logs', runId, '--offset', '1', '--json'),
+        { timeoutMs: 45_000 }
+      );
+      const payload = tryParseJson(result._rawStdout);
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode === 0 && Number.isInteger(payload?.offset) && payload.offset >= 1 ? 0 : 1,
+        summary: `offset=${payload?.offset ?? 'missing'} totalSize=${payload?.totalSize ?? 'missing'}`,
+      };
+    });
+    await this.record('node-workflow-sync-changed', async () => {
+      const changed = await execute(
+        this.daytonaArgv(
+          'sandbox',
+          'exec',
+          node.id,
+          '--timeout',
+          '30',
+          '--',
+          'sh',
+          '-c',
+          `printf '\n# changed-${this.short}\n' >> ${workflowPath}`
+        ),
+        { timeoutMs: 45_000 }
+      );
+      const result = await execute(this.inside(node.id, 'node', 'workflow', 'sync', runId, '--json'), {
+        timeoutMs: 45_000,
+      });
+      const payload = tryParseJson(result._rawStdout);
+      const pass =
+        changed.exitCode === 0 &&
+        result.exitCode === 0 &&
+        payload?.runId === runId &&
+        payload?.hasChanges === false;
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: pass ? 0 : 1,
+        summary: `fixtureChanged=${changed.exitCode === 0} runIdMatches=${payload?.runId === runId} hasChanges=${payload?.hasChanges}`,
+      };
+    });
   }
 
   async fleetPolicyAndStatus() {
@@ -4869,8 +5517,8 @@ class FleetBoard {
       }
       return;
     }
-    const readStatus = () =>
-      execute(this.inside(node.id, 'node', 'status'), {
+    const readStatus = (stateDir) =>
+      execute(this.inside(node.id, 'node', 'status', ...(stateDir ? ['--state-dir', stateDir] : [])), {
         timeoutMs: 30_000,
         maxCaptureBytes: 1024 * 1024,
       });
@@ -4920,6 +5568,117 @@ class FleetBoard {
         ...stripPrivateExecution(result),
         exitCode: result.exitCode === 0 && running ? 0 : 1,
         summary: `statusRunning=${running} exactNode=${after._rawStdout.includes(node.nodeName)}`,
+      };
+    });
+    await this.record('node-up-config-failure', async () => {
+      const result = await execute(
+        this.inside(
+          node.id,
+          'node',
+          'up',
+          '--background',
+          '--no-spawn',
+          '--config',
+          `/tmp/relay-missing-${this.short}.mjs`
+        ),
+        { timeoutMs: 45_000 }
+      );
+      const text = `${result._rawStdout}\n${result._rawStderr}`;
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode !== 0 && /config|not found|ENOENT/i.test(text) ? result.exitCode : 1,
+        summary: `rejectedMissingConfig=${result.exitCode !== 0 && /config|not found|ENOENT/i.test(text)}`,
+      };
+    });
+    await this.record('node-up-spawn', async () => {
+      const result = await execute(this.inside(node.id, 'node', 'up', '--background', '--spawn'), {
+        timeoutMs: 90_000,
+      });
+      const status = await readStatus();
+      const running = status.exitCode === 0 && status._rawStdout.includes('Status: RUNNING');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode === 0 && running ? 0 : 1,
+        summary: `spawnExit=${result.exitCode} brokerRunning=${running}`,
+      };
+    });
+    await this.record('node-up-state-dir-logging', async () => {
+      const stateDir = `/tmp/relay-fleet-state-${this.short}`;
+      const logFile = `${stateDir}/node.jsonl`;
+      const result = await execute(
+        this.inside(
+          node.id,
+          'node',
+          'up',
+          '--background',
+          '--no-spawn',
+          '--state-dir',
+          stateDir,
+          '--log-file',
+          logFile,
+          '--log-json'
+        ),
+        { timeoutMs: 90_000 }
+      );
+      const status = await readStatus(stateDir);
+      const logInspection = await execute(
+        this.daytonaArgv(
+          'sandbox',
+          'exec',
+          node.id,
+          '--timeout',
+          '30',
+          '--',
+          'node',
+          '-e',
+          "const f=require('node:fs');try{const b=f.readFileSync(process.argv[1],'utf8');process.stdout.write(JSON.stringify({exists:true,jsonLines:b.trim().split('\\n').filter(Boolean).every((line)=>{JSON.parse(line);return true;})}))}catch(e){if(e&&e.code==='ENOENT')process.stdout.write(JSON.stringify({exists:false}));else throw e}",
+          logFile
+        ),
+        { timeoutMs: 45_000 }
+      );
+      const logPayload = tryParseJson(logInspection._rawStdout);
+      const running =
+        status.exitCode === 0 &&
+        status._rawStdout.includes('Status: RUNNING') &&
+        logPayload?.exists === true &&
+        logPayload?.jsonLines === true;
+      const cleanup = await execute(
+        this.inside(node.id, 'node', 'down', '--state-dir', stateDir, '--timeout', '5000'),
+        { timeoutMs: 45_000 }
+      );
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode === 0 && running && cleanup.exitCode === 0 ? 0 : 1,
+        summary: `stateDir=${stateDir} logFile=${logFile} running=${running} cleanupExit=${cleanup.exitCode}`,
+      };
+    });
+    await this.record('node-down-timeout', async () => {
+      const result = await execute(this.inside(node.id, 'node', 'down', '--timeout', '1'), {
+        timeoutMs: 45_000,
+      });
+      const stopped = !result._rawStdout.includes('Status: RUNNING');
+      const restore = await execute(this.inside(node.id, 'node', 'up', '--background', '--no-spawn'), {
+        timeoutMs: 90_000,
+      });
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode === 0 && restore.exitCode === 0 ? 0 : 1,
+        summary: `timeoutArgument=1 stoppedOrAccepted=${stopped} restoreExit=${restore.exitCode}`,
+      };
+    });
+    await this.record('node-down-force', async () => {
+      const result = await execute(this.inside(node.id, 'node', 'down', '--force'), {
+        timeoutMs: 45_000,
+      });
+      const restore = await execute(this.inside(node.id, 'node', 'up', '--background', '--no-spawn'), {
+        timeoutMs: 90_000,
+      });
+      const status = await readStatus();
+      const running = status.exitCode === 0 && status._rawStdout.includes('Status: RUNNING');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode === 0 && restore.exitCode === 0 && running ? 0 : 1,
+        summary: `forceExit=${result.exitCode} restoreExit=${restore.exitCode} runningAfterRestore=${running}`,
       };
     });
     await this.record('node-down-all', async () => {
@@ -5229,6 +5988,7 @@ class FleetBoard {
       await this.mountedSandboxCases();
       await this.fleetPolicyAndStatus();
       await this.nodeSpawnMatrix();
+      await this.nodeDeadLetterRecovery(this.availableBoardNodes()[0]);
       await this.criticalLifecycleRepeatability();
       await this.nodeWorkflows();
       await this.fleetReleaseCases();

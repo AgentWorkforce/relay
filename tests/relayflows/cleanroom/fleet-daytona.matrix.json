@@ -4,6 +4,7 @@
   "provider": "daytona",
   "minimumBoardNodes": 2,
   "minimumCriticalLifecycleTrials": 5,
+  "minimumChurnCyclesPerNode": 10,
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
@@ -19,7 +20,13 @@
     "fleet disable": ["fleet-disable"],
     "fleet enable": ["fleet-enable"],
     "fleet inherit": ["fleet-inherit"],
-    "fleet nodes": ["fleet-nodes-default", "fleet-nodes-name", "fleet-nodes-capability", "fleet-nodes-all"],
+    "fleet nodes": [
+      "fleet-nodes-default",
+      "fleet-nodes-name",
+      "fleet-nodes-capability",
+      "fleet-nodes-all",
+      "fleet-nodes-history"
+    ],
     "fleet release": ["fleet-release", "fleet-release-delete-agent", "fleet-release-reclaims-owned-sandbox"],
     "fleet serve": ["fleet-serve-migration"],
     "fleet spawn": [
@@ -29,6 +36,7 @@
       "fleet-spawn-session-ref",
       "fleet-spawn-no-confirm-readiness",
       "fleet-spawn-metadata-channel-model-cwd",
+      "fleet-spawn-offline-target",
       "fleet-spawn-provider-claude",
       "fleet-spawn-provider-codex",
       "fleet-spawn-provider-gemini",
@@ -42,13 +50,19 @@
       "fleet-spawn-sandbox-no-mount"
     ],
     "fleet status": ["fleet-status"],
-    "node up": ["node-up-already-running", "node-up-after-down"],
-    "node down": ["node-down-graceful", "node-down-all"],
+    "node up": [
+      "node-up-already-running",
+      "node-up-after-down",
+      "node-up-config-failure",
+      "node-up-spawn",
+      "node-up-state-dir-logging"
+    ],
+    "node down": ["node-down-graceful", "node-down-all", "node-down-force", "node-down-timeout"],
     "node status": ["node-status", "node-status-wait"],
     "node metrics": ["node-metrics", "node-metrics-agent"],
-    "node deadletters": ["node-deadletters", "node-deadletters-json"],
-    "node redeliver": ["node-redeliver-all", "node-redeliver-requires-id"],
-    "node tail": ["node-tail-agent"],
+    "node deadletters": ["node-deadletters", "node-deadletters-json", "node-deadletters-nonempty"],
+    "node redeliver": ["node-redeliver-all", "node-redeliver-requires-id", "node-redeliver-targeted"],
+    "node tail": ["node-tail-agent", "node-tail-reconnect"],
     "node agent list": ["node-agent-list", "node-agent-list-pretty", "node-agent-list-status"],
     "node agent spawn": [
       "node-agent-spawn-codex-auto-a",
@@ -68,23 +82,33 @@
       "node-agent-spawn-provider-opencode-native",
       "node-agent-spawn-provider-cursor",
       "node-agent-spawn-provider-pi-native",
-      "node-agent-spawn-provider-deepagents-native"
+      "node-agent-spawn-provider-deepagents-native",
+      "node-agent-duplicate-name",
+      "node-agent-provider-start-failure",
+      "node-agent-churn-a",
+      "node-agent-churn-b"
     ],
-    "node agent new": ["node-agent-new-view"],
+    "node agent new": ["node-agent-new-view", "node-agent-new-drive", "node-agent-new-passthrough"],
     "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
     "node agent attach": [
       "node-agent-attach-view-json",
       "node-agent-attach-drive-json",
-      "node-agent-attach-passthrough-json"
+      "node-agent-attach-passthrough-json",
+      "node-agent-attach-reconnect",
+      "node-agent-attach-local",
+      "node-agent-attach-ssh-failure",
+      "node-agent-attach-join-ticket-rejection",
+      "node-agent-attach-diagnostics"
     ],
+    "node agent set-model": ["node-agent-set-model-readback"],
     "node agent message flush": ["node-agent-message-flush"],
     "node agent message hold": ["node-agent-message-hold"],
     "node agent message auto": ["node-agent-message-auto"],
-    "node workflow run": ["node-workflow-run"],
-    "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
-    "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
+    "node workflow run": ["node-workflow-run", "node-workflow-js", "node-workflow-failure"],
+    "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow", "node-workflow-logs-offset"],
+    "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync", "node-workflow-sync-changed"]
   },
-  "deferredCommandSurface": ["node agent set-model"],
+  "deferredCommandSurface": [],
   "acceptance": {
     "version": 1,
     "profiles": {
@@ -441,6 +465,7 @@
       "fleet-nodes-name": "fleet-read",
       "fleet-nodes-capability": "fleet-read",
       "fleet-nodes-all": "fleet-read",
+      "fleet-nodes-history": "fleet-read",
       "fleet-agent-list-json": "fleet-read",
       "fleet-agent-list-pretty": "fleet-read",
       "fleet-agent-list-node": "fleet-read",
@@ -451,6 +476,7 @@
       "fleet-spawn-session-ref": "targeted-fleet-spawn",
       "fleet-spawn-no-confirm-readiness": "targeted-fleet-spawn",
       "fleet-spawn-metadata-channel-model-cwd": "targeted-fleet-spawn",
+      "fleet-spawn-offline-target": "expected-rejection",
       "fleet-spawn-provider-claude": "provider-spawn",
       "fleet-spawn-provider-codex": "provider-spawn",
       "fleet-spawn-provider-gemini": "provider-spawn",
@@ -477,16 +503,24 @@
       "node-up-already-running": "node-lifecycle",
       "node-down-graceful": "node-lifecycle",
       "node-up-after-down": "node-lifecycle",
+      "node-up-config-failure": "expected-rejection",
+      "node-up-spawn": "node-lifecycle",
+      "node-up-state-dir-logging": "node-lifecycle",
       "node-down-all": "node-lifecycle",
+      "node-down-force": "node-lifecycle",
+      "node-down-timeout": "node-lifecycle",
       "node-status": "node-read",
       "node-status-wait": "node-read",
       "node-metrics": "node-read",
       "node-metrics-agent": "node-read",
       "node-deadletters": "node-read",
       "node-deadletters-json": "node-read",
+      "node-deadletters-nonempty": "node-read",
       "node-redeliver-all": "node-read",
       "node-redeliver-requires-id": "expected-rejection",
+      "node-redeliver-targeted": "node-read",
       "node-tail-agent": "node-stream",
+      "node-tail-reconnect": "node-stream",
       "node-agent-list": "node-read",
       "node-agent-list-pretty": "node-read",
       "node-agent-list-status": "node-read",
@@ -508,20 +542,36 @@
       "node-agent-spawn-provider-cursor": "direct-node-spawn",
       "node-agent-spawn-provider-pi-native": "direct-node-spawn",
       "node-agent-spawn-provider-deepagents-native": "direct-node-spawn",
+      "node-agent-duplicate-name": "expected-rejection",
+      "node-agent-provider-start-failure": "expected-rejection",
+      "node-agent-churn-a": "direct-node-spawn",
+      "node-agent-churn-b": "direct-node-spawn",
       "node-agent-new-view": "direct-node-spawn",
+      "node-agent-new-drive": "direct-node-spawn",
+      "node-agent-new-passthrough": "direct-node-spawn",
       "node-agent-attach-view-json": "agent-control",
       "node-agent-attach-drive-json": "agent-control",
       "node-agent-attach-passthrough-json": "agent-control",
+      "node-agent-attach-reconnect": "agent-control",
+      "node-agent-attach-local": "agent-control",
+      "node-agent-attach-ssh-failure": "expected-rejection",
+      "node-agent-attach-join-ticket-rejection": "expected-rejection",
+      "node-agent-attach-diagnostics": "agent-control",
       "node-agent-message-hold": "agent-control",
       "node-agent-message-flush": "agent-control",
       "node-agent-message-auto": "agent-control",
       "node-agent-release": "node-release-reclaim",
       "node-agent-same-name-reclaim": "node-release-reclaim",
+      "node-agent-set-model-readback": "agent-control",
       "node-workflow-run": "node-workflow",
+      "node-workflow-js": "node-workflow",
+      "node-workflow-failure": "expected-rejection",
       "node-workflow-logs": "node-workflow",
       "node-workflow-logs-follow": "node-workflow",
+      "node-workflow-logs-offset": "node-workflow",
       "node-workflow-sync-dry-run": "node-workflow",
       "node-workflow-sync": "node-workflow",
+      "node-workflow-sync-changed": "node-workflow",
       "agent-identity-reconciliation": "cleanup-agent",
       "owned-sandbox-cleanup": "cleanup-sandbox",
       "daytona-baseline-restored": "cleanup-baseline"
@@ -544,6 +594,7 @@
       "argvMustContain": ["--capability"]
     },
     { "id": "fleet-nodes-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
+    { "id": "fleet-nodes-history", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
     { "id": "fleet-agent-list-json", "group": "fleet", "expect": "success", "argvMustContain": ["--json"] },
     {
       "id": "fleet-agent-list-pretty",
@@ -593,6 +644,13 @@
         "--role",
         "--objective"
       ]
+    },
+    {
+      "id": "fleet-spawn-offline-target",
+      "group": "fleet-spawn",
+      "expect": "expected-failure",
+      "mustContain": "node",
+      "argvMustContain": ["--node"]
     },
     {
       "id": "fleet-spawn-provider-claude",
@@ -703,11 +761,32 @@
     { "id": "node-down-graceful", "group": "node", "expect": "success" },
     { "id": "node-up-after-down", "group": "node", "expect": "success" },
     {
+      "id": "node-up-config-failure",
+      "group": "node",
+      "expect": "expected-failure",
+      "mustContain": "config",
+      "argvMustContain": ["--config"]
+    },
+    { "id": "node-up-spawn", "group": "node", "expect": "success", "argvMustContain": ["--spawn"] },
+    {
+      "id": "node-up-state-dir-logging",
+      "group": "node",
+      "expect": "success",
+      "argvMustContain": ["--state-dir", "--log-file", "--log-json"]
+    },
+    {
       "id": "node-down-all",
       "group": "node",
       "expect": "success",
       "destructiveScope": "sandbox-processes",
       "argvMustContain": ["--all"]
+    },
+    { "id": "node-down-force", "group": "node", "expect": "success", "argvMustContain": ["--force"] },
+    {
+      "id": "node-down-timeout",
+      "group": "node",
+      "expect": "success",
+      "argvMustContain": ["--timeout"]
     },
     { "id": "node-status", "group": "node", "expect": "success" },
     { "id": "node-status-wait", "group": "node", "expect": "success", "argvMustContain": ["--wait-for"] },
@@ -715,6 +794,7 @@
     { "id": "node-metrics-agent", "group": "node", "expect": "success", "argvMustContain": ["--agent"] },
     { "id": "node-deadletters", "group": "node", "expect": "success" },
     { "id": "node-deadletters-json", "group": "node", "expect": "success", "argvMustContain": ["--json"] },
+    { "id": "node-deadletters-nonempty", "group": "node", "expect": "success" },
     { "id": "node-redeliver-all", "group": "node", "expect": "success", "argvMustContain": ["--all"] },
     {
       "id": "node-redeliver-requires-id",
@@ -722,8 +802,16 @@
       "expect": "expected-failure",
       "mustContain": "Provide exactly one"
     },
+    { "id": "node-redeliver-targeted", "group": "node", "expect": "success" },
     {
       "id": "node-tail-agent",
+      "group": "node",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--agent"]
+    },
+    {
+      "id": "node-tail-reconnect",
       "group": "node",
       "expect": "stream",
       "allowTimeout": true,
@@ -842,11 +930,50 @@
       "argvMustContain": ["deepagents", "--runtime", "native"]
     },
     {
+      "id": "node-agent-duplicate-name",
+      "group": "node-agent-spawn",
+      "expect": "expected-failure",
+      "mustContain": "already",
+      "argvMustContain": ["--name"]
+    },
+    {
+      "id": "node-agent-provider-start-failure",
+      "group": "node-agent-spawn",
+      "expect": "expected-failure",
+      "argvMustContain": ["node", "agent", "spawn"]
+    },
+    {
+      "id": "node-agent-churn-a",
+      "group": "node-agent-spawn",
+      "expect": "success",
+      "argvMustContain": ["node", "agent", "spawn"]
+    },
+    {
+      "id": "node-agent-churn-b",
+      "group": "node-agent-spawn",
+      "expect": "success",
+      "argvMustContain": ["node", "agent", "spawn"]
+    },
+    {
       "id": "node-agent-new-view",
       "group": "node-agent",
       "expect": "sentinel",
       "allowTimeout": true,
       "argvMustContain": ["--mode", "view"]
+    },
+    {
+      "id": "node-agent-new-drive",
+      "group": "node-agent",
+      "expect": "sentinel",
+      "allowTimeout": true,
+      "argvMustContain": ["--mode", "drive", "--task", "--model", "--cwd"]
+    },
+    {
+      "id": "node-agent-new-passthrough",
+      "group": "node-agent",
+      "expect": "sentinel",
+      "allowTimeout": true,
+      "argvMustContain": ["--mode", "passthrough", "--channels", "--runtime"]
     },
     {
       "id": "node-agent-attach-view-json",
@@ -869,13 +996,55 @@
       "allowTimeout": true,
       "argvMustContain": ["--json"]
     },
+    {
+      "id": "node-agent-attach-reconnect",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--node", "--json"]
+    },
+    { "id": "node-agent-attach-local", "group": "node-agent", "expect": "stream", "allowTimeout": true },
+    {
+      "id": "node-agent-attach-ssh-failure",
+      "group": "node-agent",
+      "expect": "expected-failure",
+      "mustContain": "connect",
+      "argvMustContain": ["--ssh-host"]
+    },
+    {
+      "id": "node-agent-attach-join-ticket-rejection",
+      "group": "node-agent",
+      "expect": "expected-failure",
+      "mustContain": "--node",
+      "argvMustContain": ["--join-ticket"]
+    },
+    {
+      "id": "node-agent-attach-diagnostics",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--node", "--diagnostics", "--reasoning"]
+    },
     { "id": "node-agent-message-hold", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-message-flush", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-message-auto", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-release", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-same-name-reclaim", "group": "node-agent", "expect": "sentinel" },
+    { "id": "node-agent-set-model-readback", "group": "node-agent", "expect": "success" },
 
     { "id": "node-workflow-run", "group": "node-workflow", "expect": "success" },
+    {
+      "id": "node-workflow-js",
+      "group": "node-workflow",
+      "expect": "success",
+      "argvMustContain": ["--file-type", "js"]
+    },
+    {
+      "id": "node-workflow-failure",
+      "group": "node-workflow",
+      "expect": "expected-failure",
+      "argvMustContain": ["--file-type"]
+    },
     { "id": "node-workflow-logs", "group": "node-workflow", "expect": "success" },
     {
       "id": "node-workflow-logs-follow",
@@ -884,12 +1053,19 @@
       "argvMustContain": ["--follow"]
     },
     {
+      "id": "node-workflow-logs-offset",
+      "group": "node-workflow",
+      "expect": "success",
+      "argvMustContain": ["--offset"]
+    },
+    {
       "id": "node-workflow-sync-dry-run",
       "group": "node-workflow",
       "expect": "success",
       "argvMustContain": ["--dry-run"]
     },
     { "id": "node-workflow-sync", "group": "node-workflow", "expect": "success" },
+    { "id": "node-workflow-sync-changed", "group": "node-workflow", "expect": "success" },
 
     { "id": "agent-identity-reconciliation", "group": "cleanup", "expect": "success" },
     { "id": "owned-sandbox-cleanup", "group": "cleanup", "expect": "success" },
