@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Broker worker spawns now retry transient Relaycast registration overloads and only fall back to local headless task-exit workers when Relaycast messaging is explicitly disabled.
 
 ## [11.10.4] - 2026-09-08
 

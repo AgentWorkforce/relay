@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use super::api::recipient_name_for_reachability;
+use super::api::{can_spawn_without_preregistration, recipient_name_for_reachability};
 use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
@@ -3597,6 +3597,45 @@ fn preregistration_error_message_does_not_invent_retry_after_for_transport_error
     };
     let message = format_worker_preregistration_error("Foobar", &error);
     assert!(!message.contains("retry after"));
+}
+
+#[test]
+fn preregistration_fallback_is_limited_to_local_headless_task_exit() {
+    let headless = build_http_api_spawn_spec(
+        WorkerName::new("worker-a"),
+        "opencode".to_string(),
+        Some("headless".to_string()),
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("headless spec");
+    assert!(can_spawn_without_preregistration(&headless, true, true));
+    assert!(!can_spawn_without_preregistration(&headless, false, true));
+    assert!(!can_spawn_without_preregistration(&headless, true, false));
+
+    let pty = build_http_api_spawn_spec(
+        WorkerName::new("worker-b"),
+        "codex".to_string(),
+        Some("pty".to_string()),
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("pty spec");
+    assert!(!can_spawn_without_preregistration(&pty, true, true));
 }
 
 #[test]
