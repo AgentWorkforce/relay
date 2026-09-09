@@ -740,9 +740,7 @@ export function inferWorkflowLaunchTimeoutMs(
     const declarationKind = fileType === 'ts' ? declaration[1] : undefined;
     const declarationName = fileType === 'ts' ? declaration[2] : declaration[1];
     const bindingScope =
-      declarationKind === 'var'
-        ? nearestFunctionScope(scopeId, varScopes, masked.scopeParents)
-        : scopeId;
+      declarationKind === 'var' ? nearestFunctionScope(scopeId, varScopes, masked.scopeParents) : scopeId;
     let scopeBindings = bindings.get(scopeId);
     if (scopeBindings === undefined || bindingScope !== scopeId) {
       scopeBindings = bindings.get(bindingScope);

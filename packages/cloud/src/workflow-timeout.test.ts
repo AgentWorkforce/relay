@@ -226,10 +226,7 @@ describe('workflow launch timeout inference', () => {
   });
 
   it('hoists var declarations in a catch block to the enclosing function scope', () => {
-    const source = [
-      'try {} catch (e) { var wf = workflow(\'real\'); }',
-      'wf.timeout(900_000);',
-    ].join('\n');
+    const source = ["try {} catch (e) { var wf = workflow('real'); }", 'wf.timeout(900_000);'].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
