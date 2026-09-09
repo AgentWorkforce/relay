@@ -95,7 +95,7 @@ case "\${2:-}" in
     echo "Cleaned up (was not running)"
     ;;
   up)
-    if [ "\${RELAY_BASE_URL:-}" != "https://agent37-cast.agentrelay.com" ]; then
+    if [ "\${RELAY_BASE_URL:-}" != "https://cast.agentrelay.com" ]; then
       echo "trusted Relaycast base URL missing" >&2
       exit 65
     fi
@@ -150,9 +150,9 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(cleanupSubshellIndex).toBeGreaterThan(trapDisarmIndex);
   });
 
-  it('creates an ephemeral workspace on the trusted shard and wires its base URL explicitly', () => {
+  it('creates an ephemeral workspace on the trusted engine and wires its base URL explicitly', () => {
     const script = readFileSync(smokeScript, 'utf8');
-    expect(script).toContain('TRUSTED_RELAY_BASE_URL="https://agent37-cast.agentrelay.com"');
+    expect(script).toContain('TRUSTED_RELAY_BASE_URL="https://cast.agentrelay.com"');
     expect(script).toContain('expires_in_seconds: 60');
     expect(script).toContain('printf \'::add-mask::%s\\n\' "$WORKSPACE_KEY"');
     expect(script).toContain('--request DELETE');

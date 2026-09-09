@@ -6,10 +6,10 @@ if [ "$#" -ne 2 ]; then
   exit 2
 fi
 
-# The standalone smoke is deliberately pinned to the trusted Agent37 shard.
-# Do not make this caller-selectable: the workspace key created below is scoped
-# to this origin and must never be sent to an arbitrary endpoint.
-TRUSTED_RELAY_BASE_URL="https://agent37-cast.agentrelay.com"
+# The standalone smoke is deliberately pinned to the trusted hosted Relaycast
+# engine. Do not make this caller-selectable: the workspace key created below
+# is scoped to this origin and must never be sent to an arbitrary endpoint.
+TRUSTED_RELAY_BASE_URL="https://cast.agentrelay.com"
 
 # The broker gives a multi-workspace session higher precedence than the single
 # key. This smoke intentionally exercises one ephemeral workspace, so do not
