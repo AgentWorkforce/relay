@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
+import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import type { AttachMode } from './attach-mode.js';
 import { collectWithRetry } from './collect-with-retry.js';
 import { resolveBaseUrl, resolveWorkspaceKey } from './sdk-client.js';
@@ -112,6 +113,33 @@ export class FleetNodeAttachError extends Error {
     super(message);
     this.name = 'FleetNodeAttachError';
   }
+}
+
+const TRUSTED_RELAYCAST_ORIGINS = new Set([
+  CANONICAL_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
+]);
+
+function validateFleetAttachBaseUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new FleetNodeAttachError('Fleet node attach requires a trusted Relaycast origin.');
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.pathname !== '' && parsed.pathname !== '/') ||
+    !TRUSTED_RELAYCAST_ORIGINS.has(parsed.origin)
+  ) {
+    throw new FleetNodeAttachError('Fleet node attach requires a trusted Relaycast origin.');
+  }
+  return parsed.origin;
 }
 
 class TerminalSessionAttemptError extends FleetNodeAttachError {
@@ -291,10 +319,8 @@ export async function startFleetNodeAttachProxy(
   const env = options.env ?? process.env;
   const fetchFn = options.fetch ?? globalThis.fetch;
   const workspaceKey = options.workspaceKey ?? resolveWorkspaceKey({ env });
-  const baseUrl = (options.baseUrl ?? resolveBaseUrl({ env }) ?? 'https://cast.agentrelay.com').replace(
-    /\/+$/,
-    ''
-  );
+  const requestedBaseUrl = resolveBaseUrl({ baseUrl: options.baseUrl, env });
+  const baseUrl = validateFleetAttachBaseUrl(requestedBaseUrl ?? CANONICAL_RELAYCAST_ORIGIN);
   const nodePath = safeNodePath(options.node);
   const sessionEndpoint = `${baseUrl}/v1/nodes/${nodePath}/terminal/sessions`;
   const sessionRequestTimeoutMs = options.sessionRequest?.timeoutMs ?? SESSION_REQUEST_TIMEOUT_MS;

@@ -142,7 +142,7 @@ export type CloudFleetSandboxReused = {
   activeAgents: number | null;
   maxAgents: number | null;
   providerId?: CloudFleetSandboxProviderId;
-  /** Required when Cloud reused an Agent37-isolated node. */
+  /** Required when Cloud reused a node with a known provider. */
   relaycastTarget?: CloudFleetRelaycastTarget;
 };
 
@@ -252,12 +252,22 @@ function assertProviderRelaycastTarget(
   providerId: CloudFleetSandboxProviderId | undefined,
   target: CloudFleetRelaycastTarget | undefined
 ): void {
-  if (providerId !== 'agent37') return;
-  if (!target) {
-    throw new Error('Cloud fleet sandbox response is missing the Agent37 Relaycast target.');
+  if (providerId === 'agent37') {
+    if (!target) {
+      throw new Error('Cloud fleet sandbox response is missing the Agent37 Relaycast target.');
+    }
+    if (target.route !== 'agent37-isolated' || target.baseUrl !== AGENT37_RELAYCAST_ORIGIN) {
+      throw new Error('Cloud fleet sandbox response mapped Agent37 to a non-isolated Relaycast target.');
+    }
+    return;
   }
-  if (target.route !== 'agent37-isolated' || target.baseUrl !== AGENT37_RELAYCAST_ORIGIN) {
-    throw new Error('Cloud fleet sandbox response mapped Agent37 to a non-isolated Relaycast target.');
+  if (providerId !== undefined) {
+    if (!target) {
+      throw new Error(`Cloud fleet sandbox response is missing the canonical Relaycast target for ${providerId}.`);
+    }
+    if (target.route !== 'canonical' || target.baseUrl !== CANONICAL_RELAYCAST_ORIGIN) {
+      throw new Error(`Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`);
+    }
   }
 }
 
