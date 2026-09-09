@@ -1,0 +1,280 @@
+{
+  "version": "1.0.0",
+  "id": "288e2de0-78e2-4db9-9be6-b87cb46d78a9",
+  "timestamp": "2026-09-09T19:36:45.074Z",
+  "trajectory": "traj_94islbdz6537",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_94islbdz6537/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 70,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/package-validation.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 356,
+              "end_line": 361,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud-worker.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 3,
+              "end_line": 8,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 19,
+              "end_line": 29,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 36,
+              "end_line": 50,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 53,
+              "end_line": 70,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 157,
+              "end_line": 163,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 240,
+              "end_line": 250,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/cloud.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 395,
+              "end_line": 408,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 411,
+              "end_line": 426,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 472,
+              "end_line": 480,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 484,
+              "end_line": 495,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 520,
+              "end_line": 578,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/local-workflow.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 4,
+              "end_line": 14,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 183,
+              "end_line": 255,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/local-workflow.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 3,
+              "end_line": 17,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 50,
+              "end_line": 60,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 67,
+              "end_line": 82,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 96,
+              "end_line": 106,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 266,
+              "end_line": 280,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 293,
+              "end_line": 319,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 346,
+              "end_line": 358,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            },
+            {
+              "start_line": 396,
+              "end_line": 402,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/workflow-runtime.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 108,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/workflow-runtime.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 115,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/standalone-workflow.bun.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 39,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/ci-standalone-workflow-smoke.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 42,
+              "revision": "df9cd939b35114428c64028e15a634304186ff00"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
