@@ -33,7 +33,7 @@ Daytona CLI/API reported a version mismatch: CLI `0.205.1`, API `0.210.0`.
 Do not replace the evidence below with a smaller smoke test. The repeatable
 Relay-only board is defined by:
 
-- `tests/relayflows/cleanroom/fleet-daytona.matrix.json` (94 operations);
+- `tests/relayflows/cleanroom/fleet-daytona.matrix.json` (108 operations);
 - `scripts/verify-features/fleet-daytona.mjs` (operator-host runner, evidence,
   cleanup, and campaign aggregation);
 - `workflows/verify-fleet-daytona.ts` (supervision and independent signoff);
@@ -192,8 +192,8 @@ The repaired diagnostic harness must preserve these invariants:
 - bind context, static gates, coverage, reviews, and final acceptance to the
   same source manifest. Runtime `.agentworkforce/trajectories/` changes may be
   excluded from the content digest, but the directory must remain tracked;
-- require exactly 142 unique, schema-validated coverage rows: 12 state-machine
-  transitions, 23 injected faults, 13 acceptance gates, and all 94 Fleet
+- require exactly 156 unique, schema-validated coverage rows: 12 state-machine
+  transitions, 23 injected faults, 13 acceptance gates, and all 108 Fleet
   operations. Every row must map bidirectionally to a bug or unknown;
 - treat every unresolved `CRITICAL` or `HIGH` bug as a promotion blocker,
   including `CONFIRMED`, `IN_PROGRESS`, and `BLOCKED`, not only a literal

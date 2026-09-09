@@ -623,7 +623,8 @@ async function main() {
     }
   }
 
-  const result = await wf.run({ cwd: process.cwd(), dryRun: process.env.DRY_RUN === '1' });
+  const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
+  const result = await wf.run({ cwd: process.cwd(), dryRun });
   if ('status' in result && result.status !== undefined && result.status !== 'completed') {
     throw new Error(`Clean-room workflow finished with status ${String(result.status)}`);
   }

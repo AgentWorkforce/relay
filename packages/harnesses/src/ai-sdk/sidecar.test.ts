@@ -150,6 +150,13 @@ describe('AI SDK native harness sidecar', () => {
     };
     input.write(`${JSON.stringify(command)}\n`);
     input.write(`${JSON.stringify({ ...command, request_id: 'request-2' })}\n`);
+    input.write(`${JSON.stringify({ v: 2, type: 'set_model', payload: { model: 'opus' } })}\n`);
+    input.write(
+      `${JSON.stringify({ v: 2, type: 'set_model', request_id: '', payload: { model: 'opus' } })}\n`
+    );
+    input.write(
+      `${JSON.stringify({ v: 2, type: 'set_model', request_id: 'model-1', payload: { model: 'opus' } })}\n`
+    );
     input.write(
       `${JSON.stringify({
         v: 2,
@@ -207,6 +214,19 @@ describe('AI SDK native harness sidecar', () => {
         /"kind":"thread_reply"[\s\S]*"threadId":"thread-root"[\s\S]*calling reply_to_thread with message_id "thread-root"/
       ),
       'active',
+    ]);
+    expect(output.filter((frame) => frame.type === 'set_model_response')).toEqual([
+      {
+        v: 2,
+        type: 'set_model_response',
+        request_id: 'model-1',
+        payload: {
+          status: 'unsupported',
+          applied: false,
+          effective_model: null,
+          error: 'native harnesses do not expose model mutation',
+        },
+      },
     ]);
     expect(fixture.session.doDestroy).toHaveBeenCalledTimes(1);
   });

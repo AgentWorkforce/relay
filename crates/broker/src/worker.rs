@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -69,7 +70,7 @@ const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
 /// A full command queue means the worker is already backpressured. Do not
 /// retain another normal request indefinitely waiting for capacity.
-const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
+pub(crate) const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// A PTY can transiently stop draining while it handles a large redraw or a
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
@@ -226,6 +227,11 @@ pub(crate) enum WorkerEvent {
     Message {
         name: WorkerName,
         generation: Uuid,
+        /// Monotonic timestamp captured when the worker reader received the
+        /// frame. Runtime processing can be delayed by other actor work, but
+        /// receipt deadlines must describe transport arrival rather than
+        /// handler scheduling.
+        received_at: Instant,
         value: Value,
     },
     /// The worker-owned stdin writer failed after a command was accepted.
@@ -256,6 +262,53 @@ pub(crate) struct WorkerRegistry {
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+    /// Protocol frames that a worker reader has stamped but not yet handed to
+    /// the runtime channel. The model-receipt expiry sweep reads this so a
+    /// receipt that is timestamped before its deadline but descheduled before
+    /// its channel send cannot be expired by an "empty channel" observation.
+    receipts_in_flight: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl WorkerRegistry {
+    /// Number of worker frames currently between their receive timestamp and
+    /// their channel send. Zero means every received frame has been queued.
+    pub(crate) fn receipts_in_flight(&self) -> usize {
+        self.receipts_in_flight
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Test hook: pretend a reader holds `value` stamped-but-unsent frames.
+    #[cfg(test)]
+    pub(crate) fn set_receipts_in_flight_for_test(&self, value: usize) {
+        self.receipts_in_flight
+            .store(value, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// RAII marker for one stamped-but-not-yet-sent worker frame. Entering
+/// increments the registry-wide in-flight counter before the frame is
+/// timestamped; dropping it decrements after the send settles. The expiry
+/// sweep treats a nonzero counter as "a timely receipt may still be in
+/// flight", so a deschedule between stamp and send cannot turn an in-window
+/// provider response into a false rejection.
+struct InFlightFrame {
+    counter: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl InFlightFrame {
+    fn enter(counter: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Release);
+        Self {
+            counter: counter.clone(),
+        }
+    }
+}
+
+impl Drop for InFlightFrame {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
 }
 
 fn encode_worker_frame(
@@ -361,6 +414,7 @@ impl WorkerRegistry {
             initial_tasks: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+            receipts_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -1266,6 +1320,7 @@ impl WorkerRegistry {
             stdout,
             true,
             log_file.clone(),
+            Some(self.receipts_in_flight.clone()),
         );
         spawn_worker_reader(
             self.event_tx.clone(),
@@ -1275,6 +1330,7 @@ impl WorkerRegistry {
             stderr,
             false,
             log_file,
+            None,
         );
         let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
         spawn_worker_writer(
@@ -1402,29 +1458,6 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    /// Queue an already-framed raw PTY command through the same sole stdin
-    /// writer used for protocol frames. This completes once the command has
-    /// been admitted to the writer queue, rather than after the pipe write.
-    /// That keeps administrative PTY actions such as `/model` serialized with
-    /// protocol traffic without ever reporting an admitted command as failed
-    /// while the writer can still emit it.
-    pub(crate) async fn send_raw_to_worker(&self, name: &str, frame: Vec<u8>) -> Result<()> {
-        let command_tx = self
-            .workers
-            .get(name)
-            .with_context(|| format!("unknown worker '{name}'"))?
-            .command_tx
-            .clone();
-        command_tx
-            .send(WorkerWriteCommand {
-                frame,
-                completion: None,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))?;
-        Ok(())
-    }
-
     /// Enqueue a complete worker frame without awaiting its pipe write. This
     /// is used by terminal attach traffic, which must remain responsive when a
     /// PTY stops draining stdin. The dedicated writer owns the actual write;
@@ -1508,7 +1541,11 @@ impl WorkerRegistry {
             let _ = timeout(WORKER_WRITE_TIMEOUT, completion_rx).await;
         }
 
-        let result = terminate_child(&mut handle.child, release_grace).await;
+        let result = if worker_waits_for_shutdown_exit(&handle.spec) {
+            release_child_after_grace(&mut handle.child, release_grace).await
+        } else {
+            terminate_child(&mut handle.child, release_grace).await
+        };
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
             Err(error) => {
@@ -1766,6 +1803,32 @@ fn release_grace_for_spec(spec: &AgentSpec) -> Duration {
         Some(ResolvedHarnessConfig::Native(_)) => APP_SERVER_RELEASE_GRACE,
         _ => DEFAULT_RELEASE_GRACE,
     }
+}
+
+/// An AppServer wrapper performs its provider cleanup (the session DELETE)
+/// asynchronously after it receives the shutdown frame. `terminate_child`
+/// sends SIGTERM immediately, which would abort that cleanup mid-flight while
+/// `release` still reports success — the provider session then outlives the
+/// worker. These workers get the entire grace period to exit on their own;
+/// only a wrapper that outlives the grace is signalled, then forced.
+fn worker_waits_for_shutdown_exit(spec: &AgentSpec) -> bool {
+    matches!(
+        spec.harness_config.as_ref(),
+        Some(ResolvedHarnessConfig::Headless(config))
+            if matches!(&config.driver, HeadlessHarnessDriver::AppServer)
+    )
+}
+
+/// Wait for a voluntary child exit for up to `grace` before escalating to the
+/// normal SIGTERM/SIGKILL path.
+async fn release_child_after_grace(child: &mut Child, grace: Duration) -> Result<()> {
+    if child.id().is_none() {
+        return Ok(());
+    }
+    if timeout(grace, child.wait()).await.is_ok() {
+        return Ok(());
+    }
+    terminate_child(child, DEFAULT_RELEASE_GRACE).await
 }
 
 fn validate_app_server_config(config: &HeadlessHarnessConfig) -> Result<()> {
@@ -2337,6 +2400,7 @@ fn codex_models_json_contains_model(bytes: &[u8], model: &str) -> Option<bool> {
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_worker_reader<R>(
     tx: mpsc::Sender<WorkerEvent>,
     name: WorkerName,
@@ -2345,6 +2409,7 @@ fn spawn_worker_reader<R>(
     reader: R,
     parse_json: bool,
     log_file_path: Option<PathBuf>,
+    in_flight: Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -2419,6 +2484,15 @@ fn spawn_worker_reader<R>(
 
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            // Mark the frame in flight before stamping it: the runtime's
+            // model-receipt expiry sweep treats a nonzero in-flight counter as
+            // proof that a timely receipt may still be pending, so log I/O or
+            // channel backpressure between the stamp and the send can no
+            // longer let an empty-looking channel expire the request first.
+            let _in_flight = in_flight.as_ref().map(InFlightFrame::enter);
+            // Capture arrival before log I/O or channel backpressure can delay
+            // construction of the runtime event.
+            let received_at = Instant::now();
             if parse_json {
                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
                     if value
@@ -2446,6 +2520,7 @@ fn spawn_worker_reader<R>(
                         .send(WorkerEvent::Message {
                             name: name.clone(),
                             generation,
+                            received_at,
                             value,
                         })
                         .await
@@ -2489,6 +2564,7 @@ fn spawn_worker_reader<R>(
                 .send(WorkerEvent::Message {
                     name: name.clone(),
                     generation,
+                    received_at,
                     value: fallback,
                 })
                 .await
@@ -3051,58 +3127,6 @@ sleep 30
             .unwrap();
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn raw_command_returns_after_queue_admission_without_a_writer() {
-        // `/model` is best-effort. Its API response must mean the command was
-        // accepted by the worker-owned queue, not that the eventual pipe write
-        // completed: the latter can stall while the admitted command remains
-        // eligible to be emitted.
-        let mut reg = make_registry(vec![]);
-        let name = "raw-command-admission";
-        let child = Command::new("sleep").arg("30").spawn().unwrap();
-        let generation = Uuid::new_v4();
-        let (command_tx, mut command_rx) = mpsc::channel(1);
-        reg.workers.insert(
-            WorkerName::from(name),
-            WorkerHandle {
-                generation,
-                spec: spec_for_test(name),
-                parent: None,
-                workspace_id: None,
-                child,
-                command_tx,
-                harness_pid: None,
-                spawned_at: Instant::now(),
-                ready_at: None,
-                last_activity_at: Instant::now(),
-                context_budget_pct: None,
-                state: AgentWorkState::Working,
-                exit_reason: None,
-            },
-        );
-
-        timeout(
-            Duration::from_millis(50),
-            reg.send_raw_to_worker(name, b"/model sonnet\n".to_vec()),
-        )
-        .await
-        .expect("queue admission must not wait for a pipe writer")
-        .expect("open worker queue accepts the raw command");
-
-        let queued = command_rx.recv().await.expect("raw command was queued");
-        assert_eq!(queued.frame, b"/model sonnet\n");
-        assert!(queued.completion.is_none());
-
-        let handle = reg
-            .workers
-            .get_mut(name)
-            .expect("test worker remains registered");
-        terminate_child(&mut handle.child, Duration::from_millis(200))
-            .await
-            .unwrap();
-    }
-
     // The wrapper process can outlive the harness it hosts, so reaping on the
     // wrapper alone leaves a dead agent listed as `working` forever.
     mod orphaned_worker {
@@ -3421,6 +3445,75 @@ sleep 30
         };
 
         assert_eq!(release_grace_for_spec(&spec), APP_SERVER_RELEASE_GRACE);
+    }
+
+    #[test]
+    fn app_server_release_waits_for_voluntary_exit_before_signalling() {
+        let mut spec = AgentSpec {
+            name: WorkerName::from("opencode-app"),
+            runtime: AgentRuntime::Headless,
+            provider: None,
+            cli: None,
+            session_id: Some("ses_123".to_string()),
+            harness_config: Some(ResolvedHarnessConfig::Headless(make_app_server_config())),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        assert!(worker_waits_for_shutdown_exit(&spec));
+
+        spec.harness_config = None;
+        assert!(!worker_waits_for_shutdown_exit(&spec));
+
+        spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+            command: "sleep".to_string(),
+            args: vec!["30".to_string()],
+            cwd: None,
+            env: None,
+            session_id: "session-native".to_string(),
+            metadata: None,
+        }));
+        assert!(!worker_waits_for_shutdown_exit(&spec));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_child_after_grace_returns_after_voluntary_exit() {
+        let mut child = Command::new("sleep")
+            .arg("0.05")
+            .spawn()
+            .expect("short-lived child should spawn");
+        let started = Instant::now();
+        release_child_after_grace(&mut child, Duration::from_secs(30))
+            .await
+            .expect("voluntary exit should release cleanly");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let status = child.wait().await.expect("reaped child status");
+        // A signalled exit would carry SIGTERM; a voluntary exit exits 0.
+        assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_child_after_grace_escalates_after_grace_expires() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleeping child should spawn");
+        let started = Instant::now();
+        release_child_after_grace(&mut child, Duration::from_millis(150))
+            .await
+            .expect("escalated release should still succeed");
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(150));
+        assert!(elapsed < Duration::from_secs(10));
+        let status = child.wait().await.expect("reaped child status");
+        assert!(!status.success());
     }
 
     #[test]

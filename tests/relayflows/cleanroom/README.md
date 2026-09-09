@@ -70,10 +70,11 @@ Daytona baseline and hard acceptance gates, use
 Fleet has a dedicated operator-host Relayflow because its proof environment is
 itself a set of fresh Cloud sandboxes. The flow runs two sequential attempts;
 each provisions at least two distinct Daytona sandboxes, registers both as live
-Fleet nodes, and measures 94 operations:
+Fleet nodes, and measures 108 operations:
 every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
-post-ready injection, remote attach, Relayfile root/scoped/no-mount behavior,
+post-ready injection, remote and broker-local attach/message control,
+Relayfile root/scoped/no-mount behavior,
 workflow execution, release, identity reconciliation, and exact sandbox cleanup.
 Targeted Fleet presence is cross-checked against heartbeat live-name metadata and
 `activeAgents`, unfiltered placement, direct node inventory, and the roster both
@@ -84,7 +85,7 @@ acknowledgements, exact injection reader receipts, same-name reuse, and verified
 process/identity absence after release. The baseline rejects any total or online
 agent identity and any total or live Fleet node record; release qualification
 also hashes the actual CLI and broker executables inside each sandbox. See the
-exact 94-operation acceptance crosswalk and external gates in
+exact 108-operation acceptance crosswalk and external gates in
 [`FLEET_ACCEPTANCE_AUDIT.md`](./FLEET_ACCEPTANCE_AUDIT.md).
 
 ```bash
@@ -93,10 +94,20 @@ npm run verify:fleet-daytona:dry-run
 npm run verify:fleet-daytona
 ```
 
-Run the live command only from a Linux operator host that is already authenticated
-to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
-on platforms without descriptor-bound directory I/O. The runner never prints or places credentials in child
-argv, stores redacted bounded output, checkpoints after every operation, and
+The live command is a release-qualification run and requires all of
+`VERIFY_FLEET_RELEASE_QUALIFICATION=1`, `VERIFY_FLEET_SNAPSHOT_ID`,
+`VERIFY_FLEET_SNAPSHOT_NAME`, `VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256`, and
+`VERIFY_FLEET_EXPECTED_RELAY_VERSION` for the immutable candidate snapshot.
+It fails before workspace access with an actionable prerequisite when those
+inputs are absent; there are no safe provider defaults for a snapshot ID or
+manifest digest. The qualification workflow supplies these values from its
+sealed manifest. Run it only from a Linux operator host that is already
+authenticated to Relay Cloud and Daytona; candidate prepare/hydrate intentionally fails closed
+on platforms without descriptor-bound directory I/O. The runner never persists
+unredacted credentials in recorded evidence. The explicit `--api-key` and
+`--workspace-key` option probes necessarily place an ephemeral, sandbox-local
+credential in that one child process's argv, then retain only a redacted copy.
+All captured output is bounded and redacted. The runner checkpoints after every operation and
 deletes only exact sandbox IDs/names it recorded as owned. If interrupted, rerun
 exact cleanup with the nonce printed by the workflow:
 
@@ -149,8 +160,8 @@ immutable qualification manifest; it is otherwise skipped instead of silently
 testing an unspecified build.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
-and validates exactly 142 runtime contracts: 12 state transitions, 23 injected
-faults, 13 release acceptance gates, and all 94 Fleet operations. Diagnosis mode
+and validates exactly 156 runtime contracts: 12 state transitions, 23 injected
+faults, 13 release acceptance gates, and all 108 Fleet operations. Diagnosis mode
 must mark every runtime row `BLOCKED` and bind it bidirectionally to an owned,
 promotion-blocking unknown; static tests and historical observations cannot
 become runtime passes. The seal hashes every generated artifact and reproduction

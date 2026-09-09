@@ -456,6 +456,16 @@ class AgentRelayClient:
             payload["timeout_ms"] = timeout_ms
         return await self._request("POST", f"/api/spawned/{quote(name, safe=str())}/model", json=payload)
 
+    async def get_model(self, name: str, request_id: Optional[str] = None) -> dict[str, Any]:
+        """Return a correlated model mutation receipt for an agent.
+
+        Pass the request ID returned by :meth:`set_model` when polling a
+        delayed or concurrent mutation; omitting it preserves latest-receipt
+        behavior for callers that only need current state.
+        """
+        query = f"?request_id={quote(request_id, safe=str())}" if request_id else ""
+        return await self._request("GET", f"/api/spawned/{quote(name, safe=str())}/model{query}")
+
     # ── Channels ──────────────────────────────────────────────────────────
 
     async def subscribe_channels(self, name: str, channels: list[str]) -> None:

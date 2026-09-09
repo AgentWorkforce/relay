@@ -84,7 +84,7 @@ function reviewTask(reviewer: 'claude' | 'codex', final: boolean): string {
     `Perform a ${final ? 'fresh post-fix' : 'fresh-eyes'} evidence-integrity review of the cross-repository reliability diagnosis.`,
     `Read ${ART}/context.json, all four boundary reports, ${ART}/static-gates.json, ${ART}/bug-ledger.json, ${ART}/coverage-contract.json, the task prompt, and actual cited source files.`,
     'Do not trust prior summaries. Product RED is acceptable; false greens, duplicate symptoms, unsupported root-cause claims, missing owners, and untestable gates are findings.',
-    'Check that every failed static gate and every diagnosis coverage row is represented by a bidirectional bug/unknown mapping, and that snapshot/prerelease qualification cannot pass on a stale image.',
+    'Check that every failed static gate and every one of the 156 diagnosis coverage rows is represented by a bidirectional bug/unknown mapping, and that snapshot/prerelease qualification cannot pass on a stale image.',
     'Re-run the qualification-manifest, qualification-capabilities, diagnostic-seal, and source-drift fixture suites. Capability help text is not runtime proof.',
     `Write ${output}. Use the structured finding fields from the workflow-writing standard.`,
     'Write NO_ISSUES_FOUND only when the diagnosis and release gates are comprehensive and evidence-backed, even if the product verdict remains RED.',
@@ -98,7 +98,6 @@ function finalSignoffTask(provider: 'claude' | 'codex'): string {
     'Perform a fresh, independent, read-only diagnosis-integrity review.',
     'Do not rely on or copy earlier reviewer conclusions. A RED product verdict is acceptable; incomplete or unbound evidence is not.',
     `Read ${ART}/diagnosis-seal.json and every file listed in that seal. Recompute or spot-check the cited source evidence and deterministic gates without editing any sealed file.`,
-    `Check bug deduplication, owners, reproductions, open unknowns, all ${FLEET_OPERATION_COUNT} Fleet operations, cleanup, disposable-workspace qualification, exact candidate snapshot identity, and promotion prohibition.`,
     `Write ${output} as strict JSON with exactly this shape:`,
     `{ "version": 1, "kind": "diagnosis-final-review", "role": "${role}",`,
     '  "artifactSetSha256": "copy the exact 64-character digest from diagnosis-seal.json",',
@@ -506,7 +505,7 @@ async function main() {
         `Author ${ART}/coverage-contract.json and update only ${ART}/bug-ledger.json as needed.`,
         `Read the required transition/fault/acceptance ids in ${GATE} and all ${FLEET_OPERATION_COUNT} operations in tests/relayflows/cleanroom/fleet-daytona.matrix.json.`,
         'Use schemaVersion 1, kind relay-orchestration-coverage, and mode diagnosis.',
-        'Create exactly one unique row for every transition, fault case, acceptance gate, and Fleet operation in the current inventories.',
+        `Create exactly one unique row for every transition, fault case, acceptance gate, and each of the ${FLEET_OPERATION_COUNT} Fleet operations in the current inventories.`,
         'Every row must remain status BLOCKED in diagnosis mode and contain owner, component, bindingConfiguration, timeout, idempotency, terminalState, cleanupOwner, evidence, fixture, conditions, and blockingUnknownId.',
         'Every blocking unknown must set blocksPromotion=true and include the exact row id in gateIds; every row must point back to that same unknown. Never convert a specification, unit test, help flag, or historical observation into runtime PASS.',
         'Fleet rows must copy the exact id/group/expect fields into matrixContract.',
@@ -651,7 +650,7 @@ async function main() {
 
   const result = await wf.run({
     cwd: ROOT,
-    dryRun: process.env.DRY_RUN === '1',
+    dryRun: process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true',
     ...(DISABLE_RELAYCAST
       ? {
           // Keep the runner relay switch explicit for compatibility. The CLI

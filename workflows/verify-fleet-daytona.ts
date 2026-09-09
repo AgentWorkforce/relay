@@ -572,9 +572,10 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
     process.env.AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST === '1'
       ? { AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1' }
       : undefined;
+  const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
   const result = await wf.run({
     cwd: process.cwd(),
-    dryRun: process.env.DRY_RUN === '1',
+    dryRun,
     ...(relayEnv ? { relay: { env: relayEnv } } : {}),
   });
   if ('status' in result && result.status !== undefined && result.status !== 'completed') {

@@ -4,10 +4,11 @@
   "provider": "daytona",
   "minimumBoardNodes": 2,
   "minimumCriticalLifecycleTrials": 5,
+  "operationCount": 108,
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
-  "inventorySha256": "66ff1fbbb7b89e9c5807a40f41e62bf08342397bc8592b24d2faf0bcc11648a9",
+  "inventorySha256": "b0b1d49f70185706e41b34655f7c60e6349525d226d7660a9c81544ea4bf58c5",
   "commandSurface": {
     "fleet agent list": [
       "fleet-agent-list-json",
@@ -21,7 +22,7 @@
     "fleet inherit": ["fleet-inherit"],
     "fleet nodes": ["fleet-nodes-default", "fleet-nodes-name", "fleet-nodes-capability", "fleet-nodes-all"],
     "fleet release": ["fleet-release", "fleet-release-delete-agent", "fleet-release-reclaims-owned-sandbox"],
-    "fleet serve": ["fleet-serve-migration"],
+    "fleet serve": ["fleet-serve-migration", "fleet-serve-migration-default"],
     "fleet spawn": [
       "fleet-spawn-node",
       "fleet-spawn-target-node-alias",
@@ -37,6 +38,7 @@
       "fleet-spawn-provider-grok",
       "fleet-spawn-provider-opencode",
       "fleet-spawn-reject-droid",
+      "fleet-spawn-reject-unavailable-provider",
       "fleet-spawn-sandbox-root-mount",
       "fleet-spawn-sandbox-scoped-mount",
       "fleet-spawn-sandbox-no-mount"
@@ -68,23 +70,760 @@
       "node-agent-spawn-provider-opencode-native",
       "node-agent-spawn-provider-cursor",
       "node-agent-spawn-provider-pi-native",
-      "node-agent-spawn-provider-deepagents-native"
+      "node-agent-spawn-provider-deepagents-native",
+      "node-agent-set-model-app-server-a",
+      "node-agent-set-model-app-server-b"
     ],
-    "node agent new": ["node-agent-new-view"],
+    "node agent new": ["node-agent-new-view", "node-agent-new-reject-headless"],
     "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
+    "node agent set-model": [
+      "node-agent-set-model",
+      "node-agent-set-model-app-server-a",
+      "node-agent-set-model-app-server-b"
+    ],
     "node agent attach": [
       "node-agent-attach-view-json",
       "node-agent-attach-drive-json",
-      "node-agent-attach-passthrough-json"
+      "node-agent-attach-passthrough-json",
+      "node-agent-attach-local-explicit-json",
+      "node-agent-attach-local-state-dir-json"
     ],
-    "node agent message flush": ["node-agent-message-flush"],
-    "node agent message hold": ["node-agent-message-hold"],
-    "node agent message auto": ["node-agent-message-auto"],
+    "node agent message flush": [
+      "node-agent-message-flush",
+      "node-agent-message-flush-local-explicit",
+      "node-agent-message-flush-local-state-dir"
+    ],
+    "node agent message hold": [
+      "node-agent-message-hold",
+      "node-agent-message-hold-local-explicit",
+      "node-agent-message-hold-local-state-dir"
+    ],
+    "node agent message auto": [
+      "node-agent-message-auto",
+      "node-agent-message-auto-local-explicit",
+      "node-agent-message-auto-local-state-dir"
+    ],
     "node workflow run": ["node-workflow-run"],
     "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
     "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
   },
-  "deferredCommandSurface": ["node agent set-model"],
+  "multiCommandOperations": {
+    "node-agent-set-model-app-server-a": ["node agent spawn", "node agent set-model"],
+    "node-agent-set-model-app-server-b": ["node agent spawn", "node agent set-model"]
+  },
+  "deferredCommandSurface": [],
+  "optionCoverage": {
+    "fleet agent list": [
+      {
+        "option": "--all",
+        "status": "supported",
+        "operationId": "fleet-agent-list-all",
+        "takesValue": false
+      },
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--json",
+        "status": "supported",
+        "operationId": "fleet-agent-list-json",
+        "takesValue": false
+      },
+      {
+        "option": "--node",
+        "status": "supported",
+        "operationId": "fleet-agent-list-node"
+      },
+      {
+        "option": "--pretty",
+        "status": "supported",
+        "operationId": "fleet-agent-list-pretty",
+        "takesValue": false
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet config": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet disable": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet enable": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet inherit": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet nodes": [
+      {
+        "option": "--all",
+        "status": "supported",
+        "operationId": "fleet-nodes-all",
+        "takesValue": false
+      },
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--capability",
+        "status": "supported",
+        "operationId": "fleet-nodes-capability"
+      },
+      {
+        "option": "--name",
+        "status": "supported",
+        "operationId": "fleet-nodes-name"
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet release": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--delete-agent",
+        "status": "supported",
+        "operationId": "fleet-release-delete-agent",
+        "takesValue": false
+      },
+      {
+        "option": "--reason",
+        "status": "supported",
+        "operationId": "fleet-release"
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet serve": [
+      {
+        "option": "file",
+        "status": "supported",
+        "operationId": "fleet-serve-migration",
+        "argvToken": "tests/relayflows/cleanroom/fleet-daytona.matrix.json",
+        "variants": [
+          {
+            "value": "omitted",
+            "status": "supported",
+            "operationId": "fleet-serve-migration-default",
+            "omitted": true
+          }
+        ]
+      }
+    ],
+    "fleet spawn": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--channel",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--confirm-timeout",
+        "status": "supported",
+        "operationId": "fleet-spawn-no-confirm-readiness"
+      },
+      {
+        "option": "--cwd",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--model",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--name",
+        "status": "supported",
+        "operationId": "fleet-spawn-node"
+      },
+      {
+        "option": "--no-confirm",
+        "status": "supported",
+        "operationId": "fleet-spawn-no-confirm-readiness",
+        "takesValue": false
+      },
+      {
+        "option": "--no-sandbox-relayfile",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-no-mount",
+        "takesValue": false
+      },
+      {
+        "option": "--node",
+        "status": "supported",
+        "operationId": "fleet-spawn-node"
+      },
+      {
+        "option": "--objective",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--organization",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--persona",
+        "status": "supported",
+        "operationId": "fleet-spawn-automatic-owned-placement"
+      },
+      {
+        "option": "--project",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--role",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      },
+      {
+        "option": "--sandbox",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount",
+        "takesValue": false
+      },
+      {
+        "option": "--sandbox-name",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-scoped-mount"
+      },
+      {
+        "option": "--sandbox-provider",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount",
+        "variants": [
+          {
+            "value": "daytona",
+            "status": "supported"
+          },
+          {
+            "value": "e2b",
+            "status": "skipped",
+            "reason": "E2B is not authorized for this Daytona proof and must not be provisioned."
+          },
+          {
+            "value": "unavailable-fixture",
+            "status": "unsupported",
+            "operationId": "fleet-spawn-reject-unavailable-provider",
+            "reason": "Parser-level negative probe; no sandbox provider is contacted."
+          }
+        ]
+      },
+      {
+        "option": "--sandbox-relayfile-path",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-scoped-mount"
+      },
+      {
+        "option": "--sandbox-snapshot",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount"
+      },
+      {
+        "option": "--sandbox-snapshot-manifest-sha256",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount"
+      },
+      {
+        "option": "--session-ref",
+        "status": "supported",
+        "operationId": "fleet-spawn-session-ref"
+      },
+      {
+        "option": "--target-node",
+        "status": "supported",
+        "operationId": "fleet-spawn-target-node-alias"
+      },
+      {
+        "option": "--task",
+        "status": "supported",
+        "operationId": "fleet-spawn-node"
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      },
+      {
+        "option": "--workstream",
+        "status": "supported",
+        "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      }
+    ],
+    "fleet status": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "node agent attach": [
+      {
+        "option": "--api-key",
+        "status": "supported",
+        "operationId": "node-agent-attach-local-explicit-json"
+      },
+      {
+        "option": "--broker-url",
+        "status": "supported",
+        "operationId": "node-agent-attach-local-explicit-json"
+      },
+      {
+        "option": "--diagnostics",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json",
+        "takesValue": false
+      },
+      {
+        "option": "--join-ticket",
+        "status": "skipped",
+        "reason": "Join tickets are credential-bearing and require an external broker fixture."
+      },
+      {
+        "option": "--json",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json",
+        "takesValue": false
+      },
+      {
+        "option": "--mode",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json"
+      },
+      {
+        "option": "--node",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json"
+      },
+      {
+        "option": "--reasoning",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json",
+        "takesValue": false
+      },
+      {
+        "option": "--ssh-host",
+        "status": "skipped",
+        "reason": "SSH transport is unavailable in the Daytona qualification environment."
+      },
+      {
+        "option": "--state-dir",
+        "status": "supported",
+        "operationId": "node-agent-attach-local-state-dir-json"
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-attach-view-json"
+      }
+    ],
+    "node agent list": [
+      {
+        "option": "--pretty",
+        "status": "supported",
+        "operationId": "node-agent-list-pretty",
+        "takesValue": false
+      },
+      {
+        "option": "--status",
+        "status": "supported",
+        "operationId": "node-agent-list-status",
+        "takesValue": false
+      }
+    ],
+    "node agent message auto": [
+      {
+        "option": "--api-key",
+        "status": "supported",
+        "operationId": "node-agent-message-auto-local-explicit"
+      },
+      {
+        "option": "--broker-url",
+        "status": "supported",
+        "operationId": "node-agent-message-auto-local-explicit"
+      },
+      {
+        "option": "--node",
+        "status": "supported",
+        "operationId": "node-agent-message-auto"
+      },
+      {
+        "option": "--state-dir",
+        "status": "supported",
+        "operationId": "node-agent-message-auto-local-state-dir"
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-message-auto"
+      }
+    ],
+    "node agent message flush": [
+      {
+        "option": "--api-key",
+        "status": "supported",
+        "operationId": "node-agent-message-flush-local-explicit"
+      },
+      {
+        "option": "--broker-url",
+        "status": "supported",
+        "operationId": "node-agent-message-flush-local-explicit"
+      },
+      {
+        "option": "--node",
+        "status": "supported",
+        "operationId": "node-agent-message-flush"
+      },
+      {
+        "option": "--state-dir",
+        "status": "supported",
+        "operationId": "node-agent-message-flush-local-state-dir"
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-message-flush"
+      }
+    ],
+    "node agent message hold": [
+      {
+        "option": "--api-key",
+        "status": "supported",
+        "operationId": "node-agent-message-hold-local-explicit"
+      },
+      {
+        "option": "--broker-url",
+        "status": "supported",
+        "operationId": "node-agent-message-hold-local-explicit"
+      },
+      {
+        "option": "--node",
+        "status": "supported",
+        "operationId": "node-agent-message-hold"
+      },
+      {
+        "option": "--state-dir",
+        "status": "supported",
+        "operationId": "node-agent-message-hold-local-state-dir"
+      },
+      {
+        "option": "--workspace-key",
+        "status": "supported",
+        "operationId": "node-agent-message-hold"
+      }
+    ],
+    "node agent new": [
+      {
+        "option": "--channels",
+        "status": "supported",
+        "operationId": "node-agent-new-view"
+      },
+      {
+        "option": "--cwd",
+        "status": "supported",
+        "operationId": "node-agent-new-view"
+      },
+      {
+        "option": "--endpoint",
+        "status": "skipped",
+        "reason": "Headless AppServer endpoint options belong to node agent spawn, not the PTY/native agent new path."
+      },
+      {
+        "option": "--exit-after-task",
+        "status": "skipped",
+        "reason": "agent new is the attachable PTY/native path; exit-after-task is exercised by node agent spawn."
+      },
+      {
+        "option": "--mode",
+        "status": "supported",
+        "operationId": "node-agent-new-view"
+      },
+      {
+        "option": "--model",
+        "status": "supported",
+        "operationId": "node-agent-new-view"
+      },
+      {
+        "option": "--name",
+        "status": "supported",
+        "operationId": "node-agent-new-view"
+      },
+      {
+        "option": "--protocol",
+        "status": "skipped",
+        "reason": "Headless AppServer protocol options belong to node agent spawn, not the PTY/native agent new path."
+      },
+      {
+        "option": "--release",
+        "status": "skipped",
+        "reason": "agent new cannot attach to headless AppServer workers; release policy is exercised by node agent spawn headless."
+      },
+      {
+        "option": "--runtime",
+        "status": "supported",
+        "operationId": "node-agent-new-view",
+        "variants": [
+          {
+            "value": "pty",
+            "status": "supported"
+          },
+          {
+            "value": "native",
+            "status": "skipped",
+            "reason": "The board already proves native through node agent spawn; agent new native is not needed for the Fleet lifecycle."
+          },
+          {
+            "value": "headless",
+            "status": "unsupported",
+            "operationId": "node-agent-new-reject-headless",
+            "reason": "agent new must reject headless before spawning or attaching."
+          }
+        ]
+      },
+      {
+        "option": "--session-id",
+        "status": "skipped",
+        "reason": "Headless AppServer session options belong to node agent spawn, not the PTY/native agent new path."
+      },
+      {
+        "option": "--spawn-mode",
+        "status": "skipped",
+        "reason": "agent new is the attachable PTY/native path; spawn-mode lifecycle is exercised by node agent spawn."
+      },
+      {
+        "option": "--task",
+        "status": "supported",
+        "operationId": "node-agent-new-view"
+      }
+    ],
+    "node agent release": [],
+    "node agent set-model": [
+      {
+        "option": "--json",
+        "status": "supported",
+        "operationId": "node-agent-set-model",
+        "takesValue": false
+      }
+    ],
+    "node agent spawn": [
+      {
+        "option": "--channels",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-pty"
+      },
+      {
+        "option": "--cwd",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-pty"
+      },
+      {
+        "option": "--endpoint",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--exit-after-task",
+        "status": "supported",
+        "operationId": "node-agent-spawn-exit-after-task",
+        "takesValue": false
+      },
+      {
+        "option": "--model",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-auto-a"
+      },
+      {
+        "option": "--name",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-auto-a"
+      },
+      {
+        "option": "--protocol",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--release",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--runtime",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-pty"
+      },
+      {
+        "option": "--session-id",
+        "status": "supported",
+        "operationId": "node-agent-set-model-app-server-a"
+      },
+      {
+        "option": "--spawn-mode",
+        "status": "supported",
+        "operationId": "node-agent-spawn-task-exit"
+      },
+      {
+        "option": "--task",
+        "status": "supported",
+        "operationId": "node-agent-spawn-codex-auto-a"
+      }
+    ]
+  },
   "acceptance": {
     "version": 1,
     "profiles": {
@@ -459,6 +1198,7 @@
       "fleet-spawn-provider-grok": "provider-spawn",
       "fleet-spawn-provider-opencode": "provider-spawn",
       "fleet-spawn-reject-droid": "expected-rejection",
+      "fleet-spawn-reject-unavailable-provider": "expected-rejection",
       "fleet-spawn-sandbox-root-mount": "sandbox-root-mount",
       "fleet-spawn-sandbox-scoped-mount": "sandbox-scoped-mount",
       "fleet-spawn-sandbox-no-mount": "sandbox-no-mount",
@@ -471,6 +1211,7 @@
       "fleet-inherit": "fleet-policy-mutation",
       "fleet-status": "node-read",
       "fleet-serve-migration": "expected-rejection",
+      "fleet-serve-migration-default": "expected-rejection",
       "post-ready-steer-a": "agent-control",
       "post-ready-steer-b": "agent-control",
       "post-ready-reader-ack": "agent-control",
@@ -509,12 +1250,24 @@
       "node-agent-spawn-provider-pi-native": "direct-node-spawn",
       "node-agent-spawn-provider-deepagents-native": "direct-node-spawn",
       "node-agent-new-view": "direct-node-spawn",
+      "node-agent-new-reject-headless": "expected-rejection",
+      "node-agent-set-model": "agent-control",
+      "node-agent-set-model-app-server-a": "agent-control",
+      "node-agent-set-model-app-server-b": "agent-control",
       "node-agent-attach-view-json": "agent-control",
       "node-agent-attach-drive-json": "agent-control",
       "node-agent-attach-passthrough-json": "agent-control",
+      "node-agent-attach-local-explicit-json": "agent-control",
+      "node-agent-attach-local-state-dir-json": "agent-control",
       "node-agent-message-hold": "agent-control",
+      "node-agent-message-hold-local-explicit": "agent-control",
+      "node-agent-message-hold-local-state-dir": "agent-control",
       "node-agent-message-flush": "agent-control",
+      "node-agent-message-flush-local-explicit": "agent-control",
+      "node-agent-message-flush-local-state-dir": "agent-control",
       "node-agent-message-auto": "agent-control",
+      "node-agent-message-auto-local-explicit": "agent-control",
+      "node-agent-message-auto-local-state-dir": "agent-control",
       "node-agent-release": "node-release-reclaim",
       "node-agent-same-name-reclaim": "node-release-reclaim",
       "node-workflow-run": "node-workflow",
@@ -558,14 +1311,24 @@
       "argvMustContain": ["--node", "--pretty"]
     },
     { "id": "fleet-agent-list-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
-    { "id": "fleet-spawn-node", "group": "fleet-spawn", "expect": "sentinel", "argvMustContain": ["--node"] },
+    {
+      "id": "fleet-spawn-node",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--node", "--name", "--task"]
+    },
     {
       "id": "fleet-spawn-target-node-alias",
       "group": "fleet-spawn",
       "expect": "sentinel",
       "argvMustContain": ["--target-node"]
     },
-    { "id": "fleet-spawn-automatic-owned-placement", "group": "fleet-spawn", "expect": "sentinel" },
+    {
+      "id": "fleet-spawn-automatic-owned-placement",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--persona"]
+    },
     {
       "id": "fleet-spawn-session-ref",
       "group": "fleet-spawn",
@@ -576,7 +1339,7 @@
       "id": "fleet-spawn-no-confirm-readiness",
       "group": "fleet-spawn",
       "expect": "sentinel",
-      "argvMustContain": ["--no-confirm"]
+      "argvMustContain": ["--no-confirm", "--confirm-timeout"]
     },
     {
       "id": "fleet-spawn-metadata-channel-model-cwd",
@@ -644,16 +1407,29 @@
       "argvMustContain": ["droid"]
     },
     {
+      "id": "fleet-spawn-reject-unavailable-provider",
+      "group": "fleet-sandbox",
+      "expect": "expected-failure",
+      "mustContain": "must be daytona or e2b",
+      "argvMustContain": ["--sandbox", "--sandbox-provider", "unavailable-fixture"]
+    },
+    {
       "id": "fleet-spawn-sandbox-root-mount",
       "group": "fleet-sandbox",
       "expect": "sentinel",
-      "argvMustContain": ["--sandbox"]
+      "argvMustContain": [
+        "--sandbox",
+        "--sandbox-provider",
+        "daytona",
+        "--sandbox-snapshot",
+        "--sandbox-snapshot-manifest-sha256"
+      ]
     },
     {
       "id": "fleet-spawn-sandbox-scoped-mount",
       "group": "fleet-sandbox",
       "expect": "sentinel",
-      "argvMustContain": ["--sandbox", "--sandbox-relayfile-path"]
+      "argvMustContain": ["--sandbox", "--sandbox-name", "--sandbox-relayfile-path"]
     },
     {
       "id": "fleet-spawn-sandbox-no-mount",
@@ -661,8 +1437,18 @@
       "expect": "sentinel",
       "argvMustContain": ["--sandbox", "--no-sandbox-relayfile"]
     },
-    { "id": "fleet-release", "group": "fleet", "expect": "success" },
-    { "id": "fleet-release-delete-agent", "group": "fleet", "expect": "success" },
+    {
+      "id": "fleet-release",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--reason"]
+    },
+    {
+      "id": "fleet-release-delete-agent",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--delete-agent"]
+    },
     { "id": "fleet-release-reclaims-owned-sandbox", "group": "fleet", "expect": "success" },
     { "id": "fleet-config", "group": "fleet-policy", "expect": "success" },
     {
@@ -686,6 +1472,13 @@
     { "id": "fleet-status", "group": "fleet", "expect": "success" },
     {
       "id": "fleet-serve-migration",
+      "group": "fleet",
+      "expect": "expected-failure",
+      "mustContain": "node up",
+      "argvMustContain": ["tests/relayflows/cleanroom/fleet-daytona.matrix.json"]
+    },
+    {
+      "id": "fleet-serve-migration-default",
       "group": "fleet",
       "expect": "expected-failure",
       "mustContain": "node up"
@@ -743,13 +1536,18 @@
       "expect": "success",
       "argvMustContain": ["--status"]
     },
-    { "id": "node-agent-spawn-codex-auto-a", "group": "node-agent-spawn", "expect": "sentinel" },
+    {
+      "id": "node-agent-spawn-codex-auto-a",
+      "group": "node-agent-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--name", "--task", "--model"]
+    },
     { "id": "node-agent-spawn-codex-auto-b", "group": "node-agent-spawn", "expect": "sentinel" },
     {
       "id": "node-agent-spawn-codex-pty",
       "group": "node-agent-spawn",
       "expect": "sentinel",
-      "argvMustContain": ["--runtime", "pty"]
+      "argvMustContain": ["--runtime", "pty", "--channels", "--cwd"]
     },
     {
       "id": "node-agent-spawn-codex-native",
@@ -846,14 +1644,73 @@
       "group": "node-agent",
       "expect": "sentinel",
       "allowTimeout": true,
-      "argvMustContain": ["--mode", "view"]
+      "argvMustContain": ["--runtime", "pty", "--model", "--task", "--channels", "--cwd", "--mode", "--name"]
+    },
+    {
+      "id": "node-agent-new-reject-headless",
+      "group": "node-agent",
+      "expect": "expected-failure",
+      "mustContain": "cannot attach to headless",
+      "argvMustContain": ["--runtime", "headless", "--release", "delete"]
+    },
+    {
+      "id": "node-agent-set-model",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-set-model-app-server-a",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": [
+        "agent-relay",
+        "node",
+        "agent",
+        "spawn",
+        "opencode",
+        "--runtime",
+        "headless",
+        "--protocol",
+        "opencode",
+        "--endpoint",
+        "--session-id",
+        "--release"
+      ]
+    },
+    {
+      "id": "node-agent-set-model-app-server-b",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": [
+        "agent-relay",
+        "node",
+        "agent",
+        "spawn",
+        "opencode",
+        "--runtime",
+        "headless",
+        "--protocol",
+        "opencode",
+        "--endpoint",
+        "--session-id",
+        "--release"
+      ]
     },
     {
       "id": "node-agent-attach-view-json",
       "group": "node-agent",
       "expect": "stream",
       "allowTimeout": true,
-      "argvMustContain": ["--json"]
+      "argvMustContain": [
+        "--node",
+        "--workspace-key",
+        "--reasoning",
+        "--diagnostics",
+        "--json",
+        "--mode",
+        "view"
+      ]
     },
     {
       "id": "node-agent-attach-drive-json",
@@ -869,9 +1726,74 @@
       "allowTimeout": true,
       "argvMustContain": ["--json"]
     },
-    { "id": "node-agent-message-hold", "group": "node-agent", "expect": "success" },
-    { "id": "node-agent-message-flush", "group": "node-agent", "expect": "success" },
-    { "id": "node-agent-message-auto", "group": "node-agent", "expect": "success" },
+    {
+      "id": "node-agent-attach-local-explicit-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--broker-url", "--api-key", "--json"]
+    },
+    {
+      "id": "node-agent-attach-local-state-dir-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--state-dir", "--json"]
+    },
+    {
+      "id": "node-agent-message-hold",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-hold-local-explicit",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--broker-url", "--api-key"]
+    },
+    {
+      "id": "node-agent-message-hold-local-state-dir",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--state-dir"]
+    },
+    {
+      "id": "node-agent-message-flush",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-flush-local-explicit",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--broker-url", "--api-key"]
+    },
+    {
+      "id": "node-agent-message-flush-local-state-dir",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--state-dir"]
+    },
+    {
+      "id": "node-agent-message-auto",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--node", "--workspace-key"]
+    },
+    {
+      "id": "node-agent-message-auto-local-explicit",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--broker-url", "--api-key"]
+    },
+    {
+      "id": "node-agent-message-auto-local-state-dir",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--state-dir"]
+    },
     { "id": "node-agent-release", "group": "node-agent", "expect": "success" },
     { "id": "node-agent-same-name-reclaim", "group": "node-agent", "expect": "sentinel" },
 

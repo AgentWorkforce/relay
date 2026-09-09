@@ -44,7 +44,7 @@ agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
 
-`node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
+`node agent spawn` and `node agent new` accept `--runtime auto|native|pty|headless`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`. The headless AppServer lane requires `--protocol`, `--endpoint`, and `--session-id` (and accepts `--release abort|detach|delete`) to attach a provider-owned session with truthful runtime model receipts.
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 

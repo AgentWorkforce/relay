@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "id": "trace_vk6j2we7i49f",
+  "timestamp": "2026-09-05T21:35:45.000Z",
+  "trajectory": "traj_vk6j2we7i49f",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_vk6j2we7i49f/trajectory.json",
+      "conversations": [{
+        "contributor": { "type": "ai" },
+        "ranges": [{ "start_line": 1, "end_line": 106, "revision": "a8cd49cd0beba4ecc5ac74f9f1f9da2fea76e56f" }]
+      }]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_vk6j2we7i49f/summary.md",
+      "conversations": [{
+        "contributor": { "type": "ai" },
+        "ranges": [{ "start_line": 1, "end_line": 24, "revision": "a8cd49cd0beba4ecc5ac74f9f1f9da2fea76e56f" }]
+      }]
+    }
+  ]
+}

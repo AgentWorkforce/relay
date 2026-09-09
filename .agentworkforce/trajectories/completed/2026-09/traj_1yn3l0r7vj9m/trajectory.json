@@ -1,0 +1,57 @@
+{
+  "id": "traj_1yn3l0r7vj9m",
+  "version": 1,
+  "task": {
+    "title": "Fix PR 1666 Node 24 truncation fixture flake",
+    "source": {
+      "system": "plain",
+      "id": "relay#1666"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T04:53:11.163Z",
+  "completedAt": "2026-09-09T04:54:37.845Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T04:54:37.418Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_ze0ogqtktw4a",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T04:54:37.418Z",
+      "endedAt": "2026-09-09T04:54:37.845Z",
+      "events": [
+        {
+          "ts": 1788929677419,
+          "type": "decision",
+          "content": "Make the large UTF-8 bound fixture a single-write payload: Make the large UTF-8 bound fixture a single-write payload",
+          "raw": {
+            "question": "Make the large UTF-8 bound fixture a single-write payload",
+            "chosen": "Make the large UTF-8 bound fixture a single-write payload",
+            "alternatives": [],
+            "reasoning": "The adjacent test already verifies one-byte decoder splitting; repeating 36,000 setImmediate callbacks made the independent truncation assertion depend on CI scheduler pressure under Node 24."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed scheduler sensitivity from the Node 24 Fleet evidence-bound fixture while preserving exact byte-count and truncation assertions.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e3c4d340b5f4bb817f2273a51d0cb71e0e781a31",
+    "endRef": "e3c4d340b5f4bb817f2273a51d0cb71e0e781a31"
+  }
+}

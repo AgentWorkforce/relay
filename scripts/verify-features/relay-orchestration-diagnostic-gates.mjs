@@ -1383,7 +1383,7 @@ const REQUIRED_ACCEPTANCE = [
   'full-cleanroom',
   'independent-review',
   'full-root-scale',
-  'fleet-operations',
+  'fleet-108-operations',
   'flush-fatal-deployment',
 ];
 const DIAGNOSIS_SEAL_FILES = [
@@ -1464,6 +1464,8 @@ async function validateCoverage(artifactDir, ledger) {
     }
   }
   const coverageIds = new Set(coverageRows.map((row) => row.id));
+  // Derive the row count from the same inventories asserted above so the gate
+  // cannot drift out of sync with the Fleet matrix.
   const expectedCoverageRows = expectedCoverageRowCount(matrix);
   if (coverageIds.size !== expectedCoverageRows || coverageRows.length !== expectedCoverageRows) {
     throw new Error(

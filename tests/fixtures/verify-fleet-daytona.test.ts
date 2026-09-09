@@ -11,21 +11,27 @@ import * as ts from 'typescript';
 // Dependency-free ESM is also used by the local Relayflow runner.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  assertGreenRunVerdict,
+  assertFleetLivePrerequisites,
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
   cleanupDaytonaSandbox,
+  buildLocalBrokerOptionProofScript,
   compareDaytonaSandboxBaseline,
   convergeDaytonaSandboxDeletion,
   deriveFleetVerdict,
+  dryRunRequested,
   evaluateFleetIdentityReconciliation,
   executeFleetCommand,
+  FleetBoard,
   findExactSentinelMessage,
   findFleetAgentNode,
   loadFleetMatrix,
   loadWorkspaceCredentialFile,
   matchesSandboxFileInspection,
   operationStatus,
+  parseCliJson,
   ownedBoardNodes,
   isDaytonaDeletionAccepted,
   redactFleetEvidence,
@@ -36,6 +42,10 @@ import {
   validateFleetEvidence,
   validateFleetIdentityReconciliation,
   validateFleetCommandCoverage,
+  validateFleetFinalCleanup,
+  validateFleetNodesPayload,
+  validateFleetOptionCoverage,
+  validateFleetStatusPayload,
   validateFleetAcceptance,
   validateFleetMatrix,
   validateOperationArgvContract,
@@ -59,6 +69,7 @@ import {
 } from '../../scripts/verify-features/fleet-cli-inventory.mjs';
 
 const NONCE = 'a'.repeat(32);
+const SECRET_OPTION_TOKENS = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
 const execFileAsync = promisify(execFile);
 
 type WorkflowStepDeclaration = {
@@ -182,9 +193,9 @@ function operationRecord(operation: {
   mustContain?: string;
   argvMustContain?: string[];
 }) {
-  const commandLeaf = Object.entries(fixtureMatrix.commandSurface).find(([, ids]) =>
-    (ids as string[]).includes(operation.id)
-  )?.[0];
+  const commandLeaves = Object.entries(fixtureMatrix.commandSurface)
+    .filter(([, ids]) => (ids as string[]).includes(operation.id))
+    .map(([commandLeaf]) => commandLeaf);
   const fleetProvider = operation.id.match(
     /^fleet-spawn-provider-(claude|codex|gemini|aider|goose|grok|opencode)$/
   )?.[1];
@@ -197,6 +208,28 @@ function operationRecord(operation: {
     nodeProvider !== undefined ||
     (operation.group === 'node-agent-spawn' && operation.expect !== 'sentinel-and-exit');
   const derivedObservation = /^initial-task-sentinel-[ab]$/.test(operation.id);
+  const argv = commandLeaves.length
+    ? [
+        ...commandLeaves.flatMap((commandLeaf) => ['agent-relay', ...commandLeaf.split(' ')]),
+        ...(operation.argvMustContain ?? []),
+      ]
+    : ['daytona', 'semantic-proof', operation.id];
+  for (const entries of Object.values(fixtureMatrix.optionCoverage ?? {})) {
+    for (const entry of entries) {
+      if (
+        entry.status !== 'supported' ||
+        entry.operationId !== operation.id ||
+        !entry.option.startsWith('--') ||
+        entry.takesValue === false
+      ) {
+        continue;
+      }
+      const index = argv.indexOf(entry.argvToken ?? entry.option);
+      if (index >= 0 && (argv[index + 1] === undefined || argv[index + 1].startsWith('--'))) {
+        argv.splice(index + 1, 0, SECRET_OPTION_TOKENS.has(entry.option) ? '[REDACTED]' : 'fixture-value');
+      }
+    }
+  }
   return {
     ...operation,
     acceptanceProfile: fixtureMatrix.acceptance.operationProfiles[operation.id],
@@ -206,9 +239,7 @@ function operationRecord(operation: {
     monotonicStartNs: '1000',
     monotonicEndNs: '2000',
     durationMs: 0.001,
-    argv: commandLeaf
-      ? ['agent-relay', ...commandLeaf.split(' '), ...(operation.argvMustContain ?? [])]
-      : ['daytona', 'semantic-proof', operation.id],
+    argv,
     exitCode: operation.expect === 'expected-failure' ? 1 : 0,
     timedOut: false,
     stdoutBytes: 0,
@@ -237,10 +268,13 @@ function operationRecord(operation: {
           observedIdentitySource: 'node-agent-list',
         }
       : {}),
-    ...(operation.id === 'fleet-spawn-reject-droid'
+    ...(['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id)
       ? {
           partialCreationProof: {
-            targetName: `fleet-spawn-provider-droid-${NONCE.slice(0, 16)}`,
+            targetName:
+              (operation.id === 'fleet-spawn-reject-droid'
+                ? 'fleet-spawn-provider-droid'
+                : 'fleet-spawn-unavailable-provider') + `-${NONCE.slice(0, 16)}`,
             before: {
               agentNames: [],
               fleetNodeKeys: [],
@@ -267,6 +301,8 @@ function operationRecord(operation: {
             workerName: `fleet-spawn-sandbox-scoped-mount-${NONCE.slice(0, 16)}`,
             ownership: 'created-by-run',
             ownershipNonce: NONCE,
+            sandboxPresentBeforeRelease: true,
+            workerPresentBeforeRelease: true,
             workerProcessAbsent: true,
             workerIdentityAbsent: true,
             sandboxAbsent: true,
@@ -337,6 +373,16 @@ let fixtureMatrix: {
     operationProfiles: Record<string, string>;
   };
   commandSurface: Record<string, string[]>;
+  optionCoverage: Record<
+    string,
+    Array<{
+      option: string;
+      argvToken?: string;
+      status: string;
+      operationId?: string;
+      takesValue?: boolean;
+    }>
+  >;
   operations: Array<{
     id: string;
     group: string;
@@ -354,6 +400,16 @@ function completeEvidence(matrix: {
     operationProfiles: Record<string, string>;
   };
   commandSurface: Record<string, string[]>;
+  optionCoverage: Record<
+    string,
+    Array<{
+      option: string;
+      argvToken?: string;
+      status: string;
+      operationId?: string;
+      takesValue?: boolean;
+    }>
+  >;
   operations: Array<{
     id: string;
     group: string;
@@ -484,12 +540,44 @@ function completeEvidence(matrix: {
         nonce: NONCE,
       },
     ],
-    cleanup: { status: 'pass' },
+    cleanup: {
+      status: 'pass',
+      finalBoard: {
+        pass: true,
+        processInventoryComplete: true,
+        processInventoryEmpty: true,
+        processInventoriesCoverNodes: true,
+        processInventoriesCoverOnlineNodes: true,
+        ownedNodeRecordsAbsent: true,
+        fleetNodeRecordsAbsent: true,
+        processInventoryErrors: [],
+        processInventoryNodeNames: [],
+        ownedNodeNames: [],
+      },
+    },
     verdict: 'GREEN',
   };
 }
 
 describe('complete Daytona Fleet board', () => {
+  it('parses the pretty-printed CLI receipt amid unrelated JSON logs', () => {
+    const receipt = parseCliJson(
+      '[info] {"level":"debug"}\n' +
+        JSON.stringify(
+          {
+            name: 'worker',
+            status: 'applied',
+            requestId: 'request-1',
+            effectiveModel: 'openai/gpt-5.4',
+          },
+          null,
+          2
+        ) +
+        '\n[done] {"level":"debug"}'
+    );
+    expect(receipt).toMatchObject({ status: 'applied', requestId: 'request-1' });
+  });
+
   it('restricts every Fleet reviewer and diagnosis agent to its model provider transport', () => {
     const expectedProviders = {
       opencode: [
@@ -610,9 +698,9 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations.length).toBeGreaterThan(0);
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(matrix.operations.length);
+    expect(matrix.operations).toHaveLength(108);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(108);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
@@ -628,6 +716,8 @@ describe('complete Daytona Fleet board', () => {
         'node-agent-spawn-provider-pi-native',
         'node-agent-spawn-provider-deepagents-native',
         'node-agent-message-flush',
+        'node-agent-set-model-app-server-a',
+        'node-agent-set-model-app-server-b',
         'node-workflow-sync',
         'fleet-release-reclaims-owned-sandbox',
         'owned-sandbox-cleanup',
@@ -639,6 +729,311 @@ describe('complete Daytona Fleet board', () => {
     ).toMatchObject({ expect: 'success' });
     const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
     expect(runner).toContain("['claude', 'opencode', 'pi', 'deepagents']");
+    expect(Object.keys(matrix.optionCoverage)).toEqual(
+      expect.arrayContaining([
+        'fleet spawn',
+        'fleet serve',
+        'node agent new',
+        'node agent attach',
+        'node agent message hold',
+        'node agent message flush',
+        'node agent message auto',
+      ])
+    );
+  });
+
+  it('enforces material option coverage with explicit unsupported and skipped contracts', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const inventory = await readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(
+      JSON.parse
+    );
+    expect(() => validateFleetOptionCoverage(matrix, inventory)).not.toThrow();
+    const missing = structuredClone(matrix);
+    missing.optionCoverage['node agent attach'] = missing.optionCoverage['node agent attach'].filter(
+      ({ option }: { option: string }) => option !== '--ssh-host'
+    );
+    expect(() => validateFleetOptionCoverage(missing, inventory)).toThrow(/every material option/);
+    const extraLeaf = structuredClone(matrix);
+    extraLeaf.optionCoverage['fleet synthetic-leaf'] = [];
+    expect(() => validateFleetOptionCoverage(extraLeaf, inventory)).toThrow(
+      /every public Fleet and node-agent leaf/
+    );
+    const dishonest = structuredClone(matrix);
+    dishonest.optionCoverage['node agent attach'].find(
+      ({ option }: { option: string }) => option === '--ssh-host'
+    ).status = 'unsupported';
+    delete dishonest.optionCoverage['node agent attach'].find(
+      ({ option }: { option: string }) => option === '--ssh-host'
+    ).reason;
+    expect(() => validateFleetOptionCoverage(dishonest, inventory)).toThrow(/requires a reason/);
+    const unexecuted = structuredClone(matrix);
+    unexecuted.operations.find(({ id }: { id: string }) => id === 'node-agent-new-view').argvMustContain = [
+      '--mode',
+      'view',
+    ];
+    expect(() => validateFleetOptionCoverage(unexecuted, inventory)).toThrow(
+      /supported option node agent new --(?:channels|runtime) is not required/
+    );
+    const unboundVariant = structuredClone(matrix);
+    unboundVariant.operations.find(
+      ({ id }: { id: string }) => id === 'fleet-spawn-sandbox-root-mount'
+    ).argvMustContain = unboundVariant.operations
+      .find(({ id }: { id: string }) => id === 'fleet-spawn-sandbox-root-mount')
+      .argvMustContain.filter((token: string) => token !== 'daytona');
+    expect(() => validateFleetOptionCoverage(unboundVariant, inventory)).toThrow(
+      /supported variant fleet spawn --sandbox-provider=daytona is not required/
+    );
+
+    const newDefinition = matrix.operations.find(({ id }: { id: string }) => id === 'node-agent-new-view');
+    expect(() =>
+      validateOperationArgvContract(
+        {
+          id: 'node-agent-new-view',
+          argv: ['agent-relay', 'node', 'agent', 'new', 'codex', '--mode', 'view'],
+        },
+        newDefinition,
+        matrix
+      )
+    ).toThrow(/missing required token --runtime|did not execute supported option --runtime/);
+
+    const sandboxDefinition = matrix.operations.find(
+      ({ id }: { id: string }) => id === 'fleet-spawn-sandbox-root-mount'
+    );
+    const variantDefinition = {
+      ...sandboxDefinition,
+      argvMustContain: sandboxDefinition.argvMustContain.filter((token: string) => token !== 'daytona'),
+    };
+    expect(() =>
+      validateOperationArgvContract(
+        {
+          id: sandboxDefinition.id,
+          argv: [
+            'agent-relay',
+            'fleet',
+            'spawn',
+            'codex',
+            '--sandbox',
+            '--sandbox-provider',
+            'e2b',
+            '--sandbox-snapshot',
+            'fixture',
+            '--sandbox-snapshot-manifest-sha256',
+            'a'.repeat(64),
+          ],
+        },
+        variantDefinition,
+        matrix
+      )
+    ).toThrow(/did not execute supported variant --sandbox-provider=daytona/);
+  });
+
+  it('requires every command invocation and exact runtime variant for multi-command evidence', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    const operation = evidence.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-set-model-app-server-a'
+    );
+    const definition = matrix.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-set-model-app-server-a'
+    );
+    expect(() => validateOperationArgvContract(operation, definition, matrix)).not.toThrow();
+
+    const missingSetModel = structuredClone(operation);
+    const setModelOffset = missingSetModel.argv.findIndex(
+      (token: string, index: number, argv: string[]) =>
+        token === 'agent-relay' && argv.slice(index + 1, index + 4).join(' ') === 'node agent set-model'
+    );
+    missingSetModel.argv.splice(setModelOffset, 4);
+    expect(() => validateOperationArgvContract(missingSetModel, definition, matrix)).toThrow(
+      /does not invoke command leaf node agent set-model/
+    );
+
+    const headlessOperation = evidence.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-new-reject-headless'
+    );
+    const headlessDefinition = matrix.operations.find(
+      ({ id }: { id: string }) => id === 'node-agent-new-reject-headless'
+    );
+    const wrongRuntime = structuredClone(headlessOperation);
+    wrongRuntime.argv[wrongRuntime.argv.indexOf('--runtime') + 1] = 'pty';
+    const variantOnlyDefinition = {
+      ...headlessDefinition,
+      argvMustContain: headlessDefinition.argvMustContain.filter((token: string) => token !== 'headless'),
+    };
+    expect(() => validateOperationArgvContract(wrongRuntime, variantOnlyDefinition, matrix)).toThrow(
+      /did not execute (?:un)?supported variant --runtime=headless/
+    );
+  });
+
+  it('fails closed for non-green runs and makes DRY_RUN a runner-level no-op', async () => {
+    expect(assertGreenRunVerdict({ verdict: 'GREEN' })).toEqual({ verdict: 'GREEN' });
+    expect(() => assertGreenRunVerdict({ verdict: 'RED' })).toThrow(/Fleet Daytona run verdict is RED/);
+    expect(() => assertGreenRunVerdict({})).toThrow(/verdict is missing/);
+    expect(dryRunRequested({ DRY_RUN: 'true' })).toBe(true);
+    expect(dryRunRequested({ DRY_RUN: '1' })).toBe(true);
+    expect(dryRunRequested({ DRY_RUN: 'false' })).toBe(false);
+
+    const result = await execFileAsync(
+      process.execPath,
+      ['scripts/verify-features/fleet-daytona.mjs', 'run'],
+      {
+        cwd: path.resolve('.'),
+        env: { ...process.env, DRY_RUN: 'true' },
+      }
+    );
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe('FLEET_DAYTONA_DRY_RUN_NOOP command=run\n');
+  });
+
+  it('generates a bounded local-broker option proof that redacts the explicit API key', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'fleet-local-broker-proof-'));
+    const scriptPath = path.join(directory, 'proof.cjs');
+    try {
+      const script = buildLocalBrokerOptionProofScript();
+      await writeFile(scriptPath, script);
+      await expect(execFileAsync(process.execPath, ['--check', scriptPath])).resolves.toMatchObject({
+        stderr: '',
+      });
+      expect(script).toContain("value === connection.api_key ? '[REDACTED]' : value");
+      expect(script).toContain('delete env[key]');
+      expect(script).toContain('AbortSignal.timeout(2_000)');
+      expect(script).toContain('execution.stdoutBytes > 2 * 1024 * 1024');
+      expect(script).toContain('execution.stderrBytes > 2 * 1024 * 1024');
+      expect(script).not.toContain('result.api_key');
+      expect(script).not.toContain('result.connection');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('requires explicit immutable snapshot qualification inputs for live runs', () => {
+    expect(() => assertFleetLivePrerequisites({})).toThrow(
+      /VERIFY_FLEET_RELEASE_QUALIFICATION=1.*immutable snapshot inputs/
+    );
+    expect(() => assertFleetLivePrerequisites({ VERIFY_FLEET_RELEASE_QUALIFICATION: '1' })).toThrow(
+      /VERIFY_FLEET_SNAPSHOT_ID/
+    );
+    expect(() =>
+      assertFleetLivePrerequisites({
+        VERIFY_FLEET_RELEASE_QUALIFICATION: '1',
+        VERIFY_FLEET_SNAPSHOT_ID: 'snap_candidate_1666',
+        VERIFY_FLEET_SNAPSHOT_NAME: 'relay-candidate-11.10.3',
+        VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256: 'not-a-digest',
+      })
+    ).toThrow(/VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256/);
+    expect(() =>
+      assertFleetLivePrerequisites({
+        VERIFY_FLEET_RELEASE_QUALIFICATION: '1',
+        VERIFY_FLEET_SNAPSHOT_ID: 'snap_candidate_1666',
+        VERIFY_FLEET_SNAPSHOT_NAME: 'relay-candidate-11.10.3',
+        VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256: 'a'.repeat(64),
+        VERIFY_FLEET_EXPECTED_RELAY_VERSION: '11.10.3',
+      })
+    ).not.toThrow();
+  });
+
+  it('fails the default live runner before workspace access when qualification is not configured', async () => {
+    const env = { ...process.env };
+    for (const key of [
+      'DRY_RUN',
+      'VERIFY_FLEET_RELEASE_QUALIFICATION',
+      'VERIFY_FLEET_SNAPSHOT_ID',
+      'VERIFY_FLEET_SNAPSHOT_NAME',
+      'VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256',
+      'VERIFY_FLEET_EXPECTED_RELAY_VERSION',
+    ]) {
+      delete env[key];
+    }
+    await expect(
+      execFileAsync(
+        process.execPath,
+        ['scripts/verify-features/fleet-daytona.mjs', 'run', '--nonce', 'live-prerequisite-test'],
+        { cwd: path.resolve('.'), env }
+      )
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining('VERIFY_FLEET_RELEASE_QUALIFICATION=1'),
+    });
+  });
+
+  it('fails closed on malformed list/status payloads and final board leaks', () => {
+    expect(() =>
+      validateFleetNodesPayload({ nodes: [{ name: 'node-a', status: 'online', activeAgents: -1 }] })
+    ).toThrow(/activeAgents/);
+    expect(() =>
+      validateFleetStatusPayload({ broker: { running: true }, node: { available: true } }, 'node-a')
+    ).toThrow(/wrong node/);
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [],
+        brokerAgents: [],
+        workspaceAgents: [],
+        processAgents: [],
+        processInventories: [],
+        processInventoryComplete: true,
+        processInventoryErrors: [],
+      })
+    ).toMatchObject({
+      pass: true,
+      brokerNodeCount: 0,
+      ownedNodeRecordsAbsent: true,
+      fleetNodeRecordsAbsent: true,
+      processInventoriesCoverNodes: true,
+    });
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
+        brokerAgents: [],
+        workspaceAgents: [],
+        processAgents: [],
+        processInventories: [],
+        processInventoryComplete: true,
+        processInventoryErrors: [],
+      }).pass
+    ).toBe(false);
+    for (const status of ['offline', 'stale']) {
+      expect(
+        validateFleetFinalCleanup({
+          brokerNodes: [{ name: 'owned-node', status, live: false, handlersLive: false }],
+          brokerAgents: [],
+          workspaceAgents: [],
+          processAgents: [],
+          processInventories: [],
+          processInventoryComplete: true,
+          processInventoryErrors: [],
+          ownedNodeNames: ['owned-node'],
+        }),
+        `an ${status} owned Fleet node record must not pass final cleanup`
+      ).toMatchObject({
+        pass: false,
+        ownedNodeRecordsAbsent: false,
+        fleetNodeRecordsAbsent: false,
+        processInventoriesCoverNodes: false,
+      });
+    }
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'online', live: true, handlersLive: true }],
+        brokerAgents: [{ name: 'leaked' }],
+        workspaceAgents: [],
+        processAgents: [],
+      }).pass
+    ).toBe(false);
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: null,
+        brokerAgents: null,
+        workspaceAgents: [],
+        processAgents: [],
+      }).pass
+    ).toBe(false);
+    expect(
+      validateFleetFinalCleanup({
+        brokerNodes: [{ name: 'node-a', status: 'offline' }],
+        brokerAgents: null,
+        workspaceAgents: [],
+        processAgents: [],
+      }).pass
+    ).toBe(false);
   });
 
   it('binds every operation record to an executable acceptance profile', async () => {
@@ -653,7 +1048,9 @@ describe('complete Daytona Fleet board', () => {
 
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
-    expect(() => validateFleetAcceptance(missing)).toThrow(/exactly map all matrix operations/);
+    expect(() => validateFleetAcceptance(missing)).toThrow(
+      /exactly map all 108|exactly map every matrix operation/
+    );
   });
 
   it('fails closed when Fleet qualification evidence loses creation, identity, or release binding', async () => {
@@ -1159,9 +1556,50 @@ describe('complete Daytona Fleet board', () => {
         agentName: 'worker',
         task: 'task',
         sandbox: true,
+        sandboxName: 'sandbox-scoped',
         mountPaths: ['/tests/**'],
       })
     );
+    const rootMountArgs = buildFleetSpawnArgs(
+      {
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        sandbox: true,
+        snapshotRequired: true,
+      },
+      {
+        expectedSnapshotId: 'snap_candidate_1666',
+        expectedSnapshotManifestSha256: 'a'.repeat(64),
+      }
+    );
+    validate('fleet-spawn-sandbox-root-mount', rootMountArgs);
+    expect(rootMountArgs).toEqual(
+      expect.arrayContaining([
+        '--sandbox-snapshot',
+        'snap_candidate_1666',
+        '--sandbox-snapshot-manifest-sha256',
+        'a'.repeat(64),
+      ])
+    );
+    expect(() =>
+      buildFleetSpawnArgs({
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        sandbox: true,
+        snapshotRequired: true,
+      })
+    ).toThrow(/requires VERIFY_FLEET_SNAPSHOT_ID/);
+    expect(
+      buildFleetSpawnArgs({
+        provider: 'codex',
+        agentName: 'worker',
+        task: 'task',
+        sandbox: true,
+        sandboxProvider: 'e2b',
+      })
+    ).toEqual(expect.arrayContaining(['--sandbox', '--sandbox-provider', 'e2b']));
     validate(
       'fleet-spawn-provider-claude',
       buildFleetSpawnArgs({ provider: 'claude', agentName: 'worker', task: 'task', node: 'node-a' })
@@ -1191,6 +1629,33 @@ describe('complete Daytona Fleet board', () => {
       spawnMode: 'task-exit',
     });
     validate('node-agent-spawn-task-exit', taskExit.args);
+  });
+
+  it('treats PTY model mutation as an explicit unsupported receipt', async () => {
+    const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
+    const operation = (
+      await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json')
+    ).operations.find(({ id }: { id: string }) => id === 'node-agent-set-model');
+    expect(operation).toMatchObject({ expect: 'success', argvMustContain: ['--json'] });
+    expect(runner).toContain("payload?.status === 'unsupported'");
+    expect(runner).toContain('runtime=pty');
+    expect(runner).toContain('payload?.applied === false');
+    expect(runner).toContain('payload?.accepted === false');
+  });
+
+  it('runs positive model receipts through a typed AppServer lane on both nodes', async () => {
+    const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
+      expect.arrayContaining(['node-agent-set-model-app-server-a', 'node-agent-set-model-app-server-b'])
+    );
+    expect(runner).toContain("'--runtime',");
+    expect(runner).toContain("'headless',");
+    expect(runner).toContain("'--protocol',");
+    expect(runner).toContain("'opencode',");
+    expect(runner).toContain("'node', 'agent', 'set-model'");
+    expect(runner).toContain('OpenCode session confirmation');
+    expect(runner).toContain('cleanupErrors');
   });
 
   it('proves root, scoped, and disabled Relayfile mounts with exact marker bytes', async () => {
@@ -1249,10 +1714,11 @@ describe('complete Daytona Fleet board', () => {
     expect(claude.args.join(' ')).toContain('channel general');
   });
 
-  it(
-    'derives exact command, option, argument, and hidden-surface coverage from the built CLI',
-    { timeout: 20_000 },
-    async () => {
+  // Collecting the inventory imports the real built CLI bootstrap (the full
+  // commander program with every command module) inside the test process;
+  // that cold import alone exceeds the default 5s budget on a loaded machine,
+  // so this test carries its own scoped timeout.
+  it('derives exact command, option, argument, and hidden-surface coverage from the built CLI', async () => {
       const [matrix, expected] = await Promise.all([
         loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
         readFile('tests/relayflows/cleanroom/fleet-cli-inventory.json', 'utf8').then(JSON.parse),
@@ -1261,11 +1727,16 @@ describe('complete Daytona Fleet board', () => {
       expect(compareFleetCliInventory(actual, expected)).toBe(actual);
       expect(inventorySha256(actual)).toBe(matrix.inventorySha256);
       expect(() => validateFleetCommandCoverage(matrix, actual)).not.toThrow();
-      const missingDeferredDeclaration = structuredClone(matrix);
-      missingDeferredDeclaration.deferredCommandSurface = [];
-      expect(() => validateFleetCommandCoverage(missingDeferredDeclaration, actual)).toThrow(
-        /commandSurface must exactly cover every candidate/
-      );
+    // This board re-covers `node agent set-model` through its two AppServer
+    // operations, so nothing is deferred. The coverage probe instead drops
+    // a covered command leaf from the surface: exact coverage must fail.
+    const uncoveredCommand = structuredClone(matrix);
+    delete uncoveredCommand.commandSurface['node agent set-model'];
+    delete uncoveredCommand.multiCommandOperations['node-agent-set-model-app-server-a'];
+    delete uncoveredCommand.multiCommandOperations['node-agent-set-model-app-server-b'];
+    expect(() => validateFleetCommandCoverage(uncoveredCommand, actual)).toThrow(
+      /commandSurface must exactly cover every candidate/
+    );
       expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
         hidden: true,
         leaf: true,
@@ -1282,28 +1753,30 @@ describe('complete Daytona Fleet board', () => {
       );
       expect(() => compareFleetCliInventory(actual, missingCommand)).toThrow('inventory changed');
 
-      const changedOption = structuredClone(expected);
-      changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
-      expect(() => compareFleetCliInventory(actual, changedOption)).toThrow('inventory changed');
-    }
-  );
+    const changedOption = structuredClone(expected);
+    changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
+    expect(() => compareFleetCliInventory(actual, changedOption)).toThrow('inventory changed');
+  }, 30_000);
 
   it('rejects duplicate operations and an incomplete provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const duplicate = structuredClone(matrix);
     duplicate.operations.push(structuredClone(duplicate.operations[0]));
+    duplicate.operationCount = duplicate.operations.length;
     expect(() => validateFleetMatrix(duplicate)).toThrow(/duplicate operation/);
 
     const wrongCount = structuredClone(matrix);
     wrongCount.operations.pop();
-    expect(() => validateFleetMatrix(wrongCount)).toThrow(/must exactly map all matrix operations/);
+    expect(() => validateFleetMatrix(wrongCount)).toThrow(/operationCount/);
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
       ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
-    expect(() => validateFleetMatrix(incomplete)).toThrow(/must exactly map all matrix operations/);
+    expect(() => validateFleetMatrix(incomplete)).toThrow(
+      /must exactly map every matrix operation|must exactly map all 108 operations/
+    );
   });
 
   it('redacts credentials from argv and bounded evidence text', () => {
@@ -1371,6 +1844,84 @@ describe('complete Daytona Fleet board', () => {
     }
   });
 
+  it('redacts configured credentials at every nonempty length boundary', () => {
+    const previousNodeToken = process.env.RELAY_NODE_TOKEN;
+    const previousWorkspaceKey = process.env.RELAY_WORKSPACE_KEY;
+    try {
+      process.env.RELAY_NODE_TOKEN = 'q';
+      process.env.RELAY_WORKSPACE_KEY = 'seven77';
+      const redacted = redactFleetEvidence('q\nseven77\n12345678', ['12345678']);
+      expect(redacted).not.toContain('q');
+      expect(redacted).not.toContain('seven77');
+      expect(redacted).not.toContain('12345678');
+      expect(redacted.match(/\[REDACTED_SECRET\]/g)).toHaveLength(3);
+    } finally {
+      if (previousNodeToken === undefined) delete process.env.RELAY_NODE_TOKEN;
+      else process.env.RELAY_NODE_TOKEN = previousNodeToken;
+      if (previousWorkspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
+      else process.env.RELAY_WORKSPACE_KEY = previousWorkspaceKey;
+    }
+  });
+
+  it('redacts every canonical live-credential prefix, not just at_/nt_/rk_/wk_', () => {
+    // These prefixes are the same set packages/cli/src/cli/lib/redact.ts's
+    // SECRET_PREFIX masks for display. A prior version of the local fallback
+    // regex here only covered at_/nt_/rk_/wk_ and silently let br_ (broker
+    // API key), rjt_live_, ot_live_, cld_at_, rth_at_, and ocl_node_enr_
+    // shaped credentials straight through into recorded evidence.
+    const bodies = ['0123456789abcdef', 'deadBEEF12345678'];
+    for (const prefix of [
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ]) {
+      for (const body of bodies) {
+        const token = `${prefix}${body}`;
+        const redacted = redactFleetEvidence(`credential=${token} in output`);
+        expect(redacted, `expected ${token} to be redacted`).not.toContain(token);
+        expect(redacted).toContain('[REDACTED_TOKEN]');
+      }
+    }
+  });
+
+  it('redacts GitHub tokens by their real underscore separator, not a hyphen', () => {
+    // GitHub PAT/app-token prefixes (ghp_, gho_, ghu_, ghr_, ghs_,
+    // github_pat_) are underscore-separated. A prior version of the local
+    // fallback regex here required a hyphen after the prefix (gh[opurs]-),
+    // which never matches a real GitHub token and was silently inert.
+    for (const token of [
+      'ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+      'gho_abcdefghijklmnopqrstuvwxyz0123456789',
+      'ghu_abcdefghijklmnopqrstuvwxyz0123456789',
+      'ghr_abcdefghijklmnopqrstuvwxyz0123456789',
+      'ghs_abcdefghijklmnopqrstuvwxyz0123456789',
+      'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz',
+    ]) {
+      const redacted = redactFleetEvidence(`Authorization: token ${token}`);
+      expect(redacted, `expected ${token} to be redacted`).not.toContain(token);
+      expect(redacted).toContain('[REDACTED_TOKEN]');
+    }
+    // A hyphenated look-alike must not be treated as a match either way; it
+    // simply is not a GitHub token shape and is left to the generic
+    // key=value redaction pass if it appears next to a credential label.
+    expect(redactFleetEvidence('ghp-not-a-real-github-token-shape')).toContain(
+      'ghp-not-a-real-github-token-shape'
+    );
+    // Neighboring provider-key shapes that were already correctly handled
+    // (hyphen-separated) must keep working after narrowing the GitHub branch.
+    for (const token of ['sk-proj-0123456789abcdefghijklmnop', 'sk-ant-0123456789abcdefghijklmnop']) {
+      const redacted = redactFleetEvidence(`key=${token}`);
+      expect(redacted).not.toContain(token);
+      expect(redacted).toContain('[REDACTED_TOKEN]');
+    }
+  });
+
   it('marks oversized command output as truncated instead of parsing a misleading tail', async () => {
     const result = await executeFleetCommand(
       [process.execPath, '-e', "process.stdout.write('x'.repeat(4096))"],
@@ -1393,6 +1944,15 @@ describe('complete Daytona Fleet board', () => {
     expect(result.stdoutCaptureTruncated).toBe(false);
     expect(result.stdoutTruncated).toBe(true);
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024);
+  });
+
+  it('validates evidence output limits in UTF-8 bytes, not UTF-16 code units', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+    evidence.operations[0].stdout = '中'.repeat(6_000);
+    expect(Buffer.byteLength(evidence.operations[0].stdout)).toBeGreaterThan(16 * 1024);
+    expect(() => validateFleetEvidence(evidence, matrix)).toThrow(/output exceeds the evidence bound/);
   });
 
   it('returns a timeout result when an escaped descendant retains the output pipes', async () => {
@@ -1801,10 +2361,16 @@ describe('complete Daytona Fleet board', () => {
   it('rejects reused node identity, dirty cleanup, non-monotonic time, and secret argv', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const base = completeEvidence(matrix);
-    base.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
-    base.resources[1].nodeId = 'same';
-    base.resources[0].nodeId = 'same';
-    expect(() => validateFleetEvidence(structuredClone(base), matrix)).toThrow(/node ids are not unique/);
+    base.provenance.matrixSha256 = await import('node:crypto').then(({ createHash }) =>
+      createHash('sha256').update(JSON.stringify(matrix)).digest('hex')
+    );
+    // Mutate only a private clone for the uniqueness probe: later probes must
+    // keep node_a's real identity so the scoped-mount worker stays bound to
+    // its owned sandbox under the exact-identity validator.
+    const reused = structuredClone(base);
+    reused.resources[1].nodeId = 'same';
+    reused.resources[0].nodeId = 'same';
+    expect(() => validateFleetEvidence(reused, matrix)).toThrow(/node ids are not unique/);
 
     const dirty = structuredClone(base);
     dirty.resources[1].nodeId = 'different';
@@ -1820,6 +2386,31 @@ describe('complete Daytona Fleet board', () => {
     leaked.resources[1].nodeId = 'different';
     leaked.operations[0].argv = ['agent-relay', '--token', 'at_live_secretvalue'];
     expect(() => validateFleetEvidence(leaked, matrix)).toThrow(/unredacted credential argument/);
+
+    // A credential shaped like a broker API key (br_...) or a GitHub-style
+    // token, sitting outside the argv-specific --token/--api-key check (e.g.
+    // surfaced through a recorded summary line), must still be caught by the
+    // generic serialized-evidence scan. This is the "independent" second
+    // layer FLEET_ACCEPTANCE_AUDIT.md describes; it previously shared the
+    // same incomplete prefix set as the primary redactor and let br_/gh*_
+    // shaped tokens straight through.
+    for (const token of ['br_0123456789abcdef', 'rjt_live_0123456789abcdef', 'ghp_0123456789abcdefghij']) {
+      const brokerKeyLeak = structuredClone(base);
+      brokerKeyLeak.resources[1].nodeId = 'different';
+      brokerKeyLeak.operations[0].summary = `${brokerKeyLeak.operations[0].summary ?? ''} token=${token}`;
+      expect(() => validateFleetEvidence(brokerKeyLeak, matrix), `expected ${token} to fail closed`).toThrow(
+        /unredacted token/
+      );
+    }
+
+    const hiddenReleaseFailure = structuredClone(base);
+    hiddenReleaseFailure.resources[1].nodeId = 'different';
+    hiddenReleaseFailure.cleanup.attempts = [
+      { type: 'fleet-release-support', target: 'worker-a', exitCode: 1 },
+    ];
+    expect(() => validateFleetEvidence(hiddenReleaseFailure, matrix)).toThrow(
+      /cleanup cannot pass after release failure/
+    );
   });
 
   it('keeps product defects red and safety-gated shared mutations yellow', () => {
@@ -1982,9 +2573,12 @@ describe('complete Daytona Fleet board', () => {
       matrix
     );
     expect(green.verdict).toBe('GREEN');
+    // Derived from the matrix so the expectation cannot drift from the board
+    // again: the two initial-task sentinels are derived observations, every
+    // other operation is an independent command execution.
     expect(green.operationTotals).toEqual({
       matrixOperationCount: matrix.operations.length,
-      independentCommandExecutionCount: 92,
+      independentCommandExecutionCount: matrix.operations.length - 2,
       derivedObservationCount: 2,
       derivedObservationIds: ['initial-task-sentinel-a', 'initial-task-sentinel-b'],
     });
@@ -2070,6 +2664,13 @@ describe('complete Daytona Fleet board', () => {
     ).toThrow(/reused across attempts/);
   });
 
+  // This test exercises the real gate CLI end-to-end: five `node
+  // scripts/verify-features/fleet-daytona.mjs` subprocess invocations (two
+  // attempt gates, aggregate, and two campaign-gate runs). The gates are
+  // deterministic file/hash validators with no internal waits, so the cost is
+  // subprocess startup, not an intentional delay — the default 5s test budget
+  // cannot cover five cold node processes. Keep the budget scoped to this
+  // test instead of inflating the global Vitest timeout.
   it('binds a campaign gate to both attempt seals and rejects later attempt mutation', async () => {
     const temporary = await mkdtemp(path.join(os.tmpdir(), 'relay-fleet-campaign-'));
     try {
@@ -2208,6 +2809,220 @@ describe('complete Daytona Fleet board', () => {
       ).rejects.toThrow(/sealed evidenceSha256 no longer matches/);
     } finally {
       await rm(temporary, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('redacts a credential whose prefix falls in the dropped output prefix (RED-1 adversarial)', async () => {
+    // MAX_CAPTURE_BYTES = 16 * 1024 internally.
+    const MAX_CAPTURE = 16 * 1024;
+    const secretBody = 'dead1234dead1234dead1234'; // 24 chars — distinctive
+    const secret = 'rk_live_' + secretBody; // 32 chars total
+    // Place the secret across the default 16 KiB raw-capture boundary. The
+    // raw tail therefore contains only its suffix, which used to bypass the
+    // token regex after truncation.
+    const prefixLen = 100;
+    const totalBytes = MAX_CAPTURE + prefixLen + 20;
+    const suffixLen = totalBytes - prefixLen - secret.length;
+    const script = `process.stdout.write('${'x'.repeat(prefixLen)}' + ${JSON.stringify(secret)} + 'x'.repeat(${suffixLen}))`;
+    const result = await executeFleetCommand([process.execPath, '-e', script]);
+    // Raw capture still has the full secret — sanity check.
+    expect(result._rawStdout).toContain('dead1234');
+    // Redaction must happen before the 16 KiB bounded public evidence tail is
+    // selected; neither the dropped prefix nor retained suffix may leak.
+    expect(result.stdout).not.toContain('dead1234');
+    expect(result.stdout).not.toContain('rk_live_');
+    expect(result.stdout).toContain('[REDACTED_TOKEN]');
+  });
+
+  it('does not checkpoint a credential suffix when a raw stderr tail becomes an error (RED-6 adversarial)', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), 'fleet-error-redaction-'));
+    const binDir = await mkdtemp(path.join(os.tmpdir(), 'fleet-error-command-'));
+    // Preserve the adversarial Stripe-prefix shape without committing a
+    // live-key-shaped literal that repository push protection must reject.
+    const token = ['rk', 'live', 'deadbeefdead1234'].join('_');
+    const prefixLen = 100;
+    const totalBytes = 16 * 1024 + prefixLen + 20;
+    const suffixLen = totalBytes - prefixLen - token.length;
+    const daytona = path.join(binDir, 'daytona');
+    const previousPath = process.env.PATH;
+    try {
+      await writeFile(
+        daytona,
+        `#!/usr/bin/env node\nprocess.stderr.write('x'.repeat(${prefixLen}) + ${JSON.stringify(token)} + 'x'.repeat(${suffixLen})); process.exit(7);\n`
+      );
+      await chmod(daytona, 0o755);
+      process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ''}`;
+      const board = new FleetBoard(matrix, 'fleet-error-redaction-test', artifactDir);
+      await board.record('fleet-status', () => board.listDaytona());
+      const evidence = await readFile(path.join(artifactDir, 'evidence.json'), 'utf8');
+      expect(evidence).not.toContain('dead1234');
+      expect(evidence).not.toContain('rk_live_');
+      expect(evidence).toContain('[REDACTED_TOKEN]');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await rm(artifactDir, { recursive: true, force: true });
+      await rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves UTF-8 and the byte bound when output splits multibyte characters per byte', async () => {
+    const expected = 'α🙂中 café — résumé\n';
+    const bytes = [...Buffer.from(expected)];
+    const script = [
+      `const bytes = Buffer.from(${JSON.stringify(bytes)});`,
+      'let index = 0;',
+      'const write = () => { if (index < bytes.length) { process.stdout.write(bytes.subarray(index, index + 1)); index += 1; setImmediate(write); } };',
+      'write();',
+    ].join('');
+    const result = await executeFleetCommand([process.execPath, '-e', script]);
+    expect(result.stdout).toBe(expected);
+    expect(Buffer.byteLength(result.stdout)).toBe(bytes.length);
+  });
+
+  it('keeps multibyte output within the 16 KiB evidence bound', async () => {
+    // The previous test already exercises decoder correctness with one-byte
+    // chunks. Emit this larger payload in one write so suite-wide CPU pressure
+    // cannot turn the evidence-bound assertion into a scheduler benchmark.
+    const script = "process.stdout.write('中'.repeat(12_000))";
+    const result = await executeFleetCommand([process.execPath, '-e', script]);
+    expect(result.stdoutBytes).toBe(Buffer.byteLength('中'.repeat(12_000)));
+    expect(result.stdoutTruncated).toBe(true);
+    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024);
+  });
+
+  it('redacts split stdout and stderr credentials across the bounded stream boundary (RED-5 adversarial)', async () => {
+    const maxCapture = 16 * 1024;
+    const cases = [
+      { token: 'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz', extraSecrets: [] },
+      { token: 'rk_live_0123456789abcdef', extraSecrets: [] },
+      { token: 'opaque-split-secret', extraSecrets: ['opaque-split-secret'] },
+      {
+        token: `${'x'.repeat(100)}tail-secret`,
+        extraSecrets: [`${'x'.repeat(100)}tail-secret`],
+      },
+    ];
+    for (const { token, extraSecrets } of cases) {
+      for (const tokenStart of [maxCapture - 127, maxCapture - 1, maxCapture, maxCapture + 1]) {
+        const chunks = [
+          'x'.repeat(tokenStart),
+          token.slice(0, Math.max(1, Math.floor(token.length / 2))),
+          token.slice(Math.max(1, Math.floor(token.length / 2))),
+          'y'.repeat(127),
+        ];
+        const script = [
+          'const stdout = process.stdout;',
+          'const stderr = process.stderr;',
+          `const chunks = ${JSON.stringify(chunks)};`,
+          'let index = 0;',
+          'const write = () => { if (index < chunks.length) { stdout.write(chunks[index]); stderr.write(chunks[index]); index += 1; setImmediate(write); } };',
+          'write();',
+        ].join('');
+        const result = await executeFleetCommand([process.execPath, '-e', script], { extraSecrets });
+        for (const stream of [result.stdout, result.stderr]) {
+          expect(stream).not.toContain(token);
+          if (extraSecrets.length === 0) {
+            expect(stream).not.toContain(token.slice(token.indexOf('_') + 1));
+          }
+          expect(stream).toContain(extraSecrets.length === 0 ? '[REDACTED_TOKEN]' : '[REDACTED_SECRET]');
+        }
+      }
+    }
+  });
+
+  it('catches credentials embedded adjacent to leading word characters (RED-2 adversarial)', () => {
+    // Before fix: \b at start prevents matching when a credential immediately
+    // follows a word character, e.g. 'prefixrk_live_ABCDEF12'.
+    const cases: Array<[string, string]> = [
+      ['prefix', 'rk_live_0123456789abcdef'],
+      ['x', 'br_0123456789abcdef'],
+      ['key', 'ghp_abcdefghijklmnopqrstuvwxyz0'],
+      ['api', 'at_live_0123456789abcdef'],
+      ['oauth', 'rjt_live_0123456789abcdef'],
+    ];
+    for (const [prefix, token] of cases) {
+      const adjacent = prefix + token;
+      const redacted = redactFleetEvidence(adjacent);
+      expect(redacted, `expected ${token} to be redacted when adjacent to '${prefix}'`).not.toContain(token);
+      // The body must also be absent (not just the prefixed form)
+      const bodyStart = token.indexOf('_', token.indexOf('_') + 1) + 1;
+      const body = token.slice(bodyStart);
+      expect(redacted, `expected body of ${token} to be absent`).not.toContain(body);
+    }
+    // Non-credential shapes must not be caught (no false positives)
+    expect(redactFleetEvidence('ghp-not-a-real-github-token-shape')).toContain(
+      'ghp-not-a-real-github-token-shape'
+    );
+  });
+
+  it('requires both pre-release existence and post-release absence in the reclaim proof (RED-3 adversarial)', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const evidence = completeEvidence(matrix);
+    evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+
+    // Baseline: complete proof passes
+    expect(() => validateFleetEvidence(evidence, matrix)).not.toThrow();
+
+    const releaseOp = (ev: ReturnType<typeof completeEvidence>) =>
+      ev.operations.find(({ id }: { id: string }) => id === 'fleet-release-reclaims-owned-sandbox')
+        .sandboxReleaseProof;
+
+    // Missing sandboxPresentBeforeRelease must fail
+    const missingSandboxPre = structuredClone(evidence);
+    delete releaseOp(missingSandboxPre).sandboxPresentBeforeRelease;
+    expect(() => validateFleetEvidence(missingSandboxPre, matrix)).toThrow(/exact owned sandbox/);
+
+    // sandboxPresentBeforeRelease: false must fail
+    const sandboxNotPre = structuredClone(evidence);
+    releaseOp(sandboxNotPre).sandboxPresentBeforeRelease = false;
+    expect(() => validateFleetEvidence(sandboxNotPre, matrix)).toThrow(/exact owned sandbox/);
+
+    // Missing workerPresentBeforeRelease must fail
+    const missingWorkerPre = structuredClone(evidence);
+    delete releaseOp(missingWorkerPre).workerPresentBeforeRelease;
+    expect(() => validateFleetEvidence(missingWorkerPre, matrix)).toThrow(/exact owned sandbox/);
+
+    // workerPresentBeforeRelease: false must fail
+    const workerNotPre = structuredClone(evidence);
+    releaseOp(workerNotPre).workerPresentBeforeRelease = false;
+    expect(() => validateFleetEvidence(workerNotPre, matrix)).toThrow(/exact owned sandbox/);
+  });
+
+  it('preserves checkpoint JSON when a secret value equals a JSON reserved word (RED-4 adversarial)', async () => {
+    const previousNodeToken = process.env.RELAY_NODE_TOKEN;
+    const previousWorkspaceKey = process.env.RELAY_WORKSPACE_KEY;
+    try {
+      // Set a secret env var to a JSON-reserved literal
+      process.env.RELAY_NODE_TOKEN = 'false';
+      process.env.RELAY_WORKSPACE_KEY = 'null';
+      const json = JSON.stringify(
+        { status: true, enabled: false, missing: null, data: 'example-value' },
+        null,
+        2
+      );
+      const redacted = redactFleetEvidence(json);
+      // Must still be valid JSON after redaction
+      expect(() => JSON.parse(redacted)).not.toThrow();
+      const parsed = JSON.parse(redacted);
+      // JSON boolean/null literals must be preserved
+      expect(parsed.enabled).toBe(false);
+      expect(parsed.status).toBe(true);
+      expect(parsed.missing).toBeNull();
+      // Confirm the leak scanner is still fail-closed: a real credential-shaped
+      // token in the evidence must still trigger the unredacted-token check.
+      const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+      const evidence = completeEvidence(matrix);
+      evidence.provenance.matrixSha256 = createHash('sha256').update(JSON.stringify(matrix)).digest('hex');
+      const leakyEvidence = structuredClone(evidence);
+      leakyEvidence.resources[1].nodeId = 'different';
+      leakyEvidence.operations[0].summary = 'credential=br_0123456789abcdef';
+      expect(() => validateFleetEvidence(leakyEvidence, matrix)).toThrow(/unredacted token/);
+    } finally {
+      if (previousNodeToken === undefined) delete process.env.RELAY_NODE_TOKEN;
+      else process.env.RELAY_NODE_TOKEN = previousNodeToken;
+      if (previousWorkspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
+      else process.env.RELAY_WORKSPACE_KEY = previousWorkspaceKey;
     }
   });
 });

@@ -202,6 +202,18 @@ describe('RelayFlow PR proof classification', () => {
 });
 
 describe('RelayFlow case manifest', () => {
+  it('proves model application through the compiled public CLI and real provider state', async () => {
+    const source = await readFile('tests/relayflows/cases/1658-model-change-receipt/run.mjs', 'utf8');
+    expect(source).toMatch(/\[\s*cliEntry,\s*'node',\s*'agent',\s*'spawn',\s*'opencode'/);
+    expect(source).toMatch(/cliEntry, 'node', 'agent', 'set-model', 'proof-worker'/);
+    expect(source).toMatch(/cliEntry, 'node', 'agent', 'release', 'proof-worker'/);
+    expect(source).toContain('`${providerEndpoint}/session/${session.id}`');
+    expect(source).toContain('RELAYCAST_BASE_URL: relaycast.baseUrl');
+    expect(source).toContain("start = start > 0 ? text.lastIndexOf('{', start - 1) : -1");
+    expect(source).not.toContain("await api('POST', '/api/spawned/proof-worker/model'");
+    expect(source).not.toContain('const server = createServer(async (request, response) =>');
+  });
+
   it('runs the immutable Fleet snapshot proof over a trusted local HTTPS endpoint', async () => {
     const source = await readFile('tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs', 'utf8');
     expect(source).toMatch(/import\s+https\s+from\s+['"]node:https['"]/);
@@ -1327,6 +1339,7 @@ describe('process timeout contract', () => {
         signal: abort.signal,
         onStdout: (chunk: string) => {
           output += chunk;
+          if (!output.endsWith('\n')) return;
           const parsed = Number(output.trim());
           if (Number.isSafeInteger(parsed) && parsed > 0) {
             descendantPid = parsed;

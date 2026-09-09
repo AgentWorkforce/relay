@@ -6,6 +6,7 @@ import http from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 
 import { validateCandidateInstallAttestation } from './relay-candidate-install.mjs';
@@ -49,7 +50,27 @@ const CANDIDATE_SURFACES = new Set([
   'daytona-candidate',
   'operator-and-daytona-candidate',
 ]);
+const OPTION_COVERAGE_STATUSES = new Set(['supported', 'unsupported', 'skipped']);
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
+// Kept local and dependency-free (like scripts/pr-proof/run-cloud.mjs's
+// LIVE_CREDENTIAL and scripts/verify-features/escalation-status.mjs's
+// redactAlertText) so this standalone runner never depends on workspace
+// package resolution. The live-credential prefix set must stay aligned with
+// the canonical SECRET_PREFIX in packages/cli/src/cli/lib/redact.ts.
+const LIVE_CREDENTIAL_PREFIX_SOURCE =
+  '(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9._~+/=-]{8,}';
+// GitHub token prefixes use an underscore separator (ghp_..., gho_...,
+// github_pat_...), not a hyphen.
+const GITHUB_TOKEN_SOURCE = '(?:gh[opurs]_|github_pat_)[A-Za-z0-9_]{8,}';
+const PROVIDER_SECRET_SOURCE = '(?:sk-proj|sk-ant)-[A-Za-z0-9._~+/=-]{8,}';
+const LIVE_CREDENTIAL_RE = new RegExp(`${LIVE_CREDENTIAL_PREFIX_SOURCE}\\b`, 'g');
+const GITHUB_TOKEN_RE = new RegExp(`${GITHUB_TOKEN_SOURCE}\\b`, 'g');
+const PROVIDER_SECRET_RE = new RegExp(`${PROVIDER_SECRET_SOURCE}\\b`, 'g');
+// Non-global by design: reused via .test() in validateFleetEvidence, where a
+// global regex's stateful lastIndex would make repeated calls unreliable.
+const UNREDACTED_CREDENTIAL_RE = new RegExp(
+  `(?:${LIVE_CREDENTIAL_PREFIX_SOURCE}|${GITHUB_TOKEN_SOURCE}|${PROVIDER_SECRET_SOURCE})\\b`
+);
 const KNOWN_SECRET_ENV = [
   'RELAY_AGENT_TOKEN',
   'RELAY_BROKER_API_KEY',
@@ -202,6 +223,21 @@ function parseArgs(argv) {
     }
   }
   return { command, options };
+}
+
+export function dryRunRequested(env = process.env) {
+  return ['1', 'true'].includes(
+    String(env.DRY_RUN ?? '')
+      .trim()
+      .toLowerCase()
+  );
+}
+
+export function assertGreenRunVerdict(evidence) {
+  if (evidence?.verdict !== 'GREEN') {
+    throw new Error(`Fleet Daytona run verdict is ${evidence?.verdict ?? 'missing'}`);
+  }
+  return evidence;
 }
 
 export async function loadWorkspaceCredentialFile() {
@@ -701,6 +737,20 @@ export function compareDaytonaSandboxBaseline(baseline, finalSandboxes) {
 }
 
 export function buildFleetSpawnArgs(options, qualification = {}) {
+  const sandboxProvider = options.sandboxProvider ?? 'daytona';
+  const snapshotRequired = options.snapshotRequired === true;
+  if (snapshotRequired && sandboxProvider !== 'daytona') {
+    throw new Error('immutable snapshot arguments are supported only for Daytona sandbox root mounts');
+  }
+  if (
+    snapshotRequired &&
+    (!SAFE_SNAPSHOT_ID.test(qualification.expectedSnapshotId ?? '') ||
+      !SHA256.test(qualification.expectedSnapshotManifestSha256 ?? ''))
+  ) {
+    throw new Error(
+      'fleet sandbox root mount requires VERIFY_FLEET_SNAPSHOT_ID and VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256'
+    );
+  }
   return [
     'fleet',
     'spawn',
@@ -710,8 +760,8 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
     '--task',
     options.task,
     ...(options.node ? [options.nodeFlag ?? '--node', options.node] : []),
-    ...(options.sandbox ? ['--sandbox', '--sandbox-provider', 'daytona'] : []),
-    ...(options.sandbox && qualification.releaseQualificationRequested
+    ...(options.sandbox ? ['--sandbox', '--sandbox-provider', sandboxProvider] : []),
+    ...(options.sandbox && sandboxProvider === 'daytona' && snapshotRequired
       ? [
           '--sandbox-snapshot',
           qualification.expectedSnapshotId,
@@ -736,6 +786,611 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
     '--confirm-timeout',
     String(options.confirmTimeoutMs ?? 60_000),
   ];
+}
+
+// Parse a receipt from CLI output that may include logs and pretty-printed JSON.
+// The scan is string-aware so braces inside quoted error text do not terminate a
+// candidate prematurely; the receipt fields distinguish it from log objects.
+export function parseCliJson(output) {
+  const text = String(output ?? '');
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Ignore unrelated or malformed log objects and inspect the next one.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error('set-model did not emit a complete JSON receipt: ' + text.slice(-500));
+}
+
+export function buildNodeAppServerModelProofScript() {
+  return String.raw`(async () => {
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { spawn, spawnSync } = require('node:child_process');
+
+const workerName = process.argv[1];
+const requestedModel = process.argv[2];
+const expectedNode = process.argv[3];
+const sandboxId = process.argv[4];
+const wait = async (predicate, label, timeoutMs = 60_000) => {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await predicate();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error('timed out waiting for ' + label + (lastError ? ': ' + lastError.message : ''));
+};
+const freePort = async () => {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  if (!address || typeof address !== 'object' || !address.port) throw new Error('no free port');
+  return address.port;
+};
+const findConnection = async () => {
+  const roots = [
+    path.join(os.homedir(), '.agentworkforce', 'relay'),
+    path.join(process.cwd(), '.agentworkforce', 'relay'),
+  ];
+  const queue = roots.filter((root) => fs.existsSync(root)).map((root) => ({ root, depth: 0 }));
+  const candidates = [];
+  while (queue.length) {
+    const { root, depth } = queue.shift();
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const candidate = path.join(root, entry.name);
+      if (entry.isFile() && entry.name === 'connection.json') {
+        try {
+          const connection = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+          if (connection.url && connection.api_key) candidates.push({ connection, candidate });
+        } catch {}
+      } else if (entry.isDirectory() && depth < 6) queue.push({ root: candidate, depth: depth + 1 });
+    }
+  }
+  for (const { connection, candidate } of candidates) {
+    try {
+      const response = await fetch(connection.url + '/api/status', {
+        headers: { 'x-api-key': connection.api_key },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const status = response.ok ? await response.json() : null;
+      if (status?.node_name === expectedNode) return { ...connection, path: candidate };
+    } catch {}
+  }
+  throw new Error('no live node broker connection matched ' + JSON.stringify(expectedNode));
+};
+const jsonResponse = async (response, label) => {
+  const text = await response.text();
+  if (!response.ok) throw new Error(label + ' -> ' + response.status + ' ' + text.slice(0, 300));
+  try { return text ? JSON.parse(text) : {}; } catch (error) { throw new Error(label + ' was not JSON: ' + error.message); }
+};
+const parseCliJson = (output) => {
+  const text = String(output);
+  for (let start = text.lastIndexOf('{'); start >= 0; start = text.lastIndexOf('{', start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === '{') {
+        depth += 1;
+      } else if (character === '}') {
+        depth -= 1;
+        if (depth !== 0) continue;
+        try {
+          const parsed = JSON.parse(text.slice(start, index + 1));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.status === 'string' &&
+            (typeof parsed.requestId === 'string' || typeof parsed.request_id === 'string')
+          ) {
+            return parsed;
+          }
+        } catch {
+          // Logs are untrusted; try the next candidate object.
+        }
+        break;
+      }
+    }
+  }
+  throw new Error(
+    'set-model did not emit a complete JSON receipt: ' + String(output).slice(-500)
+  );
+};
+
+let opencode;
+let connection;
+let sessionId;
+let providerSessionUrl;
+let providerEndpoint;
+let workerCreated = false;
+let tempDir;
+const result = { worker: workerName, requestedModel, node: expectedNode, sandbox: sandboxId, cleanup: false };
+let cleanupState = 'idle';
+const stopProvider = async () => {
+  if (!opencode || !opencode.pid) return;
+  const exited = () => opencode.exitCode !== null || opencode.signalCode !== null;
+  const signal = (name) => {
+    try { process.kill(-opencode.pid, name); }
+    catch { try { opencode.kill(name); } catch {} }
+  };
+  signal('SIGTERM');
+  try {
+    await wait(exited, 'OpenCode process to terminate', 5_000);
+  } catch {
+    signal('SIGKILL');
+    await wait(exited, 'OpenCode process to terminate after SIGKILL', 5_000);
+  }
+};
+const runCleanup = async () => {
+  if (cleanupState !== 'idle') return;
+  cleanupState = 'running';
+  const cleanupErrors = [];
+  if (connection && workerCreated) {
+    const release = spawnSync('agent-relay', ['node', 'agent', 'release', workerName], {
+      cwd: tempDir || process.cwd(),
+      env: {
+        ...process.env,
+        AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
+        RELAY_BROKER_URL: connection.url,
+        RELAY_BROKER_API_KEY: connection.api_key,
+      },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    if (release.error || release.status !== 0) cleanupErrors.push('worker release failed');
+    try {
+      await wait(
+        async () => {
+          const response = await fetch(
+            connection.url + '/api/spawned/' + encodeURIComponent(workerName) + '/model',
+            {
+              headers: { 'x-api-key': connection.api_key },
+              signal: AbortSignal.timeout(2_000),
+            }
+          );
+          return response.status === 404;
+        },
+        'released AppServer worker to disappear',
+        10_000
+      );
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+  }
+  if (connection && sessionId) {
+    try {
+      const response = await fetch(providerSessionUrl, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (![200, 204, 404].includes(response.status))
+        cleanupErrors.push('OpenCode session delete failed');
+      await wait(
+        async () => {
+          const check = await fetch(providerSessionUrl, { signal: AbortSignal.timeout(2_000) });
+          return check.status === 404;
+        },
+        'deleted OpenCode session to disappear',
+        10_000
+      );
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+  }
+  if (opencode && opencode.pid) {
+    try {
+      await stopProvider();
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+    if (providerEndpoint) {
+      try {
+        await wait(
+          async () => {
+            try {
+              await fetch(providerEndpoint + '/global/health', {
+                signal: AbortSignal.timeout(1_000),
+              });
+              return false;
+            } catch (error) {
+              // A refused connection proves the listener is gone. An HTTP
+              // response or request timeout still means the port is reachable.
+              return error?.cause?.code === 'ECONNREFUSED' || error?.code === 'ECONNREFUSED';
+            }
+          },
+          'OpenCode provider port to close',
+          10_000
+        );
+      } catch (error) {
+        cleanupErrors.push(error.message);
+      }
+    }
+  }
+  if (tempDir) {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+    if (fs.existsSync(tempDir)) cleanupErrors.push('temporary OpenCode directory remained');
+  }
+  cleanupState = 'done';
+  if (cleanupErrors.length) throw new Error('cleanup failed: ' + cleanupErrors.join('; '));
+  result.cleanup = true;
+};
+// Daytona's outer --timeout can SIGTERM this helper before it reaches its
+// finally block; without an explicit handler the detached OpenCode provider
+// would survive the wrapper's death until the sandbox itself is torn down.
+// Terminations run the same idempotent cleanup so the provider session,
+// process, and temporary directory are recovered on the wrapper's way out.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (cleanupState !== 'idle') return;
+    runCleanup()
+      .catch(() => {})
+      .finally(() => process.exit(1));
+  });
+}
+try {
+  connection = await findConnection();
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-model-proof-'));
+  const version = spawnSync('opencode', ['--version'], { encoding: 'utf8', timeout: 10_000 });
+  if (version.error || version.status !== 0) throw new Error('OpenCode CLI unavailable');
+  result.providerVersion = (version.stdout || version.stderr || '').trim();
+  let providerReady = false;
+  // freePort() closes its probe socket before the child binds; another local
+  // process can win that small race. Retry a bounded number of times, like the
+  // sibling 1658-model-change-receipt case, instead of failing the Fleet
+  // operation as a flaky verdict.
+  for (let attempt = 0; attempt < 3 && !providerReady; attempt += 1) {
+    const port = await freePort();
+    providerEndpoint = 'http://127.0.0.1:' + port;
+    opencode = spawn('opencode', ['serve', '--hostname', '127.0.0.1', '--port', String(port), '--pure'], {
+      cwd: tempDir,
+      env: { ...process.env, HOME: tempDir, OPENCODE_SERVER_PASSWORD: '' },
+      detached: true,
+      stdio: 'ignore',
+    });
+    opencode.unref();
+    try {
+      await wait(async () => {
+        if (opencode.exitCode !== null) return false;
+        const response = await fetch(providerEndpoint + '/global/health', { signal: AbortSignal.timeout(2_000) });
+        return response.ok;
+      }, 'real OpenCode server', 20_000);
+      providerReady = true;
+    } catch (error) {
+      await stopProvider();
+      opencode = undefined;
+      if (attempt === 2) throw error;
+    }
+  }
+  const session = await jsonResponse(await fetch(providerEndpoint + '/session', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+    signal: AbortSignal.timeout(5_000),
+  }), 'OpenCode session creation');
+  sessionId = session.id;
+  if (typeof sessionId !== 'string' || !sessionId) throw new Error('OpenCode session omitted id');
+  providerSessionUrl = providerEndpoint + '/session/' + encodeURIComponent(sessionId);
+  const spawnArgv = [
+      'node',
+      'agent',
+      'spawn',
+      'opencode',
+      '--name',
+      workerName,
+      '--runtime',
+      'headless',
+      '--protocol',
+      'opencode',
+      '--endpoint',
+      providerEndpoint,
+      '--session-id',
+      sessionId,
+      '--release',
+      'delete',
+  ];
+  const cliEnv = {
+    ...process.env,
+    // The public CLI resolves its broker through
+    // HarnessDriverClient.connect({ cwd }), which reads
+    // <cwd>/.agentworkforce/relay/connection.json unless
+    // AGENT_RELAY_STATE_DIR points at the discovered broker's state
+    // directory. RELAY_BROKER_URL/API_KEY alone are not consulted there,
+    // so without this the spawn from tempDir cannot reach the live node.
+    AGENT_RELAY_STATE_DIR: path.dirname(connection.path),
+    RELAY_BROKER_URL: connection.url,
+    RELAY_BROKER_API_KEY: connection.api_key,
+  };
+  const spawnWorker = spawnSync(
+    'agent-relay',
+    spawnArgv,
+    {
+      cwd: tempDir,
+      env: cliEnv,
+      encoding: 'utf8',
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+    }
+  );
+  if (spawnWorker.error || spawnWorker.status !== 0) {
+    throw new Error(
+      'public headless AppServer spawn failed: ' + (spawnWorker.stderr || spawnWorker.stdout).slice(-1000)
+    );
+  }
+  workerCreated = true;
+  result.spawnArgv = ['agent-relay', ...spawnArgv];
+  const setModel = spawnSync('agent-relay', ['node', 'agent', 'set-model', workerName, requestedModel, '--json'], {
+    cwd: tempDir,
+    env: cliEnv,
+    encoding: 'utf8',
+    // Leave the outer 300-second Daytona command enough headroom for the
+    // worker/session/process cleanup in finally, even on the provider timeout.
+    timeout: 60_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (setModel.error) throw setModel.error;
+  if (setModel.status !== 0) throw new Error('public set-model failed: ' + (setModel.stderr || setModel.stdout).slice(-1000));
+  const receipt = parseCliJson(setModel.stdout);
+  if (
+    receipt.name !== workerName ||
+    receipt.requestedModel !== requestedModel ||
+    receipt.status !== 'applied' ||
+    receipt.applied !== true ||
+    receipt.accepted !== true ||
+    receipt.success !== true ||
+    receipt.effectiveModel !== requestedModel ||
+    receipt.pending !== false ||
+    typeof receipt.requestId !== 'string' ||
+    receipt.requestId.length === 0 ||
+    typeof receipt.generation !== 'string' ||
+    receipt.generation.length === 0
+  ) {
+    throw new Error('public set-model returned invalid receipt: ' + JSON.stringify(receipt));
+  }
+  // Confirm through the same /session/{id} API the helper created and deletes
+  // with (providerSessionUrl). The v2 /api/session route wraps the document
+  // in data; this route returns the session directly.
+  const confirmed = await jsonResponse(await fetch(providerSessionUrl, {
+    signal: AbortSignal.timeout(5_000),
+  }), 'OpenCode session confirmation');
+  const sessionData = confirmed.data || confirmed;
+  const effective = sessionData.model && sessionData.model.providerID + '/' + sessionData.model.id;
+  if (effective !== requestedModel) throw new Error('OpenCode session model was ' + JSON.stringify(effective));
+  result.receipt = receipt;
+  result.providerModel = effective;
+} finally {
+  await runCleanup();
+}
+process.stdout.write(JSON.stringify(result));
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack ? error.stack : error) + '\n');
+  process.exitCode = 1;
+});
+`;
+}
+
+export function buildLocalBrokerOptionProofScript() {
+  return String.raw`(async () => {
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
+
+const commandKind = process.argv[1];
+const action = process.argv[2];
+const credentialMode = process.argv[3];
+const workerName = process.argv[4];
+const expectedNode = process.argv[5];
+if (!['attach', 'message'].includes(commandKind)) throw new Error('invalid command kind');
+if (!['explicit', 'state-dir'].includes(credentialMode)) throw new Error('invalid credential mode');
+
+const findConnection = async () => {
+  const roots = [
+    path.join(os.homedir(), '.agentworkforce', 'relay'),
+    path.join(process.cwd(), '.agentworkforce', 'relay'),
+  ];
+  const queue = roots.filter((root) => fs.existsSync(root)).map((root) => ({ root, depth: 0 }));
+  const candidates = [];
+  while (queue.length) {
+    const { root, depth } = queue.shift();
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const candidate = path.join(root, entry.name);
+      if (entry.isFile() && entry.name === 'connection.json') {
+        try {
+          const connection = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+          if (connection.url && connection.api_key) candidates.push({ connection, candidate });
+        } catch {}
+      } else if (entry.isDirectory() && depth < 6) {
+        queue.push({ root: candidate, depth: depth + 1 });
+      }
+    }
+  }
+  for (const { connection, candidate } of candidates) {
+    try {
+      const response = await fetch(connection.url + '/api/status', {
+        headers: { 'x-api-key': connection.api_key },
+        signal: AbortSignal.timeout(2_000),
+      });
+      const status = response.ok ? await response.json() : null;
+      if (status?.node_name === expectedNode) return { ...connection, path: candidate };
+    } catch {}
+  }
+  throw new Error('no live node broker connection matched ' + JSON.stringify(expectedNode));
+};
+const parseTrailingJSON = (text) => {
+  const source = String(text).trim();
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== '[' && source[index] !== '{') continue;
+    try { return JSON.parse(source.slice(index)); } catch {}
+  }
+  throw new Error('CLI did not emit trailing JSON');
+};
+const scrubbedEnv = () => {
+  const env = { ...process.env };
+  for (const key of ['AGENT_RELAY_STATE_DIR', 'RELAY_BROKER_URL', 'RELAY_BROKER_API_KEY']) delete env[key];
+  return env;
+};
+const connection = await findConnection();
+const stateDir = path.dirname(connection.path);
+const credentialArgs = credentialMode === 'explicit'
+  ? ['--broker-url', connection.url, '--api-key', connection.api_key]
+  : ['--state-dir', stateDir];
+const commandArgs = commandKind === 'attach'
+  ? ['node', 'agent', 'attach', workerName, '--mode', action, '--json', ...credentialArgs]
+  : ['node', 'agent', 'message', action, workerName, ...credentialArgs];
+const publicArgv = ['agent-relay', ...commandArgs.map((value) => value === connection.api_key ? '[REDACTED]' : value)];
+const result = {
+  commandKind,
+  action,
+  credentialMode,
+  workerName,
+  expectedNode,
+  publicArgv,
+  pass: false,
+};
+
+if (commandKind === 'attach') {
+  const execution = await new Promise((resolve, reject) => {
+    const child = spawn('agent-relay', commandArgs, {
+      cwd: os.tmpdir(),
+      env: scrubbedEnv(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const append = (current, chunk) => (current + chunk.toString('utf8')).slice(-2 * 1024 * 1024);
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes += chunk.length;
+      stdout = append(stdout, chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes += chunk.length;
+      stderr = append(stderr, chunk);
+    });
+    child.once('error', reject);
+    const inputTimer = setTimeout(() => {
+      try { child.stdin.write(Buffer.from([3])); } catch {}
+      try { child.stdin.end(); } catch {}
+    }, 4_000);
+    const killTimer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+    }, 12_000);
+    child.once('close', (status, signal) => {
+      clearTimeout(inputTimer);
+      clearTimeout(killTimer);
+      resolve({ status, signal, stdout, stderr, stdoutBytes, stderrBytes });
+    });
+  });
+  const events = execution.stdout
+    .split(/\r?\n/)
+    .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+    .filter(Boolean);
+  const streams = events.filter((event) => event.kind === 'worker_stream' && event.name === workerName);
+  result.streamEvents = streams.length;
+  result.stdoutBytes = execution.stdoutBytes;
+  result.stderrBytes = execution.stderrBytes;
+  result.stdoutTruncated = execution.stdoutBytes > 2 * 1024 * 1024;
+  result.stderrTruncated = execution.stderrBytes > 2 * 1024 * 1024;
+  result.exitStatus = execution.status;
+  result.exitSignal = execution.signal;
+  result.pass =
+    streams.length > 0 &&
+    (execution.status === 0 || execution.signal === 'SIGTERM') &&
+    !result.stdoutTruncated &&
+    !result.stderrTruncated;
+} else {
+  const execution = spawnSync('agent-relay', commandArgs, {
+    cwd: os.tmpdir(),
+    env: scrubbedEnv(),
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (execution.error) throw execution.error;
+  const inventory = spawnSync('agent-relay', ['node', 'agent', 'list', '--status'], {
+    cwd: os.tmpdir(),
+    env: {
+      ...scrubbedEnv(),
+      AGENT_RELAY_STATE_DIR: stateDir,
+      RELAY_BROKER_URL: connection.url,
+      RELAY_BROKER_API_KEY: connection.api_key,
+    },
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (inventory.error) throw inventory.error;
+  const agents = inventory.status === 0 ? parseTrailingJSON(inventory.stdout) : [];
+  const exact = Array.isArray(agents) ? agents.find((agent) => agent?.name === workerName) : null;
+  const expectedMode = action === 'auto' ? 'auto_inject' : 'manual_flush';
+  result.commandExitStatus = execution.status;
+  result.inventoryExitStatus = inventory.status;
+  result.observedDeliveryMode = exact?.delivery_mode ?? null;
+  result.pendingCount = Array.isArray(exact?.pending) ? exact.pending.length : null;
+  result.pass = execution.status === 0 && inventory.status === 0 && exact?.delivery_mode === expectedMode;
+}
+
+process.stdout.write(JSON.stringify(result));
+if (!result.pass) process.exitCode = 1;
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack ? error.stack : error) + '\n');
+  process.exitCode = 1;
+});
+`;
 }
 
 function requiredOption(options, name) {
@@ -839,6 +1494,9 @@ export function validateFleetMatrix(matrix) {
   if (!Array.isArray(matrix.operations) || matrix.operations.length === 0) {
     throw new Error('matrix.operations must be a non-empty array');
   }
+  if (!Number.isSafeInteger(matrix.operationCount) || matrix.operationCount !== matrix.operations.length) {
+    throw new Error('matrix.operationCount must equal the inventory-backed operation count');
+  }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.json$/.test(matrix.inventoryFile ?? '')) {
     throw new Error('matrix.inventoryFile is invalid');
   }
@@ -876,7 +1534,9 @@ export function validateFleetMatrix(matrix) {
   }
   validateFleetAcceptance(matrix);
   assertObject(matrix.commandSurface, 'matrix.commandSurface');
-  const commandOperationIds = new Set();
+  const multiCommandOperations = matrix.multiCommandOperations ?? {};
+  assertObject(multiCommandOperations, 'matrix.multiCommandOperations');
+  const commandOperationLeaves = new Map();
   for (const [leaf, operationIds] of Object.entries(matrix.commandSurface)) {
     if (!/^(?:fleet|node)(?: [a-z][a-z-]*)+$/.test(leaf)) {
       throw new Error(`matrix.commandSurface has invalid command leaf ${leaf}`);
@@ -888,10 +1548,30 @@ export function validateFleetMatrix(matrix) {
       if (!ids.has(operationId)) {
         throw new Error(`matrix.commandSurface.${leaf} references missing operation ${operationId}`);
       }
-      if (commandOperationIds.has(operationId)) {
-        throw new Error(`matrix operation ${operationId} is mapped to more than one command leaf`);
+      const leaves = commandOperationLeaves.get(operationId) ?? [];
+      leaves.push(leaf);
+      commandOperationLeaves.set(operationId, leaves);
+    }
+  }
+  for (const [operationId, leaves] of commandOperationLeaves) {
+    const declared = multiCommandOperations[operationId];
+    if (leaves.length === 1 && declared !== undefined) {
+      throw new Error(`matrix multi-command operation ${operationId} is mapped to only one leaf`);
+    }
+    if (leaves.length > 1) {
+      if (!Array.isArray(declared) || declared.length !== leaves.length) {
+        throw new Error(`matrix operation ${operationId} must declare every mapped command leaf`);
       }
-      commandOperationIds.add(operationId);
+      const actual = [...leaves].sort();
+      const expected = [...declared].sort();
+      if (actual.some((leaf, index) => leaf !== expected[index])) {
+        throw new Error(`matrix multi-command operation ${operationId} declaration does not match`);
+      }
+    }
+  }
+  for (const operationId of Object.keys(multiCommandOperations)) {
+    if (!commandOperationLeaves.has(operationId)) {
+      throw new Error(`matrix multiCommandOperations references unmapped operation ${operationId}`);
     }
   }
   for (const required of [
@@ -974,7 +1654,7 @@ export function validateFleetAcceptance(matrix) {
   const expectedIds = matrix.operations.map(({ id }) => id).sort();
   const mappedIds = Object.keys(operationProfiles).sort();
   if (expectedIds.length !== mappedIds.length || expectedIds.some((id, index) => id !== mappedIds[index])) {
-    throw new Error('matrix.acceptance.operationProfiles must exactly map all matrix operations');
+    throw new Error('matrix.acceptance.operationProfiles must exactly map every matrix operation');
   }
   for (const [operationId, profile] of Object.entries(operationProfiles)) {
     if (typeof profile !== 'string' || !Object.prototype.hasOwnProperty.call(profiles, profile)) {
@@ -982,6 +1662,317 @@ export function validateFleetAcceptance(matrix) {
     }
   }
   return acceptance;
+}
+
+export function validateFleetOptionCoverage(matrix, inventory) {
+  const coverage = matrix.optionCoverage;
+  if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) {
+    throw new Error('matrix.optionCoverage is required');
+  }
+  const coveredLeaves = inventory.commands
+    .filter(
+      (command) =>
+        command.leaf && (command.path.startsWith('fleet ') || command.path.startsWith('node agent '))
+    )
+    .map(({ path: commandPath }) => commandPath)
+    .sort();
+  const declaredLeaves = Object.keys(coverage).sort();
+  if (declaredLeaves.join('\0') !== coveredLeaves.join('\0')) {
+    throw new Error('matrix.optionCoverage must exactly cover every public Fleet and node-agent leaf');
+  }
+  for (const commandPath of coveredLeaves) {
+    const command = inventory.commands.find(({ path: candidate }) => candidate === commandPath);
+    const entries = coverage[commandPath];
+    if (!Array.isArray(entries)) throw new Error(`optionCoverage.${commandPath} is required`);
+    const expected = new Set(command.options.map(({ long }) => long).filter(Boolean));
+    if (commandPath === 'fleet serve') expected.add('file');
+    const seen = new Set();
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || typeof entry.option !== 'string') {
+        throw new Error(`optionCoverage.${commandPath} contains an invalid entry`);
+      }
+      if (!expected.has(entry.option) || seen.has(entry.option)) {
+        throw new Error(`optionCoverage.${commandPath} has an unexpected or duplicate option`);
+      }
+      seen.add(entry.option);
+      if (!OPTION_COVERAGE_STATUSES.has(entry.status)) {
+        throw new Error(`optionCoverage.${commandPath}.${entry.option} has an invalid status`);
+      }
+      if (entry.status === 'supported') {
+        const operation = matrix.operations.find(({ id }) => id === entry.operationId);
+        if (typeof entry.operationId !== 'string' || !operation) {
+          throw new Error(`supported option ${commandPath} ${entry.option} must name an operation`);
+        }
+        if (!(matrix.commandSurface[commandPath] ?? []).includes(entry.operationId)) {
+          throw new Error(
+            `supported option ${commandPath} ${entry.option} must use an operation on that leaf`
+          );
+        }
+        const coverageToken = entry.argvToken ?? entry.option;
+        if (
+          !operation.argvMustContain?.includes(coverageToken) &&
+          !operation.argvMustContain?.includes(entry.option)
+        ) {
+          throw new Error(
+            `supported option ${commandPath} ${entry.option} is not required by operation ${entry.operationId}`
+          );
+        }
+      } else if (typeof entry.reason !== 'string' || !entry.reason.trim()) {
+        throw new Error(`non-supported option ${commandPath} ${entry.option} requires a reason`);
+      }
+      if (entry.variants !== undefined) {
+        if (!Array.isArray(entry.variants) || entry.variants.length === 0) {
+          throw new Error(`option ${commandPath} ${entry.option} variants must be non-empty`);
+        }
+        const variantNames = new Set();
+        for (const variant of entry.variants) {
+          if (!variant || typeof variant.value !== 'string' || variantNames.has(variant.value)) {
+            throw new Error(`option ${commandPath} ${entry.option} has invalid variants`);
+          }
+          variantNames.add(variant.value);
+          if (!OPTION_COVERAGE_STATUSES.has(variant.status)) {
+            throw new Error(`option ${commandPath} ${entry.option} variant has invalid status`);
+          }
+          if (variant.status === 'supported') {
+            const variantOperationId = variant.operationId ?? entry.operationId;
+            const operation = matrix.operations.find(({ id }) => id === variantOperationId);
+            if (typeof variantOperationId !== 'string' || !operation) {
+              throw new Error(
+                `supported variant ${commandPath} ${entry.option}=${variant.value} must name an operation`
+              );
+            }
+            if (!(matrix.commandSurface[commandPath] ?? []).includes(variantOperationId)) {
+              throw new Error(
+                `supported variant ${commandPath} ${entry.option}=${variant.value} must use an operation on that leaf`
+              );
+            }
+            const variantToken = variant.argvToken ?? variant.value;
+            if (variant.omitted !== true && !(operation.argvMustContain ?? []).includes(variantToken)) {
+              throw new Error(
+                `supported variant ${commandPath} ${entry.option}=${variant.value} is not required by operation ${variantOperationId}`
+              );
+            }
+          } else if (variant.operationId !== undefined) {
+            const operation = matrix.operations.find(({ id }) => id === variant.operationId);
+            if (!operation || !(matrix.commandSurface[commandPath] ?? []).includes(variant.operationId)) {
+              throw new Error(
+                `negative variant ${commandPath} ${entry.option}=${variant.value} must name an operation on that leaf`
+              );
+            }
+            const variantToken = variant.argvToken ?? variant.value;
+            if (variant.omitted !== true && !(operation.argvMustContain ?? []).includes(variantToken)) {
+              throw new Error(
+                `negative variant ${commandPath} ${entry.option}=${variant.value} is not required by operation ${variant.operationId}`
+              );
+            }
+            if (typeof variant.reason !== 'string' || !variant.reason.trim()) {
+              throw new Error(`negative variant ${commandPath} ${entry.option} requires a reason`);
+            }
+          } else if (typeof variant.reason !== 'string' || !variant.reason.trim()) {
+            throw new Error(`non-supported variant ${commandPath} ${entry.option} requires a reason`);
+          }
+        }
+      }
+    }
+    if (seen.size !== expected.size)
+      throw new Error(`optionCoverage.${commandPath} must cover every material option`);
+  }
+  return coverage;
+}
+
+export function validateFleetFinalCleanup({
+  brokerNodes,
+  brokerAgents,
+  workspaceAgents,
+  processAgents,
+  processInventories,
+  processInventoryComplete,
+  processInventoryErrors,
+  ownedNodeNames = [],
+}) {
+  const inventoriesPresent =
+    Array.isArray(brokerNodes) &&
+    Array.isArray(brokerAgents) &&
+    Array.isArray(workspaceAgents) &&
+    Array.isArray(processAgents);
+  const nodeList = Array.isArray(brokerNodes) ? brokerNodes : [];
+  const brokerAgentList = Array.isArray(brokerAgents) ? brokerAgents : [];
+  const workspaceAgentList = Array.isArray(workspaceAgents) ? workspaceAgents : [];
+  const processAgentList = Array.isArray(processAgents) ? processAgents : [];
+  const processInventoryList = Array.isArray(processInventories) ? processInventories : [];
+  const processErrors = Array.isArray(processInventoryErrors) ? processInventoryErrors : [];
+  const ownedNodeNameList = Array.isArray(ownedNodeNames) ? ownedNodeNames : [];
+  const nodeRecordsValid = nodeList.every(
+    (node) => node && typeof node.name === 'string' && node.name && typeof node.status === 'string'
+  );
+  const brokerAgentRecordsValid = brokerAgentList.every(
+    (agent) => agent && typeof agent.name === 'string' && agent.name && typeof agent.node === 'string'
+  );
+  const workspaceAgentRecordsValid = workspaceAgentList.every((name) => typeof name === 'string' && name);
+  const processAgentRecordsValid = processAgentList.every(
+    (agent) => agent && typeof agent.name === 'string' && agent.name
+  );
+  const processInventoryRecordsValid = processInventoryList.every(
+    (inventory) =>
+      inventory &&
+      typeof inventory.nodeName === 'string' &&
+      inventory.nodeName &&
+      Array.isArray(inventory.agents) &&
+      inventory.agents.every((agent) => agent && typeof agent.name === 'string' && agent.name)
+  );
+  const processInventoryNodeNamesUnique =
+    new Set(processInventoryList.map((inventory) => inventory.nodeName)).size === processInventoryList.length;
+  const processAgentNamesUnique =
+    new Set(processAgentList.map((agent) => agent?.name)).size === processAgentList.length;
+  const ownedNodeNamesValid =
+    ownedNodeNameList.every((name) => typeof name === 'string' && name) &&
+    new Set(ownedNodeNameList).size === ownedNodeNameList.length;
+  const ownedNodeNameSet = new Set(ownedNodeNameList);
+  const ownedNodeRecords = nodeList.filter((node) => ownedNodeNameSet.has(node?.name));
+  const ownedNodeRecordsAbsent = ownedNodeRecords.length === 0;
+  const fleetNodeRecordsAbsent = nodeList.length === 0;
+  const finalNodeNames = new Set(nodeList.map((node) => node.name));
+  const inspectedNodeNames = new Set(processInventoryList.map((inventory) => inventory.nodeName));
+  const processInventoriesCoverNodes = [...finalNodeNames].every((name) => inspectedNodeNames.has(name));
+  const processInventoryEmpty = processInventoryList.every((inventory) => inventory.agents.length === 0);
+  const pass =
+    inventoriesPresent &&
+    nodeRecordsValid &&
+    brokerAgentRecordsValid &&
+    workspaceAgentRecordsValid &&
+    processAgentRecordsValid &&
+    processInventoryRecordsValid &&
+    processInventoryNodeNamesUnique &&
+    processAgentNamesUnique &&
+    ownedNodeNamesValid &&
+    ownedNodeRecordsAbsent &&
+    fleetNodeRecordsAbsent &&
+    processInventoryComplete === true &&
+    processErrors.length === 0 &&
+    processInventoriesCoverNodes &&
+    processInventoryEmpty &&
+    brokerAgentList.length === 0 &&
+    workspaceAgentList.length === 0 &&
+    processAgentList.length === 0;
+  return {
+    pass,
+    inventoriesPresent,
+    recordsValid:
+      nodeRecordsValid &&
+      brokerAgentRecordsValid &&
+      workspaceAgentRecordsValid &&
+      processAgentRecordsValid &&
+      processInventoryRecordsValid &&
+      processInventoryNodeNamesUnique &&
+      processAgentNamesUnique,
+    processInventoryComplete: processInventoryComplete === true,
+    processInventoryErrors: processErrors,
+    processInventoryNodeNames: [...inspectedNodeNames].sort(),
+    processInventoryNodeNamesUnique,
+    processAgentNamesUnique,
+    ownedNodeNames: [...ownedNodeNameSet].sort(),
+    ownedNodeRecordsAbsent,
+    fleetNodeRecordsAbsent,
+    processInventoriesCoverNodes,
+    // Kept as a compatibility alias for older evidence readers. The value now
+    // covers every final Fleet node record, including offline/stale records.
+    processInventoriesCoverOnlineNodes: processInventoriesCoverNodes,
+    processInventoryEmpty,
+    brokerNodeCount: nodeList.length,
+    onlineNodeCount: nodeList.filter((node) => node?.status === 'online' || node?.live === true).length,
+    brokerAgentNames: brokerAgentList
+      .map((agent) => agent?.name)
+      .filter(Boolean)
+      .sort(),
+    workspaceAgentNames: workspaceAgentList
+      .map((agent) => agent?.name ?? agent)
+      .filter(Boolean)
+      .sort(),
+    processAgentNames: processAgentList
+      .map((agent) => agent?.name)
+      .filter(Boolean)
+      .sort(),
+  };
+}
+
+function validateOperationOptionCoverage(operation, matrix) {
+  for (const entries of Object.values(matrix.optionCoverage ?? {})) {
+    for (const entry of entries) {
+      if (!entry || !Array.isArray(operation.argv)) continue;
+      const direct = entry.status === 'supported' && entry.operationId === operation.id;
+      if (direct) {
+        const token = entry.argvToken ?? entry.option;
+        const index = operation.argv.indexOf(token);
+        if (index < 0) {
+          throw new Error(`operation ${operation.id} did not execute supported option ${entry.option}`);
+        }
+        if (entry.option.startsWith('--') && entry.takesValue !== false) {
+          const value = operation.argv[index + 1];
+          if (typeof value !== 'string' || !value || value.startsWith('--')) {
+            throw new Error(`operation ${operation.id} did not execute a value for ${entry.option}`);
+          }
+        }
+      }
+      for (const variant of entry.variants ?? []) {
+        if (variant.operationId === undefined && variant.status !== 'supported') continue;
+        if ((variant.operationId ?? entry.operationId) !== operation.id) continue;
+        const token = entry.argvToken ?? entry.option;
+        const index = operation.argv.indexOf(token);
+        if (variant.omitted === true) {
+          if (index >= 0) {
+            throw new Error(`operation ${operation.id} unexpectedly supplied ${entry.option}`);
+          }
+          continue;
+        }
+        const expectedValue = variant.argvToken ?? variant.value;
+        if (index < 0 || operation.argv[index + 1] !== expectedValue) {
+          throw new Error(
+            `operation ${operation.id} did not execute ${variant.status} variant ${entry.option}=${variant.value}`
+          );
+        }
+      }
+    }
+  }
+}
+
+export function validateFleetNodesPayload(payload) {
+  if (!payload || !Array.isArray(payload.nodes)) throw new Error('Fleet nodes payload must contain nodes[]');
+  const names = new Set();
+  for (const node of payload.nodes) {
+    if (!node || typeof node.name !== 'string' || !node.name || typeof node.status !== 'string') {
+      throw new Error('Fleet nodes payload contains an invalid node record');
+    }
+    if (names.has(node.name)) throw new Error(`Fleet nodes payload contains duplicate node ${node.name}`);
+    names.add(node.name);
+    if (node.live !== undefined && typeof node.live !== 'boolean') {
+      throw new Error('Fleet nodes payload contains an invalid live flag');
+    }
+    if (node.handlersLive !== undefined && typeof node.handlersLive !== 'boolean') {
+      throw new Error('Fleet nodes payload contains an invalid handlersLive flag');
+    }
+    if (node.capabilities !== undefined && !Array.isArray(node.capabilities)) {
+      throw new Error('Fleet nodes payload contains an invalid capabilities list');
+    }
+    if (
+      node.activeAgents !== undefined &&
+      (!Number.isSafeInteger(node.activeAgents) || node.activeAgents < 0)
+    ) {
+      throw new Error('Fleet nodes payload contains an invalid activeAgents count');
+    }
+  }
+  return payload;
+}
+
+export function validateFleetStatusPayload(payload, expectedNodeName) {
+  if (!payload || typeof payload !== 'object' || !payload.broker || !payload.node) {
+    throw new Error('Fleet status payload must contain broker and node objects');
+  }
+  if (payload.broker.running !== true || payload.node.available !== true) {
+    throw new Error('Fleet status payload does not report a running broker and available node');
+  }
+  const nodeName = payload.node.name ?? payload.node.nodeName;
+  if (nodeName !== expectedNodeName) throw new Error('Fleet status payload reports the wrong node');
+  return payload;
 }
 
 export function validateFleetCommandCoverage(matrix, inventory) {
@@ -1017,18 +2008,19 @@ export function validateFleetCommandCoverage(matrix, inventory) {
   }
   if (
     inventory.commands.find((command) => command.path === 'fleet serve')?.hidden !== true ||
-    JSON.stringify(matrix.commandSurface['fleet serve']) !== JSON.stringify(['fleet-serve-migration'])
+    JSON.stringify(matrix.commandSurface['fleet serve']) !==
+      JSON.stringify(['fleet-serve-migration', 'fleet-serve-migration-default'])
   ) {
     throw new Error('hidden fleet serve migration surface is not exactly covered');
   }
+  validateFleetOptionCoverage(matrix, inventory);
   return matrix;
 }
 
-function commandLeafForOperation(matrix, operationId) {
-  for (const [leaf, operationIds] of Object.entries(matrix.commandSurface)) {
-    if (operationIds.includes(operationId)) return leaf;
-  }
-  return null;
+function commandLeavesForOperation(matrix, operationId) {
+  return Object.entries(matrix.commandSurface)
+    .filter(([, operationIds]) => operationIds.includes(operationId))
+    .map(([leaf]) => leaf);
 }
 
 function argvContainsCommandInvocation(argv, leaf) {
@@ -1045,16 +2037,19 @@ export function validateOperationArgvContract(operation, definition, matrix) {
   if (!Array.isArray(operation.argv)) {
     throw new Error(`operation ${operation.id} has no sanitized argv`);
   }
-  const leaf = commandLeafForOperation(matrix, operation.id);
-  if (!leaf) return operation;
-  if (!argvContainsCommandInvocation(operation.argv, leaf)) {
-    throw new Error(`operation ${operation.id} argv does not invoke command leaf ${leaf}`);
-  }
   for (const token of definition.argvMustContain ?? []) {
     if (!operation.argv.includes(token)) {
       throw new Error(`operation ${operation.id} argv is missing required token ${token}`);
     }
   }
+  const leaves = commandLeavesForOperation(matrix, operation.id);
+  if (leaves.length === 0) return operation;
+  for (const leaf of leaves) {
+    if (!argvContainsCommandInvocation(operation.argv, leaf)) {
+      throw new Error(`operation ${operation.id} argv does not invoke command leaf ${leaf}`);
+    }
+  }
+  validateOperationOptionCoverage(operation, matrix);
   return operation;
 }
 
@@ -1149,21 +2144,48 @@ export function validateRecoveryEvidence(evidence, matrix, nonce) {
   return evidence;
 }
 
+// JSON literal tokens that must never be used as secret replacement targets:
+// replacing them would corrupt a serialized evidence document.
+const JSON_RESERVED_VALUES = new Set(['true', 'false', 'null']);
+
 function secretValues(extra = []) {
   return [
     ...KNOWN_SECRET_ENV.map((name) => process.env[name]).filter(
-      (value) => typeof value === 'string' && value.length >= 8
+      (value) => typeof value === 'string' && value.length > 0 && !JSON_RESERVED_VALUES.has(value)
     ),
-    ...extra.filter((value) => typeof value === 'string' && value.length >= 8),
+    ...extra.filter(
+      (value) => typeof value === 'string' && value.length > 0 && !JSON_RESERVED_VALUES.has(value)
+    ),
   ];
+}
+
+export function assertFleetLivePrerequisites(env = process.env) {
+  if (String(env.VERIFY_FLEET_RELEASE_QUALIFICATION ?? '') !== '1') {
+    throw new Error(
+      'Fleet Daytona live runs require VERIFY_FLEET_RELEASE_QUALIFICATION=1 plus the immutable snapshot inputs; use verify:fleet-daytona:dry-run for local checks'
+    );
+  }
+  if (!SAFE_SNAPSHOT_ID.test(String(env.VERIFY_FLEET_SNAPSHOT_ID ?? '').trim())) {
+    throw new Error('VERIFY_FLEET_SNAPSHOT_ID is required for a live Fleet Daytona run');
+  }
+  if (!SAFE_SNAPSHOT.test(String(env.VERIFY_FLEET_SNAPSHOT_NAME ?? '').trim())) {
+    throw new Error('VERIFY_FLEET_SNAPSHOT_NAME is required for a live Fleet Daytona run');
+  }
+  if (!SHA256.test(String(env.VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256 ?? '').trim())) {
+    throw new Error('VERIFY_FLEET_SNAPSHOT_MANIFEST_SHA256 is required for a live Fleet Daytona run');
+  }
+  if (!String(env.VERIFY_FLEET_EXPECTED_RELAY_VERSION ?? '').trim()) {
+    throw new Error('VERIFY_FLEET_EXPECTED_RELAY_VERSION is required for a live Fleet Daytona run');
+  }
 }
 
 export function redactFleetEvidence(value, extraSecrets = []) {
   let text = String(value ?? '');
   for (const secret of secretValues(extraSecrets)) text = text.split(secret).join('[REDACTED_SECRET]');
   text = text
-    .replace(/\b(?:at|nt|rk|wk)_[A-Za-z0-9._~+/=-]{8,}\b/g, '[REDACTED_TOKEN]')
-    .replace(/\b(?:gh[opurs]|sk-proj|sk-ant)-[A-Za-z0-9._~+/=-]{8,}\b/g, '[REDACTED_TOKEN]')
+    .replace(LIVE_CREDENTIAL_RE, '[REDACTED_TOKEN]')
+    .replace(GITHUB_TOKEN_RE, '[REDACTED_TOKEN]')
+    .replace(PROVIDER_SECRET_RE, '[REDACTED_TOKEN]')
     .replace(
       /((?:authorization|api[_-]?key|join[_-]?ticket|token|workspace[_-]?key)\s*[:=]\s*)(?:bearer\s+)?[^\s,;"']+/gi,
       '$1[REDACTED]'
@@ -1198,7 +2220,227 @@ export function sanitizeFleetArgv(argv) {
 function boundedAppend(current, chunk, limit) {
   const combined = current + String(chunk);
   const bytes = Buffer.from(combined);
-  return bytes.byteLength <= limit ? combined : bytes.subarray(bytes.byteLength - limit).toString('utf8');
+  if (bytes.byteLength <= limit) return combined;
+  let start = bytes.byteLength - limit;
+  // `chunk` is decoded with StringDecoder before it reaches this helper, so
+  // the only boundary we need to repair is the retained tail's first byte.
+  // Never decode from the middle of a UTF-8 continuation sequence: doing so
+  // would emit replacement characters and can also make the resulting string
+  // exceed the byte bound we are enforcing.
+  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
+  return bytes.subarray(start).toString('utf8');
+}
+
+const STREAM_TOKEN_SPECS = [
+  {
+    prefixes: [
+      'rk_live_',
+      'rjt_live_',
+      'at_live_',
+      'nt_live_',
+      'ot_live_',
+      'cld_at_',
+      'rth_at_',
+      'ocl_node_enr_',
+      'br_',
+    ],
+    body: /[A-Za-z0-9._~+/=-]/,
+  },
+  {
+    prefixes: ['ghp_', 'gho_', 'ghu_', 'ghr_', 'ghs_', 'github_pat_'],
+    body: /[A-Za-z0-9_]/,
+  },
+  { prefixes: ['sk-proj-', 'sk-ant-'], body: /[A-Za-z0-9._~+/=-]/ },
+];
+const STREAM_TOKEN_PREFIXES = STREAM_TOKEN_SPECS.flatMap(({ prefixes }) => prefixes);
+const STREAM_TOKEN_MIN_BODY_LENGTH = 8;
+
+function tokenSpecAt(value, index) {
+  for (const { prefixes, body } of STREAM_TOKEN_SPECS) {
+    for (const prefix of prefixes) {
+      if (value.startsWith(prefix, index)) return { prefix, body };
+    }
+  }
+  return undefined;
+}
+
+function suffixPrefixStart(value) {
+  const firstPossibleIndex = Math.max(
+    0,
+    value.length - Math.max(...STREAM_TOKEN_PREFIXES.map((prefix) => prefix.length)) + 1
+  );
+  for (let index = firstPossibleIndex; index < value.length; index += 1) {
+    const suffix = value.slice(index);
+    if (STREAM_TOKEN_PREFIXES.some((prefix) => suffix.length < prefix.length && prefix.startsWith(suffix))) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function partialSecretStart(value, secrets) {
+  let earliest = -1;
+  for (const secret of secrets) {
+    const completeStarts = [];
+    let completeStart = value.indexOf(secret);
+    while (completeStart >= 0) {
+      completeStarts.push(completeStart);
+      completeStart = value.indexOf(secret, completeStart + 1);
+    }
+    const firstPossibleIndex = Math.max(0, value.length - secret.length + 1);
+    for (let index = firstPossibleIndex; index < value.length; index += 1) {
+      if (completeStarts.some((start) => index > start && index < start + secret.length)) continue;
+      const suffix = value.slice(index);
+      if (suffix.length < secret.length && secret.startsWith(suffix)) {
+        earliest = earliest < 0 ? index : Math.min(earliest, index);
+      }
+    }
+  }
+  return earliest;
+}
+
+function extendPastCompleteSecrets(value, emitLength, secrets) {
+  let extended = emitLength;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const secret of secrets) {
+      let start = value.indexOf(secret);
+      while (start >= 0) {
+        const end = start + secret.length;
+        if (start < extended && end > extended) {
+          extended = end;
+          changed = true;
+        }
+        start = value.indexOf(secret, start + 1);
+      }
+    }
+  }
+  return extended;
+}
+
+/**
+ * Redact credential-shaped tokens as a stream. A token body is intentionally
+ * consumed across chunks after its minimum length is reached, so a long
+ * word-adjacent token can never be split into a redacted prefix and a raw
+ * suffix at the evidence boundary.
+ */
+function createStreamingTokenRedactor(emit, extraSecrets) {
+  let pending = '';
+  let activeToken = null;
+
+  const flush = (force = false) => {
+    while (pending) {
+      if (activeToken) {
+        let bodyLength = 0;
+        while (bodyLength < pending.length && activeToken.body.test(pending[bodyLength])) {
+          bodyLength += 1;
+        }
+        if (bodyLength === pending.length && !force) {
+          pending = '';
+          return;
+        }
+        pending = pending.slice(bodyLength);
+        activeToken = null;
+        continue;
+      }
+
+      let tokenStart = -1;
+      let tokenSpec;
+      for (let index = 0; index < pending.length; index += 1) {
+        const candidate = tokenSpecAt(pending, index);
+        if (candidate) {
+          tokenStart = index;
+          tokenSpec = candidate;
+          break;
+        }
+      }
+      if (tokenStart < 0) {
+        const holdStart = force ? -1 : suffixPrefixStart(pending);
+        const emitLength = holdStart < 0 ? pending.length : holdStart;
+        if (emitLength > 0) emit(redactFleetEvidence(pending.slice(0, emitLength), extraSecrets));
+        pending = pending.slice(emitLength);
+        if (!force) return;
+        if (pending) {
+          emit(redactFleetEvidence(pending, extraSecrets));
+          pending = '';
+        }
+        return;
+      }
+
+      if (tokenStart > 0) {
+        emit(redactFleetEvidence(pending.slice(0, tokenStart), extraSecrets));
+        pending = pending.slice(tokenStart);
+      }
+
+      const prefixLength = tokenSpec.prefix.length;
+      let bodyLength = 0;
+      while (
+        prefixLength + bodyLength < pending.length &&
+        tokenSpec.body.test(pending[prefixLength + bodyLength])
+      ) {
+        bodyLength += 1;
+      }
+      if (bodyLength < STREAM_TOKEN_MIN_BODY_LENGTH) {
+        if (prefixLength + bodyLength === pending.length && !force) return;
+        emit(redactFleetEvidence(pending.slice(0, prefixLength + bodyLength), extraSecrets));
+        pending = pending.slice(prefixLength + bodyLength);
+        continue;
+      }
+
+      emit('[REDACTED_TOKEN]');
+      pending = pending.slice(prefixLength + bodyLength);
+      if (pending.length === 0 && !force) {
+        activeToken = tokenSpec;
+        return;
+      }
+    }
+  };
+
+  return {
+    append(chunk) {
+      pending += String(chunk);
+      flush();
+    },
+    finish() {
+      flush(true);
+    },
+  };
+}
+
+function createStreamingEvidenceCapture(limit, extraSecrets = []) {
+  const secrets = secretValues(extraSecrets);
+  const literalOverlap = Math.max(64, ...secrets.map((secret) => secret.length));
+  let literalPending = '';
+  let captured = '';
+
+  const emitLiteral = (value) => {
+    if (!value) return;
+    literalPending += value;
+    const partialStart = partialSecretStart(literalPending, secrets);
+    const initialEmitLength =
+      partialStart >= 0 ? partialStart : Math.max(0, literalPending.length - literalOverlap);
+    const emitLength = extendPastCompleteSecrets(literalPending, initialEmitLength, secrets);
+    if (emitLength === 0) return;
+    const emitted = literalPending.slice(0, emitLength);
+    literalPending = literalPending.slice(emitLength);
+    captured = boundedAppend(captured, redactFleetEvidence(emitted, extraSecrets), limit);
+  };
+
+  const tokenRedactor = createStreamingTokenRedactor(emitLiteral, extraSecrets);
+  return {
+    append(chunk) {
+      tokenRedactor.append(chunk);
+    },
+    finish() {
+      tokenRedactor.finish();
+      if (literalPending) {
+        captured = boundedAppend(captured, redactFleetEvidence(literalPending, extraSecrets), limit);
+        literalPending = '';
+      }
+      return captured;
+    },
+  };
 }
 
 function childEnvironment(overrides = {}, { candidate = false, broker } = {}) {
@@ -1295,6 +2537,10 @@ async function execute(argv, options = {}) {
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
   let stderr = '';
+  const stdoutEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
+  const stderrEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let stdoutBytes = 0;
   let stderrBytes = 0;
   let stdoutTruncated = false;
@@ -1373,17 +2619,21 @@ async function execute(argv, options = {}) {
     }
     child.stdout.on('data', (chunk) => {
       if (settled) return;
-      stdoutBytes += Buffer.byteLength(chunk);
+      stdoutBytes += chunk.byteLength;
       stdoutTruncated ||= stdoutBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stdoutCaptureTruncated ||= stdoutBytes > captureLimit;
-      stdout = boundedAppend(stdout, chunk, captureLimit);
+      const text = stdoutDecoder.write(chunk);
+      stdout = boundedAppend(stdout, text, captureLimit);
+      stdoutEvidence.append(text);
     });
     child.stderr.on('data', (chunk) => {
       if (settled) return;
-      stderrBytes += Buffer.byteLength(chunk);
+      stderrBytes += chunk.byteLength;
       stderrTruncated ||= stderrBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stderrCaptureTruncated ||= stderrBytes > captureLimit;
-      stderr = boundedAppend(stderr, chunk, captureLimit);
+      const text = stderrDecoder.write(chunk);
+      stderr = boundedAppend(stderr, text, captureLimit);
+      stderrEvidence.append(text);
     });
     child.on('error', (error) => {
       spawnError = error;
@@ -1415,6 +2665,17 @@ async function execute(argv, options = {}) {
     });
   });
 
+  const stdoutRemainder = stdoutDecoder.end();
+  const stderrRemainder = stderrDecoder.end();
+  if (stdoutRemainder) {
+    stdout = boundedAppend(stdout, stdoutRemainder, captureLimit);
+    stdoutEvidence.append(stdoutRemainder);
+  }
+  if (stderrRemainder) {
+    stderr = boundedAppend(stderr, stderrRemainder, captureLimit);
+    stderrEvidence.append(stderrRemainder);
+  }
+
   const monotonicEndNs = process.hrtime.bigint();
   return {
     argv: sanitizeFleetArgv(argv),
@@ -1432,8 +2693,8 @@ async function execute(argv, options = {}) {
     stderrTruncated,
     stdoutCaptureTruncated,
     stderrCaptureTruncated,
-    stdout: redactFleetEvidence(boundedAppend('', stdout, MAX_CAPTURE_BYTES), options.extraSecrets),
-    stderr: redactFleetEvidence(boundedAppend('', stderr, MAX_CAPTURE_BYTES), options.extraSecrets),
+    stdout: boundedAppend('', stdoutEvidence.finish(), MAX_CAPTURE_BYTES),
+    stderr: boundedAppend('', stderrEvidence.finish(), MAX_CAPTURE_BYTES),
     ...(stdinChunks === undefined
       ? {}
       : { stdinBytes: stdinChunks.reduce((total, entry) => total + entry.bytes.length, 0) }),
@@ -2172,8 +3433,8 @@ export function validateFleetEvidence(evidence, matrix) {
       throw new Error(`operation ${operation.id}.durationMs does not match monotonic timing`);
     }
     if (
-      (operation.stdout?.length ?? 0) > MAX_CAPTURE_BYTES ||
-      (operation.stderr?.length ?? 0) > MAX_CAPTURE_BYTES
+      Buffer.byteLength(operation.stdout ?? '', 'utf8') > MAX_CAPTURE_BYTES ||
+      Buffer.byteLength(operation.stderr ?? '', 'utf8') > MAX_CAPTURE_BYTES
     ) {
       throw new Error(`operation ${operation.id} output exceeds the evidence bound`);
     }
@@ -2191,7 +3452,7 @@ export function validateFleetEvidence(evidence, matrix) {
       }
     }
     const serialized = JSON.stringify(operation);
-    if (/\b(?:at|nt|rk|wk)_[A-Za-z0-9._~+/=-]{8,}\b/.test(serialized)) {
+    if (UNREDACTED_CREDENTIAL_RE.test(serialized)) {
       throw new Error(`operation ${operation.id} contains an unredacted token`);
     }
     if (operation.id.startsWith('initial-task-sentinel-')) {
@@ -2207,11 +3468,17 @@ export function validateFleetEvidence(evidence, matrix) {
       }
     }
 
-    if (operation.id === 'fleet-spawn-reject-droid' && operation.status === 'pass') {
-      const targetName = `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`;
+    if (
+      ['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id) &&
+      operation.status === 'pass'
+    ) {
+      const targetName =
+        operation.id === 'fleet-spawn-reject-droid'
+          ? `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`
+          : `fleet-spawn-unavailable-provider-${evidence.nonce.slice(0, 16)}`;
       if (!noPartialCreationProofPass(operation.partialCreationProof, targetName)) {
         throw new Error(
-          'fleet-spawn-reject-droid did not prove no agent, worker process, Cloud record, or Daytona sandbox was created'
+          `${operation.id} did not prove no agent, worker process, Cloud record, or Daytona sandbox was created`
         );
       }
     }
@@ -2222,7 +3489,7 @@ export function validateFleetEvidence(evidence, matrix) {
         operation.group === 'node-agent-provider' ||
         operation.group === 'node-agent-spawn') &&
       (operation.group !== 'node-agent-spawn' || operation.expect !== 'sentinel-and-exit') &&
-      operation.id !== 'fleet-spawn-reject-droid'
+      !['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id)
     ) {
       const expectedProvider =
         operation.id.match(
@@ -2373,6 +3640,8 @@ export function validateFleetEvidence(evidence, matrix) {
       !sandbox ||
       !worker ||
       !intent ||
+      proof.sandboxPresentBeforeRelease !== true ||
+      proof.workerPresentBeforeRelease !== true ||
       proof.sandboxName !== sandbox.nodeName ||
       proof.cloudWorkspaceId !== sandbox.cloudWorkspaceId ||
       proof.relayWorkspaceId !== sandbox.relayWorkspaceId ||
@@ -2394,6 +3663,31 @@ export function validateFleetEvidence(evidence, matrix) {
   }
   if (!['pass', 'fail'].includes(evidence.cleanup?.status)) {
     throw new Error('evidence cleanup status is invalid');
+  }
+  if (evidence.cleanup?.status === 'pass') {
+    const finalBoard = evidence.cleanup.finalBoard;
+    if (!finalBoard || finalBoard.pass !== true) {
+      throw new Error('cleanup cannot pass without an explicit clean final board assertion');
+    }
+    if (
+      finalBoard.processInventoryComplete !== true ||
+      finalBoard.processInventoryEmpty !== true ||
+      finalBoard.processInventoriesCoverNodes !== true ||
+      finalBoard.ownedNodeRecordsAbsent !== true ||
+      finalBoard.fleetNodeRecordsAbsent !== true ||
+      !Array.isArray(finalBoard.processInventoryErrors) ||
+      finalBoard.processInventoryErrors.length !== 0
+    ) {
+      throw new Error('cleanup cannot pass without complete empty final board process inventories');
+    }
+  }
+  const failedReleaseAttempt = (evidence.cleanup?.attempts ?? []).find(
+    ({ type, exitCode }) => typeof type === 'string' && type.includes('release') && exitCode !== 0
+  );
+  if (evidence.cleanup?.status === 'pass' && failedReleaseAttempt) {
+    throw new Error(
+      `cleanup cannot pass after release failure for ${failedReleaseAttempt.target ?? 'unknown target'}`
+    );
   }
   const mutationOperations = evidence.operations.filter(({ id }) =>
     ['fleet-enable', 'fleet-disable', 'fleet-inherit'].includes(id)
@@ -2943,6 +4237,7 @@ class FleetBoard {
       }
       return {
         ...stripPrivateExecution(result),
+        ...(Array.isArray(assertionResult.argv) ? { argv: sanitizeFleetArgv(assertionResult.argv) } : {}),
         exitCode: result.exitCode === 0 && assertionResult.pass ? 0 : 1,
         summary: assertionResult.summary,
       };
@@ -3009,7 +4304,7 @@ class FleetBoard {
       timeoutMs: 60_000,
       maxCaptureBytes: 16 * 1024 * 1024,
     });
-    if (result.exitCode !== 0) throw new Error(result._rawStderr || 'agent list failed');
+    if (result.exitCode !== 0) throw new Error(result.stderr || 'agent list failed');
     if (result.stdoutCaptureTruncated) throw new Error('agent list JSON exceeded the capture bound');
     const payload = tryParseJson(result._rawStdout);
     if (!Array.isArray(payload)) throw new Error('agent list returned invalid JSON');
@@ -3036,29 +4331,33 @@ class FleetBoard {
       timeoutMs: 60_000,
       maxCaptureBytes: 16 * 1024 * 1024,
     });
-    if (result.exitCode !== 0) throw new Error(result._rawStderr || 'fleet nodes --all failed');
+    if (result.exitCode !== 0) throw new Error(result.stderr || 'fleet nodes --all failed');
     if (result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
       throw new Error('fleet nodes --all JSON exceeded the capture bound');
     }
     const payload = tryParseJson(result._rawStdout);
-    if (!payload || !Array.isArray(payload.nodes)) {
-      throw new Error('fleet nodes --all returned invalid JSON');
-    }
+    validateFleetNodesPayload(payload);
     return payload.nodes;
   }
 
-  async listNodeAgents(node) {
+  async listNodeAgents(node, withStatus = false) {
     if (!node?.id) throw new Error('node identity is required to inspect worker processes');
-    const result = await execute(this.inside(node.id, 'node', 'agent', 'list'), {
-      timeoutMs: 30_000,
-      maxCaptureBytes: 4 * 1024 * 1024,
-    });
+    const result = await execute(
+      this.inside(node.id, 'node', 'agent', 'list', ...(withStatus ? ['--status'] : [])),
+      {
+        timeoutMs: 30_000,
+        maxCaptureBytes: 4 * 1024 * 1024,
+      }
+    );
     if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated) {
-      throw new Error(result._rawStderr || 'node agent list failed');
+      throw new Error(result.stderr || 'node agent list failed');
     }
     const payload = tryParseJson(result._rawStdout);
     const agents = Array.isArray(payload) ? payload : Array.isArray(payload?.agents) ? payload.agents : null;
     if (!agents) throw new Error('node agent list returned invalid JSON');
+    if (agents.some((agent) => !agent || typeof agent.name !== 'string' || !agent.name)) {
+      throw new Error('node agent list returned an invalid agent record');
+    }
     return agents;
   }
 
@@ -3220,8 +4519,8 @@ class FleetBoard {
       }
       return true;
     }
-    if (result._rawStderr.includes(`Agent ${JSON.stringify(name)} was not found.`)) return false;
-    throw new Error(result._rawStderr || `exact agent lookup for ${name} failed`);
+    if (result.stderr.includes(`Agent ${JSON.stringify(name)} was not found.`)) return false;
+    throw new Error(result.stderr || `exact agent lookup for ${name} failed`);
   }
 
   async findExistingAgents(names) {
@@ -4082,6 +5381,31 @@ class FleetBoard {
         summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
       };
     });
+    await this.record('fleet-spawn-reject-unavailable-provider', async () => {
+      const rejectedName = `fleet-spawn-unavailable-provider-${this.short}`;
+      const before = await this.captureNoPartialCreationProof(rejectedName);
+      const result = await execute(
+        this.cliArgv(
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          rejectedName,
+          '--task',
+          'This must be rejected before any sandbox provider is contacted.',
+          '--sandbox',
+          '--sandbox-provider',
+          'unavailable-fixture'
+        ),
+        { timeoutMs: 15_000 }
+      );
+      const after = await this.captureNoPartialCreationProof(rejectedName);
+      return {
+        ...stripPrivateExecution(result),
+        partialCreationProof: { targetName: rejectedName, before, after },
+        summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
+      };
+    });
   }
 
   async mountedSandboxCases() {
@@ -4101,6 +5425,7 @@ class FleetBoard {
         name: `relay-fleetboard-root-${this.short}`,
         paths: undefined,
         noMount: false,
+        snapshotRequired: true,
         mountProof: { scope: present(scopeMarkerBytes), rootOnly: present(rootOnlyMarkerBytes) },
       },
       {
@@ -4130,6 +5455,7 @@ class FleetBoard {
         sandboxRole: scenario.id.replace('fleet-spawn-sandbox-', '') + '-probe',
         mountPaths: scenario.paths,
         noMount: scenario.noMount,
+        snapshotRequired: scenario.snapshotRequired,
         mountProof: scenario.mountProof,
         model: process.env.VERIFY_FLEET_CODEX_MODEL ?? 'gpt-5.6-luna',
         sentinel,
@@ -4525,14 +5851,19 @@ class FleetBoard {
     const assertAgentList = (result, withStatus = false) => {
       const payload = tryParseJson(result._rawStdout);
       const agents = Array.isArray(payload) ? payload : [];
-      const exact = agents.find(({ name }) => name === node.agentName);
+      const exactMatches = agents.filter(({ name }) => name === node.agentName);
+      const exact = exactMatches[0];
+      const provider = exact?.cli ?? exact?.provider;
       const pass =
-        Boolean(exact) &&
+        exactMatches.length === 1 &&
+        provider === 'codex' &&
         exact.runtime_kind === 'pty' &&
+        Array.isArray(exact.channels) &&
+        exact.channels.includes('general') &&
         (!withStatus || (typeof exact.delivery_mode === 'string' && Array.isArray(exact.pending)));
       return {
         pass,
-        summary: `exactAgent=${Boolean(exact)} runtime=${exact?.runtime_kind ?? 'missing'} deliveryMode=${exact?.delivery_mode ?? 'not-requested'}`,
+        summary: `exactAgentCount=${exactMatches.length} provider=${provider ?? 'missing'} runtime=${exact?.runtime_kind ?? 'missing'} channels=${JSON.stringify(exact?.channels ?? [])} deliveryMode=${exact?.delivery_mode ?? 'not-requested'}`,
       };
     };
     await this.assertedCommand(
@@ -4545,8 +5876,12 @@ class FleetBoard {
       'node-agent-list-pretty',
       this.inside(sandboxId, 'node', 'agent', 'list', '--pretty'),
       (result) => ({
-        pass: result._rawStdout.includes(node.agentName) && result._rawStdout.includes('codex'),
-        summary: `listedExactAgent=${result._rawStdout.includes(node.agentName)}`,
+        pass:
+          result._rawStdout.includes(node.agentName) &&
+          result._rawStdout.includes('codex') &&
+          result._rawStdout.includes('runtime_kind') &&
+          result._rawStdout.includes('pty'),
+        summary: `listedExactAgent=${result._rawStdout.includes(node.agentName)} providerCodex=${result._rawStdout.includes('codex')} runtimePty=${result._rawStdout.includes('pty')}`,
       }),
       { timeoutMs: 45_000 }
     );
@@ -4633,6 +5968,7 @@ class FleetBoard {
     await this.nodeAgentControls(autoANode);
     const autoBNode = nodeAt(1);
     await this.directNodeSpawn('node-agent-spawn-codex-auto-b', autoBNode, 'codex');
+    await this.nodeAgentAppServerModelProof('node-agent-set-model-app-server-b', autoBNode);
     await this.releaseSupport(`node-agent-spawn-codex-auto-b-${this.short}`, autoBNode, 'node');
     const ptyNode = nodeAt(2);
     await this.directNodeSpawn('node-agent-spawn-codex-pty', ptyNode, 'codex', {
@@ -4683,51 +6019,124 @@ class FleetBoard {
     await this.directNodeSpawn('node-agent-new-view', newNode, 'codex', {
       commandName: 'new',
       mode: 'view',
+      runtime: 'pty',
+      channels: ['general'],
+      cwd: '/home/daytona',
     });
     await this.releaseSupport(`node-agent-new-view-${this.short}`, newNode, 'node');
+    await this.record('node-agent-new-reject-headless', async () => {
+      const rejectedName = `node-agent-new-headless-${this.short}`;
+      const result = await execute(
+        this.inside(
+          newNode.id,
+          'node',
+          'agent',
+          'new',
+          'codex',
+          '--name',
+          rejectedName,
+          '--task',
+          'This must be rejected before a headless worker is created.',
+          '--runtime',
+          'headless',
+          '--release',
+          'delete'
+        ),
+        { timeoutMs: 30_000 }
+      );
+      const output = `${result._rawStdout}\n${result._rawStderr}`;
+      const rejected = result.exitCode !== 0 && output.includes('cannot attach to headless');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: rejected ? result.exitCode : 1,
+        summary: `headlessRejectedBeforeSpawn=${rejected}`,
+      };
+    });
   }
 
   async nodeAgentControls(node) {
     const controlName = `node-agent-spawn-codex-auto-a-${this.short}`;
     if (!node?.nodeName || !this.controller) {
       for (const id of [
+        'node-agent-set-model',
+        'node-agent-set-model-app-server-a',
         'node-agent-attach-view-json',
         'node-agent-attach-drive-json',
         'node-agent-attach-passthrough-json',
+        'node-agent-attach-local-explicit-json',
+        'node-agent-attach-local-state-dir-json',
         'node-agent-message-hold',
+        'node-agent-message-hold-local-explicit',
+        'node-agent-message-hold-local-state-dir',
         'node-agent-message-flush',
+        'node-agent-message-flush-local-explicit',
+        'node-agent-message-flush-local-state-dir',
         'node-agent-message-auto',
+        'node-agent-message-auto-local-explicit',
+        'node-agent-message-auto-local-state-dir',
         'node-agent-release',
         'node-agent-same-name-reclaim',
       ])
         await this.derived(id, { blockedReason: 'live owned board node or controller unavailable' });
       return;
     }
+    // This control worker is deliberately Codex-over-PTY. Raw terminal output
+    // cannot prove that the provider applied a model mutation, so the truthful
+    // Fleet assertion is an explicit unsupported terminal receipt. The positive
+    // requested -> applied provider proof runs through the typed OpenCode
+    // AppServer path in relay#1658's broker-bound RelayFlow case.
+    await this.assertedCommand(
+      'node-agent-set-model',
+      this.inside(node.id, 'node', 'agent', 'set-model', controlName, 'gpt-5.6-luna', '--json'),
+      (result) => {
+        const payload = tryParseJson(result._rawStdout);
+        const pass =
+          payload?.name === controlName &&
+          payload?.requestedModel === 'gpt-5.6-luna' &&
+          payload?.status === 'unsupported' &&
+          payload?.effectiveModel === null &&
+          payload?.success === false &&
+          payload?.accepted === false &&
+          payload?.pending === false &&
+          payload?.applied === false &&
+          typeof payload?.receiptId === 'string' &&
+          payload.receiptId.length > 0;
+        return {
+          pass,
+          summary: `issue=1658 runtime=pty requestedModel=${payload?.requestedModel ?? 'missing'} status=${payload?.status ?? 'missing'} effectiveModel=${payload?.effectiveModel ?? 'missing'} accepted=${payload?.accepted} pending=${payload?.pending} applied=${payload?.applied} receipt=${typeof payload?.receiptId === 'string'}`,
+        };
+      },
+      { timeoutMs: 30_000 }
+    );
+    await this.nodeAgentAppServerModelProof('node-agent-set-model-app-server-a', node);
     for (const mode of ['view', 'drive', 'passthrough']) {
       const id = `node-agent-attach-${mode}-json`;
       await this.record(id, async () => {
         const inputMarker = `FLEET_ATTACH_INPUT_${mode.toUpperCase()}_${this.short.toUpperCase()}`;
         const injectionMarker = `FLEET_ATTACH_INJECTION_${this.short.toUpperCase()}`;
-        const attachPromise = execute(
-          this.cliArgv(
-            'node',
-            'agent',
-            'attach',
-            controlName,
-            '--node',
-            node.nodeName,
-            '--mode',
-            mode,
-            '--json'
-          ),
-          {
-            timeoutMs: 20_000,
-            stdin: [
-              { data: `${inputMarker}\n`, delayMs: 2_500, end: false },
-              { data: '\x03', delayMs: 7_000, end: true },
-            ],
-          }
+        const workspaceKey = process.env.RELAY_WORKSPACE_KEY;
+        const attachArgv = this.cliArgv(
+          'node',
+          'agent',
+          'attach',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey,
+          '--mode',
+          mode,
+          '--json',
+          ...(mode === 'view' ? ['--reasoning', '--diagnostics'] : [])
         );
+        const attachPromise = execute(attachArgv, {
+          timeoutMs: 20_000,
+          extraSecrets: [workspaceKey],
+          stdin: [
+            { data: `${inputMarker}\n`, delayMs: 2_500, end: false },
+            { data: '\x03', delayMs: 7_000, end: true },
+          ],
+        });
         await new Promise((resolve) => setTimeout(resolve, 1_500));
         const injection =
           mode === 'passthrough' && this.controller
@@ -4775,6 +6184,22 @@ class FleetBoard {
         };
       });
     }
+    await this.localNodeAgentOptionProof(
+      'node-agent-attach-local-explicit-json',
+      node,
+      controlName,
+      'attach',
+      'view',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-attach-local-state-dir-json',
+      node,
+      controlName,
+      'attach',
+      'view',
+      'state-dir'
+    );
     const readDeliveryState = async (expectedMode, requirePending, timeoutMs = 30_000) => {
       const deadline = Date.now() + timeoutMs;
       let exact;
@@ -4810,11 +6235,22 @@ class FleetBoard {
       return { result, messageId: findStringDeep(payload, ['messageId', 'id']) };
     };
     const holdSentinel = `NODE_AGENT_HOLD_FLUSH_${this.short.toUpperCase()}_READY`;
+    const workspaceKey = process.env.RELAY_WORKSPACE_KEY;
     let heldMessageId;
     await this.record('node-agent-message-hold', async () => {
       const result = await execute(
-        this.cliArgv('node', 'agent', 'message', 'hold', controlName, '--node', node.nodeName),
-        { timeoutMs: 210_000 }
+        this.cliArgv(
+          'node',
+          'agent',
+          'message',
+          'hold',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey
+        ),
+        { timeoutMs: 210_000, extraSecrets: [workspaceKey] }
       );
       const held = await readDeliveryState('manual_flush', false);
       const sent = await sendControlMessage(holdSentinel);
@@ -4834,10 +6270,36 @@ class FleetBoard {
         summary: `mode=${queued?.delivery_mode ?? held?.delivery_mode ?? 'missing'} pending=${queued?.pending?.length ?? 'missing'} messageIdCaptured=${Boolean(heldMessageId)} injectedBeforeFlush=${early.observed}`,
       };
     });
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-hold-local-explicit',
+      node,
+      controlName,
+      'message',
+      'hold',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-hold-local-state-dir',
+      node,
+      controlName,
+      'message',
+      'hold',
+      'state-dir'
+    );
     await this.record('node-agent-message-flush', async () => {
       const result = await execute(
-        this.cliArgv('node', 'agent', 'message', 'flush', controlName, '--node', node.nodeName),
-        { timeoutMs: 210_000 }
+        this.cliArgv(
+          'node',
+          'agent',
+          'message',
+          'flush',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey
+        ),
+        { timeoutMs: 210_000, extraSecrets: [workspaceKey] }
       );
       const observed = await this.waitForSentinel(holdSentinel, 90_000, controlName);
       const drained = await readDeliveryState('manual_flush', false);
@@ -4858,11 +6320,37 @@ class FleetBoard {
         summary: `sentinel=${observed.observed} pending=${drained?.pending?.length ?? 'missing'} exactReaderAck=${readerAck}`,
       };
     });
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-flush-local-explicit',
+      node,
+      controlName,
+      'message',
+      'flush',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-flush-local-state-dir',
+      node,
+      controlName,
+      'message',
+      'flush',
+      'state-dir'
+    );
     const autoSentinel = `NODE_AGENT_AUTO_${this.short.toUpperCase()}_READY`;
     await this.record('node-agent-message-auto', async () => {
       const result = await execute(
-        this.cliArgv('node', 'agent', 'message', 'auto', controlName, '--node', node.nodeName),
-        { timeoutMs: 210_000 }
+        this.cliArgv(
+          'node',
+          'agent',
+          'message',
+          'auto',
+          controlName,
+          '--node',
+          node.nodeName,
+          '--workspace-key',
+          workspaceKey
+        ),
+        { timeoutMs: 210_000, extraSecrets: [workspaceKey] }
       );
       const automatic = await readDeliveryState('auto_inject', false);
       const sent = await sendControlMessage(autoSentinel);
@@ -4889,6 +6377,22 @@ class FleetBoard {
         summary: `mode=${automatic?.delivery_mode ?? 'missing'} sentinel=${observed.observed} exactReaderAck=${readerAck}`,
       };
     });
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-auto-local-explicit',
+      node,
+      controlName,
+      'message',
+      'auto',
+      'explicit'
+    );
+    await this.localNodeAgentOptionProof(
+      'node-agent-message-auto-local-state-dir',
+      node,
+      controlName,
+      'message',
+      'auto',
+      'state-dir'
+    );
     await this.record('node-agent-release', async () => {
       const result = await execute(this.inside(node.id, 'node', 'agent', 'release', controlName), {
         timeoutMs: 45_000,
@@ -4926,6 +6430,157 @@ class FleetBoard {
       };
     });
     await this.releaseSupport(controlName, node, 'node');
+  }
+
+  async localNodeAgentOptionProof(id, node, workerName, commandKind, action, credentialMode) {
+    return this.record(id, async () => {
+      const result = await execute(
+        this.daytonaArgv(
+          'sandbox',
+          'exec',
+          node.id,
+          '--timeout',
+          '90',
+          '--',
+          'node',
+          '-e',
+          buildLocalBrokerOptionProofScript(),
+          commandKind,
+          action,
+          credentialMode,
+          workerName,
+          node.nodeName
+        ),
+        { timeoutMs: 105_000, maxCaptureBytes: 2 * 1024 * 1024 }
+      );
+      const payload = tryParseJson(result._rawStdout);
+      const publicArgv = Array.isArray(payload?.publicArgv) ? sanitizeFleetArgv(payload.publicArgv) : [];
+      const pass =
+        result.exitCode === 0 &&
+        payload?.pass === true &&
+        payload?.commandKind === commandKind &&
+        payload?.action === action &&
+        payload?.credentialMode === credentialMode &&
+        payload?.workerName === workerName &&
+        payload?.expectedNode === node.nodeName &&
+        publicArgv[0] === 'agent-relay' &&
+        (credentialMode !== 'explicit' || publicArgv.includes('[REDACTED]'));
+      return {
+        ...stripPrivateExecution(result),
+        argv: publicArgv,
+        exitCode: pass ? 0 : 1,
+        observedStream: commandKind === 'attach' && pass,
+        summary: `kind=${commandKind} action=${action} credentialMode=${credentialMode} streamEvents=${payload?.streamEvents ?? 'n/a'} deliveryMode=${payload?.observedDeliveryMode ?? 'n/a'} pending=${payload?.pendingCount ?? 'n/a'}`,
+      };
+    });
+  }
+
+  async nodeAgentAppServerModelProof(id, node) {
+    if (!node?.id || this.taintedNodeIds.has(node.id)) {
+      return this.derived(id, { blockedReason: `board node ${node?.letter ?? '?'} unavailable` });
+    }
+    const workerName = `${id}-${this.short}`;
+    // The helper owns a broker worker even if its enclosing Daytona command is
+    // killed before the helper reaches its finally block. Claim it before the
+    // direct spawn so the campaign cleanup ledger can recover that identity.
+    await this.creationIntent('relay-agent', workerName);
+    this.claimAgent(workerName, 'node-app-server-worker');
+    await this.checkpoint();
+    const script = buildNodeAppServerModelProofScript();
+    // The inner budgets (spawn 30s, set-model 60s, release 30s, four 10s
+    // disappearance/termination polls, plus bounded provider-startup retries)
+    // can approach 180s on a slow provider; the enclosing Daytona command
+    // gets 300s so the helper's finally block always runs its cleanup instead
+    // of being killed mid-flight and leaking the detached provider session.
+    return this.assertedCommand(
+      id,
+      this.daytonaArgv(
+        'sandbox',
+        'exec',
+        node.id,
+        '--timeout',
+        '300',
+        '--',
+        'node',
+        '-e',
+        script,
+        workerName,
+        'openai/gpt-5.4',
+        node.nodeName,
+        node.id
+      ),
+      (result) => {
+        const payload = tryParseJson(result._rawStdout);
+        const receipt = payload?.receipt;
+        const nestedArgv = [
+          'agent-relay',
+          'node',
+          'agent',
+          'set-model',
+          workerName,
+          'openai/gpt-5.4',
+          '--json',
+        ];
+        const publicSpawnArgv = payload?.spawnArgv;
+        // Assert the complete applied-receipt contract from the live CLI
+        // receipt (as the RelayFlow proof does), not just the helper-written
+        // payload constants: admission (accepted/success), correlation
+        // (name/requestedModel/requestId/generation), and confirmation
+        // (status/applied/effectiveModel/pending) must all hold.
+        const pass =
+          payload?.worker === workerName &&
+          payload?.requestedModel === 'openai/gpt-5.4' &&
+          payload?.providerModel === 'openai/gpt-5.4' &&
+          typeof payload?.providerVersion === 'string' &&
+          payload.providerVersion.length > 0 &&
+          payload?.cleanup === true &&
+          receipt?.name === workerName &&
+          receipt?.requestedModel === 'openai/gpt-5.4' &&
+          receipt?.status === 'applied' &&
+          receipt?.applied === true &&
+          receipt?.accepted === true &&
+          receipt?.success === true &&
+          receipt?.effectiveModel === 'openai/gpt-5.4' &&
+          receipt?.pending === false &&
+          typeof receipt?.requestId === 'string' &&
+          receipt.requestId.length > 0 &&
+          typeof receipt?.generation === 'string' &&
+          receipt.generation.length > 0 &&
+          // Ordered positional assertion of the public spawn argv: loose
+          // includes() checks would accept malformed or differently
+          // configured commands as valid evidence.
+          Array.isArray(publicSpawnArgv) &&
+          publicSpawnArgv.length === 17 &&
+          publicSpawnArgv[0] === 'agent-relay' &&
+          publicSpawnArgv[1] === 'node' &&
+          publicSpawnArgv[2] === 'agent' &&
+          publicSpawnArgv[3] === 'spawn' &&
+          publicSpawnArgv[4] === 'opencode' &&
+          publicSpawnArgv[5] === '--name' &&
+          publicSpawnArgv[6] === workerName &&
+          publicSpawnArgv[7] === '--runtime' &&
+          publicSpawnArgv[8] === 'headless' &&
+          publicSpawnArgv[9] === '--protocol' &&
+          publicSpawnArgv[10] === 'opencode' &&
+          publicSpawnArgv[11] === '--endpoint' &&
+          typeof publicSpawnArgv[12] === 'string' &&
+          publicSpawnArgv[12].startsWith('http://127.0.0.1:') &&
+          publicSpawnArgv[13] === '--session-id' &&
+          typeof publicSpawnArgv[14] === 'string' &&
+          publicSpawnArgv[14].length > 0 &&
+          publicSpawnArgv[15] === '--release' &&
+          publicSpawnArgv[16] === 'delete';
+        return {
+          pass,
+          // The operation is a Daytona wrapper, but this nested argv is the
+          // exact public command executed by the helper and is part of the
+          // sanitized evidence contract.
+          argv: [...(result.argv ?? []), ...(publicSpawnArgv ?? []), ...nestedArgv],
+          summary: `issue=1658 runtime=headless-app-server requestedModel=${payload?.requestedModel ?? 'missing'} providerModel=${payload?.providerModel ?? 'missing'} status=${receipt?.status ?? 'missing'} effectiveModel=${receipt?.effectiveModel ?? 'missing'} applied=${receipt?.applied} cleanup=${payload?.cleanup}`,
+        };
+      },
+      { timeoutMs: 300_000, maxCaptureBytes: 2 * 1024 * 1024 }
+    );
   }
 
   async nodeWorkflows() {
@@ -5189,10 +6844,13 @@ class FleetBoard {
         this.inside(statusNode.id, 'fleet', 'status'),
         (result) => {
           const payload = tryParseJson(result._rawStdout);
-          const pass =
-            payload?.broker?.running === true &&
-            payload?.node?.available === true &&
-            (payload.node.name === statusNode.nodeName || payload.node.nodeName === statusNode.nodeName);
+          let pass = false;
+          try {
+            validateFleetStatusPayload(payload, statusNode.nodeName);
+            pass = true;
+          } catch {
+            pass = false;
+          }
           return {
             pass,
             summary: `brokerRunning=${payload?.broker?.running} nodeAvailable=${payload?.node?.available} exactNode=${statusNode.nodeName}`,
@@ -5202,12 +6860,24 @@ class FleetBoard {
       );
     }
     await this.record('fleet-serve-migration', async () => {
-      const result = await execute(this.cliArgv('fleet', 'serve', '--old-flag'), { timeoutMs: 15_000 });
+      const result = await execute(
+        this.cliArgv('fleet', 'serve', 'tests/relayflows/cleanroom/fleet-daytona.matrix.json'),
+        { timeoutMs: 15_000 }
+      );
       const guidance = `${result._rawStdout}${result._rawStderr}`.includes('node up');
       return {
         ...stripPrivateExecution(result),
         exitCode: result.exitCode !== 0 && guidance ? result.exitCode : 0,
         summary: `migrationGuidance=${guidance}`,
+      };
+    });
+    await this.record('fleet-serve-migration-default', async () => {
+      const result = await execute(this.cliArgv('fleet', 'serve'), { timeoutMs: 15_000 });
+      const guidance = `${result._rawStdout}${result._rawStderr}`.includes('node up');
+      return {
+        ...stripPrivateExecution(result),
+        exitCode: result.exitCode !== 0 && guidance ? result.exitCode : 0,
+        summary: `migrationGuidance=${guidance} optionalFileOmitted=true`,
       };
     });
   }
@@ -5235,6 +6905,9 @@ class FleetBoard {
         worker?.sandboxNodeId === resource.nodeId &&
         worker?.sandboxNodeName === resource.nodeName &&
         worker?.cloudWorkspaceId === resource.cloudWorkspaceId;
+      const sandboxPresentBeforeRelease = Boolean(await this.findSandboxByName(scopedName));
+      const workerPresentBeforeRelease =
+        (await this.exactAgentExists(scopedAgent).catch(() => null)) === true;
       const result = await execute(
         this.cliArgv(
           'fleet',
@@ -5277,6 +6950,8 @@ class FleetBoard {
           workerName: scopedAgent,
           ownership: resource.ownership,
           ownershipNonce: intent?.nonce,
+          sandboxPresentBeforeRelease,
+          workerPresentBeforeRelease,
           workerProcessAbsent,
           workerIdentityAbsent,
           sandboxAbsent,
@@ -5561,10 +7236,52 @@ class FleetBoard {
       ? (this.baseline?.agentNameHashes ?? []).filter((hash) => !finalAgentNameHashes.has(hash))
       : ['agent-list-reconciliation-failed'];
     const baselinePreserved = sandboxBaseline.restored && missingBaselineAgentNameHashes.length === 0;
+    const finalBoardNodes = await this.listAllFleetNodes().catch(() => null);
+    const finalBrokerAgents = await execute(this.cliArgv('fleet', 'agent', 'list', '--all', '--json'), {
+      timeoutMs: 60_000,
+      maxCaptureBytes: 16 * 1024 * 1024,
+    })
+      .then((result) => {
+        if (result.exitCode !== 0 || result.stdoutCaptureTruncated || result.stderrCaptureTruncated)
+          return null;
+        const payload = tryParseJson(result._rawStdout);
+        return Array.isArray(payload?.perNode) ? payload.perNode : null;
+      })
+      .catch(() => null);
+    const finalProcessAgents = [];
+    const processInventories = [];
+    const processInventoryErrors = [];
+    const ownedNodeNames = [
+      this.nodeA?.nodeName,
+      this.nodeB?.nodeName,
+      ...this.evidence.resources
+        .filter(({ type, role }) => type === 'daytona-sandbox' && role === 'board-node')
+        .map(({ nodeName }) => nodeName),
+    ].filter(Boolean);
+    for (const node of finalBoardNodes ?? []) {
+      try {
+        const agents = await this.listNodeAgents(node, true);
+        processInventories.push({ nodeName: node.name, agents });
+        finalProcessAgents.push(...agents);
+      } catch (error) {
+        processInventoryErrors.push(`${node?.name ?? 'unknown'}:${redactFleetEvidence(error)}`);
+      }
+    }
+    const finalCleanup = validateFleetFinalCleanup({
+      brokerNodes: finalBoardNodes,
+      brokerAgents: finalBrokerAgents,
+      workspaceAgents: finalAgentNames ? [...finalAgentNames] : null,
+      processAgents: finalProcessAgents,
+      processInventories,
+      processInventoryComplete: Array.isArray(finalBoardNodes) && processInventoryErrors.length === 0,
+      processInventoryErrors,
+      ownedNodeNames: [...new Set(ownedNodeNames)],
+    });
+    this.evidence.cleanup.finalBoard = finalCleanup;
     await this.derived('daytona-baseline-restored', {
       argv: this.daytonaArgv('sandbox', 'list', '--format', 'json'),
-      exitCode: exactPrefixLeaks.length === 0 && baselinePreserved ? 0 : 1,
-      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)}`,
+      exitCode: exactPrefixLeaks.length === 0 && baselinePreserved && finalCleanup.pass ? 0 : 1,
+      summary: `baselineCount=${this.baseline?.count ?? 'unknown'} finalCount=${finalSandboxes.length} countMatches=${sandboxBaseline.countMatches} exactPrefixLeaks=${JSON.stringify(exactPrefixLeaks)} missingBaselineSandboxIdHashes=${JSON.stringify(sandboxBaseline.missingIdHashes)} missingBaselineSandboxNameHashes=${JSON.stringify(sandboxBaseline.missingNameHashes)} unexpectedFinalSandboxIdHashes=${JSON.stringify(sandboxBaseline.unexpectedIdHashes)} unexpectedFinalSandboxNameHashes=${JSON.stringify(sandboxBaseline.unexpectedNameHashes)} missingBaselineAgentNameHashes=${JSON.stringify(missingBaselineAgentNameHashes)} processInventoryComplete=${finalCleanup.processInventoryComplete} processInventoryErrors=${JSON.stringify(finalCleanup.processInventoryErrors)} processInventoryNodeNames=${JSON.stringify(finalCleanup.processInventoryNodeNames)} processInventoryEmpty=${finalCleanup.processInventoryEmpty}`,
     });
     this.evidence.cleanup.status =
       agentCleanup.leaked.length === 0 &&
@@ -5576,7 +7293,8 @@ class FleetBoard {
       cleanupStateSummary.leakedSandboxIds.length === 0 &&
       cleanupStateSummary.unauthorizedSandboxIds.length === 0 &&
       exactPrefixLeaks.length === 0 &&
-      baselinePreserved
+      baselinePreserved &&
+      finalCleanup.pass
         ? 'pass'
         : 'fail';
     this.evidence.cleanup.finishedAt = new Date().toISOString();
@@ -5969,6 +7687,11 @@ async function main() {
     process.stdout.write(`FLEET_DAYTONA_MATRIX_VALID operations=${matrix.operations.length}\n`);
     return;
   }
+  if (dryRunRequested()) {
+    process.stdout.write(`FLEET_DAYTONA_DRY_RUN_NOOP command=${command ?? '(missing)'}\n`);
+    return;
+  }
+  if (command === 'run') assertFleetLivePrerequisites();
   if (['run', 'cleanup'].includes(command)) {
     const credentialEnv = options['workspace-credential-env'];
     if (credentialEnv !== undefined) {
@@ -6083,6 +7806,7 @@ async function main() {
       process.stdout.write(
         `FLEET_DAYTONA_COMPLETE nonce=${nonce} verdict=${evidence.verdict} artifact=${path.join(artifactDir, 'evidence.json')}\n`
       );
+      assertGreenRunVerdict(evidence);
     } finally {
       await lock.close();
       await unlink(lockPath).catch(() => undefined);
