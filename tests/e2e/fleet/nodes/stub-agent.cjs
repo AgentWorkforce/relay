@@ -69,11 +69,11 @@ try {
 setTimeout(() => {
   ready = true;
   process.stdout.write('->pty:ready\n');
-  // The native Codex-shaped fixture models the boot marker and input prompt
-  // required by the broker when it injects the MCP configuration. No MCP/AI
-  // service is started by this stub; the assertion covers launch arguments.
+  // Model Codex's actual composer glyph and cursor, rather than Claude's ❯.
+  // The broker verifies the settled composer without requiring a transient
+  // MCP boot label. This native stub starts no MCP/AI service.
   if (path.basename(process.argv[1]) === 'codex') {
-    process.stdout.write('booting mcp server: agent-relay\n❯ ');
+    process.stdout.write('› ');
   }
 }, readyDelayMs);
 
