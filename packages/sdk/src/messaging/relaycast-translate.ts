@@ -141,16 +141,24 @@ export function toRelayCapability(raw: unknown): RelayCapability {
 export function toRelayNode(raw: unknown): RelayNode {
   const node = (raw ?? {}) as Record<string, unknown>;
   const rawStatus = readStr(node, 'status');
+  const status = rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown';
+  const live = readBoolean(node, 'live');
+  // Relaycast retains the last numeric provider load in node history and may
+  // surface zero after the provider is unreachable. Zero is a measurement, not
+  // a synonym for unknown, so omit it whenever liveness says the node cannot be
+  // queried authoritatively.
+  const activeAgents =
+    live === false || status === 'offline' ? undefined : readNumber(node, 'activeAgents', 'active_agents');
   return {
     id: readStr(node, 'id', 'node_id'),
     nodeId: readStr(node, 'nodeId', 'node_id'),
     name: readStr(node, 'name') ?? '',
-    status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
-    live: readBoolean(node, 'live'),
+    status,
+    live,
     capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],
     repoKeys: readRepoKeys(node),
     maxAgents: readNumber(node, 'maxAgents', 'max_agents'),
-    activeAgents: readNumber(node, 'activeAgents', 'active_agents'),
+    activeAgents,
     handlersLive: readBoolean(node, 'handlersLive', 'handlers_live'),
     load: readNumber(node, 'load'),
     lastHeartbeatAt: readStr(node, 'lastHeartbeatAt', 'last_heartbeat_at'),

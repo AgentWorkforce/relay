@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "id": "f1c6df14-5543-4d93-ba01-81d22ed56675",
+  "timestamp": "2026-08-26T00:39:15.360Z",
+  "trajectory": "traj_iv95g9euppbw",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_iv95g9euppbw/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 50,
+              "revision": "8e46228dea1e0ab93b37e2fb5c9dc2754f2eb323"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1591-application-ack-reconnect/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 85,
+              "end_line": 113,
+              "revision": "8e46228dea1e0ab93b37e2fb5c9dc2754f2eb323"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
