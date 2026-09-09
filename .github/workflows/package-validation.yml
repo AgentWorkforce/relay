@@ -356,3 +356,6 @@ jobs:
           AGENT_RELAY_STARTUP_DEBUG: 1
           RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}
         run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$STANDALONE_BROKER"
+
+      - name: Smoke standalone workflow execution
+        run: bash scripts/ci-standalone-workflow-smoke.sh "$STANDALONE_CLI"
