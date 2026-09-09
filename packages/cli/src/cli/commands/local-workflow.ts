@@ -405,6 +405,30 @@ async function runLocalWorkflow(
   } finally {
     fs.closeSync(logFd);
   }
+
+  // A detached child can fail after spawn returns (for example when Node is
+  // missing on a Bun standalone install). Always consume that event so Node
+  // does not report a raw unhandled `spawn ... ENOENT`, and persist guidance
+  // where `workflow logs` can surface it later.
+  if (typeof monitor.on === 'function') {
+    monitor.on('error', (error) => {
+      const message = describeWorkflowChildError(error, workflowNodeExecutable(deps)).message;
+      deps.error(message);
+      void readRunRecord(cwd, runId)
+        .catch(() => record)
+        .then((current) =>
+          writeJsonAtomic(metadataPath, {
+            ...current,
+            status: 'failed',
+            exitCode: 1,
+            error: message,
+            finishedAt: deps.now().toISOString(),
+            updatedAt: deps.now().toISOString(),
+          })
+        )
+        .catch(() => undefined);
+    });
+  }
   monitor.unref();
 
   const current = await readRunRecord(cwd, runId).catch(() => record);

@@ -21,6 +21,7 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import {
   describeWorkflowChildError,
+  isCompiledBunWorkflowRuntime,
   resolveRelayflowsCliEntrypoint,
   workflowNodeExecutable,
 } from '../lib/workflow-runtime.js';
@@ -240,12 +241,25 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
       await writeSecretFile(workflowPath, payload.workflow);
 
-      const relayflowsCli = await (deps.resolveRelayflowsCliEntrypoint
-        ? deps.resolveRelayflowsCliEntrypoint(workflowPath)
-        : resolveRelayflowsCliEntrypoint(workflowPath, deps));
+      let command = workflowNodeExecutable(deps);
+      let args: string[];
+      try {
+        const relayflowsCli = await (deps.resolveRelayflowsCliEntrypoint
+          ? deps.resolveRelayflowsCliEntrypoint(workflowPath)
+          : resolveRelayflowsCliEntrypoint(workflowPath, deps));
+        args = relayflowsArgs(relayflowsCli, workflowPath, payload);
+      } catch (error) {
+        // Cloud code archives intentionally omit node_modules. A compiled Bun
+        // worker still has relayflows core embedded in its binary, so fall
+        // back to the bundled runner when Node cannot resolve the package from
+        // the extracted assignment directory.
+        if (!isCompiledBunWorkflowRuntime(deps)) throw error;
+        command = deps.execPath ?? process.execPath;
+        args = ['__bundled-workflow', ...relayflowsArgs('', workflowPath, payload).slice(1)];
+      }
       const result = await runChild({
-        command: workflowNodeExecutable(deps),
-        args: relayflowsArgs(relayflowsCli, workflowPath, payload),
+        command,
+        args,
         cwd: runDir,
         env: buildWorkerRuntimeEnv(payload, deps),
         deps,
@@ -279,8 +293,14 @@ async function startDaemon(input: {
   const logPath = path.join(stateDir, `${input.worker.workerId}.log`);
   const logFd = fs.openSync(logPath, 'a');
   let child: ChildProcess;
+  // Node needs the real CLI entrypoint as argv[1]. Bun standalone binaries
+  // already inject their virtual `/$bunfs/...` entrypoint and treat the first
+  // user argument as the command; passing that virtual path again makes the
+  // restarted binary parse it as an unknown command.
   const args = [
-    process.argv[1] ?? 'agent-relay',
+    ...(isCompiledBunWorkflowRuntime(input.deps)
+      ? []
+      : [input.deps.cliScript ?? process.argv[1] ?? 'agent-relay']),
     'cloud',
     'worker',
     'start',
@@ -293,7 +313,7 @@ async function startDaemon(input: {
   ];
 
   try {
-    child = input.deps.spawnProcess(process.execPath, args, {
+    child = input.deps.spawnProcess(input.deps.execPath ?? process.execPath, args, {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: input.deps.env,
