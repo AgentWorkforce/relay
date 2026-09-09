@@ -79,6 +79,7 @@ jobs:
           run-id: ${{ steps.producer.outputs.run_id }}
           path: ${{ runner.temp }}/relay-cleanroom-qualification-request
           merge-multiple: true
+          digest-mismatch: error
 
       - name: Validate and bind the exact request payload
         id: request

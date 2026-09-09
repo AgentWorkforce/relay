@@ -404,9 +404,22 @@ describe('qualification manifest', () => {
       )
     ).toThrow(/positive integer/);
 
-    for (const releaseTag of ['v01.11.0', 'v11.11.0-', 'v11.11.0-01', 'v11.11.0+', 'v11.11.0+one+two']) {
+    for (const releaseTag of [
+      'v01.11.0',
+      'v11.11.0-',
+      'v11.11.0-01',
+      'v11.11.0-alpha-!',
+      'v11.11.0+',
+      'v11.11.0+one+two',
+    ]) {
       expect(() => validateQualificationManifest({ ...valid, releaseTag })).toThrow(/exact semver/);
     }
+    expect(validateQualificationManifest({ ...valid, releaseTag: 'v11.11.0-alpha-1' }).releaseTag).toBe(
+      'v11.11.0-alpha-1'
+    );
+    expect(validateQualificationManifest({ ...valid, releaseTag: 'v11.11.0+001' }).releaseTag).toBe(
+      'v11.11.0+001'
+    );
     expect(
       validateQualificationManifest({ ...valid, releaseTag: 'v11.11.0-beta.1+build.7' }).releaseTag
     ).toBe('v11.11.0-beta.1+build.7');

@@ -59,11 +59,16 @@ function exactSemverTag(value) {
   const buildParts = resolved.slice(1).split('+');
   if (buildParts.length > 2) throw new Error('releaseTag must be an exact semver tag');
   const [withoutBuild, build] = buildParts;
-  const [core, prerelease] = withoutBuild.split('-', 2);
+  const hyphen = withoutBuild.indexOf('-');
+  const core = hyphen === -1 ? withoutBuild : withoutBuild.slice(0, hyphen);
+  const prerelease = hyphen === -1 ? undefined : withoutBuild.slice(hyphen + 1);
   if (!resolved.startsWith('v') || !SEMVER_CORE.test(core)) {
     throw new Error('releaseTag must be an exact semver tag');
   }
-  for (const section of [prerelease, build]) {
+  for (const [section, isPrerelease] of [
+    [prerelease, true],
+    [build, false],
+  ]) {
     if (section === undefined) continue;
     const identifiers = section.split('.');
     if (
@@ -71,7 +76,7 @@ function exactSemverTag(value) {
       identifiers.some(
         (identifier) =>
           !SEMVER_IDENTIFIER.test(identifier) ||
-          (/^\d+$/.test(identifier) && identifier.startsWith('0') && identifier.length > 1)
+          (isPrerelease && /^\d+$/.test(identifier) && identifier.startsWith('0') && identifier.length > 1)
       )
     ) {
       throw new Error('releaseTag must be an exact semver tag');

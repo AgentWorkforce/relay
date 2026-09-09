@@ -1037,13 +1037,15 @@ describe('complete Daytona Fleet board', () => {
     const cli = path.join(root, 'install/node_modules/agent-relay/dist/cli');
     const script = path.join(cli, 'index.js');
     const probe = path.join(candidateCwd, 'probe.json');
-    const secret = path.join(root, 'relay-workspace-a.json');
+    const secretA = path.join(root, 'relay-workspace-a.json');
+    const secretB = path.join(root, 'relay-workspace-b.json');
     const previous = Object.fromEntries(
       [
         'VERIFY_FLEET_CLI',
         'VERIFY_FLEET_CANDIDATE_CWD',
         'VERIFY_FLEET_PROBE',
         'VERIFY_FLEET_PROBE_SECRET',
+        'VERIFY_FLEET_PROBE_SECRET_B',
         'VERIFY_FLEET_RELEASE_QUALIFICATION',
         'RUNNER_TEMP',
         'RELAY_WORKSPACE_KEY',
@@ -1055,15 +1057,18 @@ describe('complete Daytona Fleet board', () => {
     try {
       await mkdir(cli, { recursive: true });
       await mkdir(candidateCwd, { recursive: true });
-      await writeFile(secret, 'credential-secret\n', { mode: 0o600 });
+      await writeFile(secretA, 'credential-secret-a\n', { mode: 0o600 });
+      await writeFile(secretB, 'credential-secret-b\n', { mode: 0o600 });
       await writeFile(
         script,
         `import { readFileSync, writeFileSync } from 'node:fs';
-let credential = 'denied';
-try { credential = readFileSync(process.env.VERIFY_FLEET_PROBE_SECRET, 'utf8').trim(); } catch {}
+const readCredential = (name) => {
+  try { return readFileSync(process.env[name], 'utf8').trim(); } catch { return 'denied'; }
+};
 writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
   workspace: process.env.RELAY_WORKSPACE_KEY,
-  credential,
+  credentialA: readCredential('VERIFY_FLEET_PROBE_SECRET'),
+  credentialB: readCredential('VERIFY_FLEET_PROBE_SECRET_B'),
   daytona: process.env.DAYTONA_API_KEY,
   openai: process.env.OPENAI_API_KEY,
   cloud: process.env.CLOUD_API_ACCESS_TOKEN,
@@ -1075,7 +1080,8 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       process.env.VERIFY_FLEET_CLI = script;
       process.env.VERIFY_FLEET_CANDIDATE_CWD = candidateCwd;
       process.env.VERIFY_FLEET_PROBE = probe;
-      process.env.VERIFY_FLEET_PROBE_SECRET = secret;
+      process.env.VERIFY_FLEET_PROBE_SECRET = secretA;
+      process.env.VERIFY_FLEET_PROBE_SECRET_B = secretB;
       process.env.RELAY_WORKSPACE_KEY = 'rk_disposable_workspace';
       process.env.DAYTONA_API_KEY = 'daytona-secret';
       process.env.OPENAI_API_KEY = 'openai-secret';
@@ -1099,7 +1105,8 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       const observed = JSON.parse(await readFile(probe, 'utf8'));
       expect(observed).toMatchObject({ workspace: 'rk_disposable_workspace', home: candidateCwd });
       expect(observed.cwd).toMatch(new RegExp(`${path.basename(candidateCwd)}$`));
-      expect(observed.credential).toBe(mountSandboxAvailable ? 'denied' : 'credential-secret');
+      expect(observed.credentialA).toBe(mountSandboxAvailable ? 'denied' : 'credential-secret-a');
+      expect(observed.credentialB).toBe(mountSandboxAvailable ? 'denied' : 'credential-secret-b');
       expect(observed).not.toHaveProperty('daytona');
       expect(observed).not.toHaveProperty('openai');
       expect(observed).not.toHaveProperty('cloud');

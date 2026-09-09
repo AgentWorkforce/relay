@@ -342,5 +342,6 @@ describe('trusted cleanroom qualification request', () => {
     expect(consumerSource).toContain('--package-version "$version"');
     expect(consumerSource).toContain('VERIFY_FLEET_EXPECTED_RELAY_SHA');
     expect(consumerSource).toContain('npx relayflows run workflows/verify-fleet-daytona.ts');
+    expect(consumerSource).toContain('digest-mismatch: error');
   });
 });
