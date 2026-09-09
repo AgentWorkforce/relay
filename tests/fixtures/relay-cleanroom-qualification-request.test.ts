@@ -312,6 +312,18 @@ describe('trusted cleanroom qualification request', () => {
     const fleetStep = qualification.steps.find(
       (step: any) => step.name === 'Run exact candidate Fleet Relayflow'
     );
+    const sealIndex = qualification.steps.findIndex(
+      (step: any) => step.name === 'Seal trusted verifier and candidate execution roots'
+    );
+    const availabilityIndex = qualification.steps.findIndex(
+      (step: any) => step.name === 'Check candidate command availability in mount-isolated sandbox'
+    );
+    expect(sealIndex).toBeGreaterThanOrEqual(0);
+    expect(availabilityIndex).toBeGreaterThan(sealIndex);
+    expect(qualification.steps[availabilityIndex].env).toMatchObject({
+      VERIFY_FLEET_CANDIDATE_CWD: '${{ runner.temp }}/relay-candidate-cwd',
+      VERIFY_FLEET_TRUSTED_VERIFIER: '${{ github.workspace }}/relay-verifier',
+    });
     expect(fleetStep.env.OPENAI_API_KEY).toBe('${{ secrets.OPENAI_API_KEY }}');
     expect(fleetStep.env.ANTHROPIC_API_KEY).toBe('${{ secrets.ANTHROPIC_API_KEY }}');
     for (const step of qualification.steps.filter((step: any) => step !== fleetStep)) {
@@ -330,6 +342,11 @@ describe('trusted cleanroom qualification request', () => {
       expect(checkout.with['persist-credentials']).toBe(false);
       expect(checkout.with.repository).toBeUndefined();
     }
+    expect(checkouts.map((checkout: any) => checkout.with.path)).toEqual([
+      'relay-verifier',
+      'relay-verifier',
+      'relay-cleanup',
+    ]);
     expect(consumerSource).not.toContain('ref: ${{ github.sha }}');
     expect(consumerSource).not.toMatch(/ref:\s*\$\{\{ steps\.manifest\.outputs/);
     expect(consumerSource).not.toContain('Check out exact Relay candidate');
@@ -341,6 +358,7 @@ describe('trusted cleanroom qualification request', () => {
     expect(consumerSource).toContain('--source-sha "$RELAY_SHA"');
     expect(consumerSource).toContain('--package-version "$version"');
     expect(consumerSource).toContain('VERIFY_FLEET_EXPECTED_RELAY_SHA');
+    expect(consumerSource).toContain('--candidate-mount-sandbox');
     expect(consumerSource).toContain('npx relayflows run workflows/verify-fleet-daytona.ts');
     expect(consumerSource).toContain('digest-mismatch: error');
   });

@@ -13,6 +13,8 @@ import {
   bindInspectedSnapshotManifest,
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
+  candidateProvenanceSourceSha,
+  candidateSandboxArgv,
   compareDaytonaSandboxBaseline,
   deriveFleetVerdict,
   evaluateFleetIdentityReconciliation,
@@ -969,22 +971,109 @@ describe('complete Daytona Fleet board', () => {
     const runnerTemp = '/runner-temp';
     const candidateRoot = '/runner-temp/relay-candidate-install/install';
     expect(() => validateReleaseInventoryPaths(runnerTemp, candidateRoot, '/runner-temp/inventory')).toThrow(
-      /result directory must be outside RUNNER_TEMP/
+      /result directory must not overlap RUNNER_TEMP/
+    );
+    expect(() => validateReleaseInventoryPaths(runnerTemp, candidateRoot, '/')).toThrow(
+      /result directory must not overlap RUNNER_TEMP/
     );
     expect(() =>
       validateReleaseInventoryPaths(runnerTemp, candidateRoot, '/trusted-output/inventory')
     ).not.toThrow();
   });
 
+  it.skipIf(process.platform !== 'linux')('rejects candidate CWDs that contain the candidate install', () => {
+    const previousRunnerTemp = process.env.RUNNER_TEMP;
+    const previousCandidateCwd = process.env.VERIFY_FLEET_CANDIDATE_CWD;
+    try {
+      process.env.RUNNER_TEMP = '/runner-temp';
+      process.env.VERIFY_FLEET_CANDIDATE_CWD = '/runner-temp';
+      expect(() =>
+        candidateSandboxArgv([
+          process.execPath,
+          '/runner-temp/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js',
+          'version',
+        ])
+      ).toThrow(/must not overlap/);
+    } finally {
+      if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previousRunnerTemp;
+      if (previousCandidateCwd === undefined) delete process.env.VERIFY_FLEET_CANDIDATE_CWD;
+      else process.env.VERIFY_FLEET_CANDIDATE_CWD = previousCandidateCwd;
+    }
+  });
+
+  it('binds release provenance to the manifest candidate SHA rather than the verifier checkout', () => {
+    const verifierCommit = 'a'.repeat(40);
+    const candidateCommit = 'b'.repeat(40);
+    expect(candidateProvenanceSourceSha(verifierCommit, candidateCommit, true)).toBe(candidateCommit);
+    expect(() => candidateProvenanceSourceSha(verifierCommit, '', true)).toThrow(
+      /VERIFY_FLEET_EXPECTED_RELAY_SHA/
+    );
+  });
+
   it('makes the candidate install read-only and masks the trusted verifier before execution', async () => {
     const sandbox = await readFile('scripts/verify-features/fleet-candidate-mount-sandbox.sh', 'utf8');
     expect(sandbox).toMatch(/trusted_verifier=\$2/);
     expect(sandbox).toMatch(/mount -o remount,bind,ro \/mnt\/relay-candidate-root/);
+    expect(sandbox).toMatch(/mount -o remount,bind,ro "\$candidate_root"/);
     expect(sandbox).toMatch(/mount -t tmpfs .* "\$trusted_verifier"/);
     expect(sandbox.indexOf('mount -t tmpfs -o mode=0700,nosuid,nodev tmpfs "$runner_temp"')).toBeLessThan(
       sandbox.indexOf('exec "$node_binary"')
     );
   });
+
+  it.skipIf(process.platform !== 'linux')(
+    'rejects a real write to the final candidate bind while allowing only candidate CWD writes',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-mount-proof-'));
+      const runnerTemp = path.join(root, 'runner-temp');
+      const verifier = path.join(root, 'trusted-verifier');
+      const candidateRoot = path.join(runnerTemp, 'candidate');
+      const candidateCwd = path.join(runnerTemp, 'candidate-cwd');
+      const candidateWrite = path.join(candidateRoot, 'must-not-write');
+      const cwdWrite = path.join(candidateCwd, 'allowed-write.json');
+      const verifierMarker = path.join(verifier, 'private-marker');
+      try {
+        await Promise.all([
+          mkdir(candidateRoot, { recursive: true }),
+          mkdir(candidateCwd, { recursive: true }),
+          mkdir(verifier, { recursive: true }),
+        ]);
+        await writeFile(verifierMarker, 'trusted-only\n');
+        const probe = [
+          "const fs=require('node:fs')",
+          "let readOnly=false;try{fs.writeFileSync(process.argv[1],'blocked')}catch(error){readOnly=['EROFS','EACCES','EPERM'].includes(error.code)}",
+          "let verifierHidden=false;try{fs.readFileSync(process.argv[3])}catch(error){verifierHidden=error.code==='ENOENT'}",
+          'fs.writeFileSync(process.argv[2],JSON.stringify({readOnly,verifierHidden}))',
+          'if(!readOnly||!verifierHidden)process.exit(1)',
+        ].join(';');
+        await execFileAsync('/usr/bin/unshare', [
+          '--user',
+          '--map-root-user',
+          '--mount',
+          '--net',
+          '--fork',
+          '--',
+          '/bin/sh',
+          'scripts/verify-features/fleet-candidate-mount-sandbox.sh',
+          runnerTemp,
+          verifier,
+          candidateRoot,
+          candidateCwd,
+          process.execPath,
+          '-e',
+          probe,
+          candidateWrite,
+          cwdWrite,
+          verifierMarker,
+        ]);
+        expect(await readFile(cwdWrite, 'utf8')).toBe('{"readOnly":true,"verifierHidden":true}');
+        await expect(readFile(candidateWrite, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('updates an existing private inventory output without following a replacement symlink', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-output-'));

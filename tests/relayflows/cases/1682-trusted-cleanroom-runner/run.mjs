@@ -265,11 +265,12 @@ if (present.every((value) => !value)) {
     ...consumer.jobs.qualification_cleanup.steps,
   ].filter((step) => String(step.uses ?? '').startsWith('actions/checkout@'));
   if (checkouts.length !== 3) throw new Error('Trusted consumer checkout count changed.');
-  for (const checkout of checkouts) {
+  const checkoutPaths = ['relay-verifier', 'relay-verifier', 'relay-cleanup'];
+  for (const [index, checkout] of checkouts.entries()) {
     assertDeepEqual(
       checkout.with,
       {
-        path: 'relay-verifier',
+        path: checkoutPaths[index],
         ref: '${{ github.workflow_sha }}',
         'persist-credentials': false,
       },
@@ -291,6 +292,12 @@ if (present.every((value) => !value)) {
   const hardenIndex = qualification.steps.findIndex(
     (step) => step.name === 'Harden downloaded candidate metadata for private hydration'
   );
+  const sealIndex = qualification.steps.findIndex(
+    (step) => step.name === 'Seal trusted verifier and candidate execution roots'
+  );
+  const availabilityIndex = qualification.steps.findIndex(
+    (step) => step.name === 'Check candidate command availability in mount-isolated sandbox'
+  );
   const hydrateIndex = qualification.steps.findIndex((step) =>
     String(step.run ?? '').includes('relay-candidate-install.mjs hydrate')
   );
@@ -303,6 +310,15 @@ if (present.every((value) => !value)) {
     !hardenSource.includes('candidate-package-lock.json')
   ) {
     throw new Error('Downloaded candidate metadata is not hardened before private hydration.');
+  }
+  if (
+    sealIndex < 0 ||
+    availabilityIndex <= sealIndex ||
+    !String(qualification.steps[availabilityIndex]?.run ?? '').includes('--candidate-mount-sandbox') ||
+    qualification.steps[availabilityIndex]?.env?.VERIFY_FLEET_TRUSTED_VERIFIER !==
+      '${{ github.workspace }}/relay-verifier'
+  ) {
+    throw new Error('Candidate availability is not sealed and mount-isolated before execution.');
   }
   if (
     consumerSource.includes('ref: ${{ github.sha }}') ||

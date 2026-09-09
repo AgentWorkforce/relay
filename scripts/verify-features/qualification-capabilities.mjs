@@ -5,12 +5,71 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-function run(cli, args) {
-  const result = spawnSync(process.execPath, [cli, ...args], {
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+function isWithin(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function candidateSandboxArgv(cli, args) {
+  if (process.platform !== 'linux') {
+    throw new Error('candidate capability checks require a Linux mount namespace');
+  }
+  const runnerTemp = process.env.RUNNER_TEMP?.trim();
+  const candidateCwd = process.env.VERIFY_FLEET_CANDIDATE_CWD?.trim();
+  const trustedVerifier = process.env.VERIFY_FLEET_TRUSTED_VERIFIER?.trim();
+  if (!runnerTemp || !candidateCwd || !trustedVerifier) {
+    throw new Error(
+      'candidate capability checks require RUNNER_TEMP, VERIFY_FLEET_CANDIDATE_CWD, and VERIFY_FLEET_TRUSTED_VERIFIER'
+    );
+  }
+  const candidateRoot = path.resolve(cli, '..', '..', '..', '..', '..');
+  if (
+    !isWithin(runnerTemp, candidateRoot) ||
+    !isWithin(runnerTemp, candidateCwd) ||
+    isWithin(candidateRoot, candidateCwd) ||
+    isWithin(candidateCwd, candidateRoot)
+  ) {
+    throw new Error(
+      'candidate capability paths must use a non-overlapping install and working directory in RUNNER_TEMP'
+    );
+  }
+  return [
+    '/usr/bin/unshare',
+    '--user',
+    '--map-root-user',
+    '--mount',
+    '--net',
+    '--fork',
+    '--',
+    '/bin/sh',
+    path.join(SCRIPT_DIR, 'fleet-candidate-mount-sandbox.sh'),
+    path.resolve(runnerTemp),
+    path.resolve(trustedVerifier),
+    candidateRoot,
+    path.resolve(candidateCwd),
+    process.execPath,
+    cli,
+    ...args,
+  ];
+}
+
+function run(cli, args, isolateCandidate) {
+  const sandboxArgv = isolateCandidate ? candidateSandboxArgv(cli, args) : null;
+  const [command, commandArgs] = sandboxArgv
+    ? [sandboxArgv[0], sandboxArgv.slice(1)]
+    : [process.execPath, [cli, ...args]];
+  const result = spawnSync(command, commandArgs, {
     encoding: 'utf8',
     timeout: 30_000,
     maxBuffer: 2 * 1024 * 1024,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NO_COLOR: '1' },
+    cwd: isolateCandidate ? process.cwd() : undefined,
+    env: {
+      PATH: process.env.PATH,
+      HOME: isolateCandidate ? process.env.VERIFY_FLEET_CANDIDATE_CWD : process.env.HOME,
+      NO_COLOR: '1',
+    },
   });
   return {
     args,
@@ -184,6 +243,7 @@ function main() {
   const effectIndex = process.argv.indexOf('--effect-evidence');
   const effectPath = effectIndex >= 0 ? process.argv[effectIndex + 1] : undefined;
   const availabilityOnly = process.argv.includes('--availability-only');
+  const isolateCandidate = process.argv.includes('--candidate-mount-sandbox');
   if (!availabilityOnly && !effectPath) {
     throw new Error('--effect-evidence is required unless --availability-only is explicit');
   }
@@ -195,7 +255,7 @@ function main() {
   ];
   const effects = effectPath ? JSON.parse(readFileSync(path.resolve(effectPath), 'utf8')) : {};
   const assessment = assessQualificationCapabilities(
-    commands.map((args) => run(resolved, args)),
+    commands.map((args) => run(resolved, args, isolateCandidate)),
     effects
   );
   process.stdout.write(`${JSON.stringify(assessment, null, 2)}\n`);

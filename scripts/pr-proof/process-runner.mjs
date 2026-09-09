@@ -42,11 +42,10 @@ export function signalProcessTree(child, signal) {
       process.kill(-child.pid, signal);
       return;
     } catch (error) {
-      // macOS can report EPERM after the group leader has exited. The caller
-      // still closes its pipes in that case, so an inherited descriptor cannot
-      // keep the result pending. A live child's EPERM remains actionable.
-      if (error?.code === 'EPERM' && childExited) return;
-      if (error?.code !== 'ESRCH') throw error;
+      // macOS can report EPERM for a group containing an unreaped zombie even
+      // though the direct child handle still accepts a signal. Always try that
+      // handle; only a direct live-child denial remains actionable below.
+      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
     }
   }
   try {

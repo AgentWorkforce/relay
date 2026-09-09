@@ -21,9 +21,9 @@ export function validateReleaseInventoryPaths(runnerTemp, candidateRoot, outputR
   if (!runnerTemp || !isWithin(runnerTemp, candidateRoot)) {
     throw new Error('release qualification inventory candidate root must be inside RUNNER_TEMP');
   }
-  if (isWithin(runnerTemp, outputRoot)) {
+  if (isWithin(runnerTemp, outputRoot) || isWithin(outputRoot, runnerTemp)) {
     throw new Error(
-      'release qualification inventory result directory must be outside RUNNER_TEMP; the mount sandbox masks it'
+      'release qualification inventory result directory must not overlap RUNNER_TEMP; the mount sandbox masks it'
     );
   }
 }

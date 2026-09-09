@@ -20,6 +20,7 @@ const MOUNT_ROOT_ONLY_MARKER = 'tests/relayflows/relayfile-root-marker.txt';
 const MAX_CAPTURE_BYTES = 16 * 1024;
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA40 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_SNAPSHOT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const SAFE_SNAPSHOT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
@@ -733,7 +734,15 @@ function isWithin(parent, child) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function candidateSandboxArgv(argv) {
+export function candidateProvenanceSourceSha(verifierCommit, expectedRelaySha, releaseQualification) {
+  if (!SHA40.test(verifierCommit ?? '')) throw new Error('verifier source commit is invalid');
+  if (releaseQualification && !SHA40.test(expectedRelaySha ?? '')) {
+    throw new Error('VERIFY_FLEET_EXPECTED_RELAY_SHA is required for release qualification');
+  }
+  return expectedRelaySha || verifierCommit;
+}
+
+export function candidateSandboxArgv(argv) {
   if (process.platform !== 'linux') {
     throw new Error('release qualification candidate execution requires a Linux mount namespace');
   }
@@ -748,8 +757,8 @@ function candidateSandboxArgv(argv) {
   if (!isWithin(runnerTemp, candidateRoot) || !isWithin(runnerTemp, candidateCwd)) {
     throw new Error('candidate install and working directory must be inside RUNNER_TEMP');
   }
-  if (isWithin(candidateRoot, candidateCwd)) {
-    throw new Error('candidate working directory must be outside the read-only candidate install');
+  if (isWithin(candidateRoot, candidateCwd) || isWithin(candidateCwd, candidateRoot)) {
+    throw new Error('candidate working directory must not overlap the read-only candidate install');
   }
   return [
     '/usr/bin/unshare',
@@ -2271,6 +2280,13 @@ class FleetBoard {
     if (head.exitCode !== 0 || version.exitCode !== 0 || daytonaVersion.exitCode !== 0) {
       throw new Error('Could not bind the board to source, Relay CLI, and Daytona versions');
     }
+    const verifierCommit = head._rawStdout.trim();
+    const expectedRelaySha = process.env.VERIFY_FLEET_EXPECTED_RELAY_SHA?.trim() || null;
+    const candidateSourceSha = candidateProvenanceSourceSha(
+      verifierCommit,
+      expectedRelaySha,
+      this.evidence.environment.releaseQualificationRequested
+    );
     const [cliBytes, runnerBytes] = await Promise.all([
       readRegularFileNoFollow(this.cli, { label: 'Fleet candidate CLI entrypoint' }).then(
         (result) => result.bytes
@@ -2294,7 +2310,7 @@ class FleetBoard {
       });
       candidateInstallAttestationSha256 = createHash('sha256').update(bytes).digest('hex');
       candidateAttestation = validateCandidateInstallAttestation(JSON.parse(bytes.toString('utf8')), {
-        sourceSha: head._rawStdout.trim(),
+        sourceSha: candidateSourceSha,
         cliEntrypoint: this.cli,
         cliSha256,
       });
@@ -2302,7 +2318,8 @@ class FleetBoard {
     const workspacePayload = tryParseJson(workspace._rawStdout);
     const resolvedWorkspaceId = findStringDeep(workspacePayload, ['cloudWorkspaceId', 'workspaceId', 'id']);
     this.evidence.provenance = {
-      sourceCommit: head._rawStdout.trim(),
+      sourceCommit: candidateSourceSha,
+      verifierCommit,
       sourceDirty: status.exitCode === 0 ? status._rawStdout.trim().length > 0 : null,
       sourceStatusExitCode: status.exitCode,
       cliSha256,

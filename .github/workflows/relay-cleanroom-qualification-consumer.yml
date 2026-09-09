@@ -327,12 +327,6 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/daytona" /usr/local/bin/daytona
           daytona version
 
-      - name: Check candidate command availability (not runtime qualification)
-        working-directory: relay-verifier
-        env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
-        run: node scripts/verify-features/qualification-capabilities.mjs --availability-only --cli "$VERIFY_FLEET_CLI"
-
       - name: Seal trusted verifier and candidate execution roots
         run: |
           set -euo pipefail
@@ -340,6 +334,14 @@ jobs:
           chmod -R a-w relay-verifier "$RUNNER_TEMP/relay-candidate-install/install"
           chmod -R u+w relay-verifier/.workflow-artifacts
           chmod u+rwx "$RUNNER_TEMP/relay-candidate-cwd"
+
+      - name: Check candidate command availability in mount-isolated sandbox
+        working-directory: relay-verifier
+        env:
+          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CANDIDATE_CWD: ${{ runner.temp }}/relay-candidate-cwd
+          VERIFY_FLEET_TRUSTED_VERIFIER: ${{ github.workspace }}/relay-verifier
+        run: node scripts/verify-features/qualification-capabilities.mjs --availability-only --candidate-mount-sandbox --cli "$VERIFY_FLEET_CLI"
 
       - name: Create isolated ephemeral Cloud workspace A
         id: workspace_a
@@ -497,6 +499,8 @@ jobs:
         working-directory: relay-verifier
         env:
           VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
+          VERIFY_FLEET_CANDIDATE_CWD: ${{ runner.temp }}/relay-candidate-cwd
+          VERIFY_FLEET_TRUSTED_VERIFIER: ${{ github.workspace }}/relay-verifier
         run: |
           node scripts/verify-features/qualification-effect-evidence.mjs \
             --manifest ../qualification/normalized.json \
@@ -517,6 +521,7 @@ jobs:
             --output ../qualification/runtime-effects.json
           node scripts/verify-features/qualification-capabilities.mjs \
             --cli "$VERIFY_FLEET_CLI" \
+            --candidate-mount-sandbox \
             --effect-evidence ../qualification/runtime-effects.json
 
       - name: Upload candidate qualification evidence

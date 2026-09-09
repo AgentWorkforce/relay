@@ -1261,7 +1261,7 @@ describe('process timeout contract', () => {
       [-4242, 'SIGKILL'],
       [-4242, 'SIGKILL'],
     ]);
-    expect(childCalls).toEqual([]);
+    expect(childCalls).toEqual(['SIGKILL', 'SIGKILL']);
   });
 
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
