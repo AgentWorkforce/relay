@@ -1052,11 +1052,12 @@ async function main() {
     await prepare(requiredString(options.output, '--output'));
     return;
   }
-  if (command === 'verify') {
+  if (command === 'verify' || command === 'verify-structural') {
     requireOptionKeys(options, ['attestation', 'source-sha', 'package-version'], command);
     const result = await verifyCandidateInstall(
       requiredString(options.attestation, '--attestation'),
-      candidateIdentityFromOptions(options)
+      candidateIdentityFromOptions(options),
+      { verifyExecutables: command === 'verify' }
     );
     process.stdout.write(`RELAY_CANDIDATE_INSTALL_VERIFIED sha256=${result.attestationSha256}\n`);
     return;
@@ -1075,7 +1076,7 @@ async function main() {
     );
     return;
   }
-  throw new Error('command must be stage-source-broker, prepare, hydrate, or verify');
+  throw new Error('command must be stage-source-broker, prepare, hydrate, verify, or verify-structural');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

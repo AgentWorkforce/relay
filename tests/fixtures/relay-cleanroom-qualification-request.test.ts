@@ -362,7 +362,7 @@ describe('trusted cleanroom qualification request', () => {
     const installerSource = await readFile('scripts/verify-features/relay-candidate-install.mjs', 'utf8');
     const fleetRunnerSource = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
     expect(installerSource).toContain('verifyExecutables: false');
-    expect(fleetRunnerSource).toContain('candidateExecutable: true');
+    expect(fleetRunnerSource).toContain("candidateExecutable: 'native-broker'");
     expect(consumerSource).toContain('npx relayflows run workflows/verify-fleet-daytona.ts');
     expect(consumerSource).toContain('digest-mismatch: error');
   });

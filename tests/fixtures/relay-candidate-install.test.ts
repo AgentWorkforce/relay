@@ -447,6 +447,15 @@ describe('Relay candidate clean-install attestation', () => {
       const attestationPath = path.join(root, 'candidate-install-attestation.json');
       const broker = path.join(root, 'install', ...input.brokerRelativePath.split('/'));
       const brokerPackage = input.packages.find((entry) => entry.name === '@agent-relay/broker-linux-x64')!;
+      const cliPackage = input.packages.find((entry) => entry.name === 'agent-relay')!;
+      const syncCliAttestation = async () => {
+        const tree = await digestInstalledPackageTree(
+          path.dirname(path.dirname(path.dirname(cliEntrypoint)))
+        );
+        cliPackage.installedTreeSha256 = tree.sha256;
+        cliPackage.installedTreeFileCount = tree.fileCount;
+        cliPackage.installedTreeBytes = tree.bytes;
+      };
       const syncBrokerAttestation = async () => {
         const bytes = await readFile(broker);
         const tree = await digestInstalledPackageTree(path.dirname(path.dirname(broker)));
@@ -465,6 +474,46 @@ describe('Relay candidate clean-install attestation', () => {
       await expect(
         verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha })
       ).resolves.toMatchObject({ attestation: input });
+
+      const executionMarker = path.join(root, 'candidate-executed');
+      const markerBroker = `#!/bin/sh\nprintf broker >> ${JSON.stringify(executionMarker)}\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`;
+      const markerCli = `require('node:fs').appendFileSync(${JSON.stringify(executionMarker)}, 'cli'); console.log('agent-relay v${input.packageVersion}')\n`;
+      await writeFile(broker, markerBroker);
+      await chmod(broker, 0o755);
+      await writeFile(cliEntrypoint, markerCli);
+      input.cliSha256 = sha256(markerCli);
+      await syncCliAttestation();
+      await syncBrokerAttestation();
+      await expect(
+        verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha }, { verifyExecutables: false })
+      ).resolves.toMatchObject({ attestation: input });
+      await expect(readFile(executionMarker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      const structural = spawnSync(
+        process.execPath,
+        [
+          path.resolve('scripts/verify-features/relay-candidate-install.mjs'),
+          'verify-structural',
+          '--attestation',
+          attestationPath,
+          '--source-sha',
+          input.sourceSha,
+          '--package-version',
+          input.packageVersion,
+        ],
+        { encoding: 'utf8' }
+      );
+      expect(structural.status).toBe(0);
+      expect(structural.stdout).toContain('RELAY_CANDIDATE_INSTALL_VERIFIED');
+      await expect(readFile(executionMarker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(verifyCandidateInstall(attestationPath)).resolves.toMatchObject({ attestation: input });
+      expect(await readFile(executionMarker, 'utf8')).toBe('brokercli');
+      await rm(executionMarker);
+      await writeFile(broker, `#!/bin/sh\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`);
+      await chmod(broker, 0o755);
+      await writeFile(cliEntrypoint, cli);
+      input.cliSha256 = sha256(cli);
+      await syncCliAttestation();
+      await syncBrokerAttestation();
 
       const substitutedTransitive = path.join(root, 'install', 'node_modules', 'substituted-transitive');
       await mkdir(substitutedTransitive);

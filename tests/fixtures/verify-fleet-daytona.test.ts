@@ -60,6 +60,26 @@ import {
 const NONCE = 'a'.repeat(32);
 const execFileAsync = promisify(execFile);
 
+async function canCreateCandidateMountNamespace(): Promise<boolean> {
+  if (process.platform !== 'linux') return false;
+  try {
+    await execFileAsync(
+      '/usr/bin/unshare',
+      ['--user', '--map-root-user', '--mount', '--net', '--fork', '--', '/bin/true'],
+      { timeout: 5_000 }
+    );
+    return true;
+  } catch (error) {
+    const details = [
+      String((error as NodeJS.ErrnoException).code ?? ''),
+      String((error as { stderr?: string }).stderr ?? ''),
+      String((error as Error).message ?? ''),
+    ].join('\n');
+    if (/\bEPERM\b|operation not permitted/i.test(details)) return false;
+    throw error;
+  }
+}
+
 type WorkflowStepDeclaration = {
   dependsOn: string[];
   offset: number;
@@ -582,6 +602,8 @@ describe('complete Daytona Fleet board', () => {
       'preflight-claude-model',
     ]);
     expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
+    expect(source).toContain('relay-candidate-install.mjs verify-structural');
+    expect(source).not.toContain('relay-candidate-install.mjs verify --attestation');
     expect(source).toContain("let candidatePreparationDependency = 'build-current-cli'");
     expect(installNpm!.offset).toBeGreaterThan(build!.offset);
     expect(source).toMatch(/npm\s+install\s+--global\s+npm@\$\{REQUIRED_NPM_VERSION\}/);
@@ -984,9 +1006,12 @@ describe('complete Daytona Fleet board', () => {
   it.skipIf(process.platform !== 'linux')('rejects candidate CWDs that contain the candidate install', () => {
     const previousRunnerTemp = process.env.RUNNER_TEMP;
     const previousCandidateCwd = process.env.VERIFY_FLEET_CANDIDATE_CWD;
+    const previousCli = process.env.VERIFY_FLEET_CLI;
     try {
       process.env.RUNNER_TEMP = '/runner-temp';
       process.env.VERIFY_FLEET_CANDIDATE_CWD = '/runner-temp';
+      process.env.VERIFY_FLEET_CLI =
+        '/runner-temp/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js';
       expect(() =>
         candidateSandboxArgv([
           process.execPath,
@@ -999,6 +1024,47 @@ describe('complete Daytona Fleet board', () => {
       else process.env.RUNNER_TEMP = previousRunnerTemp;
       if (previousCandidateCwd === undefined) delete process.env.VERIFY_FLEET_CANDIDATE_CWD;
       else process.env.VERIFY_FLEET_CANDIDATE_CWD = previousCandidateCwd;
+      if (previousCli === undefined) delete process.env.VERIFY_FLEET_CLI;
+      else process.env.VERIFY_FLEET_CLI = previousCli;
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('keeps a native candidate broker as the sandbox executable', () => {
+    const previousRunnerTemp = process.env.RUNNER_TEMP;
+    const previousCandidateCwd = process.env.VERIFY_FLEET_CANDIDATE_CWD;
+    const previousCli = process.env.VERIFY_FLEET_CLI;
+    const runnerTemp = '/runner-temp';
+    const candidateRoot = '/runner-temp/relay-candidate-install/install';
+    const candidateCwd = '/runner-temp/relay-candidate-cwd';
+    const cli = `${candidateRoot}/node_modules/agent-relay/dist/cli/index.js`;
+    const broker = `${candidateRoot}/node_modules/@agent-relay/broker-linux-x64/bin/agent-relay-broker`;
+    try {
+      process.env.RUNNER_TEMP = runnerTemp;
+      process.env.VERIFY_FLEET_CANDIDATE_CWD = candidateCwd;
+      process.env.VERIFY_FLEET_CLI = cli;
+      expect(candidateSandboxArgv([broker, '--version'], 'native-broker')).toEqual([
+        '/usr/bin/unshare',
+        '--user',
+        '--map-root-user',
+        '--mount',
+        '--fork',
+        '--',
+        '/bin/sh',
+        path.resolve('scripts/verify-features/fleet-candidate-mount-sandbox.sh'),
+        runnerTemp,
+        process.cwd(),
+        candidateRoot,
+        candidateCwd,
+        broker,
+        '--version',
+      ]);
+    } finally {
+      if (previousRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = previousRunnerTemp;
+      if (previousCandidateCwd === undefined) delete process.env.VERIFY_FLEET_CANDIDATE_CWD;
+      else process.env.VERIFY_FLEET_CANDIDATE_CWD = previousCandidateCwd;
+      if (previousCli === undefined) delete process.env.VERIFY_FLEET_CLI;
+      else process.env.VERIFY_FLEET_CLI = previousCli;
     }
   });
 
@@ -1025,6 +1091,7 @@ describe('complete Daytona Fleet board', () => {
   it.skipIf(process.platform !== 'linux')(
     'rejects a real write to the final candidate bind while allowing only candidate CWD writes',
     async () => {
+      if (!(await canCreateCandidateMountNamespace())) return;
       const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-mount-proof-'));
       const runnerTemp = path.join(root, 'runner-temp');
       const verifier = path.join(root, 'trusted-verifier');
@@ -1069,6 +1136,46 @@ describe('complete Daytona Fleet board', () => {
         ]);
         expect(await readFile(cwdWrite, 'utf8')).toBe('{"readOnly":true,"verifierHidden":true}');
         await expect(readFile(candidateWrite, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'executes the native broker through the sealed mount sandbox',
+    async () => {
+      if (!(await canCreateCandidateMountNamespace())) return;
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-native-broker-sandbox-'));
+      const runnerTemp = path.join(root, 'runner-temp');
+      const verifier = path.join(root, 'trusted-verifier');
+      const candidateRoot = path.join(runnerTemp, 'candidate');
+      const candidateCwd = path.join(runnerTemp, 'candidate-cwd');
+      const broker = path.join(candidateRoot, 'bin', 'agent-relay-broker');
+      try {
+        await Promise.all([
+          mkdir(path.dirname(broker), { recursive: true }),
+          mkdir(candidateCwd, { recursive: true }),
+          mkdir(verifier, { recursive: true }),
+        ]);
+        await writeFile(broker, "#!/bin/sh\nprintf 'agent-relay-broker sandboxed\\n'\n");
+        await chmod(broker, 0o755);
+        const { stdout } = await execFileAsync('/usr/bin/unshare', [
+          '--user',
+          '--map-root-user',
+          '--mount',
+          '--fork',
+          '--',
+          '/bin/sh',
+          path.resolve('scripts/verify-features/fleet-candidate-mount-sandbox.sh'),
+          runnerTemp,
+          verifier,
+          candidateRoot,
+          candidateCwd,
+          broker,
+          '--version',
+        ]);
+        expect(stdout).toBe('agent-relay-broker sandboxed\n');
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -1196,15 +1303,7 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       process.env.DAYTONA_API_KEY = 'daytona-secret';
       process.env.OPENAI_API_KEY = 'openai-secret';
       process.env.CLOUD_API_ACCESS_TOKEN = 'cloud-secret';
-      let mountSandboxAvailable = false;
-      if (process.platform === 'linux') {
-        try {
-          await execFileAsync('/usr/bin/unshare', ['--user', '--map-root-user', '--mount', '--fork', 'true']);
-          mountSandboxAvailable = true;
-        } catch {
-          // The package-install test container may intentionally disallow user namespaces.
-        }
-      }
+      const mountSandboxAvailable = await canCreateCandidateMountNamespace();
       if (mountSandboxAvailable) {
         process.env.VERIFY_FLEET_RELEASE_QUALIFICATION = '1';
         process.env.RUNNER_TEMP = root;

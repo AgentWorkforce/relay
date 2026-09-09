@@ -742,7 +742,7 @@ export function candidateProvenanceSourceSha(verifierCommit, expectedRelaySha, r
   return expectedRelaySha || verifierCommit;
 }
 
-export function candidateSandboxArgv(argv) {
+export function candidateSandboxArgv(argv, executableKind = 'cli') {
   if (process.platform !== 'linux') {
     throw new Error('release qualification candidate execution requires a Linux mount namespace');
   }
@@ -762,6 +762,17 @@ export function candidateSandboxArgv(argv) {
   if (isWithin(candidateRoot, candidateCwd) || isWithin(candidateCwd, candidateRoot)) {
     throw new Error('candidate working directory must not overlap the read-only candidate install');
   }
+  if (executableKind === 'cli') {
+    if (argv[0] !== process.execPath || path.resolve(argv[1] ?? '') !== path.resolve(configuredCli)) {
+      throw new Error('candidate CLI sandbox argv does not target the configured candidate CLI');
+    }
+  } else if (executableKind === 'native-broker') {
+    if (!path.isAbsolute(argv[0] ?? '') || !isWithin(candidateRoot, argv[0])) {
+      throw new Error('candidate broker sandbox argv must target the candidate install');
+    }
+  } else {
+    throw new Error(`unknown candidate executable kind: ${executableKind}`);
+  }
   return [
     '/usr/bin/unshare',
     '--user',
@@ -775,7 +786,7 @@ export function candidateSandboxArgv(argv) {
     process.cwd(),
     candidateRoot,
     path.resolve(candidateCwd),
-    process.execPath,
+    executableKind === 'cli' ? process.execPath : argv[0],
     ...argv.slice(1),
   ];
 }
@@ -852,9 +863,14 @@ async function execute(argv, options = {}) {
   const startedAt = new Date().toISOString();
   const monotonicStartNs = process.hrtime.bigint();
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const candidate = isCandidateCliArgv(argv) || options.candidateExecutable === true;
+  const candidateExecutableKind = isCandidateCliArgv(argv)
+    ? 'cli'
+    : options.candidateExecutable === 'native-broker'
+      ? 'native-broker'
+      : null;
+  const candidate = candidateExecutableKind !== null;
   const releaseCandidate = candidate && process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1';
-  const childArgv = releaseCandidate ? candidateSandboxArgv(argv) : argv;
+  const childArgv = releaseCandidate ? candidateSandboxArgv(argv, candidateExecutableKind) : argv;
   const env = childEnvironment(options.env, candidate);
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
@@ -2319,7 +2335,7 @@ class FleetBoard {
       const candidateRoot = path.resolve(this.cli, '..', '..', '..', '..', '..');
       const brokerPath = path.join(candidateRoot, ...candidateAttestation.brokerRelativePath.split('/'));
       const brokerVersion = await execute([brokerPath, '--version'], {
-        candidateExecutable: true,
+        candidateExecutable: 'native-broker',
         timeoutMs: 30_000,
       });
       if (

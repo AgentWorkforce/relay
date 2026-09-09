@@ -66,7 +66,7 @@ const CANDIDATE_CLI =
 const CANDIDATE_ATTESTATION =
   CONFIGURED_CANDIDATE_ATTESTATION ?? `${CANDIDATE_INSTALL_ROOT}/candidate-install-attestation.json`;
 const CANDIDATE_PREPARE_COMMAND = CONFIGURED_CANDIDATE_CLI
-  ? `node scripts/verify-features/relay-candidate-install.mjs verify --attestation ${CANDIDATE_ATTESTATION} --source-sha ${EXPECTED_CANDIDATE_SHA} --package-version ${EXPECTED_CANDIDATE_VERSION}`
+  ? `node scripts/verify-features/relay-candidate-install.mjs verify-structural --attestation ${CANDIDATE_ATTESTATION} --source-sha ${EXPECTED_CANDIDATE_SHA} --package-version ${EXPECTED_CANDIDATE_VERSION}`
   : `node scripts/verify-features/relay-candidate-install.mjs prepare --output ${CANDIDATE_INSTALL_ROOT}`;
 
 if (!/^[a-z0-9][a-z0-9-]{0,60}$/.test(NONCE)) {
