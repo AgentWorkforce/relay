@@ -5,6 +5,7 @@ on:
     paths:
       - 'scripts/fleet/**'
       - 'tests/fleet/**'
+      - 'tests/fleet-proof/**'
       - 'tests/relayflows/cases/fleet-disk-reaper/**'
       - '.github/workflows/fleet-disk-reaper.yml'
   push:
@@ -12,6 +13,7 @@ on:
     paths:
       - 'scripts/fleet/**'
       - 'tests/fleet/**'
+      - 'tests/fleet-proof/**'
       - '.github/workflows/fleet-disk-reaper.yml'
 
 permissions:
@@ -37,3 +39,5 @@ jobs:
         run: command -v lsof
       - name: Exercise Git and active-lane retention
         run: python3 -m unittest discover -s tests/fleet -v
+      - name: Reject empty or invalid proof evidence
+        run: python3 -m unittest discover -s tests/fleet-proof -v

@@ -73,6 +73,12 @@ class ProofRunnerTests(unittest.TestCase):
         )
 
     def test_empty_discovery_never_publishes_fixed(self):
+        # Passing meta-tests elsewhere must not replace missing safety tests.
+        meta = self.harness / "tests" / "fleet-proof"
+        meta.mkdir()
+        (meta / "test_meta.py").write_text(
+            "import unittest\nclass Meta(unittest.TestCase):\n    def test_ok(self): pass\n"
+        )
         result = self.run_proof()
         self.assertIn("Ran 0 tests", result.stderr)
         self.assert_rejected(result)

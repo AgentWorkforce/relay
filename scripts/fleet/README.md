@@ -124,11 +124,14 @@ proof-entry-point regression tests):
 
 ```sh
 python3 -m unittest discover -s tests/fleet -v
+python3 -m unittest discover -s tests/fleet-proof -v
 ```
 
 The suite builds local bare remotes and temporary lanes, exercises successful
 removal, protects dirty/unpushed/active lanes, and checks both worktree and cache
-safety. The PR proof executes the same harness against target production code.
+safety. The PR proof executes the safety suite against target production code.
+Proof-runner regressions live in a separate discovery directory, so they cannot
+provide a positive count when the actual reaper safety tests are missing.
 
 ## Acquisition follow-ups
 
