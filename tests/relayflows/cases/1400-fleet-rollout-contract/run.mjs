@@ -233,6 +233,7 @@ async function assertCompiledSdkCompatibility(directory, networkEnv) {
     ];
     const expected = JSON.stringify({ enabled: true, defaultEnabled: true, override: null });
     if (values.some((value) => JSON.stringify(value) !== expected)) process.exit(2);
+    // Mutation guard: the local compatibility shim must not recreate the removed upstream surface.
     if ('fleetNodes' in upstream.workspace) process.exit(3);
   `;
   const probe = run(
