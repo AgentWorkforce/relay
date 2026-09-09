@@ -109,8 +109,9 @@ node tests/e2e/github-subscriptions/local-ai.mjs /absolute/fresh-ai-evidence
 This starts one actual Claude worker. Keep the assignment's independent reviewer stopped until cleanup completes. It verifies two successive idle actions, a600-second idle interval, ten distinct burst events, duplicate idempotency, no pre-join replay and an actual node WebSocket reconnect. Its signed producer is synthetic; these results cannot satisfy the real GitHub or actual-chief gates. It retains broker events, source/binary and runner/helper hashes, sanitized logs, channel messages and receiver tool-call names. Missing tool evidence, history/network polling, cleanup failure or missing digest action fails the run. `LOCAL_AI_LONG_IDLE_MS` may shorten a repair rerun, but such a run is not ten-minute idle proof.
 
 Set `LOCAL_AI_CLI=codex` for a separately labeled actual Codex proof using an existing
-logged-in Codex installation. This pins the actor to `gpt-6-astra` with high reasoning,
-restricts the Relay MCP server to `post_message`, and disables web search, apps,
+logged-in Codex installation. `LOCAL_AI_EXECUTABLE=/absolute/path/to/codex` can
+pin the executable when multiple versions are installed; the report records its
+path and version. This pins the actor to `gpt-6-astra` with high reasoning, restricts the Relay MCP server to `post_message`, and disables web search, apps,
 multi-agent tools. The installed Codex code-mode host stays enabled; its tool calls
 are parsed as syntax, never evaluated by the auditor, and only a single literal
 digest/action call inside `text(await tools.tool(...))` is accepted. The audit requires exactly one newly created Codex
