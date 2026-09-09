@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1712-cloud-launch-timeout",
+  "kind": "bugfix",
+  "title": "Forward explicit Cloud workflow launch budgets through the public client",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1712-cloud-launch-timeout/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "launch_timeout_not_forwarded"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "launch_timeout_forwarded"
+    }
+  }
+}
