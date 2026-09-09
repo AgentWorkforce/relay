@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 export const digest = (nonce) => createHash('sha256').update(nonce).digest('hex');
 export const noncePattern = /GHSUB_EVENT_NONCE=([a-f0-9]{32})\b/g;
@@ -151,4 +153,18 @@ export async function releaseOwnedWorker(broker, owned) {
   if (current && current.generation !== owned.generation)
     throw new Error('Worker generation changed; refusing to clean up its replacement');
   await broker.release(owned.name, 'owned GitHub demo cleanup', owned.generation, true);
+}
+
+/** Preserve startup-failure diagnostics before attempting an idle-only audit. */
+export function persistWorkerDiagnostics(output, file, actorLog, firstIdleAt) {
+  const diagnostic = [
+    {
+      file,
+      tail: actorLog
+        .slice(-12000)
+        .replace(/(?:rk_live_|at_live_|nt_live_|sk-ant-|sk-)[A-Za-z0-9_-]+/g, '[redacted]'),
+    },
+  ];
+  writeFileSync(path.join(output, 'diagnostics.json'), JSON.stringify(diagnostic, null, 2) + '\n');
+  return firstIdleAt === undefined ? null : standaloneControlsAfter(actorLog, firstIdleAt);
 }

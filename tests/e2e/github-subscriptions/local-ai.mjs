@@ -35,9 +35,8 @@ if (existsSync(path.join(output, 'report.json')))
   throw new Error('Use a fresh output directory; prior evidence must remain intact');
 mkdirSync(output, { recursive: true });
 const { HarnessDriverClient } = await import(root + '/packages/harness-driver/dist/index.js');
-const { receiverTask, digest, claudeReceiverArgs, standaloneControlsAfter } = await import(
-  root + '/tests/e2e/github-subscriptions/proof.mjs'
-);
+const { receiverTask, digest, claudeReceiverArgs, standaloneControlsAfter, persistWorkerDiagnostics } =
+  await import(root + '/tests/e2e/github-subscriptions/proof.mjs');
 const { startServer } = await import(
   path.join(path.resolve(engineDir), 'packages/engine/dist/entrypoints/node.js')
 );
@@ -524,7 +523,6 @@ try {
     });
   if (server) await server.stop();
   // Retain only sanitized evidence; the temporary broker/MCP configuration carries local test credentials.
-  const diagnostic = [];
   try {
     // Read only this owned actor's log. Open without following a final symlink,
     // then inspect and read the same descriptor, avoiding a stat/path-read race.
@@ -533,23 +531,25 @@ try {
     try {
       assert(fstatSync(descriptor).isFile(), 'Owned actor diagnostic must be a regular file');
       const actorLog = readFileSync(descriptor, 'utf8');
-      report.idleControlWrites = standaloneControlsAfter(actorLog, report.firstIdleAt);
-      if (report.idleControlWrites.length) {
+      const controls = persistWorkerDiagnostics(
+        output,
+        path.relative(work, full),
+        actorLog,
+        report.firstIdleAt
+      );
+      report.idleControlWrites = controls;
+      report.idleControlAudit = controls === null ? 'not-reached' : 'completed';
+      if (controls === null || controls.length) {
         report.idleControlAuditError =
-          'Standalone PTY control input occurred after initial idle; no-poke proof rejected';
+          controls === null
+            ? 'Initial idle boundary was not reached; startup diagnostics retained'
+            : 'Standalone PTY control input occurred after initial idle; no-poke proof rejected';
         report.pass = false;
         process.exitCode = 1;
       }
-      diagnostic.push({
-        file: path.relative(work, full),
-        tail: actorLog
-          .slice(-12000)
-          .replace(/(?:rk_live_|at_live_|nt_live_|sk-ant-|sk-)[A-Za-z0-9_-]+/g, '[redacted]'),
-      });
     } finally {
       closeSync(descriptor);
     }
-    writeFileSync(path.join(output, 'diagnostics.json'), JSON.stringify(diagnostic, null, 2) + '\n');
   } catch (error) {
     report.diagnosticError = error.message;
     report.pass = false;

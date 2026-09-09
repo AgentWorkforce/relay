@@ -351,6 +351,7 @@ function makeContext(
 // node.spawn acknowledges placement, not launch. A served handler must not
 // complete until its broker confirms readiness (or reports the terminal error).
 // Node credentials can read only spawn invocations dispatched to their own node.
+/** @internal Excluded from the published package entry point. */
 export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement: unknown): Promise<unknown> {
   const invocationId = (placement as { invocation_id?: unknown } | null)?.invocation_id;
   if (typeof invocationId !== 'string' || !invocationId) {

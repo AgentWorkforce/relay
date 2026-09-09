@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `node status` bounds local API probes so a stalled broker cannot hang the command for the default 30-second request timeout.
 
-- Codex subscription deliveries submit pasted input with a separate Enter write and stop background Enter recovery after acknowledgment, so handled events do not keep poking idle workers.
 - Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
 - Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
 - Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
@@ -24,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Served fleet spawn actions wait for the broker's confirmed readiness and propagate terminal launch failures instead of completing at placement.
 
 ### Changed
+
+- Claude and Codex workers receive a separate delayed Enter for every injected delivery. After the PTY acknowledges that write, background Enter recovery is disabled for both harnesses to avoid submitting unrelated input after idle. The structured `injection_recovery_disabled` diagnostic explicitly leaves harness acceptance unconfirmed: echoed input is not proof of an agent action.
 
 - `serveNode` verifies spawns by default and requires engine support for node-owned spawn status reads; deploy the compatible engine before publishing/upgrading fleet clients. Legacy handlers can explicitly set `verifyReady: false` to receive unverified placement only.
 - SDK `waitForReady` reports `startup_fallback` at its deadline when `worker_startup_fallback` occurred without a proven readiness handshake.

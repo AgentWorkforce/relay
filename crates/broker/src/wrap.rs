@@ -72,7 +72,7 @@ const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// same paste burst as editor content, leaving the task parked in its composer.
 /// Give its submit key a distinct, delayed PTY write. Other harnesses retain
 /// the established body-plus-Enter write shape.
-pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+fn paste_submit_harness(cli: &str) -> bool {
     let basename = cli
         .rsplit(['/', '\\'])
         .next()
@@ -83,7 +83,11 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
     // Claude identity signal used by readiness and activity detection so a
     // wrapper cannot silently fall back to the broken body-plus-Enter burst.
     let lower = basename.to_ascii_lowercase();
-    (lower.contains("claude") || lower.contains("codex")).then_some(PASTE_INJECTION_SUBMIT_DELAY)
+    lower.contains("claude") || lower.contains("codex")
+}
+
+pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+    paste_submit_harness(cli).then_some(PASTE_INJECTION_SUBMIT_DELAY)
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -690,17 +694,25 @@ impl PtyAutoState {
         }
     }
 
-    /// Call only after the atomic body+submit write is acknowledged. Codex's
-    /// delayed submit is complete at that point; background Enter recovery
-    /// would poke an idle session long after it already consumed the event.
+    /// Acknowledgment confirms a PTY write, never a harness action. Claude and
+    /// Codex already received a separate delayed submit; another Enter after
+    /// they become idle can submit unrelated composer text or repeat a command.
+    /// Keep that distinction observable, including when the body only echoed.
     pub(crate) fn note_completed_injection(&mut self, cli: &str) {
-        let codex = cli
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(cli)
-            .to_ascii_lowercase()
-            .contains("codex");
-        self.last_injection_time = if codex { None } else { Some(Instant::now()) };
+        let delayed_submit = paste_submit_harness(cli);
+        self.last_injection_time = if delayed_submit {
+            None
+        } else {
+            Some(Instant::now())
+        };
+        if delayed_submit {
+            tracing::info!(
+                cli,
+                event = "injection_recovery_disabled",
+                harness_acceptance = "unconfirmed",
+                "PTY body and delayed submit written; background Enter recovery disabled; echo verification does not confirm harness action"
+            );
+        }
         self.auto_enter_retry_count = 0;
     }
 
@@ -908,12 +920,20 @@ while True:
     }
 
     #[tokio::test]
-    async fn acknowledged_codex_submit_never_arms_idle_enter_recovery() {
+    async fn acknowledged_paste_submit_never_arms_idle_enter_recovery() {
         let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
-        for cli in ["codex", "/usr/local/bin/Codex.EXE", "company-codex"] {
+        for cli in [
+            "codex",
+            "/usr/local/bin/Codex.EXE",
+            "company-codex",
+            "/opt/codex/",
+            "claude",
+            "claude-code",
+        ] {
             let mut state = PtyAutoState::new();
             state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
             state.auto_enter_retry_count = 3;
+            assert!(injection_submit_followup_delay(cli).is_some());
             state.note_completed_injection(cli);
             state.last_output_time = Instant::now() - Duration::from_secs(120);
             for _ in 0..6 {
@@ -921,7 +941,7 @@ while True:
             }
             assert_eq!(
                 state.auto_enter_retry_count, 0,
-                "acknowledged Codex submit must never poke idle"
+                "acknowledged paste submit must never poke idle"
             );
             assert!(state.last_injection_time.is_none());
         }
@@ -936,6 +956,41 @@ while True:
         legacy.try_auto_enter(&pty);
         assert_eq!(legacy.auto_enter_retry_count, 1);
         let _ = pty.shutdown();
+    }
+
+    #[test]
+    fn delayed_submit_acknowledgment_never_claims_harness_acceptance() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || LogWriter(writer.clone()))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // A parked composer can echo the entire body: only a write was
+            // acknowledged here, so never infer a consuming harness turn.
+            let mut state = PtyAutoState::new();
+            state.note_completed_injection("codex");
+            assert!(state.last_injection_time.is_none());
+        });
+        let output = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("injection_recovery_disabled"));
+        assert!(output.contains("unconfirmed"));
+        assert!(output.contains("echo verification does not confirm harness action"));
     }
 
     /// While an interactive hold is active, `try_auto_enter` must not press

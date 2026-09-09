@@ -557,4 +557,12 @@ function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
   throw new Error(message);
 }
 
-export * from './serve-node.js';
+export { serveNode, startServeNode } from './serve-node.js';
+export type {
+  NodeEngineConnection,
+  FleetTriggerSyncTrigger,
+  FleetTriggerSyncClient,
+  FleetLogger,
+  ServeNodeOptions,
+  RunningNode,
+} from './serve-node.js';

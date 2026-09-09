@@ -1,4 +1,8 @@
 import { test } from 'node:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { persistWorkerDiagnostics } from './proof.mjs';
 import assert from 'node:assert/strict';
 import {
   correlate,
@@ -149,4 +153,26 @@ test('captured success requires an observed negative arm', async () => {
   assert.equal(capturedStimuliPass([{ pass: true }], []), false);
   assert.equal(capturedStimuliPass([{ pass: true }], [{ pass: false }]), false);
   assert.equal(capturedStimuliPass([{ pass: true }], [{ pass: true }]), true);
+});
+
+test('startup failure retains sanitized diagnostics without inventing an idle audit', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ghsub-diagnostic-'));
+  try {
+    assert.equal(
+      persistWorkerDiagnostics(dir, 'owned.log', 'Login failed: rk_live_private', undefined),
+      null
+    );
+    const data = JSON.parse(readFileSync(path.join(dir, 'diagnostics.json'), 'utf8'));
+    assert.equal(data[0].tail, 'Login failed: [redacted]');
+    assert.throws(
+      () => persistWorkerDiagnostics(dir, 'owned.log', 'bad audit boundary', 'invalid'),
+      /idle boundary/
+    );
+    assert.equal(
+      JSON.parse(readFileSync(path.join(dir, 'diagnostics.json'), 'utf8'))[0].tail,
+      'bad audit boundary'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

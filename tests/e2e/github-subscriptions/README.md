@@ -128,3 +128,10 @@ succeed. Missing control-write diagnostics fail the proof; initial startup input
 before the first idle boundary and the atomic body+submit event write are separate.
 
 Owned cleanup runs independently of the broker API loop. The name and generation remain reserved until confirmed deletion; failed attempts retry up to five times at five-second intervals. A generation-guarded release retries retained cleanup. API failures identify unconfirmed cleanup and its generation; they do not claim resources are gone. Shutdown waits up to one second for pending cleanup and logs any generation still requiring reconciliation.
+
+Claude and Codex use the same delayed-submit and no-background-Enter policy. The
+`injection_recovery_disabled` broker diagnostic records that a PTY write was
+acknowledged while harness acceptance remains unconfirmed. A body parked in a
+composer cannot pass this runner: each stimulus still requires the exact actor's
+digest action within its deadline. Startup failures retain sanitized actor logs
+in `diagnostics.json` even when the first idle boundary was never reached.

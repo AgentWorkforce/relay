@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { action, defineNode, spawn } from './index.js';
+import * as publicFleet from './index.js';
 import {
   startServeNode,
   waitForDelegatedSpawn,
@@ -747,4 +748,10 @@ describe('serveNode', () => {
       await running.stop();
     });
   });
+});
+
+it('keeps delegated confirmation internal to the fleet package', () => {
+  expect(publicFleet).not.toHaveProperty('waitForDelegatedSpawn');
+  expect(publicFleet).toHaveProperty('startServeNode');
+  expect(publicFleet).toHaveProperty('serveNode');
 });
