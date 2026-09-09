@@ -225,6 +225,25 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it('hoists var declarations in a catch block to the enclosing function scope', () => {
+    const source = [
+      'try {} catch (e) { var wf = workflow(\'real\'); }',
+      'wf.timeout(900_000);',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('does not treat a catch block as the var-hoist function scope', () => {
+    const source = [
+      "workflow('root').timeout(900_000);",
+      'function outer() {',
+      "  try {} catch (e) { var wf = workflow('inner'); }",
+      '  wf.timeout(600_000);',
+      '}',
+    ].join('\n');
+    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
+  });
+
   it('hoists var builder bindings to the surrounding function scope', () => {
     const source = ['{', "  var wf = workflow('real');", '}', 'wf.timeout(900_000);'].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);

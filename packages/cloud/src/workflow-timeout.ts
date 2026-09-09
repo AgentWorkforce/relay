@@ -524,6 +524,7 @@ function addFunctionBinding(
 function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
   functionScopes: Set<number>;
   functionBindings: Map<number, Set<string>>;
+  varScopes: Set<number>;
 } {
   const { source, scopeAt, scopeParents } = masked;
   const functionScopes = new Set<number>();
@@ -613,7 +614,7 @@ function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
     }
     for (let cursor = bodyStart; cursor < bodyEnd; cursor += 1) scopeAt[cursor] = lambdaScope;
   }
-  return { functionScopes, functionBindings };
+  return { functionScopes, functionBindings, varScopes: functionScopes };
 }
 
 function collectFunctionScopes(
@@ -622,11 +623,13 @@ function collectFunctionScopes(
 ): {
   functionScopes: Set<number>;
   functionBindings: Map<number, Set<string>>;
+  varScopes: Set<number>;
 } {
   const { source, matchingOpenParens, matchingCloseParens, matchingCloseBraces, scopeAt, nextNonWhitespace } =
     masked;
   const functionScopes = new Set<number>();
   const functionBindings = new Map<number, Set<string>>();
+  const varScopes = new Set<number>();
 
   if (fileType === 'py') return collectPythonFunctionScopes(masked);
 
@@ -637,6 +640,7 @@ function collectFunctionScopes(
     if (bodyOpen === undefined || bodyOpen + 1 >= source.length) return;
     const scopeId = scopeAt[bodyOpen + 1] ?? 0;
     functionScopes.add(scopeId);
+    varScopes.add(scopeId);
     addFunctionBinding(functionBindings, scopeId, source.slice(parametersStart, parametersEnd));
   };
 
@@ -682,6 +686,7 @@ function collectFunctionScopes(
     if (source[bodyOpen] !== '{' || bodyOpen + 1 >= source.length) continue;
     const scopeId = scopeAt[bodyOpen + 1] ?? 0;
     functionScopes.add(scopeId);
+    varScopes.add(scopeId);
     let parameterClose = previousNonWhitespace(source, arrowMatch.index - 1);
     while (parameterClose >= 0 && source[parameterClose] !== ')') parameterClose -= 1;
     if (parameterClose >= 0) {
@@ -695,7 +700,7 @@ function collectFunctionScopes(
     }
   }
 
-  return { functionScopes, functionBindings };
+  return { functionScopes, functionBindings, varScopes };
 }
 
 function nearestFunctionScope(
@@ -723,7 +728,7 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const masked = maskNonCode(workflow, fileType);
   const source = masked.source;
-  const { functionScopes, functionBindings } = collectFunctionScopes(masked, fileType);
+  const { functionScopes, functionBindings, varScopes } = collectFunctionScopes(masked, fileType);
   const bindings = new Map<number, Map<string, WorkflowBinding>>();
   const declarationPattern =
     fileType === 'ts'
@@ -736,7 +741,7 @@ export function inferWorkflowLaunchTimeoutMs(
     const declarationName = fileType === 'ts' ? declaration[2] : declaration[1];
     const bindingScope =
       declarationKind === 'var'
-        ? nearestFunctionScope(scopeId, functionScopes, masked.scopeParents)
+        ? nearestFunctionScope(scopeId, varScopes, masked.scopeParents)
         : scopeId;
     let scopeBindings = bindings.get(scopeId);
     if (scopeBindings === undefined || bindingScope !== scopeId) {
