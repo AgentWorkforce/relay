@@ -692,6 +692,19 @@ export interface RelayWorkspaceInfo {
 }
 
 /**
+ * The legacy workspace Fleet rollout view.
+ *
+ * @deprecated Fleet node delivery is always on. The compatibility methods
+ * return `{ enabled: true, defaultEnabled: true, override: null }` locally and
+ * never mutate workspace state.
+ */
+export interface RelayWorkspaceFleetNodesConfig {
+  enabled: boolean;
+  defaultEnabled: boolean;
+  override: boolean | null;
+}
+
+/**
  * Relay inbox states built on the canonical delivery-status lifecycle:
  * `queued`/`delivered`/`failed` surface directly, the terminal `acked` and
  * `dead_lettered` ledger states surface as `read` and `failed`, and
@@ -1043,6 +1056,12 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
+    /** @deprecated Fleet node delivery is always on; these methods are read-only compatibility shims. */
+    fleetNodes: {
+      get(): Promise<RelayWorkspaceFleetNodesConfig>;
+      set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
+      inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
+    };
   };
 }
 

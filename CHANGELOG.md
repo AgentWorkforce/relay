@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Fleet node delivery is always on; retired workspace rollout controls now fail locally with migration guidance instead of calling a removed API.
+- Fleet node delivery is always on; retired CLI rollout controls fail locally with migration guidance, while the deprecated SDK surface reports immutable always-on state without calling a removed API.
 
 ## [11.10.4] - 2026-09-08
 

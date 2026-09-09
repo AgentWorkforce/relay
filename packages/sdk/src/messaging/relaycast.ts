@@ -77,6 +77,7 @@ import type {
   RelayRegisterCapabilityInput,
   RelayWebhook,
   RelayWorkspaceInfo,
+  RelayWorkspaceFleetNodesConfig,
   InboxAckInput,
   InboxDeferInput,
   InboxFailInput,
@@ -127,6 +128,12 @@ const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
 const DEFAULT_CONFIRM_POLL_MS = 500;
 /** `setTimeout` clamps anything larger, firing immediately instead of waiting. */
 const MAX_CONFIRM_TIMEOUT_MS = 2_147_483_647;
+
+const alwaysOnFleetNodesConfig = (): RelayWorkspaceFleetNodesConfig => ({
+  enabled: true,
+  defaultEnabled: true,
+  override: null,
+});
 
 /** Terminal statuses that mean the node ran the action successfully. */
 const CONFIRM_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
@@ -970,6 +977,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         throw new Error('RelaycastMessagingClient.workspace.info requires the relaycast workspace API.');
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
+    },
+    /**
+     * @deprecated Relaycast removed workspace Fleet rollout state because node
+     * delivery is unconditional. Keep the shipped Relay SDK shape without
+     * consulting or mutating a remote API.
+     */
+    fleetNodes: {
+      get: async (): Promise<RelayWorkspaceFleetNodesConfig> => alwaysOnFleetNodesConfig(),
+      set: async (_enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig> => alwaysOnFleetNodesConfig(),
+      inherit: async (): Promise<RelayWorkspaceFleetNodesConfig> => alwaysOnFleetNodesConfig(),
     },
   };
 

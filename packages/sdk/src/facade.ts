@@ -13,6 +13,7 @@ import type {
   RelayAgentReleaseResult,
   RelaySendChannelMessageInput,
   RelayWorkspaceInfo,
+  RelayWorkspaceFleetNodesConfig,
 } from './messaging/index.js';
 import {
   actionSchemaToJsonSchema,
@@ -203,6 +204,12 @@ export interface RelayWorkspace {
   release(input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
+  /** @deprecated Fleet node delivery is always on; these methods are read-only compatibility shims. */
+  fleetNodes: {
+    get(): Promise<RelayWorkspaceFleetNodesConfig>;
+    set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
+    inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
+  };
 }
 
 export interface NotifyOptions {
@@ -365,6 +372,7 @@ export function createWorkspaceFacade(messaging: RelayMessaging, deps?: Workspac
 
   return {
     info: () => messaging.workspace.info(),
+    fleetNodes: messaging.workspace.fleetNodes,
     register: register as RelayWorkspace['register'],
     release: async (input) => {
       // async so an unavailable-on-this-client error is always a rejected

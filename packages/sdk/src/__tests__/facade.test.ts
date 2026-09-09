@@ -34,6 +34,11 @@ function createMessagingMock() {
   };
   const workspace = {
     info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
+    fleetNodes: {
+      get: vi.fn(async () => ({ enabled: true, defaultEnabled: true, override: null })),
+      set: vi.fn(async () => ({ enabled: true, defaultEnabled: true, override: null })),
+      inherit: vi.fn(async () => ({ enabled: true, defaultEnabled: true, override: null })),
+    },
   };
   const messaging = { messages, agents, workspace, events: {} } as unknown as RelayMessaging;
   return { messaging, messages, agents, workspace };
@@ -73,6 +78,19 @@ describe('AgentRelay facade (Phase A)', () => {
     expect(client.id).toBe('id-self');
     expect(client.name).toBe('self');
     expect(client.token).toBe('tok-self');
+  });
+
+  it('preserves the deprecated workspace.fleetNodes facade', async () => {
+    const { messaging, workspace } = createMessagingMock();
+    const relay = new AgentRelay({ messaging });
+    const alwaysOn = { enabled: true, defaultEnabled: true, override: null };
+
+    await expect(relay.workspace.fleetNodes.get()).resolves.toEqual(alwaysOn);
+    await expect(relay.workspace.fleetNodes.set(false)).resolves.toEqual(alwaysOn);
+    await expect(relay.workspace.fleetNodes.inherit()).resolves.toEqual(alwaysOn);
+    expect(workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
+    expect(workspace.fleetNodes.set).toHaveBeenCalledWith(false);
+    expect(workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
   });
 
   it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {

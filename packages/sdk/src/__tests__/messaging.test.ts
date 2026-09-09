@@ -457,6 +457,18 @@ describe('RelaycastMessagingClient', () => {
     });
   });
 
+  it('keeps workspace fleetNodes as a local immutable always-on compatibility surface', async () => {
+    const workspace = createWorkspace();
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+    const alwaysOn = { enabled: true, defaultEnabled: true, override: null };
+
+    await expect(client.workspace.fleetNodes.get()).resolves.toEqual(alwaysOn);
+    await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual(alwaysOn);
+    await expect(client.workspace.fleetNodes.set(true)).resolves.toEqual(alwaysOn);
+    await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual(alwaysOn);
+    expect(Object.keys(workspace.workspace)).toEqual(['info']);
+  });
+
   it('normalizes fleet node roster fields and passes node query options through', async () => {
     const workspace = createWorkspace();
     const client = new RelaycastMessagingClient({ relaycast: workspace });

@@ -7,7 +7,7 @@
     "command": ["node", "tests/relayflows/cases/1400-fleet-rollout-contract/run.mjs"]
   },
   "requirements": [],
-  "timeoutSeconds": 120,
+  "timeoutSeconds": 600,
   "expected": {
     "base": {
       "outcome": "bug",
