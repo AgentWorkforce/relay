@@ -226,8 +226,10 @@ fn codex_composer_ready(grid: GridReadinessSnapshot<'_>) -> bool {
     else {
         return false;
     };
-    let composer =
-        (col == 3 && line.starts_with("› ")) || (col == 8 && line.starts_with("codex> "));
+    // Grid snapshots trim trailing blanks. An empty composer therefore reads
+    // as just the glyph even though the cursor remains after its input space.
+    let composer = (col == 3 && (line == "›" || line.starts_with("› ")))
+        || (col == 8 && (line == "codex>" || line.starts_with("codex> ")));
     if !composer {
         return false;
     }
@@ -2187,6 +2189,30 @@ mod tests {
             Duration::from_secs(10)
         ));
         assert!(!settled_codex(screen, None, Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn codex_startup_accepts_empty_composer_after_grid_trims_blanks() {
+        // Captured native PTY snapshot: stdout wrote "->pty:ready\n› ",
+        // snapshot rendered "->pty:ready\n›\n..." with cursor (2, 3).
+        for (screen, col) in [("->pty:ready\n›\n", 3), ("codex>\n", 8)] {
+            let row = if col == 3 { 2 } else { 1 };
+            assert!(settled_codex(
+                screen,
+                Some((row, col)),
+                Duration::from_secs(1)
+            ));
+            assert!(!settled_codex(
+                screen,
+                Some((row, col - 1)),
+                Duration::from_secs(1)
+            ));
+            assert!(!settled_codex(
+                screen,
+                Some((row, col)),
+                Duration::from_millis(999)
+            ));
+        }
     }
 
     #[test]
