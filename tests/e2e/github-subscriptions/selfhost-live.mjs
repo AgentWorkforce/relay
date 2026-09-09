@@ -22,6 +22,10 @@ assert(
   engine && cloudRoot,
   'Set GHSUB_ENGINE_ROOT and GHSUB_CLOUD_ROOT to locally built candidate checkouts'
 );
+assert(
+  existsSync(path.join(root, 'packages/cli/dist/cli/index.js')),
+  'Missing candidate CLI build; run npm run build:core before creating live fixtures'
+);
 const { fixturePathGlob, assertProducerWorkspace, findFixtureCommentMessage } =
   await import('./fixture-scope.mjs');
 const cloudModule = (m) => m.default ?? m;
