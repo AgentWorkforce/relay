@@ -69,6 +69,13 @@ Each value must be an absolute path on that node. Registration derives the
 placement-safe `AgentWorkforce/factory` and `AgentWorkforce/relay` keys; the
 absolute values are never sent to Relaycast, exposed in the roster, or logged.
 
+`agent-relay node up` passes those keys to its native broker — which performs
+node registration — through `AGENT_RELAY_NODE_REPO_KEYS`, a comma-separated list
+of keys only. Set it yourself to declare a node's repositories authoritatively
+without a definition; a pre-set value wins over the discovered `repoPaths`. An
+empty value clears what the node advertised on a previous start, and leaving it
+unset (no `repoPaths`) leaves the node's registration tags untouched.
+
 ### Serving a node programmatically
 
 `@agent-relay/fleet` also ships the node runtime, so you can start a node in

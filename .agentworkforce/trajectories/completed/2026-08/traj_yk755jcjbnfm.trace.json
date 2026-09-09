@@ -1,0 +1,98 @@
+{
+  "version": "1.0.0",
+  "id": "2fac979c-be70-4e49-a0b3-acbd1d739f98",
+  "timestamp": "2026-08-19T14:16:56.322Z",
+  "trajectory": "traj_yk755jcjbnfm",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_yk755jcjbnfm/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 74,
+              "revision": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/node_control.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1169,
+              "end_line": 1180,
+              "revision": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/init.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 904,
+              "end_line": 921,
+              "revision": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697"
+            },
+            {
+              "start_line": 1161,
+              "end_line": 1191,
+              "revision": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/broker-lifecycle.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 672,
+              "end_line": 708,
+              "revision": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/fleet-sidecar.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 87,
+              "end_line": 104,
+              "revision": "11f97cbe4ef9f0df89ed46d0b0cf296664f84697"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
