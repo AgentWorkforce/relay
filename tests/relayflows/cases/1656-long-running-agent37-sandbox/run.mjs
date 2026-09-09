@@ -131,6 +131,8 @@ import { Command } from 'commander';
 const mocks = vi.hoisted(() => ({
   ensureCloudSession: vi.fn(),
   authorizedApiFetch: vi.fn(),
+  persistWorkspaceRelaycastTarget: vi.fn(() => true),
+  resolveWorkspaceSelection: vi.fn(() => ({ workspaceId: 'rw_relayflow' })),
 }));
 
 // The Cloud network boundary -- the only thing this probe stubs. Everything
@@ -200,6 +202,12 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
     sandboxId: REPLAY_SANDBOX_ID,
     providerSandboxId: PROVIDER_SANDBOX_ID,
     relayWorkspaceId: 'rw_relayflow',
+    relaycastTarget: {
+      route: 'agent37-isolated',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+      workspaceId: 'rw_relayflow',
+      relaycastApiKey: 'rk_live_relayflow_probe',
+    },
     relayfileMounted: true,
     relayfileMountPath: '/workspace',
     providerId: 'agent37',
@@ -245,7 +253,11 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
         },
       })) as never,
       createWorkspaceRelay: vi.fn(() => ({
-        workspace: { info: vi.fn(async () => ({ id: 'rw_relayflow' })) },
+        workspace: {
+          info: vi.fn(async () => ({ id: 'rw_relayflow' })),
+          register: vi.fn(async () => ({ token: 'at_relayflow_launcher' })),
+          release: vi.fn(async () => undefined),
+        },
       })) as never,
       createWorkspace: vi.fn() as never,
       // Capture the real CLI serialization, then fail so this same invocation
@@ -270,6 +282,8 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
     },
     ensureCloudFleetSandbox,
     deleteCloudFleetSandbox,
+    resolveWorkspaceSelection: mocks.resolveWorkspaceSelection,
+    persistWorkspaceRelaycastTarget: mocks.persistWorkspaceRelaycastTarget,
     createFleetWorkspaceClient: vi.fn() as never,
     log: () => undefined,
     warn: () => undefined,
@@ -340,6 +354,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
         String(mocks.authorizedApiFetch.mock.calls[2]?.[1] ?? '').split('/').pop() ?? ''
       ) || null,
       deleteProviderId: deleteBody.providerId ?? null,
+      relaycastTargetPersisted: mocks.persistWorkspaceRelaycastTarget.mock.calls.length === 1,
       outputFailureObserved: errors.join('\n').includes('CLI output sink failed after capture'),
     }),
     'utf8'
@@ -373,6 +388,9 @@ try {
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
   if (observation.outputFailureObserved !== true) {
     throw new Error('The probe did not serialize the CLI sandbox result, so it observed nothing.');
+  }
+  if (arm === 'head' && observation.relaycastTargetPersisted !== true) {
+    throw new Error("The head did not persist Cloud's Relaycast target before dispatch.");
   }
   // The command line named no provider on either arm. If this ever stops being
   // true the case is proving provider pinning, not capability routing.
