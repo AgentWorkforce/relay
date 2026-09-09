@@ -5914,8 +5914,7 @@ class FleetBoard {
       : ['agent-list-reconciliation-failed'];
     const finalFleetNodes = await this.listAllFleetNodes().catch(() => null);
     const finalFleetNodeNameHashes =
-      finalFleetNodes &&
-      finalFleetNodes.every(({ name }) => typeof name === 'string' && name.length > 0)
+      finalFleetNodes && finalFleetNodes.every(({ name }) => typeof name === 'string' && name.length > 0)
         ? new Set(finalFleetNodes.map(({ name }) => sha256(name)))
         : null;
     const missingBaselineFleetNodeNameHashes = finalFleetNodeNameHashes
