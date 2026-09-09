@@ -748,6 +748,9 @@ function candidateSandboxArgv(argv) {
   if (!isWithin(runnerTemp, candidateRoot) || !isWithin(runnerTemp, candidateCwd)) {
     throw new Error('candidate install and working directory must be inside RUNNER_TEMP');
   }
+  if (isWithin(candidateRoot, candidateCwd)) {
+    throw new Error('candidate working directory must be outside the read-only candidate install');
+  }
   return [
     '/usr/bin/unshare',
     '--user',
@@ -758,6 +761,7 @@ function candidateSandboxArgv(argv) {
     '/bin/sh',
     CANDIDATE_MOUNT_SANDBOX,
     path.resolve(runnerTemp),
+    process.cwd(),
     candidateRoot,
     path.resolve(candidateCwd),
     process.execPath,

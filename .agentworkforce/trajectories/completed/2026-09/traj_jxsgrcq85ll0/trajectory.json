@@ -29,7 +29,7 @@
         {
           "ts": 1788700823731,
           "type": "decision",
-          "content": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha: Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
+          "content": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
           "raw": {
             "question": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
             "chosen": "Use a no-secret request artifact plus workflow_run consumer pinned to github.workflow_sha",
@@ -41,7 +41,7 @@
         {
           "ts": 1788700824271,
           "type": "decision",
-          "content": "Validate candidate CLI inventory independently from the trusted verifier checkout: Validate candidate CLI inventory independently from the trusted verifier checkout",
+          "content": "Validate candidate CLI inventory independently from the trusted verifier checkout",
           "raw": {
             "question": "Validate candidate CLI inventory independently from the trusted verifier checkout",
             "chosen": "Validate candidate CLI inventory independently from the trusted verifier checkout",

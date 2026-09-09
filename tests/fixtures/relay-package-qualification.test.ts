@@ -224,8 +224,10 @@ describe('Relay package qualification producer', () => {
 
   it('binds the two exact package artifacts before the trusted consumer hydrates the candidate', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    const downloadPayload = workflow.indexOf('--name relay-package-qualification \\');
-    const downloadAttestation = workflow.indexOf('--name relay-package-qualification-attestation \\');
+    const downloadPayload = workflow.search(/--name\s+relay-package-qualification(?:\s+\\)?\s/);
+    const downloadAttestation = workflow.search(
+      /--name\s+relay-package-qualification-attestation(?:\s+\\)?\s/
+    );
     const verifyBundle = workflow.indexOf('qualification-manifest.mjs verify-bundle');
     const hydrate = workflow.indexOf('relay-candidate-install.mjs hydrate');
     expect(downloadPayload).toBeGreaterThan(-1);

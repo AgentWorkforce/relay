@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -263,7 +264,12 @@ function fixture() {
 
 describe('qualification runtime effect composer', () => {
   it('is an invoked release gate after both timed cleanup operations', () => {
-    const workflow = fs.readFileSync('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
+    const workflow = fs.readFileSync(
+      fileURLToPath(
+        new URL('../../.github/workflows/relay-cleanroom-qualification-consumer.yml', import.meta.url)
+      ),
+      'utf8'
+    );
     const composer = workflow.indexOf('qualification-effect-evidence.mjs');
     expect(workflow.indexOf('workspace-delete-a-timing.json')).toBeGreaterThan(-1);
     expect(workflow.indexOf('workspace-delete-b-timing.json')).toBeGreaterThan(-1);

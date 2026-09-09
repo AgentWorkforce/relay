@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { parseStrictWorkflowYaml } from './strict-yaml-subset.mjs';
 
@@ -57,15 +57,17 @@ if (present.every((value) => !value)) {
 } else if (present.some((value) => !value)) {
   throw new Error('Target contains only part of the trusted cleanroom qualification contract.');
 } else {
-  const validator = await import(`${pathToFileURL(scriptPath).href}?sha=${targetSha}`);
+  const requestWorkflowName = 'Relay cleanroom qualification request';
+  const requestWorkflowPath = '.github/workflows/relay-cleanroom-qualification-request.yml';
+  const requestArtifactName = 'relay-cleanroom-qualification-request';
   const relaySha = 'a'.repeat(40);
   const validEvent = {
     repository: { full_name: 'AgentWorkforce/relay' },
     workflow_run: {
       id: 901,
       run_attempt: 2,
-      name: validator.REQUEST_WORKFLOW_NAME,
-      path: validator.REQUEST_WORKFLOW_PATH,
+      name: requestWorkflowName,
+      path: requestWorkflowPath,
       event: 'workflow_dispatch',
       status: 'completed',
       conclusion: 'success',
@@ -76,93 +78,136 @@ if (present.every((value) => !value)) {
       triggering_actor: { login: 'approved-operator' },
     },
   };
-  const context = validator.validateQualificationRequestEvent(validEvent, '["approved-operator"]');
-  if (context.headBranch !== 'qualification/malicious-ref' || context.headSha !== relaySha) {
-    throw new Error('Trusted validator did not bind the candidate ref as immutable data.');
-  }
   const cliHarness = await mkdtemp(path.join(os.tmpdir(), 'relay-cleanroom-runner-cli-'));
   try {
     const eventPath = path.join(cliHarness, 'event.json');
     const cliContextPath = path.join(cliHarness, 'context.json');
     const githubOutputPath = path.join(cliHarness, 'github-output.txt');
+    const artifactPagesPath = path.join(cliHarness, 'artifact-pages.json');
+    const cliSelectionPath = path.join(cliHarness, 'selection.json');
     await writeFile(eventPath, `${JSON.stringify(validEvent)}\n`);
     await writeFile(githubOutputPath, '');
-    execFileSync(
-      process.execPath,
-      [
-        scriptPath,
-        'validate-event',
-        '--event',
-        eventPath,
-        '--approved-actors-json',
-        '["approved-operator"]',
-        '--output',
-        cliContextPath,
-        '--github-output',
-        githubOutputPath,
-      ],
-      { cwd: targetDir, encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] }
+    const runRequestCli = (...args) =>
+      execFileSync(process.execPath, [scriptPath, ...args], {
+        cwd: targetDir,
+        encoding: 'utf8',
+        timeout: COMMAND_TIMEOUT_MS,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    runRequestCli(
+      'validate-event',
+      '--event',
+      eventPath,
+      '--approved-actors-json',
+      '["approved-operator"]',
+      '--output',
+      cliContextPath,
+      '--github-output',
+      githubOutputPath
     );
-    assertDeepEqual(JSON.parse(await readFile(cliContextPath, 'utf8')), context, 'production validator CLI');
+    const context = JSON.parse(await readFile(cliContextPath, 'utf8'));
+    if (context.headBranch !== 'qualification/malicious-ref' || context.headSha !== relaySha) {
+      throw new Error('Production validator CLI did not bind the candidate ref as immutable data.');
+    }
     if ((await readFile(githubOutputPath, 'utf8')).trim() !== 'run_id=901') {
       throw new Error('Production validator CLI did not emit the triggering run ID.');
     }
+    for (const [label, message, mutate] of [
+      [
+        'unapproved actor',
+        /actor.login is not approved/,
+        (event) => (event.workflow_run.actor.login = 'attacker'),
+      ],
+      [
+        'unapproved rerunner',
+        /triggering_actor.login is not approved/,
+        (event) => (event.workflow_run.triggering_actor.login = 'attacker'),
+      ],
+      [
+        'fork repository',
+        /head_repository/,
+        (event) => (event.workflow_run.head_repository.full_name = 'attacker/relay'),
+      ],
+      [
+        'wrong workflow',
+        /workflow_run.path/,
+        (event) => (event.workflow_run.path = '.github/workflows/attacker.yml'),
+      ],
+      [
+        'nested branch',
+        /head_branch/,
+        (event) => (event.workflow_run.head_branch = 'qualification/attacker/nested'),
+      ],
+    ]) {
+      const changed = structuredClone(validEvent);
+      mutate(changed);
+      await writeFile(eventPath, `${JSON.stringify(changed)}\n`);
+      assertThrows(
+        () =>
+          runRequestCli(
+            'validate-event',
+            '--event',
+            eventPath,
+            '--approved-actors-json',
+            '["approved-operator"]',
+            '--output',
+            cliContextPath,
+            '--github-output',
+            githubOutputPath
+          ),
+        label,
+        message
+      );
+    }
+    await writeFile(eventPath, `${JSON.stringify(validEvent)}\n`);
+    const artifact = {
+      id: 77,
+      name: requestArtifactName,
+      expired: false,
+      size_in_bytes: 4096,
+      digest: `sha256:${'7'.repeat(64)}`,
+      workflow_run: { id: context.runId },
+    };
+    await writeFile(artifactPagesPath, `${JSON.stringify([{ total_count: 1, artifacts: [artifact] }])}\n`);
+    runRequestCli(
+      'select-artifact',
+      '--context',
+      cliContextPath,
+      '--artifact-pages',
+      artifactPagesPath,
+      '--output',
+      cliSelectionPath,
+      '--github-output',
+      githubOutputPath
+    );
+    assertDeepEqual(
+      JSON.parse(await readFile(cliSelectionPath, 'utf8')),
+      { artifactId: 77, artifactDigest: artifact.digest },
+      'production artifact selector CLI'
+    );
+    await writeFile(
+      artifactPagesPath,
+      `${JSON.stringify([{ total_count: 1, artifacts: [{ ...artifact, workflow_run: { id: 902 } }] }])}\n`
+    );
+    assertThrows(
+      () =>
+        runRequestCli(
+          'select-artifact',
+          '--context',
+          cliContextPath,
+          '--artifact-pages',
+          artifactPagesPath,
+          '--output',
+          cliSelectionPath,
+          '--github-output',
+          githubOutputPath
+        ),
+      'wrong-run artifact',
+      /triggering run/
+    );
   } finally {
     await rm(cliHarness, { recursive: true, force: true });
   }
-  for (const [label, message, mutate] of [
-    [
-      'unapproved actor',
-      /actor.login is not approved/,
-      (event) => (event.workflow_run.actor.login = 'attacker'),
-    ],
-    [
-      'unapproved rerunner',
-      /triggering_actor.login is not approved/,
-      (event) => (event.workflow_run.triggering_actor.login = 'attacker'),
-    ],
-    [
-      'fork repository',
-      /head_repository/,
-      (event) => (event.workflow_run.head_repository.full_name = 'attacker/relay'),
-    ],
-    [
-      'wrong workflow',
-      /workflow_run.path/,
-      (event) => (event.workflow_run.path = '.github/workflows/attacker.yml'),
-    ],
-    [
-      'nested branch',
-      /head_branch/,
-      (event) => (event.workflow_run.head_branch = 'qualification/attacker/nested'),
-    ],
-  ]) {
-    const changed = structuredClone(validEvent);
-    mutate(changed);
-    assertThrows(
-      () => validator.validateQualificationRequestEvent(changed, '["approved-operator"]'),
-      label,
-      message
-    );
-  }
-
-  const artifact = {
-    id: 77,
-    name: validator.REQUEST_ARTIFACT_NAME,
-    expired: false,
-    size_in_bytes: 4096,
-    digest: `sha256:${'7'.repeat(64)}`,
-    workflow_run: { id: context.runId },
-  };
-  validator.selectQualificationRequestArtifact(context, [{ total_count: 1, artifacts: [artifact] }]);
-  assertThrows(
-    () =>
-      validator.selectQualificationRequestArtifact(context, [
-        { total_count: 1, artifacts: [{ ...artifact, workflow_run: { id: 902 } }] },
-      ]),
-    'wrong-run artifact',
-    /triggering run/
-  );
 
   const requestSource = await readFile(requestWorkflowPath, 'utf8');
   const consumerSource = await readFile(consumerWorkflowPath, 'utf8');
@@ -181,7 +226,7 @@ if (present.every((value) => !value)) {
   assertDeepEqual(
     consumer.on.workflow_run,
     {
-      workflows: [validator.REQUEST_WORKFLOW_NAME],
+      workflows: [requestWorkflowName],
       types: ['completed'],
     },
     'consumer workflow_run identity'
@@ -224,7 +269,7 @@ if (present.every((value) => !value)) {
     assertDeepEqual(
       checkout.with,
       {
-        path: checkout.with.path,
+        path: 'relay-verifier',
         ref: '${{ github.workflow_sha }}',
         'persist-credentials': false,
       },

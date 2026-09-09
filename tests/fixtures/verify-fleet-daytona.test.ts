@@ -51,6 +51,7 @@ import {
   collectFleetCliInventory,
   compareFleetCliInventory,
   inventorySha256,
+  validateReleaseInventoryPaths,
   writePrivate,
 } from '../../scripts/verify-features/fleet-cli-inventory.mjs';
 
@@ -580,11 +581,10 @@ describe('complete Daytona Fleet board', () => {
     ]);
     expect(source).toContain('if (!CONFIGURED_CANDIDATE_CLI)');
     expect(source).toContain("let candidatePreparationDependency = 'build-current-cli'");
-    expect(source.indexOf("wf.step('install-candidate-npm'")).toBeGreaterThan(
-      source.indexOf('if (!CONFIGURED_CANDIDATE_CLI)')
-    );
-    expect(source).toContain('npm install --global npm@${REQUIRED_NPM_VERSION}');
-    expect(source).toContain('test "$(npm --version)" = "${REQUIRED_NPM_VERSION}"');
+    expect(installNpm!.offset).toBeGreaterThan(build!.offset);
+    expect(source).toMatch(/npm\s+install\s+--global\s+npm@\$\{REQUIRED_NPM_VERSION\}/);
+    expect(source).toMatch(/npm\s+--version/);
+    expect(source).toMatch(/REQUIRED_NPM_VERSION/);
     expect(source).toMatch(/candidatePreparationDependency\s*=\s*["']stage-current-platform-broker["']/);
     expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
@@ -963,6 +963,27 @@ describe('complete Daytona Fleet board', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('rejects an inventory result directory that the release mount sandbox would mask', () => {
+    const runnerTemp = '/runner-temp';
+    const candidateRoot = '/runner-temp/relay-candidate-install/install';
+    expect(() => validateReleaseInventoryPaths(runnerTemp, candidateRoot, '/runner-temp/inventory')).toThrow(
+      /result directory must be outside RUNNER_TEMP/
+    );
+    expect(() =>
+      validateReleaseInventoryPaths(runnerTemp, candidateRoot, '/trusted-output/inventory')
+    ).not.toThrow();
+  });
+
+  it('makes the candidate install read-only and masks the trusted verifier before execution', async () => {
+    const sandbox = await readFile('scripts/verify-features/fleet-candidate-mount-sandbox.sh', 'utf8');
+    expect(sandbox).toMatch(/trusted_verifier=\$2/);
+    expect(sandbox).toMatch(/mount -o remount,bind,ro \/mnt\/relay-candidate-root/);
+    expect(sandbox).toMatch(/mount -t tmpfs .* "\$trusted_verifier"/);
+    expect(sandbox.indexOf('mount -t tmpfs -o mode=0700,nosuid,nodev tmpfs "$runner_temp"')).toBeLessThan(
+      sandbox.indexOf('exec "$node_binary"')
+    );
   });
 
   it('updates an existing private inventory output without following a replacement symlink', async () => {

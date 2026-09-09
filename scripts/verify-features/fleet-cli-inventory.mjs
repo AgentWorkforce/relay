@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { lstat, mkdtemp, open, readFile, realpath, rm } from 'node:fs/promises';
+import { copyFile, lstat, mkdtemp, open, readFile, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -16,6 +16,17 @@ const MOUNT_SANDBOX = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'fleet-candidate-mount-sandbox.sh'
 );
+
+export function validateReleaseInventoryPaths(runnerTemp, candidateRoot, outputRoot) {
+  if (!runnerTemp || !isWithin(runnerTemp, candidateRoot)) {
+    throw new Error('release qualification inventory candidate root must be inside RUNNER_TEMP');
+  }
+  if (isWithin(runnerTemp, outputRoot)) {
+    throw new Error(
+      'release qualification inventory result directory must be outside RUNNER_TEMP; the mount sandbox masks it'
+    );
+  }
+}
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
@@ -163,10 +174,10 @@ function permissionArgs(candidateRoot, workerRoot, worker, networkBlocker, cliPa
     `--allow-fs-read=${candidateRoot}`,
     `--allow-fs-read=${path.resolve(cliPath)}`,
     `--allow-fs-read=${path.join(path.dirname(path.resolve(cliPath)), 'bootstrap.js')}`,
-    `--allow-fs-read=${fileURLToPath(import.meta.url)}`,
+    `--allow-fs-read=${path.join(path.dirname(worker), 'fleet-cli-inventory.mjs')}`,
     `--allow-fs-read=${worker}`,
     `--allow-fs-read=${networkBlocker}`,
-    `--allow-fs-read=${path.join(path.dirname(fileURLToPath(import.meta.url)), 'safe-file.mjs')}`,
+    `--allow-fs-read=${path.join(path.dirname(worker), 'safe-file.mjs')}`,
     `--allow-fs-write=${workerRoot}`,
   ];
 }
@@ -190,12 +201,22 @@ export async function collectFleetCliInventory(cliPath, { timeoutMs = INVENTORY_
     }
   }
   const workerRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-'));
+  const trustedWorkerRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-cli-inventory-runtime-'));
+  const sourceDirectory = path.dirname(fileURLToPath(import.meta.url));
+  await Promise.all(
+    [
+      'fleet-cli-inventory-worker.mjs',
+      'fleet-cli-inventory.mjs',
+      'fleet-cli-network-blocker.mjs',
+      'safe-file.mjs',
+    ].map((name) => copyFile(path.join(sourceDirectory, name), path.join(trustedWorkerRoot, name)))
+  );
   const [candidateRoot, resolvedCli, outputRoot, worker, networkBlocker] = await Promise.all([
     realpath(requestedRoot),
     realpath(requestedCli),
     realpath(workerRoot),
-    realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-cli-inventory-worker.mjs')),
-    realpath(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-cli-network-blocker.mjs')),
+    realpath(path.join(trustedWorkerRoot, 'fleet-cli-inventory-worker.mjs')),
+    realpath(path.join(trustedWorkerRoot, 'fleet-cli-network-blocker.mjs')),
   ]);
   const outputPath = path.join(outputRoot, 'inventory.json');
   const workerArgs = [
@@ -211,14 +232,14 @@ export async function collectFleetCliInventory(cliPath, { timeoutMs = INVENTORY_
   let childArgs = workerArgs;
   let childCommand = process.execPath;
   let childCwd = candidateRoot;
+  let candidateCwd = workerRoot;
   if (releaseSandbox) {
     if (process.platform !== 'linux') {
       throw new Error('release qualification inventory requires a Linux network and mount namespace');
     }
     const runnerTemp = process.env.RUNNER_TEMP?.trim();
-    if (!runnerTemp || !isWithin(runnerTemp, candidateRoot)) {
-      throw new Error('release qualification inventory candidate root must be inside RUNNER_TEMP');
-    }
+    validateReleaseInventoryPaths(runnerTemp, candidateRoot, outputRoot);
+    candidateCwd = await mkdtemp(path.join(path.resolve(runnerTemp), 'relay-cli-inventory-cwd-'));
     childCommand = '/usr/bin/unshare';
     childArgs = [
       '--user',
@@ -230,8 +251,9 @@ export async function collectFleetCliInventory(cliPath, { timeoutMs = INVENTORY_
       '/bin/sh',
       MOUNT_SANDBOX,
       path.resolve(runnerTemp),
+      process.cwd(),
       candidateRoot,
-      candidateRoot,
+      candidateCwd,
       process.execPath,
       ...workerArgs,
     ];
@@ -252,7 +274,7 @@ export async function collectFleetCliInventory(cliPath, { timeoutMs = INVENTORY_
       };
       const child = spawn(childCommand, childArgs, {
         cwd: childCwd,
-        env: candidateEnvironment(workerRoot),
+        env: candidateEnvironment(candidateCwd),
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -300,7 +322,11 @@ export async function collectFleetCliInventory(cliPath, { timeoutMs = INVENTORY_
     });
     return validateFleetCliInventory(JSON.parse(bytes.toString('utf8')));
   } finally {
-    await rm(workerRoot, { recursive: true, force: true });
+    await Promise.all([
+      rm(workerRoot, { recursive: true, force: true }),
+      rm(trustedWorkerRoot, { recursive: true, force: true }),
+      candidateCwd === workerRoot ? Promise.resolve() : rm(candidateCwd, { recursive: true, force: true }),
+    ]);
   }
 }
 

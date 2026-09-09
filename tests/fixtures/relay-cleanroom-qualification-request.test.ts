@@ -124,7 +124,7 @@ describe('trusted cleanroom qualification request', () => {
     });
   });
 
-  it('lets the trusted consumer fire for an approved malicious candidate ref without executing that ref', () => {
+  it('accepts an approved malicious candidate ref as immutable event data', () => {
     const context = validateQualificationRequestEvent(
       event({ head_branch: 'qualification/malicious-ref', head_sha: relaySha }),
       '["approved-operator"]'
