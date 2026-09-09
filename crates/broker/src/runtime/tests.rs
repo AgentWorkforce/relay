@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::PathBuf,
     process::Stdio,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -42,22 +42,23 @@ use super::{
     clear_pending_delivery_if_event_matches, continuity_dir, default_observer_token_scopes,
     delivery_read_ack_is_relaycast_message, delivery_retry_interval, drop_pending_for_worker,
     emit_delivery_attempt_outcome, emit_dropped_delivery_failures, ensure_ephemeral_paths,
-    extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
-    http_api_relaycast_send_timeout, is_relaycast_self_control_target,
-    is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
-    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token,
-    normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    pending_message_counts, persist_dead_letters_on_shutdown, persist_pending_on_shutdown,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
-    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retry_pending_delivery,
-    save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason,
-    take_pending_for_worker, try_inject_pending_relay_message, AgentRuntime, BrokerRuntime,
-    DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
+    execute_startup_channel_maintenance, extract_mcp_message_ids, http_api_event_emit_timeout,
+    http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
+    is_relaycast_self_control_target, is_unknown_worker_error_message, load_dead_letters,
+    load_pending_deliveries, mark_delivery_read_ack, mark_delivery_read_ack_with_timeout,
+    mint_or_recover_observer_token, normalize_channel, normalize_initial_task, normalize_sender,
+    parse_sort_key_from_raw_timestamp, pending_message_counts, persist_dead_letters_on_shutdown,
+    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
+    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    startup_channel_maintenance_plan, synthetic_delivery_read_ack_reason, take_pending_for_worker,
+    try_inject_pending_relay_message, AgentRuntime, BrokerRuntime, DeadLetterEntry,
+    DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
     ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
-    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage, MAX_DEAD_LETTERS,
-    MAX_DELIVERY_RETRIES,
+    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, StartupChannelMaintenanceAction,
+    StartupChannelMaintenanceKind, TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -3186,13 +3187,79 @@ fn startup_ready_handoff_follows_runtime_construction() {
         .find("tokio::spawn(async move {")
         .map(|offset| channel_bootstrap + offset)
         .expect("startup channel maintenance must run in the background");
-    let default_channel_ensure = source[background_bootstrap..]
-        .find("ensure_default_channels().await")
-        .map(|offset| background_bootstrap + offset)
-        .expect("background startup must still ensure default channels");
     assert!(
-        default_channel_ensure < runtime_constructed,
+        background_bootstrap < runtime_constructed,
         "the channel maintenance task must be scheduled without delaying runtime readiness"
+    );
+}
+
+#[tokio::test]
+async fn startup_channel_maintenance_is_ordered_and_failure_tolerant() {
+    let actions = startup_channel_maintenance_plan(2, true);
+    let expected = vec![
+        StartupChannelMaintenanceAction {
+            workspace_index: 0,
+            kind: StartupChannelMaintenanceKind::EnsureDefault,
+        },
+        StartupChannelMaintenanceAction {
+            workspace_index: 1,
+            kind: StartupChannelMaintenanceKind::EnsureDefault,
+        },
+        StartupChannelMaintenanceAction {
+            workspace_index: 0,
+            kind: StartupChannelMaintenanceKind::EnsureExtra,
+        },
+        StartupChannelMaintenanceAction {
+            workspace_index: 1,
+            kind: StartupChannelMaintenanceKind::EnsureExtra,
+        },
+        StartupChannelMaintenanceAction {
+            workspace_index: 0,
+            kind: StartupChannelMaintenanceKind::Subscribe,
+        },
+        StartupChannelMaintenanceAction {
+            workspace_index: 1,
+            kind: StartupChannelMaintenanceKind::Subscribe,
+        },
+    ];
+    assert_eq!(actions, expected);
+
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    execute_startup_channel_maintenance(actions, {
+        let observed = Arc::clone(&observed);
+        move |action| {
+            let observed = Arc::clone(&observed);
+            async move {
+                observed
+                    .lock()
+                    .expect("maintenance observation lock poisoned")
+                    .push(action);
+                if action
+                    == (StartupChannelMaintenanceAction {
+                        workspace_index: 0,
+                        kind: StartupChannelMaintenanceKind::EnsureExtra,
+                    })
+                {
+                    Err("synthetic workspace failure")
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(
+        *observed
+            .lock()
+            .expect("maintenance observation lock poisoned"),
+        expected,
+        "a failed workspace action must not skip later workspaces or subscriptions"
+    );
+    assert_eq!(
+        startup_channel_maintenance_plan(2, false),
+        expected[..4],
+        "websocket subscription is unnecessary when no extra channels were requested"
     );
 }
 

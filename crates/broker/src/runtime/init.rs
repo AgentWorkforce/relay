@@ -1,5 +1,62 @@
 use super::*;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StartupChannelMaintenanceKind {
+    EnsureDefault,
+    EnsureExtra,
+    Subscribe,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StartupChannelMaintenanceAction {
+    pub(crate) workspace_index: usize,
+    pub(crate) kind: StartupChannelMaintenanceKind,
+}
+
+pub(crate) fn startup_channel_maintenance_plan(
+    workspace_count: usize,
+    has_extra_channels: bool,
+) -> Vec<StartupChannelMaintenanceAction> {
+    let mut actions = Vec::with_capacity(workspace_count * 3);
+    for kind in [
+        StartupChannelMaintenanceKind::EnsureDefault,
+        StartupChannelMaintenanceKind::EnsureExtra,
+        StartupChannelMaintenanceKind::Subscribe,
+    ] {
+        if kind == StartupChannelMaintenanceKind::Subscribe && !has_extra_channels {
+            continue;
+        }
+        actions.extend((0..workspace_count).map(|workspace_index| {
+            StartupChannelMaintenanceAction {
+                workspace_index,
+                kind,
+            }
+        }));
+    }
+    actions
+}
+
+pub(crate) async fn execute_startup_channel_maintenance<F, Fut, E>(
+    actions: Vec<StartupChannelMaintenanceAction>,
+    mut execute: F,
+) where
+    F: FnMut(StartupChannelMaintenanceAction) -> Fut,
+    Fut: Future<Output = std::result::Result<(), E>>,
+    E: std::fmt::Display,
+{
+    for action in actions {
+        if let Err(error) = execute(action).await {
+            tracing::warn!(
+                workspace_index = action.workspace_index,
+                maintenance = ?action.kind,
+                error = %error,
+                "startup channel maintenance action failed"
+            );
+        }
+    }
+}
 
 pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
     let broker_start = Instant::now();
@@ -419,51 +476,38 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             startup_debug,
             broker_start,
             format!(
-                "ensuring default channels for {} workspaces",
+                "starting channel maintenance for {} workspaces",
                 startup_channel_workspaces.len()
             ),
         );
-        for workspace in &startup_channel_workspaces {
-            if let Err(error) = workspace.http_client.ensure_default_channels().await {
-                tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure default channels");
-            }
-        }
-        log_startup_phase(startup_debug, broker_start, "default channels ensured");
-
-        log_startup_phase(
-            startup_debug,
-            broker_start,
-            format!("ensuring extra channels count={}", extra_channels.len()),
+        let actions = startup_channel_maintenance_plan(
+            startup_channel_workspaces.len(),
+            !extra_channels.is_empty(),
         );
-        for workspace in &startup_channel_workspaces {
-            if let Err(error) = workspace
-                .http_client
-                .ensure_extra_channels(&extra_channels)
-                .await
-            {
-                tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure extra channels");
+        execute_startup_channel_maintenance(actions, |action| {
+            let workspace = startup_channel_workspaces[action.workspace_index].clone();
+            let extra_channels = extra_channels.clone();
+            async move {
+                match action.kind {
+                    StartupChannelMaintenanceKind::EnsureDefault => {
+                        workspace.http_client.ensure_default_channels().await
+                    }
+                    StartupChannelMaintenanceKind::EnsureExtra => {
+                        workspace
+                            .http_client
+                            .ensure_extra_channels(&extra_channels)
+                            .await
+                    }
+                    StartupChannelMaintenanceKind::Subscribe => workspace
+                        .ws_control_tx
+                        .send(WsControl::Subscribe(extra_channels))
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error)),
+                }
             }
-        }
-        log_startup_phase(startup_debug, broker_start, "extra channels ensured");
-
-        if !extra_channels.is_empty() {
-            log_startup_phase(
-                startup_debug,
-                broker_start,
-                "subscribing websocket control channels",
-            );
-            for workspace in &startup_channel_workspaces {
-                let _ = workspace
-                    .ws_control_tx
-                    .send(WsControl::Subscribe(extra_channels.clone()))
-                    .await;
-            }
-            log_startup_phase(
-                startup_debug,
-                broker_start,
-                "websocket subscriptions updated",
-            );
-        }
+        })
+        .await;
+        log_startup_phase(startup_debug, broker_start, "channel maintenance completed");
     });
 
     let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
