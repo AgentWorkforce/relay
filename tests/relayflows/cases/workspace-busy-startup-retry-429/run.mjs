@@ -110,15 +110,20 @@ try {
   const baseObserved =
     arm === 'base' &&
     success.registrationCount === 1 &&
+    !success.timedOut &&
     !success.stderr.includes(HANDSHAKE_MARKER) &&
     success.stderr.includes('status: 429') &&
     success.stderr.includes(BUSY_CODE) &&
     success.stderr.includes('attempts: 1') &&
     unrelated.registrationCount === 1 &&
+    !unrelated.timedOut &&
     !unrelated.stderr.includes(HANDSHAKE_MARKER) &&
     unrelated.stderr.includes(UNRELATED_CODE) &&
     exhaustion.registrationCount === 1 &&
+    !exhaustion.timedOut &&
     !exhaustion.stderr.includes(HANDSHAKE_MARKER) &&
+    exhaustion.stderr.includes('status: 429') &&
+    exhaustion.stderr.includes('workspace admission is busy') &&
     exhaustion.stderr.includes('attempts: 1');
   const headObserved =
     arm === 'head' &&
@@ -126,11 +131,15 @@ try {
     success.stderr.includes(HANDSHAKE_MARKER) &&
     !success.timedOut &&
     unrelated.registrationCount === 1 &&
+    !unrelated.timedOut &&
     !unrelated.stderr.includes(HANDSHAKE_MARKER) &&
     unrelated.stderr.includes(UNRELATED_CODE) &&
     exhaustion.registrationCount === 3 &&
+    !exhaustion.timedOut &&
     !exhaustion.stderr.includes(HANDSHAKE_MARKER) &&
     exhaustion.stderr.includes(BUSY_CODE) &&
+    exhaustion.stderr.includes('status: 429') &&
+    exhaustion.stderr.includes('workspace admission is busy') &&
     exhaustion.stderr.includes('attempts: 3');
   let outcome;
   let signature;

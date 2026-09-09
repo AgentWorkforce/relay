@@ -370,6 +370,7 @@ impl AuthClient {
             let preferred_name = requested_name;
             let mut memberships = Vec::with_capacity(sources.len());
             let mut auth_rejections = Vec::new();
+            let mut workspace_busy_rejection: Option<anyhow::Error> = None;
 
             for source in sources {
                 let Some(api_key) = normalize_workspace_key(&source.api_key) else {
@@ -394,6 +395,14 @@ impl AuthClient {
                         session.credentials.workspace_alias = source.workspace_alias.clone();
                         memberships.push(session);
                     }
+                    Err(error) if is_workspace_busy_anyhow(&error) => {
+                        // Keep the typed terminal admission error available if
+                        // every configured membership fails. A generic
+                        // rate-limit summary would erase the server code,
+                        // request id, and cumulative attempts that connect_relay
+                        // needs to report accurately.
+                        workspace_busy_rejection.get_or_insert(error);
+                    }
                     Err(error) if is_auth_rejection(&error) => {
                         auth_rejections
                             .push(source.workspace_id.unwrap_or_else(|| "env".to_string()));
@@ -413,6 +422,11 @@ impl AuthClient {
             }
 
             if memberships.is_empty() {
+                if let Some(error) = workspace_busy_rejection {
+                    return Err(error).context(
+                        "all configured multi-workspace memberships were rejected; workspace admission remained busy",
+                    );
+                }
                 anyhow::bail!(
                     "all configured multi-workspace memberships were rejected ({})",
                     auth_rejections.join(", ")
@@ -581,6 +595,16 @@ impl AuthClient {
                         default_workspace_id: Some(session.credentials.workspace_id.clone()),
                         memberships: vec![session],
                     });
+                }
+                Err(error) if is_workspace_busy_anyhow(&error) => {
+                    // RELAY_API_KEY is a join hint, not permission to mint a
+                    // replacement workspace. Preserve the exhausted typed
+                    // admission response instead of falling through to fresh
+                    // workspace creation.
+                    return Err(error).context(format!(
+                        "failed registering agent with {} workspace key; workspace admission remained busy",
+                        candidate.source
+                    ));
                 }
                 Err(error) if is_auth_rejection(&error) => {
                     if candidate.explicit_join {
@@ -2266,6 +2290,103 @@ mod tests {
         // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
         unsafe {
             std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn exhausted_workspace_busy_does_not_mint_replacement_workspace() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_busy");
+        }
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_busy");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("x-request-id", "workspace-busy-374")
+                .body(
+                    r#"{"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy"}}"#,
+                );
+        });
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(500);
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("exhausted workspace_busy must remain terminal");
+        let message = format!("{error:#}");
+        for marker in [
+            "workspace_busy",
+            "429 Too Many Requests",
+            "Workspace write capacity is busy",
+            "request_id: workspace-busy-374",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        register.assert_hits(3);
+        workspace.assert_hits(0);
+
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_workspace_selection_preserves_workspace_busy_diagnostics() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws_busy","api_key":"rk_live_busy"},{"workspace_id":"ws_auth","api_key":"rk_live_auth"}]"#,
+            );
+        }
+        let busy_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_busy");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("x-request-id", "multi-workspace-busy-374")
+                .body(
+                    r#"{"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy"}}"#,
+                );
+        });
+        let auth_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_auth");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .expect_err("a busy membership must remain diagnosable when all fail");
+        let message = format!("{error:#}");
+        for marker in [
+            "workspace_busy",
+            "429 Too Many Requests",
+            "Workspace write capacity is busy",
+            "request_id: multi-workspace-busy-374",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        busy_register.assert_hits(3);
+        auth_register.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
         }
     }
 
