@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -14,11 +14,15 @@ import {
   buildDirectNodeSpawnPlan,
   buildFleetSpawnArgs,
   candidateProvenanceSourceSha,
+  candidateNamespaceArgs,
   candidateSandboxArgv,
   compareDaytonaSandboxBaseline,
   deriveFleetVerdict,
   evaluateFleetIdentityReconciliation,
   executeFleetCommand,
+  expectedFailureExitCode,
+  exactModelReadback,
+  exactWorkerStreamMarkers,
   findExactSentinelMessage,
   findFleetAgentNode,
   loadFleetMatrix,
@@ -26,6 +30,8 @@ import {
   matchesSandboxFileInspection,
   operationStatus,
   ownedBoardNodes,
+  exactReleasedFleetHistory,
+  exactStoppedNodeStatus,
   redactFleetEvidence,
   sanitizeFleetArgv,
   summarizeFleetCampaign,
@@ -65,7 +71,7 @@ async function canCreateCandidateMountNamespace(): Promise<boolean> {
   try {
     await execFileAsync(
       '/usr/bin/unshare',
-      ['--user', '--map-root-user', '--mount', '--net', '--fork', '--', '/bin/true'],
+      ['--user', '--map-root-user', '--mount', '--pid', '--mount-proc', '--net', '--fork', '--', '/bin/true'],
       { timeout: 5_000 }
     );
     return true;
@@ -1058,6 +1064,8 @@ describe('complete Daytona Fleet board', () => {
         '--user',
         '--map-root-user',
         '--mount',
+        '--pid',
+        '--mount-proc',
         '--fork',
         '--',
         '/bin/sh',
@@ -1267,6 +1275,7 @@ describe('complete Daytona Fleet board', () => {
     const probe = path.join(candidateCwd, 'probe.json');
     const secretA = path.join(root, 'relay-workspace-a.json');
     const secretB = path.join(root, 'relay-workspace-b.json');
+    let secretHolder: ReturnType<typeof spawn> | undefined;
     const previous = Object.fromEntries(
       [
         'VERIFY_FLEET_CLI',
@@ -1289,9 +1298,21 @@ describe('complete Daytona Fleet board', () => {
       await writeFile(secretB, 'credential-secret-b\n', { mode: 0o600 });
       await writeFile(
         script,
-        `import { readFileSync, writeFileSync } from 'node:fs';
+        `import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 const readCredential = (name) => {
   try { return readFileSync(process.env[name], 'utf8').trim(); } catch { return 'denied'; }
+};
+const procEnvironContains = (needles) => {
+  let entries;
+  try { entries = readdirSync('/proc'); } catch { return false; }
+  for (const entry of entries) {
+    if (!/^\\d+$/.test(entry)) continue;
+    try {
+      const environ = readFileSync('/proc/' + entry + '/environ', 'utf8');
+      if (needles.some((needle) => environ.includes(needle))) return true;
+    } catch {}
+  }
+  return false;
 };
 writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
   workspace: process.env.RELAY_WORKSPACE_KEY,
@@ -1300,6 +1321,7 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
   daytona: process.env.DAYTONA_API_KEY,
   openai: process.env.OPENAI_API_KEY,
   cloud: process.env.CLOUD_API_ACCESS_TOKEN,
+  hostProcSecret: procEnvironContains(['daytona-secret', 'openai-secret', 'cloud-secret']),
   home: process.env.HOME,
   cwd: process.cwd(),
 }));
@@ -1318,6 +1340,19 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       if (mountSandboxAvailable) {
         process.env.VERIFY_FLEET_RELEASE_QUALIFICATION = '1';
         process.env.RUNNER_TEMP = root;
+        secretHolder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+          env: {
+            ...process.env,
+            DAYTONA_API_KEY: 'daytona-secret',
+            OPENAI_API_KEY: 'openai-secret',
+            CLOUD_API_ACCESS_TOKEN: 'cloud-secret',
+          },
+          stdio: 'ignore',
+        });
+        await new Promise<void>((resolve, reject) => {
+          secretHolder?.once('spawn', resolve);
+          secretHolder?.once('error', reject);
+        });
       }
 
       const result = await executeFleetCommand([process.execPath, script]);
@@ -1330,7 +1365,13 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
       expect(observed).not.toHaveProperty('daytona');
       expect(observed).not.toHaveProperty('openai');
       expect(observed).not.toHaveProperty('cloud');
+      if (mountSandboxAvailable) expect(observed.hostProcSecret).toBe(false);
     } finally {
+      if (secretHolder?.exitCode === null) {
+        const closed = new Promise<void>((resolve) => secretHolder?.once('close', () => resolve()));
+        secretHolder.kill('SIGKILL');
+        await closed;
+      }
       for (const [name, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
@@ -1393,6 +1434,48 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
     expect(cleanupError).toBeUndefined();
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'force-kills a same-group SIGTERM-resistant descendant when the leader exits',
+    async () => {
+      let descendantPid: number | undefined;
+      try {
+        const script = [
+          "const { spawn } = require('node:child_process');",
+          `const child = spawn(${JSON.stringify(process.execPath)}, ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { stdio: 'ignore' });`,
+          "process.stdout.write(String(child.pid) + '\\n');",
+          "process.on('SIGTERM', () => process.exit(0));",
+          'setInterval(() => {}, 1000);',
+        ].join('\n');
+        const result = await executeFleetCommand([process.execPath, '-e', script], { timeoutMs: 100 });
+        descendantPid = Number(result._rawStdout.trim());
+        expect(result.timedOut).toBe(true);
+        expect(descendantPid).toBeGreaterThan(0);
+
+        const deadline = Date.now() + 2_000;
+        let running = true;
+        while (running && Date.now() < deadline) {
+          try {
+            const { stdout } = await execFileAsync('/bin/ps', ['-o', 'stat=', '-p', String(descendantPid)]);
+            running = stdout.trim().length > 0 && !stdout.trim().startsWith('Z');
+          } catch (error: any) {
+            if (error?.code === 1 || error?.exitCode === 1) running = false;
+            else throw error;
+          }
+          if (running) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(running).toBe(false);
+      } finally {
+        if (descendantPid) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch (error: any) {
+            if (error?.code !== 'ESRCH') throw error;
+          }
+        }
+      }
+    }
+  );
+
   it('delivers staged stdin bytes so interactive mode semantics can be proven', async () => {
     const result = await executeFleetCommand([process.execPath, '-e', 'process.stdin.pipe(process.stdout)'], {
       stdin: [
@@ -1427,6 +1510,121 @@ writeFileSync(process.env.VERIFY_FLEET_PROBE, JSON.stringify({
         })
       ).toBe('pass');
     }
+  });
+
+  it('fails expected-failure operations closed when their postcondition is false', async () => {
+    expect(expectedFailureExitCode({ exitCode: 7 }, true)).toBe(7);
+    expect(expectedFailureExitCode({ exitCode: 0 }, false)).toBe(0);
+    expect(expectedFailureExitCode({ exitCode: 7 }, false)).toBe(0);
+
+    const source = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
+    // One helper definition plus all seven assertion-bearing expected-failure arms.
+    expect(source.match(/expectedFailureExitCode\(\s*result,/g)).toHaveLength(8);
+  });
+
+  it('requires an exact successful set-model inventory readback', () => {
+    expect(
+      exactModelReadback(
+        { exitCode: 0, _rawStdout: JSON.stringify([{ name: 'worker', model: 'gpt-new' }]) },
+        'worker',
+        'gpt-new'
+      )
+    ).toMatchObject({ pass: true, observedModel: 'gpt-new' });
+    expect(
+      exactModelReadback(
+        { exitCode: 0, _rawStdout: JSON.stringify([{ name: 'worker', model: 'gpt-old' }]) },
+        'worker',
+        'gpt-new'
+      ).pass
+    ).toBe(false);
+    expect(exactModelReadback({ exitCode: 1, _rawStdout: '[]' }, 'worker', 'gpt-new').pass).toBe(false);
+    expect(
+      exactModelReadback(
+        {
+          exitCode: 0,
+          stdoutTruncated: true,
+          _rawStdout: JSON.stringify([{ name: 'worker', model: 'gpt-new' }]),
+        },
+        'worker',
+        'gpt-new'
+      ).pass
+    ).toBe(false);
+    expect(
+      exactModelReadback(
+        {
+          exitCode: 0,
+          _rawStdout: JSON.stringify([
+            { name: 'worker', model: 'gpt-new' },
+            { name: 'worker', model: 'gpt-old' },
+          ]),
+        },
+        'worker',
+        'gpt-new'
+      ).pass
+    ).toBe(false);
+  });
+
+  it('binds reconnect markers to exact worker_stream events for the requested worker', () => {
+    const result = {
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      _rawStdout: [
+        JSON.stringify({ kind: 'diagnostic', name: 'worker', message: 'FIRST' }),
+        JSON.stringify({ kind: 'worker_stream', name: 'other', chunk: 'FIRST' }),
+      ].join('\n'),
+    };
+    expect(exactWorkerStreamMarkers(result, 'worker', 'FIRST', ['SECOND']).pass).toBe(false);
+
+    result._rawStdout = JSON.stringify({ kind: 'worker_stream', name: 'worker', chunk: 'FIRST' });
+    expect(exactWorkerStreamMarkers(result, 'worker', 'FIRST', ['SECOND'])).toMatchObject({
+      pass: true,
+      exactEventCount: 1,
+    });
+    result._rawStdout += `\n${JSON.stringify({ kind: 'worker_stream', name: 'worker', chunk: 'SECOND' })}`;
+    expect(exactWorkerStreamMarkers(result, 'worker', 'FIRST', ['SECOND']).pass).toBe(false);
+  });
+
+  it('accepts Fleet history only for the exact released run-owned node', () => {
+    const nodes = [
+      { id: 'live-id', name: 'live-node', status: 'online' },
+      { id: 'unrelated-id', name: 'unrelated-node', status: 'history' },
+      { id: 'released-id', name: 'released-node', status: 'offline' },
+    ];
+    expect(
+      exactReleasedFleetHistory(nodes, ['live-node'], { nodeId: 'released-id', nodeName: 'released-node' })
+    ).toMatchObject({ pass: true, historyStatus: 'offline' });
+    expect(
+      exactReleasedFleetHistory(nodes, ['live-node'], { nodeId: 'missing-id', nodeName: 'missing-node' }).pass
+    ).toBe(false);
+    expect(exactReleasedFleetHistory(nodes, ['live-node'], undefined).pass).toBe(false);
+  });
+
+  it('requires a successful exact STOPPED status for every node-down proof', async () => {
+    expect(exactStoppedNodeStatus({ exitCode: 0, _rawStdout: 'Status: STOPPED\n' })).toBe(true);
+    expect(exactStoppedNodeStatus({ exitCode: 1, _rawStdout: 'Status: STOPPED\n' })).toBe(false);
+    expect(
+      exactStoppedNodeStatus({
+        exitCode: 0,
+        stdoutTruncated: true,
+        _rawStdout: 'Status: STOPPED\n',
+      })
+    ).toBe(false);
+    expect(exactStoppedNodeStatus({ exitCode: 0, _rawStdout: 'Status: STOPPING\n' })).toBe(false);
+    expect(exactStoppedNodeStatus({ exitCode: 0, _rawStdout: 'Status: RUNNING\n' })).toBe(false);
+
+    const source = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
+    expect(source.match(/exactStoppedNodeStatus\(after\)/g)).toHaveLength(4);
+  });
+
+  it('runs release candidates in a PID namespace with a private procfs', () => {
+    expect(candidateNamespaceArgs()).toEqual([
+      '--user',
+      '--map-root-user',
+      '--mount',
+      '--pid',
+      '--mount-proc',
+      '--fork',
+    ]);
   });
 
   it('keeps the independently computed snapshot manifest digest authoritative', () => {

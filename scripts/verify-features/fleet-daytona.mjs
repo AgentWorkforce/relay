@@ -757,6 +757,10 @@ export function candidateProvenanceSourceSha(verifierCommit, expectedRelaySha, r
   return expectedRelaySha || verifierCommit;
 }
 
+export function candidateNamespaceArgs() {
+  return ['--user', '--map-root-user', '--mount', '--pid', '--mount-proc', '--fork'];
+}
+
 export function candidateSandboxArgv(argv, executableKind = 'cli') {
   if (process.platform !== 'linux') {
     throw new Error('release qualification candidate execution requires a Linux mount namespace');
@@ -790,10 +794,7 @@ export function candidateSandboxArgv(argv, executableKind = 'cli') {
   }
   return [
     '/usr/bin/unshare',
-    '--user',
-    '--map-root-user',
-    '--mount',
-    '--fork',
+    ...candidateNamespaceArgs(),
     '--',
     '/bin/sh',
     CANDIDATE_MOUNT_SANDBOX,
@@ -918,6 +919,7 @@ async function execute(argv, options = {}) {
     let timer;
     let killTimer;
     let settled = false;
+    let forced = false;
     const settle = (code, closeSignal) => {
       if (settled) return;
       settled = true;
@@ -983,6 +985,7 @@ async function execute(argv, options = {}) {
         // The child may have exited between the timeout and the signal.
       }
       killTimer = setTimeout(() => {
+        forced = true;
         try {
           if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
           else child.kill('SIGKILL');
@@ -997,6 +1000,18 @@ async function execute(argv, options = {}) {
     }, timeoutMs);
     timer.unref();
     child.on('close', (code, closeSignal) => {
+      // The group leader may honor SIGTERM while a same-group descendant
+      // ignores it and closes/does not inherit the leader's pipes. Do not
+      // cancel the hard-kill solely because the leader reached `close`.
+      if (timedOut && !forced) {
+        forced = true;
+        try {
+          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+          else child.kill('SIGKILL');
+        } catch (error) {
+          if (error?.code !== 'ESRCH') spawnError ??= error;
+        }
+      }
       settle(code, closeSignal);
     });
   });
@@ -1078,6 +1093,93 @@ export function tryParseJson(text) {
     }
   }
   return undefined;
+}
+
+export function expectedFailureExitCode(result, assertionPass) {
+  return assertionPass && Number.isInteger(result?.exitCode) && result.exitCode !== 0 ? result.exitCode : 0;
+}
+
+export function exactModelReadback(result, agentName, requestedModel) {
+  const payload =
+    result?.exitCode === 0 &&
+    result.stdoutTruncated !== true &&
+    result.stderrTruncated !== true &&
+    result.stdoutCaptureTruncated !== true &&
+    result.stderrCaptureTruncated !== true
+      ? tryParseJson(result._rawStdout)
+      : undefined;
+  const exactMatches = Array.isArray(payload) ? payload.filter(({ name }) => name === agentName) : [];
+  const exact = exactMatches.length === 1 ? exactMatches[0] : undefined;
+  return {
+    pass: exact?.model === requestedModel,
+    observedModel: exact?.model,
+  };
+}
+
+export function exactWorkerStreamMarkers(result, agentName, requiredMarker, forbiddenMarkers = []) {
+  const events = String(result?._rawStdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => tryParseJson(line))
+    .filter(
+      (event) =>
+        event?.kind === 'worker_stream' && event?.name === agentName && typeof event?.chunk === 'string'
+    );
+  const workerBytes = events.map(({ chunk }) => chunk).join('');
+  const markerPresent = workerBytes.includes(requiredMarker);
+  const forbiddenPresent = forbiddenMarkers.some((marker) => workerBytes.includes(marker));
+  return {
+    pass:
+      result?.stdoutTruncated !== true &&
+      result?.stderrTruncated !== true &&
+      events.length > 0 &&
+      markerPresent &&
+      !forbiddenPresent,
+    exactEventCount: events.length,
+    markerPresent,
+    forbiddenPresent,
+  };
+}
+
+export function exactReleasedFleetHistory(nodes, availableNames, releasedNode) {
+  if (
+    !Array.isArray(nodes) ||
+    !Array.isArray(availableNames) ||
+    typeof releasedNode?.nodeId !== 'string' ||
+    releasedNode.nodeId.length === 0 ||
+    typeof releasedNode?.nodeName !== 'string' ||
+    releasedNode.nodeName.length === 0
+  ) {
+    return { pass: false, ownedRows: 0, historyStatus: undefined };
+  }
+  const ownedRows = nodes.filter(({ name }) => availableNames.includes(name)).length;
+  const history = nodes.find(
+    ({ id, nodeId, name }) =>
+      name === releasedNode.nodeName &&
+      (id ?? nodeId) === releasedNode.nodeId &&
+      !availableNames.includes(name)
+  );
+  const historyStatus = String(history?.status ?? history?.state ?? '').toLowerCase();
+  return {
+    pass:
+      availableNames.length > 0 &&
+      ownedRows === availableNames.length &&
+      ['offline', 'unavailable', 'stopped', 'history'].includes(historyStatus),
+    ownedRows,
+    historyStatus: history ? historyStatus : undefined,
+  };
+}
+
+export function exactStoppedNodeStatus(result) {
+  return (
+    result?.exitCode === 0 &&
+    result.stdoutTruncated !== true &&
+    result.stderrTruncated !== true &&
+    result.stdoutCaptureTruncated !== true &&
+    result.stderrCaptureTruncated !== true &&
+    String(result._rawStdout ?? '')
+      .split(/\r?\n/)
+      .some((line) => line.trim() === 'Status: STOPPED')
+  );
 }
 
 function findStringDeep(value, keys) {
@@ -2236,6 +2338,7 @@ class FleetBoard {
     this.baselineAgentNames = new Set();
     this.steerReceipts = [];
     this.taintedNodeIds = new Set();
+    this.releasedHistoryNode = null;
     if (this.evidence.environment.releaseQualificationRequested) {
       if (!SAFE_SNAPSHOT_ID.test(this.evidence.environment.expectedSnapshotId ?? '')) {
         throw new Error('VERIFY_FLEET_SNAPSHOT_ID is required and must be a safe immutable provider id');
@@ -3639,7 +3742,7 @@ class FleetBoard {
       const noPartialCreation = noPartialCreationProofPass({ targetName, before, after }, targetName);
       return {
         ...stripPrivateExecution(result),
-        exitCode: rejected && noPartialCreation ? result.exitCode : 1,
+        exitCode: expectedFailureExitCode(result, rejected && noPartialCreation),
         partialCreationProof: { targetName, before, after },
         summary: `rejected=${rejected} noPartialCreation=${noPartialCreation}`,
       };
@@ -4643,13 +4746,11 @@ class FleetBoard {
           timeoutMs: 30_000,
           maxCaptureBytes: 1024 * 1024,
         });
-        const payload = tryParseJson(list._rawStdout);
-        const exact = Array.isArray(payload) ? payload.find(({ name }) => name === controlName) : undefined;
-        const readback = exact?.model === requestedModel || result.exitCode === 0;
+        const readback = exactModelReadback(list, controlName, requestedModel);
         return {
           ...stripPrivateExecution(result),
-          exitCode: result.exitCode === 0 && readback ? 0 : 1,
-          summary: `requestedModel=${requestedModel} observedModel=${exact?.model ?? 'missing'} commandExit=${result.exitCode}`,
+          exitCode: result.exitCode === 0 && readback.pass ? 0 : 1,
+          summary: `requestedModel=${requestedModel} observedModel=${readback.observedModel ?? 'missing'} commandExit=${result.exitCode} readbackExit=${list.exitCode}`,
         };
       });
       await this.record('node-agent-duplicate-name', async () => {
@@ -4674,7 +4775,7 @@ class FleetBoard {
           /already|exists|duplicate|running/i.test(`${result._rawStdout}\n${result._rawStderr}`);
         return {
           ...stripPrivateExecution(result),
-          exitCode: rejected && matches === 1 ? result.exitCode : 1,
+          exitCode: expectedFailureExitCode(result, rejected && matches === 1),
           summary: `rejected=${rejected} exactIdentityCount=${matches}`,
         };
       });
@@ -4716,17 +4817,15 @@ class FleetBoard {
         const second = await attach(`RECONNECT_SECOND_${this.short}`);
         const firstMarker = `RECONNECT_FIRST_${this.short}`;
         const secondMarker = `RECONNECT_SECOND_${this.short}`;
-        const firstMarkerOnly =
-          first._rawStdout.includes(firstMarker) && !first._rawStdout.includes(secondMarker);
-        const secondMarkerOnly =
-          second._rawStdout.includes(secondMarker) && !second._rawStdout.includes(firstMarker);
-        const firstEvents = first._rawStdout.includes(controlName) && firstMarkerOnly;
-        const secondEvents = second._rawStdout.includes(controlName) && secondMarkerOnly;
+        const firstProof = exactWorkerStreamMarkers(first, controlName, firstMarker, [secondMarker]);
+        const secondProof = exactWorkerStreamMarkers(second, controlName, secondMarker, [firstMarker]);
+        const firstEvents = firstProof.pass && !first.stdinWriteError;
+        const secondEvents = secondProof.pass && !second.stdinWriteError;
         return {
           ...stripPrivateExecution(second),
           exitCode: first.exitCode === 0 && second.exitCode === 0 && firstEvents && secondEvents ? 0 : 1,
           observedStream: firstEvents && secondEvents,
-          summary: `firstExit=${first.exitCode} secondExit=${second.exitCode} firstMarkerOnly=${firstMarkerOnly} secondMarkerOnly=${secondMarkerOnly} firstEvents=${firstEvents} secondEvents=${secondEvents}`,
+          summary: `firstExit=${first.exitCode} secondExit=${second.exitCode} firstExactWorkerEvents=${firstProof.exactEventCount} secondExactWorkerEvents=${secondProof.exactEventCount} firstMarkerOnly=${firstProof.markerPresent && !firstProof.forbiddenPresent} secondMarkerOnly=${secondProof.markerPresent && !secondProof.forbiddenPresent} firstEvents=${firstEvents} secondEvents=${secondEvents}`,
         };
       });
       await this.record('node-agent-attach-local', async () => {
@@ -4800,7 +4899,7 @@ class FleetBoard {
         /connect|ssh|refused|timed out|unreachable/i.test(`${result._rawStdout}\n${result._rawStderr}`);
       return {
         ...stripPrivateExecution(result),
-        exitCode: rejected ? result.exitCode : 1,
+        exitCode: expectedFailureExitCode(result, rejected),
         summary: `sshRejected=${rejected}`,
       };
     });
@@ -4823,7 +4922,7 @@ class FleetBoard {
         /--node|join-ticket|requires/i.test(`${result._rawStdout}\n${result._rawStderr}`);
       return {
         ...stripPrivateExecution(result),
-        exitCode: rejected ? result.exitCode : 1,
+        exitCode: expectedFailureExitCode(result, rejected),
         summary: `joinTicketRejected=${rejected}`,
       };
     });
@@ -4856,7 +4955,7 @@ class FleetBoard {
       const absent = await this.waitForNodeAgentAbsent(node, failedName, 20_000);
       return {
         ...stripPrivateExecution(result),
-        exitCode: result.exitCode !== 0 && absent ? result.exitCode : 1,
+        exitCode: expectedFailureExitCode(result, result.exitCode !== 0 && absent),
         summary: `providerStartRejected=${result.exitCode !== 0} exactIdentityAbsent=${absent}`,
       };
     });
@@ -5424,9 +5523,11 @@ class FleetBoard {
         (entry) => entry.type === 'daytona-sandbox' && entry.nodeName === scopedName
       );
       if (!resource) return { argv: [], blockedReason: 'scoped sandbox was not provisioned' };
-      const node = [this.nodeA, this.nodeB].find(({ nodeName } = {}) => nodeName === resource.nodeName);
       const worker = this.evidence.resources.find(
         (entry) => entry.type === 'relay-agent' && entry.id === scopedAgent
+      );
+      const spawnOperation = this.evidence.operations.find(
+        ({ id }) => id === 'fleet-spawn-sandbox-scoped-mount'
       );
       const intent = this.evidence.ownershipIntents.find(
         ({ type, name }) => type === 'daytona-sandbox' && name === resource.nodeName
@@ -5438,7 +5539,10 @@ class FleetBoard {
         worker?.sandboxId === resource.id &&
         worker?.sandboxNodeId === resource.nodeId &&
         worker?.sandboxNodeName === resource.nodeName &&
-        worker?.cloudWorkspaceId === resource.cloudWorkspaceId;
+        worker?.cloudWorkspaceId === resource.cloudWorkspaceId &&
+        spawnOperation?.status === 'pass' &&
+        typeof resource.nodeId === 'string' &&
+        resource.nodeId.length > 0;
       const result = await execute(
         this.cliArgv(
           'fleet',
@@ -5457,21 +5561,31 @@ class FleetBoard {
         if (!present) break;
         await new Promise((resolve) => setTimeout(resolve, 3_000));
       }
-      const workerProcessAbsent =
-        Boolean(node) && (await this.waitForNodeAgentAbsent(node, scopedAgent, 45_000));
       const workerIdentityAbsent = await this.waitForAgentAbsent(scopedAgent, 45_000);
       const sandboxAbsent = await this.waitForSandboxAbsentId(resource.id, 45_000);
+      // A worker cannot remain executing inside a provider-confirmed deleted
+      // sandbox. Querying `node agent list` through that deleted sandbox is
+      // impossible and previously made this operation unconditionally fail.
+      const workerProcessAbsent = sandboxAbsent;
+      const releasePassed =
+        result.exitCode === 0 &&
+        !present &&
+        workerProcessAbsent &&
+        workerIdentityAbsent &&
+        sandboxAbsent &&
+        ownershipBound;
+      if (releasePassed) {
+        resource.cleanupState = 'absent';
+        if (worker) worker.cleanupState = 'absent';
+        this.releasedHistoryNode = {
+          nodeId: resource.nodeId,
+          nodeName: resource.nodeName,
+          sandboxId: resource.id,
+        };
+      }
       return {
         ...stripPrivateExecution(result),
-        exitCode:
-          result.exitCode === 0 &&
-          !present &&
-          workerProcessAbsent &&
-          workerIdentityAbsent &&
-          sandboxAbsent &&
-          ownershipBound
-            ? 0
-            : 1,
+        exitCode: releasePassed ? 0 : 1,
         sandboxReleaseProof: {
           sandboxId: resource.id,
           sandboxName: resource.nodeName,
@@ -5510,7 +5624,7 @@ class FleetBoard {
         /not found/i.test(output);
       return {
         ...stripPrivateExecution(result),
-        exitCode: bounded ? result.exitCode : 1,
+        exitCode: expectedFailureExitCode(result, bounded),
         summary: `bounded=${bounded} timedOut=${result.timedOut} durationMs=${Math.round(result.durationMs)} diagnostic=${/not found/i.test(output)}`,
       };
     });
@@ -5525,25 +5639,22 @@ class FleetBoard {
       return;
     }
     const availableNames = availableNodes.map(({ nodeName }) => nodeName);
+    if (!this.releasedHistoryNode) {
+      await this.derived('fleet-nodes-history', {
+        blockedReason: 'no exact previously live run-owned released node was available',
+      });
+      return;
+    }
     await this.assertedCommand(
       'fleet-nodes-history',
       this.cliArgv('fleet', 'nodes', '--all'),
       (result) => {
         const payload = tryParseJson(result._rawStdout);
         const nodes = Array.isArray(payload?.nodes) ? payload.nodes : null;
-        const owned = nodes?.filter(({ name }) => availableNames.includes(name)) ?? [];
-        const historyRows =
-          nodes?.filter(
-            ({ name, status, state }) =>
-              !availableNames.includes(name) &&
-              ['offline', 'unavailable', 'stopped', 'history'].includes(
-                String(status ?? state ?? '').toLowerCase()
-              )
-          ) ?? [];
-        const pass = owned.length === availableNames.length && historyRows.length > 0;
+        const proof = exactReleasedFleetHistory(nodes, availableNames, this.releasedHistoryNode);
         return {
-          pass,
-          summary: `ownedRows=${owned.length} totalRows=${nodes?.length ?? 'invalid'} observedHistoryRows=${historyRows.length}`,
+          pass: proof.pass,
+          summary: `ownedRows=${proof.ownedRows} totalRows=${nodes?.length ?? 'invalid'} historyNodeId=${this.releasedHistoryNode.nodeId} historyNodeName=${this.releasedHistoryNode.nodeName} historyStatus=${proof.historyStatus ?? 'missing'}`,
         };
       },
       { timeoutMs: 60_000, maxCaptureBytes: 16 * 1024 * 1024 }
@@ -5595,7 +5706,7 @@ class FleetBoard {
         timeoutMs: 45_000,
       });
       const after = await readStatus();
-      const stopped = !after._rawStdout.includes('Status: RUNNING');
+      const stopped = exactStoppedNodeStatus(after);
       return {
         ...stripPrivateExecution(result),
         exitCode: result.exitCode === 0 && stopped ? 0 : 1,
@@ -5634,7 +5745,10 @@ class FleetBoard {
       const text = `${result._rawStdout}\n${result._rawStderr}`;
       return {
         ...stripPrivateExecution(result),
-        exitCode: result.exitCode !== 0 && /config|not found|ENOENT/i.test(text) ? result.exitCode : 1,
+        exitCode: expectedFailureExitCode(
+          result,
+          result.exitCode !== 0 && /config|not found|ENOENT/i.test(text)
+        ),
         summary: `rejectedMissingConfig=${result.exitCode !== 0 && /config|not found|ENOENT/i.test(text)}`,
       };
     });
@@ -5705,10 +5819,7 @@ class FleetBoard {
         timeoutMs: 45_000,
       });
       const after = await readStatus();
-      const stopped =
-        after.exitCode === 0 &&
-        !after._rawStdout.includes('Status: RUNNING') &&
-        after._rawStdout.includes(node.nodeName);
+      const stopped = exactStoppedNodeStatus(after);
       const restore = await execute(this.inside(node.id, 'node', 'up', '--background', '--no-spawn'), {
         timeoutMs: 90_000,
       });
@@ -5723,10 +5834,7 @@ class FleetBoard {
         timeoutMs: 45_000,
       });
       const after = await readStatus();
-      const stopped =
-        after.exitCode === 0 &&
-        !after._rawStdout.includes('Status: RUNNING') &&
-        after._rawStdout.includes(node.nodeName);
+      const stopped = exactStoppedNodeStatus(after);
       const restore = await execute(this.inside(node.id, 'node', 'up', '--background', '--no-spawn'), {
         timeoutMs: 90_000,
       });
@@ -5743,7 +5851,7 @@ class FleetBoard {
         timeoutMs: 45_000,
       });
       const after = await readStatus();
-      const stopped = !after._rawStdout.includes('Status: RUNNING');
+      const stopped = exactStoppedNodeStatus(after);
       return {
         ...stripPrivateExecution(result),
         exitCode: result.exitCode === 0 && stopped ? 0 : 1,
