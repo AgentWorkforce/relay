@@ -1,0 +1,2 @@
+Disposable subscription demo fixture ghsub-selfhost-cba18cec68
+Review this line for a real thread event.
