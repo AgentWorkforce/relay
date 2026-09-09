@@ -25,6 +25,14 @@ import { execFileSync } from 'node:child_process';
 import { codexReceiverArgs, codexMcpArgs, sessionFiles, auditOwnedCodexSession } from './codex-proof.mjs';
 const receiverCli = process.env.LOCAL_AI_CLI ?? 'claude';
 assert(['claude', 'codex'].includes(receiverCli), 'LOCAL_AI_CLI must be claude or codex');
+const receiverExecutable = process.env.LOCAL_AI_EXECUTABLE ?? receiverCli;
+if (process.env.LOCAL_AI_EXECUTABLE) {
+  assert(path.isAbsolute(receiverExecutable), 'LOCAL_AI_EXECUTABLE must be an absolute path');
+  assert.equal(path.basename(receiverExecutable), receiverCli, 'Executable must match LOCAL_AI_CLI');
+}
+const receiverVersion = execFileSync(receiverExecutable, ['--version'], {
+  encoding: 'utf8', timeout: 15000,
+}).trim();
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const engineDir = process.env.RELAYCAST_ENGINE_DIR;
 const binaryPath = process.env.BROKER_BINARY_PATH;
@@ -45,6 +53,8 @@ const report = {
   at: new Date().toISOString(),
   environment: `isolated real ${receiverCli}; synthetic signed Relayfile payloads; no GitHub delivery claim`,
   receiverCli,
+  receiverExecutable,
+  receiverVersion,
   ready: false,
   checks: [],
   stimuli: [],
@@ -316,7 +326,7 @@ try {
   const start = Date.now();
   worker = await client.spawnCli({
     name,
-    cli: receiverCli,
+    cli: receiverExecutable,
     channels: ['local-ai-proof'],
     cwd: work,
     args:
