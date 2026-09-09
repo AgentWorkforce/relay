@@ -55,6 +55,18 @@
           "tags": [
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1788986535141,
+          "type": "decision",
+          "content": "Reject zero-test proof outcomes and remove persisted CI checkout credentials: Reject zero-test proof outcomes and remove persisted CI checkout credentials",
+          "raw": {
+            "question": "Reject zero-test proof outcomes and remove persisted CI checkout credentials",
+            "chosen": "Reject zero-test proof outcomes and remove persisted CI checkout credentials",
+            "alternatives": [],
+            "reasoning": "PR #1725 review reproduced empty discovery publishing fixed. Require exactly one positive stderr count; real subprocess regressions reject successful-empty results and preserve skip/error guards. GitHub authentication still blocks live thread updates and smoke log access."
+          },
+          "significance": "high"
         }
       ]
     }

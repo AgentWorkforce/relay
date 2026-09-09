@@ -30,7 +30,17 @@ if (!existsSync(script)) {
   process.stdout.write(result.stdout ?? '');
   process.stderr.write(result.stderr ?? '');
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  if (result.error || result.status !== 0 || !/Ran \d+ tests/.test(output) || /skipped=/i.test(output)) {
+  // unittest writes its summary to stderr. Require exactly one positive count;
+  // a successful exit or a test's stdout cannot prove that discovery ran tests.
+  const summaries = [...(result.stderr ?? '').matchAll(/^Ran (\d+) tests? in .+$/gm)];
+  const testCount = summaries.length === 1 ? Number(summaries[0][1]) : 0;
+  if (
+    result.error ||
+    result.status !== 0 ||
+    !Number.isSafeInteger(testCount) ||
+    testCount <= 0 ||
+    /skipped=/i.test(output)
+  ) {
     throw new Error('Fleet reaper safety harness did not complete successfully');
   }
   observation = {

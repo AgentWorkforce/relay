@@ -119,7 +119,8 @@ return nonzero. Category byte counters are allocated-size estimates for fully
 completed deletions; an interrupted/failed partial deletion is retained as an
 error entry and its actual effect is visible in filesystem free-space readings.
 
-Run the tests without installing node_modules:
+Run the tests without installing node_modules (Node.js 22+ is needed for the
+proof-entry-point regression tests):
 
 ```sh
 python3 -m unittest discover -s tests/fleet -v
