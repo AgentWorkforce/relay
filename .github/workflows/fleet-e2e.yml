@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AgentWorkforce/relaycast
-          ref: c16771c126e6e18d459bc8048cecd5cea93f0c11 # relaycast#387: verified served-node spawn completion
+          ref: a5c7ac66f64a650274fbe2c60e3cd5d3c9b87dcd # relaycast#387: verified served-node spawn completion
           path: relaycast-engine
 
       - name: Setup Node.js
