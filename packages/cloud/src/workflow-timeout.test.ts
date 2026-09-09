@@ -136,6 +136,26 @@ describe('workflow launch timeout inference', () => {
     }
   });
 
+  it.each(['\u2028', '\u2029'])('keeps ASI regex masking after Unicode line terminator %j', (lineTerminator) => {
+    for (const keyword of ['break', 'continue', 'debugger']) {
+      const source =
+        `workflow("real").timeout(900_000); while (ready) { ${keyword}${lineTerminator}` +
+        '/workflow("fake").timeout(600_000)/.test(value); }';
+      expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+    }
+  });
+
+  it('does not treat multiline Python keyword arguments as assignments', () => {
+    const source = [
+      'wf = workflow(',
+      '  "real",',
+      '  option=other,',
+      ')',
+      'wf.timeout(900_000)',
+    ].join('\n');
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
   it('does not let a shadowed non-builder identifier create an ambiguous timeout', () => {
     const source = [
       "const wf = workflow('real');",
@@ -188,6 +208,17 @@ describe('workflow launch timeout inference', () => {
       '}',
     ].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('does not treat identifiers inside TypeScript parameter types as runtime shadows', () => {
+    const source = [
+      "const wf = workflow('real');",
+      'function run(options: { wf: string }) {',
+      '  wf.timeout(600_000);',
+      '}',
+      'wf.timeout(900_000);',
+    ].join('\n');
+    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
   });
 
   it('skips object types nested in typed function return annotations', () => {

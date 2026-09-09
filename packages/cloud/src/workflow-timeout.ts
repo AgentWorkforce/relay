@@ -28,6 +28,10 @@ const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch',
 const TYPESCRIPT_DECLARATION_KEYWORDS = ['const', 'let', 'var', 'function', 'class'] as const;
 const IDENTIFIER_PART = /[\p{ID_Continue}$\u200c\u200d]/u;
 
+function isLineTerminator(character: string | undefined): boolean {
+  return character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029';
+}
+
 type MaskedWorkflowSource = {
   source: string;
   matchingOpenParens: Map<number, number>;
@@ -78,7 +82,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   let blockComment = false;
   let regexLiteral = false;
   let regexCharacterClass = false;
-  const mask = (character: string) => (character === '\n' || character === '\r' ? character : ' ');
+  const mask = (character: string) => (isLineTerminator(character) ? character : ' ');
   let previousSignificantCharacter: string | undefined;
   let currentIdentifier = '';
   let lastIdentifier: string | undefined;
@@ -133,7 +137,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     flushIdentifier();
     if (/\s/.test(character)) {
-      if (character === '\n' || character === '\r') recordLineBreak();
+      if (isLineTerminator(character)) recordLineBreak();
       return;
     }
 
@@ -239,7 +243,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     if (lineComment) {
       output += mask(character);
-      if (character === '\n' || character === '\r') {
+      if (isLineTerminator(character)) {
         recordLineBreak();
         lineComment = false;
       }
@@ -249,7 +253,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     if (blockComment) {
       output += mask(character);
-      if (character === '\n' || character === '\r') recordLineBreak();
+      if (isLineTerminator(character)) recordLineBreak();
       if (character === '*' && next === '/') {
         output += ' ';
         index += 2;
@@ -609,12 +613,37 @@ function addFunctionBinding(
     names = new Set();
     functionBindings.set(scopeId, names);
   }
-  // This is deliberately a conservative lexical scan. Marking names from a
-  // parameter's type/default/destructuring pattern as shadowed can omit an
-  // inference, but never turns unrelated code into a false builder timeout.
-  for (const parameter of parameters.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) {
-    names.add(parameter[0]);
+  let segmentStart = 0;
+  let delimiterDepth = 0;
+  const recordSegment = (end: number): void => {
+    const declaration = parameters
+      .slice(segmentStart, end)
+      .match(/^\s*(?:\.\.\.\s*)?(?:[{[]\s*)?([A-Za-z_$][A-Za-z0-9_$]*)/);
+    if (declaration !== null) names.add(declaration[1]);
+  };
+  for (let cursor = 0; cursor < parameters.length; cursor += 1) {
+    const character = parameters[cursor];
+    if (character === '(' || character === '[' || character === '{') delimiterDepth += 1;
+    else if (character === ')' || character === ']' || character === '}') {
+      delimiterDepth = Math.max(0, delimiterDepth - 1);
+    } else if (character === ',' && delimiterDepth === 0) {
+      recordSegment(cursor);
+      segmentStart = cursor + 1;
+    }
   }
+  recordSegment(parameters.length);
+}
+
+function pythonDelimiterDepth(source: string): Uint32Array {
+  const depths = new Uint32Array(source.length);
+  let depth = 0;
+  for (let cursor = 0; cursor < source.length; cursor += 1) {
+    depths[cursor] = depth;
+    const character = source[cursor];
+    if (character === '(' || character === '[' || character === '{') depth += 1;
+    else if (character === ')' || character === ']' || character === '}') depth = Math.max(0, depth - 1);
+  }
+  return depths;
 }
 
 function resolveExpressionScopeEnds(
@@ -889,9 +918,11 @@ function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
     parameters: string;
   }> = [];
   const declarationPattern = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(/gm;
-  let declarationMatch: RegExpExecArray | null;
+  const declarationMatches = [...source.matchAll(declarationPattern)];
+  const delimiterDepth = declarationMatches.length > 0 ? pythonDelimiterDepth(source) : undefined;
   let declarationLineIndex = 0;
-  while ((declarationMatch = declarationPattern.exec(source)) !== null) {
+  for (const declarationMatch of declarationMatches) {
+    if (delimiterDepth?.[declarationMatch.index] !== 0) continue;
     const openParen = declarationMatch.index + declarationMatch[0].lastIndexOf('(');
     const closeParen = matchingCloseParens.get(openParen);
     if (closeParen === undefined) continue;
