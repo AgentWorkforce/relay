@@ -629,6 +629,7 @@ describe('registerCloudCommands', () => {
     expect(optionNames).toContain('--start-from');
     expect(optionNames).toContain('--previous-run-id');
     expect(optionNames).toContain('--relayflow-version');
+    expect(optionNames).toContain('--launch-timeout-ms');
   });
 
   it('cloud run rejects a mistyped relayflow generation before submission', async () => {
@@ -655,6 +656,43 @@ describe('registerCloudCommands', () => {
     await program.parseAsync(['node', 'agent-relay', 'cloud', 'run', 'workflow.yaml']);
 
     expect(cloudMocks.runWorkflow.mock.calls[0][1]).not.toHaveProperty('relayflowVersion');
+  });
+
+  it('cloud run forwards an explicit bounded launch timeout', async () => {
+    const { program } = createHarness();
+    cloudMocks.runWorkflow.mockResolvedValueOnce({ runId: 'run-timeout', status: 'pending' });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'run',
+      'workflow.ts',
+      '--launch-timeout-ms',
+      '900000',
+    ]);
+
+    expect(cloudMocks.runWorkflow).toHaveBeenCalledWith(
+      'workflow.ts',
+      expect.objectContaining({ launchTimeoutMs: 900_000 })
+    );
+  });
+
+  it('cloud run rejects a launch timeout with trailing non-numeric characters', async () => {
+    const { program } = createHarness();
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'run',
+        'workflow.ts',
+        '--launch-timeout-ms',
+        '900000junk',
+      ])
+    ).rejects.toThrow(/positive integer/);
+    expect(cloudMocks.runWorkflow).not.toHaveBeenCalled();
   });
 
   it.each(['v1', 'v2'] as const)(
@@ -739,6 +777,8 @@ describe('registerCloudCommands', () => {
       'Hourly eval',
       '--relayflow-version',
       'v1',
+      '--launch-timeout-ms',
+      '900000',
       '--env',
       'AI_CLI_UPDATES_DRY_RUN=true',
       '--env',
@@ -751,6 +791,7 @@ describe('registerCloudCommands', () => {
         cron: '0 * * * *',
         name: 'Hourly eval',
         relayflowVersion: 'v1',
+        launchTimeoutMs: 900_000,
         envSecrets: {
           AI_CLI_UPDATES_DRY_RUN: 'true',
           AI_CLI_UPDATES_ONLY: 'codex',
