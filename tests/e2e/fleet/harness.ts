@@ -32,10 +32,9 @@ export const CLOUD_ENROLLED_NODE_FILE = path.join(HERE, 'nodes', 'cloud-enrolled
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
 
 /**
- * Locate a built relaycast engine `serve` bin. CI sets RELAYCAST_ENGINE_DIR to a
- * checkout of AgentWorkforce/relaycast pinned to the `feat/fleet-rollout-flag`
- * SHA (relaycast#194) that carries the E2E compat fixes; locally we resolve the
- * same branch from the sibling fleet worktrees (so local == CI).
+ * Locate a built relaycast engine `serve` bin. CI sets RELAYCAST_ENGINE_DIR to
+ * a checkout of AgentWorkforce/relaycast that carries the engine compatibility
+ * fixes; locally we resolve a sibling checkout when one is available.
  */
 function resolveEngineServe(): string | null {
   const candidates: string[] = [];
@@ -44,7 +43,7 @@ function resolveEngineServe(): string | null {
       path.join(process.env.RELAYCAST_ENGINE_DIR, 'packages', 'engine', 'dist', 'bin', 'serve.js')
     );
   }
-  for (const dir of ['fleet-rollout-flag', 'fleet-mailbox']) {
+  for (const dir of ['fleet-mailbox']) {
     candidates.push(
       path.resolve(
         REPO_ROOT,

@@ -46,6 +46,11 @@ const SERVE_REPLACEMENT_MESSAGE =
   "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
 
+const FLEET_ROLLOUT_REMOVED_MESSAGE =
+  'Fleet rollout controls were removed because Fleet node delivery is always on. ' +
+  "'fleet config', 'fleet enable', 'fleet disable', and 'fleet inherit' no longer apply; " +
+  "use 'agent-relay fleet nodes' or 'agent-relay fleet status' to inspect Fleet.";
+
 const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']);
 
 export interface FleetCommandDependencies {
@@ -100,6 +105,22 @@ export function registerFleetCommands(
       deps.error(SERVE_REPLACEMENT_MESSAGE);
       deps.exit(1);
     });
+
+  // Relaycast no longer exposes a workspace fleet rollout flag: node delivery
+  // is unconditional. Keep hidden shims for the four removed commands so old
+  // scripts receive a local migration diagnostic instead of a remote 404 or a
+  // generic Commander "unknown command" error. They intentionally accept old
+  // options without resolving credentials or contacting the service.
+  for (const legacyCommand of ['config', 'enable', 'disable', 'inherit']) {
+    group
+      .command(legacyCommand, { hidden: true })
+      .allowUnknownOption(true)
+      .allowExcessArguments(true)
+      .action(() => {
+        deps.error(FLEET_ROLLOUT_REMOVED_MESSAGE);
+        deps.exit(1);
+      });
+  }
 
   addSdkOptions(
     group
@@ -476,42 +497,6 @@ export function registerFleetCommands(
         deleteAgent: options.deleteAgent === true,
       });
       printJson(deps.sdk, released);
-    });
-  });
-
-  addSdkOptions(group.command('config').description('Show workspace fleet node configuration')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.get());
-      });
-    }
-  );
-
-  addSdkOptions(group.command('enable').description('Enable fleet nodes for the workspace')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.set(true));
-      });
-    }
-  );
-
-  addSdkOptions(group.command('disable').description('Disable fleet nodes for the workspace')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.set(false));
-      });
-    }
-  );
-
-  addSdkOptions(
-    group.command('inherit').description('Use the deployment default for workspace fleet nodes')
-  ).action(async (options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
-      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-      printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
     });
   });
 

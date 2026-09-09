@@ -84,11 +84,6 @@ export type RelaycastWorkspaceLike = {
   };
   workspace?: {
     info(): Promise<unknown>;
-    fleetNodes?: {
-      get(): Promise<unknown>;
-      set(enabled: boolean): Promise<unknown>;
-      inherit(): Promise<unknown>;
-    };
   };
   as?: (agentToken: string, options?: AgentClientOptions) => RelaycastAgentLike;
   // Workspace-scoped realtime stream (relaycast 2.5+): lets a workspace-key

@@ -1,0 +1,58 @@
+{
+  "id": "traj_ncjvtz4m56ib",
+  "version": 1,
+  "task": {
+    "title": "Fix Relay Fleet issue #1400: align advertised commands with always-on node delivery"
+  },
+  "status": "active",
+  "startedAt": "2026-09-09T03:42:38.728Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T03:53:06.830Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xifb6gcrc658",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T03:53:06.830Z",
+      "events": [
+        {
+          "ts": 1788925986831,
+          "type": "decision",
+          "content": "Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API: Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API",
+          "raw": {
+            "question": "Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API",
+            "chosen": "Removed the Relaycast workspace fleet rollout facade instead of recreating a removed API",
+            "alternatives": [],
+            "reasoning": "Relaycast now delivers to nodes unconditionally; hidden CLI shims preserve credential-safe migration diagnostics while the public SDK and feature manifest stop advertising a false remote contract."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788925987256,
+          "type": "reflection",
+          "content": "Issue #1400 implementation and cleanroom proof are green: production contains no workspace.fleetNodes dependency, legacy controls fail locally with always-on guidance, and the exact base/head RelayFlow case observes the stale contract then the fixed contract.",
+          "raw": {
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4306bb29be696ec84a4e3844f86fdc4a91584407",
+    "endRef": "4306bb29be696ec84a4e3844f86fdc4a91584407"
+  }
+}

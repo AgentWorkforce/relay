@@ -691,12 +691,6 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
-export interface RelayWorkspaceFleetNodesConfig {
-  enabled: boolean;
-  defaultEnabled: boolean;
-  override: boolean | null;
-}
-
 /**
  * Relay inbox states built on the canonical delivery-status lifecycle:
  * `queued`/`delivered`/`failed` surface directly, the terminal `acked` and
@@ -1049,11 +1043,6 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
-    fleetNodes: {
-      get(): Promise<RelayWorkspaceFleetNodesConfig>;
-      set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
-      inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
-    };
   };
 }
 

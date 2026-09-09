@@ -28,7 +28,6 @@ import {
   toRelayCapability,
   toRelayNode,
   toRelayTrigger,
-  toRelayWorkspaceFleetNodesConfig,
   toTriggerRequest,
 } from './relaycast-translate.js';
 import {
@@ -78,7 +77,6 @@ import type {
   RelayRegisterCapabilityInput,
   RelayWebhook,
   RelayWorkspaceInfo,
-  RelayWorkspaceFleetNodesConfig,
   InboxAckInput,
   InboxDeferInput,
   InboxFailInput,
@@ -973,17 +971,6 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
-    fleetNodes: {
-      get: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
-        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().get());
-      },
-      set: async (enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig> => {
-        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().set(enabled));
-      },
-      inherit: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
-        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().inherit());
-      },
-    },
   };
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
@@ -1195,17 +1182,6 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error('RelaycastMessagingClient.triggers requires the relaycast triggers API.');
     }
     return this.relaycast.triggers;
-  }
-
-  private requireWorkspaceFleetNodes(): NonNullable<
-    NonNullable<RelaycastWorkspaceLike['workspace']>['fleetNodes']
-  > {
-    if (!this.relaycast.workspace?.fleetNodes) {
-      throw new Error(
-        'RelaycastMessagingClient.workspace.fleetNodes requires @relaycast/sdk with the workspace fleet nodes API.'
-      );
-    }
-    return this.relaycast.workspace.fleetNodes;
   }
 
   private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {
