@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "id": "707a8bcf-b87b-483a-aa50-25ba95a2360e",
+  "timestamp": "2026-09-09T04:07:08.099Z",
+  "trajectory": "traj_t2gcdyujrbbs",
+  "files": [
+    {
+      "path": "scripts/verify-features/fleet-daytona.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 323,
+              "end_line": 336,
+              "revision": "bc0dbf7513fa073071ba7bf055d572f4453a0b64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-fleet-daytona.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 754,
+              "end_line": 768,
+              "revision": "bc0dbf7513fa073071ba7bf055d572f4453a0b64"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
