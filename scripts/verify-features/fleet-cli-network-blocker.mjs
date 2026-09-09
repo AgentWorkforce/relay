@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { syncBuiltinESMExports } from 'node:module';
+
 const blocked = () => {
   const error = new Error('candidate CLI inventory network access is disabled');
   error.code = 'ERR_ACCESS_DENIED';
@@ -36,3 +38,5 @@ for (const name of [
     if (typeof api[key] === 'function') api[key] = blocked;
   }
 }
+
+syncBuiltinESMExports();
