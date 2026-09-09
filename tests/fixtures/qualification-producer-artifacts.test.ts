@@ -53,15 +53,24 @@ function artifacts(name = expected.artifactName) {
 describe('fixed cross-repository qualification producers', () => {
   it('is an enforced gate in the cleanroom qualification workflow', async () => {
     const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    expect(workflow).toMatch(
-      /qualification-producer-artifacts\.mjs\s+cloud\s+\\?\s*--run\s+qualification\/cloud-run\.json/
-    );
-    expect(workflow).toMatch(
-      /qualification-producer-artifacts\.mjs\s+relayfile-cloud\s+\\?\s*--run\s+qualification\/relayfile-cloud-run\.json/
-    );
-    expect(workflow).toMatch(
-      /qualification-producer-artifacts\.mjs\s+cloud-acceptance\s+\\?\s*--run\s+qualification\/cloud-acceptance-run\.json/
-    );
+    const gate = (producer: string, run: string) =>
+      new RegExp(
+        `qualification-producer-artifacts\\.mjs[\\t ]+${producer}(?:[\\t ]+|[\\t ]*\\\\[\\t ]*\\r?\\n[\\t ]*)--run[\\t ]+${run}(?=[\\t \\r\\n]|$)`
+      );
+    const cloudGate = gate('cloud', 'qualification/cloud-run\\.json');
+    expect(workflow).toMatch(cloudGate);
+    expect(workflow).toMatch(gate('relayfile-cloud', 'qualification/relayfile-cloud-run\\.json'));
+    expect(workflow).toMatch(gate('cloud-acceptance', 'qualification/cloud-acceptance-run\\.json'));
+    const uncontinued = [
+      'qualification-producer-artifacts.mjs cloud',
+      '--run qualification/cloud-run.json',
+    ].join('\n');
+    const continued = [
+      'qualification-producer-artifacts.mjs cloud \\',
+      '  --run qualification/cloud-run.json',
+    ].join('\n');
+    expect(uncontinued).not.toMatch(cloudGate);
+    expect(continued).toMatch(cloudGate);
     expect(workflow).toContain('qualification/cloud-acceptance/candidate-acceptance.json');
   });
 
