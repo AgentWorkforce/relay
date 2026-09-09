@@ -1,0 +1,110 @@
+{
+  "id": "traj_b7z6py7zyebu",
+  "version": 1,
+  "task": {
+    "title": "Fix Fleet Daytona cleanup tombstone handling",
+    "source": {
+      "system": "plain",
+      "id": "relay#1711"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T02:21:57.808Z",
+  "completedAt": "2026-09-09T02:41:44.135Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T02:33:10.347Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vypgxqvuaxb9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T02:33:10.347Z",
+      "endedAt": "2026-09-09T02:41:44.135Z",
+      "events": [
+        {
+          "ts": 1788921190348,
+          "type": "decision",
+          "content": "Publish broker API readiness only after BrokerRuntime construction: Publish broker API readiness only after BrokerRuntime construction",
+          "raw": {
+            "question": "Publish broker API readiness only after BrokerRuntime construction",
+            "chosen": "Publish broker API readiness only after BrokerRuntime construction",
+            "alternatives": [],
+            "reasoning": "The standalone macOS failure completed the Relaycast session handshake, then timed out on /api/status because the ready router was exposed while inline channel-ensure network calls still blocked construction of the request receiver. Channel maintenance is best-effort and now runs in an ordered background task; the startup listener keeps returning 503 until runtime-backed routes can be serviced."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788921190936,
+          "type": "reflection",
+          "content": "Fleet tombstone cleanup fixtures pass 45/45; standalone macOS failure is isolated to API readiness preceding runtime construction and the focused Rust regression now passes.",
+          "raw": {
+            "focalPoints": [
+              "daytona-cleanup",
+              "macos-readiness",
+              "runtime-order"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:daytona-cleanup",
+            "focal:macos-readiness",
+            "focal:runtime-order",
+            "confidence:0.9"
+          ]
+        },
+        {
+          "ts": 1788921702483,
+          "type": "decision",
+          "content": "Publish runtime-backed HTTP readiness only after BrokerRuntime construction: Publish runtime-backed HTTP readiness only after BrokerRuntime construction",
+          "raw": {
+            "question": "Publish runtime-backed HTTP readiness only after BrokerRuntime construction",
+            "chosen": "Publish runtime-backed HTTP readiness only after BrokerRuntime construction",
+            "alternatives": [],
+            "reasoning": "The hosted macOS smoke trace showed session readiness succeeded before /api/status timed out. The status route queues onto BrokerRuntime's receiver, but the prior startup sequence exposed the ready router and then awaited best-effort Relaycast channel setup before constructing or running that receiver. Scheduling ordered channel maintenance in the background and handing off only after runtime construction removes that queue starvation while preserving channel setup semantics."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788921703461,
+          "type": "reflection",
+          "content": "The Fleet cleanup implementation is already complete at PR #1665 head. The remaining hosted blocker was a separate deterministic startup-order race exposed by macOS smoke; full broker tests, clippy, formatting, and the Fleet verifier pass after moving readiness.",
+          "raw": {
+            "focalPoints": [
+              "startup-readiness",
+              "macos-smoke",
+              "fleet"
+            ],
+            "adjustments": "Commit the minimal ordering fix into PR #1665, obtain independent review and Veto, then require the exact hosted macOS smoke and RelayFlow proof to pass before merge.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:startup-readiness",
+            "focal:macos-smoke",
+            "focal:fleet",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Completed Fleet cleanup convergence and fixed the broker readiness race that exposed API routes before BrokerRuntime could service them",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5706def1c0b664326214e564162e387133ae6e25",
+    "endRef": "5706def1c0b664326214e564162e387133ae6e25"
+  }
+}

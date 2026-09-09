@@ -3166,6 +3166,37 @@ fn contract_replay_fixture_requires_replay_route_exposure() {
 }
 
 #[test]
+fn startup_ready_handoff_follows_runtime_construction() {
+    let source = include_str!("init.rs");
+    let runtime_constructed = source
+        .find("let runtime = BrokerRuntime {")
+        .expect("run_init must construct the broker runtime");
+    let ready_handoff = source
+        .rfind("relay_ready.notify_one();")
+        .expect("run_init must hand the startup listener to the ready router");
+    assert!(
+        runtime_constructed < ready_handoff,
+        "runtime-backed HTTP routes must not become ready before their request receiver exists"
+    );
+
+    let channel_bootstrap = source
+        .find("let startup_channel_workspaces = workspaces.clone();")
+        .expect("startup channel maintenance must use an owned workspace snapshot");
+    let background_bootstrap = source[channel_bootstrap..]
+        .find("tokio::spawn(async move {")
+        .map(|offset| channel_bootstrap + offset)
+        .expect("startup channel maintenance must run in the background");
+    let default_channel_ensure = source[background_bootstrap..]
+        .find("ensure_default_channels().await")
+        .map(|offset| background_bootstrap + offset)
+        .expect("background startup must still ensure default channels");
+    assert!(
+        default_channel_ensure < runtime_constructed,
+        "the channel maintenance task must be scheduled without delaying runtime readiness"
+    );
+}
+
+#[test]
 fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
     let replay_fixture: Value = serde_json::from_str(include_str!(
         "../../../../packages/contracts/fixtures/replay-fixtures.json"

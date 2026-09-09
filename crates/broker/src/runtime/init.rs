@@ -397,89 +397,74 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_token: session_node_token,
         persist: cmd.persist,
     });
-    {
-        let mut ready = relay_ready_state.write().await;
-        *ready = Some(RelayReadyState {
-            workspace_key: relay_workspace_key.clone(),
-            memberships: workspace_memberships.clone(),
-            default_workspace_id: default_workspace_id.clone(),
-        });
-    }
-    if let Some(ready) = relay_ready_state.read().await.as_ref() {
-        log_startup_phase(
-            startup_debug,
-            broker_start,
-            format!(
-                "relay ready workspace_key_set={} memberships={} default_workspace={:?}",
-                !ready.workspace_key.is_empty(),
-                ready.memberships.len(),
-                ready.default_workspace_id
-            ),
-        );
-    }
-    relay_ready.notify_one();
-    let listener = startup_listener_rx
-        .await
-        .context("startup API listener task stopped before Relaycast readiness handoff")?;
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, ready_router).await {
-            tracing::error!(error = %e, "HTTP API server error");
-        }
-    });
-
-    log_startup_phase(
-        startup_debug,
-        broker_start,
-        format!(
-            "ensuring default channels for {} workspaces",
-            workspaces.len()
-        ),
-    );
-    for workspace in &workspaces {
-        if let Err(error) = workspace.http_client.ensure_default_channels().await {
-            tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure default channels");
-        }
-    }
-    log_startup_phase(startup_debug, broker_start, "default channels ensured");
-
+    let ready_state = RelayReadyState {
+        workspace_key: relay_workspace_key.clone(),
+        memberships: workspace_memberships.clone(),
+        default_workspace_id: default_workspace_id.clone(),
+    };
     let extra_channels: Vec<ChannelName> = channels_from_csv(&cmd.channels)
         .into_iter()
         .map(ChannelName::from)
         .collect();
-    log_startup_phase(
-        startup_debug,
-        broker_start,
-        format!("ensuring extra channels count={}", extra_channels.len()),
-    );
-    for workspace in &workspaces {
-        if let Err(error) = workspace
-            .http_client
-            .ensure_extra_channels(&extra_channels)
-            .await
-        {
-            tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure extra channels");
+    // Channel creation is best-effort network maintenance. Running it inline
+    // after publishing the ready HTTP router left `/api/status` queued behind
+    // slow Relaycast requests while the BrokerRuntime event loop did not yet
+    // exist. On loaded macOS runners that exhausted the client's request
+    // timeout even though the broker had completed its session handshake.
+    // Perform the same ordered ensure-then-subscribe work in the background;
+    // API readiness below is published only after the runtime is constructed.
+    let startup_channel_workspaces = workspaces.clone();
+    tokio::spawn(async move {
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            format!(
+                "ensuring default channels for {} workspaces",
+                startup_channel_workspaces.len()
+            ),
+        );
+        for workspace in &startup_channel_workspaces {
+            if let Err(error) = workspace.http_client.ensure_default_channels().await {
+                tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure default channels");
+            }
         }
-    }
-    log_startup_phase(startup_debug, broker_start, "extra channels ensured");
+        log_startup_phase(startup_debug, broker_start, "default channels ensured");
 
-    if !extra_channels.is_empty() {
         log_startup_phase(
             startup_debug,
             broker_start,
-            "subscribing websocket control channels",
+            format!("ensuring extra channels count={}", extra_channels.len()),
         );
-        for workspace in &workspaces {
-            let _ = workspace
-                .ws_control_tx
-                .send(WsControl::Subscribe(extra_channels.clone()))
-                .await;
+        for workspace in &startup_channel_workspaces {
+            if let Err(error) = workspace
+                .http_client
+                .ensure_extra_channels(&extra_channels)
+                .await
+            {
+                tracing::warn!(workspace_id = %workspace.workspace_id, error = %error, "failed to ensure extra channels");
+            }
         }
-        log_startup_phase(
-            startup_debug,
-            broker_start,
-            "websocket subscriptions updated",
-        );
-    }
+        log_startup_phase(startup_debug, broker_start, "extra channels ensured");
+
+        if !extra_channels.is_empty() {
+            log_startup_phase(
+                startup_debug,
+                broker_start,
+                "subscribing websocket control channels",
+            );
+            for workspace in &startup_channel_workspaces {
+                let _ = workspace
+                    .ws_control_tx
+                    .send(WsControl::Subscribe(extra_channels.clone()))
+                    .await;
+            }
+            log_startup_phase(
+                startup_debug,
+                broker_start,
+                "websocket subscriptions updated",
+            );
+        }
+    });
 
     let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
     let mut worker_env = vec![
@@ -726,6 +711,36 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         telemetry,
         obligation_store: crate::obligation::ObligationStore::default(),
     };
+
+    // Do not expose runtime-backed routes until the receiver that services
+    // them has been fully constructed. The startup-only listener continues to
+    // answer `/health` and returns 503 for `/api/session` until this handoff,
+    // which the SDK already polls as the broker's startup contract.
+    {
+        let mut ready = relay_ready_state.write().await;
+        *ready = Some(ready_state);
+    }
+    if let Some(ready) = relay_ready_state.read().await.as_ref() {
+        log_startup_phase(
+            startup_debug,
+            broker_start,
+            format!(
+                "relay ready workspace_key_set={} memberships={} default_workspace={:?}",
+                !ready.workspace_key.is_empty(),
+                ready.memberships.len(),
+                ready.default_workspace_id
+            ),
+        );
+    }
+    relay_ready.notify_one();
+    let listener = startup_listener_rx
+        .await
+        .context("startup API listener task stopped before Relaycast readiness handoff")?;
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, ready_router).await {
+            tracing::error!(error = %e, "HTTP API server error");
+        }
+    });
 
     runtime.run().await
 }
