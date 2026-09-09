@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Codex startup recognizes MCP boot markers in rendered terminal redraws and waits for MCP startup to finish before releasing queued input.
+
 - `node status` bounds local API probes and reports unavailable details, so a stalled broker cannot hang the command for the default 30-second request timeout.
 
 - Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.

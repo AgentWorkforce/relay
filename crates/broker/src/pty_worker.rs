@@ -221,6 +221,17 @@ fn find_agent_relay_boot_marker(lower_output: &str) -> Option<usize> {
     None
 }
 
+fn observed_agent_relay_boot_tail(startup_output: &str, screen: &str) -> Option<String> {
+    if let Some(marker_end) = find_agent_relay_boot_marker(&startup_output.to_ascii_lowercase()) {
+        return Some(startup_output[floor_char_boundary(startup_output, marker_end)..].to_string());
+    }
+    // Cursor-addressed redraws reuse characters already on screen. Concatenated
+    // ANSI-stripped deltas can spell "agent-elay" while the actual grid says
+    // "agent-relay". Also join terminal soft wraps when matching that name.
+    let joined_screen = screen.replace(['\r', '\n'], "").to_ascii_lowercase();
+    find_agent_relay_boot_marker(&joined_screen).map(|_| screen.to_string())
+}
+
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
     buf.push_str(text);
     if buf.len() > max {
@@ -303,6 +314,14 @@ fn evaluate_startup_gate(
     }
 
     if wait_for_agent_relay_boot {
+        // A composer can already be drawn while MCP servers are still starting.
+        // Its mere presence must not release input into that startup phase.
+        let lower_screen = grid.screen.to_ascii_lowercase();
+        if lower_screen.contains("starting mcp server")
+            || lower_screen.contains("booting mcp server")
+        {
+            return false;
+        }
         saw_agent_relay_boot
             && output_has_prompt(resolved_cli, post_boot_output)
             && cli_prompt_ready(resolved_cli, grid)
@@ -1242,22 +1261,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if wait_for_agent_relay_boot {
                             let mut just_saw_agent_relay_boot = false;
                             if !saw_agent_relay_boot {
-                                let lower_startup = startup_output.to_ascii_lowercase();
-                                if let Some(marker_end_offset) = find_agent_relay_boot_marker(&lower_startup)
-                                {
+                                if let Some(tail) = observed_agent_relay_boot_tail(&startup_output, &pty.screen_text()) {
                                     saw_agent_relay_boot = true;
                                     just_saw_agent_relay_boot = true;
-                                    let marker_end = floor_char_boundary(
-                                        &startup_output,
-                                        marker_end_offset,
-                                    );
                                     post_boot_output.clear();
-                                    append_bounded(
-                                        &mut post_boot_output,
-                                        &startup_output[marker_end..],
-                                        STARTUP_BUFFER_MAX,
-                                        STARTUP_BUFFER_KEEP,
-                                    );
+                                    append_bounded(&mut post_boot_output, &tail, STARTUP_BUFFER_MAX, STARTUP_BUFFER_KEEP);
                                 }
                             }
                             if saw_agent_relay_boot && !just_saw_agent_relay_boot {
@@ -2232,6 +2240,37 @@ mod tests {
             Duration::from_millis(7)
         );
         assert_eq!(resolve_inject_rate("claude", Some("0")), Duration::ZERO);
+    }
+
+    #[test]
+    fn codex_boot_observation_uses_rendered_cursor_edits() {
+        // Captured Codex redraw: a cursor-addressed update reuses the 'r'
+        // already on screen; stripping ANSI concatenates "agent-elay".
+        let stream = "Starting MCP servers (0/4): agent-elay, node_repl";
+        let screen = "Starting MCP servers (0/4): agent-relay, node_repl\n› ";
+        assert!(find_agent_relay_boot_marker(stream).is_none());
+        assert!(observed_agent_relay_boot_tail(stream, screen).is_some());
+        let wrapped = "Starting MCP servers (0/4): agent-\nrelay, node_repl\n› ";
+        assert!(observed_agent_relay_boot_tail(stream, wrapped).is_some());
+        assert!(
+            observed_agent_relay_boot_tail(stream, "Starting MCP servers: unrelated\n› ").is_none()
+        );
+    }
+
+    #[test]
+    fn codex_boot_gate_does_not_release_while_mcp_is_starting() {
+        assert!(!evaluate_startup_gate(
+            "codex",
+            "",
+            100,
+            true,
+            true,
+            "booted\n› ",
+            GridReadinessSnapshot {
+                screen: "Starting MCP servers (0/1): agent-relay\n› ",
+                cursor: Some((2, 3))
+            },
+        ));
     }
 
     #[test]
