@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
-### Fixed
-
-- `agent-relay node up` no longer exposes runtime-backed API routes before the broker can service them, preventing slow channel setup from timing out an otherwise healthy startup.
-
-### Security
-
-- Cleanroom qualification now validates only the trusted `workflow_run` consumer, isolates candidate CLI inventory discovery from verifier secrets, and retains bounded qualification evidence for failed runtime gates.
-
 ### Added
 
 - `node agent spawn` can attach to existing headless sessions so model changes report provider-confirmed results.
@@ -26,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay node up` no longer exposes runtime-backed API routes before the broker can service them, preventing slow channel setup from timing out an otherwise healthy startup.
 - `node agent set-model` returns correlated model-change receipts, preserves uncertain outcomes, and exposes the last confirmed effective model.
 - Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
 - Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
@@ -35,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Cleanroom qualification now validates only the trusted `workflow_run` consumer, isolates candidate CLI inventory discovery from verifier secrets, and retains bounded qualification evidence for failed runtime gates.
 - Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
 - Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
 - Standalone Bun workflow runs now execute relayflows and detached monitors with a real Node.js runtime resolved from the workflow project.
