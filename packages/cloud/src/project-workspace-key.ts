@@ -7,6 +7,11 @@ import { getProjectPaths } from '@agent-relay/config';
 import { readWorkspaceStore, workspaceStorePath } from './workspace-store.js';
 
 const PROJECT_WORKSPACE_KEY_FILENAME = 'workspace-key.json';
+const PROJECT_WORKSPACE_LOCK_SUFFIX = '.lock';
+const PROJECT_WORKSPACE_LOCK_TIMEOUT_MS = 2_000;
+const PROJECT_WORKSPACE_LOCK_STALE_MS = 30_000;
+const PROJECT_WORKSPACE_LOCK_RETRY_MS = 10;
+const PROJECT_WORKSPACE_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
 
 /** Workspace-key environment aliases, highest precedence first. */
 const WORKSPACE_KEY_ENV_VARS = ['RELAY_WORKSPACE_KEY', 'AGENT_RELAY_WORKSPACE_KEY', 'RELAY_API_KEY'] as const;
@@ -130,6 +135,16 @@ export function writeProjectWorkspaceKey(
 ): void {
   const key = trimOrUndefined(workspaceKey);
   if (!key) return;
+  withProjectWorkspaceKeyLock(dataDir, () => writeProjectWorkspaceKeyUnlocked(dataDir, key, options));
+}
+
+function writeProjectWorkspaceKeyUnlocked(
+  dataDir: string,
+  workspaceKey: string,
+  options: ProjectWorkspaceSessionMetadata = {}
+): void {
+  const key = trimOrUndefined(workspaceKey);
+  if (!key) return;
   const enrolledNodeId = trimOrUndefined(options.enrolledNodeId);
   const workspaceId = trimOrUndefined(options.workspaceId);
   const relaycastRoute = options.relaycastRoute;
@@ -176,6 +191,73 @@ export function writeProjectWorkspaceKey(
   }
 }
 
+function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const lockDir = `${projectWorkspaceKeyPath(dataDir)}${PROJECT_WORKSPACE_LOCK_SUFFIX}`;
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      fs.mkdirSync(lockDir, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    try {
+      if (Date.now() - fs.statSync(lockDir).mtimeMs >= PROJECT_WORKSPACE_LOCK_STALE_MS) {
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        continue;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (Date.now() - startedAt >= PROJECT_WORKSPACE_LOCK_TIMEOUT_MS) {
+      throw new Error(`Timed out waiting for the project workspace lock at ${lockDir}.`);
+    }
+    Atomics.wait(PROJECT_WORKSPACE_LOCK_WAIT, 0, 0, PROJECT_WORKSPACE_LOCK_RETRY_MS);
+  }
+  try {
+    return callback();
+  } finally {
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+/** Atomically persist a Relaycast target only if the captured project selection is still current. */
+export function writeProjectWorkspaceTargetIfSelectionCurrent(
+  dataDir: string,
+  selection: WorkspaceSelection,
+  target: Required<
+    Pick<ProjectWorkspaceSession, 'workspaceId' | 'relaycastRoute' | 'relaycastBaseUrl' | 'relaycastApiKey'>
+  >
+): boolean {
+  return withProjectWorkspaceKeyLock(dataDir, () => {
+    const current = readProjectWorkspaceSession(dataDir);
+    if (selection.projectSessionPresent === false && current) return false;
+    if (
+      current &&
+      (current.workspaceKey !== selection.key ||
+        current.workspaceId !== selection.workspaceId ||
+        current.relaycastRoute !== selection.relaycastRoute ||
+        current.relaycastBaseUrl !== selection.relaycastBaseUrl ||
+        current.relaycastApiKey !== selection.relaycastApiKey)
+    ) {
+      return false;
+    }
+    if (!current && (selection.projectSessionPresent === true || selection.source === 'project')) {
+      return false;
+    }
+    writeProjectWorkspaceKeyUnlocked(dataDir, selection.key, {
+      ...(current?.enrolledNodeId ? { enrolledNodeId: current.enrolledNodeId } : {}),
+      workspaceId: target.workspaceId,
+      relaycastRoute: target.relaycastRoute,
+      relaycastBaseUrl: target.relaycastBaseUrl,
+      relaycastApiKey: target.relaycastApiKey,
+    });
+    return true;
+  });
+}
+
 /**
  * Rewrite a project session while retaining server-selected metadata when the
  * workspace key is unchanged. A changed key is an intentional rebind, so no
@@ -194,31 +276,33 @@ export function writeProjectWorkspaceKeyPreservingSession(
   const key = trimOrUndefined(workspaceKey);
   if (!key) return;
 
-  const existing = readProjectWorkspaceSession(dataDir);
-  const sameWorkspace = existing?.workspaceKey === key;
-  const retained: ProjectWorkspaceSessionMetadata = sameWorkspace
-    ? {
-        ...(existing?.enrolledNodeId ? { enrolledNodeId: existing.enrolledNodeId } : {}),
-        ...(existing?.workspaceId ? { workspaceId: existing.workspaceId } : {}),
-        ...(existing?.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
-        ...(existing?.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
-        ...(existing?.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
-      }
-    : {};
+  withProjectWorkspaceKeyLock(dataDir, () => {
+    const existing = readProjectWorkspaceSession(dataDir);
+    const sameWorkspace = existing?.workspaceKey === key;
+    const retained: ProjectWorkspaceSessionMetadata = sameWorkspace
+      ? {
+          ...(existing?.enrolledNodeId ? { enrolledNodeId: existing.enrolledNodeId } : {}),
+          ...(existing?.workspaceId ? { workspaceId: existing.workspaceId } : {}),
+          ...(existing?.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
+          ...(existing?.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
+          ...(existing?.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
+        }
+      : {};
 
-  writeProjectWorkspaceKey(dataDir, key, {
-    ...retained,
-    ...(trimOrUndefined(options.enrolledNodeId)
-      ? { enrolledNodeId: trimOrUndefined(options.enrolledNodeId) }
-      : {}),
-    ...(trimOrUndefined(options.workspaceId) ? { workspaceId: trimOrUndefined(options.workspaceId) } : {}),
-    ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
-    ...(trimOrUndefined(options.relaycastBaseUrl)
-      ? { relaycastBaseUrl: trimOrUndefined(options.relaycastBaseUrl) }
-      : {}),
-    ...(trimOrUndefined(options.relaycastApiKey)
-      ? { relaycastApiKey: trimOrUndefined(options.relaycastApiKey) }
-      : {}),
+    writeProjectWorkspaceKeyUnlocked(dataDir, key, {
+      ...retained,
+      ...(trimOrUndefined(options.enrolledNodeId)
+        ? { enrolledNodeId: trimOrUndefined(options.enrolledNodeId) }
+        : {}),
+      ...(trimOrUndefined(options.workspaceId) ? { workspaceId: trimOrUndefined(options.workspaceId) } : {}),
+      ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
+      ...(trimOrUndefined(options.relaycastBaseUrl)
+        ? { relaycastBaseUrl: trimOrUndefined(options.relaycastBaseUrl) }
+        : {}),
+      ...(trimOrUndefined(options.relaycastApiKey)
+        ? { relaycastApiKey: trimOrUndefined(options.relaycastApiKey) }
+        : {}),
+    });
   });
 }
 

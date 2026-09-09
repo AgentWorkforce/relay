@@ -160,6 +160,7 @@ export {
   resolveWorkspaceKeyWithSource,
   resolveWorkspaceSelection,
   writeProjectWorkspaceKey,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
   type ProjectWorkspaceSession,
   type ResolveWorkspaceKeyOptions,
   type WorkspaceKeyFileSystem,

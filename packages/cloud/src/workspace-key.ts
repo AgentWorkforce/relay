@@ -8,6 +8,7 @@ export {
   resolveWorkspaceSelection,
   writeProjectWorkspaceKey,
   writeProjectWorkspaceKeyPreservingSession,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
   type ProjectWorkspaceSession,
   type ProjectWorkspaceSessionMetadata,
   type ResolveWorkspaceKeyOptions,

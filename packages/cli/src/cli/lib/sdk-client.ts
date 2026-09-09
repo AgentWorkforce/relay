@@ -4,8 +4,7 @@ import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
 import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
-  readProjectWorkspaceSession,
-  writeProjectWorkspaceKey,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
   type WorkspaceSelection,
   type WorkspaceKeySource,
 } from '@agent-relay/cloud/workspace-key';
@@ -171,38 +170,12 @@ export function persistWorkspaceRelaycastTarget(
     selectionWithProjectDir?.projectDataDir ??
     (selection?.source === 'project' && selection.origin ? path.dirname(selection.origin) : undefined);
   if (!dataDir) return false;
-  const current = readProjectWorkspaceSession(dataDir);
-  if (selection.projectSessionPresent === false && current) return false;
-  if (
-    current &&
-    (current.workspaceKey !== selection.key ||
-      current.workspaceId !== selection.workspaceId ||
-      current.relaycastRoute !== selection.relaycastRoute ||
-      current.relaycastBaseUrl !== selection.relaycastBaseUrl ||
-      current.relaycastApiKey !== selection.relaycastApiKey)
-  ) {
-    return false;
-  }
-  if (!current && (selection.projectSessionPresent === true || selection.source === 'project')) {
-    return false;
-  }
-  writeProjectWorkspaceKey(dataDir, selection.key, {
-    ...(current?.enrolledNodeId ? { enrolledNodeId: current.enrolledNodeId } : {}),
+  return writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection, {
     workspaceId: target.workspaceId,
     relaycastRoute: target.route,
     relaycastBaseUrl: target.baseUrl,
     relaycastApiKey: target.relaycastApiKey,
   });
-  const persisted = readProjectWorkspaceSession(dataDir);
-  // Never restore a stale snapshot when verification loses a race: another
-  // process may have intentionally rebound the project after our write.
-  return (
-    persisted?.workspaceKey === selection.key &&
-    persisted.relaycastApiKey === target.relaycastApiKey &&
-    persisted.workspaceId === target.workspaceId &&
-    persisted.relaycastRoute === target.route &&
-    persisted.relaycastBaseUrl === target.baseUrl
-  );
 }
 
 export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {
