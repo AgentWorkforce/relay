@@ -1264,6 +1264,32 @@ describe('process timeout contract', () => {
     expect(childCalls).toEqual(['SIGKILL', 'SIGKILL']);
   });
 
+  it.skipIf(process.platform === 'win32')('uses the direct child handle after a group EPERM race', () => {
+    const originalKill = process.kill;
+    const childCalls: NodeJS.Signals[] = [];
+    process.kill = (() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    }) as typeof process.kill;
+    try {
+      expect(() =>
+        signalProcessTree(
+          {
+            pid: 4242,
+            exitCode: null,
+            signalCode: null,
+            kill(signal: NodeJS.Signals) {
+              childCalls.push(signal);
+            },
+          },
+          'SIGKILL'
+        )
+      ).not.toThrow();
+    } finally {
+      process.kill = originalKill;
+    }
+    expect(childCalls).toEqual(['SIGKILL']);
+  });
+
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
     const result = await runProcess(
       process.execPath,

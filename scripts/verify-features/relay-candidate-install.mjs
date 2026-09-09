@@ -601,7 +601,11 @@ export function validateCandidateInstallAttestation(value, expected = {}) {
   return attestation;
 }
 
-export async function verifyCandidateInstall(attestationPath, expected = {}) {
+export async function verifyCandidateInstall(
+  attestationPath,
+  expected = {},
+  { verifyExecutables = true } = {}
+) {
   const target = path.resolve(attestationPath);
   const { bytes } = await readRegularFileNoFollow(target, {
     label: 'candidate install attestation',
@@ -662,9 +666,11 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
     throw new Error('candidate broker digest changed');
   }
   if (brokerBytes.length !== attestation.brokerBytes) throw new Error('candidate broker size changed');
-  const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
-  if (brokerVersion !== `agent-relay-broker ${attestation.packageVersion}`) {
-    throw new Error('clean-installed candidate broker reported a different version');
+  if (verifyExecutables) {
+    const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
+    if (brokerVersion !== `agent-relay-broker ${attestation.packageVersion}`) {
+      throw new Error('clean-installed candidate broker reported a different version');
+    }
   }
   for (const entry of attestation.packages) {
     const installedRoot = packageRoot(installDir, entry.name);
@@ -701,9 +707,11 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   if (sha256(cliBytes) !== attestation.cliSha256) {
     throw new Error('candidate install CLI digest changed');
   }
-  const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 }).trim();
-  if (reportedVersion !== `agent-relay v${attestation.packageVersion}`) {
-    throw new Error('clean-installed candidate CLI reported a different version');
+  if (verifyExecutables) {
+    const reportedVersion = run(process.execPath, [expectedCli, 'version'], { timeoutMs: 30_000 }).trim();
+    if (reportedVersion !== `agent-relay v${attestation.packageVersion}`) {
+      throw new Error('clean-installed candidate CLI reported a different version');
+    }
   }
   return { attestation, attestationSha256: sha256(bytes) };
 }
@@ -1016,7 +1024,14 @@ async function hydrate(attestationPath, tarballDirectory, outputRoot, expectedId
       cwd: installDir,
       timeoutMs: 900_000,
     });
-    await verifyCandidateInstall(targetAttestation, { sourceSha, packageVersion });
+    // Hydration establishes only structural hashes and modes. Candidate CLI
+    // and broker execution happens later, after the verifier is sealed and
+    // the candidate is in its mount namespace.
+    await verifyCandidateInstall(
+      targetAttestation,
+      { sourceSha, packageVersion },
+      { verifyExecutables: false }
+    );
     process.stdout.write(
       `RELAY_CANDIDATE_INSTALL_HYDRATED cli=${path.join(rootHandle.root, 'install', ...CLI_RELATIVE_PATH.split('/'))}\n`
     );

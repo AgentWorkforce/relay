@@ -498,6 +498,9 @@ describe('Relay candidate clean-install attestation', () => {
       await writeFile(broker, "#!/bin/sh\nprintf 'agent-relay-broker 0.0.0-wrong\\n'\n");
       await chmod(broker, 0o755);
       await syncBrokerAttestation();
+      await expect(
+        verifyCandidateInstall(attestationPath, {}, { verifyExecutables: false })
+      ).resolves.toBeTruthy();
       await expect(verifyCandidateInstall(attestationPath)).rejects.toThrow(
         'broker reported a different version'
       );

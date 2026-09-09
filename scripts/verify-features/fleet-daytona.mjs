@@ -753,7 +753,9 @@ export function candidateSandboxArgv(argv) {
       'release qualification candidate execution requires RUNNER_TEMP and isolated working directory'
     );
   }
-  const candidateRoot = path.resolve(argv[1], '..', '..', '..', '..', '..');
+  const configuredCli = process.env.VERIFY_FLEET_CLI?.trim();
+  if (!configuredCli) throw new Error('release qualification candidate execution requires VERIFY_FLEET_CLI');
+  const candidateRoot = path.resolve(configuredCli, '..', '..', '..', '..', '..');
   if (!isWithin(runnerTemp, candidateRoot) || !isWithin(runnerTemp, candidateCwd)) {
     throw new Error('candidate install and working directory must be inside RUNNER_TEMP');
   }
@@ -850,7 +852,7 @@ async function execute(argv, options = {}) {
   const startedAt = new Date().toISOString();
   const monotonicStartNs = process.hrtime.bigint();
   const timeoutMs = options.timeoutMs ?? 30_000;
-  const candidate = isCandidateCliArgv(argv);
+  const candidate = isCandidateCliArgv(argv) || options.candidateExecutable === true;
   const releaseCandidate = candidate && process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1';
   const childArgv = releaseCandidate ? candidateSandboxArgv(argv) : argv;
   const env = childEnvironment(options.env, candidate);
@@ -2314,6 +2316,18 @@ class FleetBoard {
         cliEntrypoint: this.cli,
         cliSha256,
       });
+      const candidateRoot = path.resolve(this.cli, '..', '..', '..', '..', '..');
+      const brokerPath = path.join(candidateRoot, ...candidateAttestation.brokerRelativePath.split('/'));
+      const brokerVersion = await execute([brokerPath, '--version'], {
+        candidateExecutable: true,
+        timeoutMs: 30_000,
+      });
+      if (
+        brokerVersion.exitCode !== 0 ||
+        brokerVersion.stdout.trim() !== `agent-relay-broker ${candidateAttestation.packageVersion}`
+      ) {
+        throw new Error('clean-installed candidate broker reported a different version');
+      }
     }
     const workspacePayload = tryParseJson(workspace._rawStdout);
     const resolvedWorkspaceId = findStringDeep(workspacePayload, ['cloudWorkspaceId', 'workspaceId', 'id']);

@@ -359,6 +359,10 @@ describe('trusted cleanroom qualification request', () => {
     expect(consumerSource).toContain('--package-version "$version"');
     expect(consumerSource).toContain('VERIFY_FLEET_EXPECTED_RELAY_SHA');
     expect(consumerSource).toContain('--candidate-mount-sandbox');
+    const installerSource = await readFile('scripts/verify-features/relay-candidate-install.mjs', 'utf8');
+    const fleetRunnerSource = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
+    expect(installerSource).toContain('verifyExecutables: false');
+    expect(fleetRunnerSource).toContain('candidateExecutable: true');
     expect(consumerSource).toContain('npx relayflows run workflows/verify-fleet-daytona.ts');
     expect(consumerSource).toContain('digest-mismatch: error');
   });
