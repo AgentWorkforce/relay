@@ -249,7 +249,9 @@ export function inferWorkflowLaunchTimeoutMs(
   let match: RegExpExecArray | null;
   while ((match = timeoutPattern.exec(source)) !== null) {
     const root = timeoutRoot(source, match.index);
-    if (root === null || (!root.invoked && !builderNames.has(root.name))) continue;
+    if (root === null || (root.invoked ? root.name !== 'workflow' : !builderNames.has(root.name))) {
+      continue;
+    }
     const literal = match[1].match(/^[0-9](?:_?[0-9])*$/)?.[0];
     if (literal === undefined) {
       hasDynamicBuilderTimeout = true;

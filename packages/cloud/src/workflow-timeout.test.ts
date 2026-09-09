@@ -40,7 +40,12 @@ describe('workflow launch timeout inference', () => {
   });
 
   it('ignores timeout methods on unrelated objects', () => {
-    expect(inferWorkflowLaunchTimeoutMs('httpClient.timeout(600_000);', 'ts')).toBeUndefined();
+    expect(
+      inferWorkflowLaunchTimeoutMs(
+        'httpClient.timeout(600_000); httpClient().timeout(600_000); makeThing().timeout(600_000);',
+        'ts'
+      )
+    ).toBeUndefined();
   });
 
   it('does not treat a bare workflow object identifier as a builder', () => {
@@ -71,6 +76,10 @@ describe('workflow launch timeout inference', () => {
       'workflow("real").timeout(600_000).run()',
     ].join('\n');
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(600_000);
+  });
+
+  it('ignores timeout methods on unrelated Python call expressions', () => {
+    expect(inferWorkflowLaunchTimeoutMs('http_client().timeout(600_000)', 'py')).toBeUndefined();
   });
 
   it('uses the legacy five-minute floor for shorter workflow deadlines', () => {
