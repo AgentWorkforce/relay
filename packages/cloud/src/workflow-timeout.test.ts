@@ -39,6 +39,27 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it('does not mistake a regex after a control paren containing a quoted close paren for code', () => {
+    expect(
+      inferWorkflowLaunchTimeoutMs('if (foo(")")) /workflow("fake").timeout(600_000)/;', 'ts')
+    ).toBeUndefined();
+  });
+
+  it('does not rescan a large slash-heavy source from the beginning for every slash', () => {
+    class NoRescanString extends String {
+      override replace(): never {
+        throw new Error('source.replace() indicates a whole-prefix rescan');
+      }
+
+      override slice(): never {
+        throw new Error('source.slice() indicates a whole-prefix rescan');
+      }
+    }
+
+    const source = new NoRescanString('/ '.repeat(100_000)) as unknown as string;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
+  });
+
   it('ignores timeout methods on unrelated objects', () => {
     expect(
       inferWorkflowLaunchTimeoutMs(

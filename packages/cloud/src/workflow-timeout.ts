@@ -4,6 +4,24 @@ export const DEFAULT_WORKFLOW_LAUNCH_TIMEOUT_MS = 5 * 60 * 1000;
 export const MIN_EXPLICIT_WORKFLOW_LAUNCH_TIMEOUT_MS = 30 * 1000;
 export const MAX_WORKFLOW_LAUNCH_TIMEOUT_MS = 55 * 60 * 1000;
 
+const REGEX_BOUNDARY_CHARACTERS = /[([{:;,!?=+\-*%&|^~<>}]/;
+const REGEX_KEYWORDS = new Set([
+  'return',
+  'throw',
+  'case',
+  'delete',
+  'void',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'yield',
+  'await',
+  'else',
+  'do',
+]);
+const CONTROL_PAREN_KEYWORDS = new Set(['if', 'while', 'for', 'switch', 'catch', 'with']);
+
 function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 'py'>): string {
   let output = '';
   let index = 0;
@@ -14,12 +32,47 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   let blockComment = false;
   let regexLiteral = false;
   let regexCharacterClass = false;
+  const mask = (character: string) => (character === '\n' || character === '\r' ? character : ' ');
+  let previousSignificantCharacter: string | undefined;
+  let currentIdentifier = '';
+  let lastIdentifier: string | undefined;
+  let closedControlParen = false;
+  const controlParenStack: boolean[] = [];
 
-  const previousSignificantCharacter = (from: number): string | undefined => {
-    for (let cursor = from - 1; cursor >= 0; cursor -= 1) {
-      if (!/\s/.test(source[cursor])) return source[cursor];
+  const flushIdentifier = () => {
+    if (currentIdentifier) {
+      lastIdentifier = currentIdentifier;
+      currentIdentifier = '';
     }
-    return undefined;
+  };
+
+  const appendCode = (character: string) => {
+    output += character;
+    if (/[A-Za-z0-9_$]/.test(character)) {
+      currentIdentifier += character;
+      previousSignificantCharacter = character;
+      closedControlParen = false;
+      return;
+    }
+
+    flushIdentifier();
+    if (/\s/.test(character)) return;
+
+    previousSignificantCharacter = character;
+    if (character === '(') {
+      controlParenStack.push(lastIdentifier !== undefined && CONTROL_PAREN_KEYWORDS.has(lastIdentifier));
+      lastIdentifier = undefined;
+      closedControlParen = false;
+      return;
+    }
+    if (character === ')') {
+      closedControlParen = controlParenStack.pop() ?? false;
+      lastIdentifier = undefined;
+      return;
+    }
+
+    lastIdentifier = undefined;
+    closedControlParen = false;
   };
 
   // A slash starts a TypeScript regular-expression literal after an expression
@@ -27,27 +80,17 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   // expression and therefore remains visible code. This is intentionally
   // conservative: masking a possible regex is safer than inferring a timeout
   // from text inside it.
-  const startsRegexLiteral = (at: number): boolean => {
+  const startsRegexLiteral = (): boolean => {
     if (fileType !== 'ts') return false;
-    const previous = previousSignificantCharacter(at);
-    if (previous === undefined || /[([{:;,!?=+\-*%&|^~<>}]/.test(previous)) return true;
-    if (previous === ')') {
-      let closeIndex = at - 1;
-      while (closeIndex >= 0 && /\s/.test(source[closeIndex])) closeIndex -= 1;
-      const openIndex = findMatchingOpenParen(source, closeIndex);
-      const control = openIndex === null ? null : identifierBefore(source, openIndex - 1)?.name;
-      if (control && new Set(['if', 'while', 'for', 'switch', 'catch', 'with']).has(control)) {
-        return true;
-      }
+    if (
+      previousSignificantCharacter === undefined ||
+      REGEX_BOUNDARY_CHARACTERS.test(previousSignificantCharacter)
+    ) {
+      return true;
     }
-    const prefix = source.slice(0, at).replace(/\s+$/, '');
-    const keyword = prefix.match(
-      /(?:^|[^\w$])(return|throw|case|delete|void|typeof|instanceof|in|of|yield|await|else|do)\s*$/
-    );
-    return keyword !== null;
+    if (previousSignificantCharacter === ')' && closedControlParen) return true;
+    return REGEX_KEYWORDS.has(currentIdentifier || lastIdentifier || '');
   };
-
-  const mask = (character: string) => (character === '\n' || character === '\r' ? character : ' ');
 
   while (index < source.length) {
     const character = source[index];
@@ -69,6 +112,10 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       if (character === ']' && regexCharacterClass) regexCharacterClass = false;
       if (character === '/' && !regexCharacterClass) {
         regexLiteral = false;
+        previousSignificantCharacter = '/';
+        currentIdentifier = '';
+        lastIdentifier = undefined;
+        closedControlParen = false;
       }
       index += 1;
       continue;
@@ -128,7 +175,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       blockComment = true;
       continue;
     }
-    if (character === '/' && startsRegexLiteral(index)) {
+    if (character === '/' && startsRegexLiteral()) {
       output += ' ';
       index += 1;
       regexLiteral = true;
@@ -145,11 +192,15 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       triple = fileType === 'py' && next === character && third === character;
       quote = character;
       output += triple ? '   ' : ' ';
+      previousSignificantCharacter = character;
+      currentIdentifier = '';
+      lastIdentifier = undefined;
+      closedControlParen = false;
       index += triple ? 3 : 1;
       continue;
     }
 
-    output += character;
+    appendCode(character);
     index += 1;
   }
 
