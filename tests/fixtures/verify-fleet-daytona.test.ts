@@ -2448,14 +2448,12 @@ describe('complete Daytona Fleet board', () => {
   });
 
   it('keeps multibyte output within the 16 KiB evidence bound', async () => {
-    const bytes = [...Buffer.from('中'.repeat(12_000))];
-    const script = [
-      `const bytes = Buffer.from(${JSON.stringify(bytes)});`,
-      'let index = 0;',
-      'const write = () => { if (index < bytes.length) { process.stdout.write(bytes.subarray(index, index + 1)); index += 1; setImmediate(write); } };',
-      'write();',
-    ].join('');
+    // The previous test already exercises decoder correctness with one-byte
+    // chunks. Emit this larger payload in one write so suite-wide CPU pressure
+    // cannot turn the evidence-bound assertion into a scheduler benchmark.
+    const script = "process.stdout.write('中'.repeat(12_000))";
     const result = await executeFleetCommand([process.execPath, '-e', script]);
+    expect(result.stdoutBytes).toBe(Buffer.byteLength('中'.repeat(12_000)));
     expect(result.stdoutTruncated).toBe(true);
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024);
   });
