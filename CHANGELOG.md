@@ -5,11 +5,21 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased]
+
+## [11.10.4] - 2026-09-08
+
+### Changed
+
+- `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.
 
 ### Fixed
 
 - `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
+- `agent-relay node up` no longer exits when Relaycast answers a startup request with a transient 5xx. The broker retries workspace creation and agent registration up to three times before failing.
+- A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
+- Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
+- PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
 
 ## [11.10.3] - 2026-09-05
 

@@ -201,10 +201,27 @@ enum FleetDeliveryPlan {
 fn plan_fleet_delivery(decision: DeliveryDecision) -> FleetDeliveryPlan {
     match decision {
         DeliveryDecision::Deliver { .. } => FleetDeliveryPlan::Surface,
-        DeliveryDecision::Duplicate { up_to_seq }
-        | DeliveryDecision::Stale { up_to_seq }
-        | DeliveryDecision::Gap { up_to_seq } => FleetDeliveryPlan::Acknowledge(up_to_seq),
-        DeliveryDecision::IdentityReject => FleetDeliveryPlan::RejectWithoutAck,
+        // A duplicate or a genuine replay is safe to ACK without surfacing:
+        // the agent already has that message, so the copy is worth nothing and
+        // the ACK is what stops the engine resending it.
+        DeliveryDecision::Duplicate { up_to_seq } | DeliveryDecision::Stale { up_to_seq } => {
+            FleetDeliveryPlan::Acknowledge(up_to_seq)
+        }
+        // A gap is different: the agent has NOT seen this message and the book
+        // cannot place it. Never ACK a delivery that was not surfaced.
+        //
+        // The ACK this used to send carried `acked_up_to_seq` — the floor the
+        // broker was already at — so it advanced nothing. Whether re-stating
+        // that floor also causes Relaycast to retire the un-surfaced frame is
+        // engine-side behaviour not observable from this repo; the comment on
+        // `observe`'s no-position arm asserts that it does. Rather than depend
+        // on either reading, say nothing at all about a frame we did not
+        // deliver and let the engine's own outstanding set drive redelivery.
+        // The cursor deliberately stays put, so the redelivered missing frame
+        // is still accepted and the sequence becomes contiguous again.
+        DeliveryDecision::Gap { .. } | DeliveryDecision::IdentityReject => {
+            FleetDeliveryPlan::RejectWithoutAck
+        }
     }
 }
 
@@ -869,13 +886,19 @@ impl BrokerRuntime {
             },
             FleetDeliveryPlan::Acknowledge(up_to_seq) => up_to_seq,
             FleetDeliveryPlan::RejectWithoutAck => {
+                let reason = match decision {
+                    DeliveryDecision::Gap { .. } => "sequence gap; frame not placeable",
+                    _ => "conflicting agent identity",
+                };
                 tracing::warn!(
                     target = "relay_broker::fleet",
                     agent = %deliver.agent,
                     agent_id = %deliver.agent_id,
                     delivery_id = %deliver.delivery_id,
                     msg_id = %deliver.msg_id,
-                    "rejecting fleet delivery with conflicting agent identity; withholding ack"
+                    seq = deliver.seq,
+                    reason,
+                    "rejecting fleet delivery; withholding ack so the engine can redeliver"
                 );
                 return;
             }
@@ -2819,6 +2842,47 @@ mod tests {
         assert_eq!(
             plan_fleet_delivery(DeliveryDecision::IdentityReject),
             FleetDeliveryPlan::RejectWithoutAck
+        );
+    }
+
+    /// A delivery the book could not place must never be ACKed.
+    ///
+    /// The agent never saw this message, so the broker has nothing to report
+    /// about it. The old arm ACKed `acked_up_to_seq` — already the current
+    /// floor, so it advanced nothing but did emit an ACK frame for a message
+    /// that was dropped. Withholding it keeps the message unambiguously
+    /// outstanding on the engine and turns a silent drop into a logged,
+    /// retryable one.
+    #[test]
+    fn gap_plan_never_silently_destroys_the_delivery() {
+        assert_eq!(
+            plan_fleet_delivery(DeliveryDecision::Gap { up_to_seq: 7 }),
+            FleetDeliveryPlan::RejectWithoutAck,
+            "a delivery that was never surfaced must not be ACKed"
+        );
+    }
+
+    /// Duplicates and genuine replays are the only decisions that may be ACKed
+    /// without surfacing: the agent already has that message, so dropping the
+    /// copy loses nothing and the ACK lets the engine stop resending it.
+    #[test]
+    fn duplicate_and_stale_plans_still_ack_to_stop_redelivery() {
+        assert_eq!(
+            plan_fleet_delivery(DeliveryDecision::Duplicate { up_to_seq: 3 }),
+            FleetDeliveryPlan::Acknowledge(3)
+        );
+        assert_eq!(
+            plan_fleet_delivery(DeliveryDecision::Stale { up_to_seq: 4 }),
+            FleetDeliveryPlan::Acknowledge(4)
+        );
+    }
+
+    /// The normal path is unchanged.
+    #[test]
+    fn deliver_plan_surfaces() {
+        assert_eq!(
+            plan_fleet_delivery(DeliveryDecision::Deliver { up_to_seq: 9 }),
+            FleetDeliveryPlan::Surface
         );
     }
 
