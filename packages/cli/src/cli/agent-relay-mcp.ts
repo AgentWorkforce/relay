@@ -73,12 +73,13 @@ function withExitAfterTaskInstruction(task: string): string {
   return `${task}\n\n${EXIT_AFTER_TASK_INSTRUCTION}`;
 }
 
-const PERSONA_SPAWN_TIMEOUT_MS = 130_000;
-const PERSONA_SPAWN_POLL_MS = 250;
-const PERSONA_SPAWN_TIMEOUT_MESSAGE =
-  'Persona spawn timed out before broker registration and harness readiness.';
-const PERSONA_SPAWN_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
-const PERSONA_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled']);
+const VERIFIED_SPAWN_TIMEOUT_MS = 130_000;
+const VERIFIED_SPAWN_POLL_MS = 250;
+const VERIFIED_SPAWN_TIMEOUT_MESSAGE = 'Spawn timed out before broker registration and harness readiness.';
+const VERIFIED_SPAWN_MISSING_READY_MESSAGE =
+  'Spawn completed without broker registration and harness readiness proof.';
+const VERIFIED_SPAWN_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
+const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled', 'denied']);
 
 type InvocationReader = {
   getInvocation(name: string, invocationId: string): Promise<unknown>;
@@ -126,14 +127,14 @@ async function getInvocationBeforeDeadline(
   deadline: number
 ): Promise<unknown> {
   const remainingMs = deadline - Date.now();
-  if (remainingMs <= 0) throw new Error(PERSONA_SPAWN_TIMEOUT_MESSAGE);
+  if (remainingMs <= 0) throw new Error(VERIFIED_SPAWN_TIMEOUT_MESSAGE);
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       actions.getInvocation(current.actionName, current.invocationId),
       new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(PERSONA_SPAWN_TIMEOUT_MESSAGE)), remainingMs);
+        timeout = setTimeout(() => reject(new Error(VERIFIED_SPAWN_TIMEOUT_MESSAGE)), remainingMs);
       }),
     ]);
   } finally {
@@ -157,21 +158,21 @@ async function pollInvocation(
     } catch (error) {
       if (isInvocationAuthorizationError(error)) throw error;
       if (Date.now() >= deadline) {
-        throw new Error(PERSONA_SPAWN_TIMEOUT_MESSAGE, { cause: error });
+        throw new Error(VERIFIED_SPAWN_TIMEOUT_MESSAGE, { cause: error });
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, PERSONA_SPAWN_POLL_MS));
+      await new Promise<void>((resolve) => setTimeout(resolve, VERIFIED_SPAWN_POLL_MS));
     }
   }
 }
 
-async function waitForPersonaSpawn(
+async function waitForVerifiedSpawn(
   actions: InvocationReader,
   ackValue: unknown,
-  timeoutMs = PERSONA_SPAWN_TIMEOUT_MS
+  timeoutMs = VERIFIED_SPAWN_TIMEOUT_MS
 ): Promise<unknown> {
   const ack = recordValue(ackValue);
   let current = invocationRef(ack);
-  if (!current) throw new Error('Persona spawn did not return an invocation id.');
+  if (!current) throw new Error('Spawn did not return an invocation id.');
 
   const deadline = Date.now() + timeoutMs;
   const followed = new Set([`${current.actionName}\u001f${current.invocationId}`]);
@@ -179,7 +180,7 @@ async function waitForPersonaSpawn(
     const invocation = await pollInvocation(actions, current, deadline);
     const record = recordValue(invocation);
     const status = invocationText(record, 'status')?.toLowerCase();
-    if (status && PERSONA_SPAWN_SUCCESS_STATUSES.has(status)) {
+    if (status && VERIFIED_SPAWN_SUCCESS_STATUSES.has(status)) {
       const nested = nestedPersonaSpawnRef(record);
       if (nested) {
         const key = `${nested.actionName}\u001f${nested.invocationId}`;
@@ -190,15 +191,19 @@ async function waitForPersonaSpawn(
         current = nested;
         continue;
       }
+      const output = recordValue(record.output);
+      if (output.spawned !== true || output.ready !== true) {
+        throw new Error(VERIFIED_SPAWN_MISSING_READY_MESSAGE);
+      }
       return invocation;
     }
-    if (status && PERSONA_SPAWN_FAILURE_STATUSES.has(status)) {
-      throw new Error(invocationText(record, 'error') ?? `Persona spawn ${status}.`);
+    if (status && VERIFIED_SPAWN_FAILURE_STATUSES.has(status)) {
+      throw new Error(invocationText(record, 'error') ?? `Spawn ${status}.`);
     }
     if (Date.now() >= deadline) {
-      throw new Error(PERSONA_SPAWN_TIMEOUT_MESSAGE);
+      throw new Error(VERIFIED_SPAWN_TIMEOUT_MESSAGE);
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, PERSONA_SPAWN_POLL_MS));
+    await new Promise<void>((resolve) => setTimeout(resolve, VERIFIED_SPAWN_POLL_MS));
   }
 }
 
@@ -609,13 +614,6 @@ type SpawnToolRequest = {
   targetNode?: string;
 };
 
-function requireSpawnActions(client: AgentClientLike): NonNullable<AgentClientLike['actions']> {
-  if (!client.actions) {
-    throw new Error('spawn requires an agent-scoped Relaycast actions client.');
-  }
-  return client.actions;
-}
-
 function validateSpawnRequest({ cli, persona, model, sessionRef, cwd, personaCwd }: SpawnToolRequest): void {
   if (Boolean(cli) === Boolean(persona)) {
     throw new Error('spawn requires exactly one of `cli` or `persona`.');
@@ -659,7 +657,7 @@ function buildSpawnActionInput({
   const registryCwd = personaCwd ?? cwd;
   return {
     name,
-    ...(cli ? { cli } : { persona, capability: 'spawn:persona' }),
+    ...(cli ? { cli, verify_ready: true } : { persona, capability: 'spawn:persona' }),
     ...(task ? { task } : {}),
     ...(persona && registryCwd ? { cwd: registryCwd } : {}),
     ...(workerCwd ? { worker_cwd: workerCwd } : {}),
@@ -671,7 +669,7 @@ function buildSpawnActionInput({
   };
 }
 
-async function invokeVerifiedPersonaSpawn(
+async function invokeVerifiedSpawn(
   session: SessionState,
   asIdentity: string | undefined,
   baseUrl: string | undefined,
@@ -679,11 +677,11 @@ async function invokeVerifiedPersonaSpawn(
 ): Promise<unknown> {
   const agentToken = asIdentity ? session.agents.get(asIdentity)?.agentToken : session.agentToken;
   if (!agentToken) {
-    throw new Error('Persona spawn requires a registered agent identity.');
+    throw new Error('Spawn requires a registered agent identity.');
   }
   const commands = new AgentRelay({ agentToken, baseUrl }).messaging.commands;
   const invocation = await commands.invoke('spawn', actionInput);
-  return waitForPersonaSpawn(commands, invocation);
+  return waitForVerifiedSpawn(commands, invocation);
 }
 
 /**
@@ -1135,7 +1133,7 @@ function registerAgentRelayTools(
       title: 'Spawn Agent',
       description:
         'Invoke the fleet spawn action with either a raw `cli` or an AgentWorkforce `persona` name/path. ' +
-        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`) and return only after broker registration and harness readiness are verified. Raw CLI requests retain asynchronous acknowledgement behavior.',
+        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms return only after broker registration and harness readiness are verified.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
@@ -1198,7 +1196,6 @@ function registerAgentRelayTools(
       target_node,
       as,
     }) => {
-      const actions = requireSpawnActions(getAgentClient(as));
       const request = {
         name,
         cli,
@@ -1220,9 +1217,7 @@ function registerAgentRelayTools(
       };
       validateSpawnRequest(request);
       const actionInput = buildSpawnActionInput(request);
-      const invocation = persona
-        ? await invokeVerifiedPersonaSpawn(getSession(), as, baseUrl, actionInput)
-        : await actions.invoke('spawn', actionInput);
+      const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
       return jsonContent({ invocation });
     }
   );

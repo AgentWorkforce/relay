@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "id": "c848af12-7a90-42b2-a8e4-3d169f4e89d0",
+  "timestamp": "2026-08-26T00:28:51.519Z",
+  "trajectory": "traj_zq10vbcnjpil",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_zq10vbcnjpil/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 51,
+              "revision": "3bbe4f9aa796b15db9fed7e24c64005ad49c7e79"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1603-raw-spawn-readiness/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 5,
+              "revision": "3bbe4f9aa796b15db9fed7e24c64005ad49c7e79"
+            },
+            {
+              "start_line": 16,
+              "end_line": 29,
+              "revision": "3bbe4f9aa796b15db9fed7e24c64005ad49c7e79"
+            },
+            {
+              "start_line": 45,
+              "end_line": 51,
+              "revision": "3bbe4f9aa796b15db9fed7e24c64005ad49c7e79"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

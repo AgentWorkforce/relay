@@ -1,0 +1,64 @@
+{
+  "id": "traj_zq10vbcnjpil",
+  "version": 1,
+  "task": {
+    "title": "Harden PR 1606 exact RelayFlow proof runner",
+    "source": {
+      "system": "github",
+      "id": "PR-1606",
+      "url": "https://github.com/AgentWorkforce/relay/pull/1606"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-26T00:28:25.971Z",
+  "completedAt": "2026-08-26T00:28:51.212Z",
+  "agents": [
+    {
+      "name": "relay-bug-pr-proof-coordinator-0825",
+      "role": "lead",
+      "joinedAt": "2026-08-26T00:28:26.100Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_p8tazr8pd1c2",
+      "title": "Initial work",
+      "agentName": "relay-bug-pr-proof-coordinator-0825",
+      "startedAt": "2026-08-26T00:28:26.100Z",
+      "endedAt": "2026-08-26T00:28:51.212Z",
+      "events": [
+        {
+          "ts": 1787704108480,
+          "type": "decision",
+          "content": "Install optional platform packages and assert the checked-out target SHA: Install optional platform packages and assert the checked-out target SHA",
+          "raw": {
+            "question": "Install optional platform packages and assert the checked-out target SHA",
+            "chosen": "Install optional platform packages and assert the checked-out target SHA",
+            "alternatives": [],
+            "reasoning": "The external proof runner must build the exact base or head checkout reliably; omitting optional packages removed esbuild's platform binary, and the SHA assertion prevents accidentally proving a stale tree."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made the PR 1606 external RelayFlow harness install platform-specific optional build packages and fail closed when its checkout does not match RELAY_PR_PROOF_TARGET_SHA.",
+    "approach": "Reproduced the esbuild platform-binary failure, retained the external public MCP stdio harness, added exact-target verification, and preserved deterministic base-bug/head-fixed signatures.",
+    "confidence": 0.96
+  },
+  "commits": [
+    "3bbe4f9aa"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_zq10vbcnjpil/trajectory.json",
+    "tests/relayflows/cases/1603-raw-spawn-readiness/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "231a4fb2841194548f5209a895a53c93943ef1f4",
+    "endRef": "3bbe4f9aa796b15db9fed7e24c64005ad49c7e79",
+    "traceId": "c848af12-7a90-42b2-a8e4-3d169f4e89d0"
+  }
+}

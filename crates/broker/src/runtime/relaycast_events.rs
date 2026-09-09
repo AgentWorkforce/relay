@@ -197,11 +197,28 @@ fn harness_metadata_flag(config: &ResolvedHarnessConfig, snake: &str, camel: &st
 }
 
 pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
-    relaycast_harness_config(value)
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
+    let request_flag = value
+        .get("verify_ready")
+        .or_else(|| value.get("verifyReady"))
+        .or_else(|| {
+            value
+                .get("agent")
+                .and_then(|agent| agent.get("verify_ready"))
+        })
+        .or_else(|| {
+            value
+                .get("agent")
+                .and_then(|agent| agent.get("verifyReady"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    request_flag
+        || relaycast_harness_config(value)
+            .ok()
+            .flatten()
+            .as_ref()
+            .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
 }
 
 /// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
@@ -1318,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_spawn_contract_is_read_from_harness_metadata() {
+    fn verified_spawn_contract_is_read_from_request_or_harness_metadata() {
         let verified = json!({
             "harness_config": {
                 "runtime": "pty",
@@ -1337,8 +1354,12 @@ mod tests {
                 "args": []
             }
         });
+        let flattened = json!({ "verify_ready": true });
+        let nested_camel = json!({ "agent": { "verifyReady": true } });
 
         assert!(relaycast_spawn_verifies_ready(&verified));
+        assert!(relaycast_spawn_verifies_ready(&flattened));
+        assert!(relaycast_spawn_verifies_ready(&nested_camel));
         assert!(!relaycast_spawn_verifies_ready(&ordinary));
     }
 
