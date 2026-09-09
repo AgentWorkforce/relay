@@ -320,6 +320,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let (terminal_event_tx, terminal_event_rx) =
         mpsc::channel::<crate::terminal_control::TerminalControlEvent>(1024);
     let node_delivery_token_present = node_token.is_some();
+    // One probe, three holders: the node-control client task counts inbound
+    // frames into it, the runtime records what it did with each `deliver`, and
+    // the HTTP API reads it back on `GET /api/node-delivery`.
+    let node_delivery_probe =
+        std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
     tokio::spawn(crate::node_control::run_node_control_client(
         crate::node_control::FleetControlConfig {
             ws_url: fleet_ws_url,
@@ -330,6 +335,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             token_minter,
             session_token: Some(session_node_token.clone()),
             read_idle_timeout: None,
+            probe: Some(node_delivery_probe.clone()),
         },
         fleet_control_rx,
         fleet_event_tx,
@@ -396,6 +402,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_name: session_node_name,
         node_token: session_node_token,
         persist: cmd.persist,
+        node_delivery_probe: node_delivery_probe.clone(),
     });
     {
         let mut ready = relay_ready_state.write().await;
@@ -682,6 +689,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         fleet_control_tx,
         fleet_node_name,
         node_delivery_token_present,
+        node_delivery_probe,
         node_delivery_connected: false,
         fleet_event_rx,
         fleet_control_open: true,

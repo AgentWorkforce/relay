@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [11.10.4] - 2026-09-08
 
+### Added
+
+- Broker `GET /api/node-delivery` reports whether node-control `deliver` frames are reaching an agent, what the delivery book decided about each one, where it ended up, and whether the resulting `delivery_ack` actually left the broker, so a deaf agent can be told from a quiet one without restarting the broker.
+
 ### Changed
 
 - `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.

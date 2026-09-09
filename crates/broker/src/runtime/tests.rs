@@ -268,6 +268,9 @@ fn worker_event_runtime_fixture(
         fleet_control_tx,
         fleet_node_name: "test-node".to_string(),
         node_delivery_token_present: true,
+        node_delivery_probe: std::sync::Arc::new(
+            crate::node_delivery_probe::NodeDeliveryProbe::new(),
+        ),
         node_delivery_connected: true,
         fleet_event_rx,
         fleet_control_open: true,
@@ -1908,6 +1911,133 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
 
 // Full runtime/channel companion for the terminal-disposition coverage above.
 // Each real disposal path removes the pending delivery first; a late matching
+/// relay#1680 review (P2, codex + cubic). The deferred (echo-confirmed) ACK
+/// advances `acked_up_to_seq` long after the deliver frame was handled. While
+/// the cursor snapshot was published only from `handle_fleet_deliver`, that
+/// advance was invisible: `GET /api/node-delivery` kept serving the old ACK
+/// until some later frame happened to arrive. Publication now runs off the
+/// book's dirty flag once per event-loop turn, so the confirmation surfaces.
+/// relay#1680 review (coderabbitai, fleet.rs:857) MUST-FIRE.
+///
+/// `acked_without_surfacing` is stamped before the ack is handed to the
+/// node-control task. When that task is gone the ack goes nowhere and the
+/// engine will redeliver, but the disposition still reads as an acknowledgement
+/// — the instrument reporting a success that did not happen. The `acks`
+/// tallies are what separate the two, and they are only worth anything if the
+/// runtime actually stops swallowing the channel error.
+#[tokio::test]
+async fn an_ack_that_never_left_the_runtime_is_reported_as_such() {
+    let worker_name = "agent-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    let deliver = withheld_ack_for("del_ack_enqueue_failed");
+    // Seed the book so the frame below is a duplicate: that plans a bare
+    // `Acknowledge`, which is the shortest path to the ack send.
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(deliver.agent.clone(), deliver.agent_id.clone());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_delivered(&deliver);
+
+    // The node-control task is gone; nothing can receive the ack.
+    drop(fixture.fleet_control_rx);
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(deliver.clone()),
+        ))
+        .await;
+
+    let snapshot = fixture
+        .runtime
+        .node_delivery_probe
+        .snapshot_with_token(true);
+    assert_eq!(
+        snapshot["dispositions"]["acked_without_surfacing"], 1,
+        "the runtime did decide to acknowledge this frame"
+    );
+    assert_eq!(
+        snapshot["acks"]["enqueue_failed"], 1,
+        "the ack never reached the node-control task, and the endpoint must \
+         say so rather than leave the disposition reading as a delivered ack"
+    );
+    assert_eq!(
+        snapshot["acks"]["enqueued"], 0,
+        "nothing was handed off, so nothing may be tallied as enqueued"
+    );
+    assert_eq!(snapshot["acks"]["sent"], 0);
+}
+
+#[tokio::test]
+async fn a_worker_confirmed_ack_becomes_visible_on_the_node_delivery_endpoint() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    let delivery_id = DeliveryId::new("del_runtime_cursor_publish");
+    let deliver = Deliver {
+        agent: worker_name.to_string(),
+        agent_id: "worker-a-id".to_string(),
+        delivery_id: delivery_id.to_string(),
+        msg_id: format!("evt_{delivery_id}"),
+        ..withheld_ack_for(delivery_id.as_str())
+    };
+
+    // The state right after an injection: received, ack withheld pending echo.
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(deliver.agent.clone(), deliver.agent_id.clone());
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_received(&deliver);
+    fixture.runtime.publish_fleet_delivery_cursors_if_dirty();
+
+    let acked_of = |probe: &crate::node_delivery_probe::NodeDeliveryProbe| {
+        probe.snapshot_with_token(true)["cursors"][0]["acked_up_to_seq"].clone()
+    };
+    assert_eq!(
+        acked_of(&fixture.runtime.node_delivery_probe),
+        serde_json::json!(0),
+        "the ack is withheld until the worker confirms"
+    );
+
+    let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    pending.withheld_fleet_ack = Some(deliver.clone());
+    fixture
+        .runtime
+        .pending_deliveries
+        .insert(delivery_id.clone(), pending);
+
+    // The worker echoes the injection back: the deferred ACK is released.
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_ack",
+            delivery_id.as_str(),
+            format!("evt_{}", delivery_id.as_str()).as_str(),
+        ))
+        .await;
+
+    // One event-loop turn's post-processing, as `run()` performs it.
+    fixture.runtime.publish_fleet_delivery_cursors_if_dirty();
+    assert_eq!(
+        acked_of(&fixture.runtime.node_delivery_probe),
+        serde_json::json!(1),
+        "a worker-confirmed delivery must advance the published ACK cursor, \
+         not leave the endpoint serving the pre-confirmation value"
+    );
+}
+
 // worker `delivery_ack` is then driven through `BrokerRuntime::handle_worker_event`.
 // None may produce a fleet-control Send, even though the event reaches the same
 // branch that releases a successful withheld ACK.
