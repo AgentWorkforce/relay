@@ -35,19 +35,22 @@ function boundedInteger(value, { fallback, minimum, label }) {
   return candidate;
 }
 
-function signalProcessTree(child, signal) {
+export function signalProcessTree(child, signal) {
   if (process.platform !== 'win32' && child.pid) {
     try {
       process.kill(-child.pid, signal);
       return;
     } catch (error) {
-      if (error?.code !== 'ESRCH') throw error;
+      // macOS can report EPERM after the group leader exits, even though the
+      // direct child handle is still usable. Fall through to that handle so
+      // timeout cleanup remains best-effort and always closes its pipes.
+      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
     }
   }
   try {
     child.kill(signal);
   } catch (error) {
-    if (error?.code !== 'ESRCH') throw error;
+    if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
   }
 }
 

@@ -63,6 +63,8 @@ import {
   resolveBrokerArtifactPair,
 } from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
+import { signalProcessTree } from '../../scripts/pr-proof/process-runner.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
 import { inspectBrokerArtifact } from '../../scripts/pr-proof/stage-broker-artifacts.mjs';
 
 const BASE_SHA = '1'.repeat(40);
@@ -1224,6 +1226,33 @@ describe('exact broker artifact handoff', () => {
 });
 
 describe('process timeout contract', () => {
+  it('falls back to the child handle when process-group teardown races with EPERM', () => {
+    const originalKill = process.kill;
+    const groupCalls: Array<[number, NodeJS.Signals]> = [];
+    const childCalls: NodeJS.Signals[] = [];
+    const permissionDenied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    process.kill = ((pid: number, signal: NodeJS.Signals) => {
+      groupCalls.push([pid, signal]);
+      throw permissionDenied;
+    }) as typeof process.kill;
+    try {
+      signalProcessTree(
+        {
+          pid: 4242,
+          kill(signal: NodeJS.Signals) {
+            childCalls.push(signal);
+            throw permissionDenied;
+          },
+        },
+        'SIGKILL'
+      );
+    } finally {
+      process.kill = originalKill;
+    }
+    expect(groupCalls).toEqual([[-4242, 'SIGKILL']]);
+    expect(childCalls).toEqual(['SIGKILL']);
+  });
+
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
     const result = await runProcess(
       process.execPath,
