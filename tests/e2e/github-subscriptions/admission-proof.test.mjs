@@ -70,3 +70,19 @@ test('final stale check catches a prejoin action after the initial idle boundary
     /Stale prejoin/
   );
 });
+
+test('rejects equal missing or malformed envelope identities', () => {
+  for (const envelopeId of [undefined, null, '', '  ', 42]) {
+    assert.throws(
+      () =>
+        assertDuplicateAdmission(
+          [
+            { ...original, envelopeId },
+            { ...duplicate, envelopeId },
+          ],
+          'guid'
+        ),
+      /same duplicate envelope/
+    );
+  }
+});

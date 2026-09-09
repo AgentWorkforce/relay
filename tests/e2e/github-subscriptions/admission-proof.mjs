@@ -28,7 +28,11 @@ export function assertDuplicateAdmission(rows, deliveryId) {
     (r) => r.deliveryId === deliveryId && r.status === 409 && r.errorCode === 'duplicate_envelope'
   );
   assert(
-    original && duplicate && original.envelopeId === duplicate.envelopeId,
+    original &&
+      duplicate &&
+      typeof original.envelopeId === 'string' &&
+      original.envelopeId.trim().length > 0 &&
+      original.envelopeId === duplicate.envelopeId,
     'Prejoin redelivery must be rejected as the same duplicate envelope before worker startup'
   );
   return { envelopeId: duplicate.envelopeId, status: duplicate.status, code: duplicate.errorCode };
