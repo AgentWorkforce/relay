@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1736-scoped-orphan-cleanup",
+  "kind": "bugfix",
+  "title": "Restrict isolated node cleanup to its selected state directory",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1736-scoped-orphan-cleanup/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "isolated_cleanup_kills_peer_or_worker"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "isolated_cleanup_preserves_peer_and_worker"
+    }
+  }
+}
