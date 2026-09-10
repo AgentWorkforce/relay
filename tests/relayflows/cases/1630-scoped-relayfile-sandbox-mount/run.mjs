@@ -87,7 +87,6 @@ test('observes exact Relayfile subtree forwarding', async () => {
           nodeId: 'node-relayflow',
           nodeName: 'scoped-relayflow',
           sandboxId: 'sandbox-relayflow',
-          providerSandboxId: '223e4567-e89b-42d3-a456-426614174000',
           relayWorkspaceId: 'rw_relayflow',
           relayfileMounted: true,
           providerId: 'daytona',
