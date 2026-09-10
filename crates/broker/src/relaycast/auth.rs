@@ -370,6 +370,7 @@ impl AuthClient {
             let preferred_name = requested_name;
             let mut memberships = Vec::with_capacity(sources.len());
             let mut auth_rejections = Vec::new();
+            let mut workspace_busy_rejection: Option<anyhow::Error> = None;
 
             for source in sources {
                 let Some(api_key) = normalize_workspace_key(&source.api_key) else {
@@ -394,6 +395,9 @@ impl AuthClient {
                         session.credentials.workspace_alias = source.workspace_alias.clone();
                         memberships.push(session);
                     }
+                    Err(error) if is_workspace_busy_anyhow(&error) => {
+                        workspace_busy_rejection.get_or_insert(error);
+                    }
                     Err(error) if is_auth_rejection(&error) => {
                         auth_rejections
                             .push(source.workspace_id.unwrap_or_else(|| "env".to_string()));
@@ -413,6 +417,11 @@ impl AuthClient {
             }
 
             if memberships.is_empty() {
+                if let Some(error) = workspace_busy_rejection {
+                    return Err(error).context(
+                        "all configured multi-workspace memberships were rejected; workspace admission remained busy",
+                    );
+                }
                 anyhow::bail!(
                     "all configured multi-workspace memberships were rejected ({})",
                     auth_rejections.join(", ")
@@ -581,6 +590,14 @@ impl AuthClient {
                         default_workspace_id: Some(session.credentials.workspace_id.clone()),
                         memberships: vec![session],
                     });
+                }
+                Err(error) if is_workspace_busy_anyhow(&error) => {
+                    // RELAY_API_KEY is a join hint, not permission to mint a
+                    // replacement workspace when admission is temporarily busy.
+                    return Err(error).context(format!(
+                        "failed registering agent with {} workspace key; workspace admission remained busy",
+                        candidate.source
+                    ));
                 }
                 Err(error) if is_auth_rejection(&error) => {
                     if candidate.explicit_join {
@@ -901,6 +918,16 @@ fn is_rate_limited(err: &anyhow::Error) -> bool {
     auth_http_status(err).is_some_and(|status| status == StatusCode::TOO_MANY_REQUESTS)
 }
 
+fn is_workspace_busy_anyhow(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AuthHttpError>().is_some_and(|error| {
+        error.status == StatusCode::TOO_MANY_REQUESTS
+            && error
+                .code
+                .as_deref()
+                .is_some_and(|code| code.trim().eq_ignore_ascii_case(WORKSPACE_BUSY_CODE))
+    })
+}
+
 fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
     err.downcast_ref::<AuthHttpError>()
         .map(|e| e.status)
@@ -933,6 +960,11 @@ const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// 34099838274 lost three jobs to exactly that.
 const TRANSIENT_STARTUP_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
 
+/// Relaycast uses this exact code for temporary workspace write-admission
+/// saturation. Generic 429s remain terminal because they may represent quota
+/// or policy failures rather than a safe pre-commit admission signal.
+const WORKSPACE_BUSY_CODE: &str = "workspace_busy";
+
 /// Replay only server failures whose typed error code establishes that the
 /// request failed at the storage-admission boundary. Retrying every 5xx by
 /// status is unsafe for these unkeyed POSTs: an application-level 503 or a 500
@@ -953,6 +985,17 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             code.trim(),
             "database_overloaded" | "workspace_storage_unavailable"
         )
+    ) || is_workspace_busy_error(error)
+}
+
+fn is_workspace_busy_error(error: &RelayError) -> bool {
+    matches!(
+        error,
+        RelayError::Api {
+            code,
+            status: 429,
+            ..
+        } if code.trim().eq_ignore_ascii_case(WORKSPACE_BUSY_CODE)
     )
 }
 
@@ -1544,10 +1587,11 @@ mod tests {
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
-        is_agent_token_invalid_code, is_transient_server_error, reclaim_legacy_identity,
-        relay_error_to_anyhow, relay_request_with_timeout, resolve_relaycast_base_url,
-        retry_transient_relay_error, stable_node_identity_key, AuthClient, AuthHttpError,
-        CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        is_agent_token_invalid_code, is_transient_server_error, is_workspace_busy_error,
+        reclaim_legacy_identity, relay_error_to_anyhow, relay_request_with_timeout,
+        resolve_relaycast_base_url, retry_transient_relay_error, stable_node_identity_key,
+        AuthClient, AuthHttpError, CredentialCache, AGENT_TOKEN_INVALID_CODE,
+        DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -2047,6 +2091,162 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn workspace_busy_retries_once_even_with_retry_after_header() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            body::Body,
+            extract::State,
+            http::{Response, StatusCode as AxumStatusCode},
+            routing::post,
+            Router,
+        };
+
+        async fn register(State(calls): State<Arc<AtomicUsize>>) -> Response<Body> {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            let (status, body) = if attempt == 0 {
+                (
+                    AxumStatusCode::TOO_MANY_REQUESTS,
+                    json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_busy",
+                            "message": "workspace admission is busy"
+                        }
+                    }),
+                )
+            } else {
+                (
+                    AxumStatusCode::OK,
+                    json!({
+                        "ok": true,
+                        "data": {
+                            "id": "a1",
+                            "workspace_id": "ws_busy",
+                            "name": "lead",
+                            "token": "at_live_1",
+                            "status": "online",
+                            "created_at": "2025-01-01T00:00:00Z"
+                        }
+                    }),
+                )
+            };
+            let mut response = Response::new(Body::from(body.to_string()));
+            *response.status_mut() = status;
+            response.headers_mut().insert(
+                "content-type",
+                "application/json".parse().expect("valid content type"),
+            );
+            if attempt == 0 {
+                response
+                    .headers_mut()
+                    .insert("retry-after", "0".parse().expect("valid retry-after"));
+            }
+            response
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn({
+            let calls = calls.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/v1/agents", post(register))
+                        .with_state(calls),
+                )
+                .await
+            }
+        });
+
+        let _env_guard = clear_relay_env();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_busy");
+        }
+        let session = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect("workspace_busy should clear on the bounded retry");
+
+        assert_eq!(session.credentials.workspace_id, "ws_busy");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_busy_exhaustion_is_bounded_and_preserves_diagnostics() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_busy");
+        }
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_busy");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "0")
+                .header("x-request-id", "workspace-busy-test")
+                .body(r#"{"ok":false,"error":{"code":"workspace_busy","message":"workspace admission is busy"}}"#);
+        });
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(500);
+        });
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("persistent workspace_busy must remain terminal");
+        let message = format!("{error:#}");
+        for marker in [
+            "workspace_busy",
+            "429 Too Many Requests",
+            "workspace admission is busy",
+            "request_id: workspace-busy-test",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        register.assert_hits(3);
+        workspace.assert_hits(0);
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_rate_limit_is_terminal_without_replay() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error("admitting a workspace", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err::<(), _>(RelayError::api(
+                    "registration_rate_limited",
+                    "registration rate limit exceeded",
+                    429,
+                ))
+            }
+        })
+        .await
+        .expect_err("an unrelated 429 must not be replayed");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!is_workspace_busy_error(&error));
+        assert!(matches!(error, RelayError::Api { status: 429, .. }));
     }
 
     /// A failure that *changes* mid-retry — a 401 after a 503 — is terminal,
