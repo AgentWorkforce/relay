@@ -10,6 +10,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { pollUntilAbsent } from './absence.mjs';
+import { classifyProbeOutput } from './probe-diagnostics.mjs';
 import {
   buildSandboxName,
   daytonaMemoryGiBFromMiB,
@@ -213,6 +214,26 @@ async function issue490Evidence(id) {
   const parse = (result) => { try { return JSON.parse(result.stdout.trim()); } catch { return {}; } };
   const cli = parse(cliResult);
   const standalone = parse(standaloneResult);
+  const summarize = (result, parsed) => ({
+    exitCode: result.exitCode,
+    testsPassed: parsed.testsPassed ?? 0,
+    testsFailed: parsed.testsFailed ?? 1,
+    firstExit: parsed.firstExit,
+    secondExit: parsed.secondExit,
+    firstDiagnostic: parsed.firstDiagnostic ?? '',
+    secondDiagnostic: parsed.secondDiagnostic ?? '',
+    firstOutputBytes: parsed.firstOutputBytes ?? 0,
+    secondOutputBytes: parsed.secondOutputBytes ?? 0,
+    firstOutputTruncated: parsed.firstOutputTruncated === true,
+    secondOutputTruncated: parsed.secondOutputTruncated === true,
+    runnerDiagnostic: Object.keys(parsed).length > 0
+      ? 'structured_output'
+      : classifyProbeOutput(`${result.stdout}\n${result.stderr}`),
+    cursorSeeded: parsed.cursorSeeded === true,
+    realtimeDialCount: parsed.realtimeDialCount ?? 99,
+    pollingUpdateApplied: parsed.pollingUpdateApplied === true,
+    cursorPersisted: parsed.cursorPersisted === true,
+  });
   const ok = cliResult.exitCode === 0 && standaloneResult.exitCode === 0;
   return {
     issue: 490,
@@ -221,8 +242,8 @@ async function issue490Evidence(id) {
     cursorPersisted: ok,
     daemonRealtimePreserved: ok,
     daemon: { realtimeDialCount: standalone.daemonRealtimeDialCount ?? 0 },
-    cli: { exitCode: cliResult.exitCode, testsPassed: cli.testsPassed ?? 0, testsFailed: cli.testsFailed ?? 1, firstExit: cli.firstExit, secondExit: cli.secondExit, cursorSeeded: cli.cursorSeeded === true, realtimeDialCount: cli.realtimeDialCount ?? 99, pollingUpdateApplied: cli.pollingUpdateApplied === true, cursorPersisted: cli.cursorPersisted === true },
-    standalone: { exitCode: standaloneResult.exitCode, testsPassed: standalone.testsPassed ?? 0, testsFailed: standalone.testsFailed ?? 1, firstExit: standalone.firstExit, secondExit: standalone.secondExit, cursorSeeded: standalone.cursorSeeded === true, realtimeDialCount: standalone.realtimeDialCount ?? 99, pollingUpdateApplied: standalone.pollingUpdateApplied === true, cursorPersisted: standalone.cursorPersisted === true },
+    cli: summarize(cliResult, cli),
+    standalone: summarize(standaloneResult, standalone),
   };
 }
 async function aclEvidence(id) {
@@ -451,6 +472,7 @@ async function main() {
     if ((await sha256(mountDestination)) !== manifest.relayfileMount.sha256)
       throw new Error('copied relayfile-mount binary hash does not match bundle manifest');
     await cp(new URL('./issue-490-probe.mjs', import.meta.url), path.join(context, 'issue-490-probe.mjs'));
+    await cp(new URL('./probe-diagnostics.mjs', import.meta.url), path.join(context, 'probe-diagnostics.mjs'));
     const artifactHashes = Object.fromEntries(
       Object.entries(artifacts).map(([name, value]) => [name, value.sha256])
     );
@@ -462,7 +484,7 @@ async function main() {
     const dockerfile = path.join(context, 'Dockerfile');
     await writeFile(
       dockerfile,
-      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /tmp/mount-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY issue-490-probe.mjs /qualification/relayfile-npm/issue-490-probe.mjs\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && npm pack @relayfile/mount-linux-x64@${npmVersion} --pack-destination /tmp/mount-npm >/dev/null && test \"$(sha256sum /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${mountTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && test -x /qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount\n`
+      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /tmp/mount-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY issue-490-probe.mjs probe-diagnostics.mjs /qualification/relayfile-npm/\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && npm pack @relayfile/mount-linux-x64@${npmVersion} --pack-destination /tmp/mount-npm >/dev/null && test \"$(sha256sum /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${mountTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && test -x /qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount\n`
         .replace(
           '&& cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud',
           '&& cd /qualification/cloud && npm ci --no-audit --no-fund && npm run build:platform && npm run build:core && cd /qualification/relayfile-cloud'
