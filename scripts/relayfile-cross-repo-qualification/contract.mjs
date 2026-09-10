@@ -348,6 +348,7 @@ export function validatePublishedRelayfileAttestation(attestation) {
     fail('version is not an exact prerelease semver');
   if (!isHex64(attestation.tarballSha256)) fail('tarballSha256 is not a 64-hex digest');
   if (!HEX40.test(attestation.sourceSha ?? '')) fail('sourceSha is not a full 40-hex commit');
+  if (!isHex64(attestation.releaseAttestationSha256)) fail('releaseAttestationSha256 is not a 64-hex digest');
   if (attestation.registry !== undefined && (typeof attestation.registry !== 'string' || !/^https:\/\//.test(attestation.registry)))
     fail('registry must be an HTTPS URL');
   if (attestation.installed !== true) fail('installed is not true');

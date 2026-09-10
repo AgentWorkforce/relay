@@ -218,6 +218,7 @@ function armReport(arm) {
       version: '0.10.57-qualification.1',
       tarballSha256: 'd'.repeat(64),
       sourceSha: '4'.repeat(40),
+      releaseAttestationSha256: 'e'.repeat(64),
       installed: true,
     },
     sandbox: { id: `sandbox-${arm}`, name, fresh: true },

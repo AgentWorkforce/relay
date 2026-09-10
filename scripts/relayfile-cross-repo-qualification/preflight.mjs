@@ -14,6 +14,7 @@ const gate = process.env.RELAYFILE_QUALIFICATION_CREATE_SANDBOXES === '1';
 const npmVersion = process.env.RELAYFILE_QUALIFICATION_NPM_VERSION?.trim() ?? '';
 const npmTarballSha256 = process.env.RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256?.trim() ?? '';
 const npmSourceSha = process.env.RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA?.trim() ?? '';
+const releaseAttestationSha256 = process.env.RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256?.trim() ?? '';
 const candidates = {
   cloud: process.env.RELAY_CLOUD_REPO ?? process.env.RELAYFILE_CLOUD_CANDIDATE ?? '../cloud',
   relayfile: process.env.RELAYFILE_REPO ?? '../relayfile',
@@ -55,6 +56,7 @@ if (gate) {
   if (!/^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$/.test(npmVersion)) failures.push('RELAYFILE_QUALIFICATION_NPM_VERSION must be an exact prerelease semver');
   if (!/^[0-9a-f]{64}$/.test(npmTarballSha256)) failures.push('RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256 must be a 64-hex digest');
   if (!/^[0-9a-f]{40}$/.test(npmSourceSha)) failures.push('RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA must be a full 40-hex commit');
+  if (!/^[0-9a-f]{64}$/.test(releaseAttestationSha256)) failures.push('RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256 must be a 64-hex digest');
   // These real model/auth probes must complete before any Daytona API call or
   // bundle step can run. Version checks alone falsely report unauthenticated
   // or unsupported model configurations as ready.
@@ -116,7 +118,7 @@ const result = {
   candidates,
   required,
   modelProbes,
-  publishedRelayfile: { package: 'relayfile', version: npmVersion, tarballSha256: npmTarballSha256, sourceSha: npmSourceSha, installed: false },
+  publishedRelayfile: { package: 'relayfile', version: npmVersion, tarballSha256: npmTarballSha256, sourceSha: npmSourceSha, releaseAttestationSha256, installed: false },
   failures,
   note: gate
     ? 'Preflight proved candidate paths, CLI, auth, image, and run freshness.'

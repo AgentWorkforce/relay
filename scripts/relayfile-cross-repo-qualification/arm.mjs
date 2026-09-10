@@ -34,6 +34,7 @@ const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/;
 const npmVersion = process.env.RELAYFILE_QUALIFICATION_NPM_VERSION?.trim() ?? '';
 const npmTarballSha256 = process.env.RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256?.trim() ?? '';
 const npmSourceSha = process.env.RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA?.trim() ?? '';
+const releaseAttestationSha256 = process.env.RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256?.trim() ?? '';
 
 async function writeReport(value) {
   await mkdir(artifactDir, { recursive: true });
@@ -80,6 +81,7 @@ if (
   preflight.publishedRelayfile.version !== npmVersion ||
   preflight.publishedRelayfile.tarballSha256 !== npmTarballSha256 ||
   preflight.publishedRelayfile.sourceSha !== npmSourceSha ||
+  preflight.publishedRelayfile.releaseAttestationSha256 !== releaseAttestationSha256 ||
   preflight.publishedRelayfile.installed !== false
 ) {
   await writeBlocked('preflight npm prerelease attestation does not match the requested immutable install');
@@ -437,7 +439,7 @@ async function main() {
     const dockerfile = path.join(context, 'Dockerfile');
     await writeFile(
       dockerfile,
-      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY relayfile-mount-linux-amd64 /qualification/bin/relayfile-mount\nCOPY issue-490-probe.mjs /qualification/relayfile-npm/issue-490-probe.mjs\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && test \"$(npm view relayfile@${npmVersion} gitHead)\" = \"${npmSourceSha}\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && chmod +x /qualification/bin/relayfile-mount\n`
+      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY relayfile-mount-linux-amd64 /qualification/bin/relayfile-mount\nCOPY issue-490-probe.mjs /qualification/relayfile-npm/issue-490-probe.mjs\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && chmod +x /qualification/bin/relayfile-mount\n`
     );
     createAttempted = true;
     const create = await run(
@@ -500,7 +502,7 @@ async function main() {
       artifactHashes,
       artifacts,
       candidateProvenance,
-      publishedRelayfile: { package: 'relayfile', version: npmVersion, tarballSha256: npmTarballSha256, sourceSha: npmSourceSha, installed: true },
+      publishedRelayfile: { package: 'relayfile', version: npmVersion, tarballSha256: npmTarballSha256, sourceSha: npmSourceSha, releaseAttestationSha256, installed: true },
       legs: { coldMount, acl, issue490 },
       cleanup: cleanupEvidence,
       checkpoints,

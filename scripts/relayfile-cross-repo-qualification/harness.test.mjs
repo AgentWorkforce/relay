@@ -46,7 +46,9 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /cleanupEvidence\.sandboxAbsent = await verifyAbsent\(target\)/);
   assert.match(arm, /npm pack relayfile@\$\{npmVersion\}/);
   assert.match(arm, /sha256sum \/tmp\/relayfile-npm\/relayfile-\$\{npmVersion\}\.tgz/);
-  assert.match(arm, /npm view relayfile@\$\{npmVersion\} gitHead/);
+  assert.match(arm, /release-attestation\.json/);
+  assert.match(arm, /RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256/);
+  assert.doesNotMatch(arm, /npm view relayfile@\$\{npmVersion\} gitHead/);
   assert.match(arm, /issue490Evidence/);
   assert.match(arm, /legs: \{ coldMount, acl, issue490 \}/);
 });
