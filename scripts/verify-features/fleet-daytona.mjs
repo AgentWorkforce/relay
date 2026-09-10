@@ -1089,9 +1089,8 @@ try {
   result.providerVersion = (version.stdout || version.stderr || '').trim();
   let providerReady = false;
   // freePort() closes its probe socket before the child binds; another local
-  // process can win that small race. Retry a bounded number of times, like the
-  // sibling 1658-model-change-receipt case, instead of failing the Fleet
-  // operation as a flaky verdict.
+  // process can win that small race. Retry a bounded number of times instead
+  // of failing the Fleet operation as a flaky verdict.
   for (let attempt = 0; attempt < 3 && !providerReady; attempt += 1) {
     const port = await freePort();
     providerEndpoint = 'http://127.0.0.1:' + port;
