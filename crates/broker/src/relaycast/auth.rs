@@ -808,6 +808,10 @@ impl AuthClient {
     /// prior divergence — strict silently handed over the incumbent's token,
     /// non-strict silently minted a `-suffix` sibling — was itself the
     /// spawn-admission defect (see `admit_agent_registration`).
+    /// Registration is used by startup and by `rotate_token`'s 404 recovery.
+    /// Keep the admission retry shared intentionally: both paths issue the
+    /// same unkeyed pre-commit POST, and retries remain limited to Relaycast's
+    /// exact `workspace_busy` contract with the same bounded budget.
     async fn register_agent_with_workspace_key(
         &self,
         workspace_key: &str,
@@ -924,7 +928,7 @@ fn is_workspace_busy_anyhow(err: &anyhow::Error) -> bool {
             && error
                 .code
                 .as_deref()
-                .is_some_and(|code| code.trim().eq_ignore_ascii_case(WORKSPACE_BUSY_CODE))
+                .is_some_and(|code| code.trim() == WORKSPACE_BUSY_CODE)
     })
 }
 
@@ -995,7 +999,7 @@ fn is_workspace_busy_error(error: &RelayError) -> bool {
             code,
             status: 429,
             ..
-        } if code.trim().eq_ignore_ascii_case(WORKSPACE_BUSY_CODE)
+        } if code.trim() == WORKSPACE_BUSY_CODE
     )
 }
 
@@ -1587,11 +1591,11 @@ mod tests {
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
-        is_agent_token_invalid_code, is_transient_server_error, is_workspace_busy_error,
-        reclaim_legacy_identity, relay_error_to_anyhow, relay_request_with_timeout,
-        resolve_relaycast_base_url, retry_transient_relay_error, stable_node_identity_key,
-        AuthClient, AuthHttpError, CredentialCache, AGENT_TOKEN_INVALID_CODE,
-        DEFAULT_RELAYCAST_BASE_URL,
+        is_agent_token_invalid_code, is_transient_server_error, is_workspace_busy_anyhow,
+        is_workspace_busy_error, reclaim_legacy_identity, relay_error_to_anyhow,
+        relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
+        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
+        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL, TRANSIENT_STARTUP_RETRY_BACKOFFS_MS,
     };
     use relaycast::RelayError;
 
@@ -1646,6 +1650,51 @@ mod tests {
             attempts: 1,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
+    }
+
+    #[test]
+    fn workspace_busy_classifier_requires_the_exact_case_sensitive_code() {
+        assert!(is_workspace_busy_error(&RelayError::api(
+            "workspace_busy",
+            "workspace admission is busy",
+            429,
+        )));
+
+        for code in [
+            "WORKSPACE_BUSY",
+            "Workspace_Busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+        ] {
+            let error = RelayError::api(code, "not the workspace admission contract", 429);
+            assert!(
+                !is_workspace_busy_error(&error),
+                "unexpected match for {code}"
+            );
+            let anyhow_error = relay_error_to_anyhow(error);
+            assert!(
+                !is_workspace_busy_anyhow(&anyhow_error),
+                "unexpected anyhow match for {code}"
+            );
+        }
+
+        assert!(is_workspace_busy_error(&RelayError::api(
+            " workspace_busy ",
+            "workspace admission is busy",
+            429,
+        )));
+        assert!(!is_workspace_busy_error(&RelayError::api(
+            "workspace_busy",
+            "workspace admission is busy",
+            503,
+        )));
+    }
+
+    #[test]
+    fn startup_retry_backoff_budget_is_deterministic_and_bounded() {
+        assert_eq!(TRANSIENT_STARTUP_RETRY_BACKOFFS_MS, [200, 400]);
+        assert_eq!(TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.len() + 1, 3);
+        assert_eq!(TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.iter().sum::<u64>(), 600);
     }
 
     #[test]
@@ -2223,6 +2272,58 @@ mod tests {
         workspace.assert_hits(0);
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_workspace_selection_preserves_workspace_busy_diagnostics() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws_busy","api_key":"rk_live_busy"},{"workspace_id":"ws_auth","api_key":"rk_live_auth"}]"#,
+            );
+        }
+        let busy_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_busy");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("x-request-id", "multi-workspace-busy-374")
+                .body(
+                    r#"{"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy"}}"#,
+                );
+        });
+        let auth_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_auth");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .expect_err("a busy membership must remain diagnosable when all fail");
+        let message = format!("{error:#}");
+        for marker in [
+            "workspace_busy",
+            "429 Too Many Requests",
+            "Workspace write capacity is busy",
+            "request_id: multi-workspace-busy-374",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        busy_register.assert_hits(3);
+        auth_register.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
         }
     }
 

@@ -41,10 +41,26 @@ const serverPath = path.join(probeDir, 'relaycast-admission-probe.mjs');
 const serverSource = String.raw`import http from 'node:http';
 const mode = process.argv[2];
 let registrationCount = 0;
+let workspaceCreationCount = 0;
 const server = http.createServer((request, response) => {
   if (request.method === 'GET' && request.url === '/observations') {
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ registrationCount }));
+    response.end(JSON.stringify({ registrationCount, workspaceCreationCount }));
+    return;
+  }
+  if (request.method === 'POST' && request.url === '/v1/workspaces') {
+    workspaceCreationCount += 1;
+    request.resume();
+    request.once('end', () => {
+      response.writeHead(500, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        ok: false,
+        error: {
+          code: 'workspace_creation_probe',
+          message: 'workspace creation was observed by the proof probe',
+        },
+      }));
+    });
     return;
   }
   if (request.method !== 'POST' || request.url !== '/v1/agents') {
@@ -110,31 +126,30 @@ try {
   const baseObserved =
     arm === 'base' &&
     success.registrationCount === 1 &&
+    success.workspaceCreationCount === 1 &&
     !success.timedOut &&
     !success.stderr.includes(HANDSHAKE_MARKER) &&
-    success.stderr.includes('status: 429') &&
-    success.stderr.includes(BUSY_CODE) &&
-    success.stderr.includes('attempts: 1') &&
     unrelated.registrationCount === 1 &&
+    unrelated.workspaceCreationCount === 0 &&
     !unrelated.timedOut &&
     !unrelated.stderr.includes(HANDSHAKE_MARKER) &&
-    unrelated.stderr.includes(UNRELATED_CODE) &&
     exhaustion.registrationCount === 1 &&
+    exhaustion.workspaceCreationCount === 1 &&
     !exhaustion.timedOut &&
-    !exhaustion.stderr.includes(HANDSHAKE_MARKER) &&
-    exhaustion.stderr.includes('status: 429') &&
-    exhaustion.stderr.includes('workspace admission is busy') &&
-    exhaustion.stderr.includes('attempts: 1');
+    !exhaustion.stderr.includes(HANDSHAKE_MARKER);
   const headObserved =
     arm === 'head' &&
     success.registrationCount === 2 &&
+    success.workspaceCreationCount === 0 &&
     success.stderr.includes(HANDSHAKE_MARKER) &&
     !success.timedOut &&
     unrelated.registrationCount === 1 &&
+    unrelated.workspaceCreationCount === 0 &&
     !unrelated.timedOut &&
     !unrelated.stderr.includes(HANDSHAKE_MARKER) &&
     unrelated.stderr.includes(UNRELATED_CODE) &&
     exhaustion.registrationCount === 3 &&
+    exhaustion.workspaceCreationCount === 0 &&
     !exhaustion.timedOut &&
     !exhaustion.stderr.includes(HANDSHAKE_MARKER) &&
     exhaustion.stderr.includes(BUSY_CODE) &&
@@ -148,7 +163,7 @@ try {
     outcome = 'bug';
     signature = 'startup_429_workspace_busy_not_retried';
     details =
-      'The base broker treated the exact 429 workspace_busy admission response as terminal; unrelated 429s were terminal and no startup replay occurred.';
+      'The base broker treated the 429 responses as terminal after one agent-registration attempt, then attempted fallback workspace creation instead of preserving the supplied workspace key.';
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'startup_429_workspace_busy_retried_safely';
@@ -185,13 +200,15 @@ async function runScenario(mode) {
         TMPDIR: probeDir,
         NO_COLOR: '1',
         RELAYCAST_BASE_URL: `http://127.0.0.1:${port}`,
-        AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_workspace_busy_429',
+        ...(mode === 'unrelated-429'
+          ? { AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_workspace_busy_429' }
+          : { RELAY_API_KEY: 'rk_relayflow_workspace_busy_429' }),
         AGENT_RELAY_STARTUP_DEBUG: '1',
         AGENT_RELAY_TELEMETRY_DISABLED: '1',
       },
     });
-    const { registrationCount } = await readObservations(port);
-    return { ...observed, registrationCount, serverStderr };
+    const { registrationCount, workspaceCreationCount } = await readObservations(port);
+    return { ...observed, registrationCount, workspaceCreationCount, serverStderr };
   } finally {
     if (server.exitCode === null) {
       server.kill('SIGTERM');
@@ -282,6 +299,9 @@ async function readObservations(port) {
   if (!Number.isInteger(value.registrationCount)) {
     throw new Error('Observation endpoint returned an invalid registration count.');
   }
+  if (!Number.isInteger(value.workspaceCreationCount)) {
+    throw new Error('Observation endpoint returned an invalid workspace creation count.');
+  }
   return value;
 }
 
@@ -291,6 +311,7 @@ function summarize(values) {
       name,
       {
         registrationCount: value.registrationCount,
+        workspaceCreationCount: value.workspaceCreationCount,
         timedOut: value.timedOut,
         status: value.status,
         stdout: value.stdout.slice(-1_000),
