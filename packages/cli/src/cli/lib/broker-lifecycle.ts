@@ -1068,7 +1068,12 @@ async function stopRecordedBroker(
       removeBrokerIdentity(paths, identity, deps);
       return true;
     }
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ESRCH') {
+      // The kernel observed absence after this exact instance was verified.
+      removeBrokerIdentity(paths, identity, deps);
+      return true;
+    }
     // Retain the record when a matched exit was not observed.
   }
   deps.warn(`Broker orphan process may still be running (pid: ${identity.pid})`);
@@ -1577,6 +1582,13 @@ function recordWorkspaceBindingSource(
 }
 
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
+  if (!['darwin', 'linux'].includes(process.platform)) {
+    deps.error(
+      `Broker lifecycle identity verification is supported only on macOS and Linux; refusing to start on ${process.platform}.`
+    );
+    deps.exit(1);
+    return;
+  }
   ensureBundledAgentRelayMcpCommand(deps);
 
   const paths = deps.getProjectPaths();
@@ -2192,6 +2204,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   } catch (err: unknown) {
     const withCode = err as { code?: string };
     if (withCode.code === 'ESRCH') {
+      removeBrokerIdentity(paths, identity, deps);
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up stale state');
       return;

@@ -1181,6 +1181,64 @@ describe('registerCoreCommands', () => {
     }
   );
 
+  it.each([false, true])(
+    'unsupported-platform up refuses before spawning (background=%s)',
+    async (background) => {
+      const { program, deps } = createHarness();
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      Object.defineProperty(process, 'platform', { ...descriptor, value: 'win32' });
+      try {
+        expect(await runCommand(program, background ? ['up', '--background'] : ['up'])).toBe(1);
+        expect(deps.createRelay).not.toHaveBeenCalled();
+        expect(deps.spawnProcess).not.toHaveBeenCalled();
+        expect(deps.killProcess).not.toHaveBeenCalled();
+        expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('refusing to start on win32'));
+      } finally {
+        Object.defineProperty(process, 'platform', descriptor);
+      }
+    }
+  );
+
+  it.each([false, true].flatMap((connected) => [false, true].map((replace) => ({ connected, replace }))))(
+    'verified ESRCH removes only its unchanged record (connected=$connected, replace=$replace)',
+    async ({ connected, replace }) => {
+      let running = true;
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(),
+        killImpl: vi.fn((pid, signal) => {
+          if (pid === 222 && signal === 'SIGTERM') {
+            running = false;
+            if (replace) {
+              const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+              const original = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+              deps.fs.writeFileSync(filename, JSON.stringify({ ...original, pid: 333 }));
+              deps.fs.writeFileSync(
+                '/tmp/project/.agentworkforce/relay/connection.json',
+                connectionFile(333)
+              );
+            }
+            throw Object.assign(new Error('exited before signal'), { code: 'ESRCH' });
+          }
+          if (pid === 222 && signal === 0 && !running)
+            throw Object.assign(new Error('not running'), { code: 'ESRCH' });
+        }),
+      });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      if (connected)
+        deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+      const runtime = '/tmp/project/.agentworkforce/relay/runtime.json';
+      deps.fs.writeFileSync(runtime, 'retained');
+      expect(await runCommand(program, ['down', '--force'])).toBeUndefined();
+      const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+      expect(deps.fs.existsSync(filename)).toBe(replace);
+      expect(deps.fs.existsSync(runtime)).toBe(replace);
+      if (replace) expect(JSON.parse(deps.fs.readFileSync(filename, 'utf-8')).pid).toBe(333);
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [222, 'SIGTERM'],
+      ]);
+    }
+  );
+
   it('force escalation rechecks PID reuse and retains the identity of an unconfirmed exit', async () => {
     let now = 0;
     let terminated = false;

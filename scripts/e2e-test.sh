@@ -61,6 +61,12 @@ broker_is_running() {
   echo "$status_output" | grep -q "Status: RUNNING"
 }
 
+broker_is_ready() {
+  # The API/connection can appear before the owning CLI persists its identity.
+  # Wait for the completed startup marker before testing lifecycle commands.
+  grep -q '^Broker started\.$' "$DAEMON_LOG" && broker_is_running
+}
+
 # Cross-platform timeout function (macOS doesn't have timeout by default)
 # Returns 124 on timeout (like GNU timeout)
 run_with_timeout() {
@@ -151,10 +157,8 @@ log_phase "Phase 1: Broker Startup"
 # Kill any existing daemon (with timeout to prevent hanging)
 run_with_timeout 10 "$CLI_CMD" node down --force --timeout 5000 2>/dev/null || true
 
-# Kill any process using our target port (ensures the broker can bind)
-if command -v lsof &> /dev/null; then
-  lsof -ti:$BROKER_PORT | xargs kill -9 2>/dev/null || true
-fi
+# An occupied port is not proof of process ownership. Leave unverified
+# listeners alone; node up will report a binding failure or choose a free port.
 sleep 1
 
 # Start broker in background, redirect output to log file
@@ -165,15 +169,16 @@ DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"
 
-# Wait for daemon to be ready (check health endpoint)
+# Wait for completed CLI startup and live broker status.
 log_info "Waiting for daemon to be ready..."
-for i in $(seq 1 30); do
-  if broker_is_running; then
+STARTUP_DEADLINE=$((SECONDS + 60))
+for i in $(seq 1 60); do
+  if broker_is_ready; then
     log_info "Daemon is ready!"
     break
   fi
-  if [ $i -eq 30 ]; then
-    log_error "Daemon failed to start within 30 seconds"
+  if [ $SECONDS -ge $STARTUP_DEADLINE ] || [ $i -eq 60 ]; then
+    log_error "Daemon failed to start within 60 seconds"
     log_error "Daemon log tail:"
     tail -30 "$DAEMON_LOG" 2>/dev/null || echo "(no log)"
     exit 1
