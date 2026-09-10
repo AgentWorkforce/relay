@@ -142,7 +142,11 @@ function providerIdentityMatches(value, sandboxId) {
 
 function nodeIdentityMatches(node, nodeName, sandboxId) {
   const text = JSON.stringify(node);
-  return (node.name === nodeName || node.nodeName === nodeName) && text.includes(sandboxId) && text.includes('daytona');
+  return (
+    (node.name === nodeName || node.nodeName === nodeName) &&
+    text.includes(sandboxId) &&
+    text.includes('daytona')
+  );
 }
 
 function agentIdentityMatches(agent, agentName, nodeName, sandboxId) {
