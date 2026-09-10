@@ -2538,6 +2538,8 @@ async function execute(argv, options = {}) {
   const captureLimit = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
   let stdout = '';
   let stderr = '';
+  const stdoutHash = createHash('sha256');
+  const stderrHash = createHash('sha256');
   const stdoutEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
   const stderrEvidence = createStreamingEvidenceCapture(captureLimit, options.extraSecrets);
   const stdoutDecoder = new StringDecoder('utf8');
@@ -2620,6 +2622,7 @@ async function execute(argv, options = {}) {
     }
     child.stdout.on('data', (chunk) => {
       if (settled) return;
+      stdoutHash.update(chunk);
       stdoutBytes += chunk.byteLength;
       stdoutTruncated ||= stdoutBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stdoutCaptureTruncated ||= stdoutBytes > captureLimit;
@@ -2629,6 +2632,7 @@ async function execute(argv, options = {}) {
     });
     child.stderr.on('data', (chunk) => {
       if (settled) return;
+      stderrHash.update(chunk);
       stderrBytes += chunk.byteLength;
       stderrTruncated ||= stderrBytes > Math.min(captureLimit, MAX_CAPTURE_BYTES);
       stderrCaptureTruncated ||= stderrBytes > captureLimit;
@@ -2690,6 +2694,8 @@ async function execute(argv, options = {}) {
     timedOut,
     stdoutBytes,
     stderrBytes,
+    stdoutSha256: stdoutHash.digest('hex'),
+    stderrSha256: stderrHash.digest('hex'),
     stdoutTruncated,
     stderrTruncated,
     stdoutCaptureTruncated,
@@ -3450,6 +3456,13 @@ export function validateFleetEvidence(evidence, matrix) {
     for (const key of ['stdoutBytes', 'stderrBytes']) {
       if (!Number.isInteger(operation[key]) || operation[key] < 0) {
         throw new Error(`operation ${operation.id}.${key} is invalid`);
+      }
+    }
+    if (operation.derivedObservation !== true) {
+      for (const key of ['stdoutSha256', 'stderrSha256']) {
+        if (typeof operation[key] !== 'string' || !SHA256.test(operation[key])) {
+          throw new Error(`operation ${operation.id}.${key} is missing or invalid`);
+        }
       }
     }
     const serialized = JSON.stringify(operation);

@@ -248,6 +248,8 @@ function operationRecord(operation: {
     timedOut: false,
     stdoutBytes: 0,
     stderrBytes: 0,
+    stdoutSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    stderrSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     stdoutTruncated: false,
     stderrTruncated: false,
     ...(operation.mustContain ? { stderr: operation.mustContain } : {}),
@@ -2234,6 +2236,17 @@ describe('complete Daytona Fleet board', () => {
     expect(result.stdoutBytes).toBe(4096);
     expect(result.stdoutTruncated).toBe(true);
     expect(result._rawStdout).toHaveLength(64);
+  });
+
+  it('keeps cryptographic hashes of raw CLI streams beside bounded evidence captures', async () => {
+    const result = await executeFleetCommand([
+      process.execPath,
+      '-e',
+      "process.stdout.write('raw-cli-output'); process.stderr.write('raw-mcp-output')",
+    ]);
+
+    expect(result.stdoutSha256).toBe(createHash('sha256').update('raw-cli-output').digest('hex'));
+    expect(result.stderrSha256).toBe(createHash('sha256').update('raw-mcp-output').digest('hex'));
   });
 
   it('marks evidence as truncated when parsing retained more output than reviewers can inspect', async () => {
