@@ -195,6 +195,9 @@ export async function createWorkspace({
   assert.equal(credential.expiresAt, value.expiresAt);
   assert(jsonObject(credential.cloud, 'cloud credential').accessToken);
   assert(jsonObject(credential.relay, 'Relay credential').workspaceKey);
+  // credentialFile is reduced to one of the two fixed names under the trusted
+  // runner credential root by trustedCredentialPath before this write.
+  // codeql[js/http-to-file-access]
   await writeFile(trustedCredentialFile, `${JSON.stringify(credential, null, 2)}\n`, {
     mode: 0o600,
     flag: 'wx',
@@ -304,6 +307,9 @@ async function main() {
   }
   if (args.mode !== 'create') {
     const output = trustedOutputPath(required('QUALIFICATION_OUTPUT'));
+    // output is reduced to one of four fixed task-owned evidence names by
+    // trustedOutputPath before this write.
+    // codeql[js/http-to-file-access]
     await writeFile(output, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   }
   process.stdout.write(`${JSON.stringify(value)}\n`);
