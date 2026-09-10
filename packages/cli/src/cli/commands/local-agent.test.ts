@@ -251,6 +251,39 @@ describe('local agent subtree', () => {
     expect(JSON.stringify([...log.mock.calls, ...error.mock.calls])).not.toContain('rjt_live_one_time');
   });
 
+  it('attach --node redeems an isolated-shard join ticket at the explicit base URL', async () => {
+    const { program, attachNode, redeemJoinTicket } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'attach',
+        'lead',
+        '--node',
+        'agent37-codex',
+        '--join-ticket',
+        'rjt_live_one_time',
+        '--base-url',
+        'https://agent37-cast.agentrelay.com',
+      ],
+      { from: 'user' }
+    );
+
+    expect(redeemJoinTicket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticket: 'rjt_live_one_time',
+        node: 'agent37-codex',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+      })
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'agent37-codex',
+      expect.objectContaining({ baseUrl: 'https://agent37-cast.agentrelay.com' })
+    );
+  });
+
   it.each(['expired', 'invalid'])(
     'attach --node reports a clear %s join-ticket error instead of falling through to workspace resolution',
     async (reason) => {

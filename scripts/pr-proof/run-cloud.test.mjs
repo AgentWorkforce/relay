@@ -19,6 +19,17 @@ describe('cloud command output redaction', () => {
     assert.equal(redactors.stdout.push('', true), 'br');
   });
 
+  for (const fragment of ['e', 'ue', 'lue']) {
+    it(`does not wipe a stream for the benign ${fragment.length}-character secret fragment`, async () => {
+      const output = `finished with ${fragment}`;
+      const result = await run(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(output)})`], {
+        diagnosticSecretValues: ['custom-secret-value'],
+      });
+
+      assert.equal(result.stdout, output);
+    });
+  }
+
   it('masks configured secrets split across streams before echo and capture', async () => {
     const result = await run(
       process.execPath,

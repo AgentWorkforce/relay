@@ -26,6 +26,7 @@ const LEGACY_REFRESHABLE_AUTH_KEYS = [
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_LIVE_OUTPUT_BYTES = 256 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
+const MIN_SECRET_FRAGMENT_LENGTH = 4;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -163,7 +164,7 @@ function longestSuffixThatStartsSecret(value, secrets) {
 
 function longestSuffixThatMatchesSecret(value, secrets) {
   const maximum = Math.min(value.length, Math.max(...secrets.map((secret) => secret.length), 0) - 1);
-  for (let length = maximum; length > 0; length -= 1) {
+  for (let length = maximum; length >= MIN_SECRET_FRAGMENT_LENGTH; length -= 1) {
     const suffix = value.slice(value.length - length);
     if (secrets.some((secret) => secret.startsWith(suffix) || secret.endsWith(suffix))) return length;
   }

@@ -288,6 +288,13 @@ export function registerFleetCommands(
         // workspace from canonical Relaycast. Agent37 may not, because even a
         // read there mutates rate-limit/presence accounting on the shared
         // service and defeats the zero-shared-traffic canary proof.
+        if (
+          explicitWorkspaceId !== undefined &&
+          workspaceSelection?.workspaceId !== undefined &&
+          explicitWorkspaceId !== workspaceSelection.workspaceId.trim()
+        ) {
+          throw new Error('--workspace-id does not match the captured workspace identity.');
+        }
         if (!relayWorkspaceId && sandboxProvider !== 'agent37') {
           workspaceRelay = deps.sdk.createWorkspaceRelay(legacyWorkspaceClientOptions);
           const workspaceInfo = await workspaceRelay.workspace.info();

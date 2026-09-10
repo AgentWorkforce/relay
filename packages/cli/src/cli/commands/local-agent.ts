@@ -280,13 +280,14 @@ function resolveAttachCredentialSelection(
 
 async function redeemAndPersistAttachCredential(
   deps: LocalAgentDependencies,
-  options: { ticket: string; node: string; agent: string; mode: AttachMode }
+  options: { ticket: string; node: string; agent: string; mode: AttachMode; baseUrl?: string }
 ): Promise<string> {
   const redeemed = await deps.redeemJoinTicket({
     ticket: options.ticket,
     node: options.node,
     agent: options.agent,
     mode: options.mode,
+    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
     env: deps.env,
     fetch: deps.fetch,
   });
@@ -922,6 +923,7 @@ export function registerLocalAgentCommands(
               node,
               agent: name,
               mode,
+              baseUrl: options.baseUrl as string | undefined,
             });
           }
           const code = await deps.attachNode(name, mode, node, {
