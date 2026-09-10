@@ -122,28 +122,28 @@ cleanup() {
         ;;
       ?*) delete_error_code="other" ;;
     esac
-    verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-      --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
-      --request GET \
-      --header "Authorization: Bearer $WORKSPACE_KEY" \
-      "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
-    # A 5xx response can be lost after the database commit. The workspace key
-    # was proven valid by the lifecycle above, so 401 from the same key is the
-    # authoritative absence check. Any readable or unverifiable state remains
-    # a hard failure.
-    if [ "$verify_status" = "401" ]; then
-      if [ "$delete_status" = "200" ] || [ "$delete_status" = "204" ]; then
-        echo "Ephemeral workspace deletion verified"
-      else
-        echo "Ephemeral workspace deletion verified after ambiguous DELETE HTTP ${delete_status:-unknown}${delete_error_code:+, error code $delete_error_code}"
-      fi
+    if [ "$delete_status" = "200" ] || [ "$delete_status" = "204" ]; then
+      # The engine only returns success after its atomic deletion batch commits.
+      # A second database read would add an unrelated availability dependency.
+      echo "Ephemeral workspace deletion verified"
     else
-      if [ "$delete_status" != "200" ] && [ "$delete_status" != "204" ]; then
+      verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
+        --request GET \
+        --header "Authorization: Bearer $WORKSPACE_KEY" \
+        "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
+      # A 5xx response can be lost after the database commit. The workspace key
+      # was proven valid by the lifecycle above, so 401 from the same key is the
+      # authoritative absence check. Any readable or unverifiable state remains
+      # a hard failure.
+      if [ "$verify_status" = "401" ]; then
+        echo "Ephemeral workspace deletion verified after ambiguous DELETE HTTP ${delete_status:-unknown}${delete_error_code:+, error code $delete_error_code}"
+      else
         echo "ERROR: ephemeral workspace cleanup returned HTTP ${delete_status:-unknown}${delete_error_code:+, error code $delete_error_code}." >&2
+        echo "ERROR: ephemeral workspace deletion was not proved (follow-up HTTP ${verify_status:-unknown})." >&2
+        echo "The workspace id is ${WORKSPACE_ID:-unknown}; remove it manually from the trusted smoke shard." >&2
+        cleanup_status=1
       fi
-      echo "ERROR: ephemeral workspace deletion was not proved (follow-up HTTP ${verify_status:-unknown})." >&2
-      echo "The workspace id is ${WORKSPACE_ID:-unknown}; remove it manually from the trusted smoke shard." >&2
-      cleanup_status=1
     fi
   fi
   rm -rf "$TMP_ROOT"

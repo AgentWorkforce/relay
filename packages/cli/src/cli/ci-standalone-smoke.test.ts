@@ -247,6 +247,25 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(result.stderr).not.toContain('rk_live_fake_smoke_key');
   });
 
+  it('accepts a successful delete without adding a follow-up read dependency', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '204',
+        FAKE_VERIFY_STATUS: '503',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Ephemeral workspace deletion verified');
+    expect(result.stderr).not.toContain('follow-up HTTP');
+  });
+
   it('accepts an ambiguous delete response only when the follow-up proves absence', () => {
     const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
     const result = spawnSync('bash', [smokeScript, cli, broker], {
@@ -313,6 +332,28 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(result.stderr).toContain('ephemeral workspace deletion was not proved (follow-up HTTP 200)');
     expect(result.stdout).not.toContain('rk_live_delete_body_must_not_print');
     expect(result.stderr).not.toContain('rk_live_delete_body_must_not_print');
+  });
+
+  it('fails closed when an ambiguous delete cannot be verified', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUS: '503',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'ephemeral workspace cleanup returned HTTP 500, error code internal_error'
+    );
+    expect(result.stderr).toContain('ephemeral workspace deletion was not proved (follow-up HTTP 503)');
   });
 
   it('passes the shared key through the isolated lifecycle and joins its workspace', () => {
