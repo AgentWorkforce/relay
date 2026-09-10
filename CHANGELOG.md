@@ -13,14 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Ambiguous Cloud sandbox responses retain their stable `--sandbox-id` for replay instead of automatically deleting an allocation whose outcome is unknown.
-- Persisting an Agent37 Relaycast target keeps the canonical Cloud workspace key as the durable selector and stores the route-scoped transport credential separately, so later commands can reuse the original explicit key.
-- Relaycast credentials and origins now resolve as one transport pair for attach, observer, Fleet, and Relayfile provisioning commands; stale sandbox responses cannot overwrite a project workspace that was rebound while provisioning was in flight.
-- Legacy non-Agent37 Cloud sandbox responses remain usable when they omit the newer Relaycast target, while any target Cloud does return is verified and persisted for both newly provisioned and reused providers.
-- Standalone package smoke workspaces remain valid for five minutes, and startup overrides are capped at four minutes so shutdown and cleanup verification always retain a full-minute lease margin.
-- Startup retries now require Relaycast's typed pre-commit storage-admission codes instead of replaying every 5xx response from an unkeyed workspace or agent-registration request.
-- Agent registration retries now honor Relaycast's typed cooldown (capped at one minute) instead of immediately retrying through the same write-capacity window, while a three-minute aggregate deadline prevents hung requests from stranding callers.
-
 - Worker startup queues the initial task before incoming events without consuming delivery retry attempts while waiting.
 
 - Codex startup requires its cursor in the composer, no loading or busy indicator, and one second of quiet output. It no longer depends on transient MCP server labels or historical prompt glyphs; timeout fallback remains unverified.
@@ -36,8 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Operators can keep using custom `--sandbox-name` values with `agent-relay fleet spawn --sandbox`; launches without a custom name generate a stable `sbx_<UUID>` identity automatically, while only `--sandbox-id` replay requires the matching deterministic lowercase `fleet-sandbox-<UUID>` name.
-
 - Claude and Codex workers receive a separate delayed Enter for every injected delivery. After the PTY acknowledges the write, background Enter recovery is disabled for both harnesses to avoid submitting unrelated input after idle. The structured `injection_recovery_disabled` diagnostic explicitly leaves harness acceptance unconfirmed: echoed input is not proof of an agent action.
 
 ### Breaking Changes
@@ -49,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Migration Guidance
 
 - Deploy the compatible Relaycast engine before upgrading fleet clients. Set `verifyReady: false` only when the caller explicitly accepts unverified placement.
+
+## [11.11.0] - 2026-09-10
+
+### Changed
+
+- Operators can keep using custom `--sandbox-name` values with `agent-relay fleet spawn --sandbox`; launches without a custom name generate a stable `sbx_<UUID>` identity automatically, while only `--sandbox-id` replay requires the matching deterministic lowercase `fleet-sandbox-<UUID>` name.
+
+### Fixed
+
+- Ambiguous Cloud sandbox responses retain their stable `--sandbox-id` for replay instead of automatically deleting an allocation whose outcome is unknown.
+- Persisting an Agent37 Relaycast target keeps the canonical Cloud workspace key as the durable selector and stores the route-scoped transport credential separately, so later commands can reuse the original explicit key.
+- Relaycast credentials and origins now resolve as one transport pair for attach, observer, Fleet, and Relayfile provisioning commands; stale sandbox responses cannot overwrite a project workspace that was rebound while provisioning was in flight.
+- Legacy non-Agent37 Cloud sandbox responses remain usable when they omit the newer Relaycast target, while any target Cloud does return is verified and persisted for both newly provisioned and reused providers.
+- Standalone package smoke workspaces remain valid for five minutes, and startup overrides are capped at four minutes so shutdown and cleanup verification always retain a full-minute lease margin.
+- Startup retries now require Relaycast's typed pre-commit storage-admission codes instead of replaying every 5xx response from an unkeyed workspace or agent-registration request.
+- Agent registration retries now honor Relaycast's typed cooldown (capped at one minute) instead of immediately retrying through the same write-capacity window, while a three-minute aggregate deadline prevents hung requests from stranding callers.
 
 ## [11.10.4] - 2026-09-08
 
