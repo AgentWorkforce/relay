@@ -1,0 +1,134 @@
+{
+  "id": "traj_vsws9jgwnx47",
+  "version": 1,
+  "task": {
+    "title": "relayfile-cross-repo-qualification-workflow",
+    "description": "Qualify local Cloud, Relayfile, and relayfile-cloud candidates in exactly two distinct clean Daytona arms with an exact published Relayfile prerelease install, issue #490 polling/realtime proof, cold-mount, ACL saturation, fail-closed evidence, and cleanup proofs.",
+    "source": {
+      "system": "workflow-runner",
+      "id": "fe6f3932e413f7536feaf18d"
+    }
+  },
+  "status": "abandoned",
+  "startedAt": "2026-09-10T04:37:41.954Z",
+  "completedAt": "2026-09-10T04:41:22.822Z",
+  "agents": [
+    {
+      "name": "orchestrator",
+      "role": "workflow-runner",
+      "joinedAt": "2026-09-10T04:37:41.954Z"
+    },
+    {
+      "name": "claude-review",
+      "role": "specialist",
+      "joinedAt": "2026-09-10T04:38:19.930Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_by6ru7idmx0c",
+      "title": "Planning",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-10T04:37:41.954Z",
+      "endedAt": "2026-09-10T04:38:07.951Z",
+      "events": [
+        {
+          "ts": 1789015061954,
+          "type": "note",
+          "content": "Purpose: Qualify local Cloud, Relayfile, and relayfile-cloud candidates in exactly two distinct clean Daytona arms with an exact published Relayfile prerelease install, issue #490 polling/realtime proof, cold-mount, ACL saturation, fail-closed evidence, and cleanup proofs."
+        },
+        {
+          "ts": 1789015061954,
+          "type": "note",
+          "content": "Approach: 20-step dag workflow — Parsed 20 steps, 19 dependent steps, DAG validated, no cycles"
+        }
+      ]
+    },
+    {
+      "id": "chap_uri1gy2ogdjx",
+      "title": "Execution: run-arm-a, run-arm-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-10T04:38:07.951Z",
+      "endedAt": "2026-09-10T04:38:19.619Z",
+      "events": []
+    },
+    {
+      "id": "chap_6cxyi9iecdbi",
+      "title": "Convergence: run-arm-a + run-arm-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-10T04:38:19.619Z",
+      "endedAt": "2026-09-10T04:38:19.635Z",
+      "events": [
+        {
+          "ts": 1789015099628,
+          "type": "reflection",
+          "content": "run-arm-a + run-arm-b resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: verify-arm-a, verify-arm-b.",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": [
+              "run-arm-a: completed",
+              "run-arm-b: completed"
+            ]
+          },
+          "significance": "high"
+        }
+      ]
+    },
+    {
+      "id": "chap_6mae761nd7tp",
+      "title": "Execution: verify-arm-a, verify-arm-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-10T04:38:19.635Z",
+      "endedAt": "2026-09-10T04:38:19.738Z",
+      "events": []
+    },
+    {
+      "id": "chap_4ytuh3z98h23",
+      "title": "Convergence: verify-arm-a + verify-arm-b",
+      "agentName": "orchestrator",
+      "startedAt": "2026-09-10T04:38:19.738Z",
+      "endedAt": "2026-09-10T04:38:19.938Z",
+      "events": [
+        {
+          "ts": 1789015099746,
+          "type": "reflection",
+          "content": "verify-arm-a + verify-arm-b resolved. 2/2 steps completed. All steps completed on first attempt. Unblocking: aggregate-evidence.",
+          "raw": {
+            "confidence": 0.75,
+            "focalPoints": [
+              "verify-arm-a: completed",
+              "verify-arm-b: completed"
+            ]
+          },
+          "significance": "high"
+        }
+      ]
+    },
+    {
+      "id": "chap_u9ouiy65ave3",
+      "title": "Execution: claude-review",
+      "agentName": "claude-review",
+      "startedAt": "2026-09-10T04:38:19.938Z",
+      "endedAt": "2026-09-10T04:41:22.822Z",
+      "events": [
+        {
+          "ts": 1789015099938,
+          "type": "note",
+          "content": "\"claude-review\": You are the Claude fresh-eyes reviewer in phase review",
+          "raw": {
+            "agent": "claude-review"
+          }
+        },
+        {
+          "ts": 1789015282823,
+          "type": "note",
+          "content": "Abandoned: Stopped after both Daytona creates failed before allocation because 8192 MiB was passed as 8192 GiB; harness corrected before retry",
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "tags": []
+}
