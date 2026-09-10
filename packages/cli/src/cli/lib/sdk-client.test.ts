@@ -127,6 +127,46 @@ describe('sdk client option resolution', () => {
     expect(JSON.stringify(relay)).not.toContain('at_live_participant_scoped');
   });
 
+  it('does not inherit a persisted gateway when an explicit agent token is supplied', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    const relay = createAgentRelay({ token: 'at_live_explicit' }) as unknown as {
+      messagingOptions: { baseUrl?: string };
+      workspaceKey?: string;
+    };
+    expect(relay.messagingOptions.baseUrl).toBeUndefined();
+    expect(relay.workspaceKey).toBeUndefined();
+
+    const canonicalRelay = createAgentRelay({
+      token: 'at_live_explicit',
+      baseUrl: 'https://cast.agentrelay.com',
+    }) as unknown as { messagingOptions: { baseUrl?: string } };
+    expect(canonicalRelay.messagingOptions.baseUrl).toBe('https://cast.agentrelay.com');
+  });
+
+  it('does not inherit a persisted gateway when an environment agent token is supplied', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    const relay = createAgentRelay({
+      env: { RELAY_AGENT_TOKEN: 'at_live_environment' },
+    }) as unknown as {
+      messagingOptions: { baseUrl?: string };
+      workspaceKey?: string;
+    };
+    expect(relay.messagingOptions.baseUrl).toBeUndefined();
+    expect(relay.workspaceKey).toBeUndefined();
+  });
+
   it('durably records an isolated target while preserving the enrolled node session', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
       workspaceId: 'rw_abc',
@@ -199,6 +239,33 @@ describe('sdk client option resolution', () => {
       });
     }
   );
+
+  it('creates a fresh project target pin for an active machine-store selection', () => {
+    setWorkspaceKey('ops', 'rk_live_store', { AGENT_RELAY_HOME: dir });
+    const selection = resolveWorkspaceSelection({ env: { AGENT_RELAY_HOME: dir } });
+    expect(selection).toMatchObject({
+      key: 'rk_live_store',
+      source: 'store',
+      projectDataDir: projectDataDir(),
+      projectSessionPresent: false,
+    });
+
+    expect(
+      persistWorkspaceRelaycastTarget(selection, {
+        route: 'agent37-isolated',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+        workspaceId: 'rw_store',
+        relaycastApiKey: 'rk_live_store_agent37',
+      })
+    ).toBe(true);
+    expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+      workspaceKey: 'rk_live_store',
+      workspaceId: 'rw_store',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_store_agent37',
+    });
+  });
 
   it('refuses to overwrite a project session rebound after workspace selection', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_original', { workspaceId: 'rw_original' });

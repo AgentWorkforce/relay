@@ -216,7 +216,14 @@ export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgen
   if (token) {
     return new AgentRelay({
       agentToken: token,
-      baseUrl: resolveBaseUrl(options),
+      // An agent token is already scoped by the caller, whether supplied by a
+      // flag or RELAY_AGENT_TOKEN. Do not let a persisted project route
+      // silently select a different gateway; only an explicit/ambient base URL
+      // may choose the token's origin.
+      baseUrl: resolveBaseUrl({
+        ...options,
+        ignorePersistedRelaycastTarget: true,
+      }),
     });
   }
   const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);

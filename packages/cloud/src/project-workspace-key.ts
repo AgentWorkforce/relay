@@ -267,8 +267,12 @@ function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
     }
     Atomics.wait(PROJECT_WORKSPACE_LOCK_WAIT, 0, 0, PROJECT_WORKSPACE_LOCK_RETRY_MS);
   }
+  let callbackFailed = false;
   try {
     return callback();
+  } catch (error) {
+    callbackFailed = true;
+    throw error;
   } finally {
     // Remove our marker first. If the lock was declared stale and replaced
     // while the callback was running, the replacement marker is different;
@@ -282,7 +286,11 @@ function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
           (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
           (error as NodeJS.ErrnoException).code !== 'ENOTEMPTY'
         ) {
-          throw error;
+          if (callbackFailed) {
+            console.error(`Failed to release the project workspace lock at ${lockDir}.`, error);
+          } else {
+            throw error;
+          }
         }
       }
     }
@@ -496,7 +504,7 @@ export function resolveWorkspaceSelection(
     };
   }
 
-  return resolveActiveWorkspaceSelection(env);
+  return resolveActiveWorkspaceSelection(env, dataDir);
 }
 
 /**
@@ -508,7 +516,8 @@ export function resolveWorkspaceSelection(
  * It is never correct to consult this ahead of steps 1–3.
  */
 export function resolveActiveWorkspaceSelection(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  projectDataDir?: string
 ): WorkspaceSelection | undefined {
   const store = readWorkspaceStore(env);
   const activeName = trimOrUndefined(store.active);
@@ -518,6 +527,7 @@ export function resolveActiveWorkspaceSelection(
         key: storeKey,
         source: 'store',
         origin: `${workspaceStorePath(env)} (active: "${activeName}")`,
+        ...(projectDataDir ? { projectDataDir, projectSessionPresent: false } : {}),
       }
     : undefined;
 }

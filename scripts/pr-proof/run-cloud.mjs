@@ -63,13 +63,15 @@ const STATUS_DIAGNOSTIC_FIELDS = [
 ];
 const STATUS_FAILURE_DIAGNOSTIC_FIELDS = ['phase', 'code', 'dispatchType', 'sandboxId', 'occurredAt'];
 
-async function run(command, args, options = {}) {
+export async function run(command, args, options = {}) {
   const diagnosticSecretValues = options.diagnosticSecretValues ?? [];
   // Keep a redaction boundary per pipe. A partial credential suffix from
   // stdout must never be prepended to the next stderr chunk (or vice versa).
   // Each pipe is finalized independently, so an actually benign suffix can be
   // released once that originating stream closes.
-  const outputRedactors = createCommandOutputRedactors(diagnosticSecretValues);
+  const outputRedactors = createCommandOutputRedactors(diagnosticSecretValues, {
+    maskPendingOnFinal: true,
+  });
   const result = await runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
@@ -86,10 +88,10 @@ async function run(command, args, options = {}) {
 }
 
 /** Create independent streaming redactors for subprocess stdout and stderr. */
-export function createCommandOutputRedactors(secretValues = []) {
+export function createCommandOutputRedactors(secretValues = [], { maskPendingOnFinal = false } = {}) {
   return {
-    stdout: createCredentialRedactor(secretValues),
-    stderr: createCredentialRedactor(secretValues),
+    stdout: createCredentialRedactor(secretValues, { maskPendingOnFinal }),
+    stderr: createCredentialRedactor(secretValues, { maskPendingOnFinal }),
   };
 }
 
@@ -155,6 +157,15 @@ function longestSuffixThatStartsSecret(value, secrets) {
   for (let length = maximum; length > 0; length -= 1) {
     const suffix = value.slice(value.length - length);
     if (secrets.some((secret) => secret.startsWith(suffix))) return length;
+  }
+  return 0;
+}
+
+function longestSuffixThatMatchesSecret(value, secrets) {
+  const maximum = Math.min(value.length, Math.max(...secrets.map((secret) => secret.length), 0) - 1);
+  for (let length = maximum; length > 0; length -= 1) {
+    const suffix = value.slice(value.length - length);
+    if (secrets.some((secret) => secret.startsWith(suffix) || secret.endsWith(suffix))) return length;
   }
   return 0;
 }
@@ -270,7 +281,7 @@ function createConfiguredSecretRedactor(secretValues, maskPendingOnFinal = false
           continue;
         }
         const suffixLength =
-          final && !maskPendingOnFinal ? 0 : longestSuffixThatStartsSecret(input.slice(index), secrets);
+          final && !maskPendingOnFinal ? 0 : longestSuffixThatMatchesSecret(input.slice(index), secrets);
         const end = input.length - suffixLength;
         output += input.slice(index, end);
         if (suffixLength > 0) {

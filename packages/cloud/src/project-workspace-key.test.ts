@@ -81,6 +81,27 @@ describe('project workspace key resolution', () => {
     }
   });
 
+  it('preserves a callback error when lock cleanup also fails', () => {
+    const originalRename = fs.renameSync.bind(fs);
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+      originalRename(source, destination);
+      throw new Error('callback failed');
+    });
+    const rmdir = vi.spyOn(fs, 'rmdirSync').mockImplementation(() => {
+      throw new Error('cleanup failed');
+    });
+    const report = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      expect(() => writeProjectWorkspaceKey(dataDir, 'rk_project')).toThrow('callback failed');
+      expect(report).toHaveBeenCalledWith(expect.stringContaining('Failed to release'), expect.any(Error));
+    } finally {
+      rename.mockRestore();
+      rmdir.mockRestore();
+      report.mockRestore();
+    }
+  });
+
   it('round-trips an enrolled Fleet identity and clears it on an explicit workspace change', () => {
     writeProjectWorkspaceKey(dataDir, 'rk_enrolled', { enrolledNodeId: ' node_1 ' });
     expect(readProjectWorkspaceSession(dataDir)).toEqual({
@@ -129,6 +150,18 @@ describe('project workspace key resolution', () => {
     expect(resolveWorkspaceKeyWithSource({ projectDataDir: dataDir, env })).toEqual({
       key: 'rk_global',
       source: 'store',
+    });
+  });
+
+  it('records the absent project session snapshot for an active-store selection', () => {
+    const env = { AGENT_RELAY_HOME: home };
+    setWorkspaceKey('global', 'rk_global', env);
+
+    expect(resolveWorkspaceSelection({ projectDataDir: dataDir, env })).toMatchObject({
+      key: 'rk_global',
+      source: 'store',
+      projectDataDir: dataDir,
+      projectSessionPresent: false,
     });
   });
 
