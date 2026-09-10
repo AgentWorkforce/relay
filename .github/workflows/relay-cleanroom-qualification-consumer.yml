@@ -399,6 +399,20 @@ jobs:
           export VERIFY_FLEET_EXPECTED_RELAY_SHA="${{ steps.manifest.outputs.relay_sha }}"
           npx relayflows run workflows/verify-fleet-daytona.ts
 
+      - name: Reconcile exact Fleet Daytona sandboxes after candidate stop
+        if: always()
+        working-directory: relay-verifier
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          FLEET_ATTEMPTS: qualification-${{ github.run_id }}-${{ github.run_attempt }}-a,qualification-${{ github.run_id }}-${{ github.run_attempt }}-b
+        run: |
+          set -euo pipefail
+          node scripts/verify-features/reconcile-fleet-daytona.mjs reconcile \
+            --matrix tests/relayflows/cleanroom/fleet-daytona.matrix.json \
+            --artifact-root "$RUNNER_TEMP/relay-fleet-untrusted-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/.workflow-artifacts/verify-fleet-daytona" \
+            --attempts "$FLEET_ATTEMPTS" \
+            --output qualification/fleet-daytona-external-reconciliation.json
+
       - name: Verify candidate execution remained outside trusted inputs
         if: always()
         working-directory: relay-verifier

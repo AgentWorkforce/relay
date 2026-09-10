@@ -55,6 +55,8 @@ import {
   validateSandboxRuntimeAttestation,
   validateSeal,
 } from '../../scripts/verify-features/fleet-daytona.mjs';
+import { reconcileExactDaytonaSandboxes } from '../../scripts/verify-features/reconcile-fleet-daytona.mjs';
+import { deriveFleetTimeoutPlan } from '../../workflows/fleet-timeout-budget.ts';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   diagnosisAgentNetwork,
@@ -701,10 +703,10 @@ describe('complete Daytona Fleet board', () => {
     expect(source).toContain('const ATTEMPT_TIMEOUT_MS = 5_100_000');
     expect(source).toContain('const OUTER_JOB_TIMEOUT_MS = 21_600_000');
     expect(source).toContain('const CONSUMER_SETUP_RESERVE_MS = 1_800_000');
-    expect(source).toContain('const WORKFLOW_GUARD_MS = 300_000');
-    expect(source).toContain('const workflowTimeoutMs = workflowBudgetMs + WORKFLOW_GUARD_MS');
-    expect(source).toContain('if (workflowTimeoutMs > innerWorkflowBudgetMs)');
-    expect(source).toContain('wf.timeout(workflowTimeoutMs)');
+    expect(source).toContain('const CONSUMER_CLEANUP_RESERVE_MS = 180_000');
+    expect(source).toContain('const WORKFLOW_GUARD_MS = 120_000');
+    expect(source).toContain('const timeoutPlan = deriveFleetTimeoutPlan(wf.toConfig()');
+    expect(source).toContain('wf.timeout(timeoutPlan.workflowTimeoutMs)');
     expect(attemptA?.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
     expect(attemptB?.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
     expect(materialize?.dependsOn).toEqual(['gate-attempt-a-evidence', 'gate-attempt-b-evidence']);
@@ -716,8 +718,163 @@ describe('complete Daytona Fleet board', () => {
     const outerJobBudgetMs = qualification['timeout-minutes'] * 60_000;
     const attemptBudgetMs = 2 * 5_100_000;
     const setupReserveMs = 1_800_000;
-    const guardMs = 300_000;
-    expect(attemptBudgetMs + setupReserveMs + guardMs).toBeLessThan(outerJobBudgetMs);
+    const cleanupReserveMs = 180_000;
+    const guardMs = 120_000;
+    expect(attemptBudgetMs + setupReserveMs + cleanupReserveMs + guardMs).toBeLessThan(outerJobBudgetMs);
+  });
+
+  it('materializes the RelayFlow DAG timeout plan and fails closed when retries extend it', async () => {
+    const nonce = `timeout-contract-${process.pid}`;
+    const { stdout } = await execFileAsync(
+      './node_modules/.bin/relayflows',
+      ['run', 'workflows/verify-fleet-daytona.ts'],
+      {
+        env: {
+          ...process.env,
+          DRY_RUN: '1',
+          VERIFY_FLEET_TIMEOUT_PLAN: '1',
+          VERIFY_FLEET_NONCE: nonce,
+          AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1',
+          PATH: `${process.env.PATH}`,
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      }
+    );
+    const line = stdout.split('\n').find((entry) => entry.startsWith('FLEET_TIMEOUT_PLAN '));
+    expect(line).toBeDefined();
+    const plan = JSON.parse(line!.slice('FLEET_TIMEOUT_PLAN '.length));
+    expect(plan.workflowTimeoutMs).toBeLessThanOrEqual(plan.innerWorkflowBudgetMs);
+    const attemptA = plan.steps.find(({ name }: { name: string }) => name === 'run-daytona-board-attempt-a');
+    const attemptB = plan.steps.find(({ name }: { name: string }) => name === 'run-daytona-board-attempt-b');
+    expect(attemptA).toMatchObject({
+      timeoutMs: 5_100_000,
+      retries: 0,
+      dependsOn: ['seal-trusted-fleet-inputs'],
+    });
+    expect(attemptB).toMatchObject({
+      timeoutMs: 5_100_000,
+      retries: 0,
+      dependsOn: ['seal-trusted-fleet-inputs'],
+    });
+
+    const longRetryConfig = {
+      workflows: [{ steps: [{ name: 'long', timeoutMs: plan.innerWorkflowBudgetMs, retries: 1 }] }],
+    };
+    expect(() =>
+      deriveFleetTimeoutPlan(longRetryConfig, {
+        outerJobTimeoutMs: plan.outerJobTimeoutMs,
+        consumerSetupReserveMs: plan.consumerSetupReserveMs,
+        consumerCleanupReserveMs: plan.consumerCleanupReserveMs,
+        guardMs: plan.guardMs,
+      })
+    ).toThrow(/exceeds inner qualification budget/);
+  });
+
+  it('reconciles only checkpointed Daytona IDs after external timeout/failure and records absence', async () => {
+    const reconciliationSource = await readFile(
+      'scripts/verify-features/reconcile-fleet-daytona.mjs',
+      'utf8'
+    );
+    expect(reconciliationSource).not.toContain("sandbox', 'list");
+    expect(reconciliationSource).toContain("sandbox', 'info', id");
+    const consumerSource = await readFile(
+      '.github/workflows/relay-cleanroom-qualification-consumer.yml',
+      'utf8'
+    );
+    expect(consumerSource).toMatch(/Reconcile exact Fleet Daytona sandboxes[\s\S]*?if: always\(\)/);
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const attempts = ['reconcile-timeout-a', 'reconcile-failure-b'];
+    const evidenceFor = (nonce: string, id: string, nodeName: string) => ({
+      version: 1,
+      kind: 'fleet-daytona-board',
+      product: 'relay',
+      provider: 'daytona',
+      nonce,
+      baseline: {
+        sandboxIdHashes: [],
+        sandboxNameHashes: [],
+        agentNameHashes: [],
+        fleetNodeNameHashes: [],
+      },
+      ownershipIntents: [
+        {
+          type: 'daytona-sandbox',
+          name: nodeName,
+          nonce,
+          assertedAbsentAtBaseline: true,
+          checkpointedAt: '2026-09-10T00:00:00.000Z',
+        },
+      ],
+      resources: [
+        { type: 'daytona-sandbox', id, nodeName, provider: 'daytona', ownership: 'created-by-run' },
+      ],
+    });
+    const checkpointed = new Map([
+      [
+        attempts[0],
+        evidenceFor(
+          attempts[0],
+          '11111111-1111-4111-8111-111111111111',
+          `relay-fleetboard-a-${attempts[0].slice(0, 16)}`
+        ),
+      ],
+      [
+        attempts[1],
+        evidenceFor(
+          attempts[1],
+          '22222222-2222-4222-8222-222222222222',
+          `relay-fleetboard-b-${attempts[1].slice(0, 16)}`
+        ),
+      ],
+    ]);
+    const deletes: string[] = [];
+    const inspected = new Set<string>();
+    const result = await reconcileExactDaytonaSandboxes({
+      attempts,
+      matrix,
+      readAttemptEvidence: async (nonce) => checkpointed.get(nonce),
+      issueDelete: async (id) => {
+        deletes.push(id);
+        return { exitCode: id.startsWith('2') ? 1 : null, timedOut: id.startsWith('2') };
+      },
+      inspectExact: async (id) => {
+        inspected.add(id);
+        return undefined;
+      },
+      sleep: async () => undefined,
+      now: () => '2026-09-10T00:00:00.000Z',
+    });
+    expect(result).toMatchObject({
+      kind: 'fleet-daytona-external-reconciliation',
+      source: 'checkpointed-created-by-run-evidence',
+      status: 'pass',
+      targetIds: [...deletes].sort(),
+    });
+    expect(deletes).toEqual(['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222']);
+    expect(inspected).toEqual(new Set(deletes));
+    expect(result.sandboxes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: deletes[0], absent: true }),
+        expect.objectContaining({ id: deletes[1], absent: true, deleteTimedOut: true }),
+      ])
+    );
+
+    await expect(
+      reconcileExactDaytonaSandboxes({
+        attempts: [attempts[0]],
+        matrix,
+        readAttemptEvidence: async () =>
+          evidenceFor(
+            attempts[0],
+            '33333333-3333-4333-8333-333333333333',
+            `relay-fleetboard-a-${attempts[0].slice(0, 16)}`
+          ),
+        issueDelete: async () => ({ exitCode: 0 }),
+        inspectExact: async (id) => ({ id, state: 'started' }),
+        slaMs: 0,
+        sleep: async () => undefined,
+      })
+    ).resolves.toMatchObject({ status: 'fail' });
   });
 
   it('uses the exact effective Codex model for preflight and both reviewers', async () => {
