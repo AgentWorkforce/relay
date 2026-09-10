@@ -318,6 +318,15 @@ export function registerFleetCommands(
           );
         }
         const effectiveSandboxName = deterministicSandboxName ?? sandboxName;
+        // The unpinned/Agent37 path deliberately carries the measured heavy
+        // 8 CPU / 16 GiB / 20 GiB profile. Daytona and E2B cannot satisfy that
+        // shape, so an explicit legacy-provider selection must request the
+        // provider-neutral durable profile instead of becoming unroutable by
+        // construction.
+        const workloadProfile =
+          sandboxProvider === undefined || sandboxProvider === 'agent37'
+            ? 'long-running-agent'
+            : 'standard-long-running-agent';
         if (
           explicitWorkspaceId !== undefined &&
           workspaceSelection?.workspaceId !== undefined &&
@@ -335,7 +344,7 @@ export function registerFleetCommands(
             ...(sandboxId === undefined ? {} : { sandboxId }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
-            workloadProfile: 'long-running-agent',
+            workloadProfile,
             waitTimeoutMs: 90_000,
             ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
           });

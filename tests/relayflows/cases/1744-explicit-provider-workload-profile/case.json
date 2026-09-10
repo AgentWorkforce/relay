@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1744-explicit-provider-workload-profile",
+  "kind": "bugfix",
+  "title": "Route explicit Daytona and E2B Fleet sandboxes with a satisfiable workload profile",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1744-explicit-provider-workload-profile/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "explicit_legacy_providers_receive_impossible_heavy_profile"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "explicit_provider_profiles_are_routable_and_agent37_stays_heavy"
+    }
+  }
+}
