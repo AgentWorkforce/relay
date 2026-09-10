@@ -147,9 +147,10 @@ try {
     pass: true,
   });
   const earlyError = await failSubscribe('early-exit', work);
+  // The process can exit before the spawn response or during waitForReady.
   assert.match(
     earlyError,
-    /^agent 'early-exit' process exited during startup \(exit status: 1\); see worker log /
+    /^(?:agent 'early-exit' process exited during startup \(exit status: 1\); see worker log .+|Recipient early-exit failed startup: exited \(\{"reason":"exited","code":1,"signal":null\}\))$/
   );
   const earlyIdentity = (await request('/v1/agents')).find((a) => a.name === 'early-exit');
   assert(

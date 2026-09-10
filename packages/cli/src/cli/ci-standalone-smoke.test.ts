@@ -127,6 +127,13 @@ case "\${2:-}" in
     echo "Status: STOPPED"
     ;;
   down)
+    if [ "\${FAKE_READY_AFTER_SECOND_DOWN:-}" = "1" ] && [ "$(grep -c '^cli node down$' "$INVOCATION_LOG" || true)" -ge 2 ]; then
+      # Wait for the fixture's late startup output before cleanup tails its log.
+      for ((attempt=0; attempt<200; attempt++)); do
+        if grep -q '^up-ready$' "$INVOCATION_LOG"; then break; fi
+        sleep 0.01
+      done
+    fi
     echo "Cleaned up (was not running)"
     ;;
   up)
@@ -147,7 +154,6 @@ case "\${2:-}" in
       while [ "$(grep -c '^cli node down$' "$INVOCATION_LOG" || true)" -lt 2 ]; do
         sleep 0.01
       done
-      printf 'up-ready\\n' >> "$INVOCATION_LOG"
     fi
     echo 'Workspace source: environment ($RELAY_WORKSPACE_KEY)'
     if [ "\${FAKE_WORKSPACE_MODE:-joined}" = "created" ]; then
@@ -156,6 +162,9 @@ case "\${2:-}" in
       echo "Workspace: joined rw_ci"
     fi
     echo "Broker started."
+    if [ "\${FAKE_READY_AFTER_SECOND_DOWN:-}" = "1" ]; then
+      printf 'up-ready\\n' >> "$INVOCATION_LOG"
+    fi
     ;;
   *)
     exit 67
@@ -451,7 +460,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const bashEnv = join(dirname(invocationLog), 'accelerated-clock.sh');
     writeFileSync(
       bashEnv,
-      'sleep() { if [ "${1:-}" = "0.25" ]; then SECONDS=$((SECONDS + 60)); command sleep 0.01; else command sleep "$@"; fi; }\nexport -f sleep\n'
+      'sleep() { if [ "${1:-}" = "0.25" ]; then SECONDS=$((SECONDS + 60)); /bin/sleep 0.01; else /bin/sleep "$@"; fi; }\nexport -f sleep\n'
     );
     const result = spawnSync('bash', [smokeScript, cli, broker], {
       encoding: 'utf8',

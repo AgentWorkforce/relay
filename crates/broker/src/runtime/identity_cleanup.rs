@@ -35,6 +35,7 @@ pub(crate) struct PendingIdentityCleanup {
 /// Enqueue the inventory removal and deregistration together, before yielding
 /// the runtime. A stale snapshot must never be enqueued later by a background
 /// task, after another worker has joined. Backpressure retains custody for retry.
+#[allow(clippy::too_many_arguments)]
 fn start_attempt(
     tx: &mpsc::Sender<FleetControlCommand>,
     agent_id: Option<String>,
