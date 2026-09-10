@@ -609,13 +609,22 @@ impl AuthClient {
                     auth_rejections.push(format!("{} key rejected", candidate.source));
                 }
                 Err(error) if is_rate_limited(&error) => {
-                    if candidate.explicit_join {
-                        return Err(error).context(format!(
-                            "explicit workspace key from {} was rate-limited",
-                            candidate.source
-                        ));
-                    }
-                    auth_rejections.push(format!("{} key rate-limited", candidate.source));
+                    // Only the exact `workspace_busy` code (handled above by
+                    // `is_workspace_busy_anyhow`, which retries and then stays
+                    // terminal) is a safe, narrowly-scoped signal to keep
+                    // going. Any other 429 reaching this arm — a near-match
+                    // code, an unrelated quota/policy 429, or no code at all —
+                    // is *not* proof that the existing workspace is gone or
+                    // that RELAY_API_KEY was invalid. Treating it as a soft
+                    // rejection here would fall through to minting a brand
+                    // new workspace below, which is exactly the accidental
+                    // duplicate-workspace behavior the issue calls out.
+                    // Terminal for both explicit and implicit key sources.
+                    return Err(error).context(format!(
+                        "{} workspace key was rate-limited by a non-workspace_busy 429; \
+                         this is not a safe signal to mint a replacement workspace",
+                        candidate.source
+                    ));
                 }
                 Err(error) => {
                     return Err(error).context(format!(
@@ -2401,6 +2410,80 @@ mod tests {
 
         unsafe {
             std::env::remove_var("RELAY_WORKSPACES_JSON");
+        }
+    }
+
+    /// Full `startup_session` HTTP-path proof for the outer admission
+    /// fallback in `startup_single_session_set_from_sources`: a near-match
+    /// `workspace_busy` code or an unrelated 429 reaching `/v1/agents` for an
+    /// *implicit* `RELAY_API_KEY` candidate (`explicit_join: false`) must
+    /// stay terminal end-to-end, exactly like an explicit key. Before this
+    /// fix, that arm treated any 429 as a soft rejection and fell through to
+    /// `create_workspace`, minting a fresh workspace behind a caller's back
+    /// merely because the response happened to carry a 429 status — even
+    /// though only the literal `workspace_busy` code is a safe, narrowly
+    /// scoped retry/terminal signal. This must not regress: exactly one
+    /// `/v1/agents` attempt, and zero `POST /v1/workspaces` calls, for every
+    /// near-match casing/whitespace variant and for a wholly unrelated 429
+    /// code.
+    #[tokio::test]
+    async fn startup_session_near_match_and_unrelated_rate_limit_never_mints_workspace() {
+        let near_match_and_unrelated_codes = [
+            "WORKSPACE_BUSY",
+            "Workspace_Busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+            " workspace_busy",
+            "workspace_busy ",
+            " workspace_busy ",
+            "\tworkspace_busy\n",
+            "workspace_busy\u{a0}",
+            "registration_rate_limited",
+        ];
+
+        for code in near_match_and_unrelated_codes {
+            let _env_guard = clear_relay_env();
+            let server = MockServer::start();
+            unsafe {
+                std::env::set_var("RELAY_API_KEY", "rk_live_ratelimited");
+            }
+            let register = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/v1/agents")
+                    .header("authorization", "Bearer rk_live_ratelimited");
+                then.status(429)
+                    .header("content-type", "application/json")
+                    .body(format!(
+                        r#"{{"ok":false,"error":{{"code":{code:?},"message":"rate limited"}}}}"#
+                    ));
+            });
+            let workspace = server.mock(|when, then| {
+                when.method(POST).path("/v1/workspaces");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .body(
+                        r#"{"ok":true,"workspace_id":"ws_should_never_be_created","api_key":"rk_live_should_never_exist"}"#,
+                    );
+            });
+
+            let error = AuthClient::new(Some(server.base_url()))
+                .startup_session(Some("lead"))
+                .await
+                .expect_err(&format!(
+                    "code {code:?} must remain terminal and never mint a workspace"
+                ));
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("rate-limited") || message.contains("429"),
+                "error for {code:?} should describe the rate limit: {message}"
+            );
+
+            register.assert_hits(1);
+            workspace.assert_hits(0);
+
+            unsafe {
+                std::env::remove_var("RELAY_API_KEY");
+            }
         }
     }
 

@@ -11,6 +11,7 @@ const INSTANCE_NAME = 'relayflow-workspace-busy-429';
 const HANDSHAKE_MARKER = 'connect_relay completed';
 const BUSY_CODE = 'workspace_busy';
 const UNRELATED_CODE = 'registration_rate_limited';
+const NEAR_MATCH_CODE = ' workspace_busy ';
 const REQUEST_ID = 'relayflow-workspace-busy-429-request';
 const STARTUP_WINDOW_MS = 60_000;
 
@@ -75,9 +76,16 @@ const server = http.createServer((request, response) => {
     const workspaceBusy = mode === 'busy-success' || mode === 'busy-exhaustion';
     const shouldReject =
       mode === 'unrelated-429' ||
+      mode === 'unrelated-429-implicit-key' ||
+      mode === 'near-match-429-implicit-key' ||
       (workspaceBusy && (mode === 'busy-exhaustion' || attempt === 1));
     if (shouldReject) {
-      const code = mode === 'unrelated-429' ? '${UNRELATED_CODE}' : '${BUSY_CODE}';
+      const code =
+        mode === 'unrelated-429' || mode === 'unrelated-429-implicit-key'
+          ? '${UNRELATED_CODE}'
+          : mode === 'near-match-429-implicit-key'
+            ? '${NEAR_MATCH_CODE}'
+            : '${BUSY_CODE}';
       response.writeHead(429, {
         'content-type': 'application/json',
         'retry-after': '0',
@@ -117,12 +125,20 @@ process.once('SIGTERM', () => server.close(() => process.exit(0)));
 const observations = {};
 try {
   await writeFile(serverPath, serverSource, { encoding: 'utf8', mode: 0o600 });
-  for (const mode of ['busy-success', 'unrelated-429', 'busy-exhaustion']) {
+  for (const mode of [
+    'busy-success',
+    'unrelated-429',
+    'busy-exhaustion',
+    'unrelated-429-implicit-key',
+    'near-match-429-implicit-key',
+  ]) {
     observations[mode] = await runScenario(mode);
   }
   const success = observations['busy-success'];
   const unrelated = observations['unrelated-429'];
   const exhaustion = observations['busy-exhaustion'];
+  const unrelatedImplicit = observations['unrelated-429-implicit-key'];
+  const nearMatchImplicit = observations['near-match-429-implicit-key'];
   const baseObserved =
     arm === 'base' &&
     success.registrationCount === 1 &&
@@ -136,7 +152,16 @@ try {
     exhaustion.registrationCount === 1 &&
     exhaustion.workspaceCreationCount === 1 &&
     !exhaustion.timedOut &&
-    !exhaustion.stderr.includes(HANDSHAKE_MARKER);
+    !exhaustion.stderr.includes(HANDSHAKE_MARKER) &&
+    // Pre-fix, an implicit RELAY_API_KEY candidate treated ANY 429 —
+    // near-match `workspace_busy` code or a wholly unrelated one — as a
+    // soft rejection and fell through to minting a fresh workspace.
+    unrelatedImplicit.registrationCount === 1 &&
+    unrelatedImplicit.workspaceCreationCount === 1 &&
+    !unrelatedImplicit.timedOut &&
+    nearMatchImplicit.registrationCount === 1 &&
+    nearMatchImplicit.workspaceCreationCount === 1 &&
+    !nearMatchImplicit.timedOut;
   const headObserved =
     arm === 'head' &&
     success.registrationCount === 2 &&
@@ -155,7 +180,18 @@ try {
     exhaustion.stderr.includes(BUSY_CODE) &&
     exhaustion.stderr.includes('status: 429') &&
     exhaustion.stderr.includes('workspace admission is busy') &&
-    exhaustion.stderr.includes('attempts: 3');
+    exhaustion.stderr.includes('attempts: 3') &&
+    // Fixed: an implicit RELAY_API_KEY candidate must stay terminal for a
+    // near-match or unrelated 429 exactly like an explicit key, and must
+    // never mint a replacement workspace.
+    unrelatedImplicit.registrationCount === 1 &&
+    unrelatedImplicit.workspaceCreationCount === 0 &&
+    !unrelatedImplicit.timedOut &&
+    !unrelatedImplicit.stderr.includes(HANDSHAKE_MARKER) &&
+    nearMatchImplicit.registrationCount === 1 &&
+    nearMatchImplicit.workspaceCreationCount === 0 &&
+    !nearMatchImplicit.timedOut &&
+    !nearMatchImplicit.stderr.includes(HANDSHAKE_MARKER);
   let outcome;
   let signature;
   let details;
@@ -203,6 +239,11 @@ async function runScenario(mode) {
         ...(mode === 'unrelated-429'
           ? { AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_workspace_busy_429' }
           : { RELAY_API_KEY: 'rk_relayflow_workspace_busy_429' }),
+        // `unrelated-429-implicit-key` and `near-match-429-implicit-key`
+        // above both fall into the `RELAY_API_KEY` branch, since that is
+        // the specific implicit, non-`explicit_join` candidate the outer
+        // startup fallback must never mint a workspace for on a 429 that
+        // isn't the literal `workspace_busy` code.
         AGENT_RELAY_STARTUP_DEBUG: '1',
         AGENT_RELAY_TELEMETRY_DISABLED: '1',
       },
