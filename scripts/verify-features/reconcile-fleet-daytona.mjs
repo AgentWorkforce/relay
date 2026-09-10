@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { mkdir, open, rename } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import {
   executeFleetCommand,
+  expectedOwnedSandboxNames,
+  isDaytonaDeletionAccepted,
   loadFleetMatrix,
   tryParseJson,
   validateRecoveryEvidence,
@@ -89,12 +92,103 @@ function isNotFound(result) {
   return result.exitCode !== 0 && /not found|does not exist|404/i.test(result.stderr ?? '');
 }
 
+function hash(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
+function expectedWorkspaceId(evidence, workspaceId) {
+  return workspaceId ?? evidence?.environment?.expectedWorkspaceId;
+}
+
+function candidateWorkspaceId(candidate) {
+  const labels = candidate?.labels;
+  return [
+    candidate?.cloudWorkspaceId,
+    candidate?.workspaceId,
+    candidate?.relayWorkspaceId,
+    labels?.cloudWorkspaceId,
+    labels?.workspaceId,
+    labels?.relayWorkspaceId,
+  ].filter((value) => typeof value === 'string' && value.trim())[0];
+}
+
+function validateRecoveredCandidate(candidate, { name, nonce, workspaceId, startedAt, baseline }) {
+  if (!candidate || !UUID.test(candidate.id ?? '') || candidate.name !== name) {
+    throw new Error(`exact Daytona recovery for ${name} did not return one valid sandbox`);
+  }
+  if (candidate.provider !== undefined && candidate.provider !== 'daytona') {
+    throw new Error(`exact Daytona recovery for ${name} returned a non-Daytona sandbox`);
+  }
+  if (!workspaceId || candidateWorkspaceId(candidate) !== workspaceId) {
+    throw new Error(
+      `exact Daytona recovery for ${name} is not bound to workspace ${workspaceId ?? '(missing)'}`
+    );
+  }
+  const startedAtMs = Date.parse(startedAt ?? '');
+  const createdAtMs = Date.parse(candidate.createdAt ?? '');
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(createdAtMs) || createdAtMs < startedAtMs - 5_000) {
+    throw new Error(`exact Daytona recovery for ${name} is not a new sandbox for ${nonce}`);
+  }
+  if (
+    baseline?.sandboxIdHashes?.includes(hash(candidate.id)) ||
+    baseline?.sandboxNameHashes?.includes(hash(name))
+  ) {
+    throw new Error(`exact Daytona recovery for ${name} matched a baseline sandbox`);
+  }
+  return { id: candidate.id, nodeName: name, recoveredFromLostResponse: true };
+}
+
+async function recoverMissingAttemptTargets({
+  nonce,
+  evidence,
+  workspaceId,
+  startedAt,
+  baseline,
+  resolveExactName,
+  checkpointRecoveredTarget,
+}) {
+  const existingNames = new Set(
+    (evidence?.resources ?? [])
+      .filter(({ type }) => type === 'daytona-sandbox')
+      .map(({ nodeName }) => nodeName)
+  );
+  const missingNames = [...expectedOwnedSandboxNames(nonce)].filter((name) => !existingNames.has(name));
+  if (missingNames.length > 0 && typeof resolveExactName !== 'function') {
+    throw new Error(`exact Daytona recovery is unavailable for attempt ${nonce}`);
+  }
+  if (missingNames.length > 0 && typeof checkpointRecoveredTarget !== 'function') {
+    throw new Error(`exact Daytona recovery checkpoint is unavailable for attempt ${nonce}`);
+  }
+  const recovered = [];
+  for (const name of missingNames) {
+    const candidates = await resolveExactName({ name, nonce, workspaceId, startedAt });
+    if (!Array.isArray(candidates) || candidates.length !== 1) {
+      throw new Error(`exact Daytona recovery for ${name} returned ${candidates?.length ?? 0} matches`);
+    }
+    const target = validateRecoveredCandidate(candidates[0], {
+      name,
+      nonce,
+      workspaceId,
+      startedAt,
+      baseline,
+    });
+    await checkpointRecoveredTarget({ nonce, target });
+    recovered.push(target);
+  }
+  return recovered;
+}
+
 export async function reconcileExactDaytonaSandboxes({
   attempts,
   matrix,
   readAttemptEvidence,
   issueDelete,
   inspectExact,
+  resolveExactName,
+  checkpointRecoveredTarget,
+  workspaceIds = {},
+  startedAtByNonce = {},
+  startedAt,
   now = () => new Date().toISOString(),
   sleep = async (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   slaMs = DEFAULT_SLA_MS,
@@ -106,19 +200,59 @@ export async function reconcileExactDaytonaSandboxes({
     throw new Error('exact Daytona delete and inspection functions are required');
   }
   const targets = [];
+  const failures = [];
   for (const nonce of attempts) {
     if (!SAFE_ID.test(nonce)) throw new Error(`invalid Fleet attempt nonce: ${nonce}`);
-    const evidence = await readAttemptEvidence(nonce);
-    targets.push(...exactTargets(evidence, matrix, nonce).map((target) => ({ ...target, nonce })));
+    let evidence;
+    let baseline;
+    try {
+      evidence = await readAttemptEvidence(nonce);
+      validateRecoveryEvidence(evidence, matrix, nonce);
+      baseline = evidence.baseline;
+      targets.push(...exactTargets(evidence, matrix, nonce).map((target) => ({ ...target, nonce })));
+    } catch (error) {
+      failures.push({
+        nonce,
+        phase: 'evidence',
+        error: String(error instanceof Error ? error.message : error),
+      });
+    }
+    try {
+      const recovered = await recoverMissingAttemptTargets({
+        nonce,
+        evidence,
+        workspaceId: expectedWorkspaceId(evidence, workspaceIds[nonce]),
+        startedAt: startedAtByNonce[nonce] ?? evidence?.startedAt ?? startedAt,
+        baseline,
+        resolveExactName,
+        checkpointRecoveredTarget,
+      });
+      targets.push(...recovered.map((target) => ({ ...target, nonce })));
+    } catch (error) {
+      failures.push({
+        nonce,
+        phase: 'lost-response-recovery',
+        error: String(error instanceof Error ? error.message : error),
+      });
+    }
   }
   const ids = new Set();
-  for (const { id } of targets) {
-    if (ids.has(id)) throw new Error('a Daytona sandbox id was checkpointed by more than one Fleet attempt');
-    ids.add(id);
+  const uniqueTargets = [];
+  for (const target of targets) {
+    if (ids.has(target.id)) {
+      failures.push({
+        nonce: target.nonce,
+        phase: 'target-identity',
+        error: `a Daytona sandbox id was checkpointed by more than one Fleet attempt: ${target.id}`,
+      });
+      continue;
+    }
+    ids.add(target.id);
+    uniqueTargets.push(target);
   }
   const sandboxes = await Promise.all(
-    targets.map(async (target) => {
-      const startedAt = now();
+    uniqueTargets.map(async (target) => {
+      const targetStartedAt = now();
       const deadline = Date.now() + slaMs;
       let deleteResult;
       let timer;
@@ -137,13 +271,16 @@ export async function reconcileExactDaytonaSandboxes({
         if (timer) clearTimeout(timer);
       }
       let absent = false;
+      let acceptedTombstone = false;
       let inspectionError;
       let observations = 0;
       while (Date.now() <= deadline) {
         try {
           const observed = await inspectExact(target.id);
           observations += 1;
-          if (observed === undefined || observed === null) {
+          acceptedTombstone =
+            observed !== undefined && observed !== null && isDaytonaDeletionAccepted(observed);
+          if (observed === undefined || observed === null || acceptedTombstone) {
             absent = true;
             break;
           }
@@ -156,12 +293,13 @@ export async function reconcileExactDaytonaSandboxes({
       }
       return {
         ...target,
-        startedAt,
+        startedAt: targetStartedAt,
         finishedAt: now(),
         deleteIssued: true,
         deleteExitCode: deleteResult?.exitCode ?? null,
         deleteTimedOut: deleteResult?.timedOut === true,
         absent,
+        acceptedTombstone,
         observations,
         ...(deleteResult?.error ? { deleteError: deleteResult.error } : {}),
         ...(inspectionError ? { inspectionError } : {}),
@@ -173,8 +311,9 @@ export async function reconcileExactDaytonaSandboxes({
     kind: 'fleet-daytona-external-reconciliation',
     attempts,
     targetIds: sandboxes.map(({ id }) => id),
-    source: 'checkpointed-created-by-run-evidence',
-    status: sandboxes.every(({ absent }) => absent) ? 'pass' : 'fail',
+    source: 'checkpointed-or-exact-recovered-created-by-run-evidence',
+    status: failures.length === 0 && sandboxes.every(({ absent }) => absent) ? 'pass' : 'fail',
+    failures,
     sandboxes,
     createdAt: now(),
   };
@@ -186,17 +325,50 @@ async function main() {
   const matrixPath = path.resolve(required(options, 'matrix'));
   const artifactRoot = path.resolve(required(options, 'artifact-root'));
   const output = path.resolve(required(options, 'output'));
+  const recoveryCheckpoint = `${output}.checkpoint.json`;
   const attempts = required(options, 'attempts')
     .split(',')
     .map((value) => value.trim());
+  const workspaceIds = Object.fromEntries(
+    attempts.map((nonce, index) => [nonce, options[`workspace-id-${index === 0 ? 'a' : 'b'}`]])
+  );
   const matrix = await loadFleetMatrix(matrixPath);
   const result = await reconcileExactDaytonaSandboxes({
     attempts,
     matrix,
+    workspaceIds,
+    startedAt: options['started-at'] ?? process.env.FLEET_ATTEMPT_STARTED_AT,
     readAttemptEvidence: (nonce) =>
       readJson(path.join(artifactRoot, nonce, 'evidence.json'), `Fleet evidence ${nonce}`),
     issueDelete: (id, { timeoutMs }) =>
       executeFleetCommand(['daytona', 'sandbox', 'delete', id], { timeoutMs: Math.min(60_000, timeoutMs) }),
+    resolveExactName: async ({ name }) => {
+      const inspected = await executeFleetCommand(['daytona', 'sandbox', 'info', name, '--format', 'json'], {
+        timeoutMs: 30_000,
+      });
+      if (isNotFound(inspected)) return [];
+      if (inspected.exitCode !== 0)
+        throw new Error(inspected.stderr || `exact Daytona name recovery failed for ${name}`);
+      const payload = tryParseJson(inspected._rawStdout ?? inspected.stdout);
+      return payload ? [payload] : [];
+    },
+    checkpointRecoveredTarget: async ({ nonce, target }) => {
+      let checkpoint = { version: 1, kind: 'fleet-daytona-recovery-checkpoint', targets: [] };
+      try {
+        checkpoint = await readJson(recoveryCheckpoint, 'Fleet Daytona recovery checkpoint');
+      } catch (error) {
+        if (!/ENOENT|no such file/i.test(String(error))) throw error;
+      }
+      if (
+        checkpoint.version !== 1 ||
+        checkpoint.kind !== 'fleet-daytona-recovery-checkpoint' ||
+        !Array.isArray(checkpoint.targets)
+      ) {
+        throw new Error('Fleet Daytona recovery checkpoint is invalid');
+      }
+      checkpoint.targets.push({ nonce, ...target });
+      await writePrivateAtomic(recoveryCheckpoint, checkpoint);
+    },
     inspectExact: async (id) => {
       const inspected = await executeFleetCommand(['daytona', 'sandbox', 'info', id, '--format', 'json'], {
         timeoutMs: 30_000,
