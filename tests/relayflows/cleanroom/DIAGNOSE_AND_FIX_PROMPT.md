@@ -275,7 +275,7 @@ and passed all 266 changed-surface tests. Both exact sandbox IDs were then
 deleted and proved absent. Preserve the full IDs and hashes in
 `RELAY_PRERELEASE_DAYTONA_2026-09-05.md`.
 
-Do not promote this package proof into a Fleet pass. The live 94-operation
+Do not promote this package proof into a Fleet pass. The live 108-operation
 board still cannot select the candidate's immutable snapshot/data plane or
 create and reclaim the required canonical ephemeral Cloud workspace. Cloud
 issues #3349 and #3351 remain the hard boundary. The next valid Fleet proof is

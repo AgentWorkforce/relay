@@ -315,7 +315,7 @@ describe('Relay candidate clean-install attestation', () => {
     );
   });
 
-  it('re-verifies the private attestation, every tarball, every installed package, and the CLI', async () => {
+  it.skipIf(process.platform !== 'linux')('re-verifies the private attestation, every tarball, every installed package, and the CLI', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'relay-candidate-install-'));
     const originalPath = process.env.PATH;
     try {

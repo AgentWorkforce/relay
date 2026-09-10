@@ -54,6 +54,15 @@ function redact(value) {
     );
 }
 
+function redactStructured(value) {
+  if (typeof value === 'string') return redact(value);
+  if (Array.isArray(value)) return value.map(redactStructured);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactStructured(entry)]));
+  }
+  return value;
+}
+
 function bounded(value, maxBytes = MAX_OUTPUT_BYTES, sourceTruncated = false) {
   const cleaned = redact(value);
   const bytes = Buffer.from(cleaned);
@@ -326,9 +335,24 @@ async function snapshotRepo(name, repo) {
 }
 
 async function githubScope(repo) {
+  async function ghJson(args, label) {
+    try {
+      const { stdout } = await execFileAsync('gh', args, {
+        cwd: RELAY_ROOT,
+        maxBuffer: 2 * 1024 * 1024,
+        env: process.env,
+      });
+      const value = JSON.parse(stdout);
+      if (!Array.isArray(value)) throw new Error(`${repo} ${label} collection returned invalid JSON`);
+      return redactStructured(value);
+    } catch (error) {
+      throw new Error(
+        `${repo} ${label} collection failed: ${redact(error instanceof Error ? error.message : String(error))}`
+      );
+    }
+  }
   const [issuesResult, mergesResult] = await Promise.all([
-    run(
-      'gh',
+    ghJson(
       [
         'issue',
         'list',
@@ -341,10 +365,9 @@ async function githubScope(repo) {
         '--json',
         'number,title,labels,createdAt,updatedAt,url',
       ],
-      { cwd: RELAY_ROOT, timeoutMs: 120_000, maxOutputBytes: 2 * 1024 * 1024 }
+      'open issue'
     ),
-    run(
-      'gh',
+    ghJson(
       [
         'pr',
         'list',
@@ -357,26 +380,11 @@ async function githubScope(repo) {
         '--json',
         'number,title,mergedAt,url,headRefName,baseRefName',
       ],
-      { cwd: RELAY_ROOT, timeoutMs: 120_000, maxOutputBytes: 2 * 1024 * 1024 }
+      'recent merge'
     ),
   ]);
-  const parse = (result, label) => {
-    if (
-      result.exitCode !== 0 ||
-      result.timedOut ||
-      result.signal ||
-      result.error ||
-      result.stdoutTruncated ||
-      result.stderrTruncated
-    ) {
-      throw new Error(`${repo} ${label} collection failed`);
-    }
-    const value = JSON.parse(result.stdout);
-    if (!Array.isArray(value)) throw new Error(`${repo} ${label} collection returned invalid JSON`);
-    return value;
-  };
-  const openIssues = parse(issuesResult, 'open issue');
-  const recentMerges = parse(mergesResult, 'recent merge');
+  const openIssues = issuesResult;
+  const recentMerges = mergesResult;
   return {
     repo,
     capturedAt: new Date().toISOString(),

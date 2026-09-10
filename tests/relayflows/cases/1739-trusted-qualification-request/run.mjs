@@ -48,7 +48,7 @@ try {
     },
     '["qualification-app[bot]"]'
   );
-  if (context.sourceBranch !== 'qualification/proof-candidate' || context.sourceGitSha !== 'a'.repeat(40)) {
+  if (context.headBranch !== 'qualification/proof-candidate' || context.headSha !== 'a'.repeat(40)) {
     throw new Error('validator did not preserve the exact trusted request identity');
   }
   outcome = 'fixed';

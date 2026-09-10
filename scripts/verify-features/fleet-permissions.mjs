@@ -71,7 +71,7 @@ export function validateStrictHostPort(value) {
     port = value.slice(separator + 1);
     if (!HOSTNAME.test(host) && !IPV4.test(host)) throw new Error('cloudHost host is invalid');
   }
-  if (!/^(?:[1-9]\d{0,3})$/u.test(port) || Number(port) > 65_535) {
+  if (!/^(?:[1-9]\d{0,4})$/u.test(port) || Number(port) > 65_535) {
     throw new Error('cloudHost port must be between 1 and 65535');
   }
   return value;

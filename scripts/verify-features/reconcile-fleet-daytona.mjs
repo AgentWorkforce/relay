@@ -3,6 +3,7 @@
 import { mkdir, open, rename } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   executeFleetCommand,
@@ -407,7 +408,7 @@ async function main() {
     throw new Error('exact Daytona reconciliation did not prove absence for every checkpointed sandbox');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   main().catch((error) => {
     process.stderr.write(
       `[fleet-daytona-reconcile] ${String(error instanceof Error ? error.stack : error)}\n`

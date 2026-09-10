@@ -140,17 +140,32 @@ async function startCredentialBroker() {
   const relayOrigin = brokerOrigin(process.env.RELAY_BASE_URL, 'RELAY_BASE_URL');
   const cloudOrigin = brokerOrigin(process.env.CLOUD_API_URL, 'CLOUD_API_URL');
   const capability = randomBytes(32).toString('hex');
+  const taskId = process.env.VERIFY_FLEET_NONCE?.trim();
+  const relayWorkspaceId = process.env.VERIFY_FLEET_EXPECTED_RELAY_WORKSPACE_ID?.trim();
+  const cloudWorkspaceId = process.env.VERIFY_FLEET_EXPECTED_WORKSPACE_ID?.trim();
   const trusted = {
     relayWorkspaceKey: process.env.RELAY_WORKSPACE_KEY,
     cloudAccessToken: process.env.CLOUD_API_ACCESS_TOKEN,
     cloudRefreshToken: process.env.CLOUD_API_REFRESH_TOKEN,
   };
-  if (!trusted.relayWorkspaceKey || !trusted.cloudAccessToken || !trusted.cloudRefreshToken) {
+  if (
+    !trusted.relayWorkspaceKey ||
+    !trusted.cloudAccessToken ||
+    !trusted.cloudRefreshToken ||
+    !taskId ||
+    !relayWorkspaceId ||
+    !cloudWorkspaceId
+  ) {
     throw new Error('credential broker requires trusted workspace and cloud credentials');
   }
   const server = http.createServer(async (request, response) => {
     try {
-      if (request.method !== 'POST' || request.headers['x-relay-fleet-capability'] !== capability) {
+      if (
+        request.method !== 'POST' ||
+        request.headers['x-relay-fleet-capability'] !== capability ||
+        request.headers['x-relay-fleet-task-id'] !== taskId ||
+        request.headers['x-relay-fleet-workspace-id'] !== relayWorkspaceId
+      ) {
         response.writeHead(404).end();
         return;
       }
@@ -161,6 +176,23 @@ async function startCredentialBroker() {
       const target = new URL(payload.target);
       if (![relayOrigin, cloudOrigin].includes(target.origin) || target.username || target.password) {
         throw new Error('credential broker target is outside the approved upstream origins');
+      }
+      const allowedMethod = new Set(['GET', 'POST', 'PATCH', 'PUT', 'DELETE']).has(
+        payload.method.toUpperCase()
+      );
+      const allowedPath =
+        target.pathname === '/api/v1/workspaces' ||
+        target.pathname.startsWith('/api/v1/workspaces/') ||
+        target.pathname.startsWith('/api/v1/fleet/') ||
+        target.pathname.startsWith('/api/v1/agents/') ||
+        target.pathname.startsWith('/api/v1/messages/') ||
+        target.pathname.startsWith('/api/v1/nodes/');
+      const workspacePath = /^\/api\/v1\/workspaces\/([^/]+)(?:\/|$)/u.exec(target.pathname)?.[1];
+      const workspaceScoped =
+        !workspacePath || workspacePath === relayWorkspaceId || workspacePath === cloudWorkspaceId;
+      if (!allowedMethod || !allowedPath || !workspaceScoped || target.pathname.includes('..')) {
+        response.writeHead(403).end();
+        return;
       }
       const headers = new Headers();
       for (const [key, value] of Object.entries(payload.headers ?? {})) {
@@ -2517,6 +2549,9 @@ function childEnvironment(overrides = {}, { candidate = false, broker } = {}) {
     RELAY_FLEET_BROKER_CAPABILITY: broker.capability,
     RELAY_FLEET_CLOUD_ORIGIN: broker.cloudOrigin,
     RELAY_FLEET_RELAY_ORIGIN: broker.relayOrigin,
+    RELAY_FLEET_BROKER_TASK_ID: process.env.VERIFY_FLEET_NONCE,
+    RELAY_FLEET_BROKER_WORKSPACE_ID: process.env.VERIFY_FLEET_EXPECTED_RELAY_WORKSPACE_ID,
+    RELAY_FLEET_BROKER_CLOUD_WORKSPACE_ID: process.env.VERIFY_FLEET_EXPECTED_WORKSPACE_ID,
     NODE_OPTIONS: `--import=${path.resolve(SCRIPT_DIR, 'candidate-credential-broker-client.mjs')}`,
     ...overrides,
   };

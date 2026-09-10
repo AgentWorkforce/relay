@@ -200,15 +200,25 @@ jobs:
           RELAYFILE_CLOUD_ARTIFACT_DIGEST: ${{ steps.manifest.outputs.relayfile_cloud_artifact_digest }}
         run: |
           gh api "repos/AgentWorkforce/relay/actions/runs/$RELAY_PACKAGE_RUN_ID/attempts/$RELAY_PACKAGE_RUN_ATTEMPT" > qualification/relay-package-run.json
-          gh api "repos/AgentWorkforce/relay/actions/runs/$RELAY_PACKAGE_RUN_ID/artifacts" > qualification/relay-package-artifacts.json
+          gh api --paginate "repos/AgentWorkforce/relay/actions/runs/$RELAY_PACKAGE_RUN_ID/artifacts?per_page=100" --slurp > qualification/relay-package-artifacts-pages.json
           gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_RUN_ID/attempts/$CLOUD_RUN_ATTEMPT" > qualification/cloud-run.json
-          gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_RUN_ID/artifacts" > qualification/cloud-artifacts.json
+          gh api --paginate "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_RUN_ID/artifacts?per_page=100" --slurp > qualification/cloud-artifacts-pages.json
           gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_ACCEPTANCE_RUN_ID/attempts/$CLOUD_ACCEPTANCE_RUN_ATTEMPT" > qualification/cloud-acceptance-run.json
-          gh api "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_ACCEPTANCE_RUN_ID/artifacts" > qualification/cloud-acceptance-artifacts.json
+          gh api --paginate "repos/AgentWorkforce/cloud/actions/runs/$CLOUD_ACCEPTANCE_RUN_ID/artifacts?per_page=100" --slurp > qualification/cloud-acceptance-artifacts-pages.json
           gh api "repos/AgentWorkforce/relayfile-cloud/actions/runs/$RELAYFILE_CLOUD_RUN_ID/attempts/$RELAYFILE_CLOUD_RUN_ATTEMPT" > qualification/relayfile-cloud-run.json
-          gh api "repos/AgentWorkforce/relayfile-cloud/actions/runs/$RELAYFILE_CLOUD_RUN_ID/artifacts" > qualification/relayfile-cloud-artifacts.json
+          gh api --paginate "repos/AgentWorkforce/relayfile-cloud/actions/runs/$RELAYFILE_CLOUD_RUN_ID/artifacts?per_page=100" --slurp > qualification/relayfile-cloud-artifacts-pages.json
           node - <<'NODE'
           const fs = require('node:fs');
+          for (const [source, target] of [
+            ['relay-package-artifacts-pages.json', 'relay-package-artifacts.json'],
+            ['cloud-artifacts-pages.json', 'cloud-artifacts.json'],
+            ['cloud-acceptance-artifacts-pages.json', 'cloud-acceptance-artifacts.json'],
+            ['relayfile-cloud-artifacts-pages.json', 'relayfile-cloud-artifacts.json'],
+          ]) {
+            const pages = JSON.parse(fs.readFileSync(`qualification/${source}`));
+            const artifacts = (Array.isArray(pages) ? pages : [pages]).flatMap((page) => page.artifacts ?? []);
+            fs.writeFileSync(`qualification/${target}`, JSON.stringify({ artifacts }) + '\n', { mode: 0o600, flag: 'wx' });
+          }
           const relayRun = JSON.parse(fs.readFileSync('qualification/relay-package-run.json'));
           const relayArtifacts = JSON.parse(fs.readFileSync('qualification/relay-package-artifacts.json')).artifacts;
           const relayWorkflowPath = String(relayRun.path ?? '').split('@')[0];
@@ -331,6 +341,13 @@ jobs:
           sudo install -m 0755 "$RUNNER_TEMP/daytona" /usr/local/bin/daytona
           daytona version
 
+      - name: Seal trusted verifier and candidate inputs before execution
+        run: |
+          set -euo pipefail
+          chmod -R a-w relay-verifier "$RUNNER_TEMP/relay-candidate-install"
+          test ! -w relay-verifier/package.json
+          test ! -w "$RUNNER_TEMP/relay-candidate-install"
+
       - name: Check candidate command availability (not runtime qualification)
         working-directory: relay-verifier
         env:
@@ -340,40 +357,35 @@ jobs:
       - name: Create isolated ephemeral Cloud workspace A
         id: workspace_a
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
           CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          QUALIFICATION_IDEMPOTENCY_KEY: relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:a
+          QUALIFICATION_WORKSPACE_NAME: relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-a
+          QUALIFICATION_DEPLOYMENT_ID: ${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}
+          QUALIFICATION_CREDENTIAL_FILE: ${{ runner.temp }}/relay-workspace-a.json
         run: |
           chmod 0700 "$RUNNER_TEMP"
-          node "$VERIFY_FLEET_CLI" cloud workspace create \
-            --ephemeral \
-            --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-a" \
-            --ttl 24h \
-            --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
-            --idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:a" \
-            --credential-file "$RUNNER_TEMP/relay-workspace-a.json" \
-            --json > "$RUNNER_TEMP/workspace-create-a.json"
+          mkdir -p qualification-cleanup
+          node relay-verifier/scripts/verify-features/cleanup-qualification-workspaces.mjs --mode create > "$RUNNER_TEMP/workspace-create-a.json"
           WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-a.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
 
       - name: Create isolated ephemeral Cloud workspace B
         id: workspace_b
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
           CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
+          CLOUD_API_URL: https://agentrelay.com/cloud
+          QUALIFICATION_IDEMPOTENCY_KEY: relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:b
+          QUALIFICATION_WORKSPACE_NAME: relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-b
+          QUALIFICATION_DEPLOYMENT_ID: ${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}
+          QUALIFICATION_CREDENTIAL_FILE: ${{ runner.temp }}/relay-workspace-b.json
         run: |
-          node "$VERIFY_FLEET_CLI" cloud workspace create \
-            --ephemeral \
-            --name "relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-b" \
-            --ttl 24h \
-            --relayfile-cloud-deployment "${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}" \
-            --idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:b" \
-            --credential-file "$RUNNER_TEMP/relay-workspace-b.json" \
-            --json > "$RUNNER_TEMP/workspace-create-b.json"
+          node relay-verifier/scripts/verify-features/cleanup-qualification-workspaces.mjs --mode create > "$RUNNER_TEMP/workspace-create-b.json"
           WORKSPACE_OUTPUT="$RUNNER_TEMP/workspace-create-b.json" node -e "const fs=require('node:fs'); const p=JSON.parse(fs.readFileSync(process.env.WORKSPACE_OUTPUT,'utf8')); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(p.workspaceId||'')) throw new Error('invalid ephemeral workspace id'); fs.appendFileSync(process.env.GITHUB_OUTPUT, 'cloud_workspace_id='+p.workspaceId+'\n')"
 
       - name: Run exact candidate Fleet Relayflow
@@ -442,7 +454,6 @@ jobs:
         id: cleanup_ids
         if: always()
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           WORKSPACE_A_OUTPUT: ${{ steps.workspace_a.outputs.cloud_workspace_id }}
           WORKSPACE_B_OUTPUT: ${{ steps.workspace_b.outputs.cloud_workspace_id }}
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
@@ -450,28 +461,32 @@ jobs:
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
           CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_REFRESH_TOKEN_EXPIRES_AT }}
           RELAY_QUALIFICATION_DEPLOYMENT_ID: ${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}
+          CLOUD_API_URL: https://agentrelay.com/cloud
         run: |
           set -euo pipefail
           for suffix in a b; do
             idempotency="relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${suffix}"
             name="relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
-            node "$VERIFY_FLEET_CLI" cloud workspace reconcile \
-              --idempotency-key "$idempotency" \
-              --name "$name" \
-              --relayfile-cloud-deployment "$RELAY_QUALIFICATION_DEPLOYMENT_ID" \
-              --json > "$RUNNER_TEMP/workspace-reconcile-$suffix.json"
+            case "$suffix" in a) prior_workspace="$WORKSPACE_A_OUTPUT";; b) prior_workspace="$WORKSPACE_B_OUTPUT";; esac
+            QUALIFICATION_OUTPUT="qualification-cleanup/reconcile-$suffix.json" \
+            QUALIFICATION_IDEMPOTENCY_KEY="$idempotency" \
+            QUALIFICATION_WORKSPACE_NAME="$name" \
+            QUALIFICATION_DEPLOYMENT_ID="$RELAY_QUALIFICATION_DEPLOYMENT_ID" \
+            QUALIFICATION_EXPECTED_WORKSPACE_ID="$prior_workspace" \
+              node relay-verifier/scripts/verify-features/cleanup-qualification-workspaces.mjs --mode reconcile > /dev/null
           done
           node - <<'NODE'
           const fs = require('node:fs');
           const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
           for (const suffix of ['a', 'b']) {
             const prior = process.env[`WORKSPACE_${suffix.toUpperCase()}_OUTPUT`] || '';
-            const value = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/workspace-reconcile-${suffix}.json`, 'utf8'));
+            const value = JSON.parse(fs.readFileSync(`qualification-cleanup/reconcile-${suffix}.json`, 'utf8'));
             if (value.idempotencyKey !== `relay-qualification:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}:${suffix}` ||
                 value.expectedName !== `relay-qualification-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-${suffix}` ||
                 (!value.absent && !uuid.test(value.workspaceId || '')) ||
                 (value.absent && value.workspaceId !== null)) throw new Error(`invalid ${suffix} reconciliation proof`);
             if (uuid.test(prior)) {
+              if (value.absent && (value.exactWorkspaceId !== prior || value.exactAbsenceStatus !== 404)) throw new Error(`reconciled ${suffix} absence was not reread by exact ID`);
               if (!value.absent && value.workspaceId !== prior) throw new Error(`reconciled ${suffix} workspace differs from the create output`);
               fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${prior}\n`);
             } else if (value.absent === true) {
@@ -485,7 +500,6 @@ jobs:
       - name: Delete exact ephemeral workspace B and verify cascade
         if: always() && steps.cleanup_ids.outputs.workspace_b != ''
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -493,17 +507,16 @@ jobs:
           WORKSPACE_ID: ${{ steps.cleanup_ids.outputs.workspace_b }}
         run: |
           DELETE_STARTED_AT="$(date +%s)"
-          node "$VERIFY_FLEET_CLI" cloud workspace delete "$WORKSPACE_ID" \
-            --confirm "$WORKSPACE_ID" \
-            --verify-cascade \
-            --json > qualification/workspace-delete-b.json
+          QUALIFICATION_OUTPUT=qualification-cleanup/delete-b.json \
+          QUALIFICATION_WORKSPACE_ID="$WORKSPACE_ID" \
+            node relay-verifier/scripts/verify-features/cleanup-qualification-workspaces.mjs --mode delete > /dev/null
           DELETE_FINISHED_AT="$(date +%s)"
           DELETE_STARTED_AT="$DELETE_STARTED_AT" DELETE_FINISHED_AT="$DELETE_FINISHED_AT" WORKSPACE_ID="$WORKSPACE_ID" node - <<'NODE'
           const fs = require('node:fs');
           const started = Number(process.env.DELETE_STARTED_AT);
           const finished = Number(process.env.DELETE_FINISHED_AT);
           if (!Number.isSafeInteger(started) || !Number.isSafeInteger(finished) || finished < started) throw new Error('invalid delete timing');
-          const result = JSON.parse(fs.readFileSync('qualification/workspace-delete-b.json', 'utf8'));
+          const result = JSON.parse(fs.readFileSync('qualification-cleanup/delete-b.json', 'utf8'));
           if (result.workspaceId !== process.env.WORKSPACE_ID || typeof result.operationId !== 'string' || !result.operationId) throw new Error('delete result identity is invalid');
           fs.writeFileSync('qualification/workspace-delete-b-timing.json', JSON.stringify({ workspaceId: process.env.WORKSPACE_ID, operationId: result.operationId, elapsedSeconds: finished - started }) + '\n', { mode: 0o600, flag: 'wx' });
           NODE
@@ -511,7 +524,6 @@ jobs:
       - name: Delete exact ephemeral workspace A and verify cascade
         if: always() && steps.cleanup_ids.outputs.workspace_a != ''
         env:
-          VERIFY_FLEET_CLI: ${{ runner.temp }}/relay-candidate-install/install/node_modules/agent-relay/dist/cli/index.js
           CLOUD_API_ACCESS_TOKEN: ${{ secrets.CLOUD_API_ACCESS_TOKEN }}
           CLOUD_API_REFRESH_TOKEN: ${{ secrets.CLOUD_API_REFRESH_TOKEN }}
           CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: ${{ secrets.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT }}
@@ -519,17 +531,16 @@ jobs:
           WORKSPACE_ID: ${{ steps.cleanup_ids.outputs.workspace_a }}
         run: |
           DELETE_STARTED_AT="$(date +%s)"
-          node "$VERIFY_FLEET_CLI" cloud workspace delete "$WORKSPACE_ID" \
-            --confirm "$WORKSPACE_ID" \
-            --verify-cascade \
-            --json > qualification/workspace-delete-a.json
+          QUALIFICATION_OUTPUT=qualification-cleanup/delete-a.json \
+          QUALIFICATION_WORKSPACE_ID="$WORKSPACE_ID" \
+            node relay-verifier/scripts/verify-features/cleanup-qualification-workspaces.mjs --mode delete > /dev/null
           DELETE_FINISHED_AT="$(date +%s)"
           DELETE_STARTED_AT="$DELETE_STARTED_AT" DELETE_FINISHED_AT="$DELETE_FINISHED_AT" WORKSPACE_ID="$WORKSPACE_ID" node - <<'NODE'
           const fs = require('node:fs');
           const started = Number(process.env.DELETE_STARTED_AT);
           const finished = Number(process.env.DELETE_FINISHED_AT);
           if (!Number.isSafeInteger(started) || !Number.isSafeInteger(finished) || finished < started) throw new Error('invalid delete timing');
-          const result = JSON.parse(fs.readFileSync('qualification/workspace-delete-a.json', 'utf8'));
+          const result = JSON.parse(fs.readFileSync('qualification-cleanup/delete-a.json', 'utf8'));
           if (result.workspaceId !== process.env.WORKSPACE_ID || typeof result.operationId !== 'string' || !result.operationId) throw new Error('delete result identity is invalid');
           fs.writeFileSync('qualification/workspace-delete-a-timing.json', JSON.stringify({ workspaceId: process.env.WORKSPACE_ID, operationId: result.operationId, elapsedSeconds: finished - started }) + '\n', { mode: 0o600, flag: 'wx' });
           NODE
@@ -639,10 +650,12 @@ jobs:
           for suffix in a b; do
             idempotency="relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${suffix}"
             name="relay-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+            case "$suffix" in a) prior_workspace="$WORKSPACE_A";; b) prior_workspace="$WORKSPACE_B";; esac
             QUALIFICATION_OUTPUT="qualification-cleanup/reconcile-$suffix.json" \
             QUALIFICATION_IDEMPOTENCY_KEY="$idempotency" \
             QUALIFICATION_WORKSPACE_NAME="$name" \
             QUALIFICATION_DEPLOYMENT_ID="$RELAY_QUALIFICATION_DEPLOYMENT_ID" \
+            QUALIFICATION_EXPECTED_WORKSPACE_ID="$prior_workspace" \
               node scripts/verify-features/cleanup-qualification-workspaces.mjs --mode reconcile > /dev/null
           done
           node - <<'NODE'
@@ -662,6 +675,9 @@ jobs:
                 throw new Error(`reconciled ${suffix} absence returned an unexpected workspace ID`);
               }
               if (uuid.test(prior)) {
+                if (value.exactWorkspaceId !== prior || value.exactAbsenceStatus !== 404) {
+                  throw new Error(`reconciled ${suffix} absence was not reread by exact ID`);
+                }
                 // The in-job cleanup may already have deleted this exact ID.
                 // Preserve the raw reconcile result as normalized 404 evidence
                 // and suppress a second delete; never treat it as unowned.

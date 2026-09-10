@@ -3,7 +3,7 @@
 This is the immutable operator summary for the first clean-board run. It is not
 a claim that Fleet is green. It records what was actually proven, what failed,
 and what was cleaned before the repeatable 95-operation Relayflow was added.
-That historical Relayflow is separate from the current 94-operation Fleet
+That historical Relayflow is separate from the current 108-operation Fleet
 matrix used by the qualification gates.
 
 ## Topology and cleanup

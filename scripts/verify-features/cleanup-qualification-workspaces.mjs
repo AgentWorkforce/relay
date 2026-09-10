@@ -3,12 +3,14 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { authorizedApiFetch, ensureCloudSession } from '@agent-relay/cloud';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEPLOYMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const IDEMPOTENCY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,255}$/u;
 const RECONCILIATION_HEADER = 'x-agent-relay-ephemeral-reconciliation';
+const RELAY_WORKSPACE_ID = /^rw_[a-z0-9]{8}$/;
 const OUTPUT_ROOT = path.resolve('qualification-cleanup');
 
 function required(name) {
@@ -49,7 +51,7 @@ async function cloudAuth() {
   return (await ensureCloudSession({ apiUrl: required('CLOUD_API_URL'), interactive: false })).auth;
 }
 
-export async function reconcile({ auth, idempotencyKey, name, deploymentId }) {
+export async function reconcile({ auth, idempotencyKey, name, deploymentId, expectedWorkspaceId }) {
   assert(IDEMPOTENCY.test(idempotencyKey), 'idempotency key is invalid');
   assert(name.length > 0 && name.length <= 200, 'workspace name is invalid');
   assert(DEPLOYMENT.test(deploymentId), 'deployment id is invalid');
@@ -68,6 +70,16 @@ export async function reconcile({ auth, idempotencyKey, name, deploymentId }) {
   if (response.status === 404) {
     const body = jsonObject(await response.json(), 'reconciliation absence');
     assert.equal(body.code, 'workspace_not_found');
+    if (expectedWorkspaceId) {
+      assert(UUID.test(expectedWorkspaceId), 'expected workspace id is invalid');
+      const { response: exact } = await authorizedApiFetch(
+        refreshedAuth,
+        `/api/v1/workspaces/${encodeURIComponent(expectedWorkspaceId)}`,
+        { method: 'GET' },
+        { interactive: false }
+      );
+      assert.equal(exact.status, 404, 'reconciled workspace exact ID was not proven absent');
+    }
     return {
       version: 1,
       kind: 'ephemeral-workspace-reconciliation',
@@ -79,6 +91,8 @@ export async function reconcile({ auth, idempotencyKey, name, deploymentId }) {
       state: 'absent',
       credentialRevealed: false,
       absenceStatus: 404,
+      exactWorkspaceId: expectedWorkspaceId ?? null,
+      exactAbsenceStatus: expectedWorkspaceId ? 404 : null,
       reconciledAt: new Date().toISOString(),
     };
   }
@@ -101,6 +115,68 @@ export async function reconcile({ auth, idempotencyKey, name, deploymentId }) {
     state: value.state,
     credentialRevealed: value.credentialRevealed,
     reconciledAt: new Date().toISOString(),
+  };
+}
+
+export async function createWorkspace({
+  auth,
+  idempotencyKey,
+  name,
+  deploymentId,
+  credentialFile,
+  ttlSeconds = 86_400,
+}) {
+  assert(IDEMPOTENCY.test(idempotencyKey), 'idempotency key is invalid');
+  assert(name.length > 0 && name.length <= 200, 'workspace name is invalid');
+  assert(DEPLOYMENT.test(deploymentId), 'deployment id is invalid');
+  assert(
+    Number.isSafeInteger(ttlSeconds) && ttlSeconds >= 60 && ttlSeconds <= 86_400,
+    'workspace TTL is invalid'
+  );
+  assert(typeof credentialFile === 'string' && credentialFile.length > 0, 'credential file is required');
+  const { response } = await authorizedApiFetch(
+    auth,
+    '/api/v1/workspaces',
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({
+        ephemeral: true,
+        name,
+        ttlSeconds,
+        idempotencyKey,
+        relayfileCloudDeploymentId: deploymentId,
+      }),
+    },
+    { interactive: false }
+  );
+  assert(response.ok, `Cloud workspace creation failed (HTTP ${response.status})`);
+  const value = jsonObject(await response.json(), 'workspace creation response');
+  assert(UUID.test(String(value.workspaceId ?? '')), 'created workspace id is invalid');
+  assert(
+    RELAY_WORKSPACE_ID.test(String(value.relayWorkspaceId ?? '')),
+    'created Relay workspace id is invalid'
+  );
+  assert(
+    value.state === 'active' && typeof value.expiresAt === 'string',
+    'created workspace state is invalid'
+  );
+  assert(value.requestedRelayfileCloudDeploymentId === deploymentId);
+  assert(value.observedRelayfileCloudDeploymentId === deploymentId);
+  const credential = jsonObject(value.credential, 'workspace credential');
+  assert(credential.version === 1 && credential.workspaceId === value.workspaceId);
+  assert(jsonObject(credential.cloud, 'cloud credential').accessToken);
+  assert(jsonObject(credential.relay, 'Relay credential').workspaceKey);
+  await writeFile(credentialFile, `${JSON.stringify(credential, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  return {
+    version: 1,
+    workspaceId: value.workspaceId,
+    relayWorkspaceId: value.relayWorkspaceId,
+    expiresAt: value.expiresAt,
+    state: value.state,
+    requestedRelayfileCloudDeploymentId: value.requestedRelayfileCloudDeploymentId,
+    observedRelayfileCloudDeploymentId: value.observedRelayfileCloudDeploymentId,
+    credentialFile,
   };
 }
 
@@ -136,7 +212,6 @@ export async function deleteAndVerify({ auth, workspaceId }) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const output = trustedOutputPath(required('QUALIFICATION_OUTPUT'));
   const auth = await cloudAuth();
   let value;
   if (args.mode === 'reconcile') {
@@ -145,17 +220,29 @@ async function main() {
       idempotencyKey: required('QUALIFICATION_IDEMPOTENCY_KEY'),
       name: required('QUALIFICATION_WORKSPACE_NAME'),
       deploymentId: required('QUALIFICATION_DEPLOYMENT_ID'),
+      expectedWorkspaceId: process.env.QUALIFICATION_EXPECTED_WORKSPACE_ID,
     });
   } else if (args.mode === 'delete') {
     value = await deleteAndVerify({ auth, workspaceId: required('QUALIFICATION_WORKSPACE_ID') });
+  } else if (args.mode === 'create') {
+    value = await createWorkspace({
+      auth,
+      idempotencyKey: required('QUALIFICATION_IDEMPOTENCY_KEY'),
+      name: required('QUALIFICATION_WORKSPACE_NAME'),
+      deploymentId: required('QUALIFICATION_DEPLOYMENT_ID'),
+      credentialFile: required('QUALIFICATION_CREDENTIAL_FILE'),
+    });
   } else {
-    throw new Error('--mode must be reconcile or delete');
+    throw new Error('--mode must be create, reconcile, or delete');
   }
-  await writeFile(output, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  if (args.mode !== 'create') {
+    const output = trustedOutputPath(required('QUALIFICATION_OUTPUT'));
+    await writeFile(output, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  }
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : 'qualification cleanup failed'}\n`);
     process.exitCode = 1;

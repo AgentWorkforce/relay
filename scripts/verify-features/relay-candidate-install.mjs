@@ -648,7 +648,7 @@ export async function verifyCandidateInstall(attestationPath, expected = {}) {
   // Hydration runs from a credential-bearing, trusted workflow checkout. The
   // candidate package is data at that boundary: verify its bytes and metadata,
   // but do not run its broker or CLI until the isolated Fleet qualification.
-  const executeCandidate = expected.executeCandidate !== false;
+  const executeCandidate = expected.executeCandidate === true;
   if (executeCandidate) {
     const brokerVersion = run(brokerPath, ['--version'], { timeoutMs: 30_000 }).trim();
     if (brokerVersion !== `agent-relay-broker ${attestation.packageVersion}`) {

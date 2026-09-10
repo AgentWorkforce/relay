@@ -334,7 +334,7 @@ async function main() {
 
   wf.step('validate-catalog', {
     type: 'deterministic',
-    command: `node ${RUNNER} validate --matrix ${MATRIX}`,
+    command: `node ${shellQuote(RUNNER)} validate --matrix ${shellQuote(MATRIX)}`,
     captureOutput: true,
     failOnError: true,
     timeoutMs: 120_000,

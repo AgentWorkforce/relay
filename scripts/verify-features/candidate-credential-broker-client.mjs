@@ -7,8 +7,18 @@ const capability = process.env.RELAY_FLEET_BROKER_CAPABILITY;
 const approvedOrigins = new Set(
   [process.env.RELAY_FLEET_CLOUD_ORIGIN, process.env.RELAY_FLEET_RELAY_ORIGIN].filter(Boolean)
 );
+const taskId = process.env.RELAY_FLEET_BROKER_TASK_ID;
+const relayWorkspaceId = process.env.RELAY_FLEET_BROKER_WORKSPACE_ID;
+const cloudWorkspaceId = process.env.RELAY_FLEET_BROKER_CLOUD_WORKSPACE_ID;
 
-if (!brokerUrl || !capability || approvedOrigins.size !== 2) {
+if (
+  !brokerUrl ||
+  !capability ||
+  approvedOrigins.size !== 2 ||
+  !taskId ||
+  !relayWorkspaceId ||
+  !cloudWorkspaceId
+) {
   throw new Error('candidate credential broker configuration is incomplete');
 }
 
@@ -26,6 +36,8 @@ globalThis.fetch = async function candidateBrokerFetch(input, init) {
     headers: {
       'content-type': 'application/json',
       'x-relay-fleet-capability': capability,
+      'x-relay-fleet-task-id': taskId,
+      'x-relay-fleet-workspace-id': relayWorkspaceId,
     },
     body: JSON.stringify({
       target: request.url,
