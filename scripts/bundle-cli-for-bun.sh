@@ -10,13 +10,11 @@ INPUT="${1:?usage: $0 <entrypoint> <output> <version>}"
 OUTPUT="${2:?usage: $0 <entrypoint> <output> <version>}"
 VERSION="${3:?usage: $0 <entrypoint> <output> <version>}"
 
-# esbuild's package bin is a Node wrapper which launches a platform-native
-# executable.  Running that path as `bun <path>` is ambiguous on Linux: Bun
-# can treat the resolved native binary as JavaScript ("Unexpected DEL").
-# Keep the wrapper execution explicitly on Node while allowing CI/tests to
-# select a known Node installation.
-ESBUILD_RUNNER="${AGENT_RELAY_NODE:-node}"
-"$ESBUILD_RUNNER" node_modules/esbuild/bin/esbuild "$INPUT" \
+# npm's esbuild install script may replace bin/esbuild with the platform
+# native executable on Linux, while macOS retains the Node shebang wrapper.
+# Execute that package bin directly so both layouts choose their own launcher;
+# passing it through Bun or Node would parse a Linux ELF as JavaScript.
+node_modules/esbuild/bin/esbuild "$INPUT" \
   --bundle \
   --platform=node \
   --target=node18 \
