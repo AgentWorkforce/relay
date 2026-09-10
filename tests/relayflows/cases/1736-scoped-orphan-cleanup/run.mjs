@@ -31,7 +31,7 @@ if (!isWithin(harnessDir, runnerPath)) {
 
 const fixtureRoot = path.join(targetDir, '.relayflow-1736-scoped-orphan-cleanup');
 const helperPath = path.join(fixtureRoot, 'agent-relay-broker');
-const candidateState = path.join(fixtureRoot, 'candidate-state');
+const candidateState = path.join(fixtureRoot, 'candidate  state');
 const peerState = path.join(fixtureRoot, 'peer-state');
 const projectName = path.basename(targetDir);
 const children = [];
@@ -50,6 +50,8 @@ try {
   run('npm', ['run', 'build:cli'], targetDir, 'CLI package build');
 
   await mkdir(fixtureRoot, { recursive: true });
+  await mkdir(candidateState, { recursive: true });
+  await mkdir(peerState, { recursive: true });
   compileHelper();
 
   children.push(
@@ -129,7 +131,22 @@ try {
 }
 
 function compileHelper() {
-  const source = '#include <unistd.h>\nint main(void) { for (;;) pause(); }\n';
+  const source = `#include <unistd.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+int main(int argc, char **argv) {
+  int count = 0; const char *state = NULL;
+  for (int i = 2; i + 1 < argc; i++) {
+    if (!strcmp(argv[i], "--state-dir")) { count++; state = argv[i+1]; }
+  }
+  if (argc > 1 && !strcmp(argv[1], "init") && count == 1) {
+    char filename[4096];
+    snprintf(filename, sizeof(filename), "%s/broker-fixture.lock", state);
+    if (open(filename, O_CREAT | O_RDWR, 0600) < 0) return 2;
+  }
+  for (;;) pause();
+}\n`;
   const completed = spawnSync('cc', ['-O2', '-x', 'c', '-o', helperPath, '-'], {
     input: source,
     cwd: fixtureRoot,
@@ -154,7 +171,13 @@ function spawnFixture(args, label) {
 function spawnShellMention() {
   const shell = spawn(
     '/bin/sh',
-    ['-c', `${path.join(targetDir, 'bin', 'agent-relay')} up --state-dir ${candidateState}; sleep 600`],
+    [
+      '-c',
+      '"$1" up --state-dir "$2"; sleep 600',
+      'fixture-shell',
+      path.join(targetDir, 'bin', 'agent-relay'),
+      candidateState,
+    ],
     {
       cwd: targetDir,
       detached: true,

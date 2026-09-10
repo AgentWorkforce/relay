@@ -980,6 +980,42 @@ describe('registerCoreCommands', () => {
     }
   );
 
+  it.each(['/tmp/project/relay  state', '/tmp/project/.agentworkforce/relay'])(
+    'force cleanup identifies a custom-named broker by its open runtime lock in %s',
+    async (stateDir) => {
+      const running = new Set([222, 333]);
+      const execCommand = vi.fn(async (command: string) => {
+        if (command === 'ps aux')
+          return {
+            stdout: [
+              `user 222 0 0 1 1 ?? S 1:00 0:00 /opt/bin/agent-relay-broker init --instance-name custom-node --persist${stateDir.includes('  ') ? ` --state-dir ${stateDir}` : ''}`,
+              'user 333 0 0 1 1 ?? S 1:00 0:00 /opt/bin/agent-relay-broker init --instance-name custom-node --persist --state-dir /tmp/project/peer',
+            ].join('\n'),
+            stderr: '',
+          };
+        if (command.includes('-Ffn'))
+          return {
+            stdout: command.includes('-p 222 ')
+              ? `p222\nf10\nn${stateDir}/broker-custom-node.lock\n`
+              : 'p333\nf10\nn/tmp/project/peer/broker-custom-node.lock\n',
+            stderr: '',
+          };
+        return { stdout: 'fcwd\nn/tmp/project\n', stderr: '' };
+      });
+      const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+        if (signal === 0) {
+          if (!running.has(pid)) throw new Error('not running');
+          return;
+        }
+        running.delete(pid);
+      });
+      const { program } = createHarness({ execCommand, killImpl });
+      await runCommand(program, ['down', '--force', '--state-dir', stateDir]);
+      expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+      expect([...running]).toEqual([333]);
+    }
+  );
+
   it('up with an isolated state directory never kills brokers or workers from an ancestor project', async () => {
     const fs = createFsMock();
     const runningPids = new Set([222, 333, 444, 555, 666, 777, 9001, 4242]);

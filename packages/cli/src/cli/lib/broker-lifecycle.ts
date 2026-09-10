@@ -1069,6 +1069,31 @@ async function processCwdMatchesProjectRoot(
   }
 }
 
+/** Native brokers keep one runtime lock descriptor open for their lifetime.
+ * lsof field output preserves spaces in its path, unlike a rendered argv. */
+async function processRuntimeStateDirectory(
+  processInfo: ProcessInfo,
+  deps: CoreDependencies
+): Promise<string | null | undefined> {
+  try {
+    const details = await deps.execCommand(`lsof -nP -a -p ${processInfo.pid} -Ffn`);
+    const directories = new Set<string>();
+    let descriptor = false;
+    for (const line of details.stdout.split('\n')) {
+      if (line.startsWith('f')) descriptor = /^f\d/.test(line);
+      if (!descriptor || !line.startsWith('n')) continue;
+      const filename = line.slice(1);
+      if (path.isAbsolute(filename) && /^broker-.+\.lock$/.test(path.basename(filename))) {
+        directories.add(path.dirname(path.resolve(filename)));
+      }
+    }
+    if (directories.size === 0) return undefined;
+    return directories.size === 1 ? [...directories][0] : null;
+  } catch {
+    return undefined;
+  }
+}
+
 async function terminateProcess(pid: number, deps: CoreDependencies, force: boolean): Promise<boolean> {
   try {
     deps.killProcess(pid, 'SIGTERM');
@@ -1115,6 +1140,13 @@ async function killOrphanedBrokerProcesses(
         .filter((process) => isBrokerProcessCommand(process.command));
 
       for (const processInfo of relayProcesses) {
+        if (isBrokerExecutableCommand(processInfo.command)) {
+          const runtimeDirectory = await processRuntimeStateDirectory(processInfo, deps);
+          if (runtimeDirectory !== undefined) {
+            if (runtimeDirectory === stateDirectory) candidates.push(processInfo);
+            continue;
+          }
+        }
         const declaredStateDirectory = commandStateDirectory(processInfo.command);
         if (declaredStateDirectory !== undefined) {
           if (declaredStateDirectory === null) continue;
