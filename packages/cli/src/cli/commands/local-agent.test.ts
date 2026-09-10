@@ -1121,7 +1121,7 @@ describe('local agent subtree', () => {
   });
 
   it('set-model reports unsupported without claiming application', async () => {
-    const { program, client, log } = harness();
+    const { program, client, log, exit } = harness();
     client.setModel = vi.fn(async () => ({
       name: 'lead',
       model: 'opus',
@@ -1139,6 +1139,27 @@ describe('local agent subtree', () => {
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('unsupported'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('applied=false'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('set-model --json exits nonzero for a terminal unsupported receipt', async () => {
+    const { program, client, exit } = harness();
+    client.setModel = vi.fn(async () => ({
+      name: 'lead',
+      model: 'opus',
+      requested_model: 'opus',
+      effective_model: null,
+      applied: false,
+      status: 'unsupported',
+      request_id: 'model_2',
+      generation: 'generation-1',
+      revision: 2,
+      success: false,
+      accepted: false,
+      pending: false,
+    }));
+    await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], { from: 'user' });
+    expect(exit).toHaveBeenCalledWith(1);
   });
 
   it('set-model preserves an uncorrelated pending receipt without polling', async () => {

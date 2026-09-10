@@ -23,8 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
 - Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
 - Fleet Daytona live verification now fails early unless immutable candidate snapshot qualification inputs are explicit.
-- `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
-- Relayflow agents can create permitted new files inside an existing Relayfile mount without a permission failure.
 
 ### Security
 

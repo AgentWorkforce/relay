@@ -984,6 +984,10 @@ export function registerLocalAgentCommands(
             }
           }
         }
+        const receiptStatus = receipt.status ?? 'unknown';
+        const modelApplied = receiptStatus === 'applied' && receipt.applied === true;
+        const modelPending = receiptStatus === 'accepted_pending';
+        const terminalFailure = !modelApplied && !modelPending;
         if (options.json) {
           // The broker wire contract is snake_case; the CLI's JSON contract
           // uses the same camelCase style as the other machine-readable CLI
@@ -1010,20 +1014,22 @@ export function registerLocalAgentCommands(
               2
             )
           );
+          if (terminalFailure) deps.exit(1);
           return;
         }
-        if (receipt.status === 'applied' && receipt.applied === true) {
+        if (modelApplied) {
           deps.log(
             `Applied model ${receipt.effective_model ?? model} to ${name} (request ${receipt.request_id ?? 'unknown'}).`
           );
-        } else if (receipt.status === 'accepted_pending') {
+        } else if (modelPending) {
           deps.log(
             `Model request for ${name} was accepted_pending (request ${receipt.request_id ?? 'unknown'}); provider confirmation is not available yet.`
           );
         } else {
           deps.log(
-            `Model request for ${name} was ${receipt.status ?? 'unknown'}; applied=false (request ${receipt.request_id ?? 'unknown'})${receipt.error ? `: ${receipt.error}` : ''}.`
+            `Model request for ${name} was ${receiptStatus}; applied=false (request ${receipt.request_id ?? 'unknown'})${receipt.error ? `: ${receipt.error}` : ''}.`
           );
+          deps.exit(1);
         }
       });
     });
