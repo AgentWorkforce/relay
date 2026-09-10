@@ -311,8 +311,60 @@ try {
     // Reopen the same durable state while still disconnected. This checks the
     // record survived a process boundary, not just an in-memory retry.
     await stop();
+    // Model a crash snapshot with exhausted local handoffs. Audit reconciliation
+    // alone cannot prove that the separate worker-delivery queue survives.
+    const retainedDelivery = {
+      worker_name: 'recovered-worker',
+      delivery: {
+        delivery_id: 'del_local_retention_proof',
+        event_id: 'local_retention_proof',
+        workspace_id: 'local',
+        from: 'sender',
+        target: 'recovered-worker',
+        body: 'LOCAL_REPLAY_PROOF',
+        injection_mode: 'steer',
+      },
+      attempts: 100,
+      failed_attempts: 100,
+      queued_at_ms: Date.now(),
+      last_error: 'prior transport failures',
+    };
+    await writeFile(path.join(stateDir, 'pending-outage-test.json'), JSON.stringify([retainedDelivery]));
     await start(true);
     await ready();
+    await poll(async () => {
+      const status = (await request('/api/status')).data;
+      assert.equal(status.dead_letter_count, 0, 'Absent local work must not be dead-lettered');
+      return status.pending_deliveries.some(
+        (delivery) =>
+          delivery.delivery_id === retainedDelivery.delivery.delivery_id &&
+          delivery.last_error === 'waiting for local recipient to reconnect'
+      );
+    }, 'exhausted local delivery retained while recipient is absent');
+    // Persist the retained queue across another real broker restart before
+    // introducing the recipient, then observe its original payload in the PTY.
+    await stop();
+    await start(true);
+    await ready();
+    assert.equal((await request('/api/status')).data.dead_letter_count, 0);
+    assert(
+      (
+        await request('/api/spawn', {
+          name: 'recovered-worker',
+          cli: 'cat',
+          cwd: dir,
+          args: [],
+          channels: [],
+        })
+      ).response.ok
+    );
+    await poll(
+      async () =>
+        (await request('/api/spawned/recovered-worker/snapshot')).data.screen?.includes(
+          retainedDelivery.delivery.body
+        ),
+      'retained local work rendered after recipient respawn'
+    );
     assert.equal((await request('/api/status')).data.degraded.reconciliation.pending_records, 1);
     online = true;
     await poll(
@@ -342,7 +394,7 @@ try {
     arm,
     ...result,
     details:
-      'Published startup/status, local spawn/send, destination rejection, restart persistence, and audit replay signals checked; no elapsed-time assertions.',
+      'Published startup/status, local spawn/send, destination rejection, exhausted local queue retention and respawn replay across restarts, and audit replay signals checked; no elapsed-time assertions.',
   };
   if (process.env.RELAY_PR_PROOF_RESULT_PATH) {
     await mkdir(path.dirname(process.env.RELAY_PR_PROOF_RESULT_PATH), { recursive: true });

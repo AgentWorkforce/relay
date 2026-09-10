@@ -6399,8 +6399,8 @@ async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restar
     entry.failed_attempts = MAX_DELIVERY_RETRIES;
     let expected_delivery = entry.delivery.clone();
     let mut pending = HashMap::from([(id.clone(), entry)]);
-    super::save_pending_deliveries(&path, &pending).unwrap();
-    pending = load_pending_deliveries(&path);
+    // Exercise the live exhausted queue first: loading a snapshot resets the
+    // failure budget and would hide an exhaustion check before absence handling.
     let (tx, _rx) = mpsc::channel(8);
     let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
     for _ in 0..2 {
