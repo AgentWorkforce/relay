@@ -77,7 +77,7 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(issue490Probe, /firstDiagnostic: first\.diagnostic/);
   assert.match(issue490Probe, /secondDiagnostic: second\.diagnostic/);
   assert.match(arm, /classifyProbeOutput/);
-  assert.match(arm, /runnerDiagnostic: Object\.keys\(parsed\)\.length > 0/);
+  assert.match(arm, /runnerDiagnostic:\s*Object\.keys\(parsed\)\.length > 0/);
   assert.match(arm, /firstOutputTruncated: parsed\.firstOutputTruncated === true/);
   assert.match(arm, /COPY issue-490-probe\.mjs probe-diagnostics\.mjs/);
   assert.match(issue490Probe, /Date\.now\(\) \+ 10_000/);
@@ -85,7 +85,7 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(issue490Probe, /aud: 'relayfile', agent_name/);
   assert.match(issue490Probe, /state\.eventsCursor = 'evt_000'/);
   assert.match(issue490Probe, /cursorSeeded/);
-  assert.match(issue490Probe, /events: changed \? \[\{ eventId: 'evt_001'[\s\S]*nextCursor: null/);
+  assert.match(issue490Probe, /events:\s*changed\s*\?\s*\[\{\s*eventId: 'evt_001'[\s\S]*nextCursor: null/);
   assert.doesNotMatch(issue490Probe, /nextCursor: changed \? 'evt_001'/);
   assert.match(arm, /isRetryableDaytonaSandboxLookupFailure/);
   assert.match(arm, /async function runDaytona/);
@@ -120,7 +120,7 @@ test('fan-out depends on the single bundle step and fresh phase identities', () 
   assert.match(workflow, /Do not execute verify-integrity\.mjs/);
   assert.match(workflow, /integrity\.json is not a review input/);
   assert.match(workflow, /writeQualificationConfig\(CONFIG_PATH, config\)/);
-  assert.match(workflow, /--config', CONFIG_PATH/);
+  assert.match(workflow, /['"]--config['"]\s*,\s*CONFIG_PATH/);
   assert.match(workflow, /RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256/);
   assert.doesNotMatch(workflow, /RELAYFILE_QUALIFICATION_NPM_VERSION=\$\{/);
 });

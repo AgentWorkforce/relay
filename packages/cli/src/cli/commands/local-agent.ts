@@ -518,6 +518,10 @@ async function runLocalBroker(
   try {
     await fn(await deps.connectLocal(deps.cwd(), options));
   } catch (err) {
+    // Match the main broker runner: defaultExit throws CliExit so the
+    // top-level CLI can flush telemetry and stdio. It must not be rendered as
+    // a second "cli-exit:1" connection error.
+    if (err instanceof CliExit) throw err;
     deps.error(err instanceof Error ? err.message : String(err));
     deps.exit(1);
   }

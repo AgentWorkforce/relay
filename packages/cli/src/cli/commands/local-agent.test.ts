@@ -1305,6 +1305,21 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
   });
 
+  it('message flush propagates a CliExit without rendering cli-exit as a broker error', async () => {
+    const client = {
+      flushPending: vi.fn(async () => {
+        throw new CliExit(1);
+      }),
+    };
+    const connectLocal = vi.fn(async () => client as never);
+    const { program, error } = harness({ connectLocal });
+
+    await expect(
+      program.parseAsync(['local', 'agent', 'message', 'flush', 'claude'], { from: 'user' })
+    ).rejects.toMatchObject({ code: 1 });
+    expect(error).not.toHaveBeenCalledWith('cli-exit:1');
+  });
+
   it('message hold and auto switch local broker delivery mode', async () => {
     const client = {
       setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),

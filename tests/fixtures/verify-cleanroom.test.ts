@@ -942,11 +942,14 @@ describe('clean-room verification catalog', () => {
     expect(cleanupA.if).toContain('always()');
     expect(cleanup.steps.some((step: any) => step.run?.includes('cloud workspaces --json'))).toBe(false);
     expect(parsed.jobs.qualification.outputs).toEqual({
-      owned_workspace_a: '${{ steps.workspace_a.outputs.cloud_workspace_id }}',
-      owned_workspace_b: '${{ steps.workspace_b.outputs.cloud_workspace_id }}',
+      owned_workspace_a: '${{ steps.cleanup_ids.outputs.workspace_a }}',
+      owned_workspace_b: '${{ steps.cleanup_ids.outputs.workspace_b }}',
     });
     expect(source).toContain('WORKSPACE_A: ${{ needs.qualification.outputs.owned_workspace_a }}');
     expect(source).toContain('WORKSPACE_B: ${{ needs.qualification.outputs.owned_workspace_b }}');
+    expect(source).toContain('cloud workspace reconcile');
+    expect(source).toContain('relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${suffix}');
+    expect(source).toContain('relayfileCloudQualification.deploymentId');
     expect(source).toContain('result.absence?.workspaceId !== id || result.absence?.status !== 404');
   });
 });
