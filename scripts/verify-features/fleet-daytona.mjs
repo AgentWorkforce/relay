@@ -5459,8 +5459,7 @@ class FleetBoard {
       },
     ];
     for (const scenario of cases) {
-      const scenarioName =
-        scenario.name ?? `fleet-sandbox-${scenario.sandboxId.slice('sbx_'.length)}`;
+      const scenarioName = scenario.name ?? `fleet-sandbox-${scenario.sandboxId.slice('sbx_'.length)}`;
       const agentName = `${scenario.id}-${this.short}`;
       const sentinel = `${scenario.id.replace(/-/g, '_').toUpperCase()}_${this.short.toUpperCase()}_READY`;
       await this.runFleetSpawn(scenario.id, {

@@ -345,7 +345,11 @@ export function validateIssue490Evidence(evidence) {
   if (evidence.pollingUpdateApplied !== true) fail('pollingUpdateApplied is not true');
   if (evidence.cursorPersisted !== true) fail('cursorPersisted is not true');
   if (evidence.daemonRealtimePreserved !== true) fail('daemonRealtimePreserved is not true');
-  if (!isPlainObject(evidence.daemon) || !isCount(evidence.daemon.realtimeDialCount) || evidence.daemon.realtimeDialCount < 1)
+  if (
+    !isPlainObject(evidence.daemon) ||
+    !isCount(evidence.daemon.realtimeDialCount) ||
+    evidence.daemon.realtimeDialCount < 1
+  )
     fail('daemon proof did not record a realtime dial');
   for (const name of ['cli', 'standalone']) {
     const entry = evidence[name];
@@ -356,7 +360,8 @@ export function validateIssue490Evidence(evidence) {
     if (entry.exitCode !== 0) fail(`${name}.exitCode is ${entry.exitCode}, want 0`);
     if (!isCount(entry.testsPassed) || entry.testsPassed < 1) fail(`${name}.testsPassed is not positive`);
     if (entry.testsFailed !== 0) fail(`${name}.testsFailed is ${entry.testsFailed}, want 0`);
-    if (entry.realtimeDialCount !== 0) fail(`${name}.realtimeDialCount is ${entry.realtimeDialCount}, want 0`);
+    if (entry.realtimeDialCount !== 0)
+      fail(`${name}.realtimeDialCount is ${entry.realtimeDialCount}, want 0`);
     if (entry.pollingUpdateApplied !== true) fail(`${name}.pollingUpdateApplied is not true`);
     if (entry.cursorPersisted !== true) fail(`${name}.cursorPersisted is not true`);
   }
@@ -367,16 +372,22 @@ export function validateIssue490Evidence(evidence) {
 export function validatePublishedRelayfileAttestation(attestation) {
   const failures = [];
   const fail = (message) => failures.push(`npm-attestation: ${message}`);
-  if (!isPlainObject(attestation)) return { ok: false, failures: ['npm-attestation: attestation is not an object'] };
-  if (attestation.package !== RELAYFILE_NPM_PACKAGE) fail(`package is ${JSON.stringify(attestation.package)}`);
-  if (attestation.mountPackage !== '@relayfile/mount-linux-x64') fail('mountPackage is not @relayfile/mount-linux-x64');
+  if (!isPlainObject(attestation))
+    return { ok: false, failures: ['npm-attestation: attestation is not an object'] };
+  if (attestation.package !== RELAYFILE_NPM_PACKAGE)
+    fail(`package is ${JSON.stringify(attestation.package)}`);
+  if (attestation.mountPackage !== '@relayfile/mount-linux-x64')
+    fail('mountPackage is not @relayfile/mount-linux-x64');
   if (typeof attestation.version !== 'string' || !RELAYFILE_NPM_VERSION_PATTERN.test(attestation.version))
     fail('version is not an exact prerelease semver');
   if (!isHex64(attestation.tarballSha256)) fail('tarballSha256 is not a 64-hex digest');
   if (!isHex64(attestation.mountTarballSha256)) fail('mountTarballSha256 is not a 64-hex digest');
   if (!HEX40.test(attestation.sourceSha ?? '')) fail('sourceSha is not a full 40-hex commit');
   if (!isHex64(attestation.releaseAttestationSha256)) fail('releaseAttestationSha256 is not a 64-hex digest');
-  if (attestation.registry !== undefined && (typeof attestation.registry !== 'string' || !/^https:\/\//.test(attestation.registry)))
+  if (
+    attestation.registry !== undefined &&
+    (typeof attestation.registry !== 'string' || !/^https:\/\//.test(attestation.registry))
+  )
     fail('registry must be an HTTPS URL');
   if (attestation.installed !== true) fail('installed is not true');
   return { ok: failures.length === 0, failures };
@@ -602,7 +613,10 @@ function verifyNetworkBounds(label, snapshot, mounts, fail) {
 export function parseVitestVerboseOutput(output) {
   const text =
     typeof output === 'string'
-      ? output.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '')
+      ? output.replace(
+          /[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g,
+          ''
+        )
       : '';
   const lines = text.split(/\r?\n/);
   const summary = /Tests\s+([\d,]+)\s+passed(?:\s*\|\s*([\d,]+)\s+failed)?/.exec(text);

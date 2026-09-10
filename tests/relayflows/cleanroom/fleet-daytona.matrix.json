@@ -904,10 +904,10 @@
         "effectAssertions": [
           "The exact worker is observed in live Fleet placement on the requested node, posts its sender-bound sentinel, and preserves supplied invocation metadata."
         ],
-      "negativeAssertions": [
-        "Echoing the requested node, dispatch acknowledgement, or a sentinel from a differently placed identity cannot pass.",
-        "An exit-1 after the 120-second confirmation window is not proof of never-launched: the observed sf-mini ambiguity (inv_223792824900136960) must be independently classified by invocation state plus provider, Fleet node, and agent rereads; cloud3493-workspace-repair-mini-0910 appearing remote-live and reading its steer DM under a real agent ID is a confirmed-launch outcome that requires exact release and cleanup."
-      ],
+        "negativeAssertions": [
+          "Echoing the requested node, dispatch acknowledgement, or a sentinel from a differently placed identity cannot pass.",
+          "An exit-1 after the 120-second confirmation window is not proof of never-launched: the observed sf-mini ambiguity (inv_223792824900136960) must be independently classified by invocation state plus provider, Fleet node, and agent rereads; cloud3493-workspace-repair-mini-0910 appearing remote-live and reading its steer DM under a real agent ID is a confirmed-launch outcome that requires exact release and cleanup."
+        ],
         "lifecycleAssertion": "Dispatch, placement confirmation, sentinel response, release, and absence are bounded and timed.",
         "teardownAssertion": "Each worker process is absent and its nonce-owned identity is deleted before its node is reused.",
         "retryAssertion": "Same-name or ambiguous dispatch cannot create a second live worker; exact placement is re-read after dispatch."
@@ -1424,13 +1424,7 @@
       "id": "fleet-spawn-sandbox-root-mount",
       "group": "fleet-sandbox",
       "expect": "sentinel",
-      "argvMustContain": [
-        "--sandbox",
-        "--sandbox-provider",
-        "daytona",
-        "--sandbox-id",
-        "--workspace-id"
-      ]
+      "argvMustContain": ["--sandbox", "--sandbox-provider", "daytona", "--sandbox-id", "--workspace-id"]
     },
     {
       "id": "fleet-spawn-sandbox-scoped-mount",

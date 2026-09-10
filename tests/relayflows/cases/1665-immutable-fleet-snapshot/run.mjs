@@ -39,7 +39,12 @@ if (!(await exists(cliPath))) {
   run('npm', ['run', 'build:core'], targetDir, 'production CLI build', buildEnvironment());
 }
 
-const help = runNode([cliPath, 'fleet', 'spawn', 'codex', '--help'], targetDir, buildEnvironment(), CLI_TIMEOUT_MS);
+const help = runNode(
+  [cliPath, 'fleet', 'spawn', 'codex', '--help'],
+  targetDir,
+  buildEnvironment(),
+  CLI_TIMEOUT_MS
+);
 if (help.status !== 0) {
   throw new Error(`current Fleet CLI help failed: ${tail(help.stderr || help.stdout)}`);
 }
@@ -67,12 +72,25 @@ async function runIndependentCandidateRereads() {
   const agentName = requiredValue('RELAY_PR_PROOF_EXPECTED_AGENT_NAME');
   if (!SAFE_ID.test(sandboxId)) throw new Error('RELAY_PR_PROOF_EXPECTED_SANDBOX_ID is not an sbx_<UUID>.');
   if (!process.env.RELAY_WORKSPACE_KEY?.trim() || !process.env.RELAY_AGENT_TOKEN?.trim()) {
-    throw new Error('head identity rereads require candidate-bound RELAY_WORKSPACE_KEY and RELAY_AGENT_TOKEN.');
+    throw new Error(
+      'head identity rereads require candidate-bound RELAY_WORKSPACE_KEY and RELAY_AGENT_TOKEN.'
+    );
   }
 
-  const daytona = run('daytona', ['sandbox', 'info', sandboxId, '--format', 'json'], targetDir, 'Daytona sandbox reread', buildEnvironment());
+  const daytona = run(
+    'daytona',
+    ['sandbox', 'info', sandboxId, '--format', 'json'],
+    targetDir,
+    'Daytona sandbox reread',
+    buildEnvironment()
+  );
   if (daytona.status !== 0) throw new Error(`Daytona sandbox reread failed: ${tail(daytona.stderr)}`);
-  const fleetNodes = runNode([cliPath, 'fleet', 'nodes', '--all'], targetDir, buildEnvironment(), CLI_TIMEOUT_MS);
+  const fleetNodes = runNode(
+    [cliPath, 'fleet', 'nodes', '--all'],
+    targetDir,
+    buildEnvironment(),
+    CLI_TIMEOUT_MS
+  );
   const fleetAgents = runNode(
     [cliPath, 'fleet', 'agent', 'list', '--all', '--node', nodeName, '--json'],
     targetDir,
@@ -83,7 +101,8 @@ async function runIndependentCandidateRereads() {
     ['Fleet node', fleetNodes],
     ['Fleet agent', fleetAgents],
   ]) {
-    if (result.status !== 0) throw new Error(`${label} reread failed: ${tail(result.stderr || result.stdout)}`);
+    if (result.status !== 0)
+      throw new Error(`${label} reread failed: ${tail(result.stderr || result.stdout)}`);
   }
 
   const provider = parseJson(daytona.stdout, 'Daytona sandbox info');
@@ -117,7 +136,7 @@ function providerIdentityMatches(value, sandboxId) {
   const object = findIdentity(value, sandboxId, ['id', 'sandboxId']);
   return Boolean(
     object &&
-      (object.providerId === 'daytona' || object.provider === 'daytona' || object.provider?.id === 'daytona')
+    (object.providerId === 'daytona' || object.provider === 'daytona' || object.provider?.id === 'daytona')
   );
 }
 
