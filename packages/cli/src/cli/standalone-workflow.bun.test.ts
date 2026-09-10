@@ -73,7 +73,13 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
         'const provider = await import("e2b");\n' +
           'if (provider.fixture !== "e2b-runtime-fixture") process.exit(1);\n'
       );
-      execFileSync('bun', [providerProbe], { cwd: providerRoot, stdio: 'pipe' });
+      const providerBinary = path.join(providerRoot, 'provider-probe');
+      execFileSync(
+        'bun',
+        ['build', '--compile', '--external=e2b', providerProbe, '--outfile', providerBinary],
+        { cwd: providerRoot, stdio: 'pipe' }
+      );
+      execFileSync(providerBinary, [], { cwd: providerRoot, stdio: 'pipe' });
       execFileSync(
         'bun',
         [
