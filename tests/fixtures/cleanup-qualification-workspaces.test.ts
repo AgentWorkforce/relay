@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   deleteAndVerify,
   reconcile,
+  trustedOutputPath,
 } from '../../scripts/verify-features/cleanup-qualification-workspaces.mjs';
 
 const auth = {
@@ -76,5 +77,22 @@ describe('trusted qualification workspace cleanup', () => {
       /workspace id is invalid/
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts only the four task-owned cleanup evidence paths', () => {
+    for (const name of ['reconcile-a.json', 'reconcile-b.json', 'delete-a.json', 'delete-b.json']) {
+      expect(trustedOutputPath(`qualification-cleanup/${name}`)).toMatch(new RegExp(`${name}$`));
+    }
+  });
+
+  it('rejects traversal, absolute paths outside the evidence root, and unexpected filenames', () => {
+    for (const value of [
+      'qualification-cleanup/../outside.json',
+      '/tmp/qualification-cleanup/reconcile-a.json',
+      'qualification-cleanup/reconcile-c.json',
+      'qualification-cleanup/reconcile-a.txt',
+    ]) {
+      expect(() => trustedOutputPath(value)).toThrow(/qualification output/);
+    }
   });
 });

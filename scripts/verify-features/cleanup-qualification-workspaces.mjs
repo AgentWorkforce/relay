@@ -29,7 +29,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function trustedOutputPath(value) {
+export function trustedOutputPath(value) {
   const resolved = path.resolve(value);
   const relative = path.relative(OUTPUT_ROOT, resolved);
   assert(
