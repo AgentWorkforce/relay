@@ -147,6 +147,9 @@ async function recoverMissingAttemptTargets({
   resolveExactName,
   checkpointRecoveredTarget,
 }) {
+  if (!evidence || !Array.isArray(evidence.ownershipIntents)) {
+    throw new Error(`exact Daytona recovery has no checkpointed ownership intents for attempt ${nonce}`);
+  }
   const existingNames = new Set(
     (evidence?.resources ?? [])
       .filter(({ type }) => type === 'daytona-sandbox')
@@ -161,6 +164,17 @@ async function recoverMissingAttemptTargets({
   }
   const recovered = [];
   for (const name of missingNames) {
+    const intents = evidence.ownershipIntents.filter(
+      (intent) => intent?.type === 'daytona-sandbox' && intent.name === name && intent.nonce === nonce
+    );
+    if (
+      intents.length !== 1 ||
+      intents[0].assertedAbsentAtBaseline !== true ||
+      typeof intents[0].checkpointedAt !== 'string' ||
+      !Number.isFinite(Date.parse(intents[0].checkpointedAt))
+    ) {
+      throw new Error(`exact Daytona recovery for ${name} lacks one checkpointed ownership intent`);
+    }
     const candidates = await resolveExactName({ name, nonce, workspaceId, startedAt });
     if (!Array.isArray(candidates) || candidates.length !== 1) {
       throw new Error(`exact Daytona recovery for ${name} returned ${candidates?.length ?? 0} matches`);
@@ -205,9 +219,11 @@ export async function reconcileExactDaytonaSandboxes({
     if (!SAFE_ID.test(nonce)) throw new Error(`invalid Fleet attempt nonce: ${nonce}`);
     let evidence;
     let baseline;
+    let evidenceValidated = false;
     try {
       evidence = await readAttemptEvidence(nonce);
       validateRecoveryEvidence(evidence, matrix, nonce);
+      evidenceValidated = true;
       baseline = evidence.baseline;
       targets.push(...exactTargets(evidence, matrix, nonce).map((target) => ({ ...target, nonce })));
     } catch (error) {
@@ -217,6 +233,7 @@ export async function reconcileExactDaytonaSandboxes({
         error: String(error instanceof Error ? error.message : error),
       });
     }
+    if (!evidenceValidated) continue;
     try {
       const recovered = await recoverMissingAttemptTargets({
         nonce,
