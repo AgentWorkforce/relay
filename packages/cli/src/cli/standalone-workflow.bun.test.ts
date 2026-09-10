@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,10 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
     const binary = path.join(tempRoot, 'agent-relay');
     const bundle = path.join(tempRoot, 'cli-bundle.mjs');
     try {
+      const bundler = readFileSync(path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), 'utf8');
+      expect(bundler).toContain('ESBUILD_RUNNER="${AGENT_RELAY_NODE:-node}"');
+      expect(bundler).toContain('"$ESBUILD_RUNNER" node_modules/esbuild/bin/esbuild');
+      expect(bundler).not.toContain('bun node_modules/esbuild/bin/esbuild');
       execFileSync(
         'bash',
         [path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), distEntrypoint, bundle, 'test'],
