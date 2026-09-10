@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 const entrypoint = process.argv[2];
 if (!['cli', 'standalone'].includes(entrypoint)) process.exit(2);
 let realtimeDialCount = 0;
+let wsUpgradeCount = 0;
 const server = createServer((req, res) => {
   if (req.url?.includes('/fs/ws')) {
     realtimeDialCount += 1;
@@ -19,6 +20,7 @@ const server = createServer((req, res) => {
   if (req.url?.includes('/fs/events')) return res.end(JSON.stringify({ events: [{ eventId: 'evt-490', type: 'file.updated', path: '/issue-490.txt', revision: 'r2' }] }));
   res.statusCode = 404; res.end();
 });
+server.on('upgrade', (_req, socket) => { wsUpgradeCount += 1; socket.destroy(); });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const binary = entrypoint === 'cli'
@@ -35,7 +37,7 @@ if (entrypoint === 'standalone') {
   const daemon = spawn(binary, ['--workspace-id', 'issue-490', '--server', base, '--token', 'test-token', '--local-dir', '/tmp/issue-490-daemon'], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
   await new Promise((resolve) => setTimeout(resolve, 1800));
   daemon.kill('SIGKILL');
-  daemonRealtimeDialCount = realtimeDialCount;
+  daemonRealtimeDialCount = wsUpgradeCount;
 }
 server.close();
 let cursorPersisted = false;
@@ -43,5 +45,5 @@ let fileUpdated = false;
 try { fileUpdated = (await readFile(`${outputDir}/issue-490.txt`, 'utf8')) === 'healthy polling update'; } catch {}
 try { cursorPersisted = (await readFile(`${outputDir}/.relayfile-mount-state.json`, 'utf8')).includes('evt-490'); } catch {}
 const pollingUpdateApplied = fileUpdated && cursorPersisted;
-console.log(JSON.stringify({ exitCode, testsPassed: exitCode === 0 && pollingUpdateApplied ? 1 : 0, testsFailed: exitCode === 0 && pollingUpdateApplied ? 0 : 1, realtimeDialCount: entrypoint === 'standalone' ? 0 : realtimeDialCount, daemonRealtimeDialCount, pollingUpdateApplied, cursorPersisted }));
+console.log(JSON.stringify({ exitCode, testsPassed: exitCode === 0 && pollingUpdateApplied ? 1 : 0, testsFailed: exitCode === 0 && pollingUpdateApplied ? 0 : 1, realtimeDialCount: entrypoint === 'standalone' ? 0 : wsUpgradeCount, daemonRealtimeDialCount, pollingUpdateApplied, cursorPersisted }));
 process.exitCode = exitCode === 0 ? 0 : 1;

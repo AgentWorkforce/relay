@@ -10,6 +10,7 @@ const evidenceAggregate = await readFile(new URL('./aggregate-evidence.mjs', imp
 const signoff = await readFile(new URL('./record-signoff.mjs', import.meta.url), 'utf8');
 const acceptance = await readFile(new URL('./final-acceptance.mjs', import.meta.url), 'utf8');
 const absence = await readFile(new URL('./absence.mjs', import.meta.url), 'utf8');
+const issue490Probe = await readFile(new URL('./issue-490-probe.mjs', import.meta.url), 'utf8');
 const createBlock = arm.slice(
   arm.indexOf('const create = await run'),
   arm.indexOf('created = create.exitCode')
@@ -50,6 +51,10 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256/);
   assert.doesNotMatch(arm, /npm view relayfile@\$\{npmVersion\} gitHead/);
   assert.match(arm, /issue490Evidence/);
+  assert.match(arm, /issue-490-probe\.mjs/);
+  assert.match(issue490Probe, /node_modules\/\.bin\/relayfile/);
+  assert.match(arm, /@relayfile\/mount-linux-x64\/bin\/relayfile-mount/);
+  assert.doesNotMatch(issue490Probe, /go test/);
   assert.match(arm, /legs: \{ coldMount, acl, issue490 \}/);
 });
 
