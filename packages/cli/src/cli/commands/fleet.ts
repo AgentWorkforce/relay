@@ -411,8 +411,7 @@ export function registerFleetCommands(
               (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
               (returnedRelayWorkspaceId !== undefined &&
                 target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
-              (sandbox.outcome === 'provisioned' &&
-                !returnedRelayWorkspaceId)
+              (sandbox.outcome === 'provisioned' && !returnedRelayWorkspaceId)
             ) {
               throw new Error(
                 sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
@@ -430,8 +429,7 @@ export function registerFleetCommands(
             const postEnsureWorkspaceId = postEnsureWorkspace.id?.trim();
             if (
               !postEnsureWorkspaceId ||
-              (sandbox.outcome === 'provisioned' &&
-                postEnsureWorkspaceId !== returnedRelayWorkspaceId) ||
+              (sandbox.outcome === 'provisioned' && postEnsureWorkspaceId !== returnedRelayWorkspaceId) ||
               postEnsureWorkspaceId !== target.workspaceId.trim()
             ) {
               throw new Error(

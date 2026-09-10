@@ -1464,15 +1464,25 @@ describe('fleet command support', () => {
 
     await program.parseAsync(
       [
-        'fleet', 'spawn', 'codex', '--sandbox', '--no-sandbox-relayfile',
-        '--workspace-id', cloudWorkspaceId, '--name', 'sandbox-worker', '--task', 'Work',
-        '--workspace-key', 'rk_live_test',
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        cloudWorkspaceId,
+        '--name',
+        'sandbox-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
       ],
-      { from: 'user' },
+      { from: 'user' }
     );
 
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: cloudWorkspaceId }),
+      expect.objectContaining({ workspaceId: cloudWorkspaceId })
     );
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
       workspaceKey: target.relaycastApiKey,
@@ -1501,7 +1511,9 @@ describe('fleet command support', () => {
         createWorkspace: vi.fn() as never,
         log: vi.fn(),
         error: vi.fn(),
-        exit: (() => { throw new Error('__exit__'); }) as never,
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
       },
       ensureCloudFleetSandbox,
       resolveWorkspaceSelection: () => undefined,
@@ -1513,16 +1525,29 @@ describe('fleet command support', () => {
       error: () => undefined,
     });
 
-    await expect(program.parseAsync(
-      [
-        'fleet', 'spawn', 'codex', '--sandbox', '--no-sandbox-relayfile',
-        '--workspace-id', '50587328-0000-4000-8000-000000000003', '--name', 'sandbox-worker',
-        '--task', 'Work', '--workspace-key', 'rk_live_test',
-      ],
-      { from: 'user' },
-    )).rejects.toThrow('__exit__');
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--no-sandbox-relayfile',
+          '--workspace-id',
+          '50587328-0000-4000-8000-000000000003',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
     expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
-      cloudWorkspaceId: 'cloud-workspace', sandboxId: 'generated-public-sandbox',
+      cloudWorkspaceId: 'cloud-workspace',
+      sandboxId: 'generated-public-sandbox',
     });
   });
 
