@@ -54,6 +54,8 @@ impl BrokerRuntime {
         let ws_control_tx = &self.ws_control_tx;
         let relaycast_http = &self.relaycast_http;
         let hosted_agent_event_tx = &self.hosted_agent_event_tx;
+        let hosted_agent_exit_backlog = &mut self.hosted_agent_exit_backlog;
+        let hosted_agent_exit_dropped_total = &mut self.hosted_agent_exit_dropped_total;
         let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
@@ -84,6 +86,16 @@ impl BrokerRuntime {
         let crash_insights_path = &self.crash_insights_path;
 
         let now = Instant::now();
+
+        // Retry any terminal hosted-agent events (e.g. `agent_exited`) that a
+        // previous tick could not hand to the publisher because its channel
+        // was momentarily full. Doing this before generating any new events
+        // this tick preserves delivery order.
+        super::event_loop::drain_hosted_agent_exit_backlog(
+            hosted_agent_event_tx,
+            hosted_agent_exit_backlog,
+            hosted_agent_exit_dropped_total,
+        );
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
         // terminal-only RPCs so their sessions cannot remain live forever.
@@ -327,14 +339,33 @@ impl BrokerRuntime {
         let reaped_at = Instant::now();
         let reaped_at_unix = unix_timestamp_secs();
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
-        for (name, generation, code, signal, exit_reason, workspace_id, spawned_at, ready_at) in
-            &exited
+        for (
+            name,
+            generation,
+            code,
+            signal,
+            exit_reason,
+            workspace_id,
+            spawned_at,
+            ready_at,
+            generation_invocation_id,
+        ) in &exited
         {
-            // Capture Fleet correlation before normal death cleanup prunes the
-            // live inventory entry.
-            let spawn_invocation_id = fleet_inventory
-                .get(name)
-                .and_then(|agent| agent.invocation_id.clone());
+            // Correlation is carried directly on the exited generation's
+            // handle (captured by `reap_exited` before the handle was
+            // removed), not re-derived from the by-name `fleet_inventory`
+            // map here. A same-name replacement worker can register and
+            // overwrite that by-name entry before this older generation is
+            // reaped, which would otherwise misattribute the *new*
+            // generation's invocation id to *this* (old) generation's exit.
+            // Fall back to the by-name lookup only for legacy handles that
+            // never carried an `invocation_id` (e.g. pre-upgrade in-flight
+            // workers), preserving prior behavior for that narrow case.
+            let spawn_invocation_id = generation_invocation_id.clone().or_else(|| {
+                fleet_inventory
+                    .get(name)
+                    .and_then(|agent| agent.invocation_id.clone())
+            });
             let was_pending_verified_spawn = pending_verified_spawns
                 .get(name)
                 .is_some_and(|pending| pending.generation == *generation);
@@ -493,14 +524,24 @@ impl BrokerRuntime {
             .as_object()
             .cloned()
             .unwrap_or_default();
-            if let Err(error) = hosted_agent_event_tx.try_send(HostedAgentEvent {
-                name: name.as_str().to_string(),
-                event_type: "agent_exited".to_string(),
-                payload: hosted_payload,
-                workspace_id: workspace_id.as_deref().map(crate::ids::WorkspaceId::new),
-            }) {
-                tracing::warn!(worker = %name, error = %error, "hosted agent exit event queue full or closed");
-            }
+            // Delivery to hosted consumers must not silently drop the
+            // terminal event on backpressure: a full channel is retried via
+            // the bounded backlog (drained every tick) rather than dropped
+            // outright, and a closed channel is at least made observable via
+            // an error-level log and a counter. The crash-insights record
+            // saved just above remains the durable source of truth either
+            // way. See `enqueue_hosted_agent_exit_event`.
+            super::event_loop::enqueue_hosted_agent_exit_event(
+                hosted_agent_event_tx,
+                hosted_agent_exit_backlog,
+                hosted_agent_exit_dropped_total,
+                HostedAgentEvent {
+                    name: name.as_str().to_string(),
+                    event_type: "agent_exited".to_string(),
+                    payload: hosted_payload,
+                    workspace_id: workspace_id.as_deref().map(crate::ids::WorkspaceId::new),
+                },
+            );
 
             telemetry.track(TelemetryEvent::AgentCrash {
                 cli: String::new(),

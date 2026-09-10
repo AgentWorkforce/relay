@@ -674,6 +674,13 @@ impl BrokerRuntime {
                         }
                         if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
                         {
+                            // Carry correlation on this specific generation's
+                            // handle, not just the by-name `fleet_inventory`
+                            // entry: a same-name replacement can overwrite that
+                            // entry before this generation is reaped, which
+                            // would misattribute this invocation id to the
+                            // wrong exit. See maintenance.rs reap.
+                            workers.set_invocation_id(&name, invocation_id.clone());
                             super::fleet::record_fleet_inventory_agent(
                                 fleet_control_tx,
                                 fleet_inventory,

@@ -124,6 +124,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             context_budget_pct: None,
             state: AgentWorkState::Working,
             exit_reason: None,
+            invocation_id: None,
         },
     );
     registry
@@ -185,6 +186,7 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
             context_budget_pct: None,
             state: AgentWorkState::Working,
             exit_reason: None,
+            invocation_id: None,
         },
     );
     registry
@@ -621,6 +623,8 @@ fn worker_event_runtime_fixture(
         ws_control_tx,
         relaycast_http,
         hosted_agent_event_tx,
+        hosted_agent_exit_backlog: std::collections::VecDeque::new(),
+        hosted_agent_exit_dropped_total: 0,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
@@ -6346,4 +6350,290 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
         .owned_spawn_generations
         .contains_key(&name));
     fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+/// Regression for #1603 P2 #1: a same-name replacement's Fleet
+/// re-registration overwrote the by-name `fleet_inventory` entry *before*
+/// the old (already-dead) generation was reaped, so the maintenance tick's
+/// by-name correlation lookup misattributed the *new* generation's
+/// invocation id to the *old* generation's exit. Correlation must instead
+/// travel on the exited generation's own handle.
+#[cfg(unix)]
+#[tokio::test]
+async fn maintenance_tick_attributes_old_generation_exit_to_old_invocation_id() {
+    let (tx, _rx) = mpsc::channel(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests-reap-correlation"),
+        Instant::now(),
+    );
+    let name = WorkerName::from("same-name-replacement");
+    let old_generation = Uuid::new_v4();
+    let old_child = tokio::process::Command::new("sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("old-generation worker should spawn");
+    let (old_command_tx, _old_command_rx) = mpsc::channel(16);
+    registry.workers.insert(
+        name.clone(),
+        WorkerHandle {
+            generation: old_generation,
+            spec: AgentSpec {
+                name: name.clone(),
+                runtime: AgentRuntime::Headless,
+                provider: None,
+                cli: None,
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: None,
+            child: old_child,
+            command_tx: old_command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+            // Set at spawn time (see `set_invocation_id` call sites) — this
+            // is the correlation for *this* generation specifically.
+            invocation_id: Some("inv-old-generation".to_string()),
+        },
+    );
+    // Let the old generation's process actually exit before the tick runs.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    // Simulate the same-name replacement's Fleet registration landing in the
+    // by-name inventory map *before* maintenance reaps the old generation —
+    // this is the exact overwrite the bug report describes.
+    fixture.runtime.fleet_inventory.insert(
+        name.clone(),
+        crate::fleet_wire::InventoryAgent {
+            agent_id: "agent-new-generation".to_string(),
+            name: name.to_string(),
+            invocation_id: Some("inv-new-generation".to_string()),
+            session_ref: None,
+        },
+    );
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    let mut saw_exit_event = false;
+    while let Ok(envelope) = fixture._sdk_out_rx.try_recv() {
+        let payload = &envelope.payload;
+        if payload.get("kind").and_then(Value::as_str) == Some("agent_exited")
+            && payload.get("name").and_then(Value::as_str) == Some(name.as_str())
+        {
+            assert_eq!(
+                payload.get("spawn_invocation_id").and_then(Value::as_str),
+                Some("inv-old-generation"),
+                "the old generation's exit must never be attributed to the \
+                 same-name replacement's invocation id: {payload:?}"
+            );
+            saw_exit_event = true;
+        }
+    }
+    assert!(saw_exit_event, "expected an agent_exited sdk event");
+
+    // The durable crash-insights record must carry the same correlation.
+    let crash_json = fixture.runtime.crash_insights.to_json();
+    let records = crash_json
+        .get("recent")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let record = records
+        .iter()
+        .find(|record| record.get("agent_name").and_then(Value::as_str) == Some(name.as_str()))
+        .expect("crash insight record for the old generation must exist");
+    assert_eq!(
+        record.get("spawn_invocation_id").and_then(Value::as_str),
+        Some("inv-old-generation")
+    );
+}
+
+/// Regression for #1603 P2 #2: a full or closed `hosted_agent_event_tx`
+/// channel must not silently drop the terminal `agent_exited` hosted event.
+/// A full channel is retried via the bounded backlog on the next
+/// maintenance tick; a closed channel cannot be retried but is at least
+/// counted so the miss is observable.
+#[tokio::test]
+async fn hosted_agent_exit_event_survives_full_channel_and_reports_closed_channel() {
+    use super::event_loop::{enqueue_hosted_agent_exit_event, HostedAgentEvent};
+
+    // Full channel: the event must land in the backlog, not be dropped, and
+    // must be delivered once capacity frees up.
+    let (tx, mut rx) = mpsc::channel::<HostedAgentEvent>(1);
+    // Occupy the only slot so the next enqueue observes `Full`.
+    tx.try_send(HostedAgentEvent {
+        name: "occupant".to_string(),
+        event_type: "agent_exited".to_string(),
+        payload: serde_json::Map::new(),
+        workspace_id: None,
+    })
+    .unwrap();
+
+    let mut backlog = std::collections::VecDeque::new();
+    let mut dropped_total = 0u64;
+    enqueue_hosted_agent_exit_event(
+        &tx,
+        &mut backlog,
+        &mut dropped_total,
+        HostedAgentEvent {
+            name: "full-channel-victim".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+        },
+    );
+    assert_eq!(
+        backlog.len(),
+        1,
+        "event must be held for retry, not dropped"
+    );
+    assert_eq!(dropped_total, 0);
+
+    // Drain the occupant so capacity frees up, then simulate the next tick's
+    // backlog drain — the held event must now be delivered.
+    let occupant = rx.recv().await.expect("occupant should be received");
+    assert_eq!(occupant.name, "occupant");
+    super::event_loop::drain_hosted_agent_exit_backlog(&tx, &mut backlog, &mut dropped_total);
+    assert!(backlog.is_empty(), "backlog must drain once capacity frees");
+    let delivered = rx
+        .recv()
+        .await
+        .expect("backlogged event must eventually be delivered");
+    assert_eq!(delivered.name, "full-channel-victim");
+    assert_eq!(dropped_total, 0);
+
+    // Closed channel: cannot ever be retried, so it must not accumulate in
+    // the backlog — but the miss must be observable via the drop counter.
+    let (tx, rx) = mpsc::channel::<HostedAgentEvent>(4);
+    drop(rx);
+    enqueue_hosted_agent_exit_event(
+        &tx,
+        &mut backlog,
+        &mut dropped_total,
+        HostedAgentEvent {
+            name: "closed-channel-victim".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+        },
+    );
+    assert!(
+        backlog.is_empty(),
+        "a closed channel can never succeed; must not be backlogged"
+    );
+    assert_eq!(
+        dropped_total, 1,
+        "closed-channel miss must be observable via the drop counter"
+    );
+}
+
+/// Regression for #1603 P2 #2, exercised at the full maintenance-tick level:
+/// a hosted event channel with zero remaining capacity at reap time must not
+/// silently lose the terminal `agent_exited` event — it is retried from the
+/// bounded backlog on the very next tick once the channel has capacity.
+#[cfg(unix)]
+#[tokio::test]
+async fn maintenance_tick_backlogs_and_redelivers_agent_exited_when_hosted_channel_is_full() {
+    let (tx, _rx) = mpsc::channel(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests-hosted-backlog"),
+        Instant::now(),
+    );
+    let name = WorkerName::from("hosted-backlog-victim");
+    let generation = Uuid::new_v4();
+    let child = tokio::process::Command::new("sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("worker should spawn");
+    let (command_tx, _command_rx) = mpsc::channel(16);
+    registry.workers.insert(
+        name.clone(),
+        WorkerHandle {
+            generation,
+            spec: AgentSpec {
+                name: name.clone(),
+                runtime: AgentRuntime::Headless,
+                provider: None,
+                cli: None,
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: None,
+            child,
+            command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+            invocation_id: Some("inv-hosted-backlog".to_string()),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    // Replace the fixture's hosted-agent-event channel with a zero-capacity
+    // one that is already full, forcing `try_send` to observe `Full` when
+    // the tick emits `agent_exited`.
+    let (hosted_tx, mut hosted_rx) = mpsc::channel(1);
+    hosted_tx
+        .try_send(super::event_loop::HostedAgentEvent {
+            name: "occupant".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+        })
+        .unwrap();
+    fixture.runtime.hosted_agent_event_tx = hosted_tx;
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    // The channel was full, so the real terminal event must be sitting in
+    // the backlog now, not lost.
+    assert_eq!(fixture.runtime.hosted_agent_exit_backlog.len(), 1);
+    assert_eq!(fixture.runtime.hosted_agent_exit_dropped_total, 0);
+
+    // Drain the occupant to free capacity, then run another tick (a no-op
+    // for this already-reaped worker otherwise) — the backlog drain at the
+    // top of the tick must redeliver the held event.
+    let occupant = hosted_rx.recv().await.expect("occupant received");
+    assert_eq!(occupant.name, "occupant");
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(fixture.runtime.hosted_agent_exit_backlog.is_empty());
+    let redelivered = hosted_rx
+        .recv()
+        .await
+        .expect("backlogged agent_exited must be redelivered");
+    assert_eq!(redelivered.name, name.as_str());
+    assert_eq!(redelivered.event_type, "agent_exited");
+    assert_eq!(fixture.runtime.hosted_agent_exit_dropped_total, 0);
 }

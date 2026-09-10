@@ -674,6 +674,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_control_tx,
         relaycast_http,
         hosted_agent_event_tx,
+        hosted_agent_exit_backlog: VecDeque::new(),
+        hosted_agent_exit_dropped_total: 0,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,

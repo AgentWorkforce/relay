@@ -2763,6 +2763,7 @@ mod tests {
                 context_budget_pct: None,
                 state: crate::worker::AgentWorkState::Working,
                 exit_reason: None,
+                invocation_id: None,
             },
         );
 

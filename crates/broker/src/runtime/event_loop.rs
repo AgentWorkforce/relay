@@ -34,11 +34,115 @@ pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
 /// would instead cost up to N times this much.
 const SHUTDOWN_RELAYCAST_PHASE_TIMEOUT: Duration = Duration::from_millis(2500);
 
+#[derive(Clone)]
 pub(crate) struct HostedAgentEvent {
     pub(super) name: String,
     pub(super) event_type: String,
     pub(super) payload: serde_json::Map<String, Value>,
     pub(super) workspace_id: Option<WorkspaceId>,
+}
+
+/// Upper bound on how many terminal hosted-agent events (e.g. `agent_exited`)
+/// are held in [`BrokerRuntime::hosted_agent_exit_backlog`] awaiting a retry
+/// once `hosted_agent_event_tx` has capacity again. Bounded so a stuck or
+/// permanently closed publisher cannot grow this queue without limit; the
+/// oldest entry is dropped (and counted, loudly) once the cap is exceeded.
+/// Durable state for these events already lives in crash insights on disk —
+/// this backlog exists purely to make *delivery* to hosted consumers durable
+/// against transient backpressure, not to be a second source of truth.
+pub(crate) const HOSTED_AGENT_EXIT_BACKLOG_CAP: usize = 256;
+
+/// Attempt to hand a terminal hosted-agent event (`agent_exited`) to the
+/// publisher without blocking maintenance. Unlike a bare `try_send`, a full
+/// channel does not silently drop the event: it is held in a small bounded
+/// backlog and retried on the next call (typically the next maintenance
+/// tick, via [`drain_hosted_agent_exit_backlog`]) once capacity frees up.
+///
+/// A *closed* channel (publisher task gone) can never succeed, so the event
+/// is not backlogged in that case — only counted and logged at error level so
+/// the miss is observable — and the caller's crash-insights persistence
+/// (already durable on disk) remains the authoritative record either way.
+pub(crate) fn enqueue_hosted_agent_exit_event(
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+    event: HostedAgentEvent,
+) {
+    drain_hosted_agent_exit_backlog(tx, backlog, dropped_total);
+    match tx.try_send(event) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(event)) => {
+            tracing::warn!(
+                worker = %event.name,
+                event_type = %event.event_type,
+                backlog_len = backlog.len(),
+                "hosted agent event queue full; holding terminal event in bounded backlog for retry"
+            );
+            backlog.push_back(event);
+            while backlog.len() > HOSTED_AGENT_EXIT_BACKLOG_CAP {
+                if let Some(dropped) = backlog.pop_front() {
+                    *dropped_total += 1;
+                    tracing::error!(
+                        worker = %dropped.name,
+                        event_type = %dropped.event_type,
+                        dropped_total = *dropped_total,
+                        "hosted agent exit backlog overflowed; oldest terminal event was dropped — hosted consumers may miss this exit (durable crash-insights record on disk remains authoritative)"
+                    );
+                }
+            }
+        }
+        Err(mpsc::error::TrySendError::Closed(event)) => {
+            *dropped_total += 1;
+            tracing::error!(
+                worker = %event.name,
+                event_type = %event.event_type,
+                dropped_total = *dropped_total,
+                "hosted agent event publisher channel is closed; terminal event could not be delivered to hosted consumers (durable crash-insights record on disk remains authoritative)"
+            );
+        }
+    }
+}
+
+/// Retry every backlogged terminal hosted-agent event against the publisher
+/// channel, in original order, stopping at the first one that still does not
+/// fit so relative ordering is preserved and this call cannot itself stall
+/// maintenance on a persistently full channel.
+pub(crate) fn drain_hosted_agent_exit_backlog(
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+) {
+    while let Some(event) = backlog.pop_front() {
+        match tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                backlog.push_front(event);
+                break;
+            }
+            Err(mpsc::error::TrySendError::Closed(event)) => {
+                *dropped_total += 1;
+                tracing::error!(
+                    worker = %event.name,
+                    event_type = %event.event_type,
+                    dropped_total = *dropped_total,
+                    "hosted agent event publisher channel closed while draining backlog; terminal event could not be delivered (durable crash-insights record on disk remains authoritative)"
+                );
+                // The channel cannot recover; draining further entries would
+                // only repeat the same closed-channel error for each of
+                // them. Report them all now rather than one per future tick.
+                for remaining in backlog.drain(..) {
+                    *dropped_total += 1;
+                    tracing::error!(
+                        worker = %remaining.name,
+                        event_type = %remaining.event_type,
+                        dropped_total = *dropped_total,
+                        "hosted agent event publisher channel closed; discarding backlogged terminal event"
+                    );
+                }
+                break;
+            }
+        }
+    }
 }
 
 pub(crate) async fn run_hosted_agent_event_publisher(
@@ -203,6 +307,15 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
     pub(super) hosted_agent_event_tx: mpsc::Sender<HostedAgentEvent>,
+    /// Bounded retry buffer for terminal hosted-agent events (currently
+    /// `agent_exited`) that could not be handed to the publisher because its
+    /// channel was momentarily full. See [`enqueue_hosted_agent_exit_event`].
+    pub(super) hosted_agent_exit_backlog: VecDeque<HostedAgentEvent>,
+    /// Count of terminal hosted-agent events that were ultimately never
+    /// delivered to hosted consumers (backlog overflow or a closed
+    /// publisher channel). Observable via logs at error level; kept here so
+    /// tests can assert on it directly.
+    pub(super) hosted_agent_exit_dropped_total: u64,
     pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
     pub(super) api_open: bool,
