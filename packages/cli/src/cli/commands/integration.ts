@@ -29,7 +29,7 @@ import {
   assertRelayfileVersion,
   type RelayfileClientOptions,
 } from '@relayfile/client';
-import { resolveBaseUrl, resolveWorkspaceKey } from '../lib/sdk-client.js';
+import { resolveBaseUrl, resolveWorkspaceKey, resolveWorkspaceTransport } from '../lib/sdk-client.js';
 
 // Re-export the version gate so existing tests importing it from this module
 // (and any callers) keep working after it moved to the published client package.
@@ -473,8 +473,14 @@ async function createRelayfileInboundTarget(
   const options = sdkOptionsFromOpts(commandOpts);
   const authOptions =
     local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
-  const workspaceKey = resolveWorkspaceKey(authOptions);
-  const baseUrl = resolveInboundTargetBaseUrl(options);
+  // A local broker session may expose its loopback broker URL. That URL is not
+  // the Relaycast control-plane origin for inbound-target provisioning, so pair
+  // its workspace selector with the caller's Relaycast URL (or canonical).
+  const { workspaceKey, baseUrl: selectedBaseUrl } = resolveWorkspaceTransport({
+    ...authOptions,
+    baseUrl: options.baseUrl,
+  });
+  const baseUrl = resolveInboundTargetBaseUrl(selectedBaseUrl);
   const response = await fetch(new URL('/v1/integrations/relayfile/inbound-target', baseUrl), {
     method: 'POST',
     headers: {
@@ -525,8 +531,8 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
   return { url: parsedUrl.toString(), secret };
 }
 
-function resolveInboundTargetBaseUrl(options: SdkClientOptions): string {
-  const baseUrl = resolveBaseUrl(options) ?? 'https://cast.agentrelay.com';
+function resolveInboundTargetBaseUrl(selectedBaseUrl: string | undefined): string {
+  const baseUrl = selectedBaseUrl ?? 'https://cast.agentrelay.com';
   const parsed = new URL(baseUrl);
   if (parsed.protocol !== 'https:') {
     throw new Error('Inbound relayfile target provisioning requires an https Relaycast base URL.');

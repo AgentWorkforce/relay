@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 
+import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import type { InboundDeliveryMode, ListAgent, PendingRelayMessage } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
@@ -12,7 +13,7 @@ import type { AttachMode } from '../lib/attach-mode.js';
 import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
 import { attachRemoteNode, type RemoteNodeAttachOptions } from '../lib/attach-remote-node.js';
-import { startFleetNodeAttachProxy } from '../lib/attach-fleet-node.js';
+import { startFleetNodeAttachProxy, validateFleetAttachBaseUrl } from '../lib/attach-fleet-node.js';
 import { attachView } from '../lib/attach-view.js';
 import { createBackpressureAwareWriter } from '../lib/attach.js';
 import {
@@ -88,6 +89,7 @@ export function runAttach(name: string, mode: AttachMode, options: NativeAttachO
  * rather than accepted and ignored.
  */
 export type FleetNodeAttachCliOptions = Pick<NativeAttachOptions, 'json' | 'reasoning' | 'diagnostics'> & {
+  baseUrl?: string;
   workspaceKey?: string;
 };
 
@@ -106,6 +108,7 @@ export async function attachFleetNode(
     agent: name,
     node,
     mode,
+    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
     ...(options.workspaceKey === undefined ? {} : { workspaceKey: options.workspaceKey }),
   });
   const jsonWriter = options.json ? createBackpressureAwareWriter(process.stdout) : undefined;
@@ -278,19 +281,27 @@ function resolveAttachCredentialSelection(
 
 async function redeemAndPersistAttachCredential(
   deps: LocalAgentDependencies,
-  options: { ticket: string; node: string; agent: string; mode: AttachMode }
+  options: { ticket: string; node: string; agent: string; mode: AttachMode; baseUrl?: string }
 ): Promise<string> {
   const redeemed = await deps.redeemJoinTicket({
     ticket: options.ticket,
     node: options.node,
     agent: options.agent,
     mode: options.mode,
+    ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
     env: deps.env,
     fetch: deps.fetch,
   });
   const persisted = deps.persistWorkspaceSession({
     workspaceKey: redeemed.workspaceKey,
     workspaceId: redeemed.workspaceId,
+    ...(options.baseUrl
+      ? {
+          relaycastRoute: options.baseUrl === AGENT37_RELAYCAST_ORIGIN ? 'agent37-isolated' : 'canonical',
+          relaycastBaseUrl: options.baseUrl,
+          relaycastApiKey: redeemed.workspaceKey,
+        }
+      : {}),
     projectRoot: deps.cwd(),
   });
   const warning = describeClearedEnrollment(persisted);
@@ -845,6 +856,10 @@ export function registerLocalAgentCommands(
     .argument('<name>', 'Agent name')
     .option('--mode <mode>', 'drive | view | passthrough', 'view')
     .option('--node <node>', 'Canonical authenticated fleet-node terminal attach (physical or Daytona)')
+    .option(
+      '--base-url <url>',
+      'Relaycast API base URL for --node (defaults to the selected workspace route)'
+    )
     .option('--ssh-host <host>', 'SSH host fallback for a physical fleet node')
     .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
     .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
@@ -907,6 +922,10 @@ export function registerLocalAgentCommands(
         }
         try {
           let attachWorkspaceKey = credential.workspaceKey;
+          const validatedBaseUrl =
+            credential.joinTicket && typeof options.baseUrl === 'string'
+              ? validateFleetAttachBaseUrl(options.baseUrl)
+              : undefined;
           if (credential.joinTicket) {
             // Pass the redeemed key explicitly into the first attach. Merely
             // writing the project pin would leave this process vulnerable to
@@ -916,9 +935,11 @@ export function registerLocalAgentCommands(
               node,
               agent: name,
               mode,
+              baseUrl: validatedBaseUrl,
             });
           }
           const code = await deps.attachNode(name, mode, node, {
+            baseUrl: options.baseUrl as string | undefined,
             workspaceKey: attachWorkspaceKey,
             json: options.json as boolean | undefined,
             reasoning: options.reasoning as boolean | undefined,

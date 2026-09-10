@@ -24,7 +24,11 @@ afterEach(() => {
 describe('linkEnrolledNodeToProjectPin', () => {
   it('records the enrolled node on a pin that has none', () => {
     const dataDir = projectDataDir();
-    writeProjectWorkspaceKey(dataDir, 'rk_live_pinned');
+    writeProjectWorkspaceKey(dataDir, 'rk_live_pinned', {
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
 
     const result = linkEnrolledNodeToProjectPin({ nodeId: 'node_abc', projectDataDir: dataDir });
 
@@ -32,6 +36,9 @@ describe('linkEnrolledNodeToProjectPin', () => {
     expect(readProjectWorkspaceSession(dataDir)).toEqual({
       workspaceKey: 'rk_live_pinned',
       enrolledNodeId: 'node_abc',
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
     });
   });
 

@@ -171,6 +171,29 @@ describe('local agent subtree', () => {
     );
   });
 
+  it('attach --node forwards an explicit base URL for an isolated fleet workspace', async () => {
+    const { program, attachNode } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'attach',
+        'sandbox-worker',
+        '--node',
+        'agent37-codex',
+        '--base-url',
+        'https://agent37-cast.agentrelay.com',
+      ],
+      { from: 'user' }
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'sandbox-worker',
+      'view',
+      'agent37-codex',
+      expect.objectContaining({ baseUrl: 'https://agent37-cast.agentrelay.com' })
+    );
+  });
+
   it('attach --node without --workspace-key leaves the precedence ladder to resolve it', async () => {
     const { program, attachNode } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--node', 'sf-mini'], { from: 'user' });
@@ -226,6 +249,69 @@ describe('local agent subtree', () => {
     );
     expect(JSON.stringify(persistWorkspaceSession.mock.calls)).not.toContain('rjt_live_one_time');
     expect(JSON.stringify([...log.mock.calls, ...error.mock.calls])).not.toContain('rjt_live_one_time');
+  });
+
+  it('attach --node redeems an isolated-shard join ticket at the explicit base URL', async () => {
+    const { program, attachNode, redeemJoinTicket, persistWorkspaceSession } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'attach',
+        'lead',
+        '--node',
+        'agent37-codex',
+        '--join-ticket',
+        'rjt_live_one_time',
+        '--base-url',
+        'https://agent37-cast.agentrelay.com',
+      ],
+      { from: 'user' }
+    );
+
+    expect(redeemJoinTicket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ticket: 'rjt_live_one_time',
+        node: 'agent37-codex',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+      })
+    );
+    expect(persistWorkspaceSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_live_redeemed',
+      })
+    );
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'agent37-codex',
+      expect.objectContaining({ baseUrl: 'https://agent37-cast.agentrelay.com' })
+    );
+  });
+
+  it('rejects an untrusted join-ticket base URL before redemption', async () => {
+    const { program, redeemJoinTicket, attachNode, error } = harness();
+    await program.parseAsync(
+      [
+        'local',
+        'agent',
+        'attach',
+        'lead',
+        '--node',
+        'agent37-codex',
+        '--join-ticket',
+        'rjt_live_one_time',
+        '--base-url',
+        'https://evil.example.com',
+      ],
+      { from: 'user' }
+    );
+
+    expect(redeemJoinTicket).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('trusted Relaycast origin'));
   });
 
   it.each(['expired', 'invalid'])(

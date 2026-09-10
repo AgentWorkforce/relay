@@ -6,11 +6,15 @@
  * under test is the actual runtime wiring rather than a mocked stand-in.
  */
 import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { startFleetNodeAttachProxy, type FleetNodeAttachProxy } from './attach-fleet-node.js';
+import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 const SESSION_ID = 'session-under-test';
 const RESUME_TOKEN = 'resume-token';
@@ -161,7 +165,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-transient',
       node: 'node-transient',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
       sessionRequest: {
@@ -217,7 +221,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-slow-healthy',
       node: 'node-slow-healthy',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
     });
@@ -262,7 +266,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-slow-dead',
       node: 'node-slow-dead',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
     }).catch((error: unknown) => error);
@@ -306,7 +310,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
         agent: 'agent-budget-expired',
         node: 'node-budget-expired',
         mode: 'view',
-        baseUrl: 'https://fake.example',
+        baseUrl: 'https://cast.agentrelay.com',
         workspaceKey: 'wk',
         fetch: fetchFn,
         sessionRequest: {
@@ -351,7 +355,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-dead',
       node: 'node-dead',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
       sessionRequest: {
@@ -370,7 +374,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
     expect((rejected as Error).message).toContain('resolved node id unavailable');
     expect((rejected as Error).message).toContain('attempts 5 (retried 4 times)');
     expect((rejected as Error).message).toContain(
-      'endpoint "https://fake.example/v1/nodes/node-dead/terminal/sessions"'
+      'endpoint "https://cast.agentrelay.com/v1/nodes/node-dead/terminal/sessions"'
     );
   });
 
@@ -385,7 +389,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-missing-node',
       node: 'node-missing',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
       sessionRequest: { sleep: async () => undefined },
@@ -409,7 +413,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-unknown-completion',
       node: 'node-unknown-completion',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
       sessionRequest: { sleep: async () => undefined },
@@ -436,7 +440,7 @@ describe('startFleetNodeAttachProxy terminal-session request retries', () => {
       agent: 'agent-malformed',
       node: 'node-malformed',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fetchFn,
       sessionRequest: { sleep: async () => undefined },
@@ -467,7 +471,7 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
       agent: 'agent-a',
       node: 'node-a',
       mode: 'drive',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -508,7 +512,7 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
       agent: 'agent-readiness',
       node: 'node-readiness',
       mode: 'drive',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -576,7 +580,7 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
         agent: 'agent-b',
         node: 'node-b',
         mode: 'drive',
-        baseUrl: 'https://fake.example',
+        baseUrl: 'https://cast.agentrelay.com',
         workspaceKey: 'wk',
         fetch: fakeTicketFetch(remote.url),
       });
@@ -617,7 +621,7 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
         agent: 'agent-c',
         node: 'node-c',
         mode: 'drive',
-        baseUrl: 'https://fake.example',
+        baseUrl: 'https://cast.agentrelay.com',
         workspaceKey: 'wk',
         fetch: fakeTicketFetch(remote.url),
       });
@@ -653,7 +657,7 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
       agent: 'agent-d',
       node: 'node-d',
       mode: 'drive',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -704,7 +708,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       agent: 'view-delayed-upgrade',
       node: 'node-delayed-upgrade',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
       reconnectDelay: { handshakeTimeoutMs: 10_000, readyTimeoutMs: 4_000 },
@@ -737,7 +741,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       agent: 'view-backoff-snapshot',
       node: 'node-backoff-snapshot',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
       reconnectDelay: {
@@ -772,7 +776,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       agent: 'view-target',
       node: 'view-node',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -826,7 +830,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       agent: 'view-reconnect',
       node: 'node-reconnect',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
       reconnectDelay: { initialMs: 1, maxMs: 1 },
@@ -877,7 +881,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       // path, including a multi-byte UTF-8 boundary.
       node: `node-exhaust-${'é'.repeat(100)}`,
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
       reconnectDelay: { initialMs: 1, maxMs: 1 },
@@ -917,7 +921,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       agent: 'view-stalled-resume',
       node: 'node-stalled-resume',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
       reconnectDelay: {
@@ -1002,7 +1006,7 @@ describe('startFleetNodeAttachProxy readiness-gate status mapping', () => {
       agent,
       node: 'node-mapping',
       mode: 'drive',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remoteUrl),
     });
@@ -1121,9 +1125,12 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
   function capturingTicketFetch(remoteUrl: string): {
     fetch: typeof globalThis.fetch;
     authorization: () => string | undefined;
+    requestUrl: () => string | undefined;
   } {
     let seen: string | undefined;
-    const fetchFn = (async (_url: string, init?: RequestInit) => {
+    let requestedUrl: string | undefined;
+    const fetchFn = (async (url: string, init?: RequestInit) => {
+      requestedUrl = url;
       const headers = (init?.headers ?? {}) as Record<string, string>;
       seen = headers.Authorization;
       return {
@@ -1139,7 +1146,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
         }),
       } as unknown as Response;
     }) as unknown as typeof globalThis.fetch;
-    return { fetch: fetchFn, authorization: () => seen };
+    return { fetch: fetchFn, authorization: () => seen, requestUrl: () => requestedUrl };
   }
 
   it('presents an explicit workspace key ahead of the ambient environment', async () => {
@@ -1150,7 +1157,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
       agent: 'agent-e',
       node: 'node-e',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'rk_live_explicit',
       env: { RELAY_WORKSPACE_KEY: 'rk_live_ambient' },
       fetch: ticket.fetch,
@@ -1158,6 +1165,123 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
     cleanup.push(proxy.close);
 
     expect(ticket.authorization()).toBe('Bearer rk_live_explicit');
+  });
+
+  it('uses an explicit isolated base URL instead of the canonical fallback', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'sandbox-worker',
+      node: 'agent37-codex',
+      mode: 'view',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+      workspaceKey: 'rk_live_agent37_target',
+      env: { RELAY_WORKSPACE_KEY: 'rk_live_ambient' },
+      fetch: ticket.fetch,
+    });
+    cleanup.push(proxy.close);
+
+    expect(ticket.requestUrl()).toBe(
+      'https://agent37-cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
+    );
+    expect(ticket.requestUrl()).not.toBe(
+      'https://cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
+    );
+  });
+
+  it('binds a matching explicit canonical selector to its persisted isolated key and origin', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-attach-project-'));
+    const priorProject = process.env.AGENT_RELAY_PROJECT;
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_isolated',
+    });
+
+    try {
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'sandbox-worker',
+        node: 'agent37-codex',
+        mode: 'view',
+        baseUrl: 'https://agent37-cast.agentrelay.com/',
+        workspaceKey: 'rk_live_canonical',
+        env: {},
+        fetch: ticket.fetch,
+      });
+      cleanup.push(proxy.close);
+
+      expect(ticket.authorization()).toBe('Bearer rk_live_isolated');
+      expect(ticket.requestUrl()).toBe(
+        'https://agent37-cast.agentrelay.com/v1/nodes/agent37-codex/terminal/sessions'
+      );
+    } finally {
+      if (priorProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = priorProject;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not inherit a persisted route when an explicit key selects a different workspace', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const ticket = capturingTicketFetch(remote.url);
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-attach-project-'));
+    const priorProject = process.env.AGENT_RELAY_PROJECT;
+    process.env.AGENT_RELAY_PROJECT = projectRoot;
+    writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_isolated',
+    });
+
+    try {
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'other-worker',
+        node: 'other-node',
+        mode: 'view',
+        workspaceKey: 'rk_live_other',
+        env: {},
+        fetch: ticket.fetch,
+      });
+      cleanup.push(proxy.close);
+
+      expect(ticket.authorization()).toBe('Bearer rk_live_other');
+      expect(ticket.requestUrl()).toBe('https://cast.agentrelay.com/v1/nodes/other-node/terminal/sessions');
+    } finally {
+      if (priorProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = priorProject;
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'https://evil.example',
+    'http://cast.agentrelay.com',
+    'https://cast.agentrelay.com.attacker.example',
+    'https://cast.agentrelay.com/path',
+  ])('rejects an untrusted explicit base URL before sending the workspace key', async (baseUrl) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+
+    await expect(
+      startFleetNodeAttachProxy({
+        agent: 'agent-attacker',
+        node: 'node-attacker',
+        mode: 'view',
+        baseUrl,
+        workspaceKey: 'rk_live_must_not_leave_process',
+        env: {},
+        fetch,
+      })
+    ).rejects.toThrow(/trusted Relaycast origin/);
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('falls back to the environment when no explicit key is supplied', async () => {
@@ -1168,7 +1292,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
       agent: 'agent-f',
       node: 'node-f',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       env: { RELAY_WORKSPACE_KEY: 'rk_live_ambient' },
       fetch: ticket.fetch,
     });
@@ -1212,7 +1336,7 @@ describe('startFleetNodeAttachProxy flush route', () => {
       // changing delivery mode, so it must not have to seize the single drive
       // slot from whoever is attached.
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -1263,7 +1387,7 @@ describe('startFleetNodeAttachProxy flush route', () => {
       agent: 'agent-missing',
       node: 'node-remote',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -1304,7 +1428,7 @@ describe('startFleetNodeAttachProxy flush route', () => {
       agent: 'agent-noid',
       node: 'node-remote',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });
@@ -1361,7 +1485,7 @@ describe('startFleetNodeAttachProxy flush route', () => {
       agent: 'agent-cross',
       node: 'node-remote',
       mode: 'view',
-      baseUrl: 'https://fake.example',
+      baseUrl: 'https://cast.agentrelay.com',
       workspaceKey: 'wk',
       fetch: fakeTicketFetch(remote.url),
     });

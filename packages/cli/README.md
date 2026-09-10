@@ -179,7 +179,15 @@ sees the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
 `--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
 to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
-fails, Relay asks Cloud to delete the newly created sandbox.
+fails, Relay asks Cloud to delete the newly created sandbox. Runs without a
+custom name use one `sbx_<UUID>` identity and the matching
+`fleet-sandbox-<UUID>` node name. Legacy custom `--sandbox-name` values remain supported when no
+`--sandbox-id` is supplied; in that mode Cloud receives no sandbox identity.
+When replaying with `--sandbox-id <sbx_UUID>` (lowercase RFC 4122 UUID), pass
+its matching deterministic `--sandbox-name` or let Relay derive it. If
+provisioning ends with an unknown outcome, rerun the command with the warning's
+`--sandbox-id` to replay the same Cloud identity instead of adopting another
+fleet node.
 
 Large workspaces should select only the live subtree an agent needs. Pass one
 or more explicit directory roots after `--sandbox-relayfile-path`; Cloud
