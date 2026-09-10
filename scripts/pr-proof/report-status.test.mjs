@@ -14,8 +14,5 @@ test('manual proof dispatch refuses a stale or malformed expected head before pu
     () => assertExpectedHeadSha('b'.repeat(40), CURRENT),
     /PR head changed before proof dispatch/
   );
-  assert.throws(
-    () => assertExpectedHeadSha('not-a-sha', CURRENT),
-    /Expected PR proof head SHA/
-  );
+  assert.throws(() => assertExpectedHeadSha('not-a-sha', CURRENT), /Expected PR proof head SHA/);
 });
