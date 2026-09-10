@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1715-spawn-overload",
+  "kind": "bugfix",
+  "title": "Retry overloaded worker registration and keep spawn fallback safe",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1715-spawn-overload/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "spawn_503_not_retried_and_safe_fallback_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "spawn_503_retried_and_safe_fallback_is_live"
+    }
+  }
+}

@@ -37,6 +37,19 @@ fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
         .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
 }
 
+/// A missing preregistration token is safe only for an explicitly local,
+/// one-shot worker. Interactive and PTY workers need Relaycast identity for
+/// inbound delivery; silently starting either without it would report a
+/// process that cannot receive messages. `skip_relay_prompt` is the API's
+/// explicit declaration that the worker does not need Relaycast tools.
+pub(crate) fn can_spawn_without_preregistration(
+    spec: &AgentSpec,
+    exit_after_task: bool,
+    skip_relay_prompt: bool,
+) -> bool {
+    matches!(spec.runtime, AgentRuntime::Headless) && exit_after_task && skip_relay_prompt
+}
+
 /// Resolve the named recipient whose presence accompanies an HTTP send.
 /// Normalize at this boundary so direct runtime requests cannot publish to a
 /// trimmed target while observing a whitespace-padded agent name.
@@ -492,6 +505,14 @@ impl BrokerRuntime {
                                 Err(RegRetryOutcome::RetryableExhausted(error)) => {
                                     let message =
                                         format_worker_preregistration_error(&name, &error);
+                                    if !can_spawn_without_preregistration(
+                                        &spec,
+                                        exit_after_task,
+                                        skip_relay_prompt,
+                                    ) {
+                                        let _ = reply.send(Err(message));
+                                        return;
+                                    }
                                     tracing::warn!(
                                         worker = %name,
                                         error = %error,

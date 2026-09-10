@@ -6,12 +6,12 @@ use std::{
 
 use anyhow::{Context, Result};
 use relaycast::{
-    agent::DmOptions, format_registration_error,
-    retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
-    AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient, AgentRegistrationError,
-    AgentRegistrationRetryOutcome, CompleteInvocationRequest, CreateObserverTokenRequest,
-    EmitSessionEventRequest, MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast,
-    RelayCastOptions, RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
+    agent::DmOptions, format_registration_error, registration_is_retryable, ActionDefinition,
+    ActionInvocation, AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient,
+    AgentRegistrationError, AgentRegistrationRetryOutcome, CompleteInvocationRequest,
+    CreateObserverTokenRequest, EmitSessionEventRequest, MessageListQuery, ObserverToken,
+    RegisterActionRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
+    TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 
@@ -49,8 +49,6 @@ pub struct RelaycastHttpClient {
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
 pub type RegRetryOutcome = AgentRegistrationRetryOutcome;
-#[cfg(test)]
-pub(crate) use relaycast::registration_is_retryable;
 pub(crate) use relaycast::registration_retry_after_secs;
 
 /// Why the broker is asking `register_agent_token` for a token.
@@ -1442,19 +1440,156 @@ pub fn format_worker_preregistration_error(
     format_registration_error(name, error).replace("register agent", "pre-register worker")
 }
 
-/// Attempt to register an agent token with up to 3 retries for transient errors.
+/// The Relaycast SDK currently classifies only rate limits and transport
+/// failures as retryable registration errors. A registration `POST` is not
+/// retried by the SDK's HTTP layer because it is unkeyed, so a transient
+/// `database_overloaded` 503 otherwise reaches the broker as `Fatal` after one
+/// request. Keep the broker's retry budget small and explicit for that typed
+/// control-plane failure.
+fn is_transient_registration_api_error(error: &RelaycastRegistrationError) -> bool {
+    // Relaycast's 503 contract covers `database_overloaded` and deployments
+    // that use a different transient code with `Retry-After`. The SDK drops
+    // that header while converting the response to `AgentRegistrationError`,
+    // so status 503 is the only stable signal available here. Auth failures
+    // (401/403) and contract/conflict responses remain terminal.
+    matches!(error, RelaycastRegistrationError::Api { status: 503, .. })
+}
+
+fn registration_client_unavailable(error: &RelaycastRegistrationError) -> bool {
+    matches!(
+        error,
+        RelaycastRegistrationError::Transport { detail, .. }
+            if detail == "SDK relay client not initialized"
+    )
+}
+
+/// Keep the terminal registration diagnostics truthful after broker-owned
+/// retries. The SDK includes the number of HTTP attempts in the opaque API
+/// detail string; each call here represents one POST because unkeyed agent
+/// registration is not retried by the SDK itself.
+fn with_registration_attempts(
+    error: RelaycastRegistrationError,
+    total_attempts: u32,
+) -> RelaycastRegistrationError {
+    match error {
+        RelaycastRegistrationError::Api {
+            agent_name,
+            status,
+            detail,
+        } => RelaycastRegistrationError::Api {
+            agent_name,
+            status,
+            detail: restamp_registration_attempts(detail, total_attempts),
+        },
+        other => other,
+    }
+}
+
+fn restamp_registration_attempts(detail: String, total_attempts: u32) -> String {
+    let marker = "; attempts: ";
+    let Some(start) = detail.find(marker) else {
+        return format!("{detail}; attempts: {total_attempts}");
+    };
+    let value_start = start + marker.len();
+    let value_end = detail[value_start..]
+        .find([';', ')'])
+        .map_or(detail.len(), |offset| value_start + offset);
+    format!(
+        "{}{}{}",
+        &detail[..value_start],
+        total_attempts,
+        &detail[value_end..]
+    )
+}
+
+fn registration_attempt_count(error: &RelaycastRegistrationError) -> u32 {
+    let RelaycastRegistrationError::Api { detail, .. } = error else {
+        return 1;
+    };
+    let marker = "; attempts: ";
+    let Some(start) = detail.find(marker) else {
+        return 1;
+    };
+    let value_start = start + marker.len();
+    detail[value_start..]
+        .split([';', ')'])
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|attempts| *attempts > 0)
+        .unwrap_or(1)
+}
+
+/// Attempt to register an agent token with up to 3 retries for transient
+/// errors. The delay is deliberately bounded: the SDK does not expose the
+/// `Retry-After` header on 503 errors, so use the documented short retry
+/// budget rather than sleeping on an untrusted/unbounded server value. For
+/// SDK errors that do carry a retry-after duration are capped at one second;
+/// 429 cooldowns are returned immediately because the SDK blocks the name
+/// locally and another attempt cannot issue a POST until that cooldown ends.
 pub async fn retry_agent_registration(
     http: &RelaycastHttpClient,
     name: &str,
     cli: Option<&str>,
 ) -> Result<String, RegRetryOutcome> {
-    let registration = http.registration.as_ref().as_ref().ok_or_else(|| {
-        RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
-            agent_name: name.to_string(),
-            detail: "SDK relay client not initialized".to_string(),
-        })
-    })?;
-    sdk_retry_agent_registration(registration, name, cli).await
+    const RETRY_BACKOFFS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(400)];
+    // This loop runs inside the serialized broker runtime actor. Keep any
+    // server-advertised cooldown on the same short scale as the fixed
+    // backoffs; the SDK also blocks the name locally after a 429, so sleeping
+    // for the full cooldown here would stall unrelated broker work and still
+    // produce no further POST.
+    const MAX_RETRY_AFTER: Duration = Duration::from_secs(1);
+
+    let mut total_attempts: u32 = 0;
+    for retry_delay in RETRY_BACKOFFS
+        .iter()
+        .copied()
+        .map(Some)
+        .chain(std::iter::once(None))
+    {
+        match http.register_agent_token(name, cli).await {
+            Ok(token) => return Ok(token),
+            Err(error) => {
+                total_attempts = total_attempts.saturating_add(registration_attempt_count(&error));
+                // A missing SDK client is a configuration/authentication
+                // failure, not a transient transport outage. In particular,
+                // do not let the Transport variant reach the retryable
+                // classifier and delay a fail-closed spawn.
+                if registration_client_unavailable(&error) {
+                    return Err(RegRetryOutcome::Fatal(with_registration_attempts(
+                        error,
+                        total_attempts,
+                    )));
+                }
+                let retryable = registration_is_retryable(&error)
+                    || is_transient_registration_api_error(&error);
+                if retryable {
+                    if let Some(delay) = retry_delay {
+                        // A 429 installs an SDK-side cooldown. Do not issue
+                        // futile retries that only return `Blocked` while
+                        // consuming the bounded attempt budget.
+                        if http.registration_block_remaining(name).is_some() {
+                            return Err(RegRetryOutcome::RetryableExhausted(
+                                with_registration_attempts(error, total_attempts),
+                            ));
+                        }
+                        let delay = registration_retry_after_secs(&error)
+                            .map(|seconds| Duration::from_secs(seconds).min(MAX_RETRY_AFTER))
+                            .unwrap_or(delay);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(RegRetryOutcome::RetryableExhausted(
+                        with_registration_attempts(error, total_attempts),
+                    ));
+                }
+                return Err(RegRetryOutcome::Fatal(with_registration_attempts(
+                    error,
+                    total_attempts,
+                )));
+            }
+        }
+    }
+    unreachable!("the bounded registration retry loop always returns")
 }
 
 /// The declared fields alone, trimmed, with blanks omitted.
@@ -1511,20 +1646,28 @@ fn registration_metadata_error(agent_name: &str, error: RelayError) -> Relaycast
 
 #[cfg(test)]
 mod tests {
+    use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
     use httpmock::{
         Method::{GET, PATCH, POST},
         MockServer,
     };
     use relaycast::AgentRegistrationError;
     use serde_json::json;
-    use std::time::Duration;
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
 
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
     use super::{
-        format_worker_preregistration_error, registration_is_retryable,
-        registration_retry_after_secs, ImpersonationAwareRegistrationError, MessageInjectionMode,
-        RecipientReachability, RegisterIntent, RelaycastHttpClient,
+        format_worker_preregistration_error, is_transient_registration_api_error,
+        registration_is_retryable, registration_retry_after_secs, restamp_registration_attempts,
+        ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
+        RegisterIntent, RelaycastHttpClient,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -1547,6 +1690,190 @@ mod tests {
         };
         assert!(registration_is_retryable(&error));
         assert_eq!(registration_retry_after_secs(&error), Some(60));
+    }
+
+    #[test]
+    fn database_overloaded_registration_is_transient_but_auth_failures_are_not() {
+        let overloaded = AgentRegistrationError::Api {
+            agent_name: "worker-a".to_string(),
+            status: 503,
+            detail: "The database is temporarily overloaded. (code: database_overloaded; attempts: 1; request_id: req-1)".to_string(),
+        };
+        assert!(is_transient_registration_api_error(&overloaded));
+
+        let retry_after_503 = AgentRegistrationError::Api {
+            agent_name: "worker-a".to_string(),
+            status: 503,
+            detail: "service unavailable (code: temporarily_unavailable; attempts: 1)".to_string(),
+        };
+        assert!(is_transient_registration_api_error(&retry_after_503));
+
+        let unauthorized = AgentRegistrationError::Api {
+            agent_name: "worker-a".to_string(),
+            status: 401,
+            detail: "unauthorized (code: invalid_key; attempts: 1)".to_string(),
+        };
+        assert!(!is_transient_registration_api_error(&unauthorized));
+    }
+
+    #[test]
+    fn registration_attempt_diagnostics_are_restamped_without_losing_request_id() {
+        let detail =
+            "overloaded (code: database_overloaded; attempts: 1; request_id: req-1)".to_string();
+        let restamped = restamp_registration_attempts(detail, 3);
+        assert!(restamped.contains("attempts: 3"));
+        assert!(restamped.contains("request_id: req-1"));
+    }
+
+    #[tokio::test]
+    async fn worker_registration_retries_database_overloaded_then_succeeds() {
+        #[derive(Clone)]
+        struct RegistrationState(Arc<AtomicUsize>);
+
+        async fn register_agent(
+            State(state): State<RegistrationState>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            let attempt = state.0.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "database_overloaded",
+                            "message": "The database is temporarily overloaded."
+                        }
+                    })),
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent_worker_a",
+                        "workspace_id": "ws_test",
+                        "name": "worker-a",
+                        "status": "online",
+                        "created_at": "2026-09-10T00:00:00.000Z",
+                        "token": "at_live_worker_a"
+                    }
+                })),
+            )
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind registration probe");
+        let address = listener.local_addr().expect("registration probe address");
+        let server_attempts = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(register_agent))
+                    .with_state(RegistrationState(server_attempts)),
+            )
+            .await
+            .expect("registration probe server");
+        });
+
+        let client = RelaycastHttpClient::new(
+            Some(format!("http://{address}")),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
+        let token = super::retry_agent_registration(&client, "worker-a", Some("codex"))
+            .await
+            .expect("database overload should be retried");
+        assert_eq!(token, "at_live_worker_a");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rate_limited_registration_does_not_burn_retries_during_sdk_cooldown() {
+        #[derive(Clone)]
+        struct RegistrationState(Arc<AtomicUsize>);
+
+        async fn rate_limited(
+            State(state): State<RegistrationState>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            state.0.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "rate_limited",
+                        "message": "registration rate limited"
+                    }
+                })),
+            )
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind registration probe");
+        let address = listener.local_addr().expect("registration probe address");
+        let server_attempts = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(rate_limited))
+                    .with_state(RegistrationState(server_attempts)),
+            )
+            .await
+            .expect("registration probe server");
+        });
+
+        let client = RelaycastHttpClient::new(
+            Some(format!("http://{address}")),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
+        let result =
+            super::retry_agent_registration(&client, "worker-rate-limited", Some("codex")).await;
+        assert!(matches!(
+            result,
+            Err(
+                relaycast::AgentRegistrationRetryOutcome::RetryableExhausted(
+                    AgentRegistrationError::RateLimited { .. }
+                )
+            )
+        ));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "SDK cooldown must not cause futile retry POSTs"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn uninitialized_registration_fails_closed_without_retry_delay() {
+        let mut client = RelaycastHttpClient::new(None, "rk_live_test", "broker", "codex");
+        client.registration = Arc::new(None);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            super::retry_agent_registration(&client, "worker-uninitialized", Some("codex")),
+        )
+        .await
+        .expect("missing SDK client must fail without retry sleeps");
+        assert!(matches!(
+            result,
+            Err(relaycast::AgentRegistrationRetryOutcome::Fatal(
+                AgentRegistrationError::Transport { detail, .. }
+            )) if detail == "SDK relay client not initialized"
+        ));
     }
 
     #[test]

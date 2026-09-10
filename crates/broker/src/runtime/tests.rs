@@ -11,12 +11,14 @@ use crate::ids::{
     AgentId, ChannelName, DeliveryId, EventId, MessageTarget, WorkerName, WorkspaceAlias,
     WorkspaceId,
 };
+use crate::listen_api::{listen_api_router_with_auth, ListenApiConfig, ListenApiRequest};
 use crate::node_control::{FleetControlCommand, FleetDeliveryBook};
 use crate::protocol::{
     AgentSpec, BrokerEvent, DeliveryReadAckStatus, HarnessReleasePolicy, HeadlessHarnessConfig,
     HeadlessHarnessDriver, MessageInjectionMode, NativeHarnessConfig, ProtocolEnvelope,
     RelayDelivery, ResolvedHarnessConfig,
 };
+use crate::replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY};
 use crate::telemetry::TelemetryClient;
 use crate::worker::{
     spawn_worker_writer, AgentWorkState, WorkerEvent, WorkerHandle, WorkerRegistry,
@@ -31,11 +33,13 @@ use crate::{
         },
     },
 };
+use axum::{body::to_bytes, body::Body, http::Request};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+use tower::ServiceExt;
 use uuid::Uuid;
 
-use super::api::recipient_name_for_reachability;
+use super::api::{can_spawn_without_preregistration, recipient_name_for_reachability};
 use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
@@ -199,6 +203,7 @@ async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
 
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
+    api_tx: mpsc::Sender<ListenApiRequest>,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
     _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
     _temp_dir: tempfile::TempDir,
@@ -207,6 +212,14 @@ struct WorkerEventRuntimeFixture {
 fn worker_event_runtime_fixture(
     workers: WorkerRegistry,
     pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
+) -> WorkerEventRuntimeFixture {
+    worker_event_runtime_fixture_with_relay(workers, pending_deliveries, None)
+}
+
+fn worker_event_runtime_fixture_with_relay(
+    workers: WorkerRegistry,
+    pending_deliveries: HashMap<DeliveryId, PendingDelivery>,
+    relay_base_url: Option<String>,
 ) -> WorkerEventRuntimeFixture {
     let temp_dir = tempfile::tempdir().expect("runtime fixture temp dir");
     let paths = RuntimePaths {
@@ -217,7 +230,8 @@ fn worker_event_runtime_fixture(
         dedup: temp_dir.path().join("dedup.json"),
         _lock: None,
     };
-    let default_workspace = test_relay_workspace("ws_demo", Some("demo"));
+    let default_workspace =
+        test_relay_workspace_with_base_url("ws_demo", Some("demo"), relay_base_url.as_deref());
     let default_workspace_id = Some(default_workspace.workspace_id.clone());
     let workspace_lookup = HashMap::from([(
         default_workspace.workspace_id.clone(),
@@ -226,7 +240,7 @@ fn worker_event_runtime_fixture(
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
-    let (_api_tx, api_rx) = mpsc::channel(4);
+    let (api_tx, api_rx) = mpsc::channel(4);
     let (_ws_inbound_tx, ws_inbound_rx) = mpsc::channel(4);
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel(16);
     let (_fleet_event_tx, fleet_event_rx) = mpsc::channel(4);
@@ -312,6 +326,7 @@ fn worker_event_runtime_fixture(
 
     WorkerEventRuntimeFixture {
         runtime,
+        api_tx,
         fleet_control_rx,
         _sdk_out_rx: sdk_out_rx,
         _temp_dir: temp_dir,
@@ -3600,6 +3615,213 @@ fn preregistration_error_message_does_not_invent_retry_after_for_transport_error
 }
 
 #[test]
+fn preregistration_fallback_is_limited_to_local_headless_task_exit() {
+    let headless = build_http_api_spawn_spec(
+        WorkerName::new("worker-a"),
+        "opencode".to_string(),
+        Some("headless".to_string()),
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("headless spec");
+    assert!(can_spawn_without_preregistration(&headless, true, true));
+    assert!(!can_spawn_without_preregistration(&headless, false, true));
+    assert!(!can_spawn_without_preregistration(&headless, true, false));
+
+    let pty = build_http_api_spawn_spec(
+        WorkerName::new("worker-b"),
+        "codex".to_string(),
+        Some("pty".to_string()),
+        None,
+        Vec::new(),
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("pty spec");
+    assert!(!can_spawn_without_preregistration(&pty, true, true));
+}
+
+/// Exercise the complete `/api/spawn` path around node-registration failure:
+/// the real router emits a spawn request, the runtime answers the
+/// node-control registration with an error, and Relaycast stays at a
+/// persistent typed 503. Only an explicitly local/headless/task-exit request
+/// reaches `WorkerRegistry::spawn`; the PTY request fails closed.
+#[tokio::test]
+async fn api_spawn_retries_overload_and_only_safe_mode_falls_back() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let registration = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents");
+        then.status(503).json_body(json!({
+            "ok": false,
+            "error": {
+                "code": "database_overloaded",
+                "message": "The database is temporarily overloaded.",
+                "request_id": "req-overload"
+            }
+        }));
+    });
+
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel(16);
+    let worker_logs_dir = tempfile::tempdir().expect("worker logs dir");
+    let workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        worker_logs_dir.path().to_path_buf(),
+        Instant::now(),
+    );
+    let mut fixture =
+        worker_event_runtime_fixture_with_relay(workers, HashMap::new(), Some(server.base_url()));
+    let (events_tx, _events_rx) = tokio::sync::broadcast::channel(8);
+    let router = listen_api_router_with_auth(
+        ListenApiConfig {
+            tx: fixture.api_tx.clone(),
+            events_tx,
+            replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY),
+            workspace_key: None,
+            relay_base_url: Some(server.base_url()),
+            memberships: Vec::new(),
+            default_workspace_id: Some(WorkspaceId::new("ws_demo")),
+            node_id: "node_test".to_string(),
+            node_name: "test-node".to_string(),
+            node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            persist: false,
+        },
+        None,
+    );
+    let spawn_request = |body: Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/spawn")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("spawn body")))
+            .expect("spawn request")
+    };
+
+    let unsafe_response = tokio::spawn(router.clone().oneshot(spawn_request(json!({
+        "name": "unsafe-overload-worker",
+        "cli": "codex",
+        "transport": "pty"
+    }))));
+    let unsafe_api_request = fixture
+        .runtime
+        .api_rx
+        .recv()
+        .await
+        .expect("unsafe API request");
+    let mut unsafe_runtime = Box::pin(fixture.runtime.handle_api_request(unsafe_api_request));
+    let unsafe_command = tokio::select! {
+        command = fixture.fleet_control_rx.recv() => command.expect("unsafe node registration command"),
+        _ = &mut unsafe_runtime => panic!("runtime must wait for node registration reply"),
+    };
+    let FleetControlCommand::RegisterAgent { reply, .. } = unsafe_command else {
+        panic!("spawn should use node-control agent.register");
+    };
+    reply
+        .send(Err("node_agent_registration_unavailable".to_string()))
+        .expect("unsafe registration reply");
+    unsafe_runtime.await;
+
+    let unsafe_response = unsafe_response
+        .await
+        .expect("unsafe router task")
+        .expect("unsafe router response");
+    assert_eq!(
+        unsafe_response.status(),
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let unsafe_body = to_bytes(unsafe_response.into_body(), usize::MAX)
+        .await
+        .expect("unsafe response body");
+    let unsafe_json: Value = serde_json::from_slice(&unsafe_body).expect("unsafe JSON");
+    let unsafe_error = unsafe_json["error"].as_str().expect("unsafe error");
+    assert!(unsafe_error.contains("503"));
+    assert!(unsafe_error.contains("database_overloaded"));
+    assert!(unsafe_error.contains("attempts: 3"));
+    assert!(fixture.runtime.workers.workers.is_empty());
+
+    let safe_response = tokio::spawn(router.oneshot(spawn_request(json!({
+        "name": "safe-overload-worker",
+        "cli": "codex",
+        "transport": "headless",
+        "spawnMode": "task_exit",
+        "skipRelayPrompt": true,
+        "task": "run the local task",
+        "harnessConfig": {
+            "runtime": "native",
+            "command": "cat",
+            "sessionId": "session-safe"
+        }
+    }))));
+    let safe_api_request = fixture
+        .runtime
+        .api_rx
+        .recv()
+        .await
+        .expect("safe API request");
+    let mut safe_runtime = Box::pin(fixture.runtime.handle_api_request(safe_api_request));
+    let safe_command = tokio::select! {
+        command = fixture.fleet_control_rx.recv() => command.expect("safe node registration command"),
+        _ = &mut safe_runtime => panic!("runtime must wait for node registration reply"),
+    };
+    let FleetControlCommand::RegisterAgent { reply, .. } = safe_command else {
+        panic!("safe spawn should use node-control agent.register");
+    };
+    reply
+        .send(Err("node_agent_registration_unavailable".to_string()))
+        .expect("safe registration reply");
+    safe_runtime.await;
+
+    let safe_response = safe_response
+        .await
+        .expect("safe router task")
+        .expect("safe router response");
+    assert_eq!(safe_response.status(), axum::http::StatusCode::OK);
+    let safe_body = to_bytes(safe_response.into_body(), usize::MAX)
+        .await
+        .expect("safe response body");
+    let safe_json: Value = serde_json::from_slice(&safe_body).expect("safe JSON");
+    assert_eq!(safe_json["success"], true);
+    assert_eq!(safe_json["runtime"], "headless");
+    assert_eq!(safe_json["pre_registered"], false);
+    assert_eq!(safe_json["sessionId"], "session-safe");
+    assert!(
+        safe_json["pid"].as_u64().is_some(),
+        "must report the live process PID"
+    );
+    let warning = safe_json["warning"].as_str().expect("safe warning");
+    assert!(warning.contains("503"));
+    assert!(warning.contains("database_overloaded"));
+    assert!(warning.contains("attempts: 3"));
+    assert!(fixture.runtime.workers.has_worker("safe-overload-worker"));
+    assert_eq!(
+        registration.hits(),
+        6,
+        "each spawn gets the full bounded retry budget"
+    );
+
+    fixture
+        .runtime
+        .workers
+        .release("safe-overload-worker")
+        .await
+        .expect("clean up local fallback worker");
+}
+
+#[test]
 fn injection_format_preserved() {
     let rendered = format_injection("alice", "evt_1", "hello", "bob");
     assert!(rendered.contains("<system-reminder>"));
@@ -5204,6 +5426,14 @@ fn model_flag_injected_with_other_args() {
 // ---------------------------------------------------------------------------
 
 fn test_relay_workspace(workspace_id: &str, workspace_alias: Option<&str>) -> RelayWorkspace {
+    test_relay_workspace_with_base_url(workspace_id, workspace_alias, None)
+}
+
+fn test_relay_workspace_with_base_url(
+    workspace_id: &str,
+    workspace_alias: Option<&str>,
+    relay_base_url: Option<&str>,
+) -> RelayWorkspace {
     let (ws_control_tx, _ws_control_rx) = mpsc::channel::<WsControl>(1);
     RelayWorkspace {
         workspace_id: WorkspaceId::from(workspace_id.to_string()),
@@ -5213,7 +5443,12 @@ fn test_relay_workspace(workspace_id: &str, workspace_alias: Option<&str>) -> Re
         self_agent_id: AgentId::from("agent_broker".to_string()),
         self_names: HashSet::from(["broker".to_string()]),
         self_agent_ids: HashSet::from([AgentId::from("agent_broker".to_string())]),
-        http_client: RelaycastHttpClient::new(None, "rk_live_test", "broker", "codex"),
+        http_client: RelaycastHttpClient::new(
+            relay_base_url.map(ToOwned::to_owned),
+            "rk_live_test",
+            "broker",
+            "codex",
+        ),
         ws_control_tx,
     }
 }
