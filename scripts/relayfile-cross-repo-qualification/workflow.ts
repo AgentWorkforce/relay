@@ -1,5 +1,6 @@
 /** RelayFlow DAG for the two-arm qualification. */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
+import { writeQualificationConfig } from './config.mjs';
 import { ClaudeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
 const RUN_ID =
@@ -16,22 +17,8 @@ const relayfilePath = process.env.RELAYFILE_REPO ?? '../relayfile';
 const relayfileCloudPath = process.env.RELAYFILE_CLOUD_REPO ?? '../relayfile-cloud';
 // Explicitly forward only qualification inputs. RelayFlow does not inherit the
 // workflow module's process.env into deterministic child steps automatically.
-const qualificationEnv = Object.fromEntries(
-  [
-    'RELAYFILE_QUALIFICATION_RUN_ID', 'RELAYFILE_QUALIFICATION_ARTIFACT_DIR',
-    'RELAYFILE_QUALIFICATION_BUNDLE_DIR', 'RELAYFILE_QUALIFICATION_CREATE_SANDBOXES',
-    'RELAYFILE_QUALIFICATION_NPM_VERSION', 'RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256',
-    'RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA', 'RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256',
-    'RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256', 'RELAYFILE_QUALIFICATION_DAYTONA_IMAGE',
-    'RELAYFILE_DAYTONA_CPU', 'RELAYFILE_DAYTONA_MEMORY_MB', 'RELAYFILE_DAYTONA_DISK_GIB',
-    'RELAYFILE_DAYTONA_TTL_MINUTES',
-  ].map((key) => [key, key === 'RELAYFILE_QUALIFICATION_RUN_ID' ? RUN_ID : key === 'RELAYFILE_QUALIFICATION_ARTIFACT_DIR' ? ARTIFACT_DIR : key === 'RELAYFILE_QUALIFICATION_BUNDLE_DIR' ? `${ARTIFACT_DIR}/bundle` : process.env[key] ?? ''])
-);
-Object.assign(qualificationEnv, {
-  RELAY_CLOUD_REPO: cloudPath,
-  RELAYFILE_REPO: relayfilePath,
-  RELAYFILE_CLOUD_REPO: relayfileCloudPath,
-});
+const CONFIG_PATH = `${ARTIFACT_DIR}/qualification-config.json`;
+const config = { version: 1, runId: RUN_ID, artifactDir: ARTIFACT_DIR, bundleDir: `${ARTIFACT_DIR}/bundle`, createSandboxes: process.env.RELAYFILE_QUALIFICATION_CREATE_SANDBOXES === '1', candidates: { cloud: cloudPath, relayfile: relayfilePath, 'relayfile-cloud': relayfileCloudPath }, npm: { version: process.env.RELAYFILE_QUALIFICATION_NPM_VERSION ?? '', tarballSha256: process.env.RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256 ?? '', sourceSha: process.env.RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA ?? '', releaseAttestationSha256: process.env.RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256 ?? '', mountTarballSha256: process.env.RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256 ?? '' }, daytona: { image: process.env.RELAYFILE_QUALIFICATION_DAYTONA_IMAGE ?? '', cpu: process.env.RELAYFILE_DAYTONA_CPU ?? '2', memoryMb: process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096', diskGib: process.env.RELAYFILE_DAYTONA_DISK_GIB ?? '10', ttlMinutes: process.env.RELAYFILE_DAYTONA_TTL_MINUTES ?? '90' } };
 // Pass the generated run identity through the child process environment. Keep it
 // out of shell command text so an unsafe caller-supplied value can never become
 // shell syntax.
@@ -39,7 +26,7 @@ process.env.RELAYFILE_QUALIFICATION_RUN_ID = RUN_ID;
 process.env.RELAYFILE_QUALIFICATION_ARTIFACT_DIR = ARTIFACT_DIR;
 process.env.RELAYFILE_QUALIFICATION_BUNDLE_DIR = `${ARTIFACT_DIR}/bundle`;
 function command(script: string, ...args: string[]): string {
-  return ['node', `scripts/relayfile-cross-repo-qualification/${script}`, ...args].join(' ');
+    return ['node', `scripts/relayfile-cross-repo-qualification/${script}`, ...args, '--config', CONFIG_PATH].join(' ');
 }
 function reviewTask(provider: 'Claude' | 'Codex', phase: string): string {
   const name = provider.toLowerCase();
@@ -107,7 +94,7 @@ export function buildQualificationWorkflow() {
     .channel('relayfile-cross-repo-qualification')
     .maxConcurrency(2)
     .timeout(5_400_000)
-    .onError('continue');
+    .onError('fail-fast');
   wf.paths(
     [
       ['cloud', cloudPath, 'Local Cloud ACL suite'],
@@ -238,7 +225,9 @@ export function buildQualificationWorkflow() {
 async function main() {
   if (!process.argv[1]?.endsWith('relayfile-cross-repo-qualification/workflow.ts')) return;
   const dryRun = process.env.DRY_RUN === '1' || process.env.RELAYFILE_QUALIFICATION_DRY_RUN === '1';
-  const result = await buildQualificationWorkflow().run({ cwd: process.cwd(), dryRun, envSecrets: qualificationEnv });
+  await mkdir(ARTIFACT_DIR, { recursive: true });
+  await writeQualificationConfig(CONFIG_PATH, config);
+  const result = await buildQualificationWorkflow().run({ cwd: process.cwd(), dryRun });
   if (dryRun) await writeDryRunReport();
   if ('status' in result && result.status !== 'completed' && !dryRun) process.exitCode = 1;
 }

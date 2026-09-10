@@ -1,3 +1,5 @@
+import './config.mjs';
+
 /**
  * Relayfile cross-repo qualification contract.
  *

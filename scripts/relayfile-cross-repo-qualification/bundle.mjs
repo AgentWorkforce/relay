@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config.mjs';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config.mjs';
 import { execFile } from 'node:child_process';
 import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
