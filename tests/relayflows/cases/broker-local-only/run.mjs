@@ -144,16 +144,16 @@ async function request(route, body, method = body ? 'POST' : 'GET') {
   const data = await response.json();
   return { response, data };
 }
-async function ready() {
+async function ready(mode = 'local_only') {
   await poll(async () => {
     if (!url) return false;
     try {
       const { response, data } = await request('/api/status');
-      return response.ok && data.mode === 'local_only';
+      return response.ok && data.mode === mode;
     } catch {
       return false;
     }
-  }, 'local runtime readiness');
+  }, `${mode} runtime readiness`);
 }
 async function stop() {
   if (child && child.exitCode === null && child.signalCode === null) {
@@ -386,6 +386,25 @@ try {
     );
     assert.equal(persisted.records.length, 0);
     assert(!JSON.stringify(persisted).includes(env.AGENT_RELAY_WORKSPACE_KEY));
+    // Recovery may use a different workspace, or follow a local-only session
+    // with no key at all. Neither backlog may be uploaded or block normal mode.
+    for (const scope of [null, 'different-destination']) {
+      await stop();
+      const backlog = JSON.stringify({
+        scope,
+        records: [{ event_id: 'local_foreign_scope', body: 'PRIVATE_RETAINED_AUDIT' }],
+      });
+      const outboxPath = path.join(stateDir, 'state-outage-test.local-outbox.json');
+      await writeFile(outboxPath, backlog);
+      await start(false);
+      await ready('normal');
+      assert.equal(await readFile(outboxPath, 'utf8'), backlog, 'Unmatched backlog stays byte-identical');
+      assert.match(logs, /local audit backlog retained without reconciliation/);
+      assert(
+        !observations.events.some((event) => event.payload?.event_id === 'local_foreign_scope'),
+        'Unmatched local audit work must not be published'
+      );
+    }
     result = { outcome: 'fixed', signature: 'visible_local_runtime_and_reconciled_delivery' };
   }
   const report = {
@@ -394,7 +413,7 @@ try {
     arm,
     ...result,
     details:
-      'Published startup/status, local spawn/send, destination rejection, exhausted local queue retention and respawn replay across restarts, and audit replay signals checked; no elapsed-time assertions.',
+      'Published startup/status, local spawn/send, destination rejection, exhausted local queue retention and respawn replay across restarts, audit replay, and normal recovery with unmatched backlogs checked; no elapsed-time assertions.',
   };
   if (process.env.RELAY_PR_PROOF_RESULT_PATH) {
     await mkdir(path.dirname(process.env.RELAY_PR_PROOF_RESULT_PATH), { recursive: true });

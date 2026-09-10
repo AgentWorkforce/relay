@@ -434,13 +434,19 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         None
     };
     // A normal restart also drains retained audit records without replaying
-    // them as messages or changing the normal broker capability state.
+    // them as messages or changing the normal broker capability state. A
+    // backlog that cannot be reconciled must not block normal startup.
     let _previous_local_reconciliation =
         if !local_only && paths.state.with_extension("local-outbox.json").exists() {
-            Some(super::degraded::DegradedState::start(
-                &paths,
-                &resolved_name,
-            )?)
+            match super::degraded::DegradedState::start(&paths, &resolved_name) {
+                Ok(reconciliation) => Some(reconciliation),
+                Err(error) => {
+                    eprintln!(
+                        "[agent-relay] local audit backlog retained without reconciliation: {error}"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
