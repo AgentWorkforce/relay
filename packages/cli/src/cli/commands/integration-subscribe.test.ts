@@ -268,6 +268,21 @@ describe('integration subscribe', () => {
     });
   });
 
+  it('does not treat a legacy loopback broker HTTP API as the inbound gateway', async () => {
+    const { program, error } = harness({
+      resolveLocalRelayOptions: async () => ({
+        workspaceKey: 'rk_live_local',
+        baseUrl: 'http://127.0.0.1:3889',
+      }),
+    });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://cast.agentrelay.com'),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }) })
+    );
+  });
+
   it('keeps the session Relaycast URL paired with its workspace key for inbound provisioning', async () => {
     const { program } = harness({
       resolveLocalRelayOptions: async () => ({

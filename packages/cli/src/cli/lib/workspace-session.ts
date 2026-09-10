@@ -1,7 +1,11 @@
 import { getProjectPaths } from '@agent-relay/config';
 import { resolveWorkspaceKeyWithSource } from '@agent-relay/cloud/workspace-key';
 
-import { readProjectWorkspaceSession, writeProjectWorkspaceKey } from './project-workspace-key.js';
+import {
+  readProjectWorkspaceSession,
+  writeProjectWorkspaceKey,
+  writeProjectWorkspaceKeyPreservingSession,
+} from './project-workspace-key.js';
 import { setWorkspaceKey, switchWorkspace, validateWorkspaceName } from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
@@ -14,6 +18,10 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   workspaceKey: string;
   /** Canonical Relaycast workspace id, when the credential issuer supplies it. */
   workspaceId?: string;
+  relaycastRoute?: 'canonical' | 'agent37-isolated';
+  relaycastBaseUrl?: string;
+  /** Route-scoped Relaycast credential paired with the persisted route. */
+  relaycastApiKey?: string;
   /** Named sessions are also stored and selected in the machine-global workspace store. */
   name?: string;
 }
@@ -99,10 +107,22 @@ export function persistWorkspaceSession(
   // for an ordinary switch/join/create that happens to stay on the same key.
   const keepsWorkspace = existing?.workspaceKey === workspaceKey;
   const enrolledNodeId = keepsWorkspace ? existing?.enrolledNodeId : undefined;
-  writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
-    ...(enrolledNodeId ? { enrolledNodeId } : {}),
-    ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
-  });
+  if (keepsWorkspace) {
+    writeProjectWorkspaceKeyPreservingSession(projectDataDir, workspaceKey, {
+      ...(enrolledNodeId ? { enrolledNodeId } : {}),
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
+      ...(options.relaycastBaseUrl ? { relaycastBaseUrl: options.relaycastBaseUrl } : {}),
+      ...(options.relaycastApiKey ? { relaycastApiKey: options.relaycastApiKey } : {}),
+    });
+  } else {
+    writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
+      ...(options.relaycastBaseUrl ? { relaycastBaseUrl: options.relaycastBaseUrl } : {}),
+      ...(options.relaycastApiKey ? { relaycastApiKey: options.relaycastApiKey } : {}),
+    });
+  }
 
   if (name) {
     setWorkspaceKey(name, workspaceKey, options.env);

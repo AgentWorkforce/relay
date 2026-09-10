@@ -30,7 +30,7 @@ import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.
 import {
   readProjectWorkspaceSession,
   resolveWorkspaceSelection,
-  writeProjectWorkspaceKey,
+  writeProjectWorkspaceKeyPreservingSession,
   type ProjectWorkspaceSession,
   type WorkspaceSelection,
 } from './project-workspace-key.js';
@@ -1953,12 +1953,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // workspace. Persistence must never abort startup, so a write failure is
     // swallowed.
     try {
-      writeProjectWorkspaceKey(projectWorkspaceKeyDataDir, relay.workspaceKey ?? undefined, {
+      const relayWorkspaceKey = relay.workspaceKey ?? undefined;
+      const sameWorkspace = resumedProjectSession?.workspaceKey === relayWorkspaceKey;
+      writeProjectWorkspaceKeyPreservingSession(projectWorkspaceKeyDataDir, relayWorkspaceKey, {
         enrolledNodeId: deps.env.AGENT_RELAY_ENROLLED_NODE_ID ?? resumedProjectSession?.enrolledNodeId,
         // Recording the resolved workspace id lets the NEXT start detect a
         // conflicting source (a stored enrollment in another workspace) before
         // the broker comes up, instead of after agents land in the wrong place.
-        workspaceId: relay.workspaceId ?? resumedProjectSession?.workspaceId,
+        ...((relay.workspaceId ?? (sameWorkspace ? resumedProjectSession?.workspaceId : undefined))
+          ? { workspaceId: relay.workspaceId ?? resumedProjectSession?.workspaceId }
+          : {}),
       });
     } catch {
       // best-effort: a broker that came up should stay up even if the key file

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -15,12 +15,94 @@ function makeExecutable(directory: string, name: string, contents: string): stri
   return path;
 }
 
-function createFakeBinaries(): { cli: string; broker: string; invocationLog: string } {
+function createFakeBinaries(): { cli: string; broker: string; invocationLog: string; toolsPath: string } {
   const directory = mkdtempSync(join(tmpdir(), 'relay-standalone-smoke-test-'));
   temporaryDirectories.push(directory);
 
   const invocationLog = join(directory, 'invocations.log');
   writeFileSync(invocationLog, '');
+  const toolsPath = join(directory, 'tools');
+  mkdirSync(toolsPath);
+  makeExecutable(
+    toolsPath,
+    'curl',
+    `#!/usr/bin/env bash
+set -euo pipefail
+output=/dev/null
+headers=/dev/null
+method=GET
+url=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    --output) output="\$2"; shift 2 ;;
+    --dump-header) headers="\$2"; shift 2 ;;
+    --connect-timeout|--max-time) shift 2 ;;
+    --request) method="\$2"; shift 2 ;;
+    --write-out) shift 2 ;;
+    --data|--header) shift 2 ;;
+    *) url="\$1"; shift ;;
+  esac
+done
+if [[ "$method" = POST && "$url" = */v1/workspaces ]]; then
+  printf '%s' '{"data":{"api_key":"rk_live_fake_smoke_key","workspace_id":"rw_fake_smoke"}}' > "\$output"
+  echo 201
+elif [[ "$method" = DELETE && "$url" = */v1/workspace ]]; then
+  delete_status="\${FAKE_DELETE_STATUS:-204}"
+  if [ "$delete_status" != 200 ] && [ "$delete_status" != 204 ]; then
+    printf '%s' '{"error":{"code":"internal_error","message":"rk_live_delete_body_must_not_print"}}' > "\$output"
+  fi
+  echo "$delete_status"
+elif [[ "$method" = GET && "$url" = */v1/workspace ]]; then
+  verify_status="\${FAKE_VERIFY_STATUS:-401}"
+  if [ -n "\${FAKE_VERIFY_STATUSES:-}" ]; then
+    verify_count_file="\${INVOCATION_LOG}.verify-count"
+    verify_count=0
+    if [ -f "\$verify_count_file" ]; then
+      verify_count="\$(<"\$verify_count_file")"
+    fi
+    IFS=',' read -r -a verify_statuses <<< "\$FAKE_VERIFY_STATUSES"
+    verify_index="\$verify_count"
+    if [ "\$verify_index" -ge "\${#verify_statuses[@]}" ]; then
+      verify_index="\$((\${#verify_statuses[@]} - 1))"
+    fi
+    verify_status="\${verify_statuses[\$verify_index]}"
+    printf '%s\n' "\$((verify_count + 1))" > "\$verify_count_file"
+  fi
+  if [ -n "\${FAKE_VERIFY_RETRY_AFTER:-}" ]; then
+    retry_after_header="\${FAKE_VERIFY_RETRY_AFTER_HEADER:-Retry-After}"
+    printf 'HTTP/2 %s\r\n%s: %s\r\n\r\n' "\$verify_status" "\$retry_after_header" "\$FAKE_VERIFY_RETRY_AFTER" > "\$headers"
+  fi
+  echo "\$verify_status"
+else
+  echo 500
+fi
+`
+  );
+  makeExecutable(
+    toolsPath,
+    'sleep',
+    `#!/usr/bin/env bash
+printf 'sleep %s\n' "\${1:-}" >> "$INVOCATION_LOG"
+`
+  );
+  makeExecutable(
+    toolsPath,
+    'jq',
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "-cn" ]; then
+  echo '{"name":"fake","expires_in_seconds":300}'
+elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *api_key* ]]; then
+  echo 'rk_live_fake_smoke_key'
+elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *workspace_id* ]]; then
+  echo 'rw_fake_smoke'
+elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *error.code* ]] && [ -n "\${FAKE_DELETE_ERROR_CODE:-}" ]; then
+  echo "\$FAKE_DELETE_ERROR_CODE"
+else
+  exit 1
+fi
+`
+  );
   const broker = makeExecutable(
     directory,
     'broker',
@@ -48,8 +130,8 @@ case "\${2:-}" in
     echo "Cleaned up (was not running)"
     ;;
   up)
-    if [ -z "\${RELAY_WORKSPACE_KEY:-}" ]; then
-      echo "workspace key missing" >&2
+    if [ "\${RELAY_BASE_URL:-}" != "https://cast.agentrelay.com" ]; then
+      echo "trusted Relaycast base URL missing" >&2
       exit 65
     fi
     if [ -n "\${RELAY_WORKSPACES_JSON:-}" ]; then
@@ -82,7 +164,7 @@ esac
 `
   );
 
-  return { cli, broker, invocationLog };
+  return { cli, broker, invocationLog, toolsPath };
 }
 
 afterEach(() => {
@@ -103,18 +185,37 @@ describe('ci-standalone-smoke workspace reuse', () => {
     expect(cleanupSubshellIndex).toBeGreaterThan(trapDisarmIndex);
   });
 
-  it('injects the same dedicated secret at every workflow call site', () => {
+  it('creates an ephemeral workspace on the trusted engine and wires its base URL explicitly', () => {
+    const script = readFileSync(smokeScript, 'utf8');
+    expect(script).toContain('TRUSTED_RELAY_BASE_URL="https://cast.agentrelay.com"');
+    expect(script).toContain('WORKSPACE_LEASE_SECONDS=300');
+    expect(script).toContain('CURL_CONNECT_TIMEOUT_SECONDS=10');
+    expect(script).toContain('CURL_MAX_TIME_SECONDS=60');
+    expect(script).toContain('--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS"');
+    expect(script).toContain('--max-time "$CURL_MAX_TIME_SECONDS"');
+    expect(script).toContain('expires_in_seconds: $expires');
+    expect(script).toContain('printf \'::add-mask::%s\\n\' "$WORKSPACE_KEY"');
+    expect(script).toContain('--request DELETE');
+    expect(script).toContain('Ephemeral workspace deletion verified');
     for (const workflow of ['.github/workflows/package-validation.yml', '.github/workflows/publish.yml']) {
-      expect(readFileSync(resolve(workflow), 'utf8')).toContain(
-        'RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}'
-      );
+      expect(readFileSync(resolve(workflow), 'utf8')).not.toContain('RELAY_CI_WORKSPACE_KEY');
     }
+  });
+
+  it('reports the create HTTP status and sanitized error code when no key is returned', () => {
+    const script = readFileSync(smokeScript, 'utf8');
+    expect(script).toContain('CREATE_ERROR_CODE=');
+    expect(script).toContain('did not contain an API key (HTTP ${CREATE_STATUS:-unknown}');
+    expect(script).toContain('error code ${CREATE_ERROR_CODE}');
+    expect(script).not.toContain('cat "$WORKSPACE_RESPONSE"');
   });
 
   it('keeps the outer startup deadline above the broker aggregate handshake budget', () => {
     const script = readFileSync(smokeScript, 'utf8');
     const brokerSession = readFileSync(resolve('crates/broker/src/runtime/session.rs'), 'utf8');
     const minimumSeconds = Number(script.match(/MIN_STARTUP_TIMEOUT_SECONDS=([0-9]+)/)?.[1]);
+    const maximumSeconds = Number(script.match(/MAX_STARTUP_TIMEOUT_SECONDS=([0-9]+)/)?.[1]);
+    const leaseSeconds = Number(script.match(/WORKSPACE_LEASE_SECONDS=([0-9]+)/)?.[1]);
     const smokeSeconds = Number(
       script.match(/AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-([0-9]+)}/)?.[1]
     );
@@ -124,6 +225,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
 
     expect(minimumSeconds).toBeGreaterThanOrEqual(brokerSeconds + 10);
     expect(smokeSeconds).toBeGreaterThanOrEqual(minimumSeconds);
+    expect(leaseSeconds - maximumSeconds).toBeGreaterThanOrEqual(60);
   });
 
   it('rejects unsafe startup-timeout overrides before invoking binaries', () => {
@@ -132,15 +234,15 @@ describe('ci-standalone-smoke workspace reuse', () => {
       ['050', 'without leading zeros'],
       ['060', 'without leading zeros'],
       ['08', 'without leading zeros'],
-      ['99999', 'must be no more than 86400s'],
-      ['9223372036854775808', 'between 50s and 86400s'],
+      ['241', 'must be no more than 240s'],
+      ['99999', 'must be no more than 240s'],
+      ['9223372036854775808', 'between 50s and 240s'],
     ]) {
       const { cli, broker, invocationLog } = createFakeBinaries();
       const result = spawnSync('bash', [smokeScript, cli, broker], {
         encoding: 'utf8',
         env: {
           ...process.env,
-          RELAY_WORKSPACE_KEY: 'rk_live_test_only',
           AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: override,
           INVOCATION_LOG: invocationLog,
         },
@@ -152,47 +254,170 @@ describe('ci-standalone-smoke workspace reuse', () => {
     }
   });
 
-  it('fails closed before invoking binaries when the dedicated key is missing or whitespace-only', () => {
-    const unusableKeys: Array<[label: string, value: string | undefined]> = [
-      ['unset', undefined],
-      ['empty', ''],
-      ['single space', ' '],
-      ['tab', '\t'],
-    ];
-
-    for (const [label, value] of unusableKeys) {
-      const { cli, broker, invocationLog } = createFakeBinaries();
-      const env = { ...process.env };
-      if (value === undefined) {
-        delete env.RELAY_WORKSPACE_KEY;
-      } else {
-        env.RELAY_WORKSPACE_KEY = value;
-      }
-      env.INVOCATION_LOG = invocationLog;
-
-      const result = spawnSync('bash', [smokeScript, cli, broker], {
-        encoding: 'utf8',
-        env,
-      });
-
-      expect(result.status, `${label}: ${result.stderr}`).toBe(2);
-      expect(result.stderr, label).toContain('Refusing to start');
-      expect(result.stderr, label).toContain('throwaway workspace');
-      expect(result.stderr, label).not.toContain('binary not found');
-      expect(readFileSync(invocationLog, 'utf8'), label).toBe('');
-    }
-  });
-
-  it('passes the shared key through the isolated lifecycle and joins its workspace', () => {
-    const { cli, broker, invocationLog } = createFakeBinaries();
+  it('mints and cleans up the ephemeral workspace without printing its key', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
     const result = spawnSync('bash', [smokeScript, cli, broker], {
       encoding: 'utf8',
       env: {
         ...process.env,
-        RELAY_WORKSPACE_KEY: 'rk_live_test_only',
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Ephemeral workspace deletion verified');
+    // The GitHub workflow command necessarily carries the value once so the
+    // runner can mask it; all ordinary output must remain free of the key.
+    const ordinaryOutput = result.stdout.replace(/::add-mask::[^\n]*\n/g, '');
+    expect(ordinaryOutput).not.toContain('rk_live_fake_smoke_key');
+    expect(result.stderr).not.toContain('rk_live_fake_smoke_key');
+  });
+
+  it('accepts a successful delete without adding a follow-up read dependency', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '204',
+        FAKE_VERIFY_STATUS: '503',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Ephemeral workspace deletion verified');
+    expect(result.stderr).not.toContain('follow-up HTTP');
+  });
+
+  it('accepts an ambiguous delete response only when the follow-up proves absence', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUS: '401',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      'Ephemeral workspace deletion verified after ambiguous DELETE HTTP 500, error code internal_error'
+    );
+    expect(result.stdout).not.toContain('rk_live_delete_body_must_not_print');
+    expect(result.stderr).not.toContain('rk_live_delete_body_must_not_print');
+  });
+
+  it('retries a transient verification read and honors bounded Retry-After', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUSES: '503,401',
+        FAKE_VERIFY_RETRY_AFTER: '3',
+        FAKE_VERIFY_RETRY_AFTER_HEADER: 'retry-after',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      'Ephemeral workspace deletion verified after ambiguous DELETE HTTP 500, error code internal_error'
+    );
+    expect(readFileSync(invocationLog, 'utf8')).toContain('sleep 3');
+  });
+
+  it('classifies an unsafe delete error code instead of logging it', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'rk_live_untrusted_code',
+        FAKE_VERIFY_STATUS: '401',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('ambiguous DELETE HTTP 500, error code other');
+    expect(result.stdout).not.toContain('rk_live_untrusted_code');
+    expect(result.stderr).not.toContain('rk_live_untrusted_code');
+  });
+
+  it('fails closed when an ambiguous delete leaves the workspace readable', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUS: '200',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'ephemeral workspace cleanup returned HTTP 500, error code internal_error'
+    );
+    expect(result.stderr).toContain('ephemeral workspace deletion was not proved (follow-up HTTP 200)');
+    expect(result.stdout).not.toContain('rk_live_delete_body_must_not_print');
+    expect(result.stderr).not.toContain('rk_live_delete_body_must_not_print');
+  });
+
+  it('fails closed when an ambiguous delete cannot be verified', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUS: '503',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'ephemeral workspace cleanup returned HTTP 500, error code internal_error'
+    );
+    expect(result.stderr).toContain('ephemeral workspace deletion was not proved (follow-up HTTP 503)');
+  });
+
+  it('passes the shared key through the isolated lifecycle and joins its workspace', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
         RELAY_WORKSPACES_JSON: '[{"workspace_id":"rw_wrong","api_key":"rk_wrong"}]',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-a',
         INVOCATION_LOG: invocationLog,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
       },
       timeout: 10_000,
     });
@@ -203,15 +428,15 @@ describe('ci-standalone-smoke workspace reuse', () => {
   });
 
   it('rejects a lifecycle that reports a newly created workspace', () => {
-    const { cli, broker, invocationLog } = createFakeBinaries();
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
     const result = spawnSync('bash', [smokeScript, cli, broker], {
       encoding: 'utf8',
       env: {
         ...process.env,
-        RELAY_WORKSPACE_KEY: 'rk_live_test_only',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-b',
         FAKE_WORKSPACE_MODE: 'created',
         INVOCATION_LOG: invocationLog,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
       },
       timeout: 10_000,
     });
@@ -222,7 +447,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
   });
 
   it('rejects readiness written after the startup deadline', () => {
-    const { cli, broker, invocationLog } = createFakeBinaries();
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
     const bashEnv = join(dirname(invocationLog), 'accelerated-clock.sh');
     writeFileSync(
       bashEnv,
@@ -232,12 +457,12 @@ describe('ci-standalone-smoke workspace reuse', () => {
       encoding: 'utf8',
       env: {
         ...process.env,
-        RELAY_WORKSPACE_KEY: 'rk_live_test_only',
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-c',
         AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '50',
         FAKE_READY_AFTER_SECOND_DOWN: '1',
         INVOCATION_LOG: invocationLog,
         BASH_ENV: bashEnv,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
       },
       timeout: 10_000,
     });

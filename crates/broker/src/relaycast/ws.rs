@@ -6,12 +6,12 @@ use std::{
 
 use anyhow::{Context, Result};
 use relaycast::{
-    agent::DmOptions, format_registration_error,
-    retry_agent_registration as sdk_retry_agent_registration, ActionDefinition, ActionInvocation,
-    AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient, AgentRegistrationError,
-    AgentRegistrationRetryOutcome, CompleteInvocationRequest, CreateObserverTokenRequest,
-    EmitSessionEventRequest, MessageListQuery, ObserverToken, RegisterActionRequest, RelayCast,
-    RelayCastOptions, RelayError, ReleaseAgentRequest, TakeOverAgentRequest, UpdateAgentRequest,
+    agent::DmOptions, format_registration_error, registration_is_retryable, ActionDefinition,
+    ActionInvocation, AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient,
+    AgentRegistrationError, AgentRegistrationRetryOutcome, CompleteInvocationRequest,
+    CreateObserverTokenRequest, EmitSessionEventRequest, MessageListQuery, ObserverToken,
+    RegisterActionRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
+    TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -50,8 +50,6 @@ pub struct RelaycastHttpClient {
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
 pub type RegRetryOutcome = AgentRegistrationRetryOutcome;
-#[cfg(test)]
-pub(crate) use relaycast::registration_is_retryable;
 pub(crate) use relaycast::registration_retry_after_secs;
 
 /// Why the broker is asking `register_agent_token` for a token.
@@ -1580,7 +1578,87 @@ pub fn format_worker_preregistration_error(
     format_registration_error(name, error).replace("register agent", "pre-register worker")
 }
 
+const MAX_AGENT_REGISTRATION_ATTEMPTS: usize = 3;
+const DEFAULT_AGENT_REGISTRATION_RETRY_DELAY: Duration = Duration::from_secs(2);
+const MAX_AGENT_REGISTRATION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_AGENT_REGISTRATION_ELAPSED: Duration = Duration::from_secs(180);
+
+fn agent_registration_retry_delay(error: &RelaycastRegistrationError) -> Duration {
+    registration_retry_after_secs(error)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_AGENT_REGISTRATION_RETRY_DELAY)
+        .min(MAX_AGENT_REGISTRATION_RETRY_DELAY)
+}
+
+async fn retry_agent_registration_with<F, Fut, S, SleepFut>(
+    mut request: F,
+    mut sleep: S,
+) -> Result<String, RegRetryOutcome>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, RelaycastRegistrationError>>,
+    S: FnMut(Duration) -> SleepFut,
+    SleepFut: std::future::Future<Output = ()>,
+{
+    for attempt in 0..MAX_AGENT_REGISTRATION_ATTEMPTS {
+        match request().await {
+            Ok(token) => return Ok(token),
+            Err(error)
+                if registration_is_retryable(&error)
+                    && attempt + 1 < MAX_AGENT_REGISTRATION_ATTEMPTS =>
+            {
+                let delay = agent_registration_retry_delay(&error);
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    retry_in_ms = delay.as_millis(),
+                    error = %error,
+                    "transient Relaycast agent registration failure; retrying"
+                );
+                sleep(delay).await;
+            }
+            Err(error) if registration_is_retryable(&error) => {
+                return Err(RegRetryOutcome::RetryableExhausted(error));
+            }
+            Err(error) => return Err(RegRetryOutcome::Fatal(error)),
+        }
+    }
+    unreachable!("the registration retry loop always returns on its final attempt")
+}
+
+async fn retry_agent_registration_with_budget<F, Fut, S, SleepFut>(
+    agent_name: &str,
+    budget: Duration,
+    request: F,
+    sleep: S,
+) -> Result<String, RegRetryOutcome>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, RelaycastRegistrationError>>,
+    S: FnMut(Duration) -> SleepFut,
+    SleepFut: std::future::Future<Output = ()>,
+{
+    match tokio::time::timeout(budget, retry_agent_registration_with(request, sleep)).await {
+        Ok(result) => result,
+        Err(_) => Err(RegRetryOutcome::RetryableExhausted(
+            RelaycastRegistrationError::Transport {
+                agent_name: agent_name.to_string(),
+                detail: format!(
+                    "registration retry budget exhausted after {}s",
+                    budget.as_secs()
+                ),
+            },
+        )),
+    }
+}
+
 /// Attempt to register an agent token with up to 3 retries for transient errors.
+///
+/// The Relaycast SDK's typed rate-limit errors carry its cooldown. Honor
+/// that duration (under a hard one-minute cap) instead of immediately retrying
+/// through the same admission window. Transport failures retain the short SDK
+/// fallback because they do not carry a retry delay. The complete operation is
+/// capped below Cloud's five-minute step-provisioning budget, so a hung request
+/// or a second full cooldown cannot strand the caller indefinitely.
 pub async fn retry_agent_registration(
     http: &RelaycastHttpClient,
     name: &str,
@@ -1592,7 +1670,13 @@ pub async fn retry_agent_registration(
             detail: "SDK relay client not initialized".to_string(),
         })
     })?;
-    sdk_retry_agent_registration(registration, name, cli).await
+    retry_agent_registration_with_budget(
+        name,
+        MAX_AGENT_REGISTRATION_ELAPSED,
+        || registration.register_agent_token(name, cli),
+        |delay| tokio::time::sleep(delay),
+    )
+    .await
 }
 
 /// Create a new spawn identity, never reuse a cached credential or take over a name.
@@ -1721,8 +1805,9 @@ mod tests {
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
     use super::{
-        format_worker_preregistration_error, register_new_spawn_identity,
-        registration_is_retryable, registration_retry_after_secs,
+        agent_registration_retry_delay, format_worker_preregistration_error,
+        register_new_spawn_identity, registration_is_retryable, registration_retry_after_secs,
+        retry_agent_registration_with, retry_agent_registration_with_budget,
         ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
         RegRetryOutcome, RegisterIntent, RelaycastHttpClient, RelaycastRegistrationError,
     };
@@ -1747,6 +1832,172 @@ mod tests {
         };
         assert!(registration_is_retryable(&error));
         assert_eq!(registration_retry_after_secs(&error), Some(60));
+    }
+
+    #[test]
+    fn registration_retry_delay_honors_typed_cooldown_with_a_hard_cap() {
+        let advertised = AgentRegistrationError::RateLimited {
+            agent_name: "worker-a".to_string(),
+            retry_after_secs: 17,
+            detail: "rate limited".to_string(),
+        };
+        let excessive = AgentRegistrationError::Blocked {
+            agent_name: "worker-a".to_string(),
+            retry_after_secs: 600,
+        };
+        let transport = AgentRegistrationError::Transport {
+            agent_name: "worker-a".to_string(),
+            detail: "connection reset".to_string(),
+        };
+
+        assert_eq!(
+            agent_registration_retry_delay(&advertised),
+            Duration::from_secs(17)
+        );
+        assert_eq!(
+            agent_registration_retry_delay(&excessive),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            agent_registration_retry_delay(&transport),
+            Duration::from_secs(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_retry_waits_for_the_typed_rate_limit_delay() {
+        let mut outcomes = std::collections::VecDeque::from([
+            Err(AgentRegistrationError::RateLimited {
+                agent_name: "worker-a".to_string(),
+                retry_after_secs: 23,
+                detail: "rate limited".to_string(),
+            }),
+            Ok("at_live_after_retry".to_string()),
+        ]);
+        let mut delays = Vec::new();
+
+        let token = retry_agent_registration_with(
+            || std::future::ready(outcomes.pop_front().expect("bounded test outcome")),
+            |delay| {
+                delays.push(delay);
+                std::future::ready(())
+            },
+        )
+        .await
+        .expect("the retry after the advertised delay should succeed");
+
+        assert_eq!(token, "at_live_after_retry");
+        assert_eq!(delays, vec![Duration::from_secs(23)]);
+    }
+
+    #[tokio::test]
+    async fn registration_retry_preserves_terminal_classification_and_attempt_budget() {
+        let mut transient_outcomes = std::collections::VecDeque::from([
+            Err(AgentRegistrationError::Transport {
+                agent_name: "worker-a".to_string(),
+                detail: "first".to_string(),
+            }),
+            Err(AgentRegistrationError::Transport {
+                agent_name: "worker-a".to_string(),
+                detail: "second".to_string(),
+            }),
+            Err(AgentRegistrationError::Transport {
+                agent_name: "worker-a".to_string(),
+                detail: "third".to_string(),
+            }),
+        ]);
+        let mut transient_delays = Vec::new();
+
+        let exhausted = retry_agent_registration_with(
+            || {
+                std::future::ready(
+                    transient_outcomes
+                        .pop_front()
+                        .expect("three-attempt test outcome"),
+                )
+            },
+            |delay| {
+                transient_delays.push(delay);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            exhausted,
+            Err(RegRetryOutcome::RetryableExhausted(
+                AgentRegistrationError::Transport { detail, .. }
+            )) if detail == "third"
+        ));
+        assert_eq!(transient_delays, vec![Duration::from_secs(2); 2]);
+        assert!(transient_outcomes.is_empty());
+
+        let mut fatal_delays = Vec::new();
+        let fatal = retry_agent_registration_with(
+            || {
+                std::future::ready(Err(AgentRegistrationError::Api {
+                    agent_name: "worker-a".to_string(),
+                    status: 401,
+                    detail: "unauthorized".to_string(),
+                }))
+            },
+            |delay| {
+                fatal_delays.push(delay);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            fatal,
+            Err(RegRetryOutcome::Fatal(AgentRegistrationError::Api {
+                status: 401,
+                ..
+            }))
+        ));
+        assert!(fatal_delays.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registration_retry_budget_cancels_a_hung_request() {
+        let result = retry_agent_registration_with_budget(
+            "worker-a",
+            Duration::from_millis(10),
+            || std::future::pending::<Result<String, AgentRegistrationError>>(),
+            |_| std::future::ready(()),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(RegRetryOutcome::RetryableExhausted(
+                AgentRegistrationError::Transport { detail, .. }
+            )) if detail.contains("retry budget exhausted")
+        ));
+    }
+
+    #[tokio::test]
+    async fn registration_retry_budget_cancels_a_cooldown_sleep() {
+        let result = retry_agent_registration_with_budget(
+            "worker-a",
+            Duration::from_millis(10),
+            || {
+                std::future::ready(Err(AgentRegistrationError::RateLimited {
+                    agent_name: "worker-a".to_string(),
+                    retry_after_secs: 60,
+                    detail: "rate limited".to_string(),
+                }))
+            },
+            |_| std::future::pending::<()>(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(RegRetryOutcome::RetryableExhausted(
+                AgentRegistrationError::Transport { detail, .. }
+            )) if detail.contains("retry budget exhausted")
+        ));
     }
 
     #[test]

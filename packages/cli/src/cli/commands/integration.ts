@@ -34,7 +34,7 @@ import {
   assertRelayfileVersion,
   type RelayfileClientOptions,
 } from '@relayfile/client';
-import { resolveBaseUrl, resolveWorkspaceKey } from '../lib/sdk-client.js';
+import { resolveBaseUrl, resolveWorkspaceKey, resolveWorkspaceTransport } from '../lib/sdk-client.js';
 
 // Re-export the version gate so existing tests importing it from this module
 // (and any callers) keep working after it moved to the published client package.
@@ -482,8 +482,7 @@ async function createRelayfileInboundTarget(
   const options = sdkOptionsFromOpts(commandOpts);
   const authOptions =
     local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
-  const workspaceKey = resolveWorkspaceKey(authOptions);
-  const baseUrl = resolveInboundTargetBaseUrl(authOptions);
+  const { workspaceKey, baseUrl } = resolveInboundTargetTransport(authOptions, options);
   const response = await fetch(new URL('/v1/integrations/relayfile/inbound-target', baseUrl), {
     method: 'POST',
     headers: {
@@ -534,8 +533,23 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
   return { url: parsedUrl.toString(), secret };
 }
 
-function resolveInboundTargetBaseUrl(options: SdkClientOptions): string {
-  const baseUrl = resolveBaseUrl(options) ?? 'https://cast.agentrelay.com';
+function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions: SdkClientOptions) {
+  const selected = { ...options };
+  // A legacy broker session can advertise its loopback HTTP API. It is not
+  // the Relaycast gateway. Preserve genuine HTTPS session origins, including
+  // custom self-hosts, and let persisted workspace routing validate the pair.
+  if (!callerOptions.baseUrl && selected.baseUrl) {
+    const url = new URL(selected.baseUrl);
+    if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
+      selected.baseUrl = undefined;
+    }
+  }
+  const transport = resolveWorkspaceTransport(selected);
+  return { ...transport, baseUrl: resolveInboundTargetBaseUrl(transport.baseUrl) };
+}
+
+function resolveInboundTargetBaseUrl(selectedBaseUrl: string | undefined): string {
+  const baseUrl = selectedBaseUrl ?? 'https://cast.agentrelay.com';
   const parsed = new URL(baseUrl);
   if (parsed.protocol !== 'https:') {
     throw new Error('Inbound relayfile target provisioning requires an https Relaycast base URL.');
@@ -1438,7 +1452,7 @@ async function runSubscribeSetup(
   const channel = recipientName
     ? await deps.resolveAgentChannel(recipientName, {
         ...effectiveRelayOptions,
-        baseUrl: resolveInboundTargetBaseUrl(effectiveRelayOptions),
+        baseUrl: resolveInboundTargetTransport(effectiveRelayOptions, relayOptions).baseUrl,
       })
     : targetChannel(to);
   const events = commaList(opts.events);

@@ -9,6 +9,14 @@ import { runBoundedProcess } from './process-runner.mjs';
 
 const TERMINAL_SUCCESS = new Set(['completed', 'succeeded', 'success']);
 const TERMINAL_FAILURE = new Set(['failed', 'cancelled', 'canceled', 'timed_out', 'error']);
+const CLOUD_RUN_STATUSES = new Set([
+  'pending',
+  'queued',
+  'launching',
+  'running',
+  ...TERMINAL_SUCCESS,
+  ...TERMINAL_FAILURE,
+]);
 const LEGACY_REFRESHABLE_AUTH_KEYS = [
   'CLOUD_API_ACCESS_TOKEN',
   'CLOUD_API_REFRESH_TOKEN',
@@ -17,12 +25,55 @@ const LEGACY_REFRESHABLE_AUTH_KEYS = [
 ];
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_LIVE_OUTPUT_BYTES = 256 * 1024;
+const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
+const MIN_FINAL_MASK_FRAGMENT_LENGTH = 4;
 const DEFAULT_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const DIAGNOSTIC_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+const LIVE_CREDENTIAL_PREFIXES = [
+  'rk_live_',
+  'rjt_live_',
+  'at_live_',
+  'nt_live_',
+  'ot_live_',
+  'cld_at_',
+  'rth_at_',
+  'ocl_node_enr_',
+  'br_',
+  'github_pat_',
+  'ghp_',
+  'gho_',
+  'ghu_',
+  'ghs_',
+  'ghr_',
+];
+const LIVE_CREDENTIAL_PREFIX_RE = new RegExp(
+  `(${LIVE_CREDENTIAL_PREFIXES.map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,
+  'g'
+);
+const STATUS_DIAGNOSTIC_FIELDS = [
+  'runId',
+  'status',
+  'sandboxId',
+  'dispatchType',
+  'relayflowVersion',
+  'createdAt',
+  'updatedAt',
+];
+const STATUS_FAILURE_DIAGNOSTIC_FIELDS = ['phase', 'code', 'dispatchType', 'sandboxId', 'occurredAt'];
 
-function run(command, args, options = {}) {
-  return runBoundedProcess(command, args, {
+export async function run(command, args, options = {}) {
+  const diagnosticSecretValues = options.diagnosticSecretValues ?? [];
+  // Keep a redaction boundary per pipe. A partial credential suffix from
+  // stdout must never be prepended to the next stderr chunk (or vice versa).
+  // Each pipe is finalized independently, so an actually benign suffix can be
+  // released once that originating stream closes.
+  const outputRedactors = createCommandOutputRedactors(diagnosticSecretValues, {
+    maskPendingOnFinal: true,
+  });
+  const result = await runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
     maxCaptureBytes: MAX_CAPTURE_BYTES,
@@ -31,7 +82,34 @@ function run(command, args, options = {}) {
     signal: options.signal,
     onStdout: options.onStdout,
     onStderr: options.onStderr,
+    transformChunk: (text, stream, final) => outputRedactors[stream].push(text, final),
   });
+
+  return maskCapturedCommandOutput(result, outputRedactors);
+}
+
+/** Create independent streaming redactors for subprocess stdout and stderr. */
+export function createCommandOutputRedactors(secretValues = [], { maskPendingOnFinal = false } = {}) {
+  return {
+    stdout: createCredentialRedactor(secretValues, { maskPendingOnFinal }),
+    stderr: createCredentialRedactor(secretValues, { maskPendingOnFinal }),
+  };
+}
+
+export function maskCapturedCommandOutput(result, outputRedactor) {
+  if (outputRedactor && typeof outputRedactor.requiresCapturedOutputMask === 'function') {
+    return outputRedactor.requiresCapturedOutputMask()
+      ? { ...result, stdout: result.stdout ? '[redacted]' : '', stderr: result.stderr ? '[redacted]' : '' }
+      : result;
+  }
+  const maskedStreams = Object.entries(outputRedactor ?? {})
+    .filter(([, redactor]) => redactor?.requiresCapturedOutputMask?.())
+    .map(([stream]) => stream);
+  if (maskedStreams.length === 0) return result;
+  return {
+    ...result,
+    ...Object.fromEntries(maskedStreams.map((stream) => [stream, result[stream] ? '[redacted]' : ''])),
+  };
 }
 
 export function boundedDuration(value, { fallback, minimum, maximum, label }) {
@@ -43,22 +121,394 @@ export function boundedDuration(value, { fallback, minimum, maximum, label }) {
   return parsed;
 }
 
-function parseJsonOutput(output, label) {
+export function parseJsonOutput(output, label) {
   try {
     return JSON.parse(output);
   } catch {
     const first = output.indexOf('{');
     const last = output.lastIndexOf('}');
-    if (first >= 0 && last > first) return JSON.parse(output.slice(first, last + 1));
+    if (first >= 0 && last > first) {
+      try {
+        return JSON.parse(output.slice(first, last + 1));
+      } catch {
+        // Fall through to the fixed error below without exposing payload excerpts.
+      }
+    }
     throw new Error(`${label} did not return JSON`);
   }
 }
 
+export function boundedDiagnostic(value) {
+  const text = String(value ?? '');
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= MAX_DIAGNOSTIC_BYTES) return text;
+
+  const marker = '\n[... diagnostic output truncated ...]';
+  const tailBudget = MAX_DIAGNOSTIC_BYTES - Buffer.byteLength(marker, 'utf8');
+  let tail = bytes.subarray(bytes.length - tailBudget).toString('utf8');
+  // A byte slice can begin in the middle of a multi-byte code point. Removing
+  // the replacement character (or another leading code point if needed) keeps
+  // the final diagnostic, including its marker, within the byte contract.
+  while (Buffer.byteLength(tail, 'utf8') > tailBudget) tail = tail.slice(1);
+  return `${tail}${marker}`;
+}
+
+function longestSuffixThatStartsSecret(value, secrets) {
+  const maximum = Math.min(value.length, Math.max(...secrets.map((secret) => secret.length), 0) - 1);
+  for (let length = maximum; length > 0; length -= 1) {
+    const suffix = value.slice(value.length - length);
+    if (secrets.some((secret) => secret.startsWith(suffix))) return length;
+  }
+  return 0;
+}
+
+function longestSuffixThatMatchesSecret(value, secrets) {
+  const maximum = Math.min(value.length, Math.max(...secrets.map((secret) => secret.length), 0) - 1);
+  for (let length = maximum; length > 0; length -= 1) {
+    const suffix = value.slice(value.length - length);
+    if (secrets.some((secret) => secret.startsWith(suffix) || secret.endsWith(suffix))) return length;
+  }
+  return 0;
+}
+
+function createCredentialPrefixRedactor(maskPendingOnFinal = false) {
+  let pending = '';
+  let active = null;
+  let maskedPendingOnFinal = false;
+
+  return {
+    push(value, final = false) {
+      const input = pending + String(value ?? '');
+      pending = '';
+      let output = '';
+      let index = 0;
+
+      while (index < input.length) {
+        if (active) {
+          if (!active.emitted) {
+            if (/[A-Za-z0-9_%-]/.test(input[index])) {
+              output += `${active.prefix}…`;
+              active.emitted = true;
+            } else {
+              output += active.prefix;
+              active = null;
+              continue;
+            }
+          }
+          while (index < input.length && /[A-Za-z0-9_%.%-]/.test(input[index])) index += 1;
+          if (index === input.length) {
+            if (final) active = null;
+            break;
+          }
+          active = null;
+          continue;
+        }
+
+        LIVE_CREDENTIAL_PREFIX_RE.lastIndex = index;
+        const match = LIVE_CREDENTIAL_PREFIX_RE.exec(input);
+        if (match) {
+          const prefixIndex = match.index;
+          const prefix = match[0];
+          output += input.slice(index, prefixIndex);
+          index = prefixIndex;
+          active = { prefix, emitted: false };
+          index += prefix.length;
+          continue;
+        }
+
+        const suffixLength =
+          final && !maskPendingOnFinal
+            ? 0
+            : longestSuffixThatStartsSecret(input.slice(index), LIVE_CREDENTIAL_PREFIXES);
+        const end = input.length - suffixLength;
+        output += input.slice(index, end);
+        if (suffixLength > 0) {
+          pending = input.slice(end);
+        }
+        break;
+      }
+
+      if (final && active && !active.emitted) {
+        output += maskPendingOnFinal ? '[redacted]' : active.prefix;
+      }
+      if (final) {
+        active = null;
+        if (pending) {
+          output +=
+            maskPendingOnFinal && pending.length >= MIN_FINAL_MASK_FRAGMENT_LENGTH ? '[redacted]' : pending;
+          pending = '';
+        }
+      }
+      return output;
+    },
+    maskedPendingOnFinal() {
+      return maskedPendingOnFinal;
+    },
+  };
+}
+
+function createConfiguredSecretRedactor(secretValues, maskPendingOnFinal = false) {
+  const secrets = [...new Set(secretValues.filter((value) => typeof value === 'string' && value))];
+  let pending = '';
+  let maskedPendingOnFinal = false;
+
+  return {
+    push(value, final = false) {
+      if (secrets.length === 0) return String(value ?? '');
+      const input = pending + String(value ?? '');
+      pending = '';
+      let output = '';
+      let index = 0;
+      while (index < input.length) {
+        let secret;
+        let secretIndex = -1;
+        for (const candidate of secrets) {
+          const candidateIndex = input.indexOf(candidate, index);
+          if (
+            candidateIndex !== -1 &&
+            (secretIndex === -1 ||
+              candidateIndex < secretIndex ||
+              (candidateIndex === secretIndex && candidate.length > (secret?.length ?? 0)))
+          ) {
+            secret = candidate;
+            secretIndex = candidateIndex;
+          }
+        }
+        if (secret !== undefined) {
+          output += input.slice(index, secretIndex);
+          output += '[redacted]';
+          index = secretIndex + secret.length;
+          continue;
+        }
+        const suffixLength =
+          final && !maskPendingOnFinal ? 0 : longestSuffixThatMatchesSecret(input.slice(index), secrets);
+        const end = input.length - suffixLength;
+        output += input.slice(index, end);
+        if (suffixLength > 0) {
+          pending = input.slice(end);
+        }
+        break;
+      }
+      if (final) {
+        output +=
+          pending && maskPendingOnFinal && pending.length >= MIN_FINAL_MASK_FRAGMENT_LENGTH
+            ? '[redacted]'
+            : pending;
+        pending = '';
+      }
+      return output;
+    },
+    maskedPendingOnFinal() {
+      return maskedPendingOnFinal;
+    },
+  };
+}
+
+/** Redact credentials across subprocess chunks before bounded capture. */
+export function createCredentialRedactor(secretValues = [], { maskPendingOnFinal = false } = {}) {
+  const prefixRedactor = createCredentialPrefixRedactor(maskPendingOnFinal);
+  const secretRedactor = createConfiguredSecretRedactor(secretValues, maskPendingOnFinal);
+  return {
+    push(value, final = false) {
+      const prefixed = prefixRedactor.push(value, final);
+      return secretRedactor.push(prefixed, final);
+    },
+    requiresCapturedOutputMask() {
+      return prefixRedactor.maskedPendingOnFinal() || secretRedactor.maskedPendingOnFinal();
+    },
+  };
+}
+
+export function sanitizeCloudCommandOutput(value, secretValues = []) {
+  return createCredentialRedactor(secretValues).push(value, true);
+}
+
+function structuralDiagnosticValue(field, value, secretValues) {
+  const sanitized = sanitizeCloudCommandOutput(value, secretValues);
+  if (field === 'status') return recognizedCloudRunStatus(sanitized);
+  if (field === 'runId' || field === 'sandboxId') {
+    return RUN_ID_RE.test(sanitized) ? sanitized : null;
+  }
+  if (field === 'relayflowVersion') {
+    return sanitized === 'v1' || sanitized === 'v2' ? sanitized : null;
+  }
+  if (field === 'createdAt' || field === 'updatedAt' || field === 'occurredAt') {
+    return ISO_TIMESTAMP_RE.test(sanitized) && Number.isFinite(Date.parse(sanitized)) ? sanitized : null;
+  }
+  return DIAGNOSTIC_TOKEN_RE.test(sanitized) ? sanitized : null;
+}
+
+function diagnosticRecord(value, secretValues) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const diagnostic = {};
+  for (const field of STATUS_DIAGNOSTIC_FIELDS) {
+    if (typeof value[field] === 'string') {
+      const structuralValue = structuralDiagnosticValue(field, value[field], secretValues);
+      if (structuralValue) diagnostic[field] = structuralValue;
+    }
+  }
+  if (value.failure && typeof value.failure === 'object' && !Array.isArray(value.failure)) {
+    const failure = {};
+    for (const field of STATUS_FAILURE_DIAGNOSTIC_FIELDS) {
+      if (typeof value.failure[field] === 'string') {
+        const structuralValue = structuralDiagnosticValue(field, value.failure[field], secretValues);
+        if (structuralValue) failure[field] = structuralValue;
+      }
+    }
+    if (Object.keys(failure).length > 0) diagnostic.failure = failure;
+  }
+  return diagnostic;
+}
+
+/**
+ * Reduce `cloud status --json` to the structural fields useful for triage.
+ * Workflow source, result payloads, nested errors, and cause chains are never
+ * copied because they can contain arbitrary workflow-provided credentials.
+ */
+export function sanitizeCloudStatusDiagnostic(output, secretValues = []) {
+  const text = String(output ?? '').trim();
+  if (!text) return '';
+  try {
+    const payload = parseJsonOutput(text, 'Cloud status diagnostic');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return '<non-object status response omitted>';
+    }
+    const source =
+      typeof payload.status === 'string'
+        ? payload
+        : payload.run && typeof payload.run === 'object' && !Array.isArray(payload.run)
+          ? payload.run
+          : payload.workflowRun &&
+              typeof payload.workflowRun === 'object' &&
+              !Array.isArray(payload.workflowRun)
+            ? payload.workflowRun
+            : payload;
+    const diagnostic = diagnosticRecord(source, secretValues);
+    return boundedDiagnostic(
+      diagnostic && Object.keys(diagnostic).length > 0
+        ? JSON.stringify(diagnostic)
+        : '<status response omitted: no allowlisted diagnostic fields>'
+    );
+  } catch {
+    if (text.includes('{') || text.includes('}')) {
+      return '<malformed JSON status response omitted>';
+    }
+    return '<non-JSON status response omitted>';
+  }
+}
+
+export function formatCloudRunDiagnostics({
+  runId,
+  terminalStatus,
+  lastStatusOutput,
+  statusPollFailures,
+  logs,
+  diagnosticSecretValues = [],
+}) {
+  const logOutput = `${logs?.stdout ?? ''}${logs?.stderr ?? ''}`;
+  return [
+    'Cloud RelayFlow diagnostics',
+    `run_id=${sanitizeCloudCommandOutput(runId, diagnosticSecretValues)}`,
+    `terminal_status=${sanitizeCloudCommandOutput(terminalStatus ?? 'unknown', diagnosticSecretValues)}`,
+    `status_poll_failures=${statusPollFailures}`,
+    `last_status_response=${
+      sanitizeCloudStatusDiagnostic(lastStatusOutput, diagnosticSecretValues) || '<empty>'
+    }`,
+    `cloud_logs_exit_code=${logs?.exitCode ?? 'unknown'}`,
+    `cloud_logs_timed_out=${logs?.timedOut === true}`,
+    `cloud_logs_output=${logOutput ? 'present' : 'empty'}`,
+    '',
+  ].join('\n');
+}
+
+export function formatCloudRunArtifact(input) {
+  return (
+    formatCloudRunDiagnostics(input) +
+    sanitizeCloudCommandOutput(
+      `${input.logs?.stdout ?? ''}${input.logs?.stderr ?? ''}`,
+      input.diagnosticSecretValues
+    )
+  );
+}
+
+async function writeStatusPollDiagnostics({
+  logsPath,
+  runId,
+  lastStatusOutput,
+  statusPollFailures,
+  terminalStatus,
+  logsTimedOut,
+  diagnosticSecretValues = [],
+}) {
+  await mkdir(path.dirname(logsPath), { recursive: true });
+  await writeFile(
+    logsPath,
+    formatCloudRunDiagnostics({
+      runId,
+      terminalStatus,
+      lastStatusOutput,
+      statusPollFailures,
+      logs: { stdout: '', stderr: '', exitCode: 'unknown', timedOut: logsTimedOut },
+      diagnosticSecretValues,
+    })
+  );
+}
+
+export async function writeStatusPollTimeoutDiagnostics({
+  logsPath,
+  runId,
+  lastStatusOutput,
+  statusPollFailures,
+  diagnosticSecretValues = [],
+}) {
+  await writeStatusPollDiagnostics({
+    logsPath,
+    runId,
+    lastStatusOutput,
+    statusPollFailures,
+    terminalStatus: 'status_poll_timeout',
+    logsTimedOut: true,
+    diagnosticSecretValues,
+  });
+}
+
+export async function writeStatusPollDeadlineDiagnostics({
+  logsPath,
+  runId,
+  lastStatusOutput,
+  statusPollFailures,
+  diagnosticSecretValues = [],
+}) {
+  await writeStatusPollDiagnostics({
+    logsPath,
+    runId,
+    lastStatusOutput,
+    statusPollFailures,
+    terminalStatus: 'status_poll_deadline_exceeded',
+    logsTimedOut: false,
+    diagnosticSecretValues,
+  });
+}
+
+export function recognizedCloudRunStatus(value) {
+  if (typeof value !== 'string') return null;
+  const status = value.toLowerCase();
+  return CLOUD_RUN_STATUSES.has(status) ? status : null;
+}
+
 function statusFrom(payload) {
   for (const candidate of [payload.status, payload.run?.status, payload.workflowRun?.status]) {
-    if (typeof candidate === 'string') return candidate.toLowerCase();
+    if (typeof candidate === 'string') return recognizedCloudRunStatus(candidate);
   }
   throw new Error('Cloud status response did not contain a status');
+}
+
+export function recognizedCloudStatusFromOutput(output) {
+  try {
+    return statusFrom(parseJsonOutput(output, 'Cloud status'));
+  } catch {
+    return null;
+  }
 }
 
 function requiredCredential(env, name) {
@@ -117,7 +567,7 @@ export function createCliApiKeyEnvironment(env = process.env) {
 
   const cliEnv = { ...env, CLOUD_API_URL: apiUrl, CLOUD_API_KEY: apiKey };
   for (const key of LEGACY_REFRESHABLE_AUTH_KEYS) delete cliEnv[key];
-  return { cliEnv };
+  return { cliEnv, diagnosticSecretValues: [apiKey] };
 }
 
 export async function main() {
@@ -149,6 +599,8 @@ export async function main() {
   let shuttingDown = false;
   let activeCommandController = null;
   let launchProgressError = null;
+  let lastStatusOutput = '';
+  let statusPollFailures = 0;
 
   const notePreparedRunId = (preparedRunId) => {
     try {
@@ -173,7 +625,11 @@ export async function main() {
     const controller = new AbortController();
     activeCommandController = controller;
     try {
-      return await run(command, args, { ...options, signal: controller.signal });
+      return await run(command, args, {
+        ...options,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
+        signal: controller.signal,
+      });
     } finally {
       if (activeCommandController === controller) activeCommandController = null;
     }
@@ -182,14 +638,25 @@ export async function main() {
   const cancelRemote = async (reason) => {
     if (!runId || terminal) return;
     cancelPromise ??= (async () => {
-      console.warn(`Cancelling Cloud RelayFlow run ${runId} (${reason})`);
+      console.warn(
+        `Cancelling Cloud RelayFlow run ${sanitizeCloudCommandOutput(
+          runId,
+          auth.diagnosticSecretValues
+        )} (${reason})`
+      );
       const result = await run(cli, ['cloud', 'cancel', runId, '--json'], {
         env: auth.cliEnv,
         quiet: true,
         timeoutMs: commandTimeoutMs,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
       });
       if (result.exitCode !== 0 || result.timedOut) {
-        console.warn(`Cloud cancellation failed with exit ${result.exitCode}: ${result.stderr.trim()}`);
+        console.warn(
+          `Cloud cancellation failed with exit ${result.exitCode}: ${sanitizeCloudCommandOutput(
+            result.stderr.trim(),
+            auth.diagnosticSecretValues
+          )}`
+        );
       }
     })();
     await cancelPromise;
@@ -200,7 +667,9 @@ export async function main() {
     shuttingDown = true;
     activeCommandController?.abort();
     void (async () => {
-      await cancelRemote(signal).catch((error) => console.warn(error.message));
+      await cancelRemote(signal).catch((error) =>
+        console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues))
+      );
       process.exit(signal === 'SIGINT' ? 130 : 143);
     })();
   };
@@ -227,7 +696,7 @@ export async function main() {
       );
     }
     if (launch.exitCode !== 0) {
-      process.stderr.write(launch.stderr);
+      process.stderr.write(sanitizeCloudCommandOutput(launch.stderr, auth.diagnosticSecretValues));
       throw new Error(`Cloud workflow submission failed with exit ${launch.exitCode}`);
     }
     const launchPayload = parseJsonOutput(launch.stdout, 'Cloud run');
@@ -239,7 +708,7 @@ export async function main() {
       throw new Error(`Cloud prepare/run ID mismatch: ${runId} != ${launchedRunId}`);
     }
     runId = launchedRunId;
-    console.log(`Cloud RelayFlow run: ${runId}`);
+    console.log(`Cloud RelayFlow run: ${sanitizeCloudCommandOutput(runId, auth.diagnosticSecretValues)}`);
     if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `run_id=${runId}\n`);
 
     const deadline = Date.now() + timeoutMs;
@@ -252,13 +721,36 @@ export async function main() {
         timeoutMs: commandTimeoutMs,
       });
       if (statusResult.timedOut) {
+        statusPollFailures += 1;
+        lastStatusOutput = statusResult.stderr.trim() || statusResult.stdout.trim();
+        await writeStatusPollTimeoutDiagnostics({
+          logsPath,
+          runId,
+          lastStatusOutput,
+          statusPollFailures,
+          diagnosticSecretValues: auth.diagnosticSecretValues,
+        });
         throw new Error(`Cloud status command timed out for run ${runId}`);
       }
       if (statusResult.exitCode !== 0) {
-        console.warn(`Cloud status poll failed (${statusResult.exitCode}); retrying`);
+        statusPollFailures += 1;
+        lastStatusOutput = statusResult.stderr.trim() || statusResult.stdout.trim();
+        console.warn(
+          `Cloud status poll failed (${statusResult.exitCode}); retrying${
+            lastStatusOutput
+              ? `: ${sanitizeCloudStatusDiagnostic(lastStatusOutput, auth.diagnosticSecretValues)}`
+              : ''
+          }`
+        );
         continue;
       }
-      const status = statusFrom(parseJsonOutput(statusResult.stdout, 'Cloud status'));
+      lastStatusOutput = statusResult.stdout.trim();
+      const status = recognizedCloudStatusFromOutput(statusResult.stdout);
+      if (!status) {
+        statusPollFailures += 1;
+        console.warn('Cloud RelayFlow status: <unrecognized>');
+        continue;
+      }
       console.log(`Cloud RelayFlow status: ${status}`);
       if (TERMINAL_SUCCESS.has(status) || TERMINAL_FAILURE.has(status)) {
         terminalStatus = status;
@@ -267,6 +759,13 @@ export async function main() {
       }
     }
     if (!terminalStatus) {
+      await writeStatusPollDeadlineDiagnostics({
+        logsPath,
+        runId,
+        lastStatusOutput,
+        statusPollFailures,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
+      });
       await cancelRemote('deadline exceeded');
       terminal = true;
       throw new Error(`Cloud RelayFlow exceeded ${timeoutMs}ms`);
@@ -278,9 +777,24 @@ export async function main() {
       quiet: true,
       timeoutMs: commandTimeoutMs,
     });
-    await writeFile(logsPath, logs.stdout + logs.stderr);
-    if (logs.stdout) process.stdout.write(logs.stdout);
-    if (logs.stderr) process.stderr.write(logs.stderr);
+    await writeFile(
+      logsPath,
+      formatCloudRunArtifact({
+        runId,
+        terminalStatus,
+        lastStatusOutput,
+        statusPollFailures,
+        logs,
+        diagnosticSecretValues: auth.diagnosticSecretValues,
+      })
+    );
+    const sanitizedLogs = sanitizeCloudCommandOutput(
+      `${logs.stdout ?? ''}${logs.stderr ?? ''}`,
+      auth.diagnosticSecretValues
+    );
+    if (sanitizedLogs) {
+      process.stdout.write(sanitizedLogs);
+    }
     if (logs.timedOut) throw new Error(`Cloud log retrieval timed out for run ${runId}`);
     if (logs.exitCode !== 0) throw new Error(`Cloud log retrieval failed with exit ${logs.exitCode}`);
 
@@ -290,7 +804,10 @@ export async function main() {
     if (process.env.GITHUB_STEP_SUMMARY) {
       await appendFile(
         process.env.GITHUB_STEP_SUMMARY,
-        `\n- Cloud run: \`${runId}\`\n- Cloud status: **${terminalStatus}**\n`
+        `\n- Cloud run: \`${sanitizeCloudCommandOutput(
+          runId,
+          auth.diagnosticSecretValues
+        )}\`\n- Cloud status: **${terminalStatus}**\n`
       );
     }
   } finally {
@@ -298,13 +815,15 @@ export async function main() {
     process.removeListener('SIGINT', signalHandler);
     process.removeListener('SIGTERM', signalHandler);
     if (runId && !terminal)
-      await cancelRemote('dispatcher exiting').catch((error) => console.warn(error.message));
+      await cancelRemote('dispatcher exiting').catch((error) =>
+        console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues))
+      );
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    console.error(error.message);
+    console.error(sanitizeCloudCommandOutput(error.message, [process.env.CLOUD_API_KEY]));
     process.exitCode = 1;
   });
 }
