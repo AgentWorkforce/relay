@@ -705,6 +705,9 @@ describe('complete Daytona Fleet board', () => {
   it('records every remaining workflow operation when a run omits its ID', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const artifactDir = await mkdtemp(path.join(os.tmpdir(), 'relay-fleet-missing-workflow-id-'));
+    const short = NONCE.slice(0, 16);
+    const workflowPath = `/tmp/relay-fleet-workflow-${short}.sh`;
+    const markerBytes = `RELAY_NODE_WORKFLOW_EFFECT_${short.toUpperCase()}\n`;
     const commandResult = (rawStdout = '') => ({
       argv: [],
       exitCode: 0,
@@ -717,11 +720,20 @@ describe('complete Daytona Fleet board', () => {
     const responses = [
       commandResult(JSON.stringify({ exists: false })),
       commandResult(),
-      commandResult(JSON.stringify({ workflowPath: '/tmp/relay-fleet-workflow.sh', fileType: 'sh' })),
+      commandResult(JSON.stringify({ workflowPath, fileType: 'sh' })),
+      commandResult(
+        JSON.stringify({
+          exists: true,
+          bytes: Buffer.byteLength(markerBytes),
+          sha256: createHash('sha256').update(markerBytes).digest('hex'),
+        })
+      ),
     ];
+    const calls: string[][] = [];
     try {
       const board = new FleetBoard(matrix, NONCE, artifactDir, {
-        executeCommand: async () => {
+        executeCommand: async (argv: string[]) => {
+          calls.push(argv);
           const response = responses.shift();
           if (!response) throw new Error('unexpected workflow command');
           return response;
@@ -732,8 +744,24 @@ describe('complete Daytona Fleet board', () => {
       await board.nodeWorkflows();
 
       expect(responses).toEqual([]);
+      expect(calls).toHaveLength(4);
+      expect(
+        calls.map((argv) => {
+          if (argv.some((value) => value.includes('createHash'))) return 'inspect-marker';
+          if (argv.some((value) => value.includes('writeFileSync'))) return 'setup-workflow';
+          if (argv.includes('agent-relay') && argv.includes('workflow') && argv.includes('run')) {
+            return 'run-workflow';
+          }
+          return 'unexpected';
+        })
+      ).toEqual(['inspect-marker', 'setup-workflow', 'run-workflow', 'inspect-marker']);
       expect(board.evidence.operations.map(({ id }) => id)).toEqual(NODE_WORKFLOW_OPERATION_IDS);
-      expect(board.evidence.operations[0]).toMatchObject({ id: 'node-workflow-run', status: 'fail' });
+      expect(board.evidence.operations[0]).toMatchObject({
+        id: 'node-workflow-run',
+        status: 'fail',
+        summary: expect.stringContaining('runId=missing'),
+      });
+      expect(board.evidence.operations[0].stderr).toBeUndefined();
       expect(board.evidence.operations.slice(1)).toEqual(
         NODE_WORKFLOW_OPERATION_IDS.slice(1).map((id) =>
           expect.objectContaining({
