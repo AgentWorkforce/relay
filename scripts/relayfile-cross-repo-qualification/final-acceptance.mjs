@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config.mjs';
 
 /** Final workflow gate: a completed workflow is acceptable only with PASS evidence and both signoffs. */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';

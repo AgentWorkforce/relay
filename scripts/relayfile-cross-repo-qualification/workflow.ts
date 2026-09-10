@@ -1,5 +1,6 @@
 /** RelayFlow DAG for the two-arm qualification. */
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { writeQualificationConfig } from './config.mjs';
 import { ClaudeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
@@ -22,6 +23,8 @@ const config = { version: 1, runId: RUN_ID, artifactDir: ARTIFACT_DIR, bundleDir
 // Pass the generated run identity through the child process environment. Keep it
 // out of shell command text so an unsafe caller-supplied value can never become
 // shell syntax.
+config.artifactDir = path.resolve(config.artifactDir);
+config.bundleDir = path.resolve(config.bundleDir);
 process.env.RELAYFILE_QUALIFICATION_RUN_ID = RUN_ID;
 process.env.RELAYFILE_QUALIFICATION_ARTIFACT_DIR = ARTIFACT_DIR;
 process.env.RELAYFILE_QUALIFICATION_BUNDLE_DIR = `${ARTIFACT_DIR}/bundle`;

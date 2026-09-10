@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config.mjs';
 
 import { computeIntegrity } from './integrity.mjs';
 

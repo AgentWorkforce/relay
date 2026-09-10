@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config.mjs';
 
 /** Execute one qualification arm. Creation is fail-closed behind the gate. */
 import { execFile } from 'node:child_process';

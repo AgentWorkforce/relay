@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './config.mjs';
 
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
