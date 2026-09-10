@@ -35,18 +35,23 @@ function boundedInteger(value, { fallback, minimum, label }) {
   return candidate;
 }
 
-function signalProcessTree(child, signal) {
+export function signalProcessTree(child, signal) {
+  const childExited = child.exitCode !== null || child.signalCode !== null;
   if (process.platform !== 'win32' && child.pid) {
     try {
       process.kill(-child.pid, signal);
       return;
     } catch (error) {
-      if (error?.code !== 'ESRCH') throw error;
+      // macOS can report EPERM for a group containing an unreaped zombie even
+      // though the direct child handle still accepts a signal. Always try that
+      // handle; only a direct live-child denial remains actionable below.
+      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
     }
   }
   try {
     child.kill(signal);
   } catch (error) {
+    if (error?.code === 'EPERM' && childExited) return;
     if (error?.code !== 'ESRCH') throw error;
   }
 }
@@ -104,10 +109,24 @@ export function runBoundedProcess(command, args, options = {}) {
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
 
+    const failTermination = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reject(error);
+    };
+
     const forceKill = () => {
       if (forced) return;
       forced = true;
-      signalProcessTree(child, 'SIGKILL');
+      try {
+        signalProcessTree(child, 'SIGKILL');
+      } catch (error) {
+        failTermination(error);
+        return;
+      }
       child.stdout.destroy();
       child.stderr.destroy();
     };
@@ -116,7 +135,12 @@ export function runBoundedProcess(command, args, options = {}) {
       if (timedOut || aborted || settled) return;
       timedOut = reason === 'timeout';
       aborted = reason === 'abort';
-      signalProcessTree(child, 'SIGTERM');
+      try {
+        signalProcessTree(child, 'SIGTERM');
+      } catch (error) {
+        failTermination(error);
+        return;
+      }
       hardKill = setTimeout(forceKill, terminationGraceMs);
     };
 

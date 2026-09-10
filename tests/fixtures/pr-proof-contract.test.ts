@@ -63,6 +63,8 @@ import {
   resolveBrokerArtifactPair,
 } from '../../scripts/pr-proof/resolve-broker-artifacts.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
+import { signalProcessTree } from '../../scripts/pr-proof/process-runner.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
 import { inspectBrokerArtifact } from '../../scripts/pr-proof/stage-broker-artifacts.mjs';
 
 const BASE_SHA = '1'.repeat(40);
@@ -1224,6 +1226,70 @@ describe('exact broker artifact handoff', () => {
 });
 
 describe('process timeout contract', () => {
+  it.skipIf(process.platform === 'win32')('treats EPERM as a teardown race only after child exit', () => {
+    const originalKill = process.kill;
+    const groupCalls: Array<[number, NodeJS.Signals]> = [];
+    const childCalls: NodeJS.Signals[] = [];
+    const permissionDenied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    process.kill = ((pid: number, signal: NodeJS.Signals) => {
+      groupCalls.push([pid, signal]);
+      throw permissionDenied;
+    }) as typeof process.kill;
+    try {
+      const liveChild = {
+        pid: 4242,
+        exitCode: null,
+        signalCode: null,
+        kill(signal: NodeJS.Signals) {
+          childCalls.push(signal);
+          throw permissionDenied;
+        },
+      };
+      expect(() => signalProcessTree(liveChild, 'SIGKILL')).toThrow(permissionDenied);
+
+      signalProcessTree(
+        {
+          ...liveChild,
+          exitCode: 0,
+        },
+        'SIGKILL'
+      );
+    } finally {
+      process.kill = originalKill;
+    }
+    expect(groupCalls).toEqual([
+      [-4242, 'SIGKILL'],
+      [-4242, 'SIGKILL'],
+    ]);
+    expect(childCalls).toEqual(['SIGKILL', 'SIGKILL']);
+  });
+
+  it.skipIf(process.platform === 'win32')('uses the direct child handle after a group EPERM race', () => {
+    const originalKill = process.kill;
+    const childCalls: NodeJS.Signals[] = [];
+    process.kill = (() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+    }) as typeof process.kill;
+    try {
+      expect(() =>
+        signalProcessTree(
+          {
+            pid: 4242,
+            exitCode: null,
+            signalCode: null,
+            kill(signal: NodeJS.Signals) {
+              childCalls.push(signal);
+            },
+          },
+          'SIGKILL'
+        )
+      ).not.toThrow();
+    } finally {
+      process.kill = originalKill;
+    }
+    expect(childCalls).toEqual(['SIGKILL']);
+  });
+
   it('marks a process timed out even when it exits zero after SIGTERM', async () => {
     const result = await runProcess(
       process.execPath,
