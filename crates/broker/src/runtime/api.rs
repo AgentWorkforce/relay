@@ -1225,8 +1225,8 @@ impl BrokerRuntime {
                                 fleet_delivery_book,
                                 &name,
                             )
-                                .await
-                                .err()
+                            .await
+                            .err()
                         };
                         if let Some(error) = &fleet_deregistration_error {
                             tracing::warn!(
