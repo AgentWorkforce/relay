@@ -37,36 +37,24 @@ if (!(await exists(cliPath))) {
   run('npm', ['run', 'build:core'], targetDir, 'production CLI build', buildEnvironment());
 }
 
-const help = runNode(
-  [cliPath, 'fleet', 'spawn', 'codex', '--help'],
+const reconcileHelp = runNode(
+  [cliPath, 'cloud', 'workspace', 'reconcile', '--help'],
   targetDir,
   buildEnvironment(),
   CLI_TIMEOUT_MS
 );
-if (help.status !== 0) {
-  throw new Error(`current Fleet CLI help failed: ${tail(help.stderr || help.stdout)}`);
-}
-const helpText = `${help.stdout}\n${help.stderr}`;
-for (const option of ['--sandbox', '--sandbox-provider', '--sandbox-id', '--workspace-id']) {
-  if (!helpText.includes(option)) throw new Error(`current Fleet CLI help is missing ${option}`);
-}
-for (const removed of ['--sandbox-snapshot', '--sandbox-snapshot-manifest-sha256']) {
-  if (helpText.includes(removed)) throw new Error(`removed Fleet CLI option returned: ${removed}`);
-}
-
-if (arm === 'base') {
-  await writeObservation(
-    'absent',
-    'legacy_snapshot_argv_absent',
-    'The exact target CLI exposes explicit workspace/sandbox identity controls and no removed snapshot argv flags.'
+const reconcileHelpText = `${reconcileHelp.stdout}\n${reconcileHelp.stderr}`;
+const hasReconcileCommand =
+  reconcileHelp.status === 0 &&
+  ['--idempotency-key <key>', '--name <name>', '--relayfile-cloud-deployment <id>', '--json'].every(
+    (option) => reconcileHelpText.includes(option)
   );
-} else {
-  await writeObservation(
-    'fixed',
-    'fleet_cli_identity_controls',
-    `Exact candidate CLI help proved explicit workspace/sandbox identity controls and rejected legacy snapshot flags; raw help output hash=${rawDigest('fleet-spawn-help', helpText).sha256}.`
-  );
-}
+const reconcileHelpDigest = rawDigest('cloud-workspace-reconcile-help', reconcileHelpText).sha256;
+await writeObservation(
+  hasReconcileCommand ? 'fixed' : 'absent',
+  hasReconcileCommand ? 'workspace_reconcile_command' : 'workspace_reconcile_command_missing',
+  `Exact target CLI cloud workspace reconcile help ${hasReconcileCommand ? 'exposes' : 'does not expose'} the bounded idempotency/name/deployment/JSON contract; exit=${reconcileHelp.status}, raw help hash=${reconcileHelpDigest}.`
+);
 
 function rawDigest(label, text) {
   const bytes = Buffer.from(String(text));

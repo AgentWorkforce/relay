@@ -2149,8 +2149,11 @@ describe('trusted dispatcher source contract', () => {
 
   it('keeps the hosted immutable Fleet case non-credentialed', async () => {
     const source = await readFile('tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs', 'utf8');
-    expect(source).toContain('fleet_cli_identity_controls');
-    expect(source).toContain('raw help output hash=');
+    expect(source).toContain('workspace_reconcile_command');
+    expect(source).toContain('workspace_reconcile_command_missing');
+    expect(source).toContain("hasReconcileCommand ? 'fixed' : 'absent'");
+    expect(source).not.toContain("if (arm === 'base') {");
+    expect(source).toContain('raw help hash=');
     expect(source).not.toContain('process.env.RELAY_WORKSPACE_KEY');
     expect(source).not.toContain('process.env.RELAY_AGENT_TOKEN');
     expect(source).not.toContain('process.env.RELAY_BASE_URL');

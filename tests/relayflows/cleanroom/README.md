@@ -149,15 +149,14 @@ sandbox IDs. Validate the immutable result with `gate-campaign`.
 The first hand-run baseline that motivated this board is recorded in
 [`FLEET_DAYTONA_MANUAL_2026-09-04.md`](./FLEET_DAYTONA_MANUAL_2026-09-04.md).
 
-## Scheduled and prerelease qualification
+## Dispatch and prerelease qualification
 
-`.github/workflows/relay-cleanroom-qualification.yml` runs the read-only
-cross-repository diagnosis nightly. It runs the same two-attempt Fleet campaign
-for a prerelease, a stable release, a `relay_candidate_qualification`
-repository dispatch, or a manual qualification. Nightly Fleet qualification is
-enabled by setting `RELAY_NIGHTLY_QUALIFICATION_MANIFEST_JSON` to a current
-immutable qualification manifest; it is otherwise skipped instead of silently
-testing an unspecified build.
+`.github/workflows/relay-cleanroom-qualification.yml` is a deliberately inert
+manual dispatch bootstrap on the default branch. It does not run diagnosis or
+Fleet qualification: it fails closed and requires a `qualification/<nonce>` ref
+containing the complete verifier. The request workflow receives the
+`relay_candidate_qualification` dispatch and materializes the no-secret request
+for that trusted verifier; there is no nightly qualification schedule.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
 and validates exactly 156 runtime contracts: 12 state transitions, 23 injected
@@ -180,7 +179,8 @@ mount-free, sealed-file workflows; remove it when Relayflows exposes an explicit
 no-Relayfile-provisioning contract.
 
 `.github/workflows/relay-package-qualification.yml` is the only accepted Relay
-package producer. A successful manual main-only prerelease run emits a package payload and a
+package producer. A successful manual prerelease run from an immutable
+`qualification/<nonce>` ref emits a package payload and a
 second attestation artifact that seals the first artifact's GitHub digest. The
 payload binds the Relay source SHA and exact SDK/config/protocol package versions;
 Cloud accepts only the fixed workflow, path, event, ref, run attempt, artifact

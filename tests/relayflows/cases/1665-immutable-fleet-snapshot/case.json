@@ -11,11 +11,11 @@
   "expected": {
     "base": {
       "outcome": "absent",
-      "signature": "legacy_snapshot_argv_absent"
+      "signature": "workspace_reconcile_command_missing"
     },
     "head": {
       "outcome": "fixed",
-      "signature": "fleet_cli_identity_controls"
+      "signature": "workspace_reconcile_command"
     }
   }
 }
