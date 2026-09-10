@@ -14,6 +14,9 @@ const ERROR_CODE = 'database_overloaded';
 const ERROR_MESSAGE = 'The database is temporarily overloaded. request_id: relayflow-1715-request';
 const ERROR_STATUS = 503;
 const REQUEST_ID = 'relayflow-1715-request';
+const RETRY_AFTER_SECONDS = 1;
+const RETRY_BACKOFFS_MS = [200, 400];
+const RETRY_DEADLINE_MS = 2_000;
 const UNSAFE_AGENT = 'relayflow-1715-unsafe';
 const SAFE_AGENT = 'relayflow-1715-safe';
 
@@ -134,6 +137,8 @@ try {
     const agents = (await api('GET', '/api/spawned')).body?.agents ?? [];
     return agents.every((agent) => agent?.name !== SAFE_AGENT);
   }, 'safe task-exit cleanup');
+  const registrationTimestamps = [...relay.workerRegistrationTimestamps];
+  const retryScheduleBounded = retryScheduleIsBounded(registrationTimestamps);
   const markers = (text, attempts) =>
     text.includes(`(${ERROR_STATUS})`) &&
     text.includes(ERROR_CODE) &&
@@ -149,6 +154,7 @@ try {
     unsafeNoWorker === true &&
     safeNoWorker === true &&
     safeTaskExitCleaned === true &&
+    retryScheduleBounded === false &&
     relay.workerRegistrations === 2 &&
     !safe.body?.success;
   const headObserved =
@@ -165,6 +171,7 @@ try {
     Number.isInteger(safeWorkerPid) &&
     safeWorkerPid > 0 &&
     safeTaskExitCleaned === true &&
+    retryScheduleBounded === true &&
     relay.workerRegistrations === 6;
 
   let outcome;
@@ -177,7 +184,7 @@ try {
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'spawn_503_retried_and_safe_fallback_is_live';
-    details = `Head sent three bounded HTTP registration attempts for each spawn (${relay.workerRegistrations} total), kept unsafe PTY closed, and returned a live safe headless task-exit worker with the preserved overload warning.`;
+    details = `Head sent three bounded HTTP registration attempts for each spawn (${relay.workerRegistrations} total), kept unsafe PTY closed, and returned a live safe headless task-exit worker with the preserved overload warning; timestamped retries stayed within the fixed 200/400ms schedule and ${RETRY_DEADLINE_MS}ms deadline despite a nonzero Retry-After header.`;
   } else {
     throw new Error(
       `Unexpected ${arm} spawn observation: ${JSON.stringify({
@@ -189,6 +196,8 @@ try {
         safeNoWorker,
         safeWorkerPid,
         safeTaskExitCleaned,
+        registrationTimestamps,
+        retryScheduleBounded,
         checks: {
           unsafeStatus: unsafe.status === 500,
           unsafeMarkers: markers(unsafeError, 3),
@@ -201,6 +210,7 @@ try {
           safeWarning: markers(safeWarning, 3),
           livePid: Number.isInteger(safeWorkerPid) && safeWorkerPid > 0,
           safeTaskExitCleaned,
+          retryScheduleBounded,
           count: relay.workerRegistrations === 6,
         },
         stderr: brokerStderr.slice(-4_000),
@@ -220,7 +230,7 @@ try {
 
 async function startRelayProbe() {
   const sockets = new Set();
-  const state = { workerRegistrations: 0 };
+  const state = { workerRegistrations: 0, workerRegistrationTimestamps: [] };
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -235,6 +245,11 @@ async function startRelayProbe() {
     if (request.method === 'POST' && pathname === '/v1/agents') {
       if (body?.name !== BROKER_NAME) {
         state.workerRegistrations += 1;
+        state.workerRegistrationTimestamps.push(Date.now());
+        // Keep a nonzero Retry-After in the fixture to guard the contract. The
+        // current Relaycast SDK drops this header for 503 errors, so the
+        // broker's documented fixed schedule/deadline is what can be proven
+        // here; 429 cooldowns are covered by the SDK fail-fast unit test.
         sendJson(
           response,
           ERROR_STATUS,
@@ -242,7 +257,7 @@ async function startRelayProbe() {
             ok: false,
             error: { code: ERROR_CODE, message: ERROR_MESSAGE },
           },
-          { 'x-request-id': REQUEST_ID }
+          { 'retry-after': String(RETRY_AFTER_SECONDS), 'x-request-id': REQUEST_ID }
         );
         return;
       }
@@ -275,6 +290,9 @@ async function startRelayProbe() {
     ...state,
     get workerRegistrations() {
       return state.workerRegistrations;
+    },
+    get workerRegistrationTimestamps() {
+      return state.workerRegistrationTimestamps;
     },
     baseUrl: `http://127.0.0.1:${address.port}`,
     async close() {
@@ -376,4 +394,21 @@ function isWithin(directory, candidate) {
     relative === '' ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
   );
+}
+
+function retryScheduleIsBounded(timestamps) {
+  // Relaycast 8.0 exposes no Retry-After value for a 503. Verify the
+  // observable broker-owned schedule and total deadline instead of adding a
+  // long, dependency-shaped sleep to this hermetic proof.
+  if (timestamps.length !== 6) return false;
+  for (let spawn = 0; spawn < 2; spawn += 1) {
+    const start = spawn * 3;
+    const elapsed = timestamps[start + 2] - timestamps[start];
+    if (elapsed > RETRY_DEADLINE_MS) return false;
+    for (let retry = 0; retry < RETRY_BACKOFFS_MS.length; retry += 1) {
+      const delta = timestamps[start + retry + 1] - timestamps[start + retry];
+      if (delta < RETRY_BACKOFFS_MS[retry] - 50) return false;
+    }
+  }
+  return true;
 }
