@@ -83,6 +83,18 @@
             "reasoning": "Go downloads are read-only by default and caused deterministic EACCES cleanup failure. Recursive chmod is restricted to directories beneath the mkdtemp-owned cache, skips symlinks, and is paired with -modcacherw plus a behavioral 0500-directory regression."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789008100532,
+          "type": "decision",
+          "content": "Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion: Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion",
+          "raw": {
+            "question": "Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion",
+            "chosen": "Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion",
+            "alternatives": [],
+            "reasoning": "A lost CLI response can leave a remote sandbox after only the pre-create name intent is durable; exact name/workspace/nonce/newness/baseline validation plus a private checkpoint closes the crash window without ambient scans, while invalid attempt evidence remains fail-closed and independent."
+          },
+          "significance": "high"
         }
       ]
     }
