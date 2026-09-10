@@ -1,49 +1,43 @@
 #!/usr/bin/env node
-// Sandbox probe: execute the installed package binary against a local fake API.
-// The fake deliberately delays/429s /fs/ws and serves a healthy polling update;
-// the package binary is responsible for emitting its durable state.
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 const entrypoint = process.argv[2];
 if (!['cli', 'standalone'].includes(entrypoint)) process.exit(2);
-let realtimeDialCount = 0;
-let wsUpgradeCount = 0;
+let changed = false, wsUpgradeCount = 0;
 const server = createServer((req, res) => {
-  if (req.url?.includes('/fs/ws')) {
-    realtimeDialCount += 1;
-    setTimeout(() => { res.statusCode = 429; res.end('delayed'); }, 1500);
-    return;
-  }
-  if (req.url?.includes('/fs/tree')) return res.end(JSON.stringify({ entries: [{ path: '/issue-490.txt', type: 'file', revision: 'r1' }] }));
-  if (req.url?.includes('/fs/file')) return res.end(JSON.stringify({ path: '/issue-490.txt', revision: 'r2', content: 'healthy polling update' }));
-  if (req.url?.includes('/fs/events')) return res.end(JSON.stringify({ events: [{ eventId: 'evt-490', type: 'file.updated', path: '/issue-490.txt', revision: 'r2' }] }));
+  if (req.url?.includes('/fs/tree')) return res.end(JSON.stringify({ entries: [{ path: '/issue-490.txt', type: 'file', revision: changed ? 'r2' : 'r1' }] }));
+  if (req.url?.includes('/fs/file')) return res.end(JSON.stringify({ path: '/issue-490.txt', revision: changed ? 'r2' : 'r1', content: changed ? 'healthy polling update' : 'initial' }));
+  if (req.url?.includes('/fs/events')) return res.end(JSON.stringify({ events: changed ? [{ eventId: 'evt_001', type: 'file.updated', path: '/issue-490.txt', revision: 'r2' }] : [] }));
+  if (req.url?.includes('/fs/bulk-read')) { res.statusCode = 501; return res.end('unsupported'); }
+  if (req.url?.includes('/sync/status')) return res.end(JSON.stringify({ status: 'ready' }));
   res.statusCode = 404; res.end();
 });
-server.on('upgrade', (_req, socket) => { wsUpgradeCount += 1; socket.destroy(); });
+server.on('upgrade', (_req, socket) => { wsUpgradeCount += 1; setTimeout(() => { socket.write('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 7\r\n\r\ndelayed'); socket.destroy(); }, 1500); });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
-const binary = entrypoint === 'cli'
-  ? '/qualification/relayfile-npm/node_modules/.bin/relayfile'
-  : '/qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount';
-const outputDir = `/tmp/issue-490-${entrypoint}-once`;
-const args = entrypoint === 'cli'
-  ? ['mount', 'issue-490', '--server', base, '--token', 'test-token', '--once', '--timeout=250ms', '--local-dir', outputDir]
-  : ['--workspace-id', 'issue-490', '--server', base, '--token', 'test-token', '--once', '--timeout=250ms', '--local-dir', outputDir];
-const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
-const exitCode = await new Promise((resolve) => child.once('exit', (code) => resolve(code ?? 1)));
+const jwt = `eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${Buffer.from(JSON.stringify({ workspace_id: 'issue-490' })).toString('base64url')}.signature`;
+const binary = entrypoint === 'cli' ? '/qualification/relayfile-npm/node_modules/.bin/relayfile' : '/qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount';
+const outputDir = `/tmp/issue-490-${entrypoint}`;
+const stateFile = `${outputDir}/state.json`;
+const args = entrypoint === 'cli' ? ['mount', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile] : ['--workspace', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile];
+const runOnce = () => new Promise((resolve) => { const child = spawn(binary, args, { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } }); child.once('exit', (code) => resolve(code ?? 1)); });
+const firstExit = await runOnce();
+const onceWsUpgradeCount = wsUpgradeCount;
+changed = true;
+const secondExit = await runOnce();
+let fileUpdated = false, cursorPersisted = false;
+try { fileUpdated = (await readFile(`${outputDir}/issue-490.txt`, 'utf8')) === 'healthy polling update'; } catch {}
+try { cursorPersisted = JSON.parse(await readFile(stateFile, 'utf8')).eventsCursor === 'evt_001'; } catch {}
 let daemonRealtimeDialCount = 0;
 if (entrypoint === 'standalone') {
-  const daemon = spawn(binary, ['--workspace-id', 'issue-490', '--server', base, '--token', 'test-token', '--local-dir', '/tmp/issue-490-daemon'], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
+  const daemon = spawn(binary, ['--workspace', 'issue-490', '--server', base, '--token', jwt, '--local-dir', `${outputDir}-daemon`, '--state-file', `${outputDir}-daemon/state.json`], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
   await new Promise((resolve) => setTimeout(resolve, 1800));
+  daemonRealtimeDialCount = wsUpgradeCount - onceWsUpgradeCount;
   daemon.kill('SIGKILL');
-  daemonRealtimeDialCount = wsUpgradeCount;
+  await new Promise((resolve) => daemon.once('exit', resolve));
 }
 server.close();
-let cursorPersisted = false;
-let fileUpdated = false;
-try { fileUpdated = (await readFile(`${outputDir}/issue-490.txt`, 'utf8')) === 'healthy polling update'; } catch {}
-try { cursorPersisted = (await readFile(`${outputDir}/.relayfile-mount-state.json`, 'utf8')).includes('evt-490'); } catch {}
-const pollingUpdateApplied = fileUpdated && cursorPersisted;
-console.log(JSON.stringify({ exitCode, testsPassed: exitCode === 0 && pollingUpdateApplied ? 1 : 0, testsFailed: exitCode === 0 && pollingUpdateApplied ? 0 : 1, realtimeDialCount: entrypoint === 'standalone' ? 0 : wsUpgradeCount, daemonRealtimeDialCount, pollingUpdateApplied, cursorPersisted }));
-process.exitCode = exitCode === 0 ? 0 : 1;
+const success = firstExit === 0 && secondExit === 0 && fileUpdated && cursorPersisted && onceWsUpgradeCount === 0 && (entrypoint !== 'standalone' || daemonRealtimeDialCount > 0);
+console.log(JSON.stringify({ exitCode: success ? 0 : 1, testsPassed: success ? 1 : 0, testsFailed: success ? 0 : 1, realtimeDialCount: onceWsUpgradeCount, onceWsUpgradeCount, daemonRealtimeDialCount, pollingUpdateApplied: fileUpdated, cursorPersisted }));
+process.exitCode = success ? 0 : 1;
