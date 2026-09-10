@@ -7,6 +7,8 @@ type JsonRecord = Record<string, unknown>;
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DAYTONA_PROVIDER_SANDBOX_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
  * Cloud may hand back the gateway route owned by a provisioned sandbox. This
  * is deliberately an exact-origin allowlist: a route is control-plane input,
@@ -409,6 +411,19 @@ function assertExpectedSandboxIdentity(payload: JsonRecord, expectedSandboxId: s
   }
 }
 
+/** Daytona's control-plane identity and its provider UUID are distinct. */
+function normalizeProviderSandboxId(
+  payload: JsonRecord,
+  providerId: CloudFleetSandboxProviderId | undefined
+): string | undefined {
+  const providerSandboxId = readString(payload, 'providerSandboxId');
+  if (providerId !== 'daytona') return providerSandboxId;
+  if (!providerSandboxId || !DAYTONA_PROVIDER_SANDBOX_ID_PATTERN.test(providerSandboxId)) {
+    throw new Error('Cloud fleet sandbox response is missing a valid Daytona providerSandboxId.');
+  }
+  return providerSandboxId;
+}
+
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
@@ -444,7 +459,7 @@ function normalizeEnsureResult(
       throw new Error('Cloud fleet sandbox response is missing relayfileMounted.');
     }
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
-    const providerSandboxId = readString(payload, 'providerSandboxId');
+    const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
@@ -488,7 +503,7 @@ function normalizeEnsureResult(
 
   if (outcome === 'provisioning_timeout') {
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
-    const providerSandboxId = readString(payload, 'providerSandboxId');
+    const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
+
 - Worker startup queues the initial task before incoming events without consuming delivery retry attempts while waiting.
 
 - Codex startup requires its cursor in the composer, no loading or busy indicator, and one second of quiet output. It no longer depends on transient MCP server labels or historical prompt glyphs; timeout fallback remains unverified.

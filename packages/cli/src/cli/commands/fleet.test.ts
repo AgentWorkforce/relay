@@ -795,7 +795,13 @@ describe('fleet command support', () => {
       baseUrl: 'https://agent37-cast.agentrelay.com',
     });
     expect(JSON.parse(logs[0]!)).toMatchObject({
-      sandbox: { providerId: 'agent37', nodeName: 'e2b-codex', relayfileMountPath: '/workspace' },
+      sandbox: {
+        sandboxId: 'sandbox-1',
+        providerSandboxId: 'provider-sandbox-1',
+        providerId: 'agent37',
+        nodeName: 'e2b-codex',
+        relayfileMountPath: '/workspace',
+      },
       invocation: { invocationId: 'inv_sandbox' },
       attachCommand:
         "agent-relay node agent attach 'sandbox-worker' --node 'e2b-codex' --mode drive --base-url 'https://agent37-cast.agentrelay.com'",

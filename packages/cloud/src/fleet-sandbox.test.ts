@@ -28,6 +28,7 @@ const auth = {
 const refreshedAuth = { ...auth, accessToken: 'refreshed' };
 const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
 const SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
+const DAYTONA_PROVIDER_SANDBOX_ID = '223e4567-e89b-42d3-a456-426614174000';
 const SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
 const RELAYCAST_TARGET = {
   route: 'agent37-isolated' as const,
@@ -356,6 +357,100 @@ describe('Cloud fleet sandbox client', () => {
         providerId: 'agent37',
       });
       expect(result).not.toHaveProperty('providerSandboxId');
+    }
+  );
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'requires a valid Daytona providerSandboxId for %s responses',
+    async (outcome) => {
+      for (const providerSandboxId of [undefined, 'not-a-daytona-uuid']) {
+        mocks.authorizedApiFetch
+          .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+          .mockResolvedValueOnce({
+            response: Response.json(
+              outcome === 'provisioned'
+                ? {
+                    outcome,
+                    nodeId: 'node-daytona',
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    relayfileMounted: true,
+                    providerId: 'daytona',
+                  }
+                : {
+                    outcome,
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    waitedMs: 90_000,
+                    providerId: 'daytona',
+                  },
+              { status: outcome === 'provisioned' ? 201 : 202 }
+            ),
+            auth,
+          });
+
+        await expect(
+          ensureCloudFleetSandbox({
+            workspaceId: 'rw_abc',
+            requiredCapability: 'spawn:codex',
+            sandboxId: SANDBOX_ID,
+            name: SANDBOX_NAME,
+            forceProvision: true,
+            providerId: 'daytona',
+            workloadProfile: 'long-running-agent',
+          })
+        ).rejects.toThrow('valid Daytona providerSandboxId');
+      }
+    }
+  );
+
+  it.each(['provisioned', 'provisioning_timeout'] as const)(
+    'returns the exact Daytona providerSandboxId for %s responses',
+    async (outcome) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            outcome === 'provisioned'
+              ? {
+                  outcome,
+                  nodeId: 'node-daytona',
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  relayfileMounted: true,
+                  providerId: 'daytona',
+                }
+              : {
+                  outcome,
+                  nodeName: SANDBOX_NAME,
+                  sandboxId: SANDBOX_ID,
+                  providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+                  relayWorkspaceId: 'rw_abc',
+                  waitedMs: 90_000,
+                  providerId: 'daytona',
+                },
+            { status: outcome === 'provisioned' ? 201 : 202 }
+          ),
+          auth,
+        });
+
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          sandboxId: SANDBOX_ID,
+          name: SANDBOX_NAME,
+          forceProvision: true,
+          providerId: 'daytona',
+          workloadProfile: 'long-running-agent',
+        })
+      ).resolves.toMatchObject({ sandboxId: SANDBOX_ID, providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID });
     }
   );
 
@@ -868,7 +963,8 @@ describe('Cloud fleet sandbox client', () => {
                   nodeId: `node-${providerId}`,
                   nodeName: `${providerId}-reviewer`,
                   sandboxId: `sandbox-${providerId}`,
-                  providerSandboxId: `provider-sandbox-${providerId}`,
+                  providerSandboxId:
+                    providerId === 'daytona' ? DAYTONA_PROVIDER_SANDBOX_ID : `provider-sandbox-${providerId}`,
                   relayWorkspaceId: 'rw_abc',
                   relaycastTarget: CANONICAL_RELAYCAST_TARGET,
                   relayfileMounted: true,
@@ -921,6 +1017,8 @@ describe('Cloud fleet sandbox client', () => {
                   nodeId: `node-${providerId}`,
                   nodeName: `${providerId}-reviewer`,
                   sandboxId: `sandbox-${providerId}`,
+                  providerSandboxId:
+                    providerId === 'daytona' ? DAYTONA_PROVIDER_SANDBOX_ID : `provider-sandbox-${providerId}`,
                   relayWorkspaceId: 'rw_abc',
                   relayfileMounted: true,
                 }
@@ -969,6 +1067,8 @@ describe('Cloud fleet sandbox client', () => {
                   nodeId: `node-${providerId}`,
                   nodeName: `${providerId}-reviewer`,
                   sandboxId: `sandbox-${providerId}`,
+                  providerSandboxId:
+                    providerId === 'daytona' ? DAYTONA_PROVIDER_SANDBOX_ID : `provider-sandbox-${providerId}`,
                   relayWorkspaceId: 'rw_abc',
                   relaycastTarget: RELAYCAST_TARGET,
                   relayfileMounted: true,
@@ -1422,7 +1522,7 @@ describe('Cloud fleet sandbox client', () => {
               nodeId: 'node-1',
               nodeName: 'daytona-codex',
               sandboxId: 'sandbox-1',
-              providerSandboxId: 'provider-sandbox-1',
+              providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
               relayWorkspaceId: 'rw_abc',
               relaycastTarget: CANONICAL_RELAYCAST_TARGET,
               relayfileMounted: true,
@@ -1463,7 +1563,7 @@ describe('Cloud fleet sandbox client', () => {
             nodeId: 'node-1',
             nodeName: 'daytona-codex',
             sandboxId: 'sandbox-1',
-            providerSandboxId: 'provider-sandbox-1',
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
             relayWorkspaceId: 'rw_abc',
             relaycastTarget: CANONICAL_RELAYCAST_TARGET,
             relayfileMounted: true,
