@@ -82,7 +82,9 @@ receive a degraded-mode notice. Their model provider and any tools they
 configure themselves still have their own connectivity requirements.
 
 When a workspace key is configured through the normal workspace selection,
-the broker retries an independent audit connection in the background. Queued
+the broker retries an independent audit connection in the background. Audit
+endpoints require HTTPS, with HTTP allowed only for literal loopback IPs used
+in local development. Audit records never follow HTTP redirects. Queued
 local delivery records are persisted in `state-<name>.local-outbox.json` beside
 broker state, then reconciled as `local.delivery.queued` events under a separate
 broker audit identity when Relaycast responds. These events contain the

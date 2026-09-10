@@ -123,6 +123,25 @@ impl Drop for DegradedState {
     }
 }
 
+fn validate_audit_endpoint(base: Option<&str>) -> Result<()> {
+    let url = reqwest::Url::parse(base.unwrap_or("https://cast.agentrelay.com"))
+        .context("invalid local reconciliation endpoint")?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    });
+    anyhow::ensure!(
+        url.scheme() == "https" || (url.scheme() == "http" && loopback),
+        "local reconciliation requires HTTPS, except for literal loopback HTTP endpoints"
+    );
+    anyhow::ensure!(
+        url.username().is_empty() && url.password().is_none(),
+        "local reconciliation endpoint must not contain URL credentials"
+    );
+    Ok(())
+}
+
 impl DegradedState {
     pub(super) fn start(paths: &RuntimePaths, name: &str) -> Result<Self> {
         let key = std::env::var("AGENT_RELAY_WORKSPACE_KEY")
@@ -133,6 +152,9 @@ impl DegradedState {
             .ok()
             .or_else(|| std::env::var("RELAY_BASE_URL").ok())
             .filter(|base| !base.trim().is_empty());
+        if key.is_some() {
+            validate_audit_endpoint(base.as_deref())?;
+        }
         let scope = key.as_ref().map(|key| {
             format!(
                 "{:x}",
@@ -149,6 +171,7 @@ impl DegradedState {
             paths.state.with_extension("local-outbox.json"),
             scope,
         )?));
+        let audit_http = audit_http_client()?;
         let task_journal = journal.clone();
         let identity = stable_node_identity_key(&paths.state);
         // A separate identity cannot rotate the normal broker's token or claim
@@ -201,7 +224,10 @@ impl DegradedState {
                     task_journal.lock().unwrap().connected = false;
                     continue;
                 };
-                if reconcile_record(http, &name, &record).await.is_ok() {
+                if reconcile_record(&audit_http, http, &name, &record)
+                    .await
+                    .is_ok()
+                {
                     let mut journal = task_journal.lock().unwrap();
                     if !journal.connected {
                         eprintln!("[agent-relay] local delivery audit reconciliation connected (broker operating mode unchanged)");
@@ -241,20 +267,47 @@ impl DegradedState {
     }
 }
 
-async fn reconcile_record(http: &RelaycastHttpClient, name: &str, record: &Value) -> Result<()> {
-    timeout(
-        Duration::from_secs(5),
-        http.emit_agent_event(
-            name,
-            "local.delivery.queued",
-            record
-                .as_object()
-                .context("invalid local delivery record")?
-                .clone(),
-        ),
-    )
-    .await
-    .context("local reconciliation timed out")??;
+fn audit_http_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()?)
+}
+
+async fn reconcile_record(
+    client: &reqwest::Client,
+    http: &RelaycastHttpClient,
+    name: &str,
+    record: &Value,
+) -> Result<()> {
+    validate_audit_endpoint(http.base_url.as_deref())?;
+    // A redirect must not send the retained body or workspace credential to
+    // an endpoint that was never pinned by the journal's destination digest.
+    let response = client
+        .post(format!(
+            "{}/v1/agents/{}/events",
+            http.base_url
+                .as_deref()
+                .unwrap_or("https://cast.agentrelay.com")
+                .trim_end_matches('/'),
+            urlencoding::encode(name)
+        ))
+        .bearer_auth(&http.api_key)
+        .header(
+            "X-Relaycast-Origin-Actor",
+            crate::telemetry::BROKER_ORIGIN_ACTOR,
+        )
+        .json(&json!({"type": "local.delivery.queued", "payload": record}))
+        .send()
+        .await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "local audit event was not accepted"
+    );
+    let envelope: Value = response.json().await?;
+    anyhow::ensure!(envelope["ok"] == true, "local audit event was rejected");
+    let _: relaycast::SessionEvent = serde_json::from_value(envelope["data"].clone())
+        .context("invalid local audit acknowledgement")?;
     Ok(())
 }
 
@@ -471,9 +524,14 @@ mod tests {
             "local-broker",
             "local",
         );
-        assert!(reconcile_record(&http, "local-broker", &record)
-            .await
-            .is_err());
+        assert!(reconcile_record(
+            &audit_http_client().unwrap(),
+            &http,
+            "local-broker",
+            &record
+        )
+        .await
+        .is_err());
         assert_eq!(
             Journal::open(path.clone(), None)
                 .unwrap()
@@ -488,12 +546,108 @@ mod tests {
                 .json_body(json!({"type":"local.delivery.queued", "payload": record}));
             then.status(200).json_body(json!({"ok":true,"data":{"id":"audit_one","agent_id":"local-broker","type":"local.delivery.queued","payload":record,"created_at":"2026-09-09T00:00:00Z"}}));
         }).await;
-        reconcile_record(&http, "local-broker", &record)
-            .await
-            .unwrap();
+        reconcile_record(
+            &audit_http_client().unwrap(),
+            &http,
+            "local-broker",
+            &record,
+        )
+        .await
+        .unwrap();
         journal.acknowledge("local_replay").unwrap();
         accepted.assert_hits_async(1).await;
         remote_delivery.assert_hits_async(0).await;
         assert!(Journal::open(path, None).unwrap().outbox.records.is_empty());
+    }
+    #[test]
+    fn audit_endpoint_requires_tls_outside_literal_loopback() {
+        for url in [
+            "https://cast.agentrelay.com",
+            "http://127.0.0.1:8787",
+            "http://[::1]:8787",
+        ] {
+            assert!(validate_audit_endpoint(Some(url)).is_ok());
+        }
+        for url in [
+            "http://remote.example",
+            "http://localhost:8787",
+            "ftp://127.0.0.1",
+            "https://user:password@example.com",
+        ] {
+            assert!(validate_audit_endpoint(Some(url)).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_redirect_cannot_forward_private_record_to_another_destination() {
+        use httpmock::Method::POST;
+        let source = httpmock::MockServer::start_async().await;
+        let destination = httpmock::MockServer::start_async().await;
+        let leak = destination
+            .mock_async(|when, then| {
+                when.method(POST);
+                then.status(200).json_body(json!({"ok": true}));
+            })
+            .await;
+        let redirect = source
+            .mock_async(|when, then| {
+                when.method(POST).path("/v1/agents/local-broker/events");
+                then.status(307)
+                    .header("Location", destination.url("/private-data"));
+            })
+            .await;
+        let http = RelaycastHttpClient::new(
+            Some(source.base_url()),
+            "rk_live_test",
+            "local-broker",
+            "local",
+        );
+        assert!(reconcile_record(
+            &audit_http_client().unwrap(),
+            &http,
+            "local-broker",
+            &json!({"event_id": "local_private", "body": "private work"})
+        )
+        .await
+        .is_err());
+        redirect.assert_hits_async(1).await;
+        leak.assert_hits_async(0).await;
+    }
+    #[tokio::test]
+    async fn registration_sdk_strips_workspace_credential_on_cross_origin_redirect() {
+        use httpmock::Method::POST;
+        let source = httpmock::MockServer::start_async().await;
+        let destination = httpmock::MockServer::start_async().await;
+        let leaked_key = destination
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .header("authorization", "Bearer rk_live_test");
+                then.status(401);
+            })
+            .await;
+        let redirected = destination.mock_async(|when, then| {
+            when.method(POST);
+            then.status(401).json_body(json!({"ok": false, "error": {"code": "unauthorized", "message": "no credential"}}));
+        }).await;
+        source
+            .mock_async(|when, then| {
+                when.method(POST).path("/v1/agents");
+                then.status(307)
+                    .header("Location", destination.url("/v1/agents"));
+            })
+            .await;
+        let relay = relaycast::RelayCast::new(
+            relaycast::RelayCastOptions::new("rk_live_test").with_base_url(source.base_url()),
+        )
+        .unwrap();
+        let request = relaycast::CreateAgentRequest {
+            name: "local-broker".into(),
+            agent_type: Some("agent".into()),
+            persona: None,
+            metadata: None,
+        };
+        assert!(relay.register_agent(request).await.is_err());
+        leaked_key.assert_hits_async(0).await;
+        redirected.assert_hits_async(1).await;
     }
 }

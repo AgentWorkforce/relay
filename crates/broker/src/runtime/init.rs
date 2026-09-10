@@ -147,7 +147,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let relay_ready = Arc::new(Notify::new());
     let relay_ready_state: Arc<RwLock<Option<RelayReadyState>>> = Arc::new(RwLock::new(None));
     let (api_tx, api_rx) = mpsc::channel::<ListenApiRequest>(32);
-    let api_host = bracket_ipv6_host(unbracket_ipv6(&cmd.api_bind));
+    let api_host = bracket_ipv6_host(unbracket_ipv6(cmd.api_bind.trim()));
     let bind_addr = format!("{}:{}", api_host, cmd.api_port);
     log_startup_phase(
         startup_debug,
@@ -464,7 +464,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_id: session_node_id,
         node_name: session_node_name,
         node_token: session_node_token,
-        persist: cmd.persist,
+        persist: paths.persist,
     });
     {
         let mut ready = relay_ready_state.write().await;
@@ -717,7 +717,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // Owner lease: in ephemeral mode, the broker shuts down if the SDK
     // doesn't renew the lease within this duration. Replaces stdin EOF
     // detection. Disabled in persist mode.
-    let lease_duration = if cmd.persist {
+    let lease_duration = if paths.persist {
         None
     } else {
         Some(Duration::from_secs(120))
@@ -736,7 +736,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
 
     let runtime = BrokerRuntime {
         degraded,
-        persist: cmd.persist,
+        persist: paths.persist,
         broker_start,
         agent_spawn_count,
         paths,

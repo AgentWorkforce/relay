@@ -104,7 +104,6 @@ async function start(localOnly, apiBind = '127.0.0.1') {
     path.resolve(binary),
     [
       'init',
-      '--persist',
       '--state-dir',
       stateDir,
       '--instance-name',
@@ -185,12 +184,16 @@ try {
     assert.match(logs, /failed to initialize relaycast session|failed registering agent/);
     result = { outcome: 'absent', signature: 'relaycast_outage_blocks_local_runtime' };
   } else {
-    await start(true, '[::1]');
+    await start(true, ' [::1] ');
     await ready();
     assert.equal(new URL(url).hostname, '[::1]', 'IPv6 API discovery URL is bracketed');
     const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
     assert.equal(connection.url, url, 'Persisted discovery URL matches the listening IPv6 API');
     assert.match(logs, /DEGRADED.*LOCAL ONLY/);
+    const lease = await request('/api/session/renew', {});
+    assert(lease.response.ok);
+    assert.equal(lease.data.persist, true, '--state-dir enables effective persistence');
+    assert.equal(lease.data.expires_in_secs, 0, 'Durable local work has no owner lease expiry');
     let health = (await request('/health')).data;
     assert.equal(health.status, 'degraded');
     assert.equal(health.relaycastConnected, false);
@@ -204,7 +207,7 @@ try {
       cwd: dir,
       args: [
         '-c',
-        'for key in AGENT_RELAY_ORIGIN_ACTOR RELAY_AGENT_NAME RELAY_AGENT_TYPE RELAY_STRICT_AGENT_NAME AGENT_RELAY_WORKSPACE_KEY RELAY_WORKSPACE_KEY RELAY_API_KEY RELAY_AGENT_TOKEN RELAY_NODE_TOKEN; do if printenv "$key" >/dev/null; then exit 9; fi; done; printf clean > local-env-proof; read -r line',
+        'for key in AGENT_RELAY_ORIGIN_ACTOR RELAY_AGENT_NAME RELAY_AGENT_TYPE RELAY_STRICT_AGENT_NAME AGENT_RELAY_WORKSPACE_KEY RELAY_WORKSPACE_KEY RELAY_API_KEY RELAY_AGENT_TOKEN RELAY_NODE_TOKEN; do if printenv "$key" >/dev/null; then exit 9; fi; done; test "$AGENT_RELAY_TELEMETRY_DISABLED" = 1 && test "$DO_NOT_TRACK" = 1 && test "$AGENT_RELAY_NO_DEBUG_FILES" = 1 || exit 10; printf clean > local-env-proof; read -r line',
       ],
       channels: [],
     });
