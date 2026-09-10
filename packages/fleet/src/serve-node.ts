@@ -336,9 +336,105 @@ function makeContext(
           ...(message.data ? { data: message.data as NodeMessageInput['data'] } : {}),
         }),
     },
-    spawnAgent: (spawn: FleetSpawnAgentInput) =>
-      nodeCtx.spawnAgent(buildSpawnInput(spawn, nodeCtx.invocationId, shadowedHarness)),
+    spawnAgent: async (spawn: FleetSpawnAgentInput) => {
+      const placement = await nodeCtx.spawnAgent(
+        buildSpawnInput(spawn, nodeCtx.invocationId, shadowedHarness)
+      );
+      if (spawn.verifyReady === false) {
+        return { placement, ready: false, readiness: 'unverified' };
+      }
+      return waitForDelegatedSpawn(options, placement);
+    },
   };
+}
+
+// node.spawn acknowledges placement, not launch. A served handler must not
+// complete until its broker confirms readiness (or reports the terminal error).
+// Node credentials can read only spawn invocations dispatched to their own node.
+/** @internal Excluded from the published package entry point. */
+export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement: unknown): Promise<unknown> {
+  const invocationId = (placement as { invocation_id?: unknown } | null)?.invocation_id;
+  if (typeof invocationId !== 'string' || !invocationId) {
+    throw new Error('spawn_confirmation_missing: engine returned no delegated invocation ID');
+  }
+  const configuredBase = (options.connection.baseUrl ?? 'https://cast.agentrelay.com')
+    .replace(/^ws:/, 'http:')
+    .replace(/^wss:/, 'https:');
+  // Scan once: an unanchored /\/+$/ trim can backtrack quadratically on a
+  // caller-controlled long run of slashes followed by another character.
+  let end = configuredBase.length;
+  while (end > 0 && configuredBase[end - 1] === '/') end--;
+  const baseUrl = configuredBase.slice(0, end);
+  const url = `${baseUrl}/v1/actions/spawn/invocations/${encodeURIComponent(invocationId)}`;
+  // Broker readiness is bounded at 120 seconds. Include a finite reporting grace
+  // period; a missing result is an actionable failure, never inferred success.
+  const deadline = AbortSignal.timeout(130_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      let response: Response | undefined;
+      let body:
+        | { data?: { status?: string; output?: { spawned?: boolean; ready?: boolean }; error?: string } }
+        | undefined;
+      try {
+        response = await fetch(url, {
+          headers: { authorization: `Bearer ${options.connection.nodeToken}` },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        });
+        if (response.ok) body = (await response.json()) as typeof body;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        // A failed status read does not mean the already-dispatched child failed.
+        // Keep the same invocation until the overall confirmation deadline.
+        response = undefined;
+      }
+      if (response?.ok) {
+        const invocation = body?.data;
+        if (invocation?.status === 'completed') {
+          if (invocation.output?.spawned !== true || invocation.output?.ready !== true) {
+            throw new Error(
+              `spawn_readiness_unconfirmed: ${invocationId} completed without confirmed launch/readiness`
+            );
+          }
+          return invocation.output;
+        }
+        if (['failed', 'denied', 'cancelled'].includes(invocation?.status ?? '')) {
+          throw new Error(`spawn_failed: ${invocationId}: ${invocation?.error ?? invocation?.status}`);
+        }
+        if (!['pending', 'dispatched', 'invoked', 'running'].includes(invocation?.status ?? '')) {
+          throw new Error(`spawn_confirmation_invalid: ${invocationId} returned an invalid status`);
+        }
+      } else if (response) {
+        await response.body?.cancel();
+        if (response.status !== 429 && response.status !== 503) {
+          throw new Error(
+            `spawn_confirmation_unavailable: ${invocationId} HTTP ${response.status}; engine must support node-owned spawn status reads`
+          );
+        }
+      }
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener('abort', abort);
+          resolve();
+        }, 1_000);
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      });
+    }
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error(
+        `spawn_confirmation_interrupted: ${invocationId}; reconcile the delegated invocation before retrying`,
+        { cause: error }
+      );
+    }
+    throw new Error(`spawn_confirmation_failed: ${invocationId}: ${errorMessage(error)}`, { cause: error });
+  }
 }
 
 /**
@@ -359,6 +455,7 @@ function buildSpawnInput(
   const invocationId = spawn.invocationId ?? fallbackInvocationId;
   return {
     ...spawn.agent,
+    verify_ready: spawn.verifyReady !== false,
     ...(spawn.initialTask !== undefined ? { task: spawn.initialTask } : {}),
     ...(spawn.registrationMetadata ? { metadata: spawn.registrationMetadata } : {}),
     skip_relay_prompt: spawn.skipRelayPrompt ?? false,

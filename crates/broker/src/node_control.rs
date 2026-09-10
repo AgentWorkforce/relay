@@ -547,6 +547,7 @@ pub(crate) struct AgentRegistrationToken {
 
 #[derive(Debug)]
 struct PendingAgentRegistration {
+    isolates_channels: bool,
     name: String,
     reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
     created_at: Instant,
@@ -562,6 +563,10 @@ pub(crate) enum FleetControlCommand {
     UpdateLoad(FleetLoadSnapshot),
     HeartbeatNow,
     Send(BrokerToRelaycast),
+    DeregisterAgent {
+        request: AgentDeregister,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     RegisterAgent {
         request: AgentRegister,
         reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
@@ -1568,6 +1573,9 @@ fn handle_disconnected_command(
         }
         Some(FleetControlCommand::UpdateLoad(next)) => *load = next,
         Some(FleetControlCommand::UpdateInventory(next)) => *inventory = next,
+        Some(FleetControlCommand::DeregisterAgent { reply, .. }) => {
+            let _ = reply.send(Err(register_agent_error.to_string()));
+        }
         Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
             let _ = reply.send(Err(register_agent_error.to_string()));
         }
@@ -1859,6 +1867,8 @@ async fn run_connected_once(
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
+    let mut pending_deregistrations: HashMap<String, oneshot::Sender<Result<(), String>>> =
+        HashMap::new();
 
     if send_wire(
         &mut sink,
@@ -1936,6 +1946,15 @@ async fn run_connected_once(
                             return ControlRunResult::Disconnected;
                         }
                     }
+                    Some(FleetControlCommand::DeregisterAgent { mut request, reply }) => {
+                        let request_id = format!("agent_deregister_{}", Uuid::new_v4().simple());
+                        request.id = Some(request_id.clone());
+                        pending_deregistrations.retain(|_, pending| !pending.is_closed());
+                        pending_deregistrations.insert(request_id, reply);
+                        if send_wire(&mut sink, &BrokerToRelaycast::AgentDeregister(request)).await.is_err() {
+                            return ControlRunResult::Disconnected;
+                        }
+                    }
                     Some(FleetControlCommand::RegisterAgent { mut request, reply }) => {
                         let request_id = request.id.clone().unwrap_or_else(|| {
                             format!("agent_register_{}", Uuid::new_v4().simple())
@@ -1944,6 +1963,7 @@ async fn run_connected_once(
                         pending_agent_registrations.insert(
                             request_id,
                             PendingAgentRegistration {
+                                isolates_channels: request.auto_join_general == Some(false),
                                 name: request.name.clone(),
                                 reply,
                                 created_at: Instant::now(),
@@ -2020,7 +2040,7 @@ async fn run_connected_once(
                 // answering our ping, which is the only traffic a healthy but
                 // idle engine is guaranteed to send.
                 last_inbound = Instant::now();
-                if !handle_server_message(message, event_tx, &mut pending_agent_registrations, &mut sink).await {
+                if !handle_server_message(message, event_tx, &mut pending_agent_registrations, &mut pending_deregistrations, &mut sink).await {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
                 }
@@ -2060,6 +2080,7 @@ async fn handle_server_message<S>(
     message: Message,
     event_tx: &mpsc::Sender<FleetControlEvent>,
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
     sink: &mut S,
 ) -> bool
 where
@@ -2069,9 +2090,24 @@ where
     match message {
         Message::Text(text) => match serde_json::from_str::<RelaycastToBroker>(&text) {
             Ok(RelaycastToBroker::Reply(reply)) => {
+                if let Some(pending) = pending_deregistrations.remove(&reply.id) {
+                    let result = if reply.ok {
+                        Ok(())
+                    } else {
+                        Err("agent_deregister_rejected".to_string())
+                    };
+                    let _ = pending.send(result);
+                    return true;
+                }
+
                 complete_agent_registration(reply, pending_agent_registrations, sink).await
             }
             Ok(RelaycastToBroker::Error(error)) => {
+                if let Some(pending) = pending_deregistrations.remove(&error.id) {
+                    let _ = pending.send(Err(format!("{}: {}", error.code, error.message)));
+                    return true;
+                }
+
                 // Surface every engine rejection at error level. A node.register or
                 // heartbeat rejection (e.g. node_name_conflict) matches no pending
                 // agent registration below, so without this it vanishes silently —
@@ -2083,6 +2119,9 @@ where
                     id = %error.id,
                     "engine rejected a node control frame"
                 );
+                if error.code == "invalid_message" {
+                    fail_unsupported_channel_isolation(&error.message, pending_agent_registrations);
+                }
                 fail_agent_registration(
                     &error.id,
                     format!("{}: {}", error.code, error.message),
@@ -2195,6 +2234,41 @@ fn fail_agent_registration(
 ) {
     if let Some(pending) = pending_agent_registrations.remove(id) {
         let _ = pending.reply.send(Err(reason));
+    }
+}
+
+/// Older strict schemas cannot echo the request id when parsing fails. Only
+/// reject registrations using the specifically rejected extension; unrelated
+/// schema errors and legacy registrations keep their normal correlation.
+fn fail_unsupported_channel_isolation(
+    message: &str,
+    pending: &mut HashMap<String, PendingAgentRegistration>,
+) {
+    let Ok(serde_json::Value::Array(issues)) = serde_json::from_str::<serde_json::Value>(message)
+    else {
+        return;
+    };
+    let rejected = issues.iter().any(|issue| {
+        issue["code"] == "unrecognized_keys"
+            && issue["path"].as_array().is_some_and(Vec::is_empty)
+            && issue["keys"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|key| key == "auto_join_general"))
+    });
+    if !rejected {
+        return;
+    }
+    let incompatible: Vec<_> = pending
+        .iter()
+        .filter(|(_, entry)| entry.isolates_channels)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in incompatible {
+        fail_agent_registration(
+            &id,
+            "agent_register_unsupported_channel_isolation: engine upgrade required".to_string(),
+            pending,
+        );
     }
 }
 
@@ -3238,6 +3312,62 @@ mod tests {
         assert!(seen.contains("dup"));
     }
 
+    #[tokio::test]
+    async fn uncorrelated_strict_schema_error_fails_only_isolated_registration_promptly() {
+        let (isolated_tx, mut isolated_rx) = oneshot::channel();
+        let (legacy_tx, mut legacy_rx) = oneshot::channel();
+        let mut pending = HashMap::from([
+            (
+                "isolated".to_string(),
+                PendingAgentRegistration {
+                    isolates_channels: true,
+                    name: "isolated".to_string(),
+                    reply: isolated_tx,
+                    created_at: Instant::now(),
+                },
+            ),
+            (
+                "legacy".to_string(),
+                PendingAgentRegistration {
+                    isolates_channels: false,
+                    name: "legacy".to_string(),
+                    reply: legacy_tx,
+                    created_at: Instant::now(),
+                },
+            ),
+        ]);
+        let (events, _) = mpsc::channel(1);
+        let mut deregistrations = HashMap::new();
+        let mut sink = futures_util::sink::drain();
+        for key in ["unrelated_extension", "auto_join_general"] {
+            let error = json!({"v":1,"type":"error","ok":false,"id":"fresh-engine-id","code":"invalid_message","message":json!([{"code":"unrecognized_keys","path":[],"keys":[key]}]).to_string()});
+            assert!(
+                handle_server_message(
+                    Message::Text(error.to_string()),
+                    &events,
+                    &mut pending,
+                    &mut deregistrations,
+                    &mut sink
+                )
+                .await
+            );
+            assert!(matches!(
+                legacy_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            if key == "unrelated_extension" {
+                assert!(matches!(
+                    isolated_rx.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+            }
+        }
+        assert!(
+            matches!(isolated_rx.try_recv(), Ok(Err(reason)) if reason.starts_with("agent_register_unsupported_channel_isolation"))
+        );
+        assert_eq!(pending.len(), 1);
+    }
+
     #[test]
     fn expire_agent_registrations_bounds_pending_map() {
         let created_at = Instant::now();
@@ -3245,6 +3375,7 @@ mod tests {
         let mut pending = HashMap::from([(
             "agent_register_1".to_string(),
             PendingAgentRegistration {
+                isolates_channels: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at,
@@ -3275,6 +3406,7 @@ mod tests {
         let mut pending = HashMap::from([(
             "agent_register_req".to_string(),
             PendingAgentRegistration {
+                isolates_channels: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at: Instant::now(),
@@ -3318,6 +3450,7 @@ mod tests {
         let mut pending = HashMap::from([(
             "agent_register_req".to_string(),
             PendingAgentRegistration {
+                isolates_channels: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at: Instant::now(),
@@ -3635,6 +3768,7 @@ mod tests {
         command_tx
             .send(FleetControlCommand::RegisterAgent {
                 request: AgentRegister {
+                    auto_join_general: Some(false),
                     v: FLEET_WIRE_VERSION,
                     id: None,
                     name: "agent-a".to_string(),
@@ -3863,6 +3997,7 @@ mod tests {
         command_tx
             .send(FleetControlCommand::RegisterAgent {
                 request: AgentRegister {
+                    auto_join_general: Some(false),
                     v: FLEET_WIRE_VERSION,
                     id: None,
                     name: "agent-a".to_string(),

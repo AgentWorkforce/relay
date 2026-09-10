@@ -29,6 +29,7 @@ function recordBriefNonce(nonce) {
       nonce,
       agent: process.env.RELAY_AGENT_NAME ?? null,
       node: process.env.RELAY_E2E_NODE_NAME ?? null,
+      args: process.argv.slice(2),
       observedAt: new Date().toISOString(),
     })
   );
@@ -68,6 +69,12 @@ try {
 setTimeout(() => {
   ready = true;
   process.stdout.write('->pty:ready\n');
+  // Model Codex's actual composer glyph and cursor, rather than Claude's ❯.
+  // The broker verifies the settled composer without requiring a transient
+  // MCP boot label. This native stub starts no MCP/AI service.
+  if (path.basename(process.argv[1]) === 'codex') {
+    process.stdout.write('› ');
+  }
 }, readyDelayMs);
 
 setInterval(() => {}, 1 << 30);

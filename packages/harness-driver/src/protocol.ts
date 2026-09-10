@@ -238,6 +238,10 @@ export interface ListAgent {
   channels: string[];
   parent?: string;
   pid?: number;
+  /** True only after the broker observed worker_ready for this process generation. */
+  ready?: boolean;
+  /** Immutable identity for generation-checked cleanup. */
+  generation?: string;
   last_activity_at?: string;
   last_activity_ms?: number;
   context_budget_pct?: number | null;
@@ -552,7 +556,8 @@ export type BrokerEvent =
       channels: string[];
     }
   | {
-      kind: 'worker_ready';
+      /** Fallback releases queued legacy startup work but does not establish readiness. */
+      kind: 'worker_ready' | 'worker_startup_fallback';
       name: string;
       runtime: AgentRuntime;
       provider?: HeadlessProvider;
@@ -692,7 +697,13 @@ export type BrokerToWorker =
 export type WorkerToBroker =
   | {
       type: 'worker_ready';
-      payload: { name: string; runtime: AgentRuntime; provider?: HeadlessProvider; sessionId?: string };
+      payload: {
+        name: string;
+        runtime: AgentRuntime;
+        provider?: HeadlessProvider;
+        sessionId?: string;
+        readiness_proven?: boolean;
+      };
     }
   | {
       type: 'delivery_ack';

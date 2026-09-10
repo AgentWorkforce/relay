@@ -7,6 +7,8 @@ type JsonRecord = Record<string, unknown>;
 const CLOUD_WORKSPACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DAYTONA_PROVIDER_SANDBOX_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 /**
  * Cloud may hand back the gateway route owned by a provisioned sandbox. This
  * is deliberately an exact-origin allowlist: a route is control-plane input,
@@ -47,6 +49,8 @@ export class CloudFleetSandboxProvisionError extends Error {
   readonly sandboxId?: string;
   readonly nodeName?: string;
   readonly providerId?: CloudFleetSandboxProviderId;
+  /** A 2xx response proved this exact caller-owned sandbox was provisioned. */
+  readonly confirmedProvisioned: boolean;
   readonly outcomeUnknown: boolean;
 
   constructor(
@@ -56,6 +60,7 @@ export class CloudFleetSandboxProvisionError extends Error {
       sandboxId?: string;
       nodeName?: string;
       providerId?: CloudFleetSandboxProviderId;
+      confirmedProvisioned?: boolean;
       outcomeUnknown?: boolean;
       cause?: unknown;
     } = {}
@@ -66,7 +71,8 @@ export class CloudFleetSandboxProvisionError extends Error {
     this.sandboxId = identity.sandboxId;
     this.nodeName = identity.nodeName;
     this.providerId = identity.providerId;
-    this.outcomeUnknown = identity.outcomeUnknown === true;
+    this.confirmedProvisioned = identity.confirmedProvisioned === true;
+    this.outcomeUnknown = !this.confirmedProvisioned && identity.outcomeUnknown === true;
   }
 }
 
@@ -118,7 +124,7 @@ const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] =
   'microsandbox',
 ];
 
-export type CloudFleetSandboxReady = {
+type CloudFleetSandboxReadyBase = {
   outcome: 'provisioned';
   cloudWorkspaceId: string;
   nodeId: string;
@@ -133,6 +139,16 @@ export type CloudFleetSandboxReady = {
   providerId?: CloudFleetSandboxProviderId;
 };
 
+/** Daytona responses always carry the independently attested provider UUID. */
+export type CloudFleetSandboxReady =
+  | (CloudFleetSandboxReadyBase & {
+      providerId: 'daytona';
+      providerSandboxId: string;
+    })
+  | (CloudFleetSandboxReadyBase & {
+      providerId?: Exclude<CloudFleetSandboxProviderId, 'daytona'>;
+    });
+
 export type CloudFleetSandboxReused = {
   outcome: 'reused';
   cloudWorkspaceId: string;
@@ -146,7 +162,7 @@ export type CloudFleetSandboxReused = {
   relaycastTarget?: CloudFleetRelaycastTarget;
 };
 
-export type CloudFleetSandboxProvisioningTimeout = {
+type CloudFleetSandboxProvisioningTimeoutBase = {
   outcome: 'provisioning_timeout';
   cloudWorkspaceId: string;
   sandboxId: string;
@@ -157,6 +173,16 @@ export type CloudFleetSandboxProvisioningTimeout = {
   waitedMs: number;
   providerId?: CloudFleetSandboxProviderId;
 };
+
+/** Daytona timeout responses also prove the provider UUID before they are surfaced. */
+export type CloudFleetSandboxProvisioningTimeout =
+  | (CloudFleetSandboxProvisioningTimeoutBase & {
+      providerId: 'daytona';
+      providerSandboxId: string;
+    })
+  | (CloudFleetSandboxProvisioningTimeoutBase & {
+      providerId?: Exclude<CloudFleetSandboxProviderId, 'daytona'>;
+    });
 
 export type EnsureCloudFleetSandboxResult =
   | CloudFleetSandboxReady
@@ -409,6 +435,42 @@ function assertExpectedSandboxIdentity(payload: JsonRecord, expectedSandboxId: s
   }
 }
 
+/** Daytona's control-plane identity and its provider UUID are distinct. */
+function normalizeProviderSandboxId(
+  payload: JsonRecord,
+  providerId: CloudFleetSandboxProviderId | undefined
+): string | undefined {
+  const providerSandboxId = readString(payload, 'providerSandboxId');
+  if (providerId !== 'daytona') return providerSandboxId;
+  if (!providerSandboxId || !DAYTONA_PROVIDER_SANDBOX_ID_PATTERN.test(providerSandboxId)) {
+    throw new Error('Cloud fleet sandbox response is missing a valid Daytona providerSandboxId.');
+  }
+  return providerSandboxId;
+}
+
+/**
+ * A malformed success response can still leave a billable sandbox behind. It
+ * is safe to delete only when the response itself confirms the exact
+ * caller-checkpointed identity; never promote a returned or ambient identity
+ * to cleanup authority.
+ */
+function confirmsProvisionedSandboxIdentity(
+  payload: unknown,
+  expectedSandboxId: string | undefined,
+  expectedNodeName: string | undefined,
+  requestedProviderId: CloudFleetSandboxProviderId | undefined
+): boolean {
+  if (!isObject(payload) || expectedSandboxId === undefined || requestedProviderId !== 'daytona')
+    return false;
+  // A timeout is also a response from an accepted provision request. When it
+  // echoes the exact caller-checkpointed public identity, Cloud can safely
+  // delete that one sandbox even if the provider UUID is malformed or absent.
+  if (!['provisioned', 'provisioning_timeout'].includes(readString(payload, 'outcome') ?? '')) return false;
+  if (readString(payload, 'sandboxId') !== expectedSandboxId) return false;
+  if (expectedNodeName !== undefined && readString(payload, 'nodeName') !== expectedNodeName) return false;
+  return readString(payload, 'providerId') === requestedProviderId;
+}
+
 function normalizeEnsureResult(
   payload: unknown,
   cloudWorkspaceId: string,
@@ -444,7 +506,7 @@ function normalizeEnsureResult(
       throw new Error('Cloud fleet sandbox response is missing relayfileMounted.');
     }
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
-    const providerSandboxId = readString(payload, 'providerSandboxId');
+    const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
@@ -466,7 +528,7 @@ function normalizeEnsureResult(
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
-    };
+    } as CloudFleetSandboxReady;
   }
 
   if (outcome === 'reused') {
@@ -488,7 +550,7 @@ function normalizeEnsureResult(
 
   if (outcome === 'provisioning_timeout') {
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
-    const providerSandboxId = readString(payload, 'providerSandboxId');
+    const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
@@ -505,7 +567,7 @@ function normalizeEnsureResult(
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
       ...(providerId === undefined ? {} : { providerId }),
-    };
+    } as CloudFleetSandboxProvisioningTimeout;
   }
 
   throw new Error('Cloud fleet sandbox response has an unknown outcome.');
@@ -629,6 +691,12 @@ export async function ensureCloudFleetSandbox(
       input.providerId
     );
   } catch (error) {
+    const confirmedProvisioned = confirmsProvisionedSandboxIdentity(
+      payload,
+      sandboxIdentity.sandboxId,
+      sandboxIdentity.name,
+      input.providerId
+    );
     throw new CloudFleetSandboxProvisionError(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
       {
@@ -636,7 +704,7 @@ export async function ensureCloudFleetSandbox(
         ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
         ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
-        outcomeUnknown: true,
+        ...(confirmedProvisioned ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
         cause: error,
       }
     );

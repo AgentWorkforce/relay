@@ -14,6 +14,7 @@ use relaycast::{
     TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
@@ -930,6 +931,37 @@ impl RelaycastHttpClient {
         &self,
         agent_name: &str,
         reason: Option<&str>,
+        delete_identity: bool,
+    ) -> Result<()> {
+        let expected_token_hash = if delete_identity {
+            Some(self.owned_identity_token_hash(agent_name)?)
+        } else {
+            None
+        };
+        self.release_agent_identity_guarded(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash.as_deref(),
+        )
+        .await
+    }
+
+    /// Capture before yielding the runtime; background cleanup must not adopt a
+    /// later cache entry belonging to a same-name replacement.
+    pub(crate) fn owned_identity_token_hash(&self, agent_name: &str) -> Result<String> {
+        let token = self.registration.as_ref().as_ref()
+            .and_then(|registration| registration.cached_agent_token(agent_name))
+            .context("owned identity cleanup requires its cached credential; refusing name-only deletion")?;
+        Ok(format!("{:x}", Sha256::digest(token.as_bytes())))
+    }
+
+    pub(crate) async fn release_agent_identity_guarded(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
     ) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
@@ -941,8 +973,46 @@ impl RelaycastHttpClient {
             let request = ReleaseAgentRequest {
                 name: agent_name.to_string(),
                 reason: Some(attributed_reason),
-                delete_agent: None,
+                // Deletion is opt-in for an owned disposable identity. Ordinary
+                // release and attached identities retain the existing lifecycle policy.
+                delete_agent: delete_identity.then_some(true),
             };
+            if delete_identity {
+                let expected_token_hash =
+                    expected_token_hash.context("owned cleanup has no captured credential hash")?;
+                let mut body = serde_json::to_value(&request)?;
+                body["expected_token_hash"] = Value::String(expected_token_hash.to_string());
+                let response = reqwest::Client::new()
+                    .post(format!(
+                        "{}/v1/agents/release",
+                        self.base_url
+                            .as_deref()
+                            .unwrap_or("https://cast.agentrelay.com")
+                            .trim_end_matches('/')
+                    ))
+                    .bearer_auth(&self.api_key)
+                    .json(&body)
+                    .timeout(Duration::from_secs(30))
+                    .send()
+                    .await
+                    .context("owned identity cleanup request failed")?;
+                if !response.status().is_success() {
+                    anyhow::bail!("owned identity cleanup rejected (HTTP {}); retry/reconcile without deleting a replacement", response.status());
+                }
+                let result: Value = response
+                    .json()
+                    .await
+                    .context("invalid identity cleanup response")?;
+                if result["data"]["status"] != "completed" {
+                    anyhow::bail!("owned identity cleanup queued but unconfirmed; reconcile lifecycle invocation {}", result["data"]["invocation_id"]);
+                }
+                if self.owned_identity_token_hash(agent_name).ok().as_deref()
+                    == Some(expected_token_hash)
+                {
+                    self.invalidate_cached_registration(agent_name);
+                }
+                return Ok(());
+            }
             // Invalidate the cached token before the call so an ambiguous
             // response (e.g. a timeout after Relaycast committed the release)
             // can never leave a dead token cached for reuse. Worst case on
@@ -1142,6 +1212,33 @@ impl RelaycastHttpClient {
                 .await
             {
                 Ok(outcome) => {
+                    let mut verification_error = None;
+                    for attempt in 0..3 {
+                        match agent_client.channel_members(name).await {
+                            Ok(members)
+                                if members.iter().any(|member| member.agent_name == agent_name) =>
+                            {
+                                verification_error = None;
+                                break;
+                            }
+                            Ok(_) => {
+                                verification_error = Some(
+                                    "join acknowledged but worker membership is absent".to_string(),
+                                )
+                            }
+                            Err(error) => {
+                                verification_error =
+                                    Some(format!("membership verification failed: {error}"))
+                            }
+                        }
+                        if attempt < 2 {
+                            tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                        }
+                    }
+                    if let Some(error) = verification_error {
+                        failures.push(format!("{name}: {error}"));
+                        continue;
+                    }
                     tracing::info!(
                         worker = %agent_name,
                         channel = %outcome.name,
@@ -1167,6 +1264,47 @@ impl RelaycastHttpClient {
                 failures.join("; ")
             );
         }
+        Ok(())
+    }
+
+    /// Read the live agent detail, not the cached channel metadata. This also
+    /// detects an older engine silently ignoring the registration opt-out.
+    pub(crate) async fn verify_agent_channel_scope(
+        &self,
+        name: &str,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        let relay = self
+            .relay
+            .as_ref()
+            .as_ref()
+            .context("SDK relay client not initialized")?;
+        let client = relay.as_agent(&self.api_key)?;
+        let agent: Value = client
+            .http_client()
+            .get(&format!("/v1/agents/{name}"), None, None)
+            .await?;
+        let memberships = agent
+            .get("channels")
+            .and_then(Value::as_array)
+            .context("live agent membership response is missing channels")?;
+        let actual = memberships
+            .iter()
+            .map(|member| {
+                member
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .context("live membership is missing channel name")
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        let expected = channels
+            .iter()
+            .map(|channel| channel.as_str())
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            actual == expected,
+            "worker '{name}' live channel isolation failed: expected {expected:?}, got {actual:?}"
+        );
         Ok(())
     }
 
@@ -1541,6 +1679,67 @@ pub async fn retry_agent_registration(
     .await
 }
 
+/// Create a new spawn identity, never reuse a cached credential or take over a name.
+/// A successful result is ownership evidence for cleanup of a failed new spawn.
+pub async fn register_new_spawn_identity(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+) -> Result<String, RegRetryOutcome> {
+    let relay = http.relay.as_ref().as_ref().ok_or_else(|| {
+        RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
+            agent_name: name.to_string(),
+            detail: "SDK relay client not initialized".to_string(),
+        })
+    })?;
+    // Use the SDK transport with the extended registration contract. Do not
+    // consult the identity cache: success must prove a newly created identity.
+    let client = relay
+        .as_agent(&http.api_key)
+        .map_err(|error| RegRetryOutcome::Fatal(registration_metadata_error(name, error)))?;
+    let body = serde_json::json!({
+        "name": name, "type": "agent", "auto_join_general": false,
+        "metadata": {"cli": cli.unwrap_or(&http.default_cli)}
+    });
+    for attempt in 0..3 {
+        match client
+            .http_client()
+            .post::<relaycast::CreateAgentResponse>("/v1/agents", Some(&body), None)
+            .await
+        {
+            Ok(agent) if !agent.token.trim().is_empty() => {
+                http.seed_agent_token(name, &agent.token);
+                return Ok(agent.token);
+            }
+            Ok(_) => {
+                return Err(RegRetryOutcome::Fatal(
+                    RelaycastRegistrationError::MissingToken {
+                        agent_name: name.to_string(),
+                    },
+                ))
+            }
+            Err(RelayError::Api { status: 409, .. }) => {
+                return Err(RegRetryOutcome::Fatal(
+                    RelaycastRegistrationError::AlreadyExists {
+                        agent_name: name.to_string(),
+                    },
+                ))
+            }
+            Err(error) => {
+                let error = registration_metadata_error(name, error);
+                if !relaycast::registration_is_retryable(&error) {
+                    return Err(RegRetryOutcome::Fatal(error));
+                }
+                if attempt == 2 {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+    unreachable!()
+}
+
 /// The declared fields alone, trimmed, with blanks omitted.
 ///
 /// Omitting rather than sending `""` matters because both callers merge this
@@ -1607,10 +1806,10 @@ mod tests {
 
     use super::{
         agent_registration_retry_delay, format_worker_preregistration_error,
-        registration_is_retryable, registration_retry_after_secs, retry_agent_registration_with,
-        retry_agent_registration_with_budget, ImpersonationAwareRegistrationError,
-        MessageInjectionMode, RecipientReachability, RegRetryOutcome, RegisterIntent,
-        RelaycastHttpClient,
+        register_new_spawn_identity, registration_is_retryable, registration_retry_after_secs,
+        retry_agent_registration_with, retry_agent_registration_with_budget,
+        ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
+        RegRetryOutcome, RegisterIntent, RelaycastHttpClient, RelaycastRegistrationError,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -1996,6 +2195,29 @@ mod tests {
     /// exact wire assertion matters here: a successful helper return alone
     /// would not prove the destructive endpoint was avoided.
     #[tokio::test]
+    async fn live_channel_scope_rejects_implicit_general_even_when_spec_is_empty() {
+        let server = MockServer::start();
+        let detail = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(200).json_body(json!({"ok": true, "data": {
+                "channels": [{"name": "general"}]
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        assert!(client
+            .verify_agent_channel_scope("worker-a", &[])
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("live channel isolation failed"));
+        client
+            .verify_agent_channel_scope("worker-a", &["general".into()])
+            .await
+            .unwrap();
+        detail.assert_hits(2);
+    }
+
+    #[tokio::test]
     async fn mark_agent_offline_updates_presence_without_releasing_the_identity() {
         let server = MockServer::start();
         let update = server.mock(|when, then| {
@@ -2064,11 +2286,110 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .release_agent_identity("worker-a", None)
+            .release_agent_identity("worker-a", None, false)
             .await
             .expect("explicit release should succeed");
 
         release.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn fresh_spawn_registration_refuses_cached_incumbent_without_takeover_or_release() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(
+                json!({"ok":false,"error":{"code":"agent_already_exists","message":"name held"}}),
+            );
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/chief/takeover");
+            then.status(500);
+        });
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(500);
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("chief", "incumbent-token");
+        let result = register_new_spawn_identity(&client, "chief", Some("claude")).await;
+        assert!(matches!(
+            result,
+            Err(RegRetryOutcome::Fatal(
+                RelaycastRegistrationError::AlreadyExists { .. }
+            ))
+        ));
+        assert_eq!(
+            client
+                .registration
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .cached_agent_token("chief")
+                .as_deref(),
+            Some("incumbent-token")
+        );
+        create.assert_hits(1);
+        takeover.assert_hits(0);
+        release.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_requires_token_generation_and_terminal_ack() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .json_body_partial(
+                    json!({"name":"owned-worker", "delete_agent":true,
+                    "expected_token_hash":format!("{:x}", Sha256::digest(b"owned-token"))})
+                    .to_string(),
+                );
+            then.status(200)
+                .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        assert!(client
+            .release_agent_identity("owned-worker", None, true)
+            .await
+            .is_err());
+        cleanup.assert_hits(0);
+        client.seed_agent_token("owned-worker", "owned-token");
+        client
+            .release_agent_identity("owned-worker", None, true)
+            .await
+            .unwrap();
+        cleanup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn deferred_owned_cleanup_uses_captured_hash_and_preserves_newer_cache_entry() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .json_body_partial(
+                    json!({"expected_token_hash":format!("{:x}", Sha256::digest(b"owned-token"))})
+                        .to_string(),
+                );
+            then.status(200)
+                .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let captured = client.owned_identity_token_hash("owned-worker").unwrap();
+        client.seed_agent_token("owned-worker", "replacement-token");
+        client
+            .release_agent_identity_guarded("owned-worker", None, true, Some(&captured))
+            .await
+            .unwrap();
+        cleanup.assert_hits(1);
+        assert_eq!(
+            client.owned_identity_token_hash("owned-worker").unwrap(),
+            format!("{:x}", Sha256::digest(b"replacement-token"))
+        );
     }
 
     #[tokio::test]
@@ -2181,6 +2502,12 @@ mod tests {
                 }
             }));
         });
+        let members_mock = server.mock(|when, then| {
+            when.method(GET).path("/v1/channels/pa-fixes-hardening/members");
+            then.status(200).json_body(json!({"ok": true, "data": [{
+                "agent_id": "lead-id", "agent_name": "lead", "role": "member", "joined_at": "2026-09-08T00:00:00Z"
+            }]}));
+        });
         let spawn_mock = server.mock(|when, then| {
             when.method(POST).path("/v1/agents");
             then.status(500).json_body(json!({
@@ -2203,7 +2530,67 @@ mod tests {
 
         create_mock.assert_hits(1);
         join_mock.assert_hits(1);
+        members_mock.assert_hits(1);
         spawn_mock.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn worker_membership_retries_a_transient_read_but_rejects_permanent_absence() {
+        for recover in [true, false] {
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/channels");
+                then.status(409).json_body(json!({"ok":false,"error":{"code":"channel_already_exists","message":"exists"}}));
+            });
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/channels/proof/join");
+                then.status(409).json_body(
+                    json!({"ok":false,"error":{"code":"already_member","message":"joined"}}),
+                );
+            });
+            let mut first = server.mock(|when, then| {
+                when.method(GET).path("/v1/channels/proof/members");
+                if recover {
+                    then.status(503).json_body(
+                        json!({"ok":false,"error":{"code":"unavailable","message":"retry"}}),
+                    );
+                } else {
+                    then.status(200).json_body(json!({"ok":true,"data":[]}));
+                }
+            });
+            let client = seeded_http_client(&server.base_url());
+            client.seed_agent_token("worker", "owned-token");
+            let channels = [ChannelName::from("proof")];
+            if recover {
+                let repair = async {
+                    while first.hits() == 0 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    first.delete();
+                    server.mock(|when, then| {
+                        when.method(GET).path("/v1/channels/proof/members");
+                        then.status(200).json_body(json!({"ok":true,"data":[{"agent_id":"worker-id","agent_name":"worker","role":"member","joined_at":"2026-09-08T00:00:00Z"}]}));
+                    });
+                };
+                let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+                    tokio::join!(
+                        client.ensure_agent_channels("worker", None, &channels),
+                        repair
+                    )
+                })
+                .await
+                .unwrap();
+                result.unwrap();
+            } else {
+                assert!(client
+                    .ensure_agent_channels("worker", None, &channels)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("absent"));
+                first.assert_hits(3);
+            }
+        }
     }
 
     #[tokio::test]

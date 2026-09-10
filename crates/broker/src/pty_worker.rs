@@ -34,11 +34,11 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
-use crate::readiness::{cli_prompt_ready, detect_cli_ready, GridReadinessSnapshot};
+use crate::readiness::{detect_cli_ready, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
-use crate::util::terminal::detect_codex_trust_prompt;
+use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_prompt};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
@@ -180,44 +180,13 @@ const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
 const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
-const PROMPT_WINDOW_BYTES: usize = 800;
+const CODEX_STARTUP_SETTLE: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct StartupReadinessState {
     ready_sent: bool,
+    fallback_sent: bool,
     wait_warned: bool,
-}
-
-const AGENT_RELAY_BOOT_MARKER: &str = "booting mcp server: agent-relay";
-const AGENT_RELAY_SERVER_NAME: &str = "agent-relay";
-const LEGACY_RELAY_SERVER_NAME: &str = "relaycast";
-
-/// Detect the Agent Relay MCP boot marker in output. Different CLIs emit
-/// different boot messages:
-/// - Claude: "booting mcp server: agent-relay"
-/// - Codex:  "Starting MCP servers (0/2): relay, agent-relay"
-///
-/// Returns the byte offset of the end of the marker, or None if not found.
-fn find_agent_relay_boot_marker(lower_output: &str) -> Option<usize> {
-    // Claude-style marker
-    if let Some(idx) = lower_output.find(AGENT_RELAY_BOOT_MARKER) {
-        return Some(idx + AGENT_RELAY_BOOT_MARKER.len());
-    }
-    let legacy_boot_marker = format!("booting mcp server: {LEGACY_RELAY_SERVER_NAME}");
-    if let Some(idx) = lower_output.find(&legacy_boot_marker) {
-        return Some(idx + legacy_boot_marker.len());
-    }
-    // Codex-style marker: "starting mcp server" with the configured server nearby.
-    if let Some(idx) = lower_output.find("starting mcp server") {
-        let search_end = floor_char_boundary(lower_output, (idx + 200).min(lower_output.len()));
-        let boot_line = &lower_output[idx..search_end];
-        for server_name in [AGENT_RELAY_SERVER_NAME, LEGACY_RELAY_SERVER_NAME] {
-            if let Some(server_idx) = boot_line.find(server_name) {
-                return Some(idx + server_idx + server_name.len());
-            }
-        }
-    }
-    None
 }
 
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
@@ -226,44 +195,6 @@ fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
         let start = floor_char_boundary(buf, buf.len() - keep);
         *buf = buf[start..].to_string();
     }
-}
-
-fn codex_agent_relay_boot_expected(cli: &str, args: &[String]) -> bool {
-    cli_basename(cli).eq_ignore_ascii_case("codex")
-        && args.iter().any(|arg| {
-            let lower = arg.to_ascii_lowercase();
-            lower.contains("mcp_servers.agent-relay")
-                || lower.contains(&format!("mcp_servers.{LEGACY_RELAY_SERVER_NAME}"))
-        })
-}
-
-fn output_has_prompt(cli: &str, output: &str) -> bool {
-    let lower_cli = cli.to_ascii_lowercase();
-    let clean = strip_ansi(output);
-    if clean.is_empty() {
-        return false;
-    }
-
-    let region = if clean.len() > PROMPT_WINDOW_BYTES {
-        let start = floor_char_boundary(&clean, clean.len() - PROMPT_WINDOW_BYTES);
-        &clean[start..]
-    } else {
-        &clean
-    };
-
-    let mut patterns = vec!["> ", "$ ", ">>> ", "›", "❯"];
-    if lower_cli.contains("codex") {
-        patterns.push("codex> ");
-    }
-    if patterns.iter().any(|pattern| region.contains(pattern)) {
-        return true;
-    }
-
-    region.lines().rev().take(6).any(|line| {
-        let trimmed = line.trim();
-        matches!(trimmed, "›" | ">" | "$" | ">>>" | "❯")
-            || (lower_cli.contains("codex") && trimmed.eq_ignore_ascii_case("codex>"))
-    })
 }
 
 fn detect_context_budget_pct(output: &str) -> Option<u8> {
@@ -281,28 +212,66 @@ fn detect_context_budget_pct(output: &str) -> Option<u8> {
     latest
 }
 
+// Codex may complete Relay MCP startup before ever drawing that server in its
+// status line. Readiness must not depend on sampling a transient boot label.
+// Require the cursor in the real composer and a quiet terminal; a historical
+// prompt glyph or an elapsed startup deadline is not verified readiness.
+fn codex_composer_ready(grid: GridReadinessSnapshot<'_>) -> bool {
+    let Some((row, col)) = grid.cursor else {
+        return false;
+    };
+    let Some(line) = row
+        .checked_sub(1)
+        .and_then(|row| grid.screen.lines().nth(row as usize))
+    else {
+        return false;
+    };
+    // Grid snapshots trim trailing blanks. An empty composer therefore reads
+    // as just the glyph even though the cursor remains after its input space.
+    let composer = (col == 3 && (line == "›" || line.starts_with("› ")))
+        || (col == 8 && (line == "codex>" || line.starts_with("codex> ")));
+    if !composer {
+        return false;
+    }
+    let lower = grid.screen.to_ascii_lowercase();
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    ![
+        "starting mcp server",
+        "booting mcp server",
+        "esc to interrupt",
+        "resuming session",
+        "model: loading",
+        "directory: loading",
+        "mcp client for `agent-relay` failed to start",
+        "mcp client for `relaycast` failed to start",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
 fn evaluate_startup_gate(
     resolved_cli: &str,
     startup_output: &str,
     startup_total_bytes: usize,
-    wait_for_agent_relay_boot: bool,
-    saw_agent_relay_boot: bool,
-    post_boot_output: &str,
+    output_quiet: Duration,
     grid: GridReadinessSnapshot<'_>,
 ) -> bool {
-    // A menu-selection glyph is not the harness input prompt. In particular,
-    // Codex's directory-trust interstitial contains the same `›` glyph as its
-    // composer, so the generic prompt detector would otherwise release the
-    // queued brief before the auto-responder's Enter takes effect. Every gate
-    // path (output, init, and timer tick) passes through this exclusion.
-    if detect_codex_trust_prompt(grid.screen) {
+    let is_codex = matches!(
+        cli_basename(resolved_cli).to_ascii_lowercase().as_str(),
+        "codex" | "codex.exe"
+    );
+    let trust_blocked = detect_codex_trust_prompt(grid.screen)
+        || detect_claude_trust_prompt(grid.screen) == (true, true);
+    let composer_ready = is_codex && codex_composer_ready(grid);
+    tracing::debug!(target: "relay_broker::startup_gate",
+        cli = resolved_cli, is_codex, composer_ready, trust_blocked,
+        output_quiet_ms = output_quiet.as_millis(),
+        cursor = ?grid.cursor, startup_total_bytes, "harness startup gate");
+    if trust_blocked {
         return false;
     }
-
-    if wait_for_agent_relay_boot {
-        saw_agent_relay_boot
-            && output_has_prompt(resolved_cli, post_boot_output)
-            && cli_prompt_ready(resolved_cli, grid)
+    if is_codex {
+        composer_ready && output_quiet >= CODEX_STARTUP_SETTLE
     } else {
         detect_cli_ready(resolved_cli, startup_output, startup_total_bytes, grid)
     }
@@ -335,16 +304,15 @@ pub(crate) enum StartupGate {
 /// typing into it would answer a security question on the operator's behalf.
 /// `evaluate_startup_gate` vetoes it for exactly that reason.
 fn startup_gate_blocked(pty: &PtySession) -> bool {
-    detect_codex_trust_prompt(&pty.screen_text())
+    let screen = pty.screen_text();
+    detect_codex_trust_prompt(&screen) || detect_claude_trust_prompt(&screen) == (true, true)
 }
 
 fn startup_gate_ready(
     resolved_cli: &str,
     startup_output: &str,
     startup_total_bytes: usize,
-    wait_for_agent_relay_boot: bool,
-    saw_agent_relay_boot: bool,
-    post_boot_output: &str,
+    output_quiet: Duration,
     pty: &PtySession,
 ) -> bool {
     let screen = pty.screen_text();
@@ -352,9 +320,7 @@ fn startup_gate_ready(
         resolved_cli,
         startup_output,
         startup_total_bytes,
-        wait_for_agent_relay_boot,
-        saw_agent_relay_boot,
-        post_boot_output,
+        output_quiet,
         GridReadinessSnapshot {
             screen: &screen,
             cursor: Some(pty.cursor_position()),
@@ -500,7 +466,8 @@ async fn try_emit_worker_ready(
     // A deliberate veto is not a blind spot: never time out past a known
     // blocking dialog, or the brief is typed into a trust prompt and answers a
     // security question nobody asked us to answer.
-    let timed_out = gate != StartupGate::Blocked
+    let timed_out = !readiness.fallback_sent
+        && gate != StartupGate::Blocked
         && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
@@ -534,10 +501,11 @@ async fn try_emit_worker_ready(
         out_tx,
         "worker_ready",
         request_id,
-        json!({"name": worker_name, "runtime": "pty", "pid": child_pid}),
+        json!({"name": worker_name, "runtime": "pty", "pid": child_pid, "readiness_proven": startup_ready}),
     )
     .await;
-    readiness.ready_sent = true;
+    readiness.ready_sent = startup_ready;
+    readiness.fallback_sent |= !startup_ready;
 }
 
 async fn emit_harness_started(
@@ -670,11 +638,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // predictive-echo rollback). Draining lives in its own select arm so the
     // loop keeps forwarding PTY output and handling input while writes settle.
     let mut pending_pty_writes: FuturesUnordered<PtyWriteAckFuture> = FuturesUnordered::new();
-    let wait_for_agent_relay_boot = codex_agent_relay_boot_expected(&resolved_cli, &effective_args);
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
-    let mut saw_agent_relay_boot = false;
-    let mut post_boot_output = String::new();
     let mut init_request_id: Option<RequestId> = None;
     let mut init_received_at: Option<Instant> = None;
     let mut startup_readiness = StartupReadinessState::default();
@@ -864,9 +829,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     &resolved_cli,
                                     &startup_output,
                                     startup_total_bytes,
-                                    wait_for_agent_relay_boot,
-                                    saw_agent_relay_boot,
-                                    &post_boot_output,
+                                    last_pty_output_time.elapsed(),
                                     &pty,
                                 );
                                 let gate = if startup_ready {
@@ -1250,36 +1213,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             STARTUP_BUFFER_MAX,
                             STARTUP_BUFFER_KEEP,
                         );
-                        if wait_for_agent_relay_boot {
-                            let mut just_saw_agent_relay_boot = false;
-                            if !saw_agent_relay_boot {
-                                let lower_startup = startup_output.to_ascii_lowercase();
-                                if let Some(marker_end_offset) = find_agent_relay_boot_marker(&lower_startup)
-                                {
-                                    saw_agent_relay_boot = true;
-                                    just_saw_agent_relay_boot = true;
-                                    let marker_end = floor_char_boundary(
-                                        &startup_output,
-                                        marker_end_offset,
-                                    );
-                                    post_boot_output.clear();
-                                    append_bounded(
-                                        &mut post_boot_output,
-                                        &startup_output[marker_end..],
-                                        STARTUP_BUFFER_MAX,
-                                        STARTUP_BUFFER_KEEP,
-                                    );
-                                }
-                            }
-                            if saw_agent_relay_boot && !just_saw_agent_relay_boot {
-                                append_bounded(
-                                    &mut post_boot_output,
-                                    &clean_text,
-                                    STARTUP_BUFFER_MAX,
-                                    STARTUP_BUFFER_KEEP,
-                                );
-                            }
-                        }
                         if let Some(pct) = detect_context_budget_pct(&clean_text) {
                             if last_context_low_pct.is_some_and(|last| pct > last) {
                                 last_context_low_pct = None;
@@ -1299,9 +1232,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &resolved_cli,
                             &startup_output,
                             startup_total_bytes,
-                            wait_for_agent_relay_boot,
-                            saw_agent_relay_boot,
-                            &post_boot_output,
+                            last_pty_output_time.elapsed(),
                             &pty,
                         );
                         let gate = if startup_ready {
@@ -1727,7 +1658,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         // Submit the body and mandatory Enter as one FIFO
-                        // command and hold the ack. Claude Code needs Enter as
+                        // command and hold the ack. Claude Code and Codex need Enter as
                         // a distinct PTY write after its multiline paste
                         // boundary settles; relay-pty keeps that delayed
                         // follow-up atomic with the body. Other harnesses keep
@@ -1826,8 +1757,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 ),
                             )
                             .await;
-                            pty_auto.last_injection_time = Some(Instant::now());
-                            pty_auto.auto_enter_retry_count = 0;
+                            pty_auto.note_completed_injection(&resolved_cli);
 
                             // Queue echo verification against the confirmed body,
                             // or confirm immediately when the echo raced ahead of
@@ -1949,9 +1879,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     &resolved_cli,
                     &startup_output,
                     startup_total_bytes,
-                    wait_for_agent_relay_boot,
-                    saw_agent_relay_boot,
-                    &post_boot_output,
+                    last_pty_output_time.elapsed(),
                     &pty,
                 );
                 let gate = if startup_ready {
@@ -2246,117 +2174,106 @@ mod tests {
         assert_eq!(resolve_inject_rate("claude", Some("0")), Duration::ZERO);
     }
 
-    #[test]
-    fn codex_agent_relay_boot_expected_when_configured() {
-        let args = vec![
-            "--config".to_string(),
-            "mcp_servers.agent-relay.command=npx".to_string(),
-        ];
-        assert!(codex_agent_relay_boot_expected("codex", &args));
-        assert!(!codex_agent_relay_boot_expected("claude", &args));
+    fn settled_codex(screen: &str, cursor: Option<(u16, u16)>, quiet: Duration) -> bool {
+        evaluate_startup_gate(
+            "codex",
+            "",
+            40000,
+            quiet,
+            GridReadinessSnapshot { screen, cursor },
+        )
     }
 
     #[test]
-    fn output_has_prompt_detects_codex_glyph_prompt() {
-        assert!(output_has_prompt("codex", "Boot complete\n› "));
+    fn codex_startup_accepts_settled_composer_without_a_boot_label() {
+        let screen =
+            "OpenAI Codex\n› Ask Codex to do anything\n  gpt-6-astra high · Context 100% left\n";
+        assert!(!settled_codex(
+            screen,
+            Some((2, 3)),
+            Duration::from_millis(999)
+        ));
+        assert!(settled_codex(screen, Some((2, 3)), Duration::from_secs(1)));
+        // Historical output size and marker eviction do not affect readiness.
+        assert!(!settled_codex(
+            screen,
+            Some((1, 3)),
+            Duration::from_secs(10)
+        ));
+        assert!(!settled_codex(
+            screen,
+            Some((2, 20)),
+            Duration::from_secs(10)
+        ));
+        assert!(!settled_codex(screen, None, Duration::from_secs(10)));
     }
 
     #[test]
-    fn startup_gate_requires_visible_post_boot_prompt() {
-        let startup_output = "Welcome\n› ";
-        let post_boot_output = "done\n› ";
-        let loading_grid = GridReadinessSnapshot {
-            screen: "MCP loading...\n",
-            cursor: Some((1, 15)),
-        };
-        assert!(!evaluate_startup_gate(
-            "codex",
-            startup_output,
-            startup_output.len(),
-            true,
-            true,
-            post_boot_output,
-            loading_grid,
-        ));
-
-        let ready_grid = GridReadinessSnapshot {
-            screen: "done\n› \n",
-            cursor: Some((2, 3)),
-        };
-        assert!(!evaluate_startup_gate(
-            "codex",
-            startup_output,
-            startup_output.len(),
-            true,
-            false,
-            post_boot_output,
-            ready_grid,
-        ));
-        assert!(!evaluate_startup_gate(
-            "codex",
-            startup_output,
-            startup_output.len(),
-            true,
-            true,
-            "MCP loading...",
-            ready_grid,
-        ));
-        assert!(evaluate_startup_gate(
-            "codex",
-            startup_output,
-            startup_output.len(),
-            true,
-            true,
-            post_boot_output,
-            ready_grid,
-        ));
+    fn codex_startup_accepts_empty_composer_after_grid_trims_blanks() {
+        // Captured native PTY snapshot: stdout wrote "->pty:ready\n› ",
+        // snapshot rendered "->pty:ready\n›\n..." with cursor (2, 3).
+        for (screen, col) in [("->pty:ready\n›\n", 3), ("codex>\n", 8)] {
+            let row = if col == 3 { 2 } else { 1 };
+            assert!(settled_codex(
+                screen,
+                Some((row, col)),
+                Duration::from_secs(1)
+            ));
+            assert!(!settled_codex(
+                screen,
+                Some((row, col - 1)),
+                Duration::from_secs(1)
+            ));
+            assert!(!settled_codex(
+                screen,
+                Some((row, col)),
+                Duration::from_millis(999)
+            ));
+        }
     }
 
     #[test]
-    fn startup_gate_uses_ready_detection_when_agent_relay_boot_not_required() {
+    fn codex_startup_rejects_loading_busy_failed_relay_and_trust_composers() {
+        for screen in [
+            "Resuming session…\n› Ask Codex to do anything",
+            "model: loading\n› Ask Codex to do anything",
+            "Starting MCP servers (3/4): veto\n› Ask Codex to do anything",
+            "Booting MCP server: agent-relay\n› Ask Codex to do anything",
+            "Working (esc to interrupt)\n› Ask Codex to do anything",
+            "MCP client for `agent-relay` failed to start\n› Ask Codex to do anything",
+            "Do you trust the contents of this directory?\n› 1. Yes, continue\n2. No, quit\nPress enter to continue",
+        ] {
+            assert!(!settled_codex(screen, Some((2, 3)), Duration::from_secs(60)), "unexpected readiness: {screen}");
+        }
+    }
+
+    #[test]
+    fn codex_startup_does_not_treat_unrelated_mcp_warning_as_relay_failure() {
+        let screen = "MCP client for `veto` failed to start\n› Ask Codex to do anything";
+        assert!(settled_codex(screen, Some((2, 3)), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn other_harnesses_keep_existing_startup_detection() {
         assert!(evaluate_startup_gate(
             "claude",
             "",
             20,
-            false,
-            false,
-            "",
+            Duration::ZERO,
             GridReadinessSnapshot {
                 screen: "Welcome back Khaliq!\n>\n",
-                cursor: Some((2, 2)),
-            },
+                cursor: Some((2, 2))
+            }
         ));
         assert!(evaluate_startup_gate(
             "aider",
             "",
             20,
-            false,
-            false,
-            "",
+            Duration::ZERO,
             GridReadinessSnapshot {
                 screen: "Ready\n> \n",
-                cursor: Some((2, 3)),
-            },
-        ));
-    }
-
-    #[test]
-    fn startup_gate_rejects_codex_directory_trust_menu() {
-        let trust_screen = "Do you trust the contents of this directory?\n\
-                            › 1. Yes, continue\n\
-                              2. No, quit\n\
-                            Press enter to continue";
-        assert!(!evaluate_startup_gate(
-            "codex",
-            trust_screen,
-            600,
-            false,
-            false,
-            "",
-            GridReadinessSnapshot {
-                screen: trust_screen,
-                cursor: Some((2, 1)),
-            },
+                cursor: Some((2, 3))
+            }
         ));
     }
 
@@ -2388,11 +2305,24 @@ mod tests {
         .await;
 
         assert!(
-            readiness.ready_sent,
-            "past the deadline the brief must go out; a held brief is a total loss"
+            !readiness.ready_sent,
+            "elapsed time must not establish confirmed readiness"
         );
         let frame = rx.try_recv().expect("worker_ready must be emitted");
         assert_eq!(frame.msg_type, "worker_ready");
+        assert_eq!(frame.payload["readiness_proven"], false);
+        try_emit_worker_ready(
+            &tx,
+            "unrecognised-prompt",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            StartupGate::Ready,
+        )
+        .await;
+        assert!(readiness.ready_sent);
+        assert_eq!(rx.try_recv().unwrap().payload["readiness_proven"], true);
     }
 
     #[tokio::test]

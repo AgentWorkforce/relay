@@ -1,4 +1,9 @@
 import type { Command } from 'commander';
+import {
+  launchSubscriptionRecipient,
+  resolveSubscriptionAgentChannel,
+  type RecipientLaunch,
+} from './integration-recipient.js';
 import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getProjectPaths } from '@agent-relay/config';
@@ -138,6 +143,8 @@ export interface RelayfileBridge {
 type RelayfileBindingInput = Parameters<RelayfileBridge['bind']>[0];
 
 export type IntegrationCommandDependencies = SdkCommandDeps & {
+  launchRecipient: typeof launchSubscriptionRecipient;
+  resolveAgentChannel: typeof resolveSubscriptionAgentChannel;
   resolveLocalRelayOptions: () => Promise<LocalRelayOptions | undefined>;
   relayfile: RelayfileBridge;
   cleanupJournal: CleanupJournal;
@@ -369,6 +376,8 @@ function withIntegrationDefaults(
 ): IntegrationCommandDependencies {
   return {
     ...withSdkDefaults(overrides),
+    launchRecipient: launchSubscriptionRecipient,
+    resolveAgentChannel: resolveSubscriptionAgentChannel,
     resolveLocalRelayOptions: resolveLocalBrokerRelayOptions,
     relayfile: defaultRelayfileBridge(),
     cleanupJournal: fileCleanupJournal(),
@@ -473,14 +482,7 @@ async function createRelayfileInboundTarget(
   const options = sdkOptionsFromOpts(commandOpts);
   const authOptions =
     local && !explicitWorkspaceKey(commandOpts) ? localRetryOptions(options, local) : options;
-  // A local broker session may expose its loopback broker URL. That URL is not
-  // the Relaycast control-plane origin for inbound-target provisioning, so pair
-  // its workspace selector with the caller's Relaycast URL (or canonical).
-  const { workspaceKey, baseUrl: selectedBaseUrl } = resolveWorkspaceTransport({
-    ...authOptions,
-    baseUrl: options.baseUrl,
-  });
-  const baseUrl = resolveInboundTargetBaseUrl(selectedBaseUrl);
+  const { workspaceKey, baseUrl } = resolveInboundTargetTransport(authOptions, options);
   const response = await fetch(new URL('/v1/integrations/relayfile/inbound-target', baseUrl), {
     method: 'POST',
     headers: {
@@ -531,6 +533,21 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
   return { url: parsedUrl.toString(), secret };
 }
 
+function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions: SdkClientOptions) {
+  const selected = { ...options };
+  // A legacy broker session can advertise its loopback HTTP API. It is not
+  // the Relaycast gateway. Preserve genuine HTTPS session origins, including
+  // custom self-hosts, and let persisted workspace routing validate the pair.
+  if (!callerOptions.baseUrl && selected.baseUrl) {
+    const url = new URL(selected.baseUrl);
+    if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
+      selected.baseUrl = undefined;
+    }
+  }
+  const transport = resolveWorkspaceTransport(selected);
+  return { ...transport, baseUrl: resolveInboundTargetBaseUrl(transport.baseUrl) };
+}
+
 function resolveInboundTargetBaseUrl(selectedBaseUrl: string | undefined): string {
   const baseUrl = selectedBaseUrl ?? 'https://cast.agentrelay.com';
   const parsed = new URL(baseUrl);
@@ -576,35 +593,6 @@ async function ensureProviderConnected(
       `${provider} is still not connected. Run: relayfile integration connect ${provider} --workspace <ws>, then re-run.`
     );
   }
-}
-
-async function ensureRecipient(
-  relay: AgentRelayAgent,
-  provider: string,
-  target: string,
-  opts: Record<string, unknown>
-): Promise<void> {
-  const name = agentName(target);
-  if (!name) {
-    return;
-  }
-  const agents = await relay.agents.list();
-  if (agents.some((agent: { name: string }) => agent.name === name)) {
-    return;
-  }
-
-  const spawnCli = typeof opts.spawn === 'string' ? opts.spawn.trim() : '';
-  if (!spawnCli) {
-    throw new Error(
-      `Recipient agent ${target} does not exist. Run: agent-relay integration subscribe ${provider} --to ${target} --spawn <cli>`
-    );
-  }
-
-  await relay.agents.register({
-    name,
-    type: 'agent',
-    metadata: { requestedCli: spawnCli, source: 'integration.subscribe' },
-  });
 }
 
 async function promptSubscribeOptions(
@@ -1386,6 +1374,29 @@ async function runSubscribe(
   providerArg: string | undefined,
   opts: Record<string, unknown>
 ): Promise<void> {
+  const recipient: { launch?: RecipientLaunch; committed?: boolean } = {};
+  try {
+    await runSubscribeSetup(deps, providerArg, opts, recipient);
+  } catch (error) {
+    if (recipient.launch && !recipient.committed) {
+      try {
+        await recipient.launch.rollback();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Subscribe failed and recipient cleanup needs retry');
+      }
+    }
+    throw error;
+  } finally {
+    recipient.launch?.close();
+  }
+}
+
+async function runSubscribeSetup(
+  deps: IntegrationCommandDependencies,
+  providerArg: string | undefined,
+  opts: Record<string, unknown>,
+  recipient: { launch?: RecipientLaunch; committed?: boolean }
+): Promise<void> {
   await deps.relayfile.ensureCompatible();
 
   if (opts.list) {
@@ -1421,8 +1432,29 @@ async function runSubscribe(
   const effectiveRelayOptions =
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
   const relay = deps.createAgentRelay(effectiveRelayOptions);
-  await ensureRecipient(relay, provider, to, opts);
-  const channel = targetChannel(to);
+  const recipientName = agentName(to);
+  if (opts.spawn && !recipientName) throw new Error('--spawn requires an explicit @agent recipient');
+  if (recipientName && typeof opts.spawn === 'string') {
+    recipient.launch = await deps.launchRecipient({
+      name: recipientName,
+      cli: opts.spawn,
+      provider,
+      resource: pathGlob,
+      options: effectiveRelayOptions,
+      ...(typeof opts.cwd === 'string' ? { cwd: opts.cwd } : {}),
+      ...(typeof opts.brokerConnection === 'string' ? { brokerConnectionPath: opts.brokerConnection } : {}),
+      ...(typeof opts.task === 'string' ? { task: opts.task } : {}),
+      ...(Array.isArray(opts.spawnArg) ? { args: opts.spawnArg as string[] } : {}),
+    });
+  } else if (recipientName && !(await relay.agents.list()).some((agent) => agent.name === recipientName)) {
+    throw new Error(`Recipient @${recipientName} does not exist; use --spawn <cli> to launch it.`);
+  }
+  const channel = recipientName
+    ? await deps.resolveAgentChannel(recipientName, {
+        ...effectiveRelayOptions,
+        baseUrl: resolveInboundTargetTransport(effectiveRelayOptions, relayOptions).baseUrl,
+      })
+    : targetChannel(to);
   const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
   const inboundTarget = await createRelayfileInboundTarget(opts, local, {
@@ -1584,6 +1616,7 @@ async function runSubscribe(
         : {}),
     };
     await deps.relayfile.bind(bindingInput);
+    recipient.committed = true;
   } catch (err) {
     // The new binding never fully landed: roll back only what we just created,
     // leave any prior working binding untouched, and keep/record a durable
@@ -1841,7 +1874,19 @@ export function registerIntegrationCommands(
       .description('Subscribe a relay recipient to a relayfile integration')
       .option('--resource <value>', 'Provider-native resource (channel, project, label, etc.)')
       .option('--to <target>', 'Relay recipient, e.g. @agent or #channel')
-      .option('--spawn <cli>', 'Register the recipient agent when it is absent')
+      .option('--spawn <cli>', 'Launch and confirm a live recipient before subscribing the explicit resource')
+      .option(
+        '--spawn-arg <value>',
+        'Literal harness argument, repeatable (use --spawn-arg=--flag for flags)',
+        (value: string, prior: string[]) => [...prior, value],
+        []
+      )
+      .option('--cwd <path>', 'Working directory for the spawned recipient')
+      .option(
+        '--broker-connection <path>',
+        'Explicit broker connection.json for --spawn; workspace must match'
+      )
+      .option('--task <text>', 'Task for the spawned recipient; resource scope comes only from --resource')
       .option('--events <list>', 'Comma-separated relay event names', 'message.created,thread.reply')
       .option('--bridge-url <url>', 'Writeback bridge URL')
       .option('--bridge-secret <secret>', 'HMAC signing secret for the writeback bridge')

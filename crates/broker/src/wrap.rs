@@ -57,11 +57,7 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
-const CLAUDE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
-/// The trust dialog renders ~1.3 KB of box drawing and can take tens of
-/// seconds to paint, so the window has to outlive several partial frames.
-const CLAUDE_TRUST_BUF_MAX: usize = 8000;
-const CLAUDE_TRUST_BUF_KEEP: usize = 6000;
+const PASTE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
 /// Pause between moving the trust-menu highlight and confirming it.
 const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
 /// Gap between successive trust-menu arrow keys, so a multi-row move repaints
@@ -72,11 +68,11 @@ const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
 // partially delivered and is unsafe to requeue blindly.
 const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Claude Code treats multiline input and a trailing Enter received in the
+/// Claude Code and Codex treat multiline input and a trailing Enter received in the
 /// same paste burst as editor content, leaving the task parked in its composer.
 /// Give its submit key a distinct, delayed PTY write. Other harnesses retain
 /// the established body-plus-Enter write shape.
-pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+fn paste_submit_harness(cli: &str) -> bool {
     let basename = cli
         .rsplit(['/', '\\'])
         .next()
@@ -86,10 +82,12 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
     // wrappers such as `company-claude` and `claude-code`. Match the same
     // Claude identity signal used by readiness and activity detection so a
     // wrapper cannot silently fall back to the broken body-plus-Enter burst.
-    basename
-        .to_ascii_lowercase()
-        .contains("claude")
-        .then_some(CLAUDE_INJECTION_SUBMIT_DELAY)
+    let lower = basename.to_ascii_lowercase();
+    lower.contains("claude") || lower.contains("codex")
+}
+
+pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+    paste_submit_harness(cli).then_some(PASTE_INJECTION_SUBMIT_DELAY)
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -294,7 +292,6 @@ pub(crate) struct PtyAutoState {
     pub(crate) gemini_untrusted_buffer: String,
     pub(crate) gemini_untrusted_handled: bool,
     // Claude Code folder trust prompt
-    pub(crate) claude_trust_buffer: String,
     pub(crate) claude_trust_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
@@ -335,7 +332,6 @@ impl PtyAutoState {
             gemini_trust_handled: false,
             gemini_untrusted_buffer: String::new(),
             gemini_untrusted_handled: false,
-            claude_trust_buffer: String::new(),
             claude_trust_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
@@ -604,7 +600,7 @@ impl PtyAutoState {
     /// confirming. Relay previously assumed the affirmative option was already
     /// selected and sent a bare Enter — on Claude Code 2.1.259+ that confirmed
     /// `No, exit`, killing the worker while its roster row survived.
-    pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
+    pub(crate) async fn handle_claude_trust(&mut self, _text: &str, pty: &PtySession) {
         if self.interactive_hold {
             return;
         }
@@ -612,70 +608,49 @@ impl PtyAutoState {
             return;
         }
 
-        Self::append_buf(
-            &mut self.claude_trust_buffer,
-            text,
-            CLAUDE_TRUST_BUF_MAX,
-            CLAUDE_TRUST_BUF_KEEP,
-        );
-        let clean = strip_ansi(&self.claude_trust_buffer);
-
-        let steps = match plan_claude_trust_response(&clean) {
+        // Read the terminal grid, which incorporates cursor-only repaints.
+        // Concatenated old menu text is not the current highlighted choice.
+        let steps = match plan_claude_trust_response(&pty.screen_text()) {
             ClaudeTrustPlan::Confirm { steps } => steps,
-            // Partial or unrecognizable frame: wait for a fuller repaint rather
-            // than guessing which row Enter would confirm.
             ClaudeTrustPlan::Ambiguous | ClaudeTrustPlan::Absent => return,
         };
-
-        tracing::info!(
-            steps,
-            "Detected Claude Code folder trust prompt, selecting affirmative option by label"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Navigation and confirmation must reach the child as one queue entry.
-        // Submitting them separately lets a full write queue reject the
-        // navigation and then accept the Enter once a slot frees, which
-        // confirms the still-selected decline row — the exact failure this
-        // handler exists to prevent. `submit_write_paced_with_followup` keeps
-        // the arrow keys and the trailing `\r` adjacent on the FIFO, paces one
-        // VT atom at a time so the menu repaints between moves, and either
-        // admits the whole compound write or none of it.
-        let submitted = if steps == 0 {
-            pty.submit_write(b"\r".to_vec())
-        } else {
-            let key: &[u8] = if steps > 0 {
-                b"\x1b[B" // cursor down
-            } else {
-                b"\x1b[A" // cursor up
+        tracing::info!(steps, "Detected Claude Code folder trust prompt; verifying affirmative selection before confirmation");
+        if steps != 0 {
+            let key: &[u8] = if steps > 0 { b"\x1b[B" } else { b"\x1b[A" };
+            let nav = key.repeat(steps.unsigned_abs() as usize);
+            let submitted = pty.submit_write_paced(nav, CLAUDE_TRUST_KEY_PACE);
+            let Ok(ack) = submitted else {
+                return;
             };
-            let mut nav = Vec::with_capacity(key.len() * steps.unsigned_abs() as usize);
-            for _ in 0..steps.unsigned_abs() {
-                nav.extend_from_slice(key);
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(1), ack).await,
+                Ok(Ok(Ok(())))
+            ) {
+                return;
             }
-            pty.submit_write_paced_with_followup(
-                nav,
-                CLAUDE_TRUST_KEY_PACE,
-                CLAUDE_TRUST_NAV_SETTLE,
-                b"\r".to_vec(),
-            )
-        };
-
-        match submitted {
-            Ok(_) => {
-                self.claude_trust_buffer.clear();
-                self.claude_trust_handled = true;
-            }
-            Err(error) => {
-                // Nothing was admitted, so nothing was confirmed. Leave the
-                // prompt unhandled and retry on the next output chunk rather
-                // than stranding the worker on an unanswered dialog.
-                tracing::warn!(
-                    target: "agent_relay::worker::pty",
-                    context = "claude_trust",
-                    error = %error,
-                    "trust-menu write rejected; leaving prompt unhandled for retry"
+        }
+        // Require an affirmative selection to survive several independent
+        // repaints. Startup terminal negotiation can briefly select Yes and
+        // then reset No after the first navigation readback.
+        for sample in 0..4 {
+            tokio::time::sleep(CLAUDE_TRUST_NAV_SETTLE).await;
+            let confirmation_plan = plan_claude_trust_response(&pty.screen_text());
+            tracing::debug!(
+                sample,
+                ?confirmation_plan,
+                "Claude trust live confirmation sample"
+            );
+            if !matches!(confirmation_plan, ClaudeTrustPlan::Confirm { steps: 0 }) {
+                tracing::info!(
+                    "Claude trust selection changed or is incomplete; waiting for its next repaint"
                 );
+                return;
+            }
+        }
+        match pty.submit_write(b"\r".to_vec()) {
+            Ok(_) => self.claude_trust_handled = true,
+            Err(error) => {
+                tracing::warn!(%error, "trust confirmation write rejected; leaving prompt unhandled")
             }
         }
     }
@@ -717,6 +692,28 @@ impl PtyAutoState {
                 self.auto_enter_retry_count += 1;
             }
         }
+    }
+
+    /// Acknowledgment confirms a PTY write, never a harness action. Claude and
+    /// Codex already received a separate delayed submit; another Enter after
+    /// they become idle can submit unrelated composer text or repeat a command.
+    /// Keep that distinction observable, including when the body only echoed.
+    pub(crate) fn note_completed_injection(&mut self, cli: &str) {
+        let delayed_submit = paste_submit_harness(cli);
+        self.last_injection_time = if delayed_submit {
+            None
+        } else {
+            Some(Instant::now())
+        };
+        if delayed_submit {
+            tracing::info!(
+                cli,
+                event = "injection_recovery_disabled",
+                harness_acceptance = "unconfirmed",
+                "PTY body and delayed submit written; background Enter recovery disabled; echo verification does not confirm harness action"
+            );
+        }
+        self.auto_enter_retry_count = 0;
     }
 
     pub(crate) fn update_auto_suggestion(&mut self, text: &str) {
@@ -852,6 +849,149 @@ mod idle_tests {
 #[cfg(test)]
 mod hold_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trust_confirmation_requires_observed_affirmative_after_navigation() {
+        let temp = tempfile::tempdir().unwrap();
+        let enabled = temp.path().join("allow-navigation");
+        let inputs = temp.path().join("inputs");
+        let script = r#"import os,sys,tty,threading
+from pathlib import Path
+tty.setraw(0)
+enabled,inputs=map(Path,sys.argv[1:])
+def paint(yes=False):
+ sys.stdout.write('\x1b[2J\x1b[HTrust this folder?\r\n'+('  No, exit\r\n❯ Yes, I trust this folder' if yes else '❯ No, exit\r\n  Yes, I trust this folder')+'\r\nEnter to confirm');sys.stdout.flush()
+paint()
+while True:
+ data=os.read(0,1024)
+ with inputs.open('ab') as f:f.write(data)
+ if b'\x1b[B' in data:
+  paint(enabled.exists())
+  if enabled.exists() and enabled.read_bytes()==b'reset':threading.Timer(0.25,paint).start()
+ if b'\r' in data:break
+"#;
+        let args = vec![
+            "-u".into(),
+            "-c".into(),
+            script.into(),
+            enabled.display().to_string(),
+            inputs.display().to_string(),
+        ];
+        let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        for _ in 0..40 {
+            if pty.screen_text().contains("Yes, I trust this folder") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let mut state = PtyAutoState::new();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let first = std::fs::read(&inputs).unwrap();
+        assert!(
+            !first.contains(&b'\r'),
+            "never confirm when navigation was ignored/reset"
+        );
+        assert!(!state.claude_trust_handled);
+        std::fs::write(&enabled, b"allow").unwrap();
+        // A repaint can briefly show Yes, then reset later than the first
+        // readback. Do not submit during that transient affirmative frame.
+        std::fs::write(&enabled, b"reset").unwrap();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(
+            !state.claude_trust_handled,
+            "transient affirmative is not stable confirmation"
+        );
+        assert!(!std::fs::read(&inputs).unwrap().contains(&b'\r'));
+        std::fs::write(&enabled, b"allow").unwrap();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(state.claude_trust_handled);
+        assert_eq!(
+            std::fs::read(&inputs)
+                .unwrap()
+                .iter()
+                .filter(|byte| **byte == b'\r')
+                .count(),
+            1
+        );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn acknowledged_paste_submit_never_arms_idle_enter_recovery() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        for cli in [
+            "codex",
+            "/usr/local/bin/Codex.EXE",
+            "company-codex",
+            "/opt/codex/",
+            "claude",
+            "claude-code",
+        ] {
+            let mut state = PtyAutoState::new();
+            state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+            state.auto_enter_retry_count = 3;
+            assert!(injection_submit_followup_delay(cli).is_some());
+            state.note_completed_injection(cli);
+            state.last_output_time = Instant::now() - Duration::from_secs(120);
+            for _ in 0..6 {
+                state.try_auto_enter(&pty);
+            }
+            assert_eq!(
+                state.auto_enter_retry_count, 0,
+                "acknowledged paste submit must never poke idle"
+            );
+            assert!(state.last_injection_time.is_none());
+        }
+        let mut legacy = PtyAutoState::new();
+        legacy.note_completed_injection("opencode");
+        assert!(
+            legacy.last_injection_time.is_some(),
+            "other harness recovery remains unchanged"
+        );
+        legacy.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+        legacy.last_output_time = Instant::now() - Duration::from_secs(120);
+        legacy.try_auto_enter(&pty);
+        assert_eq!(legacy.auto_enter_retry_count, 1);
+        let _ = pty.shutdown();
+    }
+
+    #[test]
+    fn delayed_submit_acknowledgment_never_claims_harness_acceptance() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || LogWriter(writer.clone()))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // A parked composer can echo the entire body: only a write was
+            // acknowledged here, so never infer a consuming harness turn.
+            let mut state = PtyAutoState::new();
+            state.note_completed_injection("codex");
+            assert!(state.last_injection_time.is_none());
+        });
+        let output = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("injection_recovery_disabled"));
+        assert!(output.contains("unconfirmed"));
+        assert!(output.contains("echo verification does not confirm harness action"));
+    }
 
     /// While an interactive hold is active, `try_auto_enter` must not press
     /// Enter (which would submit a human driver's half-typed input). Releasing
@@ -2024,8 +2164,7 @@ pub(crate) async fn run_wrap(
                             event_id = %pending.event_id,
                             "wrap: delivery injection confirmed"
                         );
-                        pty_auto.last_injection_time = Some(Instant::now());
-                        pty_auto.auto_enter_retry_count = 0;
+                        pty_auto.note_completed_injection(&resolved_cli);
                         let verification = PendingVerification {
                             delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
@@ -2287,7 +2426,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn only_claude_uses_a_delayed_submit_followup() {
+    fn paste_aware_harnesses_use_a_delayed_submit_followup() {
         let expected = Some(Duration::from_millis(250));
         assert_eq!(injection_submit_followup_delay("claude"), expected);
         assert_eq!(
@@ -2307,7 +2446,11 @@ mod tests {
             expected
         );
         assert_eq!(injection_submit_followup_delay("claude-code"), expected);
-        assert_eq!(injection_submit_followup_delay("codex"), None);
+        assert_eq!(injection_submit_followup_delay("codex"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/usr/local/bin/Codex.EXE"),
+            expected
+        );
         assert_eq!(injection_submit_followup_delay("opencode"), None);
     }
 

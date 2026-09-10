@@ -42,6 +42,9 @@ on:
       - '.github/workflows/fleet-e2e.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -57,17 +60,20 @@ jobs:
     steps:
       - name: Checkout relay
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # The relaycast engine lives in a separate repo. This E2E drives the
       # node-provider model and heartbeats whose load may be unreported for
-      # unbounded providers. Keep the pin on a released engine that supports the
-      # complete wire shape: older engines reject an omitted/null `load` and
-      # silently stop applying active-agent heartbeat updates (relaycast#307).
+      # unbounded providers. This companion PR candidate supplies isolated
+      # registration, acknowledged cleanup and node-owned spawn status reads.
+      # It is a test pin, not a released or deployed product dependency.
       - name: Checkout relaycast engine (node-provider model)
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           repository: AgentWorkforce/relaycast
-          ref: eb7563ffcf0e54698c23363c5753060f99d37dd3 # relaycast v7.0.0 (node providers + unreported-load heartbeat compatibility)
+          ref: a5c7ac66f64a650274fbe2c60e3cd5d3c9b87dcd # relaycast#387: verified served-node spawn completion
           path: relaycast-engine
 
       - name: Setup Node.js

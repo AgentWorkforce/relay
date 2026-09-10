@@ -320,8 +320,12 @@ done
 if kill -0 "$UP_PID" 2>/dev/null; then
   run_cli node down --force --timeout 5000 >/dev/null 2>&1 || true
   # Hard-kill after 15s if down --force didn't terminate the process (e.g. macOS 26 hang)
+  # Disarm before fork: cancellation can arrive before the child runs its
+  # first command, when an inherited EXIT trap would delete the workspace.
+  trap - EXIT
   ( sleep 15 && kill -9 "$UP_PID" 2>/dev/null || true ) >/dev/null 2>&1 &
   KILLER_PID=$!
+  trap cleanup EXIT
   wait "$UP_PID" || true
   kill "$KILLER_PID" 2>/dev/null || true
 else

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -260,6 +260,11 @@ pub(crate) struct WorkerRegistry {
     worker_logs_dir: PathBuf,
     commit_hooks_dir: Option<tempfile::TempDir>,
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
+    // Ownership outlives reaping so a failed pre-ready handle can clean up safely.
+    pub(crate) owned_spawn_generations:
+        HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
+    pub(crate) identity_cleanups: HashMap<WorkerName, crate::runtime::PendingIdentityCleanup>,
+    pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
     /// Protocol frames that a worker reader has stamped but not yet handed to
@@ -412,6 +417,9 @@ impl WorkerRegistry {
             worker_logs_dir,
             commit_hooks_dir: None,
             initial_tasks: HashMap::new(),
+            owned_spawn_generations: HashMap::new(),
+            completed_owned_releases: VecDeque::new(),
+            identity_cleanups: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
             receipts_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -468,6 +476,8 @@ impl WorkerRegistry {
                         - chrono::Duration::from_std(handle.last_activity_at.elapsed()).unwrap_or_default(),
                     "context_budget_pct": handle.context_budget_pct,
                     "current_state": handle.state.as_str(),
+                    "ready": handle.ready_at.is_some(),
+                    "generation": handle.generation.to_string(),
                     "pending_messages": pending_messages.get(name).copied().unwrap_or(0),
                     "runtime_kind": if native_harness.is_some() { "native" } else if handle.spec.runtime == AgentRuntime::Pty { "pty" } else { "headless" },
                     "native_harness_protocol_version": native_harness.as_ref().map(|(version, _)| *version),
@@ -629,6 +639,9 @@ impl WorkerRegistry {
         commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
+        if self.identity_cleanups.contains_key(&spec.name) {
+            anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
+        }
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
@@ -1492,6 +1505,10 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
+        anyhow::ensure!(
+            !self.initial_tasks.contains_key(name),
+            "worker initial task has not been queued"
+        );
         tracing::debug!(
             target = "broker::deliver",
             worker = %name,

@@ -34,6 +34,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone Bun workflow runs now execute relayflows and detached monitors with a real Node.js runtime resolved from the workflow project.
 - Standalone Bun workflow runs now use a real Node.js runtime when available, with bundled relayflows execution for Cloud archives that omit node_modules; daemon restarts and monitor failures now remain actionable.
 
+- Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
+
+## [12.0.0] - 2026-09-10
+
+### Added
+
+- `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails. Repeatable `--spawn-arg` forwards literal harness options.
+
+### Fixed
+
+- Worker startup queues the initial task before incoming events without consuming delivery retry attempts while waiting.
+- Codex startup requires its cursor in the composer, no loading or busy indicator, and one second of quiet output. It no longer depends on transient MCP server labels or historical prompt glyphs; timeout fallback remains unverified.
+- `node status` bounds local API probes and reports unavailable details, so a stalled broker cannot hang the command for the default 30-second request timeout.
+- Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
+- Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
+- Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
+- Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
+- Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
+- Served fleet spawn actions wait for the broker's confirmed readiness and propagate terminal launch failures instead of completing at placement.
+
+### Changed
+
+- Claude and Codex workers receive a separate delayed Enter for every injected delivery. After the PTY acknowledges the write, background Enter recovery is disabled for both harnesses to avoid submitting unrelated input after idle. The structured `injection_recovery_disabled` diagnostic explicitly leaves harness acceptance unconfirmed: echoed input is not proof of an agent action.
+
+### Breaking Changes
+
+- `serveNode` verifies spawns by default and requires engine support for node-owned spawn status reads; deploy the compatible engine before publishing/upgrading fleet clients. Legacy handlers can explicitly set `verifyReady: false` to receive unverified placement only.
+- SDK `waitForReady` reports `startup_fallback` at its deadline when `worker_startup_fallback` occurred without a proven readiness handshake.
+- MCP raw CLI spawns wait for harness readiness and report terminal startup errors; the selected broker must support the readiness contract.
+
+### Migration Guidance
+
+- Deploy the compatible Relaycast engine before upgrading fleet clients. Set `verifyReady: false` only when the caller explicitly accepts unverified placement.
+
 ## [11.11.0] - 2026-09-10
 
 ### Changed

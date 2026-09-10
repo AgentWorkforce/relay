@@ -1607,6 +1607,11 @@ impl BrokerRuntime {
                             );
                         }
                     } else if msg_type == "worker_ready" {
+                        let readiness_proven = value
+                            .get("payload")
+                            .and_then(|payload| payload.get("readiness_proven"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true);
                         // If this (re)spawned worker's inbound delivery mode is
                         // already manual_flush — e.g. it crashed and restarted
                         // while a human was driving — replay the interactive hold
@@ -1624,7 +1629,9 @@ impl BrokerRuntime {
                         // action timeout.
                         let pending = pending_verified_spawns
                             .get(&name)
-                            .is_some_and(|pending| pending.generation == generation)
+                            .is_some_and(|pending| {
+                                readiness_proven && pending.generation == generation
+                            })
                             .then(|| pending_verified_spawns.remove(&name))
                             .flatten();
                         if let Some(pending) = pending {
@@ -1741,7 +1748,9 @@ impl BrokerRuntime {
                                 // Records that the harness actually came up, so
                                 // `reap_exited` can tell a slow start from one that
                                 // never happened.
-                                h.ready_at.get_or_insert_with(Instant::now);
+                                if readiness_proven {
+                                    h.ready_at.get_or_insert_with(Instant::now);
+                                }
                                 (
                                     h.spec.provider.clone(),
                                     h.spec.cli.clone(),
@@ -1763,7 +1772,7 @@ impl BrokerRuntime {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
-                                "kind": "worker_ready",
+                                "kind": if readiness_proven { "worker_ready" } else { "worker_startup_fallback" },
                                 "name": name,
                                 "runtime": runtime,
                                 "provider": provider_val,

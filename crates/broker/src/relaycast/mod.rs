@@ -25,6 +25,7 @@ pub(crate) use workspace::{
     MultiWorkspaceSession, WorkspaceInboundMessage, WorkspaceMembershipSummary,
 };
 pub(crate) use ws::{
-    format_worker_preregistration_error, registration_retry_after_secs, retry_agent_registration,
-    RegRetryOutcome, RelaycastHttpClient, RelaycastRegistrationError, WsControl,
+    format_worker_preregistration_error, register_new_spawn_identity,
+    registration_retry_after_secs, retry_agent_registration, RegRetryOutcome, RelaycastHttpClient,
+    RelaycastRegistrationError, WsControl,
 };

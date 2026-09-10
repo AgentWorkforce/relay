@@ -1259,6 +1259,7 @@ impl BrokerRuntime {
         };
         if self.workers.workers.contains_key(&name)
             || self.pending_verified_spawns.contains_key(&name)
+            || self.workers.identity_cleanups.contains_key(&name)
         {
             self.reply_action_error(&invoke.invocation_id, "spawn_agent_name_in_use")
                 .await;
@@ -1403,6 +1404,14 @@ impl BrokerRuntime {
                 .await;
             }
             Err(error) => {
+                if let Some(pending) = self.workers.identity_cleanups.get_mut(&name) {
+                    pending
+                        .completions
+                        .push(super::identity_cleanup::CleanupCompletion::Fleet(
+                            fleet_spawn_action_result(&invoke.invocation_id, &name, Err(error)),
+                        ));
+                    return;
+                }
                 // A registration can succeed before process creation fails. Undo
                 // that authoritative identity before reporting the failed launch.
                 match deregister_fleet_agent(
@@ -1722,7 +1731,7 @@ fn fleet_spawn_action_result(
             output: json!({ "spawned": true, "name": name.as_str() }),
         }),
         Err(error) => ActionResultPayload::Error(ActionResultError {
-            error: format!("spawn_failed: {error}"),
+            error: format!("spawn_failed: {error:#}"),
         }),
     };
     ActionResult {
@@ -1966,6 +1975,7 @@ pub(super) async fn register_node_agent_token(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
     name: &str,
+    channels: &[ChannelName],
     invocation_id: Option<String>,
     session_ref: Option<String>,
 ) -> Result<crate::node_control::AgentRegistrationToken, String> {
@@ -1973,6 +1983,10 @@ pub(super) async fn register_node_agent_token(
     fleet_control_tx
         .send(FleetControlCommand::RegisterAgent {
             request: AgentRegister {
+                // Preserve the legacy strict wire schema when its default
+                // membership already matches the requested scope.
+                auto_join_general: (!channels.iter().any(|channel| channel.as_str() == "general"))
+                    .then_some(false),
                 v: FLEET_WIRE_VERSION,
                 id: None,
                 name: name.to_string(),
@@ -2056,6 +2070,38 @@ pub(super) async fn deregister_fleet_agent(
                 "fleet_control_unavailable".to_string()
             }
         })?;
+    Ok(true)
+}
+
+#[cfg(test)]
+pub(super) async fn deregister_fleet_agent_confirmed(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    fleet_delivery_book: &FleetDeliveryBook,
+    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    name: &WorkerName,
+) -> Result<bool, String> {
+    let Some(agent_id) = fleet_delivery_book.active_agent_id(name.as_str()) else {
+        return Ok(false);
+    };
+    // Remove the reconnect snapshot first, on the same FIFO control channel.
+    // Otherwise a periodic inventory sync could rebind the identity between
+    // the deregistration acknowledgement and the subsequent release request.
+    prune_fleet_inventory_entry(fleet_control_tx, fleet_inventory, name).await;
+    let (reply, received) = tokio::sync::oneshot::channel();
+    fleet_control_tx
+        .try_send(FleetControlCommand::DeregisterAgent {
+            request: AgentDeregister {
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                agent_id: agent_id.to_string(),
+                name: Some(name.to_string()),
+            },
+            reply,
+        })
+        .map_err(|error| format!("fleet deregistration unavailable: {error}"))?;
+    tokio::time::timeout(Duration::from_secs(30), received)
+        .await.map_err(|_| "fleet deregistration acknowledgement timed out; engine must support acknowledged agent.deregister".to_string())?
+        .map_err(|_| "fleet deregistration connection closed before acknowledgement".to_string())??;
     Ok(true)
 }
 
@@ -3307,6 +3353,7 @@ mod tests {
                 &tx,
                 &mut delivery_book,
                 "agent-a",
+                &[ChannelName::from("general")],
                 Some("inv-42".to_string()),
                 session_ref,
             )
@@ -3318,6 +3365,10 @@ mod tests {
         let FleetControlCommand::RegisterAgent { request, reply } = command else {
             panic!("expected RegisterAgent command");
         };
+        assert_eq!(
+            request.auto_join_general, None,
+            "default spawn must work with legacy strict engines"
+        );
         assert_eq!(request.invocation_id.as_deref(), Some("inv-42"));
         assert_eq!(request.session_ref.as_deref(), Some("sess-resume-7"));
         // A session ref implies the spawn is resumable.
@@ -3356,15 +3407,20 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
         let register_handle = tokio::spawn(async move {
             let mut delivery_book = FleetDeliveryBook::default();
-            register_node_agent_token(&tx, &mut delivery_book, "agent-a", None, None).await?;
+            register_node_agent_token(&tx, &mut delivery_book, "agent-a", &[], None, None).await?;
             Ok::<_, String>(delivery_book)
         });
 
-        let FleetControlCommand::RegisterAgent { reply, .. } =
+        let FleetControlCommand::RegisterAgent { request, reply } =
             rx.recv().await.expect("register command emitted")
         else {
             panic!("expected RegisterAgent command");
         };
+        assert_eq!(
+            request.auto_join_general,
+            Some(false),
+            "empty channels require explicit isolation support"
+        );
         reply
             .send(Ok(crate::node_control::AgentRegistrationToken {
                 name: "agent-a".to_string(),
@@ -3393,6 +3449,66 @@ mod tests {
             delivery_book.observe(&mismatch),
             DeliveryDecision::IdentityReject
         );
+    }
+
+    #[tokio::test]
+    async fn owned_cleanup_waits_for_engine_deregistration_ack() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        let mut inventory = HashMap::from([(
+            WorkerName::from("agent-a"),
+            InventoryAgent {
+                agent_id: "agent-a-id".to_string(),
+                name: "agent-a".to_string(),
+                invocation_id: None,
+                session_ref: None,
+            },
+        )]);
+        let task = tokio::spawn(async move {
+            deregister_fleet_agent_confirmed(
+                &tx,
+                &book,
+                &mut inventory,
+                &WorkerName::from("agent-a"),
+            )
+            .await
+        });
+        let FleetControlCommand::UpdateInventory(snapshot) = rx.recv().await.unwrap() else {
+            panic!("expected inventory removal before deregistration");
+        };
+        assert!(snapshot.is_empty());
+        let FleetControlCommand::DeregisterAgent { request, reply } = rx.recv().await.unwrap()
+        else {
+            panic!("expected acknowledged deregistration");
+        };
+        assert_eq!(request.agent_id, "agent-a-id");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!task.is_finished(), "enqueue is not engine completion");
+        reply.send(Ok(())).unwrap();
+        assert_eq!(task.await.unwrap(), Ok(true));
+    }
+
+    #[tokio::test]
+    async fn owned_cleanup_retains_identity_when_deregistration_disconnects() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(1);
+        let mut book = FleetDeliveryBook::default();
+        book.bind_authoritative_identity("agent-a", "agent-a-id");
+        let task = tokio::spawn(async move {
+            deregister_fleet_agent_confirmed(
+                &tx,
+                &book,
+                &mut HashMap::new(),
+                &WorkerName::from("agent-a"),
+            )
+            .await
+        });
+        drop(rx.recv().await.unwrap());
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("before acknowledgement"));
     }
 
     #[tokio::test]

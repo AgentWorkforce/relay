@@ -114,11 +114,13 @@ export const SpawnAgentResultSchema = z.looseObject({
   warning: z.string().nullable().optional(),
   sessionId: optionalString,
   generation: optionalString,
+  channels: z.array(z.string()).optional(),
 });
 
 export interface SessionInfo {
   broker_version: string;
   protocol_version: number;
+  spawn_capabilities?: { explicit_empty_channels?: boolean; create_only_identity?: boolean };
   workspace_key?: string;
   relay_base_url?: string;
   default_workspace_id?: string;
@@ -707,7 +709,14 @@ export class HarnessDriverClient {
     return this.spawnCli({ ...input, cli: 'opencode' });
   }
 
-  async release(name: string, reason?: string): Promise<{ name: string }> {
+  async release(
+    name: string,
+    reason?: string,
+    expectedGeneration?: string,
+    deleteIdentity = false
+  ): Promise<{ name: string }> {
+    if (deleteIdentity && !expectedGeneration)
+      throw new Error('Owned identity deletion requires a worker generation');
     const beforeCtx: BeforeAgentReleaseContext = { name, reason, baseUrl: this.baseUrl };
     const t0 = Date.now();
     await this.eventBus.emit('beforeAgentRelease', beforeCtx);
@@ -716,7 +725,15 @@ export class HarnessDriverClient {
         `/api/spawned/${encodeURIComponent(name)}`,
         {
           method: 'DELETE',
-          ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+          ...(reason || expectedGeneration
+            ? {
+                body: JSON.stringify({
+                  reason,
+                  expected_generation: expectedGeneration,
+                  ...(deleteIdentity ? { delete_identity: true } : {}),
+                }),
+              }
+            : {}),
         }
       );
       const afterCtx: AfterAgentReleaseContext = {

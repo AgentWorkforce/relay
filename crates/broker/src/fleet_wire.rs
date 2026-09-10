@@ -219,6 +219,12 @@ pub struct NodeDeregister {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRegister {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_join_general: Option<bool>,
     pub v: FleetWireVersion,
     #[serde(
         default,
@@ -767,6 +773,7 @@ mod tests {
     #[test]
     fn skips_absent_optional_fields() {
         let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+            auto_join_general: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             name: "codex-1".to_string(),
@@ -786,36 +793,29 @@ mod tests {
         );
     }
 
-    /// Regression guard for the whole reason declared metadata is published over
-    /// HTTP rather than on this frame. The engine parses `agent.register` with a
-    /// `.strict()` schema whose only keys are v/id/name/invocation_id/
-    /// session_ref/resumable; ANY additional key makes it reject the frame with
-    /// a freshly generated id, which the broker's id-keyed correlation cannot
-    /// match, so the registration waiter stalls for the full 30s
-    /// `FLEET_AGENT_REGISTER_TIMEOUT`. Assert the serialized key set exactly, so
-    /// re-adding a field here fails loudly instead of surfacing as a timeout.
+    /// Cover both legacy-compatible default membership and the candidate
+    /// engine's explicit isolation extension. Metadata belongs on HTTP.
     #[test]
     fn agent_register_carries_no_keys_the_engine_schema_rejects() {
-        let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
-            v: FLEET_WIRE_VERSION,
-            id: Some("register-1".to_string()),
-            name: "fleet-worker".to_string(),
-            invocation_id: Some("inv-1".to_string()),
-            session_ref: Some("sess-1".to_string()),
-            resumable: Some(true),
-        });
-
-        let value = serde_json::to_value(msg).unwrap();
-        let mut keys: Vec<&str> = value
-            .as_object()
-            .expect("agent.register serializes to an object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
+        for auto_join_general in [None, Some(false)] {
+            let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+                auto_join_general,
+                v: FLEET_WIRE_VERSION,
+                id: Some("register-1".to_string()),
+                name: "fleet-worker".to_string(),
+                invocation_id: Some("inv-1".to_string()),
+                session_ref: Some("sess-1".to_string()),
+                resumable: Some(true),
+            });
+            let value = serde_json::to_value(msg).unwrap();
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            let mut expected = vec![
                 "id",
                 "invocation_id",
                 "name",
@@ -823,8 +823,13 @@ mod tests {
                 "session_ref",
                 "type",
                 "v",
-            ]
-        );
+            ];
+            if auto_join_general.is_some() {
+                expected.insert(0, "auto_join_general");
+                assert_eq!(value["auto_join_general"], false);
+            }
+            assert_eq!(keys, expected);
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "11.11.0",
+  "version": "12.0.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -109,7 +109,8 @@
     "verify:fleet-daytona:validate": "node scripts/verify-features/fleet-daytona.mjs validate",
     "verify:fleet-daytona:dry-run": "DRY_RUN=1 relayflows run workflows/verify-fleet-daytona.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs"
+    "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
+    "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
@@ -127,6 +128,7 @@
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
+    "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
     "@relayflows/cli": "1.1.5",
     "@relayflows/core": "1.1.5",

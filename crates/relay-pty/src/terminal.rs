@@ -204,11 +204,14 @@ fn classify_trust_row(norm: &str) -> Option<bool> {
     //   2.1.19  "1. Yes, proceed"
     //   2.1.236 "1. Yes, I trust this folder"
     //   2.1.261 "Yes, I trust this folder"
-    if norm.contains("trustthisfolder") || norm.contains("yes,proceed") {
+    let label = trust_label_key(norm);
+    if (label.starts_with("yes,") && label.contains("trustthisfolder"))
+        || label.starts_with("yes,proceed")
+    {
         return Some(true);
     }
     // Decline wordings: "2. No, exit" / "No, exit".
-    if norm.contains("no,exit") {
+    if label.starts_with("no,exit") {
         return Some(false);
     }
     None
@@ -336,6 +339,16 @@ pub fn is_auto_suggestion(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_question_header_is_not_an_affirmative_menu_option() {
+        assert_eq!(
+            plan_claude_trust_response(
+                "Trust this folder?\n❯ No, exit\n  Yes, I trust this folder\nEnter to confirm"
+            ),
+            ClaudeTrustPlan::Confirm { steps: 1 }
+        );
+    }
 
     // ==================== plan_claude_trust_response ====================
     //

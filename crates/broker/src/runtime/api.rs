@@ -1,6 +1,6 @@
 use super::*;
 use crate::protocol::HeadlessHarnessDriver;
-use crate::relaycast::retry_agent_registration;
+use crate::relaycast::{register_new_spawn_identity, retry_agent_registration};
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
@@ -366,10 +366,31 @@ impl BrokerRuntime {
                 replay_buffer,
                 reply,
             } => {
-                let effective_channels = if channels.is_empty() {
-                    default_spawn_channels()
-                } else {
-                    channels.clone()
+                // Tokenless HTTP registration below is create-only;
+                // only their successful new identity may be deleted on failure.
+                // A supplied credential never grants cleanup ownership.
+                if workers.identity_cleanups.contains_key(&name) {
+                    let _ = reply.send(Err(
+                        "worker name has pending owned cleanup; complete it before reuse"
+                            .to_string(),
+                    ));
+                    return;
+                }
+                if workers.has_worker(&name) {
+                    let _ = reply.send(Err(format!("agent '{name}' already exists")));
+                    return;
+                }
+                let owns_identity = agent_token.is_none();
+                let effective_channels = channels.unwrap_or_else(default_spawn_channels);
+                let effective_channels = match super::relaycast_events::relaycast_spawn_channels(
+                    &json!({"channels": effective_channels}),
+                    None,
+                ) {
+                    Ok(channels) => channels,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.to_string()));
+                        return;
+                    }
                 };
                 let spec = match build_http_api_spawn_spec(
                     name.clone(),
@@ -396,14 +417,9 @@ impl BrokerRuntime {
                 // was minted by the node control connection, and the worker must
                 // receive that exact token before its harness starts.
                 //
-                // Otherwise bind the agent to this node via node-control
-                // `agent.register` — the same step the engine `action.invoke`
-                // spawn converges on — so the agent is born `via_node`-bound and
-                // delivery flows over /v1/node/ws. The minted token is injected
-                // as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP) so
-                // the worker MCP never re-registers over HTTP. If node binding is
-                // unavailable, fall back to HTTP pre-registration so a tokenless
-                // node (e.g. mint failure) still spawns a working agent.
+                // Otherwise create a fresh identity over HTTP, then bind it to
+                // this node. The minted token is injected as RELAY_AGENT_TOKEN
+                // so the worker MCP never re-registers over HTTP.
                 let mut fleet_registration = None;
                 let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                 let worker_relay_key = if let Some(token) = agent_token {
@@ -429,122 +445,92 @@ impl BrokerRuntime {
                     }
                     Some(token)
                 } else {
-                    // Derive the session ref from the resolved spec the same way
-                    // the fleet/sidecar paths do, so an HTTP spawn carrying a
-                    // `harnessConfig.session_id` registers as a resumable session
-                    // rather than a fresh spawn. No invocation id exists on the
-                    // HTTP path.
-                    match super::fleet::register_node_agent_token(
-                        fleet_control_tx,
-                        fleet_delivery_book,
-                        name.as_str(),
-                        None,
-                        session_ref.clone(),
-                    )
-                    .await
-                    {
+                    // Node agent.register may resume an existing identity. Establish
+                    // create-only ownership over HTTP first, then bind that exact
+                    // new identity to the node for normal delivery/inventory.
+                    match register_new_spawn_identity(relaycast_http, &name, Some(&cli)).await {
                         Ok(token) => {
-                            tracing::info!(
-                                worker = %name,
-                                "bound agent to node via agent.register for HTTP spawn"
-                            );
                             super::fleet::spawn_declared_metadata_publish(
                                 relaycast_http,
                                 name.as_str(),
                                 registration_metadata,
                             );
-                            let relay_key = token.token.clone();
-                            fleet_registration = Some((token, None, session_ref));
-                            Some(relay_key)
-                        }
-                        Err(node_error) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %node_error,
-                                "node agent.register unavailable; falling back to HTTP pre-registration"
-                            );
-                            // The ordinary cache-aware registration: it honours
-                            // the SDK's cached token and rate-limit block, so a
-                            // name already seeded by preflight or an earlier
-                            // spawn is reused rather than re-created. Declared
-                            // metadata is published separately, exactly as on
-                            // the node path.
-                            match retry_agent_registration(relaycast_http, &name, Some(&cli)).await
-                            {
-                                Ok(token) => {
-                                    super::fleet::spawn_declared_metadata_publish(
-                                        relaycast_http,
-                                        name.as_str(),
-                                        registration_metadata,
-                                    );
-                                    // HTTP registration alone leaves the agent
-                                    // without a node binding; the engine only
-                                    // delivers to `via_node` agents in node-only
-                                    // delivery. Bind it to this node so it is
-                                    // deliverable, surfacing a loud warning if the
-                                    // bind fails.
-                                    let bind_warning = super::relaycast_events::bind_http_registered_agent_to_node(
-                                        relaycast_http,
-                                        fleet_node_name,
-                                        &name,
-                                    )
-                                    .await;
-                                    if let Some(warning) = bind_warning {
-                                        preregistration_warning = Some(warning);
-                                    } else {
-                                        match super::fleet::resolve_fleet_agent_token_identity(
-                                            relaycast_http,
-                                            fleet_delivery_book,
-                                            &name,
-                                            &token,
-                                        )
-                                        .await
-                                        {
-                                            Ok(registration) => {
-                                                fleet_registration =
-                                                    Some((registration, None, session_ref.clone()));
-                                            }
-                                            Err(error) => {
-                                                tracing::warn!(
-                                                    worker = %name,
-                                                    error = %error,
-                                                    "could not resolve HTTP-registered agent for reconnect inventory"
-                                                );
-                                            }
-                                        }
+                            // HTTP registration alone leaves the agent
+                            // without a node binding; the engine only
+                            // delivers to `via_node` agents in node-only
+                            // delivery. Bind it to this node so it is
+                            // deliverable, surfacing a loud warning if the
+                            // bind fails.
+                            let bind_warning =
+                                super::relaycast_events::bind_http_registered_agent_to_node(
+                                    relaycast_http,
+                                    fleet_node_name,
+                                    &name,
+                                )
+                                .await;
+                            if let Some(warning) = bind_warning {
+                                preregistration_warning = Some(warning);
+                            } else {
+                                match super::fleet::resolve_fleet_agent_token_identity(
+                                    relaycast_http,
+                                    fleet_delivery_book,
+                                    &name,
+                                    &token,
+                                )
+                                .await
+                                {
+                                    Ok(registration) => {
+                                        fleet_registration =
+                                            Some((registration, None, session_ref.clone()));
                                     }
-                                    Some(token)
-                                }
-                                Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                                    let message =
-                                        format_worker_preregistration_error(&name, &error);
-                                    tracing::warn!(
-                                        worker = %name,
-                                        error = %error,
-                                        "continuing spawn without pre-registration after retries exhausted"
-                                    );
-                                    preregistration_warning = Some(message);
-                                    None
-                                }
-                                Err(RegRetryOutcome::Fatal(error)) => {
-                                    let _ = reply.send(Err(format_worker_preregistration_error(
-                                        &name, &error,
-                                    )));
-                                    return;
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "could not resolve HTTP-registered agent for reconnect inventory"
+                                        );
+                                    }
                                 }
                             }
+                            Some(token)
+                        }
+                        Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                            let message = format_worker_preregistration_error(&name, &error);
+                            // Do not launch a tokenless process that could create
+                            // an identity later without broker cleanup ownership.
+                            let _ = reply.send(Err(message));
+                            return;
+                        }
+                        Err(RegRetryOutcome::Fatal(error)) => {
+                            let _ =
+                                reply.send(Err(format_worker_preregistration_error(&name, &error)));
+                            return;
                         }
                     }
                 };
+                // Create-only registration has established a fresh identity.
+                // A retired generation must not become its cleanup owner.
+                if owns_identity {
+                    workers.owned_spawn_generations.remove(&name);
+                }
                 if let Some(token) = worker_relay_key.as_deref() {
                     // Node registration returns a token without populating the
                     // HTTP client's worker cache. Seed it before authenticating
                     // as the worker so channel reconciliation cannot rotate an
                     // already-live identity's token.
                     seed_supplied_agent_token(relaycast_http, &name, token);
-                    if let Err(error) = relaycast_http
-                        .ensure_agent_channels(&name, Some(&cli), &effective_channels)
-                        .await
+                    if let Err(error) = async {
+                        relaycast_http
+                            .ensure_agent_channels(&name, Some(&cli), &effective_channels)
+                            .await?;
+                        if owns_identity {
+                            relaycast_http
+                                .verify_agent_channel_scope(&name, &effective_channels)
+                                .await?;
+                        }
+                        anyhow::Ok(())
+                    }
+                    .await
                     {
                         tracing::error!(
                             worker = %name,
@@ -554,10 +540,20 @@ impl BrokerRuntime {
                         );
                         let membership_warning =
                             format!("worker channel membership was not fully reconciled: {error}");
-                        preregistration_warning = Some(match preregistration_warning.take() {
-                            Some(existing) => format!("{existing}; {membership_warning}"),
-                            None => membership_warning,
-                        });
+                        super::identity_cleanup::schedule_identity_cleanup(
+                            workers,
+                            fleet_control_tx,
+                            fleet_delivery_book,
+                            fleet_inventory,
+                            relaycast_http,
+                            &name,
+                            owns_identity,
+                            Some(super::identity_cleanup::CleanupCompletion::Api(
+                                reply,
+                                Err(membership_warning),
+                            )),
+                        );
+                        return;
                     }
                 }
 
@@ -694,6 +690,14 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        if owns_identity {
+                            if let Some(worker) = workers.workers.get(&name) {
+                                workers.owned_spawn_generations.insert(
+                                    name.clone(),
+                                    (worker.generation, relaycast_http.clone()),
+                                );
+                            }
+                        }
                         if let Some((token, invocation_id, session_ref)) = fleet_registration.take()
                         {
                             super::fleet::record_fleet_inventory_agent(
@@ -813,6 +817,7 @@ impl BrokerRuntime {
                             "sessionId": effective_spec.session_id.clone(),
                             "pid": pid,
                             "generation": generation.clone(),
+                            "channels": effective_spec.channels,
                             "sessionId": effective_spec.session_id.clone(),
                             "pre_registered": worker_relay_key.is_some(),
                             "warning": preregistration_warning,
@@ -823,7 +828,24 @@ impl BrokerRuntime {
                             agent_result_tokens.remove(&config.token);
                         }
                         eprintln!("[agent-relay] HTTP API: failed to spawn '{}': {}", name, e);
-                        let _ = reply.send(Err(e.to_string()));
+                        let message = e.to_string();
+                        if owns_identity && worker_relay_key.is_some() {
+                            super::identity_cleanup::schedule_identity_cleanup(
+                                workers,
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                fleet_inventory,
+                                relaycast_http,
+                                &name,
+                                true,
+                                Some(super::identity_cleanup::CleanupCompletion::Api(
+                                    reply,
+                                    Err(message),
+                                )),
+                            );
+                            return;
+                        }
+                        let _ = reply.send(Err(message));
                     }
                 }
             }
@@ -1099,8 +1121,85 @@ impl BrokerRuntime {
             ListenApiRequest::Release {
                 name,
                 reason,
+                expected_generation,
+                delete_identity,
                 reply,
             } => {
+                // Bounded tombstones make an acknowledged cleanup retry safe:
+                // no remote mutation, and never release a replacement worker.
+                if delete_identity
+                    && !workers.has_worker(&name)
+                    && expected_generation.as_deref().is_some_and(|expected| {
+                        workers.completed_owned_releases.iter().any(
+                            |(released_name, generation)| {
+                                released_name == &name && generation.to_string() == expected
+                            },
+                        )
+                    })
+                {
+                    let _ = reply.send(Ok(json!({"success": true, "name": name})));
+                    return;
+                }
+                if let Some(pending) = workers.identity_cleanups.get_mut(&name) {
+                    if delete_identity
+                        && pending.delete_identity
+                        && expected_generation.as_deref()
+                            == Some(pending.generation.to_string().as_str())
+                    {
+                        pending
+                            .completions
+                            .push(super::identity_cleanup::CleanupCompletion::Api(
+                                reply,
+                                Ok(json!({"success":true,"name":name})),
+                            ));
+                        pending.attempts = 0;
+                        pending.retry_at = Instant::now();
+                    } else {
+                        let _ = reply.send(Err("worker generation changed or cleanup is in progress; refusing unverified release".to_string()));
+                    }
+                    return;
+                }
+                let owned_http = workers
+                    .owned_spawn_generations
+                    .get(&name)
+                    .map(|(_, http)| http.clone());
+                let relaycast_http = owned_http.as_ref().unwrap_or(relaycast_http);
+                let retired_owned = delete_identity
+                    && !workers.has_worker(&name)
+                    && expected_generation.as_deref().is_some_and(|expected| {
+                        workers
+                            .owned_spawn_generations
+                            .get(&name)
+                            .is_some_and(|(generation, _)| generation.to_string() == expected)
+                    });
+                if let Some(expected) = expected_generation.as_deref() {
+                    if !retired_owned
+                        && workers
+                            .workers
+                            .get(&name)
+                            .map(|worker| worker.generation.to_string())
+                            .as_deref()
+                            != Some(expected)
+                    {
+                        let _ = reply.send(Err("worker generation changed or is absent; refusing to release an unverified identity".to_string()));
+                        return;
+                    }
+                }
+                if delete_identity
+                    && !workers
+                        .owned_spawn_generations
+                        .get(&name)
+                        .is_some_and(|(generation, _)| {
+                            Some(generation.to_string()).as_deref()
+                                == expected_generation.as_deref()
+                        })
+                {
+                    let _ = reply.send(Err(
+                        "identity was not created by this worker generation; refusing deletion"
+                            .to_string(),
+                    ));
+                    return;
+                }
                 if let Some(ref r) = reason {
                     tracing::info!(worker = %name, reason = %r, "releasing agent via HTTP API");
                 }
@@ -1108,19 +1207,27 @@ impl BrokerRuntime {
                 // auto-restart of intentionally released agents.
                 workers.supervisor.unregister(&name);
                 workers.metrics.on_release(&name);
-                match workers.release(&name).await {
+                match if retired_owned {
+                    Ok(())
+                } else {
+                    workers.release(&name).await
+                } {
                     Ok(()) => {
                         // The name-keyed receipt describes the live worker
                         // only; correlated request receipts remain available
                         // in the request cache until their retention TTL.
                         model_receipts.remove(&name);
-                        let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
-                            fleet_control_tx,
-                            fleet_delivery_book,
-                            &name,
-                        )
-                        .await
-                        .err();
+                        let fleet_deregistration_error = if delete_identity {
+                            None
+                        } else {
+                            super::fleet::deregister_fleet_agent(
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                &name,
+                            )
+                                .await
+                                .err()
+                        };
                         if let Some(error) = &fleet_deregistration_error {
                             tracing::warn!(
                                 worker = %name,
@@ -1128,19 +1235,14 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        let relaycast_release_error = match relaycast_http
-                            .release_agent_identity(&name, reason.as_deref())
-                            .await
-                        {
-                            Ok(()) => None,
-                            Err(error) => {
-                                tracing::warn!(
-                                    worker = %name,
-                                    error = %error,
-                                    "failed to release worker identity in relaycast"
-                                );
-                                Some(error.to_string())
-                            }
+                        let relaycast_release_error = if delete_identity {
+                            None
+                        } else {
+                            relaycast_http
+                                .release_agent_identity(&name, reason.as_deref(), false)
+                                .await
+                                .err()
+                                .map(|error| error.to_string())
                         };
                         let dropped = take_pending_for_worker(pending_deliveries, &name);
                         if !dropped.is_empty() {
@@ -1174,7 +1276,7 @@ impl BrokerRuntime {
                         if paths.persist {
                             let _ = state.save(&paths.state);
                         }
-                        if fleet_deregistration_error.is_none() {
+                        if !delete_identity && fleet_deregistration_error.is_none() {
                             super::fleet::prune_fleet_agent_state(
                                 fleet_control_tx,
                                 fleet_inventory,
@@ -1217,6 +1319,26 @@ impl BrokerRuntime {
                             Some("http_api_release"),
                         )
                         .await;
+                        if delete_identity {
+                            super::identity_cleanup::schedule_identity_cleanup(
+                                workers,
+                                fleet_control_tx,
+                                fleet_delivery_book,
+                                fleet_inventory,
+                                relaycast_http,
+                                &name,
+                                true,
+                                Some(super::identity_cleanup::CleanupCompletion::Api(
+                                    reply,
+                                    Ok(json!({"success":true,"name":name})),
+                                )),
+                            );
+                            return;
+                        }
+                        if fleet_deregistration_error.is_none() && relaycast_release_error.is_none()
+                        {
+                            workers.owned_spawn_generations.remove(&name);
+                        }
                         let response = match (fleet_deregistration_error, relaycast_release_error)
                         {
                             (Some(error), _) => Err(format!(
@@ -1255,7 +1377,7 @@ impl BrokerRuntime {
                             // token, or a retry can never actually free the
                             // seat.
                             let relaycast_release_error = match relaycast_http
-                                .release_agent_identity(&name, reason.as_deref())
+                                .release_agent_identity(&name, reason.as_deref(), false)
                                 .await
                             {
                                 Ok(()) => None,
