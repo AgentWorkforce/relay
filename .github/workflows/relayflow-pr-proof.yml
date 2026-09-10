@@ -13,6 +13,10 @@ on:
         description: Pull request number to prove
         required: true
         type: number
+      expected_head_sha:
+        description: Exact current PR head SHA to prove (required for a fresh manual dispatch)
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -47,9 +51,14 @@ jobs:
         id: status
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Do not interpolate workflow-dispatch input into `run`: Actions
+          # expands expressions before the shell parses this script. The Node
+          # guard validates the value after this quoted environment expansion.
+          EXPECTED_HEAD_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head_sha || '' }}
         run: >-
           node scripts/pr-proof/report-status.mjs start
           --event "$GITHUB_EVENT_PATH"
+          --expected-head-sha "$EXPECTED_HEAD_SHA"
           --github-output "$GITHUB_OUTPUT"
 
       - name: Classify PR and validate declared case
