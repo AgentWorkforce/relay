@@ -30,10 +30,14 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
     const binary = path.join(tempRoot, 'agent-relay');
     const bundle = path.join(tempRoot, 'cli-bundle.mjs');
     try {
-      execFileSync('bash', [path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), distEntrypoint, bundle, 'test'], {
-        cwd: repoRoot,
-        stdio: 'pipe',
-      });
+      execFileSync(
+        'bash',
+        [path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), distEntrypoint, bundle, 'test'],
+        {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        }
+      );
       execFileSync(
         'bun',
         [
