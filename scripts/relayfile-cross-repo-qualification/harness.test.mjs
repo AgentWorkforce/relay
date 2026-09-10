@@ -55,6 +55,12 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(issue490Probe, /node_modules\/\.bin\/relayfile/);
   assert.match(arm, /@relayfile\/mount-linux-x64\/bin\/relayfile-mount/);
   assert.doesNotMatch(issue490Probe, /go test/);
+  assert.match(issue490Probe, /onceWsUpgradeCount = wsUpgradeCount/);
+  assert.match(issue490Probe, /issue-490-\$\{entrypoint\}-state\/state\.json/);
+  assert.match(issue490Probe, /child\.once\('error'/);
+  assert.match(issue490Probe, /Date\.now\(\) \+ 10_000/);
+  assert.match(issue490Probe, /workspaceId: 'issue-490', providers: \[\]/);
+  assert.match(issue490Probe, /aud: 'relayfile', agent_name/);
   assert.match(arm, /legs: \{ coldMount, acl, issue490 \}/);
 });
 
