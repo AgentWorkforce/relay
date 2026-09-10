@@ -1016,11 +1016,18 @@ function isAttachedBrokerCliCommand(command: string): boolean {
   if (!/(?:^|\s)up(?:\s|$)/.test(command) || /(?:^|\s)--background(?:\s|=|$)/.test(command)) {
     return false;
   }
-  return /(?:^|\s)(?:\S*agent-relay(?:\.js)?|\S*agent-relay-[^\s]+)(?:\s|$)/.test(command);
+  const words = command.trim().split(/\s+/);
+  const executable = commandExecutableBasename(command);
+  // A shell or worker prompt mentioning `agent-relay up` is not the CLI.
+  const cli = ['node', 'bun'].includes(executable) ? path.basename(words[1] ?? '') : executable;
+  return /^(?:agent-relay(?:\.js)?|agent-relay-(?:darwin|linux|win32)[\w.-]*)$/.test(cli);
 }
 
 function isBrokerProcessCommand(command: string): boolean {
-  return isBrokerExecutableCommand(command) || isAttachedBrokerCliCommand(command);
+  // PTY workers use the same executable as their broker. They are never
+  // orphan broker candidates, even when their executable lives in this project.
+  if (isBrokerExecutableCommand(command)) return command.trim().split(/\s+/)[1] === 'init';
+  return isAttachedBrokerCliCommand(command);
 }
 
 function escapeRegExp(value: string): string {
@@ -1029,12 +1036,19 @@ function escapeRegExp(value: string): string {
 
 function commandHasBrokerName(command: string, brokerName: string): boolean {
   const escapedName = escapeRegExp(brokerName);
-  return new RegExp(`(?:^|\\s)--name(?:\\s+|=)${escapedName}(?:\\s|$)`).test(command);
+  return new RegExp(`(?:^|\\s)--(?:name|broker-name|instance-name)(?:\\s+|=)${escapedName}(?:\\s|$)`).test(
+    command
+  );
 }
 
-function commandHasProjectRoot(command: string, projectRoot: string): boolean {
-  const escapedRoot = escapeRegExp(path.resolve(projectRoot));
-  return new RegExp(`(?:^|\\s|=|["'])${escapedRoot}(?:$|\\s|["']|${escapeRegExp(path.sep)})`).test(command);
+function commandStateDirectory(command: string): string | null | undefined {
+  const flags = [...command.matchAll(/(?:^|\s)--state-dir(?=\s|=|$)/g)];
+  if (flags.length === 0) return undefined;
+  if (flags.length !== 1) return null;
+  const matches = [...command.matchAll(/(?:^|\s)--state-dir(?:\s+|=)(?:"([^"]+)"|'([^']+)'|(\S+))/g)];
+  // Ambiguous or incomplete process listings cannot establish ownership.
+  if (matches.length !== 1) return null;
+  return matches[0][1] ?? matches[0][2] ?? matches[0][3] ?? null;
 }
 
 async function processCwdMatchesProjectRoot(
@@ -1074,15 +1088,21 @@ async function terminateProcess(pid: number, deps: CoreDependencies, force: bool
 }
 
 async function killOrphanedBrokerProcesses(
-  projectRoot: string,
+  paths: CoreProjectPaths,
   deps: CoreDependencies,
-  options?: { force?: boolean }
+  options?: { force?: boolean; brokerName?: string }
 ): Promise<{ matchedCount: number; killedCount: number }> {
   let matchedCount = 0;
   let killedCount = 0;
   try {
-    const resolvedProjectRoot = path.resolve(projectRoot);
-    const brokerName = path.basename(resolvedProjectRoot) || 'project';
+    const resolvedProjectRoot = path.resolve(paths.projectRoot);
+    const stateDirectory = path.resolve(paths.dataDir);
+    const usesDefaultStateDirectory =
+      stateDirectory === path.join(resolvedProjectRoot, '.agentworkforce/relay');
+    const brokerName =
+      options?.brokerName ??
+      deps.env.AGENT_RELAY_BROKER_NAME ??
+      (path.basename(resolvedProjectRoot) || 'project');
     const candidates: ProcessInfo[] = [];
     try {
       const processList = await deps.execCommand('ps aux');
@@ -1092,18 +1112,22 @@ async function killOrphanedBrokerProcesses(
         .filter((process): process is ProcessInfo => process !== null)
         .filter((process) => isBrokerProcessCommand(process.command));
 
-      const matchedPids = new Set<number>();
       for (const processInfo of relayProcesses) {
-        if (commandHasProjectRoot(processInfo.command, resolvedProjectRoot)) {
-          candidates.push(processInfo);
-          matchedPids.add(processInfo.pid);
-        }
-      }
-
-      for (const processInfo of relayProcesses) {
-        if (matchedPids.has(processInfo.pid)) {
+        const declaredStateDirectory = commandStateDirectory(processInfo.command);
+        if (declaredStateDirectory !== undefined) {
+          if (declaredStateDirectory === null) continue;
+          if (path.isAbsolute(declaredStateDirectory)) {
+            if (path.resolve(declaredStateDirectory) === stateDirectory) candidates.push(processInfo);
+          } else if (await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps)) {
+            if (path.resolve(resolvedProjectRoot, declaredStateDirectory) === stateDirectory)
+              candidates.push(processInfo);
+          }
           continue;
         }
+        // A custom state directory must never adopt a process using the default
+        // directory. An executable or arbitrary argument under an ancestor
+        // project (including the user's home directory) proves no ownership.
+        if (!usesDefaultStateDirectory) continue;
         const cwdMatches = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
         if (!cwdMatches) continue;
         if (
@@ -1113,7 +1137,6 @@ async function killOrphanedBrokerProcesses(
           continue;
         }
         candidates.push(processInfo);
-        matchedPids.add(processInfo.pid);
       }
     } catch {
       // Expected if ps is unavailable; fall through to no matches.
@@ -1161,7 +1184,8 @@ async function waitForProcessExit(pid: number, timeoutMs: number, deps: CoreDepe
 
 async function recoverHalfStartedBroker(
   paths: CoreProjectPaths,
-  deps: CoreDependencies
+  deps: CoreDependencies,
+  brokerName?: string
 ): Promise<'running' | 'recovered' | 'clear' | 'blocked'> {
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
   const readiness = await waitForBrokerReadiness(paths, deps, 0, true);
@@ -1185,7 +1209,7 @@ async function recoverHalfStartedBroker(
     return 'recovered';
   }
 
-  const orphanCleanup = await killOrphanedBrokerProcesses(paths.projectRoot, deps, { force: true });
+  const orphanCleanup = await killOrphanedBrokerProcesses(paths, deps, { force: true, brokerName });
   if (orphanCleanup.matchedCount > 0) {
     if (orphanCleanup.killedCount < orphanCleanup.matchedCount) {
       deps.error(
@@ -1660,7 +1684,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 
   if (options.background) {
-    const preflight = await recoverHalfStartedBroker(paths, deps);
+    const preflight = await recoverHalfStartedBroker(paths, deps, options.brokerName);
     if (preflight === 'running') {
       const pid = readBrokerPid(paths.dataDir, deps);
       deps.error(
@@ -1894,7 +1918,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
-    await killOrphanedBrokerProcesses(paths.projectRoot, deps);
+    await killOrphanedBrokerProcesses(paths, deps, { brokerName: options.brokerName });
 
     const started = await startBrokerWithPortFallback(
       paths,
@@ -2100,7 +2124,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
   if (!conn) {
     if (options.force) {
-      await killOrphanedBrokerProcesses(paths.projectRoot, deps, { force: true });
+      await killOrphanedBrokerProcesses(paths, deps, { force: true });
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {

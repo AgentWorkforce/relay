@@ -980,6 +980,56 @@ describe('registerCoreCommands', () => {
     }
   );
 
+  it('up with an isolated state directory never kills brokers or workers from an ancestor project', async () => {
+    const fs = createFsMock();
+    const runningPids = new Set([222, 333, 444, 555, 666, 777, 9001, 4242]);
+    let now = 0;
+    const execCommand = vi.fn(async (command: string) => {
+      if (command === 'ps aux') {
+        return {
+          stdout: [
+            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
+            'user 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay-broker init --name project --persist',
+            'user 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/peer-state --persist',
+            'user 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay-broker pty --agent-name chief -- claude up --state-dir /tmp/project/candidate-state',
+            'user 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay node up --state-dir /tmp/project/peer-state',
+            'user 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -c agent-relay up --state-dir /tmp/project/candidate-state',
+            'user 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/candidate-state --state-dir',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      return { stdout: 'fcwd\nn/tmp/project\n', stderr: '' };
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      runningPids.delete(pid);
+    });
+    const { program } = createHarness({
+      fs,
+      execCommand,
+      killImpl,
+      spawnedProcess: createSpawnedProcessMock({ pid: 9001 }),
+      nowImpl: vi.fn(() => now),
+      sleepImpl: vi.fn(async (ms: number) => {
+        now += ms;
+        fs.writeFileSync('/tmp/project/candidate-state/connection.json', connectionFile(4242));
+      }),
+    });
+    const exitCode = await runCommand(program, [
+      'up',
+      '--background',
+      '--state-dir',
+      '/tmp/project/candidate-state',
+    ]);
+    expect(exitCode).toBe(0);
+    expect(killImpl.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    expect([...runningPids]).toEqual([222, 333, 444, 555, 666, 777, 9001, 4242]);
+  });
+
   it('down --force only kills actual orphaned broker executables for the project', async () => {
     const runningPids = new Set([222, 444, 666]);
     const execCommand = vi.fn(async (command: string) => {
@@ -994,6 +1044,8 @@ describe('registerCoreCommands', () => {
             'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agentworkforce/relay --persist',
             'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up',
             'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay status --wait-for=30',
+            'khaliqgant 888 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay-broker pty --agent-name chief -- claude',
+            'khaliqgant 999 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay-broker init --state-dir /tmp/project/peer-state --persist',
           ].join('\n'),
           stderr: '',
         };
@@ -1036,6 +1088,8 @@ describe('registerCoreCommands', () => {
     expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(555, 'SIGTERM');
     expect(killImpl).not.toHaveBeenCalledWith(777, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(888, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(999, 'SIGTERM');
     expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 222)');
     expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 444)');
     expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 666)');
