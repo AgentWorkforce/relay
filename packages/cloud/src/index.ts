@@ -81,6 +81,9 @@ export {
   ensureCloudFleetSandbox,
   deleteCloudFleetSandbox,
   CloudFleetSandboxProvisionError,
+  normalizeRelaycastTarget,
+  CANONICAL_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
   type CloudFleetSandboxReady,
@@ -90,8 +93,8 @@ export {
   type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
-  SNAPSHOT_ID_PATTERN,
-  SHA256_PATTERN,
+  type CloudFleetRelaycastRoute,
+  type CloudFleetRelaycastTarget,
 } from './fleet-sandbox.js';
 
 export {
@@ -157,6 +160,7 @@ export {
   resolveWorkspaceKeyWithSource,
   resolveWorkspaceSelection,
   writeProjectWorkspaceKey,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
   type ProjectWorkspaceSession,
   type ResolveWorkspaceKeyOptions,
   type WorkspaceKeyFileSystem,

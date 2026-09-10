@@ -108,6 +108,14 @@ export function runBoundedProcess(command, args, options = {}) {
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
 
+    // Transforms run before capture, live output, and callbacks. A transform
+    // may retain a small streaming boundary and is called once more with
+    // `final=true` after the decoder has been flushed.
+    const transformOutput = (stream, text, final = false) => {
+      if (typeof options.transformChunk !== 'function') return text;
+      return options.transformChunk(text, stream, final) ?? '';
+    };
+
     const forceKill = () => {
       if (forced) return;
       forced = true;
@@ -134,6 +142,21 @@ export function runBoundedProcess(command, args, options = {}) {
       options.signal?.removeEventListener('abort', abortHandler);
     };
 
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        forceKill();
+      } catch {
+        // Preserve the transform/spawn failure as the rejection reason. The
+        // parent-side pipes still must close even if process signaling fails.
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }
+      reject(error);
+    };
+
     const writeLiveOutput = (stream, text) => {
       if (options.echo === false || !text) return;
       if (liveOutputBytes >= maximumLiveOutput) {
@@ -156,46 +179,57 @@ export function runBoundedProcess(command, args, options = {}) {
       }
     };
 
+    const consumeOutput = (stream, text, final = false) => {
+      const transformed = transformOutput(stream, text, final);
+      if (!transformed) return;
+      if (stream === 'stdout') {
+        stdout = appendBounded(stdout, transformed, maximum);
+        options.onStdout?.(transformed);
+        writeLiveOutput(process.stdout, transformed);
+      } else {
+        stderr = appendBounded(stderr, transformed, maximum);
+        options.onStderr?.(transformed);
+        writeLiveOutput(process.stderr, transformed);
+      }
+    };
+
     child.stdout.on('data', (chunk) => {
-      const text = stdoutDecoder.write(chunk);
-      if (!text) return;
-      stdout = appendBounded(stdout, text, maximum);
-      options.onStdout?.(text);
-      writeLiveOutput(process.stdout, text);
+      try {
+        consumeOutput('stdout', stdoutDecoder.write(chunk));
+      } catch (error) {
+        fail(error);
+      }
     });
     child.stderr.on('data', (chunk) => {
-      const text = stderrDecoder.write(chunk);
-      if (!text) return;
-      stderr = appendBounded(stderr, text, maximum);
-      options.onStderr?.(text);
-      writeLiveOutput(process.stderr, text);
+      try {
+        consumeOutput('stderr', stderrDecoder.write(chunk));
+      } catch (error) {
+        fail(error);
+      }
     });
-    child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    });
+    child.on('error', fail);
     child.on('close', (code, signal) => {
       if (settled) return;
-      settled = true;
       // The process-group leader can exit after SIGTERM while a descendant
       // with detached stdio remains alive. Force-kill the group before
       // clearing the grace timer so that descendant cannot escape cleanup.
       if (timedOut || aborted) forceKill();
       cleanup();
-      const stdoutTail = stdoutDecoder.end();
-      const stderrTail = stderrDecoder.end();
-      stdout = appendBounded(stdout, stdoutTail, maximum);
-      stderr = appendBounded(stderr, stderrTail, maximum);
-      if (stdoutTail) {
-        options.onStdout?.(stdoutTail);
-        writeLiveOutput(process.stdout, stdoutTail);
+      try {
+        const stdoutTail = stdoutDecoder.end();
+        const stderrTail = stderrDecoder.end();
+        consumeOutput('stdout', stdoutTail);
+        consumeOutput('stderr', stderrTail);
+        consumeOutput('stdout', '', true);
+        consumeOutput('stderr', '', true);
+      } catch (error) {
+        // A descendant can keep running after the process-group leader closes
+        // its inherited pipes. Use the same terminal cleanup path as a
+        // transform failure observed during a data event.
+        fail(error);
+        return;
       }
-      if (stderrTail) {
-        options.onStderr?.(stderrTail);
-        writeLiveOutput(process.stderr, stderrTail);
-      }
+      settled = true;
       resolve({ exitCode: code ?? 1, signal, stdout, stderr, timedOut, aborted });
     });
   });

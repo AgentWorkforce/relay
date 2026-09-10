@@ -933,17 +933,26 @@ const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// 34099838274 lost three jobs to exactly that.
 const TRANSIENT_STARTUP_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
 
-/// The server-side statuses worth replaying: 500, 502, 503, 504. A 501 is a
-/// contract mismatch rather than a transient and is deliberately excluded, as
-/// are transport errors — a timed-out `POST /v1/agents` may already have
-/// created the agent, and re-sending it is the AR-448 duplicate shape.
+/// Replay only server failures whose typed error code establishes that the
+/// request failed at the storage-admission boundary. Retrying every 5xx by
+/// status is unsafe for these unkeyed POSTs: an application-level 503 or a 500
+/// returned after commit could create the AR-448 duplicate shape when replayed.
+///
+/// `database_overloaded` is Relaycast's D1 admission failure and
+/// `workspace_storage_unavailable` is emitted when workspace persistence never
+/// starts. Both are explicitly pre-commit contracts. Transport errors remain
+/// terminal because a timed-out request may already have committed.
 fn is_transient_server_error(error: &RelayError) -> bool {
     matches!(
         error,
         RelayError::Api {
+            code,
             status: 500 | 502 | 503 | 504,
             ..
-        }
+        } if matches!(
+            code.trim(),
+            "database_overloaded" | "workspace_storage_unavailable"
+        )
     )
 }
 
@@ -1535,10 +1544,10 @@ mod tests {
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
-        is_agent_token_invalid_code, reclaim_legacy_identity, relay_error_to_anyhow,
-        relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
-        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
-        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        is_agent_token_invalid_code, is_transient_server_error, reclaim_legacy_identity,
+        relay_error_to_anyhow, relay_request_with_timeout, resolve_relaycast_base_url,
+        retry_transient_relay_error, stable_node_identity_key, AuthClient, AuthHttpError,
+        CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
     };
     use relaycast::RelayError;
 
@@ -2073,6 +2082,135 @@ mod tests {
                 assert_eq!(attempts, 2, "both HTTP attempts must be reported");
             }
             other => panic!("expected a terminal API error, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_application_503_is_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error("probing an application failure", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err::<(), _>(RelayError::api(
+                    "application_temporarily_unavailable",
+                    "the application rejected the request",
+                    503,
+                ))
+            }
+        })
+        .await
+        .expect_err("an unclassified 503 must not replay an unkeyed POST");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        match error {
+            RelayError::Api {
+                code,
+                status,
+                attempts,
+                ..
+            } => {
+                assert_eq!(code, "application_temporarily_unavailable");
+                assert_eq!(status, 503);
+                assert_eq!(attempts, 1);
+            }
+            other => panic!("expected the original terminal API error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn transient_retry_requires_both_a_safe_code_and_server_status() {
+        assert!(is_transient_server_error(&RelayError::api(
+            "database_overloaded",
+            "overloaded",
+            503,
+        )));
+        assert!(is_transient_server_error(&RelayError::api(
+            "workspace_storage_unavailable",
+            "storage unavailable",
+            502,
+        )));
+        assert!(!is_transient_server_error(&RelayError::api(
+            "database_overloaded",
+            "conflict",
+            409,
+        )));
+        assert!(!is_transient_server_error(&RelayError::api(
+            "unknown_error",
+            "server failure",
+            500,
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_application_503_exits_registration_without_a_replay() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        async fn reject_registration(
+            State(attempts): State<Arc<AtomicUsize>>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            (
+                AxumStatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "application_temporarily_unavailable",
+                        "message": "The request could not be completed."
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(reject_registration))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let error = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("an unclassified application 503 must be terminal");
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("application_temporarily_unavailable"),
+            "{message}"
+        );
+        assert!(message.contains("attempts: 1"), "{message}");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "an unkeyed registration must not be replayed on an unknown 503"
+        );
+
+        server.abort();
+        // SAFETY: test-only, serialized by RELAY_ENV_MUTEX via clear_relay_env.
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
         }
     }
 

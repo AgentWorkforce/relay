@@ -729,6 +729,46 @@ describe('runUpCommand workspace precedence', () => {
     expect(readPin(dataDir)).toMatchObject({ workspaceKey: 'rk_test', workspaceId: 'rw_test' });
   });
 
+  it('retains the Relaycast target when the broker keeps the pinned workspace', async () => {
+    const { deps, dataDir } = createUpHarness();
+    writeRepositoryPin(dataDir, {
+      workspaceKey: 'rk_test',
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+
+    await runUpCommand({}, deps);
+
+    expect(readPin(dataDir)).toMatchObject({
+      workspaceKey: 'rk_test',
+      workspaceId: 'rw_test',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+  });
+
+  it('clears the old Relaycast target when the broker changes workspace', async () => {
+    const { deps, dataDir, createRelay } = createUpHarness();
+    writeRepositoryPin(dataDir, {
+      workspaceKey: 'rk_old',
+      workspaceId: 'rw_old',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+    createRelay.mockImplementationOnce(async () => ({
+      spawn: vi.fn(async () => undefined),
+      getStatus: vi.fn(async () => ({})),
+      shutdown: vi.fn(async () => undefined),
+      workspaceKey: 'rk_new',
+      workspaceId: 'rw_new',
+    }));
+
+    await runUpCommand({}, deps);
+
+    expect(readPin(dataDir)).toEqual({ workspaceKey: 'rk_new', workspaceId: 'rw_new' });
+  });
+
   it('never prints workspace key material while reporting the winning source', async () => {
     const { deps, dataDir, home, log, warn, error } = createUpHarness();
     setWorkspaceKey('global', 'rk_global', { AGENT_RELAY_HOME: home });

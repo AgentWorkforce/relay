@@ -7,7 +7,9 @@ export {
   resolveActiveWorkspaceSelection,
   resolveWorkspaceSelection,
   writeProjectWorkspaceKey,
+  writeProjectWorkspaceKeyPreservingSession,
   type ProjectWorkspaceSession,
+  type ProjectWorkspaceSessionMetadata,
   type WorkspaceKeyFileSystem,
   type WorkspaceSelection,
 } from '@agent-relay/cloud/workspace-key';

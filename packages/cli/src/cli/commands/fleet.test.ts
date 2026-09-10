@@ -46,6 +46,21 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
 import { registerFleetCommands } from './fleet.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
+const REPLAY_SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
+const REPLAY_SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
+const AGENT37_RELAYCAST_TARGET = {
+  route: 'agent37-isolated' as const,
+  baseUrl: 'https://agent37-cast.agentrelay.com',
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_agent37_target',
+};
+const CANONICAL_RELAYCAST_TARGET = {
+  route: 'canonical' as const,
+  baseUrl: 'https://cast.agentrelay.com',
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_canonical_target',
+};
+
 const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
 const liveAgentCapabilities = (...names: string[]) => [
   {
@@ -643,7 +658,7 @@ describe('fleet command support', () => {
     });
   });
 
-  it('fleet spawn --sandbox-provider e2b provisions E2B, mounts Relayfile, and uses a temporary launcher', async () => {
+  it('fleet spawn --sandbox-provider agent37 provisions the isolated canary and uses a temporary launcher', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const placement = {
       spawn: vi.fn(async () => ({
@@ -663,12 +678,19 @@ describe('fleet command support', () => {
     const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
     const ensureCloudFleetSandbox = vi.fn(async () => ({
       outcome: 'provisioned' as const,
-      providerId: 'e2b' as const,
+      providerId: 'agent37' as const,
       cloudWorkspaceId: 'cloud-workspace',
       nodeId: 'node-1',
       nodeName: 'e2b-codex',
       sandboxId: 'sandbox-1',
+      providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
+      relaycastTarget: {
+        route: 'agent37-isolated',
+        baseUrl: 'https://agent37-cast.agentrelay.com',
+        workspaceId: 'rw_abc',
+        relaycastApiKey: 'rk_live_agent37_target',
+      },
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
     }));
@@ -686,6 +708,13 @@ describe('fleet command support', () => {
         exit: vi.fn() as never,
       },
       ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -700,11 +729,13 @@ describe('fleet command support', () => {
         'codex',
         '--sandbox',
         '--sandbox-provider',
-        'e2b',
+        'agent37',
+        '--sandbox-id',
+        REPLAY_SANDBOX_ID,
+        '--sandbox-name',
+        REPLAY_SANDBOX_NAME,
         '--sandbox-relayfile-path',
         '/live-review/run-123/**',
-        '--sandbox-name',
-        'e2b-codex',
         '--name',
         'sandbox-worker',
         '--task',
@@ -714,18 +745,21 @@ describe('fleet command support', () => {
       ],
       { from: 'user' }
     );
-    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith({
+    const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
+    expect(ensureInput).toEqual({
       workspaceId: 'rw_abc',
       requiredCapability: 'spawn:codex',
       maxAgents: 1,
       mountRelayfile: true,
       relayfilePaths: ['/live-review/run-123/**'],
+      sandboxId: REPLAY_SANDBOX_ID,
       forceProvision: true,
-      providerId: 'e2b',
+      providerId: 'agent37',
       workloadProfile: 'long-running-agent',
       waitTimeoutMs: 90_000,
-      name: 'e2b-codex',
+      name: REPLAY_SANDBOX_NAME,
     });
+    expect(ensureInput?.name).toBe(`fleet-sandbox-${ensureInput?.sandboxId?.slice('sbx_'.length)}`);
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
         name: expect.stringMatching(/^fleet-spawn-launcher-[a-f0-9]{8}$/),
@@ -734,9 +768,9 @@ describe('fleet command support', () => {
       { strict: true }
     );
     expect(createAgentRelay).toHaveBeenCalledWith({
-      workspaceKey: 'rk_live_test',
+      workspaceKey: 'rk_live_agent37_target',
       token: 'at_live_launcher',
-      baseUrl: undefined,
+      baseUrl: 'https://agent37-cast.agentrelay.com',
     });
     expect(placement.spawn).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -756,39 +790,38 @@ describe('fleet command support', () => {
       })
     );
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(createWorkspaceRelay).toHaveBeenNthCalledWith(1, {
+      workspaceKey: 'rk_live_agent37_target',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+    });
     expect(JSON.parse(logs[0]!)).toMatchObject({
-      sandbox: { providerId: 'e2b', nodeName: 'e2b-codex', relayfileMountPath: '/workspace' },
+      sandbox: { providerId: 'agent37', nodeName: 'e2b-codex', relayfileMountPath: '/workspace' },
       invocation: { invocationId: 'inv_sandbox' },
-      attachCommand: "agent-relay node agent attach 'sandbox-worker' --node 'e2b-codex' --mode drive",
+      attachCommand:
+        "agent-relay node agent attach 'sandbox-worker' --node 'e2b-codex' --mode drive --base-url 'https://agent37-cast.agentrelay.com'",
     });
   });
 
-  it('fleet spawn sends the exact Daytona snapshot ID and companion manifest digest', async () => {
-    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+  it('fleet spawn --sandbox reuses an Agent37 target without a Relayfile mount', async () => {
     const placement = {
-      spawn: vi.fn(async () => ({ invocationId: 'inv_candidate', node: { name: 'candidate-node' } })),
+      spawn: vi.fn(async () => ({ invocationId: 'inv_reused', node: { name: 'agent37-codex' } })),
     };
+    const register = vi.fn(async () => ({ token: 'at_live_agent37' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
     const createWorkspaceRelay = vi.fn(() => ({
-      workspace: {
-        info: vi.fn(async () => ({ id: 'rw_abc' })),
-        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
-        release: vi.fn(async () => ({ released: true, deleted: true })),
-      },
+      workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
     }));
     const ensureCloudFleetSandbox = vi.fn(async () => ({
-      outcome: 'provisioned' as const,
-      providerId: 'daytona' as const,
+      outcome: 'reused' as const,
       cloudWorkspaceId: 'cloud-workspace',
-      nodeId: 'node-candidate',
-      nodeName: 'candidate-node',
-      sandboxId: 'sandbox-candidate',
-      relayWorkspaceId: 'rw_abc',
-      relayfileMounted: true,
-      relayfileMountPath: '/workspace',
-      snapshotId: 'snap_immutable_candidate_0905',
-      snapshotManifestSha256: 'a'.repeat(64),
+      nodeId: 'node-1',
+      nodeName: 'agent37-codex',
+      status: 'online',
+      activeAgents: 0,
+      maxAgents: 1,
+      providerId: 'agent37' as const,
+      relaycastTarget: AGENT37_RELAYCAST_TARGET,
     }));
-    const logs: string[] = [];
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
@@ -796,11 +829,18 @@ describe('fleet command support', () => {
         createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
         createWorkspaceRelay: createWorkspaceRelay as never,
         createWorkspace: vi.fn() as never,
-        log: (message: unknown) => logs.push(String(message)),
+        log: vi.fn(),
         error: vi.fn(),
         exit: vi.fn() as never,
       },
       ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
       deleteCloudFleetSandbox: vi.fn(async () => undefined),
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -815,98 +855,205 @@ describe('fleet command support', () => {
         'codex',
         '--sandbox',
         '--sandbox-provider',
-        'daytona',
-        '--sandbox-snapshot',
-        'snap_immutable_candidate_0905',
-        '--sandbox-snapshot-manifest-sha256',
-        'a'.repeat(64),
-        '--sandbox-name',
-        'candidate-node',
+        'agent37',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        'rw_abc',
         '--name',
-        'candidate-worker',
+        'reused-worker',
         '--task',
-        'Wait for VERIFY',
+        'Work',
         '--workspace-key',
         'rk_live_test',
       ],
       { from: 'user' }
     );
 
-    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerId: 'daytona',
-        snapshotId: 'snap_immutable_candidate_0905',
-        snapshotManifestSha256: 'a'.repeat(64),
-        forceProvision: true,
-      })
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: AGENT37_RELAYCAST_TARGET.relaycastApiKey,
+      baseUrl: AGENT37_RELAYCAST_TARGET.baseUrl,
+    });
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.stringMatching(/^fleet-spawn-launcher-/) }),
+      { strict: true }
     );
-    expect(JSON.parse(logs[0]!)).toMatchObject({
-      sandbox: {
-        snapshotId: 'snap_immutable_candidate_0905',
-        snapshotManifestSha256: 'a'.repeat(64),
+    expect(release).toHaveBeenCalled();
+  });
+
+  it('applies and persists a returned target for a reused non-Agent37 provider', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_canonical_ambient');
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_reused_e2b', node: { name: 'e2b-codex' } })),
+    };
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
+    }));
+    const persistWorkspaceRelaycastTarget = vi.fn(() => true);
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
       },
-      invocation: { invocationId: 'inv_candidate' },
-    });
-  });
-
-  it.each([
-    ['--sandbox-snapshot', 'snap_immutable_candidate_0905'],
-    ['--sandbox-snapshot-manifest-sha256', 'a'.repeat(64)],
-  ])('fleet spawn rejects an unpaired candidate selector (%s)', async (flag, value) => {
-    const program = new Command();
-    program.exitOverride();
-    const ensureCloudFleetSandbox = vi.fn();
-    registerFleetCommands(program, {
-      ensureCloudFleetSandbox,
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'reused' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-e2b',
+        nodeName: 'e2b-codex',
+        status: 'online',
+        activeAgents: 0,
+        maxAgents: 1,
+        providerId: 'e2b' as const,
+        relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+      })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
       warn: () => undefined,
       error: () => undefined,
     });
 
-    await expect(
-      program.parseAsync(
-        ['fleet', 'spawn', 'codex', '--sandbox', flag, value, '--name', 'candidate-worker', '--task', 'Wait'],
-        { from: 'user' }
-      )
-    ).rejects.toThrow('cli-exit:1');
-    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'e2b',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        'rw_abc',
+        '--name',
+        'reused-e2b-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: CANONICAL_RELAYCAST_TARGET.relaycastApiKey,
+      baseUrl: CANONICAL_RELAYCAST_TARGET.baseUrl,
+    });
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({ name: expect.stringMatching(/^fleet-spawn-launcher-/) }),
+      { strict: true }
+    );
+    expect(createAgentRelay).toHaveBeenCalledWith({
+      workspaceKey: CANONICAL_RELAYCAST_TARGET.relaycastApiKey,
+      token: 'at_live_launcher',
+      baseUrl: CANONICAL_RELAYCAST_TARGET.baseUrl,
+    });
+    expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'rk_live_test' }),
+      CANONICAL_RELAYCAST_TARGET
+    );
   });
 
-  it('fleet spawn rejects a candidate snapshot without explicit Daytona selection', async () => {
+  it('does not inherit a persisted Agent37 target for a legacy sandbox without a returned target', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_unproven_ambient');
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_legacy_reused', node: { name: 'e2b-codex' } })),
+    };
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        register: vi.fn(async () => ({ token: 'at_live_legacy_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
     const program = new Command();
     program.exitOverride();
-    const ensureCloudFleetSandbox = vi.fn();
     registerFleetCommands(program, {
-      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'reused' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-e2b',
+        nodeName: 'e2b-codex',
+        status: 'online',
+        activeAgents: 0,
+        maxAgents: 1,
+        providerId: 'e2b' as const,
+      })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: AGENT37_RELAYCAST_TARGET.baseUrl,
+        relaycastApiKey: AGENT37_RELAYCAST_TARGET.relaycastApiKey,
+      }),
+      persistWorkspaceRelaycastTarget: vi.fn(() => true),
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
       warn: () => undefined,
       error: () => undefined,
     });
 
-    await expect(
-      program.parseAsync(
-        [
-          'fleet',
-          'spawn',
-          'codex',
-          '--sandbox',
-          '--sandbox-snapshot',
-          'snap_immutable_candidate_0905',
-          '--sandbox-snapshot-manifest-sha256',
-          'a'.repeat(64),
-          '--name',
-          'candidate-worker',
-          '--task',
-          'Wait',
-        ],
-        { from: 'user' }
-      )
-    ).rejects.toThrow('cli-exit:1');
-    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'e2b',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        'rw_abc',
+        '--name',
+        'legacy-reused-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: undefined,
+      baseUrl: undefined,
+      ignorePersistedRelaycastTarget: true,
+    });
+    expect(createAgentRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: 'at_live_legacy_launcher',
+      baseUrl: undefined,
+      ignorePersistedRelaycastTarget: true,
+    });
   });
 
-  it('fleet spawn --sandbox deletes a freshly provisioned sandbox when dispatch fails', async () => {
-    const placement = { spawn: vi.fn(async () => Promise.reject(new Error('dispatch failed'))) };
+  it('fleet spawn --sandbox cleans up when the target cannot be persisted', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const ensureCloudFleetSandbox = vi.fn(async () => ({
       outcome: 'provisioned' as const,
@@ -915,27 +1062,33 @@ describe('fleet command support', () => {
       nodeName: 'agent37-codex',
       sandboxId: 'sandbox-1',
       relayWorkspaceId: 'rw_abc',
+      relaycastTarget: AGENT37_RELAYCAST_TARGET,
       relayfileMounted: true,
-      relayfileMountPath: '/workspace',
-      providerId: 'agent37' as const,
     }));
-    const errors: string[] = [];
+    const createAgentRelay = vi.fn();
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
       sdk: {
-        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createAgentRelay: createAgentRelay as never,
         createWorkspaceRelay: vi.fn(() => ({
           workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
         })) as never,
         createWorkspace: vi.fn() as never,
         log: vi.fn(),
-        error: (...args: unknown[]) => errors.push(args.join(' ')),
-        exit: (() => {
+        error: vi.fn(),
+        exit: vi.fn(() => {
           throw new Error('__exit__');
         }) as never,
       },
       ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => false,
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -950,6 +1103,85 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-provider',
+          'agent37',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: 'cloud-workspace',
+      sandboxId: 'sandbox-1',
+    });
+    expect(createAgentRelay).not.toHaveBeenCalled();
+  });
+
+  it('fleet spawn --sandbox deletes a freshly provisioned sandbox when dispatch fails', async () => {
+    const placement = { spawn: vi.fn(async () => Promise.reject(new Error('dispatch failed'))) };
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-1',
+      nodeName: 'agent37-codex',
+      sandboxId: 'sandbox-1',
+      providerSandboxId: 'provider-sandbox-1',
+      relayWorkspaceId: 'rw_abc',
+      relaycastTarget: AGENT37_RELAYCAST_TARGET,
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+      providerId: 'agent37' as const,
+    }));
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: {
+            info: vi.fn(async () => ({ id: 'rw_abc' })),
+            register: vi.fn(async () => ({ token: 'at_live_isolated_launcher' })),
+            release: vi.fn(async () => ({ released: true, deleted: true })),
+          },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'flag',
+        origin: 'test',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'agent37',
           '--name',
           'sandbox-worker',
           '--task',
@@ -976,7 +1208,417 @@ describe('fleet command support', () => {
     });
   });
 
-  it('cleans up when Cloud reports a post-provision response failure with a sandbox ID', async () => {
+  it('preserves legacy custom sandbox names without sending a sandbox identity', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_legacy_sandbox',
+        node: { name: 'custom-node' },
+      })),
+    };
+    const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
+    }));
+    const persistWorkspaceRelaycastTarget = vi.fn(() => true);
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      providerId: 'e2b' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-legacy',
+      nodeName: 'custom-node',
+      sandboxId: 'legacy-public-sandbox',
+      providerSandboxId: 'legacy-provider-sandbox',
+      relayWorkspaceId: 'rw_abc',
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'flag',
+        origin: 'test',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-name',
+        'custom-node',
+        '--name',
+        'sandbox-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
+    expect(persistWorkspaceRelaycastTarget).not.toHaveBeenCalled();
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_test',
+      token: undefined,
+      baseUrl: undefined,
+      ignorePersistedRelaycastTarget: true,
+    });
+    expect(ensureInput).toMatchObject({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      forceProvision: true,
+      workloadProfile: 'long-running-agent',
+      name: 'custom-node',
+    });
+    expect(ensureInput).not.toHaveProperty('sandboxId');
+  });
+
+  it('rejects an explicit workspace ID that conflicts with the captured selection', async () => {
+    const ensureCloudFleetSandbox = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: 'test',
+        workspaceId: 'rw_captured',
+      }),
+      persistWorkspaceRelaycastTarget: vi.fn(() => true),
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--workspace-id',
+          'rw_other',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+
+  it('accepts an explicit workspace ID matching the captured selection', async () => {
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-generated',
+      nodeName: 'generated-node',
+      sandboxId: 'generated-public-sandbox',
+      relayWorkspaceId: 'rw_captured',
+      relayfileMounted: true,
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn: vi.fn() } } })) as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: {
+            register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+            release: vi.fn(async () => ({ released: true, deleted: true })),
+          },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: 'test',
+        workspaceId: 'rw_captured',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        'rw_captured',
+        '--name',
+        'sandbox-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'rw_captured' })
+    );
+  });
+
+  it('generates a stable identity and matching name when neither option is supplied', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const events: string[] = [];
+    const ensureCloudFleetSandbox = vi
+      .fn(async () => ({
+        outcome: 'provisioned' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-generated',
+        nodeName: 'generated-node',
+        sandboxId: 'generated-public-sandbox',
+        providerSandboxId: 'generated-provider-sandbox',
+        relayWorkspaceId: 'rw_abc',
+        relaycastTarget: AGENT37_RELAYCAST_TARGET,
+        relayfileMounted: true,
+        relayfileMountPath: '/workspace',
+      }))
+      .mockImplementationOnce(async () => {
+        events.push('ensure');
+        return {
+          outcome: 'provisioned' as const,
+          cloudWorkspaceId: 'cloud-workspace',
+          nodeId: 'node-generated',
+          nodeName: 'generated-node',
+          sandboxId: 'generated-public-sandbox',
+          providerSandboxId: 'generated-provider-sandbox',
+          relayWorkspaceId: 'rw_abc',
+          relaycastTarget: AGENT37_RELAYCAST_TARGET,
+          relayfileMounted: true,
+          relayfileMountPath: '/workspace',
+        };
+      });
+    const createWorkspaceRelay = vi.fn(() => {
+      events.push('workspace-relay');
+      return {
+        workspace: {
+          info: vi.fn(async () => ({ id: 'rw_abc' })),
+          register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+          release: vi.fn(async () => ({ released: true, deleted: true })),
+        },
+      };
+    });
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({
+          messaging: { placement: { spawn: vi.fn(async () => ({ invocationId: 'inv_generated' })) } },
+        })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'flag',
+        origin: 'test',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--name',
+        'sandbox-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
+    expect(events.slice(0, 2)).toEqual(['ensure', 'workspace-relay']);
+    expect(createWorkspaceRelay).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ignorePersistedRelaycastTarget: true })
+    );
+    expect(ensureInput?.sandboxId).toMatch(
+      /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(ensureInput?.name).toBe(`fleet-sandbox-${ensureInput?.sandboxId?.slice('sbx_'.length)}`);
+  });
+
+  it('rejects a replay sandbox name that does not match its identity', async () => {
+    const ensureCloudFleetSandbox = vi.fn();
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
+          '--sandbox-name',
+          'custom-node',
+          '--workspace-id',
+          'rw_abc',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(errors.join('\n')).toContain('--sandbox-name');
+    expect(errors.join('\n')).toContain('when --sandbox-id is supplied');
+  });
+
+  it('rejects an invalid replay sandbox ID before provisioning', async () => {
+    const ensureCloudFleetSandbox = vi.fn();
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (...args: unknown[]) => errors.push(args.join(' ')),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-id',
+          'sandbox-1',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(errors.join('\n')).toContain('--sandbox-id must match lowercase sbx_<UUID>');
+  });
+
+  it('preserves the stable sandbox ID for replay when Cloud reports an unknown outcome', async () => {
+    const warnings: string[] = [];
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const program = new Command();
     program.exitOverride();
@@ -996,15 +1638,15 @@ describe('fleet command support', () => {
       ensureCloudFleetSandbox: vi.fn(async () => {
         throw new CloudFleetSandboxProvisionError('malformed response', {
           cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
-          sandboxId: 'sandbox-1',
-          nodeName: 'daytona-codex',
+          sandboxId: REPLAY_SANDBOX_ID,
+          nodeName: REPLAY_SANDBOX_NAME,
           outcomeUnknown: true,
         });
       }),
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
-      warn: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
       error: () => undefined,
     });
 
@@ -1015,8 +1657,12 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
           '--sandbox-name',
-          'daytona-codex',
+          REPLAY_SANDBOX_NAME,
+          '--workspace-id',
+          'rw_abc',
           '--name',
           'sandbox-worker',
           '--task',
@@ -1030,13 +1676,12 @@ describe('fleet command support', () => {
       )
     ).rejects.toThrow('__exit__');
 
-    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
-      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
-      sandboxId: 'sandbox-1',
-    });
+    expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(warnings.join('\n')).toContain(`check Cloud Fleet for node '${REPLAY_SANDBOX_NAME}'`);
+    expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
-  it('pins cleanup to the requested E2B provider when Cloud fails closed after provisioning', async () => {
+  it('pins cleanup to the requested E2B provider for a known post-provision failure', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const program = new Command();
     program.exitOverride();
@@ -1059,7 +1704,6 @@ describe('fleet command support', () => {
           sandboxId: 'sandbox-e2b',
           nodeName: 'e2b-codex',
           providerId: 'e2b',
-          outcomeUnknown: true,
         });
       }),
       deleteCloudFleetSandbox,
@@ -1078,8 +1722,6 @@ describe('fleet command support', () => {
           '--sandbox',
           '--sandbox-provider',
           'e2b',
-          '--sandbox-name',
-          'e2b-codex',
           '--name',
           'sandbox-worker',
           '--task',
@@ -1100,7 +1742,7 @@ describe('fleet command support', () => {
     });
   });
 
-  it('identifies the requested node when the provisioning response is interrupted', async () => {
+  it('keeps the caller sandbox ID for replay guidance after an identifier-less server failure', async () => {
     const warnings: string[] = [];
     const deleteCloudFleetSandbox = vi.fn();
     const program = new Command();
@@ -1122,6 +1764,7 @@ describe('fleet command support', () => {
         throw new CloudFleetSandboxProvisionError('request interrupted', {
           cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
           nodeName: 'daytona-codex',
+          providerId: 'e2b',
           outcomeUnknown: true,
         });
       }),
@@ -1139,8 +1782,12 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-provider',
+          'e2b',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
           '--sandbox-name',
-          'daytona-codex',
+          REPLAY_SANDBOX_NAME,
           '--name',
           'sandbox-worker',
           '--task',
@@ -1156,6 +1803,7 @@ describe('fleet command support', () => {
 
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
     expect(warnings.join('\n')).toContain("check Cloud Fleet for node 'daytona-codex'");
+    expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
   it('warns when an unmounted sandbox cannot be cleaned up automatically', async () => {
@@ -1182,10 +1830,19 @@ describe('fleet command support', () => {
         nodeId: 'node-1',
         nodeName: 'daytona-codex',
         sandboxId: 'sandbox-1',
+        providerSandboxId: 'provider-sandbox-1',
         relayWorkspaceId: 'rw_abc',
+        relaycastTarget: AGENT37_RELAYCAST_TARGET,
         relayfileMounted: false,
         providerId: 'agent37' as const,
       })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'flag',
+        origin: 'test',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
       deleteCloudFleetSandbox: vi.fn(async () => Promise.reject(new Error('delete failed'))),
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -1200,6 +1857,8 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--sandbox-provider',
+          'agent37',
           '--name',
           'sandbox-worker',
           '--task',
