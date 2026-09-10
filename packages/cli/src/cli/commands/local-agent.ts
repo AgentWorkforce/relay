@@ -299,6 +299,7 @@ async function redeemAndPersistAttachCredential(
       ? {
           relaycastRoute: options.baseUrl === AGENT37_RELAYCAST_ORIGIN ? 'agent37-isolated' : 'canonical',
           relaycastBaseUrl: options.baseUrl,
+          relaycastApiKey: redeemed.workspaceKey,
         }
       : {}),
     projectRoot: deps.cwd(),

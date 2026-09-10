@@ -203,6 +203,36 @@ describe('workspace session persistence', () => {
     });
   });
 
+  it('replaces a stale route credential when re-persisting an explicit route', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+    writeProjectWorkspaceKey(projectDataDir, 'rk_live_redeemed', {
+      workspaceId: 'rw_redeemed',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: 'https://cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_stale_canonical',
+    });
+
+    persistWorkspaceSession({
+      workspaceKey: 'rk_live_redeemed',
+      workspaceId: 'rw_redeemed',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_redeemed',
+      projectDataDir,
+      env,
+    });
+
+    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
+      workspaceKey: 'rk_live_redeemed',
+      workspaceId: 'rw_redeemed',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_redeemed',
+    });
+  });
+
   it('clears the enrolled Fleet node id when moving to a different workspace', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');

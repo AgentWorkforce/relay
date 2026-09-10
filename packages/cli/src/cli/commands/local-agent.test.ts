@@ -280,6 +280,7 @@ describe('local agent subtree', () => {
       expect.objectContaining({
         relaycastRoute: 'agent37-isolated',
         relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_live_redeemed',
       })
     );
     expect(attachNode).toHaveBeenCalledWith(
