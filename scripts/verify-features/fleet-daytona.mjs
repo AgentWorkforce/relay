@@ -50,6 +50,33 @@ const KNOWN_SECRET_ENV = [
   'CLOUD_API_ACCESS_TOKEN',
   'CLOUD_API_REFRESH_TOKEN',
 ];
+export const NODE_WORKFLOW_OPERATION_IDS = Object.freeze([
+  'node-workflow-run',
+  'node-workflow-js',
+  'node-workflow-failure',
+  'node-workflow-logs',
+  'node-workflow-logs-follow',
+  'node-workflow-logs-offset',
+  'node-workflow-sync-dry-run',
+  'node-workflow-sync',
+  'node-workflow-sync-changed',
+]);
+export const NODE_LIFECYCLE_OPERATION_IDS = Object.freeze([
+  'node-up-already-running',
+  'node-down-graceful',
+  'node-up-after-down',
+  'node-up-config-failure',
+  'node-up-spawn',
+  'node-up-state-dir-logging',
+  'node-down-timeout',
+  'node-down-force',
+  'node-down-all',
+  'fleet-nodes-history',
+]);
+
+export function isChangedWorkflowSyncResult(payload, runId) {
+  return payload?.runId === runId && payload?.hasChanges === true;
+}
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -5108,20 +5135,9 @@ class FleetBoard {
   }
 
   async nodeWorkflows() {
-    const ids = [
-      'node-workflow-run',
-      'node-workflow-js',
-      'node-workflow-failure',
-      'node-workflow-logs',
-      'node-workflow-logs-follow',
-      'node-workflow-logs-offset',
-      'node-workflow-sync-dry-run',
-      'node-workflow-sync',
-      'node-workflow-sync-changed',
-    ];
     const node = this.availableBoardNodes().at(-1);
     if (!node?.id) {
-      for (const id of ids)
+      for (const id of NODE_WORKFLOW_OPERATION_IDS)
         await this.derived(id, { blockedReason: 'no live owned board node was available' });
       return;
     }
@@ -5370,10 +5386,7 @@ class FleetBoard {
       });
       const payload = tryParseJson(result._rawStdout);
       const pass =
-        changed.exitCode === 0 &&
-        result.exitCode === 0 &&
-        payload?.runId === runId &&
-        payload?.hasChanges === false;
+        changed.exitCode === 0 && result.exitCode === 0 && isChangedWorkflowSyncResult(payload, runId);
       return {
         ...stripPrivateExecution(result),
         exitCode: pass ? 0 : 1,
@@ -5664,13 +5677,7 @@ class FleetBoard {
   async nodeLifecycle() {
     const node = this.availableBoardNodes().at(-1);
     if (!node?.id) {
-      for (const id of [
-        'node-up-already-running',
-        'node-down-graceful',
-        'node-up-after-down',
-        'node-down-all',
-        'fleet-nodes-history',
-      ]) {
+      for (const id of NODE_LIFECYCLE_OPERATION_IDS) {
         await this.derived(id, { blockedReason: 'board node B unavailable' });
       }
       return;

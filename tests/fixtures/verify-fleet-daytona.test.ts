@@ -25,9 +25,12 @@ import {
   exactWorkerStreamMarkers,
   findExactSentinelMessage,
   findFleetAgentNode,
+  isChangedWorkflowSyncResult,
   loadFleetMatrix,
   loadWorkspaceCredentialFile,
   matchesSandboxFileInspection,
+  NODE_LIFECYCLE_OPERATION_IDS,
+  NODE_WORKFLOW_OPERATION_IDS,
   operationStatus,
   ownedBoardNodes,
   exactReleasedFleetHistory,
@@ -675,6 +678,27 @@ describe('complete Daytona Fleet board', () => {
     ).toMatchObject({ expect: 'success' });
     const runner = await readFile('scripts/verify-features/fleet-daytona.mjs', 'utf8');
     expect(runner).toContain("['claude', 'opencode', 'pi', 'deepagents']");
+  });
+
+  it('requires a reported workflow mutation and records every blocked lifecycle operation', () => {
+    const runId = 'workflow-run-123';
+    expect(isChangedWorkflowSyncResult({ runId, hasChanges: true }, runId)).toBe(true);
+    expect(isChangedWorkflowSyncResult({ runId, hasChanges: false }, runId)).toBe(false);
+    expect(isChangedWorkflowSyncResult({ runId: 'different-run', hasChanges: true }, runId)).toBe(false);
+
+    expect(NODE_WORKFLOW_OPERATION_IDS).toContain('node-workflow-sync-changed');
+    expect(NODE_LIFECYCLE_OPERATION_IDS).toEqual([
+      'node-up-already-running',
+      'node-down-graceful',
+      'node-up-after-down',
+      'node-up-config-failure',
+      'node-up-spawn',
+      'node-up-state-dir-logging',
+      'node-down-timeout',
+      'node-down-force',
+      'node-down-all',
+      'fleet-nodes-history',
+    ]);
   });
 
   it('binds every operation record to an executable acceptance profile', async () => {
