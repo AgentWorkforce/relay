@@ -184,6 +184,9 @@ test('evidence aggregation is independent from final signoff aggregation', () =>
   assert.match(aggregate, /aggregate-evidence\.json/);
   assert.match(aggregate, /COMPREHENSIVELY_SATISFIED/);
   assert.match(signoff, /finalReview\?\.value\?\.verdict !== 'COMPREHENSIVELY_SATISFIED'/);
+  assert.match(workflow, /findings array contains only unresolved blocking defects/);
+  assert.match(workflow, /COMPREHENSIVELY_SATISFIED, findings MUST be exactly \[\]/);
+  assert.match(workflow, /If verdict is BLOCKED, findings MUST contain at least one non-empty blocker/);
 });
 
 test('blocked deterministic evidence stops before paid reviewers', () => {
