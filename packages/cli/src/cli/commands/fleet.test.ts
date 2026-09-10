@@ -1421,6 +1421,111 @@ describe('fleet command support', () => {
     );
   });
 
+  it('accepts a Cloud UUID request when Cloud returns its Relaycast workspace target', async () => {
+    const cloudWorkspaceId = '50587328-0000-4000-8000-000000000003';
+    const target = { ...CANONICAL_RELAYCAST_TARGET, workspaceId: 'rw_7ccfea89' };
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-generated',
+      nodeName: 'generated-node',
+      sandboxId: 'generated-public-sandbox',
+      relayWorkspaceId: 'rw_7ccfea89',
+      relaycastTarget: target,
+      relayfileMounted: true,
+    }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_7ccfea89' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn: vi.fn() } } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => undefined,
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet', 'spawn', 'codex', '--sandbox', '--no-sandbox-relayfile',
+        '--workspace-id', cloudWorkspaceId, '--name', 'sandbox-worker', '--task', 'Work',
+        '--workspace-key', 'rk_live_test',
+      ],
+      { from: 'user' },
+    );
+
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: cloudWorkspaceId }),
+    );
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: target.relaycastApiKey,
+      baseUrl: target.baseUrl,
+    });
+  });
+
+  it('rejects a Relaycast target whose workspace differs from Cloud identity', async () => {
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-generated',
+      nodeName: 'generated-node',
+      sandboxId: 'generated-public-sandbox',
+      relayWorkspaceId: 'rw_expected',
+      relaycastTarget: { ...CANONICAL_RELAYCAST_TARGET, workspaceId: 'rw_other' },
+      relayfileMounted: true,
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => { throw new Error('__exit__'); }) as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => undefined,
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(program.parseAsync(
+      [
+        'fleet', 'spawn', 'codex', '--sandbox', '--no-sandbox-relayfile',
+        '--workspace-id', '50587328-0000-4000-8000-000000000003', '--name', 'sandbox-worker',
+        '--task', 'Work', '--workspace-key', 'rk_live_test',
+      ],
+      { from: 'user' },
+    )).rejects.toThrow('__exit__');
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: 'cloud-workspace', sandboxId: 'generated-public-sandbox',
+    });
+  });
+
   it('generates a stable identity and matching name when neither option is supplied', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const events: string[] = [];

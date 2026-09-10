@@ -405,11 +405,14 @@ export function registerFleetCommands(
           // exact workspace Cloud returned.
           try {
             const target = sandbox.relaycastTarget;
+            const returnedRelayWorkspaceId =
+              'relayWorkspaceId' in sandbox ? sandbox.relayWorkspaceId?.trim() : undefined;
             if (
               (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
-              target.workspaceId.trim() !== relayWorkspaceId.trim() ||
+              (returnedRelayWorkspaceId !== undefined &&
+                target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
               (sandbox.outcome === 'provisioned' &&
-                sandbox.relayWorkspaceId.trim() !== relayWorkspaceId.trim())
+                !returnedRelayWorkspaceId)
             ) {
               throw new Error(
                 sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
@@ -428,7 +431,7 @@ export function registerFleetCommands(
             if (
               !postEnsureWorkspaceId ||
               (sandbox.outcome === 'provisioned' &&
-                postEnsureWorkspaceId !== sandbox.relayWorkspaceId.trim()) ||
+                postEnsureWorkspaceId !== returnedRelayWorkspaceId) ||
               postEnsureWorkspaceId !== target.workspaceId.trim()
             ) {
               throw new Error(
