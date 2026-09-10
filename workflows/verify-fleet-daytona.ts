@@ -20,6 +20,7 @@ import path from 'node:path';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
 import { workflow } from '@relayflows/core';
+import { deriveFleetTimeoutPlan } from './fleet-timeout-budget.ts';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import { REQUIRED_NPM_VERSION } from '../scripts/verify-features/relay-candidate-install.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -45,7 +46,10 @@ const OUTER_JOB_TIMEOUT_MS = 21_600_000;
 // validating producer artifacts, and allocating the two Cloud workspaces
 // before this nested workflow starts.
 const CONSUMER_SETUP_RESERVE_MS = 1_800_000;
-const WORKFLOW_GUARD_MS = 300_000;
+// The external reconciliation runs all exact sandbox deletions concurrently;
+// reserve two minutes for its bounded provider convergence plus reporting.
+const CONSUMER_CLEANUP_RESERVE_MS = 180_000;
+const WORKFLOW_GUARD_MS = 120_000;
 const INSTALL_ROOT = path.resolve(
   process.env.VERIFY_FLEET_INSTALL_ROOT ??
     path.join(process.env.RUNNER_TEMP ?? TRUSTED_ROOT, 'relay-candidate-install')
@@ -578,45 +582,16 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
   // while still remaining conservative for serialized runner scheduling. The
   // guard leaves the outer job time to report a clean failure and start the
   // independent cleanup job instead of being hard-killed at the same instant.
-  const timeoutPlan = wf.toConfig();
-  const timeoutAgents = new Map(timeoutPlan.agents.map((agent) => [agent.name, agent]));
-  const definitions = timeoutPlan.workflows.flatMap((definition) => definition.steps);
-  const stepsByName = new Map(definitions.map((step) => [step.name, step]));
-  const pathMemo = new Map<string, number>();
-  const pathStack = new Set<string>();
-  const criticalPathMs = (name: string): number => {
-    const cached = pathMemo.get(name);
-    if (cached !== undefined) return cached;
-    if (pathStack.has(name)) throw new Error(`Fleet workflow timeout dependency cycle at ${name}`);
-    const step = stepsByName.get(name);
-    if (!step) throw new Error(`Fleet workflow timeout dependency is missing step ${name}`);
-    if (!Number.isSafeInteger(step.timeoutMs) || Number(step.timeoutMs) < 1) {
-      throw new Error(`Fleet step ${name} has no positive timeout`);
-    }
-    pathStack.add(name);
-    const agentRetries = step.agent ? timeoutAgents.get(step.agent)?.constraints?.retries : undefined;
-    const retries = step.retries ?? agentRetries ?? timeoutPlan.errorHandling?.maxRetries ?? 0;
-    if (!Number.isSafeInteger(retries) || retries < 0)
-      throw new Error(`Fleet step ${name} has invalid retries`);
-    const ownBudget = Number(step.timeoutMs) * (retries + 1);
-    const dependencyBudget = (step.dependsOn ?? []).reduce(
-      (max, dependency) => Math.max(max, criticalPathMs(dependency)),
-      0
-    );
-    pathStack.delete(name);
-    const total = ownBudget + dependencyBudget;
-    pathMemo.set(name, total);
-    return total;
-  };
-  const workflowBudgetMs = definitions.reduce((max, step) => Math.max(max, criticalPathMs(step.name)), 0);
-  const workflowTimeoutMs = workflowBudgetMs + WORKFLOW_GUARD_MS;
-  const innerWorkflowBudgetMs = OUTER_JOB_TIMEOUT_MS - CONSUMER_SETUP_RESERVE_MS;
-  if (workflowTimeoutMs > innerWorkflowBudgetMs) {
-    throw new Error(
-      `Fleet workflow timeout ${workflowTimeoutMs}ms exceeds inner qualification budget ${innerWorkflowBudgetMs}ms`
-    );
+  const timeoutPlan = deriveFleetTimeoutPlan(wf.toConfig(), {
+    outerJobTimeoutMs: OUTER_JOB_TIMEOUT_MS,
+    consumerSetupReserveMs: CONSUMER_SETUP_RESERVE_MS,
+    consumerCleanupReserveMs: CONSUMER_CLEANUP_RESERVE_MS,
+    guardMs: WORKFLOW_GUARD_MS,
+  });
+  if (process.env.VERIFY_FLEET_TIMEOUT_PLAN === '1') {
+    process.stdout.write(`FLEET_TIMEOUT_PLAN ${JSON.stringify(timeoutPlan)}\n`);
   }
-  wf.timeout(workflowTimeoutMs);
+  wf.timeout(timeoutPlan.workflowTimeoutMs);
 
   // Keep permissions attached to the finalized config object so the dry-run can
   // audit the exact runtime policy before allowing this workflow to run live.
