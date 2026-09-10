@@ -127,6 +127,7 @@ try {
   const unsafeError = typeof unsafe.body?.error === 'string' ? unsafe.body.error : '';
   const spawnedList = (await api('GET', '/api/spawned')).body?.agents ?? [];
   const unsafeNoWorker = spawnedList.every((agent) => agent?.name !== UNSAFE_AGENT);
+  const safeNoWorker = spawnedList.every((agent) => agent?.name !== SAFE_AGENT);
   const safeWarning = typeof safe.body?.warning === 'string' ? safe.body.warning : '';
   const safeWorkerPid = spawnedList.find((agent) => agent?.name === SAFE_AGENT)?.workerPid;
   const markers = (text, attempts) =>
@@ -142,6 +143,7 @@ try {
     markers(unsafeError, 1) &&
     markers(typeof safe.body?.error === 'string' ? safe.body.error : '', 1) &&
     unsafeNoWorker === true &&
+    safeNoWorker === true &&
     relay.workerRegistrations === 2 &&
     !safe.body?.success;
   const headObserved =
@@ -178,6 +180,7 @@ try {
         unsafe,
         safe,
         unsafeNoWorker,
+        safeNoWorker,
         safeWorkerPid,
         checks: {
           unsafeStatus: unsafe.status === 500,
@@ -200,7 +203,10 @@ try {
 } finally {
   if (broker && broker.exitCode === null) {
     broker.kill('SIGTERM');
-    await Promise.race([onceExit(broker), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+    await Promise.race([
+      onceExit(broker),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
     if (broker.exitCode === null) broker.kill('SIGKILL');
   }
   await relay?.close();
