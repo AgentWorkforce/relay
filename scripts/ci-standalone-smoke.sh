@@ -147,11 +147,13 @@ cleanup() {
               # database overload. Accept only that bounded vocabulary; a
               # malformed, date-form, or excessive value falls back to 2s.
               verify_delay="$(awk '
-                BEGIN { IGNORECASE = 1 }
-                /^Retry-After:[[:space:]]*/ {
-                  gsub(/\r/, "")
-                  sub(/^[^:]*:[[:space:]]*/, "")
-                  value = $0
+                {
+                  line = $0
+                  gsub(/\r/, "", line)
+                }
+                tolower(line) ~ /^retry-after:[[:space:]]*/ {
+                  sub(/^[^:]*:[[:space:]]*/, "", line)
+                  value = line
                 }
                 END { print value }
               ' "$VERIFY_HEADERS" 2>/dev/null || true)"

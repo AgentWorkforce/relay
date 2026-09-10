@@ -69,7 +69,8 @@ elif [[ "$method" = GET && "$url" = */v1/workspace ]]; then
     printf '%s\n' "\$((verify_count + 1))" > "\$verify_count_file"
   fi
   if [ -n "\${FAKE_VERIFY_RETRY_AFTER:-}" ]; then
-    printf 'HTTP/2 %s\r\nRetry-After: %s\r\n\r\n' "\$verify_status" "\$FAKE_VERIFY_RETRY_AFTER" > "\$headers"
+    retry_after_header="\${FAKE_VERIFY_RETRY_AFTER_HEADER:-Retry-After}"
+    printf 'HTTP/2 %s\r\n%s: %s\r\n\r\n' "\$verify_status" "\$retry_after_header" "\$FAKE_VERIFY_RETRY_AFTER" > "\$headers"
   fi
   echo "\$verify_status"
 else
@@ -328,6 +329,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
         FAKE_DELETE_ERROR_CODE: 'internal_error',
         FAKE_VERIFY_STATUSES: '503,401',
         FAKE_VERIFY_RETRY_AFTER: '3',
+        FAKE_VERIFY_RETRY_AFTER_HEADER: 'retry-after',
       },
       timeout: 10_000,
     });
