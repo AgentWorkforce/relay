@@ -1522,14 +1522,13 @@ pub async fn retry_agent_registration(
     name: &str,
     cli: Option<&str>,
 ) -> Result<String, RegRetryOutcome> {
-    let registration = http.registration.as_ref().as_ref().ok_or_else(|| {
-        RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
-            agent_name: name.to_string(),
-            detail: "SDK relay client not initialized".to_string(),
-        })
-    })?;
     const RETRY_BACKOFFS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(400)];
-    const MAX_RETRY_AFTER: u64 = 5;
+    // This loop runs inside the serialized broker runtime actor. Keep any
+    // server-advertised cooldown on the same short scale as the fixed
+    // backoffs; the SDK also blocks the name locally after a 429, so sleeping
+    // for the full cooldown here would stall unrelated broker work and still
+    // produce no further POST.
+    const MAX_RETRY_AFTER: Duration = Duration::from_secs(1);
 
     let mut total_attempts: u32 = 0;
     for retry_delay in RETRY_BACKOFFS
@@ -1538,7 +1537,7 @@ pub async fn retry_agent_registration(
         .map(Some)
         .chain(std::iter::once(None))
     {
-        match registration.register_agent_token(name, cli).await {
+        match http.register_agent_token(name, cli).await {
             Ok(token) => return Ok(token),
             Err(error) => {
                 total_attempts = total_attempts.saturating_add(registration_attempt_count(&error));
@@ -1546,8 +1545,16 @@ pub async fn retry_agent_registration(
                     || is_transient_registration_api_error(&error);
                 if retryable {
                     if let Some(delay) = retry_delay {
+                        // A 429 installs an SDK-side cooldown. Do not issue
+                        // futile retries that only return `Blocked` while
+                        // consuming the bounded attempt budget.
+                        if http.registration_block_remaining(name).is_some() {
+                            return Err(RegRetryOutcome::RetryableExhausted(
+                                with_registration_attempts(error, total_attempts),
+                            ));
+                        }
                         let delay = registration_retry_after_secs(&error)
-                            .map(|seconds| Duration::from_secs(seconds.min(MAX_RETRY_AFTER)))
+                            .map(|seconds| Duration::from_secs(seconds).min(MAX_RETRY_AFTER))
                             .unwrap_or(delay);
                         tokio::time::sleep(delay).await;
                         continue;
@@ -1764,6 +1771,69 @@ mod tests {
             .expect("database overload should be retried");
         assert_eq!(token, "at_live_worker_a");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn rate_limited_registration_does_not_burn_retries_during_sdk_cooldown() {
+        #[derive(Clone)]
+        struct RegistrationState(Arc<AtomicUsize>);
+
+        async fn rate_limited(
+            State(state): State<RegistrationState>,
+        ) -> (StatusCode, Json<serde_json::Value>) {
+            state.0.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "rate_limited",
+                        "message": "registration rate limited"
+                    }
+                })),
+            )
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind registration probe");
+        let address = listener.local_addr().expect("registration probe address");
+        let server_attempts = attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(rate_limited))
+                    .with_state(RegistrationState(server_attempts)),
+            )
+            .await
+            .expect("registration probe server");
+        });
+
+        let client = RelaycastHttpClient::new(
+            Some(format!("http://{address}")),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
+        let result =
+            super::retry_agent_registration(&client, "worker-rate-limited", Some("codex")).await;
+        assert!(matches!(
+            result,
+            Err(
+                relaycast::AgentRegistrationRetryOutcome::RetryableExhausted(
+                    AgentRegistrationError::RateLimited { .. }
+                )
+            )
+        ));
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "SDK cooldown must not cause futile retry POSTs"
+        );
 
         server.abort();
     }

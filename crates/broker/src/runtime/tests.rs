@@ -3676,10 +3676,11 @@ async fn api_spawn_retries_overload_and_only_safe_mode_falls_back() {
     });
 
     let (worker_event_tx, _worker_event_rx) = mpsc::channel(16);
+    let worker_logs_dir = tempfile::tempdir().expect("worker logs dir");
     let workers = WorkerRegistry::new(
         worker_event_tx,
         Vec::new(),
-        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        worker_logs_dir.path().to_path_buf(),
         Instant::now(),
     );
     let mut fixture =
