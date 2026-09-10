@@ -35,6 +35,12 @@ const server = http.createServer(async (req, res) => {
   };
   if (!online) {
     observations.unavailable++;
+    if (
+      req.method !== 'POST' ||
+      (req.url !== '/v1/agents' && !/^\/v1\/agents\/[^/]+\/events$/.test(req.url))
+    ) {
+      observations.unexpected.push(`${req.method} ${req.url}`);
+    }
     reply(503, { ok: false, error: { code: 'database_overloaded', message: 'deterministic test outage' } });
   } else if (req.method === 'POST' && req.url === '/v1/agents') {
     observations.registrations.push(body.name);
@@ -87,7 +93,7 @@ let child;
 let logs = '';
 let url;
 let exited;
-async function start(localOnly) {
+async function start(localOnly, apiBind = '127.0.0.1') {
   logs = '';
   url = undefined;
   child = spawn(
@@ -99,6 +105,8 @@ async function start(localOnly) {
       stateDir,
       '--instance-name',
       'outage-test',
+      '--api-bind',
+      apiBind,
       ...(localOnly ? ['--local-only'] : []),
     ],
     { cwd: dir, env, stdio: ['pipe', 'pipe', 'pipe'] }
@@ -173,8 +181,11 @@ try {
     assert.match(logs, /failed to initialize relaycast session|failed registering agent/);
     result = { outcome: 'absent', signature: 'relaycast_outage_blocks_local_runtime' };
   } else {
-    await start(true);
+    await start(true, '::1');
     await ready();
+    assert.equal(new URL(url).hostname, '[::1]', 'IPv6 API discovery URL is bracketed');
+    const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+    assert.equal(connection.url, url, 'Persisted discovery URL matches the listening IPv6 API');
     assert.match(logs, /DEGRADED.*LOCAL ONLY/);
     let health = (await request('/health')).data;
     assert.equal(health.status, 'degraded');
@@ -191,6 +202,32 @@ try {
       channels: [],
     });
     assert(spawned.response.ok, 'Local spawn succeeds during outage');
+    assert.match(spawned.data.warning, /DEGRADED.*LOCAL ONLY/);
+    let state = JSON.parse(await readFile(path.join(stateDir, 'state-outage-test.json'), 'utf8'));
+    assert.equal(state.agents['local-worker'].initial_task ?? null, null, 'Taskless spawn stays idle');
+    for (const [name, task, exitAfterTask] of [
+      ['empty-task-worker', '   ', false],
+      ['task-worker', 'EXPLICIT_INITIAL_TASK', true],
+    ]) {
+      const response = await request('/api/spawn', {
+        name,
+        cli: 'cat',
+        cwd: dir,
+        args: [],
+        channels: [],
+        task,
+        exit_after_task: exitAfterTask,
+      });
+      assert(response.response.ok);
+      state = JSON.parse(await readFile(path.join(stateDir, 'state-outage-test.json'), 'utf8'));
+      if (exitAfterTask) {
+        assert.match(state.agents[name].initial_task, /DEGRADED.*LOCAL ONLY/);
+        assert.match(state.agents[name].initial_task, /EXPLICIT_INITIAL_TASK/);
+        assert.match(state.agents[name].initial_task, /Post-task exit/);
+      } else {
+        assert.equal(state.agents[name].initial_task ?? null, null, 'Blank task stays idle');
+      }
+    }
     const unknown = await request('/api/send', { to: 'remote-worker', text: 'must not route' });
     assert(!unknown.response.ok, 'Remote destination is explicitly rejected');
     const sent = await request('/api/send', { to: 'local-worker', text: 'LOCAL_WORK_PROOF', mode: 'steer' });

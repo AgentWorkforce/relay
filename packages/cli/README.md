@@ -92,7 +92,10 @@ can deduplicate by `event_id` after an ambiguous response or crash.
 
 `node status` reports the reconciliation backlog and the last connection
 result. Without a workspace key, local work still runs and records remain on
-disk until a key is configured on restart; no workspace is created. The outbox
+disk with no upload destination; no workspace is created. A nonempty unscoped
+backlog cannot acquire a destination on restart. Keep its state directory and
+continue without a key, or select a different state directory for new work
+with a configured destination. The outbox
 is bounded to 10,000 records / 32 MiB and rejects new sends when full. A digest
 pins a configured backlog to its original workspace key and Relaycast base URL;
 restore that configuration to drain it before rotating keys or changing the

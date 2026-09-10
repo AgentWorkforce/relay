@@ -148,7 +148,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let relay_ready = Arc::new(Notify::new());
     let relay_ready_state: Arc<RwLock<Option<RelayReadyState>>> = Arc::new(RwLock::new(None));
     let (api_tx, api_rx) = mpsc::channel::<ListenApiRequest>(32);
-    let bind_addr = format!("{}:{}", cmd.api_bind, cmd.api_port);
+    let api_host = bracket_ipv6_host(unbracket_ipv6(&cmd.api_bind));
+    let bind_addr = format!("{}:{}", api_host, cmd.api_port);
     log_startup_phase(
         startup_debug,
         broker_start,
@@ -162,20 +163,20 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     log_startup_phase(
         startup_debug,
         broker_start,
-        format!("API listener bound on {}:{}", cmd.api_bind, actual_port),
+        format!("API listener bound on {}:{}", api_host, actual_port),
     );
     // Machine-readable on stdout (SDK parses this to discover the port).
     // Diagnostic logs stay on stderr via tracing/eprintln.
     println!(
         "[agent-relay] API listening on http://{}:{}",
-        cmd.api_bind, actual_port
+        api_host, actual_port
     );
 
     // Write connection file so CLI commands can find this broker.
     let connection_dir = paths.state.parent().unwrap();
     let connection_path = connection_dir.join("connection.json");
     let connection = json!({
-        "url": format!("http://{}:{}", cmd.api_bind, actual_port),
+        "url": format!("http://{}:{}", api_host, actual_port),
         "port": actual_port,
         "api_key": &api_key,
         "pid": std::process::id(),

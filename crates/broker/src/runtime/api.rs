@@ -549,11 +549,8 @@ impl BrokerRuntime {
 
                 let skip_relay_prompt = skip_relay_prompt || local_only;
                 let task = if local_only {
-                    Some(format!(
-                        "{}\n\n{}",
-                        super::degraded::WARNING,
-                        task.unwrap_or_default()
-                    ))
+                    normalize_initial_task(task)
+                        .map(|task| format!("{}\n\n{}", super::degraded::WARNING, task))
                 } else {
                     task
                 };

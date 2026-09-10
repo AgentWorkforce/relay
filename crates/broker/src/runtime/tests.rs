@@ -6388,3 +6388,41 @@ async fn local_only_queued_work_survives_restart_and_replays_when_recipient_reco
     assert_eq!(pending[&id].delivery.event_id.as_str(), "local_reconnect");
     cleanup_worker_registry(reconnected).await;
 }
+
+#[tokio::test]
+async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pending.json");
+    let id = DeliveryId::new("del_local_exhausted");
+    let mut entry = pending_delivery("local-worker", id.as_str(), "local_exhausted");
+    entry.attempts = MAX_DELIVERY_RETRIES;
+    entry.failed_attempts = MAX_DELIVERY_RETRIES;
+    let expected_delivery = entry.delivery.clone();
+    let mut pending = HashMap::from([(id.clone(), entry)]);
+    super::save_pending_deliveries(&path, &pending).unwrap();
+    pending = load_pending_deliveries(&path);
+    let (tx, _rx) = mpsc::channel(8);
+    let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
+    for _ in 0..2 {
+        assert!(matches!(
+            retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
+                .await
+                .unwrap(),
+            DeliveryAttemptOutcome::Noop
+        ));
+        assert_eq!(pending[&id].delivery, expected_delivery);
+        assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES);
+        super::save_pending_deliveries(&path, &pending).unwrap();
+        pending = load_pending_deliveries(&path);
+    }
+    let mut reconnected = make_worker_registry_with_worker("local-worker").await;
+    let outcome =
+        retry_pending_delivery(&id, &mut reconnected, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap();
+    cleanup_worker_registry(reconnected).await;
+    assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
+    assert_eq!(pending[&id].delivery, expected_delivery);
+    assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES + 1);
+    assert_eq!(pending[&id].failed_attempts, 0);
+}

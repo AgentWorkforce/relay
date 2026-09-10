@@ -56,7 +56,7 @@ impl Journal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Outbox::default(),
             Err(error) => return Err(error).context("cannot read local delivery outbox"),
         };
-        if !outbox.records.is_empty() && outbox.scope.is_some() {
+        if !outbox.records.is_empty() {
             anyhow::ensure!(outbox.scope == scope, "local delivery outbox belongs to another reconciliation destination; restore the original configuration or use a different state directory");
         }
         outbox.scope = scope.clone();
@@ -402,6 +402,29 @@ mod tests {
             .outbox
             .records
             .is_empty());
+    }
+
+    #[test]
+    fn unscoped_backlog_cannot_acquire_an_upload_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("outbox.json");
+        let record = json!({"event_id": "local_private", "body": "local-only work"});
+        let mut journal = Journal::open(path.clone(), None).unwrap();
+        journal.enqueue(record.clone()).unwrap();
+        drop(journal);
+        let original = std::fs::read(&path).unwrap();
+
+        assert!(Journal::open(path.clone(), Some("new-destination".into())).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let recovered = Journal::open(path.clone(), None).unwrap();
+        assert_eq!(recovered.outbox.scope, None);
+        assert_eq!(recovered.outbox.records.front(), Some(&record));
+        assert!(!recovered.configured);
+
+        // A fresh, empty journal may still be configured normally.
+        let empty = dir.path().join("empty.json");
+        Journal::open(empty.clone(), None).unwrap();
+        assert!(Journal::open(empty, Some("new-destination".into())).is_ok());
     }
 
     #[test]
