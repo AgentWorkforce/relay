@@ -339,13 +339,26 @@ jobs:
             echo "Unsupported macOS runner architecture: $ARCH"
             exit 1
           fi
+          scripts/bundle-cli-for-bun.sh \
+            ./packages/cli/dist/cli/index.js \
+            "release-binaries/cli-bundle.mjs" \
+            "$VERSION"
           bun build \
             --compile \
             --minify \
             --target="$TARGET" \
             --external=better-sqlite3 \
+            --external=cpu-features \
+            --external=node-pty \
+            --external=e2b \
+            --external=modal \
+            --external=freestyle \
+            --external=microsandbox \
+            --external=@vercel/sandbox \
+            --external=@aws-sdk/client-bedrock-agentcore-control \
+            --external=@aws-sdk/client-bedrock-agentcore \
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
-            ./packages/cli/dist/cli/index.js \
+            release-binaries/cli-bundle.mjs \
             --outfile "release-binaries/${OUTPUT}"
           scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version

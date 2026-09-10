@@ -41,6 +41,11 @@ mkdir -p "$RELEASE_DIR"
 info "Building TypeScript..."
 npm run build
 
+# Bundle through esbuild before Bun compile. This preserves runtime-optional
+# providers and relocates Relayfile's package metadata lookup for Bun images.
+CLI_BUNDLE="$RELEASE_DIR/cli-bundle.mjs"
+scripts/bundle-cli-for-bun.sh ./packages/cli/dist/cli/index.js "$CLI_BUNDLE" "$VERSION"
+
 # Targets for cross-compilation
 # Format: "target:output-suffix"
 TARGETS=(
@@ -51,6 +56,19 @@ TARGETS=(
 )
 
 # Build for each target
+# Sandbox providers are optional peer dependencies.  Keep them out of the
+# standalone bundle so a user only needs to install the provider they select
+# at runtime; @agent-relay/sandbox loads them with dynamic imports.
+OPTIONAL_SANDBOX_EXTERNAL_ARGS=(
+    --external e2b
+    --external modal
+    --external freestyle
+    --external microsandbox
+    --external @vercel/sandbox
+    --external @aws-sdk/client-bedrock-agentcore-control
+    --external @aws-sdk/client-bedrock-agentcore
+)
+
 for target_spec in "${TARGETS[@]}"; do
     IFS=':' read -r target suffix <<< "$target_spec"
     output="$RELEASE_DIR/agent-relay-$suffix"
@@ -65,7 +83,8 @@ for target_spec in "${TARGETS[@]}"; do
         --external better-sqlite3 \
         --external cpu-features \
         --external node-pty \
-        ./packages/cli/dist/cli/index.js \
+        "${OPTIONAL_SANDBOX_EXTERNAL_ARGS[@]}" \
+        "$CLI_BUNDLE" \
         --outfile "$output" 2>&1; then
 
         # Get file size
@@ -100,7 +119,8 @@ if bun build \
     --external better-sqlite3 \
     --external cpu-features \
     --external node-pty \
-    ./packages/cli/dist/cli/index.js \
+    "${OPTIONAL_SANDBOX_EXTERNAL_ARGS[@]}" \
+    "$CLI_BUNDLE" \
     --outfile "$CURRENT_OUTPUT" 2>&1; then
 
     SIZE=$(du -h "$CURRENT_OUTPUT" | cut -f1)

@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { runAiSdkSidecarMain } from '@agent-relay/harnesses';
 
 import { runCli } from './bootstrap.js';
-import { runBundledWorkflowCli } from './lib/bundled-workflow-runner.js';
 import { describeError } from './lib/describe-error.js';
 import { exitAfterFlush } from './lib/flush-stdio.js';
 
@@ -28,7 +27,9 @@ if (isEntrypoint()) {
     process.argv[2] === '__ai-sdk-sidecar'
       ? runAiSdkSidecarMain(process.argv.slice(3))
       : process.argv[2] === '__bundled-workflow'
-        ? runBundledWorkflowCli(process.argv.slice(3))
+        ? import('./lib/bundled-workflow-runner.js').then(({ runBundledWorkflowCli }) =>
+            runBundledWorkflowCli(process.argv.slice(3))
+          )
         : runCli();
   main.catch(async (err) => {
     // Commander will have already printed a helpful message for parse errors.
