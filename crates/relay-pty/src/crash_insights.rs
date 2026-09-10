@@ -34,6 +34,33 @@ pub struct CrashRecord {
     pub uptime_secs: u64,
     pub category: CrashCategory,
     pub description: String,
+    /// Broker workspace that owned this worker, when the spawn was workspace-scoped.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Fleet action invocation that created this worker, when available.
+    #[serde(default)]
+    pub spawn_invocation_id: Option<String>,
+    /// Process generation; same-name workers must remain independently queryable.
+    #[serde(default)]
+    pub generation: String,
+    /// Whether the broker observed `worker_ready` for this process generation.
+    #[serde(default)]
+    pub became_ready: bool,
+    /// Unix timestamp (seconds) at which the wrapper process was spawned.
+    #[serde(default)]
+    pub spawned_at: u64,
+    /// Unix timestamp (seconds) at which the worker reported ready.
+    #[serde(default)]
+    pub ready_at: Option<u64>,
+    /// Unix timestamp (seconds) at which the broker reaped this generation.
+    #[serde(default)]
+    pub exited_at: u64,
+    /// Bounded, broker-derived explanation for why the process was reaped.
+    #[serde(default)]
+    pub exit_reason: Option<String>,
+    /// Fleet node name that hosted this generation.
+    #[serde(default)]
+    pub fleet_node_name: Option<String>,
 }
 
 /// A detected crash pattern (grouping).
@@ -186,10 +213,16 @@ impl CrashInsights {
     /// Save to a JSON file.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, json)?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        // Replace the snapshot atomically. Exit records are written from the
+        // maintenance tick, so a broker crash during persistence must leave
+        // either the prior complete snapshot or this complete one, never a
+        // truncated JSON file that erases all earlier evidence on restart.
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        std::io::Write::write_all(&mut tmp, json.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
 
@@ -218,6 +251,15 @@ mod tests {
             uptime_secs: 60,
             category,
             description,
+            workspace_id: None,
+            spawn_invocation_id: None,
+            generation: String::new(),
+            became_ready: true,
+            spawned_at: 0,
+            ready_at: None,
+            exited_at: 0,
+            exit_reason: None,
+            fleet_node_name: None,
         }
     }
 
@@ -376,6 +418,54 @@ mod tests {
         let loaded = CrashInsights::load(&path);
         assert_eq!(loaded.total(), 1);
         assert_eq!(loaded.records[0].agent_name, "w1");
+    }
+
+    #[test]
+    fn correlated_exit_metadata_survives_atomic_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crashes.json");
+        let mut ci = CrashInsights::new();
+        let mut record = make_record("w1", Some(137), None);
+        record.workspace_id = Some("ws-1".to_string());
+        record.spawn_invocation_id = Some("invoke-1".to_string());
+        record.generation = "generation-1".to_string();
+        record.became_ready = true;
+        record.spawned_at = 100;
+        record.ready_at = Some(110);
+        record.exited_at = 125;
+        record.uptime_secs = 25;
+        record.exit_reason = Some("worker_write_failed".to_string());
+        record.fleet_node_name = Some("node-1".to_string());
+        ci.record(record);
+
+        ci.save(&path).unwrap();
+        let loaded = CrashInsights::load(&path);
+        let loaded = &loaded.records[0];
+        assert_eq!(loaded.spawn_invocation_id.as_deref(), Some("invoke-1"));
+        assert_eq!(loaded.generation, "generation-1");
+        assert_eq!(loaded.ready_at, Some(110));
+        assert_eq!(loaded.exited_at, 125);
+        assert_eq!(loaded.exit_reason.as_deref(), Some("worker_write_failed"));
+    }
+
+    #[test]
+    fn legacy_records_load_with_empty_correlation_fields() {
+        let record: CrashRecord = serde_json::from_value(serde_json::json!({
+            "agent_name": "legacy",
+            "exit_code": 1,
+            "signal": null,
+            "timestamp": 42,
+            "uptime_secs": 2,
+            "category": "error",
+            "description": "Exited with code 1"
+        }))
+        .unwrap();
+
+        assert_eq!(record.agent_name, "legacy");
+        assert!(record.generation.is_empty());
+        assert!(!record.became_ready);
+        assert_eq!(record.exited_at, 0);
+        assert!(record.exit_reason.is_none());
     }
 
     #[test]

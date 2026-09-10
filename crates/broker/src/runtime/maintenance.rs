@@ -2,6 +2,49 @@ use super::fleet::{release_terminal_resize_ownership, try_send_terminal};
 use super::*;
 use crate::terminal_control::TerminalToCloud;
 
+fn instant_to_unix_secs(at: Instant, now: Instant, now_unix: u64) -> u64 {
+    now_unix.saturating_sub(now.saturating_duration_since(at).as_secs())
+}
+
+fn bounded_exit_reason(reason: Option<&str>) -> Option<String> {
+    reason.map(|reason| {
+        const MAX_BYTES: usize = 256;
+        if reason.len() <= MAX_BYTES {
+            reason.to_string()
+        } else {
+            let end = reason.floor_char_boundary(MAX_BYTES - '…'.len_utf8());
+            format!("{}…", &reason[..end])
+        }
+    })
+}
+
+#[cfg(test)]
+mod exit_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn exit_reason_is_bounded_without_splitting_utf8() {
+        let reason = "é".repeat(300);
+        let bounded = bounded_exit_reason(Some(&reason)).expect("reason is present");
+        assert!(bounded.len() <= 256);
+        assert!(bounded.ends_with('…'));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn instant_conversion_is_monotonic_and_bounded() {
+        let now = Instant::now();
+        let spawned = now - Duration::from_secs(12);
+        let ready = now - Duration::from_secs(5);
+        assert_eq!(instant_to_unix_secs(spawned, now, 1_000), 988);
+        assert_eq!(instant_to_unix_secs(ready, now, 1_000), 995);
+        assert_eq!(
+            instant_to_unix_secs(now + Duration::from_secs(1), now, 1_000),
+            1_000
+        );
+    }
+}
+
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
         self.reconcile_identity_cleanups().await;
@@ -37,6 +80,8 @@ impl BrokerRuntime {
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
         let default_workspace = &self.default_workspace;
+        let fleet_node_name = self.fleet_node_name.clone();
+        let crash_insights_path = &self.crash_insights_path;
 
         let now = Instant::now();
 
@@ -276,8 +321,23 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        // Use the instant immediately surrounding reaping for wall-clock
+        // conversion; delivery/reconciliation awaits earlier in this tick
+        // must not make the terminal timestamp stale.
+        let reaped_at = Instant::now();
+        let reaped_at_unix = unix_timestamp_secs();
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
-        for (name, generation, code, signal, exit_reason) in &exited {
+        for (name, generation, code, signal, exit_reason, workspace_id, spawned_at, ready_at) in
+            &exited
+        {
+            // Capture Fleet correlation before normal death cleanup prunes the
+            // live inventory entry.
+            let spawn_invocation_id = fleet_inventory
+                .get(name)
+                .and_then(|agent| agent.invocation_id.clone());
+            let was_pending_verified_spawn = pending_verified_spawns
+                .get(name)
+                .is_some_and(|pending| pending.generation == *generation);
             let mut retain_fleet_identity = workers
                 .owned_spawn_generations
                 .get(name)
@@ -334,7 +394,27 @@ impl BrokerRuntime {
                         .await;
                 }
             }
-            let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
+            let exited_at = reaped_at_unix;
+            let spawned_at_unix = instant_to_unix_secs(*spawned_at, reaped_at, reaped_at_unix);
+            let ready_at_unix =
+                ready_at.map(|at| instant_to_unix_secs(at, reaped_at, reaped_at_unix));
+            let (category, description) =
+                crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
+            let durable_reason = bounded_exit_reason(exit_reason.as_deref())
+                .or_else(|| {
+                    was_pending_verified_spawn.then(|| "spawn_harness_not_ready".to_string())
+                })
+                .or_else(|| {
+                    if *code == Some(0) && signal.is_none() {
+                        Some("clean_exit".to_string())
+                    } else {
+                        Some(description.clone())
+                    }
+                });
+            let generation_id = generation.to_string();
+            let workspace_id = workspace_id.as_ref().map(ToString::to_string);
+            let fleet_node_name = (!fleet_node_name.is_empty()).then(|| fleet_node_name.clone());
+            let lifecycle_reason = durable_reason.as_deref().unwrap_or("worker_exited");
             if (code.is_some_and(|code| code != 0) || signal.is_some())
                 && state
                     .agents
@@ -370,21 +450,57 @@ impl BrokerRuntime {
                     tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing exited worker session");
                 }
             }
-            // Record crash in insights
-            let (category, description) =
-                crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
             crash_insights.record(crate::crash_insights::CrashRecord {
                 agent_name: name.as_str().to_string(),
                 exit_code: *code,
                 signal: signal.clone(),
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                uptime_secs: 0,
+                timestamp: exited_at,
+                uptime_secs: exited_at.saturating_sub(spawned_at_unix),
                 category,
-                description,
+                description: description.clone(),
+                workspace_id: workspace_id.clone(),
+                spawn_invocation_id: spawn_invocation_id.clone(),
+                generation: generation_id.clone(),
+                became_ready: ready_at.is_some(),
+                spawned_at: spawned_at_unix,
+                ready_at: ready_at_unix,
+                exited_at,
+                exit_reason: durable_reason.clone(),
+                fleet_node_name: fleet_node_name.clone(),
             });
+            if paths.persist {
+                if let Err(error) = crash_insights.save(crash_insights_path) {
+                    tracing::warn!(
+                        path = %crash_insights_path.display(),
+                        error = %error,
+                        "failed to persist worker exit record"
+                    );
+                }
+            }
+            let hosted_payload = json!({
+                "code": code,
+                "signal": signal,
+                "reason": durable_reason,
+                "generation": generation_id,
+                "workspace_id": workspace_id,
+                "spawn_invocation_id": spawn_invocation_id,
+                "fleet_node_name": fleet_node_name,
+                "became_ready": ready_at.is_some(),
+                "spawned_at": spawned_at_unix,
+                "ready_at": ready_at_unix,
+                "exited_at": exited_at,
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+            if let Err(error) = hosted_agent_event_tx.try_send(HostedAgentEvent {
+                name: name.as_str().to_string(),
+                event_type: "agent_exited".to_string(),
+                payload: hosted_payload,
+                workspace_id: workspace_id.as_deref().map(crate::ids::WorkspaceId::new),
+            }) {
+                tracing::warn!(worker = %name, error = %error, "hosted agent exit event queue full or closed");
+            }
 
             telemetry.track(TelemetryEvent::AgentCrash {
                 cli: String::new(),
@@ -416,6 +532,15 @@ impl BrokerRuntime {
                             "signal": signal,
                             "restart_count": restart_count,
                             "delay_ms": delay.as_millis() as u64,
+                            "reason": durable_reason,
+                            "generation": generation_id,
+                            "workspace_id": workspace_id,
+                            "spawn_invocation_id": spawn_invocation_id,
+                            "fleet_node_name": fleet_node_name,
+                            "became_ready": ready_at.is_some(),
+                            "spawned_at": spawned_at_unix,
+                            "ready_at": ready_at_unix,
+                            "exited_at": exited_at,
                         }),
                     )
                     .await;
@@ -463,7 +588,20 @@ impl BrokerRuntime {
                     agent_result_tokens.retain(|_, agent| agent != name);
                     let _ = send_event(
                         sdk_out_tx,
-                        json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
+                        json!({
+                            "kind":"agent_permanently_dead",
+                            "name":name,
+                            "reason":reason,
+                            "exit_reason":durable_reason,
+                            "generation":generation_id,
+                            "workspace_id":workspace_id,
+                            "spawn_invocation_id":spawn_invocation_id,
+                            "fleet_node_name":fleet_node_name,
+                            "became_ready":ready_at.is_some(),
+                            "spawned_at":spawned_at_unix,
+                            "ready_at":ready_at_unix,
+                            "exited_at":exited_at,
+                        }),
                     )
                     .await;
                     publish_agent_state_transition(
@@ -537,7 +675,14 @@ impl BrokerRuntime {
                             "code":code,
                             "signal":signal,
                             "reason": lifecycle_reason,
-                            "generation": generation,
+                            "generation": generation_id,
+                            "workspace_id": workspace_id,
+                            "spawn_invocation_id": spawn_invocation_id,
+                            "fleet_node_name": fleet_node_name,
+                            "became_ready": ready_at.is_some(),
+                            "spawned_at": spawned_at_unix,
+                            "ready_at": ready_at_unix,
+                            "exited_at": exited_at,
                         }),
                     )
                     .await;

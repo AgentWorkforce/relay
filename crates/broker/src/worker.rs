@@ -201,6 +201,9 @@ pub(crate) type ExitedWorker = (
     Option<i32>,
     Option<String>,
     Option<String>,
+    Option<crate::ids::WorkspaceId>,
+    Instant,
+    Option<Instant>,
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1625,16 +1628,22 @@ impl WorkerRegistry {
                 None
             };
             if let Some(orphan) = orphaned {
-                let generation = self
+                let (generation, workspace_id, spawned_at, ready_at, reason) = self
                     .workers
                     .get(&name)
-                    .expect("orphaned worker must still be registered")
-                    .generation;
-                let reason = self
-                    .workers
-                    .get(&name)
-                    .and_then(|handle| handle.exit_reason.clone())
-                    .or_else(|| Some(orphan.reason().to_string()));
+                    .map(|handle| {
+                        (
+                            handle.generation,
+                            handle.workspace_id.clone(),
+                            handle.spawned_at,
+                            handle.ready_at,
+                            handle
+                                .exit_reason
+                                .clone()
+                                .or_else(|| Some(orphan.reason().to_string())),
+                        )
+                    })
+                    .expect("orphaned worker must still be registered");
                 if let Some(handle) = self.workers.get_mut(&name) {
                     tracing::warn!(
                         worker = %name,
@@ -1667,15 +1676,32 @@ impl WorkerRegistry {
                 }
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, generation, None, None, reason));
+                exited.push((
+                    name,
+                    generation,
+                    None,
+                    None,
+                    reason,
+                    workspace_id,
+                    spawned_at,
+                    ready_at,
+                ));
                 continue;
             }
             if let Some(status) = status {
-                let generation = self
+                let (generation, workspace_id, spawned_at, ready_at, reason) = self
                     .workers
                     .get(&name)
-                    .expect("exited worker must still be registered")
-                    .generation;
+                    .map(|handle| {
+                        (
+                            handle.generation,
+                            handle.workspace_id.clone(),
+                            handle.spawned_at,
+                            handle.ready_at,
+                            handle.exit_reason.clone(),
+                        )
+                    })
+                    .expect("exited worker must still be registered");
                 let code = status.code();
                 #[cfg(unix)]
                 let signal = {
@@ -1684,26 +1710,44 @@ impl WorkerRegistry {
                 };
                 #[cfg(not(unix))]
                 let signal: Option<String> = None;
-                let reason = self
-                    .workers
-                    .get(&name)
-                    .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, generation, code, signal, reason));
+                exited.push((
+                    name,
+                    generation,
+                    code,
+                    signal,
+                    reason,
+                    workspace_id,
+                    spawned_at,
+                    ready_at,
+                ));
             } else if gone_via_kill0 {
-                let generation = self
+                let (generation, workspace_id, spawned_at, ready_at, reason) = self
                     .workers
                     .get(&name)
-                    .expect("gone worker must still be registered")
-                    .generation;
-                let reason = self
-                    .workers
-                    .get(&name)
-                    .and_then(|handle| handle.exit_reason.clone());
+                    .map(|handle| {
+                        (
+                            handle.generation,
+                            handle.workspace_id.clone(),
+                            handle.spawned_at,
+                            handle.ready_at,
+                            handle.exit_reason.clone(),
+                        )
+                    })
+                    .expect("gone worker must still be registered");
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, generation, None, None, reason));
+                exited.push((
+                    name,
+                    generation,
+                    None,
+                    None,
+                    reason,
+                    workspace_id,
+                    spawned_at,
+                    ready_at,
+                ));
             }
         }
         Ok(exited)
@@ -2872,6 +2916,61 @@ sleep 30
         // `kill(pid, None)` is the POSIX liveness probe: it signals nothing,
         // it only reports whether the pid still exists and is ours to signal.
         kill(Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reap_exited_preserves_worker_correlation_metadata() {
+        let mut reg = make_registry(vec![]);
+        let name = WorkerName::from("correlated-exit");
+        let generation = Uuid::new_v4();
+        let workspace_id = crate::ids::WorkspaceId::new("workspace-1");
+        let spawned_at = Instant::now() - Duration::from_secs(5);
+        let ready_at = Instant::now() - Duration::from_secs(2);
+        let child = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("short-lived worker should spawn");
+        let (command_tx, _command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        reg.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation,
+                spec: spec_for_test(name.as_str()),
+                parent: None,
+                workspace_id: Some(workspace_id.clone()),
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at,
+                ready_at: Some(ready_at),
+                last_activity_at: ready_at,
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: Some("worker_write_failed".to_string()),
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let exited = reg.reap_exited().await.expect("reap should succeed");
+        assert_eq!(exited.len(), 1);
+        let (
+            exited_name,
+            exited_generation,
+            exit_code,
+            _signal,
+            exit_reason,
+            exited_workspace,
+            exited_spawned_at,
+            exited_ready_at,
+        ) = &exited[0];
+        assert_eq!(exited_name, &name);
+        assert_eq!(*exited_generation, generation);
+        assert_eq!(*exit_code, Some(7));
+        assert_eq!(exit_reason.as_deref(), Some("worker_write_failed"));
+        assert_eq!(exited_workspace.as_ref(), Some(&workspace_id));
+        assert_eq!(*exited_spawned_at, spawned_at);
+        assert_eq!(*exited_ready_at, Some(ready_at));
     }
 
     #[cfg(unix)]
