@@ -140,18 +140,20 @@ try {
   }, 'safe task-exit cleanup');
   const registrationTimestamps = [...relay.workerRegistrationTimestamps];
   const retryScheduleBounded = retryScheduleIsBounded(registrationTimestamps);
-  const markers = (text, attempts) =>
+  // The pre-fix SDK reports one POST by omission (no attempts marker), while
+  // the broker-owned retry path restamps the terminal detail with the total.
+  const markers = (text, attempts, requireAttempts = true) =>
     text.includes(`(${ERROR_STATUS})`) &&
     text.includes(ERROR_CODE) &&
     text.includes(REQUEST_ID) &&
-    text.includes(`attempts: ${attempts}`);
+    (!requireAttempts || text.includes(`attempts: ${attempts}`));
 
   const baseObserved =
     arm === 'base' &&
     unsafe.status === 500 &&
     safe.status === 500 &&
-    markers(unsafeError, 1) &&
-    markers(typeof safe.body?.error === 'string' ? safe.body.error : '', 1) &&
+    markers(unsafeError, 1, false) &&
+    markers(typeof safe.body?.error === 'string' ? safe.body.error : '', 1, false) &&
     unsafeNoWorker === true &&
     safeNoWorker === true &&
     safeTaskExitCleaned === true &&

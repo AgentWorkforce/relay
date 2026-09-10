@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker worker spawns now retry transient Relaycast registration overloads and only fall back to local headless task-exit workers when Relaycast messaging is explicitly disabled.
+- Broker worker spawns and `mcp-args --register` now retry transient Relaycast registration overloads; spawns only fall back to local headless task-exit workers when Relaycast messaging is explicitly disabled.
 
 ## [11.10.4] - 2026-09-08
 

@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::relaycast::{
-    configure_agent_relay_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
+    configure_agent_relay_mcp_with_token, retry_agent_registration, RegRetryOutcome,
+    RelaycastHttpClient, RelaycastRegistrationError,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -171,12 +172,15 @@ async fn register_agent_token_for_mcp_args_with_timeout(
 
     let agent_token = match tokio::time::timeout(
         timeout,
-        client.register_agent_token(agent_name, Some(&cli_lower)),
+        retry_agent_registration(&client, agent_name, Some(&cli_lower)),
     )
     .await
     {
         Ok(Ok(token)) => token,
-        Ok(Err(error)) => return Err(map_register_agent_token_error(error)),
+        Ok(Err(RegRetryOutcome::RetryableExhausted(error)))
+        | Ok(Err(RegRetryOutcome::Fatal(error))) => {
+            return Err(map_register_agent_token_error(error));
+        }
         Err(error) => bail!("register timed out after {timeout:?}: {error}"),
     };
 
@@ -628,7 +632,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_surfaces_terminal_sdk_diagnostics_without_replaying_an_unsafe_post() {
+    async fn register_retries_transient_overload_before_surface_terminal_diagnostics() {
         let _env = EnvGuard::all();
         std::env::remove_var("RELAY_API_KEY");
         std::env::remove_var("RELAY_BASE_URL");
@@ -666,14 +670,13 @@ mod tests {
             "registration_backend_overloaded",
             "deterministic registration failure",
             "request_id: mcp-args-374",
-            "attempts: 1",
+            "attempts: 3",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        // Registration is an unkeyed POST. Retrying an ambiguous 503 could
-        // duplicate a committed agent registration, so the SDK must not replay
-        // it even when the server advertised Retry-After.
-        register_mock.assert_hits(1);
+        // The broker-owned retry budget handles the typed transient overload;
+        // the terminal diagnostic must report the total broker attempts.
+        register_mock.assert_hits(3);
     }
 
     #[tokio::test]
