@@ -42,6 +42,10 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
           stdio: 'pipe',
         }
       );
+      const bundleSource = readFileSync(bundle, 'utf8');
+      for (const provider of optionalSandboxProviders) {
+        expect(bundleSource).toContain(`import("${provider}")`);
+      }
       execFileSync(
         'bun',
         [

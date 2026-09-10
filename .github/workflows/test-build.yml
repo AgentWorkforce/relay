@@ -4,12 +4,14 @@ on:
   push:
     paths:
       - 'scripts/build-bun.sh'
+      - 'scripts/bundle-cli-for-bun.sh'
       - 'scripts/sign-macos-binary.sh'
       - 'scripts/verify-macos-binary.sh'
       - '.github/workflows/test-build.yml'
   pull_request:
     paths:
       - 'scripts/build-bun.sh'
+      - 'scripts/bundle-cli-for-bun.sh'
       - 'scripts/sign-macos-binary.sh'
       - 'scripts/verify-macos-binary.sh'
       - '.github/workflows/test-build.yml'
