@@ -292,7 +292,11 @@ describe('qualification runtime effect composer', () => {
     );
     expect(composerSource).toContain('const fleetSignoffVerified = enforced.status === 0;');
     expect(composerSource).not.toContain('fleetSignoffVerified: true');
-    expect(workflow.match(/--ttl 24h/g)).toHaveLength(2);
+    // Workspace lifecycle is owned by the trusted helper.  Creation receives
+    // its run-scoped identity through the step environment, and the helper's
+    // bounded 24-hour default is tested separately at the API boundary.
+    expect(workflow.match(/QUALIFICATION_IDEMPOTENCY_KEY:/g)).toHaveLength(2);
+    expect(workflow.match(/cleanup-qualification-workspaces\.mjs --mode create/g)).toHaveLength(2);
     expect(workflow).toContain("VERIFY_FLEET_MIN_CREDENTIAL_LIFETIME_SECONDS: '21600'");
     expect(workflow).toContain('workflow_run:');
     expect(workflow).toContain('ref: ${{ github.workflow_sha }}');

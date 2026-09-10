@@ -303,19 +303,21 @@ describe('qualification manifest', () => {
       jobs?: { qualification?: { steps?: Array<Record<string, unknown>> } };
     };
     const steps = workflow.jobs?.qualification?.steps ?? [];
-    const createCommand = (name: string) => {
+    const createStep = (name: string) => {
       const step = steps.find((candidate) => candidate.name === name);
       expect(step).toBeDefined();
       expect(typeof step?.run).toBe('string');
-      return String(step?.run);
+      return step as { env?: Record<string, unknown> };
     };
 
-    expect(createCommand('Create isolated ephemeral Cloud workspace A')).toContain(
-      '--idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:a"'
-    );
-    expect(createCommand('Create isolated ephemeral Cloud workspace B')).toContain(
-      '--idempotency-key "relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:b"'
-    );
+    expect(createStep('Create isolated ephemeral Cloud workspace A').env).toMatchObject({
+      QUALIFICATION_IDEMPOTENCY_KEY: 'relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:a',
+      QUALIFICATION_WORKSPACE_NAME: 'relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-a',
+    });
+    expect(createStep('Create isolated ephemeral Cloud workspace B').env).toMatchObject({
+      QUALIFICATION_IDEMPOTENCY_KEY: 'relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:b',
+      QUALIFICATION_WORKSPACE_NAME: 'relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-b',
+    });
   });
 
   it('uses a Node runtime that satisfies the locked dependency engine floor', async () => {

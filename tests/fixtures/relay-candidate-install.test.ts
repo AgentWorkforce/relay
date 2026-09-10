@@ -464,7 +464,7 @@ describe('Relay candidate clean-install attestation', () => {
         ).rejects.toThrow('package version does not match');
 
         await expect(
-          verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha })
+          verifyCandidateInstall(attestationPath, { sourceSha: input.sourceSha, executeCandidate: true })
         ).resolves.toMatchObject({ attestation: input });
         await expect(readFile(cliExecutionMarker, 'utf8')).resolves.toBe('executed');
         await expect(readFile(brokerExecutionMarker, 'utf8')).resolves.toBe('executed');
