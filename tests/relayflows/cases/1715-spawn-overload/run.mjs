@@ -16,6 +16,7 @@ const ERROR_STATUS = 503;
 const REQUEST_ID = 'relayflow-1715-request';
 const RETRY_AFTER_SECONDS = 1;
 const RETRY_BACKOFFS_MS = [200, 400];
+const RETRY_DELAY_TOLERANCE_MS = 250;
 const RETRY_DEADLINE_MS = 2_000;
 const UNSAFE_AGENT = 'relayflow-1715-unsafe';
 const SAFE_AGENT = 'relayflow-1715-safe';
@@ -407,7 +408,12 @@ function retryScheduleIsBounded(timestamps) {
     if (elapsed > RETRY_DEADLINE_MS) return false;
     for (let retry = 0; retry < RETRY_BACKOFFS_MS.length; retry += 1) {
       const delta = timestamps[start + retry + 1] - timestamps[start + retry];
-      if (delta < RETRY_BACKOFFS_MS[retry] - 50) return false;
+      if (
+        delta < RETRY_BACKOFFS_MS[retry] - 50 ||
+        delta > RETRY_BACKOFFS_MS[retry] + RETRY_DELAY_TOLERANCE_MS
+      ) {
+        return false;
+      }
     }
   }
   return true;
