@@ -21,7 +21,9 @@ const jwt = `eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${Buffer.from(JSON.stringify({ 
 const binary = entrypoint === 'cli' ? '/qualification/relayfile-npm/node_modules/.bin/relayfile' : '/qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount';
 const outputDir = `/tmp/issue-490-${entrypoint}`;
 const stateFile = `/tmp/issue-490-${entrypoint}-state/state.json`;
-const args = entrypoint === 'cli' ? ['mount', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile] : ['--workspace', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile];
+const args = entrypoint === 'cli'
+  ? ['mount', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile]
+  : ['--workspace', 'issue-490', '--base-url', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile];
 const runOnce = () => new Promise((resolve) => {
   const child = spawn(binary, args, { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
   child.once('error', () => resolve(1));
@@ -45,7 +47,7 @@ try { fileUpdated = (await readFile(`${outputDir}/issue-490.txt`, 'utf8')) === '
 try { cursorPersisted = JSON.parse(await readFile(stateFile, 'utf8')).eventsCursor === 'evt_001'; } catch {}
 let daemonRealtimeDialCount = 0;
 if (entrypoint === 'standalone') {
-  const daemon = spawn(binary, ['--workspace', 'issue-490', '--server', base, '--token', jwt, '--local-dir', `${outputDir}-daemon`, '--state-file', `/tmp/issue-490-${entrypoint}-daemon-state/state.json`], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
+  const daemon = spawn(binary, ['--workspace', 'issue-490', '--base-url', base, '--token', jwt, '--local-dir', `${outputDir}-daemon`, '--state-file', `/tmp/issue-490-${entrypoint}-daemon-state/state.json`], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
   const daemonExit = new Promise((resolve) => { daemon.once('error', () => resolve(1)); daemon.once('exit', (code) => resolve(code ?? 1)); });
   const deadline = Date.now() + 10_000;
   while (wsUpgradeCount - onceWsUpgradeCount < 1 && Date.now() < deadline) await sleep(100);

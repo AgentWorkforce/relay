@@ -20,6 +20,7 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /bundle-manifest\.json/);
   assert.match(arm, /immutable bundle belongs to a different run ID/);
   assert.match(arm, /npm ci --no-audit --no-fund/);
+  assert.match(arm, /npm run build:platform && npm run build:core/);
   assert.match(arm, /'--cwd',\s*'\/qualification\/relayfile-cloud'/);
   assert.match(arm, /pollUntilAbsent/);
   assert.match(arm, /preflight\.status !== 'READY'/);
@@ -57,6 +58,9 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /issue-490-probe\.mjs/);
   assert.match(issue490Probe, /node_modules\/\.bin\/relayfile/);
   assert.match(arm, /@relayfile\/mount-linux-x64\/bin\/relayfile-mount/);
+  assert.match(issue490Probe, /entrypoint === 'cli'[\s\S]*'--server'[\s\S]*'--base-url'/);
+  assert.equal((issue490Probe.match(/'--server'/g) ?? []).length, 1);
+  assert.equal((issue490Probe.match(/'--base-url'/g) ?? []).length, 2);
   assert.doesNotMatch(issue490Probe, /go test/);
   assert.match(issue490Probe, /onceWsUpgradeCount = wsUpgradeCount/);
   assert.match(issue490Probe, /issue-490-\$\{entrypoint\}-state\/state\.json/);
