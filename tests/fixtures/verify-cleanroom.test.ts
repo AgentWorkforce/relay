@@ -951,5 +951,9 @@ describe('clean-room verification catalog', () => {
     expect(source).toContain('relay-qualification:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${suffix}');
     expect(source).toContain('relayfileCloudQualification.deploymentId');
     expect(source).toContain('result.absence?.workspaceId !== id || result.absence?.status !== 404');
+    expect(source).toContain('workspace_${suffix}_already_absent=true');
+    expect(source).toContain("source: 'reconcile'");
+    expect(source).toContain("steps.resolve.outputs.workspace_a_already_absent != 'true'");
+    expect(source).toContain("steps.resolve.outputs.workspace_b_already_absent != 'true'");
   });
 });

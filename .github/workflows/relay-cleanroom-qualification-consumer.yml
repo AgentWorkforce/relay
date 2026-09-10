@@ -653,8 +653,27 @@ jobs:
               throw new Error(`invalid ${suffix} reconciliation identity`);
             }
             if (value.absent === true) {
-              if (value.workspaceId !== null || uuid.test(prior)) {
-                throw new Error(`reconciled ${suffix} absence conflicts with a create-step workspace ID`);
+              if (value.workspaceId !== null) {
+                throw new Error(`reconciled ${suffix} absence returned an unexpected workspace ID`);
+              }
+              if (uuid.test(prior)) {
+                // The in-job cleanup may already have deleted this exact ID.
+                // Preserve the raw reconcile result as normalized 404 evidence
+                // and suppress a second delete; never treat it as unowned.
+                resolved[suffix] = prior;
+                fs.writeFileSync(
+                  `qualification-cleanup/delete-${suffix}.json`,
+                  `${JSON.stringify({
+                    source: 'reconcile',
+                    workspaceId: prior,
+                    absence: { workspaceId: prior, status: 404 },
+                    reconcile: value,
+                  })}\n`,
+                  { mode: 0o600, flag: 'wx' }
+                );
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}=${prior}\n`);
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}_already_absent=true\n`);
+                continue;
               }
               fs.appendFileSync(process.env.GITHUB_OUTPUT, `workspace_${suffix}_absent=true\n`);
               continue;
@@ -674,7 +693,7 @@ jobs:
           NODE
 
       - name: Delete exact fallback workspace B and verify cascade
-        if: steps.resolve.outputs.workspace_b != ''
+        if: steps.resolve.outputs.workspace_b != '' && steps.resolve.outputs.workspace_b_already_absent != 'true'
         working-directory: relay-cleanup
         env:
           CLOUD_API_URL: https://agentrelay.com/cloud
@@ -691,7 +710,7 @@ jobs:
             --json > qualification-cleanup/delete-b.json
 
       - name: Delete exact fallback workspace A and verify cascade
-        if: always() && steps.resolve.outputs.workspace_a != ''
+        if: always() && steps.resolve.outputs.workspace_a != '' && steps.resolve.outputs.workspace_a_already_absent != 'true'
         working-directory: relay-cleanup
         env:
           CLOUD_API_URL: https://agentrelay.com/cloud
