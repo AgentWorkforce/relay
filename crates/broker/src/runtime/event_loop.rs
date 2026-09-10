@@ -40,6 +40,104 @@ pub(crate) struct HostedAgentEvent {
     pub(super) event_type: String,
     pub(super) payload: serde_json::Map<String, Value>,
     pub(super) workspace_id: Option<WorkspaceId>,
+    /// Idempotency key hosted consumers can use to discard a duplicate
+    /// delivery. Matches `CrashRecord::dedupe_key` (`agent_name::generation`)
+    /// for the durable record this event was derived from, so a replay after
+    /// restart can be recognized as the same logical exit even though it is
+    /// a distinct in-memory `HostedAgentEvent`.
+    pub(super) dedupe_key: String,
+}
+
+/// Rebuild the hosted `agent_exited` event for a durable crash record.
+///
+/// Used both for the live path (immediately after
+/// [`crate::crash_insights::CrashInsights::record`]) and for replay on
+/// broker restart (see `reload_pending_hosted_agent_exit_backlog`), so the
+/// two can never drift: whatever a live exit would have published is
+/// bit-for-bit what a restart replays from the durable record.
+pub(crate) fn hosted_agent_event_from_crash_record(
+    record: &crate::crash_insights::CrashRecord,
+) -> HostedAgentEvent {
+    let payload = serde_json::json!({
+        "code": record.exit_code,
+        "signal": record.signal,
+        "reason": record.exit_reason,
+        "generation": record.generation,
+        "workspace_id": record.workspace_id,
+        "spawn_invocation_id": record.spawn_invocation_id,
+        "fleet_node_name": record.fleet_node_name,
+        "became_ready": record.became_ready,
+        "spawned_at": record.spawned_at,
+        "ready_at": record.ready_at,
+        "exited_at": record.exited_at,
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default();
+    HostedAgentEvent {
+        name: record.agent_name.clone(),
+        event_type: "agent_exited".to_string(),
+        payload,
+        workspace_id: record
+            .workspace_id
+            .as_deref()
+            .map(crate::ids::WorkspaceId::new),
+        dedupe_key: record.dedupe_key(),
+    }
+}
+
+/// Rebuild the bounded in-memory retry backlog from durable pending records
+/// on broker startup, in original (chronological) order.
+///
+/// This is the "replay" half of the durable outbox: [`CrashInsights`] on
+/// disk is the source of truth for *what* still needs delivering; this
+/// merely reconstructs the in-memory `HostedAgentEvent`s the maintenance
+/// tick's normal drain/enqueue path already knows how to retry. Bounded by
+/// [`HOSTED_AGENT_EXIT_BACKLOG_CAP`] exactly like the live path, so a broker
+/// that comes back after accumulating an enormous pending set still starts
+/// with a small, boring backlog rather than an unbounded one — the loudly
+/// logged overflow-drop is the same code path live delivery uses.
+///
+/// [`CrashInsights`]: crate::crash_insights::CrashInsights
+pub(crate) fn reload_pending_hosted_agent_exit_backlog(
+    crash_insights: &crate::crash_insights::CrashInsights,
+    dropped_total: &mut u64,
+) -> VecDeque<HostedAgentEvent> {
+    let mut backlog: VecDeque<HostedAgentEvent> = crash_insights
+        .pending_hosted_deliveries()
+        .into_iter()
+        .map(hosted_agent_event_from_crash_record)
+        .collect();
+    let replayed = backlog.len();
+    enforce_hosted_agent_exit_backlog_cap(&mut backlog, dropped_total);
+    if replayed > 0 {
+        tracing::info!(
+            replayed,
+            retained = backlog.len(),
+            "replaying pending hosted agent-exit deliveries from durable crash insights after restart"
+        );
+    }
+    backlog
+}
+
+/// Trim `backlog` down to [`HOSTED_AGENT_EXIT_BACKLOG_CAP`], dropping the
+/// oldest entries first and counting/logging every drop loudly. Shared by
+/// the live enqueue path and startup replay so both bound growth identically.
+fn enforce_hosted_agent_exit_backlog_cap(
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+) {
+    while backlog.len() > HOSTED_AGENT_EXIT_BACKLOG_CAP {
+        if let Some(dropped) = backlog.pop_front() {
+            *dropped_total += 1;
+            tracing::error!(
+                worker = %dropped.name,
+                event_type = %dropped.event_type,
+                dropped_total = *dropped_total,
+                "hosted agent exit backlog overflowed; oldest terminal event was dropped — hosted consumers may miss this exit (durable crash-insights record on disk remains authoritative)"
+            );
+        }
+    }
 }
 
 /// Upper bound on how many terminal hosted-agent events (e.g. `agent_exited`)
@@ -62,15 +160,64 @@ pub(crate) const HOSTED_AGENT_EXIT_BACKLOG_CAP: usize = 256;
 /// is not backlogged in that case — only counted and logged at error level so
 /// the miss is observable — and the caller's crash-insights persistence
 /// (already durable on disk) remains the authoritative record either way.
+/// Mark `event` delivered in the durable crash-insights record it was
+/// derived from and persist that transition immediately.
+///
+/// This is the "ack boundary" for hosted delivery: the only handoff point
+/// actually available to the broker is a successful `mpsc::try_send` into
+/// the publisher task (there is no further downstream ack — the publisher
+/// task's own HTTP call to Relaycast is best-effort and already logged on
+/// failure independently). Persisting right here, synchronously, means a
+/// crash immediately after this call still leaves the on-disk record
+/// correctly marked `Delivered` — and a crash immediately *before* it still
+/// leaves the record `Pending`, so a restart replays it again. That replay
+/// is safe (not silently duplicate-lossy) only because consumers dedupe on
+/// `dedupe_key`; this is the accepted at-least-once tradeoff.
+fn mark_hosted_delivered_and_persist(
+    crash_insights: &mut crate::crash_insights::CrashInsights,
+    crash_insights_path: &std::path::Path,
+    persist: bool,
+    dedupe_key: &str,
+) {
+    if crash_insights.mark_hosted_delivered(dedupe_key) && persist {
+        if let Err(error) = crash_insights.save(crash_insights_path) {
+            tracing::warn!(
+                path = %crash_insights_path.display(),
+                error = %error,
+                dedupe_key = %dedupe_key,
+                "failed to persist hosted-delivery acknowledgement; a future restart may harmlessly replay this already-delivered exit"
+            );
+        }
+    }
+}
+
 pub(crate) fn enqueue_hosted_agent_exit_event(
     tx: &mpsc::Sender<HostedAgentEvent>,
     backlog: &mut VecDeque<HostedAgentEvent>,
     dropped_total: &mut u64,
+    crash_insights: &mut crate::crash_insights::CrashInsights,
+    crash_insights_path: &std::path::Path,
+    persist: bool,
     event: HostedAgentEvent,
 ) {
-    drain_hosted_agent_exit_backlog(tx, backlog, dropped_total);
+    drain_hosted_agent_exit_backlog(
+        tx,
+        backlog,
+        dropped_total,
+        crash_insights,
+        crash_insights_path,
+        persist,
+    );
+    let dedupe_key = event.dedupe_key.clone();
     match tx.try_send(event) {
-        Ok(()) => {}
+        Ok(()) => {
+            mark_hosted_delivered_and_persist(
+                crash_insights,
+                crash_insights_path,
+                persist,
+                &dedupe_key,
+            );
+        }
         Err(mpsc::error::TrySendError::Full(event)) => {
             tracing::warn!(
                 worker = %event.name,
@@ -79,17 +226,7 @@ pub(crate) fn enqueue_hosted_agent_exit_event(
                 "hosted agent event queue full; holding terminal event in bounded backlog for retry"
             );
             backlog.push_back(event);
-            while backlog.len() > HOSTED_AGENT_EXIT_BACKLOG_CAP {
-                if let Some(dropped) = backlog.pop_front() {
-                    *dropped_total += 1;
-                    tracing::error!(
-                        worker = %dropped.name,
-                        event_type = %dropped.event_type,
-                        dropped_total = *dropped_total,
-                        "hosted agent exit backlog overflowed; oldest terminal event was dropped — hosted consumers may miss this exit (durable crash-insights record on disk remains authoritative)"
-                    );
-                }
-            }
+            enforce_hosted_agent_exit_backlog_cap(backlog, dropped_total);
         }
         Err(mpsc::error::TrySendError::Closed(event)) => {
             *dropped_total += 1;
@@ -97,7 +234,7 @@ pub(crate) fn enqueue_hosted_agent_exit_event(
                 worker = %event.name,
                 event_type = %event.event_type,
                 dropped_total = *dropped_total,
-                "hosted agent event publisher channel is closed; terminal event could not be delivered to hosted consumers (durable crash-insights record on disk remains authoritative)"
+                "hosted agent event publisher channel is closed; terminal event could not be delivered to hosted consumers for the remaining process lifetime (durable crash-insights record on disk remains authoritative and pending — it will be replayed on the next broker restart)"
             );
         }
     }
@@ -106,15 +243,27 @@ pub(crate) fn enqueue_hosted_agent_exit_event(
 /// Retry every backlogged terminal hosted-agent event against the publisher
 /// channel, in original order, stopping at the first one that still does not
 /// fit so relative ordering is preserved and this call cannot itself stall
-/// maintenance on a persistently full channel.
+/// maintenance on a persistently full channel (bounded work per tick, never
+/// blocking maintenance indefinitely on a stuck or closed channel).
 pub(crate) fn drain_hosted_agent_exit_backlog(
     tx: &mpsc::Sender<HostedAgentEvent>,
     backlog: &mut VecDeque<HostedAgentEvent>,
     dropped_total: &mut u64,
+    crash_insights: &mut crate::crash_insights::CrashInsights,
+    crash_insights_path: &std::path::Path,
+    persist: bool,
 ) {
     while let Some(event) = backlog.pop_front() {
+        let dedupe_key = event.dedupe_key.clone();
         match tx.try_send(event) {
-            Ok(()) => {}
+            Ok(()) => {
+                mark_hosted_delivered_and_persist(
+                    crash_insights,
+                    crash_insights_path,
+                    persist,
+                    &dedupe_key,
+                );
+            }
             Err(mpsc::error::TrySendError::Full(event)) => {
                 backlog.push_front(event);
                 break;
@@ -125,18 +274,23 @@ pub(crate) fn drain_hosted_agent_exit_backlog(
                     worker = %event.name,
                     event_type = %event.event_type,
                     dropped_total = *dropped_total,
-                    "hosted agent event publisher channel closed while draining backlog; terminal event could not be delivered (durable crash-insights record on disk remains authoritative)"
+                    "hosted agent event publisher channel closed while draining backlog; terminal event could not be delivered for the remaining process lifetime (durable crash-insights record on disk remains authoritative and pending — it will be replayed on the next broker restart)"
                 );
-                // The channel cannot recover; draining further entries would
-                // only repeat the same closed-channel error for each of
-                // them. Report them all now rather than one per future tick.
+                // The channel cannot recover for the rest of this process's
+                // lifetime; draining further entries would only repeat the
+                // same closed-channel error for each of them. Report them
+                // all now rather than one per future tick. Every one of
+                // these events' durable crash records is still `Pending` on
+                // disk (never marked delivered) so a broker restart replays
+                // them — this in-memory backlog is only ever a delivery
+                // *retry* aid, not the durability boundary itself.
                 for remaining in backlog.drain(..) {
                     *dropped_total += 1;
                     tracing::error!(
                         worker = %remaining.name,
                         event_type = %remaining.event_type,
                         dropped_total = *dropped_total,
-                        "hosted agent event publisher channel closed; discarding backlogged terminal event"
+                        "hosted agent event publisher channel closed; discarding backlogged terminal event from the in-memory retry queue (durable crash-insights record remains pending for replay on restart)"
                     );
                 }
                 break;
@@ -725,6 +879,7 @@ mod resize_owner_tests {
             event_type: "activity.changed".to_string(),
             payload: serde_json::Map::new(),
             workspace_id: Some(workspace_id),
+            dedupe_key: "Worker::activity.changed".to_string(),
         })
         .await
         .expect("publisher queue open");

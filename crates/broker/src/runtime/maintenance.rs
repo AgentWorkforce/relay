@@ -95,6 +95,9 @@ impl BrokerRuntime {
             hosted_agent_event_tx,
             hosted_agent_exit_backlog,
             hosted_agent_exit_dropped_total,
+            crash_insights,
+            crash_insights_path,
+            paths.persist,
         );
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
@@ -481,7 +484,14 @@ impl BrokerRuntime {
                     tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing exited worker session");
                 }
             }
-            crash_insights.record(crate::crash_insights::CrashRecord {
+            // Record and persist the terminal crash record — with hosted
+            // delivery defaulted to `Pending` — *before* any attempt to hand
+            // it to the hosted publisher channel below. This ordering is the
+            // core of the durable outbox: a broker crash between this save
+            // and the enqueue attempt still leaves a `Pending` record on
+            // disk, so a restart replays it; there is no window in which the
+            // event is neither durably queued nor delivered.
+            let crash_record = crate::crash_insights::CrashRecord {
                 agent_name: name.as_str().to_string(),
                 exit_code: *code,
                 signal: signal.clone(),
@@ -498,7 +508,9 @@ impl BrokerRuntime {
                 exited_at,
                 exit_reason: durable_reason.clone(),
                 fleet_node_name: fleet_node_name.clone(),
-            });
+                hosted_delivery: crate::crash_insights::HostedDeliveryState::Pending,
+            };
+            crash_insights.record(crash_record.clone());
             if paths.persist {
                 if let Err(error) = crash_insights.save(crash_insights_path) {
                     tracing::warn!(
@@ -508,39 +520,24 @@ impl BrokerRuntime {
                     );
                 }
             }
-            let hosted_payload = json!({
-                "code": code,
-                "signal": signal,
-                "reason": durable_reason,
-                "generation": generation_id,
-                "workspace_id": workspace_id,
-                "spawn_invocation_id": spawn_invocation_id,
-                "fleet_node_name": fleet_node_name,
-                "became_ready": ready_at.is_some(),
-                "spawned_at": spawned_at_unix,
-                "ready_at": ready_at_unix,
-                "exited_at": exited_at,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
             // Delivery to hosted consumers must not silently drop the
             // terminal event on backpressure: a full channel is retried via
             // the bounded backlog (drained every tick) rather than dropped
             // outright, and a closed channel is at least made observable via
-            // an error-level log and a counter. The crash-insights record
-            // saved just above remains the durable source of truth either
-            // way. See `enqueue_hosted_agent_exit_event`.
+            // an error-level log and a counter. Either way the durable
+            // crash-insights record saved just above starts (and, on
+            // anything short of a successful handoff, stays) `Pending`, so
+            // it is always the authoritative record of what still needs
+            // delivering — including across a broker restart, which replays
+            // every still-`Pending` record. See `enqueue_hosted_agent_exit_event`.
             super::event_loop::enqueue_hosted_agent_exit_event(
                 hosted_agent_event_tx,
                 hosted_agent_exit_backlog,
                 hosted_agent_exit_dropped_total,
-                HostedAgentEvent {
-                    name: name.as_str().to_string(),
-                    event_type: "agent_exited".to_string(),
-                    payload: hosted_payload,
-                    workspace_id: workspace_id.as_deref().map(crate::ids::WorkspaceId::new),
-                },
+                crash_insights,
+                crash_insights_path,
+                paths.persist,
+                super::event_loop::hosted_agent_event_from_crash_record(&crash_record),
             );
 
             telemetry.track(TelemetryEvent::AgentCrash {

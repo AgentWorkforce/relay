@@ -556,6 +556,19 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
     let crash_insights = crate::crash_insights::CrashInsights::load(&crash_insights_path);
+    // Replay the durable hosted-delivery outbox: any exit whose
+    // `agent_exited` hand-off to the hosted publisher channel never
+    // succeeded (crash before or during that handoff, or a channel that was
+    // closed for the remainder of the previous process's life) is still
+    // `Pending` on disk and gets a fresh in-memory retry entry here, in the
+    // same order it was recorded, so this restart's normal maintenance-tick
+    // drain path retries it exactly as it would a same-session backlog
+    // entry. See `crate::crash_insights::CrashRecord::hosted_delivery`.
+    let mut hosted_agent_exit_dropped_total = 0u64;
+    let hosted_agent_exit_backlog = super::event_loop::reload_pending_hosted_agent_exit_backlog(
+        &crash_insights,
+        &mut hosted_agent_exit_dropped_total,
+    );
 
     let sdk_lines = BufReader::new(tokio::io::stdin()).lines();
     let stdin_open = true;
@@ -674,8 +687,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_control_tx,
         relaycast_http,
         hosted_agent_event_tx,
-        hosted_agent_exit_backlog: VecDeque::new(),
-        hosted_agent_exit_dropped_total: 0,
+        hosted_agent_exit_backlog,
+        hosted_agent_exit_dropped_total,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,

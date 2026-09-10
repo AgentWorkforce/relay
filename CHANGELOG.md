@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 
-- Worker deaths now persist bounded, generation-correlated exit diagnostics immediately and surface them through node and Fleet agent events. Fleet invocation correlation is carried on the exited process generation itself, so a same-name replacement worker can no longer overwrite the exit attribution; a full or closed hosted-event channel now backlogs and retries the terminal `agent_exited` event instead of silently dropping it.
+- Worker deaths now persist bounded, generation-correlated exit diagnostics immediately and surface them through node and Fleet agent events. Fleet invocation correlation is carried on the exited process generation itself, so a same-name replacement worker can no longer overwrite the exit attribution. Hosted `agent_exited` delivery is now a durable, at-least-once outbox tied to the persisted crash record: a full or closed hosted-event channel no longer silently drops the terminal event, pending deliveries survive a broker restart and are replayed in order (deduped by agent + generation), and pending/backlog/drop counts are queryable via the crash-insights API.
 
 - `fleet spawn --sandbox` uses the provider-neutral durable profile for explicit Daytona and E2B sandboxes, so their measured resource envelopes are routable while Agent37 retains its heavy profile.
 

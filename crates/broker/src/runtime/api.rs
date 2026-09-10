@@ -314,6 +314,8 @@ impl BrokerRuntime {
         let persist = self.persist;
         let shutdown = &mut self.shutdown;
         let crash_insights = &self.crash_insights;
+        let hosted_agent_exit_backlog_len = self.hosted_agent_exit_backlog.len();
+        let hosted_agent_exit_dropped_total = self.hosted_agent_exit_dropped_total;
 
         match req {
             ListenApiRequest::Spawn {
@@ -2084,7 +2086,24 @@ impl BrokerRuntime {
                 })));
             }
             ListenApiRequest::GetCrashInsights { reply } => {
-                let _ = reply.send(Ok(crash_insights.to_json()));
+                // Backward-compatible additions: existing fields from
+                // `crash_insights.to_json()` are unchanged; `hosted_delivery`
+                // groups the durable outbox/backlog status a REST client can
+                // poll instead of (or alongside) directly reading
+                // `crash-insights.json`'s per-record `hosted_delivery` state.
+                let mut body = crash_insights.to_json();
+                if let Some(object) = body.as_object_mut() {
+                    object.insert(
+                        "hosted_delivery".to_string(),
+                        json!({
+                            "pending": crash_insights.pending_hosted_deliveries().len(),
+                            "in_memory_backlog_len": hosted_agent_exit_backlog_len,
+                            "in_memory_backlog_cap": super::event_loop::HOSTED_AGENT_EXIT_BACKLOG_CAP,
+                            "dropped_total": hosted_agent_exit_dropped_total,
+                        }),
+                    );
+                }
+                let _ = reply.send(Ok(body));
             }
             ListenApiRequest::GetDeadLetters { reply } => {
                 let now_ms = unix_timestamp_millis();

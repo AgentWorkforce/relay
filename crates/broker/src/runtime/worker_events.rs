@@ -155,6 +155,10 @@ fn enqueue_pty_event(
         event_type: event_type.to_string(),
         payload,
         workspace_id: state.workspace_id.clone(),
+        // Best-effort observability events (non-terminal) never go through
+        // the durable agent_exited outbox/backlog, so this key is only ever
+        // used for logging context, never for dedup lookups.
+        dedupe_key: format!("{}::pty::{}", name, state.sequence),
     }) {
         tracing::warn!(worker = %name, error = %error, "Relaycast PTY observability queue is full or closed");
     }
@@ -594,11 +598,21 @@ fn hosted_agent_event(
     if let Some(timestamp) = payload.get("timestamp") {
         event_payload.insert("timestamp".to_string(), timestamp.clone());
     }
+    let dedupe_key = format!(
+        "{}::relayed::{}::{}",
+        name,
+        event_type,
+        payload.get("sequence").cloned().unwrap_or(Value::Null)
+    );
     Some(HostedAgentEvent {
         name: name.to_string(),
         event_type,
         payload: event_payload,
         workspace_id,
+        // Relayed worker-protocol events (not the broker-synthesized
+        // terminal `agent_exited`) never go through the durable outbox
+        // either; this key is only for logging/uniqueness, not dedup.
+        dedupe_key,
     })
 }
 

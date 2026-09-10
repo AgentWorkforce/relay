@@ -24,6 +24,38 @@ pub enum CrashCategory {
     Unknown,
 }
 
+/// Delivery state of a crash record's corresponding hosted `agent_exited`
+/// event.
+///
+/// This is the durable half of the hosted-delivery outbox: every exit is
+/// recorded [`Pending`](HostedDeliveryState::Pending) in the same atomic
+/// write as the rest of the crash record (see [`CrashInsights::record`] /
+/// [`CrashInsights::save`]), *before* the broker attempts to hand the event
+/// to the hosted publisher channel. It flips to
+/// [`Delivered`](HostedDeliveryState::Delivered) only after that handoff
+/// actually succeeds (a successful `mpsc::Sender::try_send`), and that
+/// transition is itself persisted immediately. A broker crash at any point
+/// between the two writes therefore always leaves the on-disk record in
+/// exactly one of those two states — never a state that claims delivery
+/// happened when it didn't.
+///
+/// On restart, every still-`Pending` record is a candidate for replay (see
+/// `hosted_agent_event_from_crash_record` in the broker crate), giving
+/// at-least-once delivery: a record may occasionally be replayed after it
+/// was in fact delivered (e.g. the success write raced a crash), which is
+/// why replay is keyed by [`CrashRecord::dedupe_key`] so hosted consumers can
+/// idempotently discard a duplicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedDeliveryState {
+    /// Not yet handed off to the hosted publisher channel (or the handoff
+    /// failed and was not retried). Eligible for replay on restart.
+    #[default]
+    Pending,
+    /// Successfully handed to the hosted publisher channel at least once.
+    Delivered,
+}
+
 /// A single crash record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrashRecord {
@@ -61,6 +93,25 @@ pub struct CrashRecord {
     /// Fleet node name that hosted this generation.
     #[serde(default)]
     pub fleet_node_name: Option<String>,
+    /// Durable delivery state of the corresponding hosted `agent_exited`
+    /// event. See [`HostedDeliveryState`]. Defaults to `Pending` so records
+    /// written by older brokers (before this field existed) are always
+    /// eligible for replay rather than silently treated as delivered.
+    #[serde(default)]
+    pub hosted_delivery: HostedDeliveryState,
+}
+
+impl CrashRecord {
+    /// Stable idempotency key for this generation's hosted delivery:
+    /// `agent_name` plus `generation`. A same-name replacement worker gets a
+    /// new `generation` (see `WorkerHandle`), so this key never collides
+    /// across two different process lifetimes of the same agent name, and
+    /// is stable across broker restarts (unlike, say, a locally-assigned
+    /// sequence number) so hosted consumers can dedupe a replayed delivery
+    /// against one they already saw before a restart.
+    pub fn dedupe_key(&self) -> String {
+        format!("{}::{}", self.agent_name, self.generation)
+    }
 }
 
 /// A detected crash pattern (grouping).
@@ -202,6 +253,45 @@ impl CrashInsights {
         self.records.len()
     }
 
+    /// Records whose hosted `agent_exited` delivery has not yet succeeded,
+    /// in the original (chronological) order they were recorded.
+    ///
+    /// This is the durable hosted-delivery outbox's replay source: the
+    /// broker walks this on startup and on-disk retention (`max_records`,
+    /// via [`CrashInsights::record`]) is this outbox's explicit bound on
+    /// disk growth — a broker that is offline (or whose hosted channel stays
+    /// closed) long enough to accumulate more than `max_records` crashes
+    /// will lose the oldest still-pending deliveries rather than grow the
+    /// file without limit. That loss is logged loudly wherever eviction
+    /// happens; it never happens silently.
+    pub fn pending_hosted_deliveries(&self) -> Vec<&CrashRecord> {
+        self.records
+            .iter()
+            .filter(|record| record.hosted_delivery == HostedDeliveryState::Pending)
+            .collect()
+    }
+
+    /// Mark the most recent record matching `dedupe_key` as delivered and
+    /// return whether a matching (still-pending) record was found.
+    ///
+    /// Callers should persist ([`CrashInsights::save`]) immediately after a
+    /// successful call so the transition is durable before the process could
+    /// crash again. Searches from the end since the record being
+    /// acknowledged was almost always just appended; older duplicates (there
+    /// should not normally be more than one record per key) are left
+    /// untouched.
+    pub fn mark_hosted_delivered(&mut self, dedupe_key: &str) -> bool {
+        for record in self.records.iter_mut().rev() {
+            if record.hosted_delivery == HostedDeliveryState::Pending
+                && record.dedupe_key() == dedupe_key
+            {
+                record.hosted_delivery = HostedDeliveryState::Delivered;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Load from a JSON file. Returns empty insights if file doesn't exist or is invalid.
     pub fn load(path: &Path) -> Self {
         std::fs::read_to_string(path)
@@ -233,6 +323,12 @@ impl CrashInsights {
             "recent": self.recent(20),
             "patterns": self.patterns(),
             "health_score": self.health_score(),
+            // Durable hosted-delivery outbox status. `hosted_delivery_pending`
+            // counts records not yet handed off to the hosted publisher
+            // channel — these are exactly what gets replayed on the next
+            // broker restart. Backward-compatible addition: older clients
+            // that don't read this field are unaffected.
+            "hosted_delivery_pending": self.pending_hosted_deliveries().len(),
         })
     }
 }
@@ -260,6 +356,7 @@ mod tests {
             exited_at: 0,
             exit_reason: None,
             fleet_node_name: None,
+            hosted_delivery: HostedDeliveryState::Pending,
         }
     }
 
@@ -500,6 +597,170 @@ mod tests {
             let decoded: CrashCategory = serde_json::from_str(&json).unwrap();
             assert_eq!(decoded, cat);
         }
+    }
+
+    #[test]
+    fn new_record_defaults_to_pending_hosted_delivery() {
+        let mut ci = CrashInsights::new();
+        let mut record = make_record("w1", Some(1), None);
+        record.generation = "gen-1".to_string();
+        ci.record(record);
+
+        assert_eq!(ci.pending_hosted_deliveries().len(), 1);
+        assert_eq!(
+            ci.pending_hosted_deliveries()[0].hosted_delivery,
+            HostedDeliveryState::Pending
+        );
+    }
+
+    #[test]
+    fn legacy_records_without_the_field_default_to_pending() {
+        // A record persisted by a broker built before `hosted_delivery`
+        // existed must still be replayed, never silently treated as
+        // already delivered.
+        let record: CrashRecord = serde_json::from_value(serde_json::json!({
+            "agent_name": "legacy",
+            "exit_code": 1,
+            "signal": null,
+            "timestamp": 42,
+            "uptime_secs": 2,
+            "category": "error",
+            "description": "Exited with code 1",
+            "generation": "gen-legacy"
+        }))
+        .unwrap();
+
+        assert_eq!(record.hosted_delivery, HostedDeliveryState::Pending);
+    }
+
+    #[test]
+    fn mark_hosted_delivered_flips_state_and_returns_true() {
+        let mut ci = CrashInsights::new();
+        let mut record = make_record("w1", Some(1), None);
+        record.generation = "gen-1".to_string();
+        let key = record.dedupe_key();
+        ci.record(record);
+
+        assert!(ci.mark_hosted_delivered(&key));
+        assert_eq!(ci.pending_hosted_deliveries().len(), 0);
+        // Marking again finds no pending match — already delivered.
+        assert!(!ci.mark_hosted_delivered(&key));
+    }
+
+    #[test]
+    fn mark_hosted_delivered_ignores_unknown_key() {
+        let mut ci = CrashInsights::new();
+        let mut record = make_record("w1", Some(1), None);
+        record.generation = "gen-1".to_string();
+        ci.record(record);
+
+        assert!(!ci.mark_hosted_delivered("w1::some-other-generation"));
+        assert_eq!(ci.pending_hosted_deliveries().len(), 1);
+    }
+
+    #[test]
+    fn dedupe_key_distinguishes_same_name_different_generation() {
+        let mut a = make_record("w1", Some(1), None);
+        a.generation = "gen-old".to_string();
+        let mut b = make_record("w1", Some(1), None);
+        b.generation = "gen-new".to_string();
+
+        assert_ne!(a.dedupe_key(), b.dedupe_key());
+
+        // Marking the old generation delivered must not affect the new
+        // generation's own pending record — a same-name replacement worker's
+        // exit must remain independently deliverable.
+        let mut ci = CrashInsights::new();
+        let old_key = a.dedupe_key();
+        ci.record(a);
+        ci.record(b);
+        assert!(ci.mark_hosted_delivered(&old_key));
+        assert_eq!(ci.pending_hosted_deliveries().len(), 1);
+        assert_eq!(ci.pending_hosted_deliveries()[0].generation, "gen-new");
+    }
+
+    #[test]
+    fn pending_hosted_deliveries_preserve_chronological_order() {
+        let mut ci = CrashInsights::new();
+        for i in 0..5 {
+            let mut record = make_record(&format!("w{}", i), Some(1), None);
+            record.generation = format!("gen-{}", i);
+            ci.record(record);
+        }
+
+        let pending = ci.pending_hosted_deliveries();
+        let names: Vec<&str> = pending.iter().map(|r| r.agent_name.as_str()).collect();
+        assert_eq!(names, vec!["w0", "w1", "w2", "w3", "w4"]);
+    }
+
+    #[test]
+    fn retention_bounds_pending_hosted_delivery_backlog() {
+        // Explicit retention bound: if pending deliveries pile up past
+        // `max_records`, the oldest are evicted along with the rest of the
+        // ring buffer rather than growing the outbox file without limit.
+        let mut ci = CrashInsights {
+            records: Vec::new(),
+            max_records: 3,
+        };
+        for i in 0..5 {
+            let mut record = make_record(&format!("w{}", i), Some(1), None);
+            record.generation = format!("gen-{}", i);
+            ci.record(record);
+        }
+
+        assert_eq!(ci.pending_hosted_deliveries().len(), 3);
+        let names: Vec<&str> = ci
+            .pending_hosted_deliveries()
+            .iter()
+            .map(|r| r.agent_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["w2", "w3", "w4"]);
+    }
+
+    #[test]
+    fn hosted_delivery_state_survives_atomic_persistence_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crashes.json");
+        let mut ci = CrashInsights::new();
+        let mut delivered = make_record("delivered-agent", Some(1), None);
+        delivered.generation = "gen-delivered".to_string();
+        let delivered_key = delivered.dedupe_key();
+        ci.record(delivered);
+        ci.mark_hosted_delivered(&delivered_key);
+
+        let mut pending = make_record("pending-agent", Some(1), None);
+        pending.generation = "gen-pending".to_string();
+        ci.record(pending);
+
+        ci.save(&path).unwrap();
+        let reloaded = CrashInsights::load(&path);
+
+        assert_eq!(reloaded.pending_hosted_deliveries().len(), 1);
+        assert_eq!(
+            reloaded.pending_hosted_deliveries()[0].agent_name,
+            "pending-agent"
+        );
+    }
+
+    #[test]
+    fn dedupe_key_and_persistence_handle_utf8_agent_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crashes.json");
+        let mut ci = CrashInsights::new();
+        let mut record = make_record("agent-日本語-🚀", Some(1), None);
+        record.generation = "gen-utf8".to_string();
+        let key = record.dedupe_key();
+        assert_eq!(key, "agent-日本語-🚀::gen-utf8");
+        ci.record(record);
+
+        ci.save(&path).unwrap();
+        let mut reloaded = CrashInsights::load(&path);
+        assert_eq!(reloaded.pending_hosted_deliveries().len(), 1);
+        assert!(reloaded.mark_hosted_delivered(&key));
+        reloaded.save(&path).unwrap();
+
+        let reloaded_again = CrashInsights::load(&path);
+        assert_eq!(reloaded_again.pending_hosted_deliveries().len(), 0);
     }
 
     #[test]
