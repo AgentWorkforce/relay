@@ -171,15 +171,20 @@ async function parseInfo(target) {
   return sandbox;
 }
 async function issue490Evidence(id) {
-  const runGoTest = (pkg, pattern) => run('daytona', [
-    'exec', id, '--cwd', '/qualification/relayfile', '--', 'go', 'test', pkg,
-    '-run', pattern, '-count=1',
+  // Run the published package's platform binary, never the source checkout.
+  // The probe owns a delayed/429 websocket fake server and emits only its
+  // structured counters (no token-bearing process output).
+  const runProbe = (entrypoint) => run('daytona', [
+    'exec', id, '--cwd', '/qualification/relayfile-npm', '--', 'node',
+    '/qualification/relayfile-npm/issue-490-probe.mjs', entrypoint,
   ], { timeoutMs: 300_000 });
   const [cliResult, standaloneResult] = await Promise.all([
-    runGoTest('./cmd/relayfile-cli', 'TestMountUsesRecordedLocalDirWhenOmitted'),
-    runGoTest('./cmd/relayfile-mount', 'TestRunSinglePollingMountOnceSkipsRealtimeDial'),
+    runProbe('cli'),
+    runProbe('standalone'),
   ]);
-  const testsPassedFor = (result) => (result.stdout.match(/\bok\s+[^\s]+/g) ?? []).length;
+  const parse = (result) => { try { return JSON.parse(result.stdout.trim()); } catch { return {}; } };
+  const cli = parse(cliResult);
+  const standalone = parse(standaloneResult);
   const ok = cliResult.exitCode === 0 && standaloneResult.exitCode === 0;
   return {
     issue: 490,
@@ -187,8 +192,9 @@ async function issue490Evidence(id) {
     pollingUpdateApplied: ok,
     cursorPersisted: ok,
     daemonRealtimePreserved: ok,
-    cli: { exitCode: cliResult.exitCode, testsPassed: testsPassedFor(cliResult), testsFailed: cliResult.exitCode === 0 ? 0 : 1, realtimeDialCount: 0, pollingUpdateApplied: cliResult.exitCode === 0, cursorPersisted: cliResult.exitCode === 0 },
-    standalone: { exitCode: standaloneResult.exitCode, testsPassed: testsPassedFor(standaloneResult), testsFailed: standaloneResult.exitCode === 0 ? 0 : 1, realtimeDialCount: 0, pollingUpdateApplied: standaloneResult.exitCode === 0, cursorPersisted: standaloneResult.exitCode === 0 },
+    daemon: { realtimeDialCount: standalone.daemonRealtimeDialCount ?? 0 },
+    cli: { exitCode: cliResult.exitCode, testsPassed: cli.testsPassed ?? 0, testsFailed: cli.testsFailed ?? 1, realtimeDialCount: cli.realtimeDialCount ?? 99, pollingUpdateApplied: cli.pollingUpdateApplied === true, cursorPersisted: cli.cursorPersisted === true },
+    standalone: { exitCode: standaloneResult.exitCode, testsPassed: standalone.testsPassed ?? 0, testsFailed: standalone.testsFailed ?? 1, realtimeDialCount: standalone.realtimeDialCount ?? 99, pollingUpdateApplied: standalone.pollingUpdateApplied === true, cursorPersisted: standalone.cursorPersisted === true },
   };
 }
 async function aclEvidence(id) {
@@ -419,6 +425,7 @@ async function main() {
     await cp(mountSource, mountDestination);
     if ((await sha256(mountDestination)) !== manifest.relayfileMount.sha256)
       throw new Error('copied relayfile-mount binary hash does not match bundle manifest');
+    await cp(new URL('./issue-490-probe.mjs', import.meta.url), path.join(context, 'issue-490-probe.mjs'));
     const artifactHashes = Object.fromEntries(
       Object.entries(artifacts).map(([name, value]) => [name, value.sha256])
     );
@@ -430,7 +437,7 @@ async function main() {
     const dockerfile = path.join(context, 'Dockerfile');
     await writeFile(
       dockerfile,
-      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY relayfile-mount-linux-amd64 /qualification/bin/relayfile-mount\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && test \"$(npm view relayfile@${npmVersion} gitHead)\" = \"${npmSourceSha}\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && chmod +x /qualification/bin/relayfile-mount\n`
+      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY relayfile-mount-linux-amd64 /qualification/bin/relayfile-mount\nCOPY issue-490-probe.mjs /qualification/relayfile-npm/issue-490-probe.mjs\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && test \"$(npm view relayfile@${npmVersion} gitHead)\" = \"${npmSourceSha}\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && chmod +x /qualification/bin/relayfile-mount\n`
     );
     createAttempted = true;
     const create = await run(
@@ -472,7 +479,7 @@ async function main() {
         'env',
         'RELAYFILE_QUALIFICATION_MODE=candidate',
         'RELAYFILE_CLOUD_REPO=/qualification/relayfile-cloud',
-        'RELAYFILE_MOUNT_BINARY=/qualification/bin/relayfile-mount',
+        'RELAYFILE_MOUNT_BINARY=/qualification/relayfile-npm/node_modules/relayfile/bin/relayfile',
         'RELAYFILE_EVIDENCE_PATH=/tmp/cold-mount-evidence.json',
         'node_modules/.bin/tsx',
         'local/cold-mount-scale.ts',

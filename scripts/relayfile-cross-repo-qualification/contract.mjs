@@ -320,6 +320,8 @@ export function validateIssue490Evidence(evidence) {
   if (evidence.pollingUpdateApplied !== true) fail('pollingUpdateApplied is not true');
   if (evidence.cursorPersisted !== true) fail('cursorPersisted is not true');
   if (evidence.daemonRealtimePreserved !== true) fail('daemonRealtimePreserved is not true');
+  if (!isPlainObject(evidence.daemon) || !isCount(evidence.daemon.realtimeDialCount) || evidence.daemon.realtimeDialCount < 1)
+    fail('daemon proof did not record a realtime dial');
   for (const name of ['cli', 'standalone']) {
     const entry = evidence[name];
     if (!isPlainObject(entry)) {

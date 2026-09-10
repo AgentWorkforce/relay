@@ -230,8 +230,9 @@ function armReport(arm) {
         pollingUpdateApplied: true,
         cursorPersisted: true,
         daemonRealtimePreserved: true,
+        daemon: { realtimeDialCount: 1 },
         cli: { exitCode: 0, testsPassed: 2, testsFailed: 0, realtimeDialCount: 0, pollingUpdateApplied: true, cursorPersisted: true },
-        standalone: { exitCode: 0, testsPassed: 2, testsFailed: 0, realtimeDialCount: 0, pollingUpdateApplied: true, cursorPersisted: true },
+        standalone: { exitCode: 0, testsPassed: 2, testsFailed: 0, realtimeDialCount: 0, pollingUpdateApplied: true, cursorPersisted: true, daemonRealtimeDialCount: 1 },
       },
     },
     cleanup: {
