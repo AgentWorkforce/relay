@@ -47,6 +47,18 @@
             "reasoning": "Regenerating the full lock rewrote hundreds of unrelated records. The exact root override plus the smol-toml 1.8.0 lock entry passes npm ci and removes GHSA-7w5x-hrqm-74c2 without broad candidate dependency churn. The separate Relayfile SDK/Bun incompatibility remains independently tracked."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789022666797,
+          "type": "decision",
+          "content": "Invalid or manual integrity verification must fail without writing integrity.json: Invalid or manual integrity verification must fail without writing integrity.json",
+          "raw": {
+            "question": "Invalid or manual integrity verification must fail without writing integrity.json",
+            "chosen": "Invalid or manual integrity verification must fail without writing integrity.json",
+            "alternatives": [],
+            "reasoning": "The authoritative report belongs to the post-review deterministic step. Writing a BLOCKED artifact before that gate lets a reviewer side-effect poison otherwise immutable evidence; preserving an existing report also prevents later invalid invocations from overwriting a valid runner-bound comparison."
+          },
+          "significance": "high"
         }
       ]
     }

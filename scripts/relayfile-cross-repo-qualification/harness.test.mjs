@@ -99,6 +99,8 @@ test('fan-out depends on the single bundle step and fresh phase identities', () 
   assert.match(workflow, /capture-integrity\.mjs/);
   assert.match(workflow, /verify-integrity\.mjs/);
   assert.match(workflow, /steps\.capture-integrity\.output/);
+  assert.match(workflow, /Do not execute verify-integrity\.mjs/);
+  assert.match(workflow, /integrity\.json is not a review input/);
   assert.match(workflow, /writeQualificationConfig\(CONFIG_PATH, config\)/);
   assert.match(workflow, /--config', CONFIG_PATH/);
   assert.match(workflow, /RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256/);

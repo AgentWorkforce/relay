@@ -67,7 +67,8 @@ async function seed(dir) {
 
 async function verify(dir, expected) {
   try {
-    await execFileAsync(process.execPath, [verifyScript.pathname, expected], {
+    const args = expected === undefined ? [verifyScript.pathname] : [verifyScript.pathname, expected];
+    await execFileAsync(process.execPath, args, {
       env: {
         ...process.env,
         RELAYFILE_QUALIFICATION_ARTIFACT_DIR: dir,
@@ -79,6 +80,23 @@ async function verify(dir, expected) {
     return error.code ?? 1;
   }
 }
+
+test('manual verification without the runner digest cannot create or replace the integrity report', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'relayfile-final-integrity-'));
+  try {
+    await seed(dir);
+    assert.notEqual(await verify(dir, undefined), 0);
+    await assert.rejects(readFile(path.join(dir, 'integrity.json')), { code: 'ENOENT' });
+
+    const digest = (await computeIntegrity(dir)).digest;
+    assert.equal(await verify(dir, digest), 0);
+    const accepted = await readFile(path.join(dir, 'integrity.json'), 'utf8');
+    assert.notEqual(await verify(dir, 'not-a-runner-digest'), 0);
+    assert.equal(await readFile(path.join(dir, 'integrity.json'), 'utf8'), accepted);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test('integrity digest passes unchanged evidence and blocks one-byte mutation', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'relayfile-integrity-'));
