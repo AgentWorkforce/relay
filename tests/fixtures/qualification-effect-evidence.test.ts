@@ -274,6 +274,8 @@ describe('qualification runtime effect composer', () => {
   it('composes the exact create/delete shapes emitted by the trusted cleanup helper', async () => {
     const base = fixture();
     const root = await fs.promises.mkdtemp('/tmp/qualification-helper-composer-');
+    const priorCredentialRoot = process.env.QUALIFICATION_CREDENTIAL_ROOT;
+    process.env.QUALIFICATION_CREDENTIAL_ROOT = root;
     const auth = {
       apiUrl: 'https://cloud.example.test',
       accessToken: 'access-token-fixture',
@@ -363,13 +365,13 @@ describe('qualification runtime effect composer', () => {
           idempotencyKey: `relay-qualification:run:attempt:${index}`,
           name: `relay-qualification-run-attempt-${index}`,
           deploymentId,
-          credentialFile: path.join(root, `credential-${index}.json`),
+          credentialFile: path.join(root, `relay-workspace-${index === 0 ? 'a' : 'b'}.json`),
         });
         creates.push({
           label: index === 0 ? 'a' : 'b',
           result: created,
           credential: createMetadata[index]!.credential,
-          credentialPath: path.join(root, `credential-${index}.json`),
+          credentialPath: path.join(root, `relay-workspace-${index === 0 ? 'a' : 'b'}.json`),
           mode: '0600',
         });
       }
@@ -392,6 +394,8 @@ describe('qualification runtime effect composer', () => {
       expect(fetchMock).toHaveBeenCalledTimes(6);
     } finally {
       fetchMock.mockRestore();
+      if (priorCredentialRoot === undefined) delete process.env.QUALIFICATION_CREDENTIAL_ROOT;
+      else process.env.QUALIFICATION_CREDENTIAL_ROOT = priorCredentialRoot;
       await fs.promises.rm(root, { recursive: true, force: true });
     }
   });

@@ -12,6 +12,7 @@ const IDEMPOTENCY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,255}$/u;
 const RECONCILIATION_HEADER = 'x-agent-relay-ephemeral-reconciliation';
 const RELAY_WORKSPACE_ID = /^rw_[a-z0-9]{8}$/;
 const OUTPUT_ROOT = path.resolve('qualification-cleanup');
+const CREDENTIAL_FILENAMES = new Set(['relay-workspace-a.json', 'relay-workspace-b.json']);
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -35,11 +36,29 @@ export function trustedOutputPath(value) {
   const resolved = path.resolve(value);
   const relative = path.relative(OUTPUT_ROOT, resolved);
   assert(
-    relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative),
+    relative &&
+      resolved.startsWith(`${OUTPUT_ROOT}${path.sep}`) &&
+      !relative.startsWith(`..${path.sep}`) &&
+      relative !== '..' &&
+      !path.isAbsolute(relative),
     'qualification output must remain under qualification-cleanup'
   );
   assert(/^(?:reconcile|delete)-[ab]\.json$/u.test(relative), 'qualification output filename is invalid');
-  return resolved;
+  // Return only a path selected from the four fixed task-owned names. This
+  // keeps the file sink independent of the caller-provided path string.
+  return path.join(OUTPUT_ROOT, relative);
+}
+
+export function trustedCredentialPath(value) {
+  const resolved = path.resolve(value);
+  const filename = path.basename(resolved);
+  const credentialRoot = path.resolve(process.env.QUALIFICATION_CREDENTIAL_ROOT ?? '/tmp');
+  assert(CREDENTIAL_FILENAMES.has(filename), 'qualification credential filename is invalid');
+  assert(
+    resolved.startsWith(`${credentialRoot}${path.sep}`) && path.dirname(resolved) === credentialRoot,
+    'qualification credential path must remain in the task credential directory'
+  );
+  return path.join(credentialRoot, filename);
 }
 
 function jsonObject(value, label) {
@@ -134,6 +153,7 @@ export async function createWorkspace({
     'workspace TTL is invalid'
   );
   assert(typeof credentialFile === 'string' && credentialFile.length > 0, 'credential file is required');
+  const trustedCredentialFile = trustedCredentialPath(credentialFile);
   const { response } = await authorizedApiFetch(
     auth,
     '/api/v1/workspaces',
@@ -175,7 +195,10 @@ export async function createWorkspace({
   assert.equal(credential.expiresAt, value.expiresAt);
   assert(jsonObject(credential.cloud, 'cloud credential').accessToken);
   assert(jsonObject(credential.relay, 'Relay credential').workspaceKey);
-  await writeFile(credentialFile, `${JSON.stringify(credential, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  await writeFile(trustedCredentialFile, `${JSON.stringify(credential, null, 2)}\n`, {
+    mode: 0o600,
+    flag: 'wx',
+  });
   return {
     version: 1,
     workspaceId: value.workspaceId,
@@ -187,7 +210,7 @@ export async function createWorkspace({
     requestedRelayfileCloudDeploymentId: value.requestedRelayfileCloudDeploymentId,
     observedRelayfileCloudDeploymentId: value.observedRelayfileCloudDeploymentId,
     relayfileCloudAttestationSha256: value.relayfileCloudAttestationSha256,
-    credentialFile,
+    credentialFile: trustedCredentialFile,
   };
 }
 
@@ -229,6 +252,18 @@ export async function deleteAndVerify({ auth, workspaceId }) {
     );
     for (const field of fields) assert(field in section, `delete proof.${name}.${field} is required`);
   }
+  assert.equal(proof.daytona.remaining, 0, 'delete proof.daytona.remaining must be zero');
+  assert.equal(proof.cloud.appWorkspaceRowsRemaining, 0, 'delete proof.cloud app rows must be zero');
+  assert.equal(proof.cloud.workflowLaunchesInProgress, 0, 'delete proof.cloud workflows must be zero');
+  assert.equal(
+    proof.credentials.activeSessionsRemaining,
+    0,
+    'delete proof.credentials sessions must be zero'
+  );
+  assert.equal(proof.relaycast.deleted, true, 'delete proof.relaycast deletion is required');
+  assert.equal(proof.relaycast.agentsAndNodesDeletedByWorkspaceCascade, true);
+  assert.equal(proof.relayfile.deleted, true, 'delete proof.relayfile deletion is required');
+  assert.equal(proof.registry.deleted, true, 'delete proof.registry deletion is required');
   const { response: absence } = await authorizedApiFetch(
     refreshedAuth,
     `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
@@ -262,7 +297,7 @@ async function main() {
       idempotencyKey: required('QUALIFICATION_IDEMPOTENCY_KEY'),
       name: required('QUALIFICATION_WORKSPACE_NAME'),
       deploymentId: required('QUALIFICATION_DEPLOYMENT_ID'),
-      credentialFile: required('QUALIFICATION_CREDENTIAL_FILE'),
+      credentialFile: trustedCredentialPath(required('QUALIFICATION_CREDENTIAL_FILE')),
     });
   } else {
     throw new Error('--mode must be create, reconcile, or delete');

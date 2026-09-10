@@ -4,6 +4,7 @@ import {
   createWorkspace,
   deleteAndVerify,
   reconcile,
+  trustedCredentialPath,
   trustedOutputPath,
 } from '../../scripts/verify-features/cleanup-qualification-workspaces.mjs';
 
@@ -14,6 +15,37 @@ const auth = {
   accessTokenExpiresAt: '2099-01-01T00:00:00.000Z',
   refreshTokenExpiresAt: '2099-01-02T00:00:00.000Z',
 };
+
+function validDeletePayload(workspaceId: string) {
+  return {
+    workspaceId,
+    relayWorkspaceId: 'rw_7ccfea89',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    deleted: true,
+    state: 'deleted',
+    idempotent: false,
+    verifiedAt: '2026-09-05T12:00:30.000Z',
+    operationId: 'op-qualification-a',
+    proof: {
+      daytona: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', remaining: 0 },
+      cloud: {
+        workspaceId,
+        relayWorkspaceId: 'rw_7ccfea89',
+        appWorkspaceRowsRemaining: 0,
+        workflowLaunchesInProgress: 0,
+      },
+      credentials: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', activeSessionsRemaining: 0 },
+      relaycast: {
+        workspaceId,
+        relayWorkspaceId: 'rw_7ccfea89',
+        deleted: true,
+        agentsAndNodesDeletedByWorkspaceCascade: true,
+      },
+      relayfile: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', deleted: true },
+      registry: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', deleted: true },
+    },
+  };
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -65,7 +97,7 @@ describe('trusted qualification workspace cleanup', () => {
   });
 
   it('creates through the trusted API and writes only the credential file', async () => {
-    const credentialPath = '/tmp/relay-qualification-create-fixture.json';
+    const credentialPath = '/tmp/relay-workspace-a.json';
     const fs = await import('node:fs/promises');
     await fs.rm(credentialPath, { force: true });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -114,39 +146,7 @@ describe('trusted qualification workspace cleanup', () => {
     const workspaceId = '11111111-1111-4111-8111-111111111111';
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            workspaceId,
-            relayWorkspaceId: 'rw_7ccfea89',
-            expiresAt: '2099-01-01T00:00:00.000Z',
-            deleted: true,
-            state: 'deleted',
-            idempotent: false,
-            verifiedAt: '2026-09-05T12:00:30.000Z',
-            operationId: 'op-qualification-a',
-            proof: {
-              daytona: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', remaining: 0 },
-              cloud: {
-                workspaceId,
-                relayWorkspaceId: 'rw_7ccfea89',
-                appWorkspaceRowsRemaining: 0,
-                workflowLaunchesInProgress: 0,
-              },
-              credentials: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', activeSessionsRemaining: 0 },
-              relaycast: {
-                workspaceId,
-                relayWorkspaceId: 'rw_7ccfea89',
-                deleted: true,
-                agentsAndNodesDeletedByWorkspaceCascade: true,
-              },
-              relayfile: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', deleted: true },
-              registry: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', deleted: true },
-            },
-          }),
-          { status: 200 }
-        )
-      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(validDeletePayload(workspaceId)), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'workspace_not_found' }), { status: 404 }));
 
     const result = await deleteAndVerify({ auth, workspaceId });
@@ -164,10 +164,31 @@ describe('trusted qualification workspace cleanup', () => {
   });
 
   it.each([
+    ['daytona', 'remaining', 1],
+    ['cloud', 'appWorkspaceRowsRemaining', 1],
+    ['cloud', 'workflowLaunchesInProgress', 1],
+    ['credentials', 'activeSessionsRemaining', 1],
+    ['relaycast', 'deleted', false],
+    ['relaycast', 'agentsAndNodesDeletedByWorkspaceCascade', false],
+    ['relayfile', 'deleted', false],
+    ['registry', 'deleted', false],
+  ])('rejects delete proof with %s.%s=%s', async (section, field, value) => {
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const payload = validDeletePayload(workspaceId);
+    (payload.proof as Record<string, Record<string, unknown>>)[section][field] = value;
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'workspace_not_found' }), { status: 404 }));
+    await expect(deleteAndVerify({ auth, workspaceId })).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
     ['relayWorkspaceId', 'rw_mismatch1'],
     ['expiresAt', '2099-02-01T00:00:00.000Z'],
   ])('rejects a credential whose %s does not match workspace metadata', async (field, mismatch) => {
-    const credentialPath = `/tmp/relay-qualification-mismatch-${field}.json`;
+    const credentialPath = `/tmp/relay-workspace-${field === 'relayWorkspaceId' ? 'a' : 'b'}.json`;
     const fs = await import('node:fs/promises');
     await fs.rm(credentialPath, { force: true });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -220,14 +241,31 @@ describe('trusted qualification workspace cleanup', () => {
     }
   });
 
+  it('accepts only the two task-owned credential paths', () => {
+    const priorRoot = process.env.QUALIFICATION_CREDENTIAL_ROOT;
+    process.env.QUALIFICATION_CREDENTIAL_ROOT = '/tmp';
+    try {
+      expect(trustedCredentialPath('/tmp/relay-workspace-a.json')).toBe('/tmp/relay-workspace-a.json');
+      expect(trustedCredentialPath('/tmp/relay-workspace-b.json')).toBe('/tmp/relay-workspace-b.json');
+    } finally {
+      if (priorRoot === undefined) delete process.env.QUALIFICATION_CREDENTIAL_ROOT;
+      else process.env.QUALIFICATION_CREDENTIAL_ROOT = priorRoot;
+    }
+  });
+
   it('rejects traversal, absolute paths outside the evidence root, and unexpected filenames', () => {
     for (const value of [
       'qualification-cleanup/../outside.json',
       '/tmp/qualification-cleanup/reconcile-a.json',
       'qualification-cleanup/reconcile-c.json',
       'qualification-cleanup/reconcile-a.txt',
+      '/tmp/relay-workspace-c.json',
+      '/tmp/nested/relay-workspace-a.json',
+      '/tmp/relay-workspace-a.txt',
     ]) {
       expect(() => trustedOutputPath(value)).toThrow(/qualification output/);
     }
+    expect(() => trustedCredentialPath('/tmp/relay-workspace-c.json')).toThrow(/credential filename/);
+    expect(() => trustedCredentialPath('/tmp/nested/relay-workspace-a.json')).toThrow(/credential path/);
   });
 });

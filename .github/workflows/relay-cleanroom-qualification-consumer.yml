@@ -369,6 +369,7 @@ jobs:
           QUALIFICATION_IDEMPOTENCY_KEY: relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:a
           QUALIFICATION_WORKSPACE_NAME: relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-a
           QUALIFICATION_DEPLOYMENT_ID: ${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}
+          QUALIFICATION_CREDENTIAL_ROOT: ${{ runner.temp }}
           QUALIFICATION_CREDENTIAL_FILE: ${{ runner.temp }}/relay-workspace-a.json
         run: |
           chmod 0700 "$RUNNER_TEMP"
@@ -387,6 +388,7 @@ jobs:
           QUALIFICATION_IDEMPOTENCY_KEY: relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:b
           QUALIFICATION_WORKSPACE_NAME: relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-b
           QUALIFICATION_DEPLOYMENT_ID: ${{ steps.manifest.outputs.relayfile_cloud_deployment_id }}
+          QUALIFICATION_CREDENTIAL_ROOT: ${{ runner.temp }}
           QUALIFICATION_CREDENTIAL_FILE: ${{ runner.temp }}/relay-workspace-b.json
         run: |
           node relay-verifier/scripts/verify-features/cleanup-qualification-workspaces.mjs --mode create > "$RUNNER_TEMP/workspace-create-b.json"
