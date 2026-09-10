@@ -173,9 +173,13 @@ function spawnShellMention() {
     '/bin/sh',
     [
       '-c',
-      '"$1" up --state-dir "$2"; sleep 600',
+      // Positional arguments make the CLI command visible to ps without
+      // executing paths supplied by the fixture environment.
+      'sleep 600; :',
       'fixture-shell',
       path.join(targetDir, 'bin', 'agent-relay'),
+      'up',
+      '--state-dir',
       candidateState,
     ],
     {
