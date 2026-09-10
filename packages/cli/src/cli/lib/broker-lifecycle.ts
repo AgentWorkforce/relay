@@ -1055,15 +1055,17 @@ async function processCwdMatchesProjectRoot(
   processInfo: ProcessInfo,
   projectRoot: string,
   deps: CoreDependencies
-): Promise<boolean> {
+): Promise<string | null> {
   try {
     const cwdDetails = await deps.execCommand(`lsof -nP -a -p ${processInfo.pid} -d cwd -Fn`);
-    return cwdDetails.stdout
+    const matchingCwd = cwdDetails.stdout
       .split('\n')
       .filter((line) => line.startsWith('n'))
-      .some((line) => path.resolve(line.slice(1)) === projectRoot);
+      .map((line) => path.resolve(line.slice(1)))
+      .find((cwd) => cwd === projectRoot || cwd.startsWith(`${projectRoot}${path.sep}`));
+    return matchingCwd ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1118,8 +1120,9 @@ async function killOrphanedBrokerProcesses(
           if (declaredStateDirectory === null) continue;
           if (path.isAbsolute(declaredStateDirectory)) {
             if (path.resolve(declaredStateDirectory) === stateDirectory) candidates.push(processInfo);
-          } else if (await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps)) {
-            if (path.resolve(resolvedProjectRoot, declaredStateDirectory) === stateDirectory)
+          } else {
+            const processCwd = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
+            if (processCwd && path.resolve(processCwd, declaredStateDirectory) === stateDirectory)
               candidates.push(processInfo);
           }
           continue;
@@ -1128,8 +1131,8 @@ async function killOrphanedBrokerProcesses(
         // directory. An executable or arbitrary argument under an ancestor
         // project (including the user's home directory) proves no ownership.
         if (!usesDefaultStateDirectory) continue;
-        const cwdMatches = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
-        if (!cwdMatches) continue;
+        const processCwd = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
+        if (processCwd !== resolvedProjectRoot) continue;
         if (
           isBrokerExecutableCommand(processInfo.command) &&
           !commandHasBrokerName(processInfo.command, brokerName)

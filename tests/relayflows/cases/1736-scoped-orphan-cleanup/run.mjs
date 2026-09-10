@@ -89,8 +89,9 @@ try {
   await waitForExit(children[0]);
   const selectedStopped = !isAlive(children[0]);
   const survivors = children.slice(1).filter(isAlive);
+  const nonSelectedStopped = children.slice(1).some((child) => !isAlive(child));
   const headObserved = selectedStopped && survivors.length === children.length - 1;
-  const baseObserved = !headObserved;
+  const baseObserved = selectedStopped && nonSelectedStopped;
   const outcome = arm === 'base' ? (baseObserved ? 'bug' : null) : headObserved ? 'fixed' : null;
   const signature =
     arm === 'base' ? 'isolated_cleanup_kills_peer_or_worker' : 'isolated_cleanup_preserves_peer_and_worker';

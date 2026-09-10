@@ -1082,6 +1082,46 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
   });
 
+  it('down --force resolves a relative state directory from a nested broker cwd', async () => {
+    const runningPids = new Set([222, 333]);
+    const execCommand = vi.fn(async (command: string) => {
+      if (command === 'ps aux') {
+        return {
+          stdout: [
+            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
+            'user 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir candidate-state --persist',
+            'user 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/peer-state --persist',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      if (command === 'lsof -nP -a -p 222 -d cwd -Fn') {
+        return { stdout: 'fcwd\nn/tmp/project/nested\n', stderr: '' };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      runningPids.delete(pid);
+    });
+    const { program } = createHarness({ execCommand, killImpl });
+
+    const exitCode = await runCommand(program, [
+      'down',
+      '--force',
+      '--state-dir',
+      '/tmp/project/nested/candidate-state',
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect([...runningPids]).toEqual([333]);
+  });
+
   it('down --force only kills actual orphaned broker executables for the project', async () => {
     const runningPids = new Set([222, 444, 666]);
     const execCommand = vi.fn(async (command: string) => {
