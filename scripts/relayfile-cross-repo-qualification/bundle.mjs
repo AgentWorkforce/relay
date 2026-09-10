@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { captureGitProvenance, verifyGitProvenance } from './git-provenance.mjs';
+import { withTemporaryGoModuleCache } from './go-cache.mjs';
 import { PROBE_TIMEOUT_MS } from './probes.mjs';
 const execFileAsync = promisify(execFile);
 const BUNDLE_TIMEOUT_MS = 900_000;
@@ -81,16 +82,24 @@ for (const [name, repo] of Object.entries(candidates)) {
   };
 }
 const mountBinary = path.join(out, 'relayfile-mount-linux-amd64');
-await execFileAsync(
-  'go',
-  ['build', '-trimpath', '-buildvcs=false', '-ldflags=-buildid=', '-o', mountBinary, './cmd/relayfile-mount'],
-  {
-    cwd: candidates.relayfile,
-    env: { ...process.env, GOOS: 'linux', GOARCH: 'amd64', CGO_ENABLED: '0' },
-    timeout: BUNDLE_TIMEOUT_MS,
-    killSignal: 'SIGKILL',
-  }
-);
+await withTemporaryGoModuleCache(async (goModCache) => {
+  await execFileAsync(
+    'go',
+    ['build', '-trimpath', '-buildvcs=false', '-ldflags=-buildid=', '-o', mountBinary, './cmd/relayfile-mount'],
+    {
+      cwd: candidates.relayfile,
+      env: {
+        ...process.env,
+        GOOS: 'linux',
+        GOARCH: 'amd64',
+        CGO_ENABLED: '0',
+        GOMODCACHE: goModCache,
+      },
+      timeout: BUNDLE_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    }
+  );
+});
 const mountBytes = await readFile(mountBinary);
 await verifyGitProvenance(candidates, gitCandidates, { execFileAsync });
 const candidateProvenance = Object.fromEntries(

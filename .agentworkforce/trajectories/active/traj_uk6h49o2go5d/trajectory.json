@@ -59,6 +59,18 @@
             "reasoning": "The authoritative report belongs to the post-review deterministic step. Writing a BLOCKED artifact before that gate lets a reviewer side-effect poison otherwise immutable evidence; preserving an existing report also prevents later invalid invocations from overwriting a valid runner-bound comparison."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789023256145,
+          "type": "decision",
+          "content": "Bundle construction uses an isolated disposable Go module cache and is a hard pre-arm gate: Bundle construction uses an isolated disposable Go module cache and is a hard pre-arm gate",
+          "raw": {
+            "question": "Bundle construction uses an isolated disposable Go module cache and is a hard pre-arm gate",
+            "chosen": "Bundle construction uses an isolated disposable Go module cache and is a hard pre-arm gate",
+            "alternatives": [],
+            "reasoning": "The operator default GOMODCACHE can be unavailable or a broken external-volume symlink. Candidate bundling must be reproducible without host cache assumptions, must remove its temporary cache, and must stop before Daytona allocation when provenance or the Linux mount binary cannot be built."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -128,7 +128,9 @@ export function buildQualificationWorkflow() {
     dependsOn: ['preflight'],
     command: command('bundle.mjs'),
     captureOutput: true,
-    failOnError: false,
+    // Candidate provenance and the Linux mount binary must exist before either
+    // arm may allocate a Daytona sandbox.
+    failOnError: true,
   });
   for (const arm of ['A', 'B'] as const) {
     wf.step(`run-arm-${arm.toLowerCase()}`, {

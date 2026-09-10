@@ -11,6 +11,10 @@ const signoff = await readFile(new URL('./record-signoff.mjs', import.meta.url),
 const acceptance = await readFile(new URL('./final-acceptance.mjs', import.meta.url), 'utf8');
 const absence = await readFile(new URL('./absence.mjs', import.meta.url), 'utf8');
 const issue490Probe = await readFile(new URL('./issue-490-probe.mjs', import.meta.url), 'utf8');
+const bundleStep = workflow.slice(
+  workflow.indexOf("wf.step('bundle-candidates'"),
+  workflow.indexOf("for (const arm of ['A', 'B']", workflow.indexOf("wf.step('bundle-candidates'"))
+);
 const createBlock = arm.slice(
   arm.indexOf('const create = await run'),
   arm.indexOf('created = create.exitCode')
@@ -30,6 +34,8 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /path\.join\(bundleDir, 'bundle-manifest\.json'\)/);
   assert.match(arm, /candidateProvenance/);
   assert.match(arm, /\[0-9a-f\]\{40\}/);
+  assert.match(bundle, /withTemporaryGoModuleCache/);
+  assert.match(bundle, /GOMODCACHE: goModCache/);
   assert.match(arm, /apt-get install -y --no-install-recommends procps ca-certificates/);
   assert.match(arm, /rm -rf \/var\/lib\/apt\/lists\/\*/);
   assert.match(arm, /RELAY_PR_PROOF_RESULT_PATH=\/tmp\/workspace-acl-provisioning-admission\.json/);
@@ -79,6 +85,9 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
 
 test('fan-out depends on the single bundle step and fresh phase identities', () => {
   assert.match(workflow, /dependsOn: \['bundle-candidates'\]/);
+  assert.match(bundleStep, /dependsOn: \['preflight'\]/);
+  assert.match(bundleStep, /failOnError: true/);
+  assert.doesNotMatch(bundleStep, /failOnError: false/);
   for (const phase of ['review', 'fix', 'final-review'])
     assert.match(workflow, new RegExp(`\\$\\{provider\\}-${phase}`));
   assert.doesNotMatch(workflow, /final-fix/);
