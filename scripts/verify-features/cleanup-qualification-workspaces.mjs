@@ -2,12 +2,14 @@
 
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { authorizedApiFetch, ensureCloudSession } from '@agent-relay/cloud';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEPLOYMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const IDEMPOTENCY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,255}$/u;
 const RECONCILIATION_HEADER = 'x-agent-relay-ephemeral-reconciliation';
+const OUTPUT_ROOT = path.resolve('qualification-cleanup');
 
 function required(name) {
   const value = process.env[name]?.trim();
@@ -25,6 +27,17 @@ function parseArgs(argv) {
     args[key.slice(2)] = value;
   }
   return args;
+}
+
+function trustedOutputPath(value) {
+  const resolved = path.resolve(value);
+  const relative = path.relative(OUTPUT_ROOT, resolved);
+  assert(
+    relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative),
+    'qualification output must remain under qualification-cleanup'
+  );
+  assert(/^(?:reconcile|delete)-[ab]\.json$/u.test(relative), 'qualification output filename is invalid');
+  return resolved;
 }
 
 function jsonObject(value, label) {
@@ -123,7 +136,7 @@ export async function deleteAndVerify({ auth, workspaceId }) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const output = required('QUALIFICATION_OUTPUT');
+  const output = trustedOutputPath(required('QUALIFICATION_OUTPUT'));
   const auth = await cloudAuth();
   let value;
   if (args.mode === 'reconcile') {
