@@ -21,9 +21,12 @@ const jwt = `eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${Buffer.from(JSON.stringify({ 
 const binary = entrypoint === 'cli' ? '/qualification/relayfile-npm/node_modules/.bin/relayfile' : '/qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount';
 const outputDir = `/tmp/issue-490-${entrypoint}`;
 const stateFile = `/tmp/issue-490-${entrypoint}-state/state.json`;
+// Keep enough cycle budget for a contended 2-CPU sandbox. The regression is
+// still fail-closed because onceWsUpgradeCount must remain exactly zero; it
+// does not rely on the delayed websocket exhausting this command timeout.
 const args = entrypoint === 'cli'
-  ? ['mount', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile]
-  : ['--workspace', 'issue-490', '--base-url', base, '--token', jwt, '--once', '--timeout=250ms', '--local-dir', outputDir, '--state-file', stateFile];
+  ? ['mount', 'issue-490', '--server', base, '--token', jwt, '--once', '--timeout=5s', '--local-dir', outputDir, '--state-file', stateFile]
+  : ['--workspace', 'issue-490', '--base-url', base, '--token', jwt, '--once', '--timeout=5s', '--local-dir', outputDir, '--state-file', stateFile];
 const runOnce = () => new Promise((resolve) => {
   const child = spawn(binary, args, { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
   child.once('error', () => resolve(1));

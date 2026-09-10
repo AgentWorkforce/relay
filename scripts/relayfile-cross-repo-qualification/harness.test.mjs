@@ -61,6 +61,8 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(issue490Probe, /entrypoint === 'cli'[\s\S]*'--server'[\s\S]*'--base-url'/);
   assert.equal((issue490Probe.match(/'--server'/g) ?? []).length, 1);
   assert.equal((issue490Probe.match(/'--base-url'/g) ?? []).length, 2);
+  assert.equal((issue490Probe.match(/'--timeout=5s'/g) ?? []).length, 2);
+  assert.doesNotMatch(issue490Probe, /--timeout=250ms/);
   assert.doesNotMatch(issue490Probe, /go test/);
   assert.match(issue490Probe, /onceWsUpgradeCount = wsUpgradeCount/);
   assert.match(issue490Probe, /issue-490-\$\{entrypoint\}-state\/state\.json/);
