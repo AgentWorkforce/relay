@@ -131,13 +131,18 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
   });
   const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
   const release = vi.fn(async () => ({ released: true, deleted: true }));
-  const createWorkspaceRelay = vi.fn(() => ({
+  const workspaceRelay = {
     workspace: {
       info: vi.fn(async () => ({ id: 'rw_relayflow' })),
       register,
       release,
     },
-  }));
+  };
+  let workspaceRelayOptions: Record<string, unknown> | undefined;
+  const createWorkspaceRelay = vi.fn((options: Record<string, unknown>) => {
+    workspaceRelayOptions = options;
+    return workspaceRelay;
+  });
   const cliErrors: string[] = [];
   const program = new Command();
   program.exitOverride();
@@ -220,11 +225,14 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
       cliError: cliErrors.join('\n'),
       hasWorkspaceKey:
         typeof constructorOptions?.workspaceKey === 'string' && constructorOptions.workspaceKey.length > 0,
-      hasToken: typeof constructorOptions?.token === 'string' && constructorOptions.token.length > 0,
+      exactToken: constructorOptions?.token === 'at_live_launcher',
+      exactWorkspaceKey: workspaceRelayOptions?.workspaceKey === 'rk_live_cloud_target',
       baseUrl: constructorOptions?.baseUrl ?? null,
       placementCalls: placement.spawn.mock.calls.length,
       registerCalls: register.mock.calls.length,
       releaseCalls: release.mock.calls.length,
+      workspaceRelayCalls: createWorkspaceRelay.mock.calls.length,
+      workspaceRelayBaseUrl: workspaceRelayOptions?.baseUrl ?? null,
     }),
     'utf8'
   );
@@ -252,10 +260,13 @@ try {
 
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
   const sharedLifecycleObserved =
-    observation.hasToken === true &&
+    observation.exactToken === true &&
     observation.baseUrl === 'https://cast.agentrelay.com' &&
     observation.registerCalls === 1 &&
-    observation.releaseCalls === 1;
+    observation.releaseCalls === 1 &&
+    observation.workspaceRelayCalls === 1 &&
+    observation.exactWorkspaceKey === true &&
+    observation.workspaceRelayBaseUrl === 'https://cast.agentrelay.com';
   const baseObserved =
     sharedLifecycleObserved &&
     observation.commandOutcome === 'error' &&
