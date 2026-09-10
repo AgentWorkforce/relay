@@ -1687,6 +1687,77 @@ describe('fleet command support', () => {
     expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
+  it('deletes only the checkpointed Daytona ID after a matched malformed provisioned response', async () => {
+    const warnings: string[] = [];
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const createWorkspaceRelay = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => {
+        throw new CloudFleetSandboxProvisionError('missing valid Daytona providerSandboxId', {
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          sandboxId: REPLAY_SANDBOX_ID,
+          nodeName: REPLAY_SANDBOX_NAME,
+          providerId: 'daytona',
+          confirmedProvisioned: true,
+        });
+      }),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'daytona',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
+          '--sandbox-name',
+          REPLAY_SANDBOX_NAME,
+          '--workspace-id',
+          'rw_abc',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+      sandboxId: REPLAY_SANDBOX_ID,
+      providerId: 'daytona',
+    });
+    expect(createWorkspaceRelay).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
   it('pins cleanup to the requested E2B provider for a known post-provision failure', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const program = new Command();

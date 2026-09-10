@@ -340,7 +340,26 @@ export function registerFleetCommands(
             ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
           });
         } catch (error) {
-          if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
+          if (
+            error instanceof CloudFleetSandboxProvisionError &&
+            error.confirmedProvisioned &&
+            error.cloudWorkspaceId &&
+            error.sandboxId
+          ) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: error.cloudWorkspaceId,
+                sandboxId: error.sandboxId,
+                ...(error.providerId === undefined ? {} : { providerId: error.providerId }),
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
                 error.nodeName ?? effectiveSandboxName ?? 'the requested sandbox'
