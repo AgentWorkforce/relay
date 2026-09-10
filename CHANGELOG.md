@@ -29,8 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleanroom qualification now validates only the trusted `workflow_run` consumer, isolates candidate CLI inventory discovery from verifier secrets, and retains bounded qualification evidence for failed runtime gates.
 - Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
 - Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
-- Standalone Bun workflow runs now execute relayflows and detached monitors with a real Node.js runtime resolved from the workflow project.
-- Standalone Bun workflow runs now use a real Node.js runtime when available, with bundled relayflows execution for Cloud archives that omit node_modules; daemon restarts and monitor failures now remain actionable.
+- Standalone Bun workflow runs execute relayflows and detached monitors with a real Node.js runtime resolved from the workflow project, including Cloud archives that omit node_modules; daemon restarts and monitor failures remain actionable.
 
 - Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
 

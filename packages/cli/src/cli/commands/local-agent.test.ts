@@ -1190,6 +1190,37 @@ describe('local agent subtree', () => {
     expect(error).not.toHaveBeenCalledWith('cli-exit:1');
   });
 
+  it.each(['rejected', 'unknown'] as const)(
+    'set-model --json treats %s as a terminal failure without stderr noise',
+    async (status) => {
+      const { program, client, log, error } = harness({
+        exit: vi.fn((code: number): never => {
+          throw new CliExit(code);
+        }) as never,
+      });
+      client.setModel = vi.fn(async () => ({
+        name: 'lead',
+        model: 'opus',
+        requested_model: 'opus',
+        effective_model: null,
+        applied: false,
+        status,
+        request_id: `model-${status}`,
+        generation: 'generation-1',
+        revision: 2,
+        success: false,
+        accepted: false,
+        pending: false,
+      }));
+
+      await expect(
+        program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus', '--json'], { from: 'user' })
+      ).rejects.toMatchObject({ code: 1 });
+      expect(JSON.parse(log.mock.calls[0]![0] as string)).toMatchObject({ status, applied: false });
+      expect(error).not.toHaveBeenCalled();
+    }
+  );
+
   it('set-model preserves an uncorrelated pending receipt without polling', async () => {
     const { program, client } = harness();
     client.setModel = vi.fn(async () => ({

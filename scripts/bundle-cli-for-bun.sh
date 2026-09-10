@@ -6,9 +6,23 @@ set -euo pipefail
 # that package is pulled through RelayFlows; esbuild inlines the dependency
 # and the version is already supplied by the CLI build.
 
-INPUT="${1:?usage: $0 <entrypoint> <output> <version>}"
-OUTPUT="${2:?usage: $0 <entrypoint> <output> <version>}"
+INPUT_ARG="${1:?usage: $0 <entrypoint> <output> <version>}"
+OUTPUT_ARG="${2:?usage: $0 <entrypoint> <output> <version>}"
 VERSION="${3:?usage: $0 <entrypoint> <output> <version>}"
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+to_absolute_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$PWD" "$1" ;;
+  esac
+}
+INPUT="$(to_absolute_path "$INPUT_ARG")"
+OUTPUT="$(to_absolute_path "$OUTPUT_ARG")"
+ESBUILD="$REPO_ROOT/node_modules/esbuild/bin/esbuild"
+
+cd "$REPO_ROOT"
 
 # npm's esbuild install script may replace bin/esbuild with the platform
 # native executable on Linux, while macOS retains the Node shebang wrapper.
@@ -17,7 +31,7 @@ VERSION="${3:?usage: $0 <entrypoint> <output> <version>}"
 # ssh2 crypto accelerator is optional (ssh2 has a portable crypto fallback),
 # so let esbuild bundle ssh2 while treating its optional native addon as empty;
 # Bun then embeds the portable protocol implementation in the standalone.
-node_modules/esbuild/bin/esbuild "$INPUT" \
+"$ESBUILD" "$INPUT" \
   --bundle \
   --platform=node \
   --target=node18 \

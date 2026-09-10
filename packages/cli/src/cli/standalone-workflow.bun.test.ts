@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,18 +29,21 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
     const tempRoot = mkdtempSync(path.join(os.tmpdir(), 'agent-relay-bun-workflow-test-'));
     const binary = path.join(tempRoot, 'agent-relay');
     const bundle = path.join(tempRoot, 'cli-bundle.mjs');
+    let unrelatedCwd: string | undefined;
     try {
       const bundler = readFileSync(path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), 'utf8');
-      expect(bundler).toContain('node_modules/esbuild/bin/esbuild "$INPUT"');
+      expect(bundler).toContain('"$ESBUILD" "$INPUT"');
+      expect(bundler).toContain('REPO_ROOT=');
       expect(bundler).toContain('--loader:.node=empty');
       expect(bundler).not.toContain('--external:ssh2');
       expect(bundler).not.toContain('bun node_modules/esbuild/bin/esbuild');
       expect(bundler).not.toContain('node node_modules/esbuild/bin/esbuild');
+      unrelatedCwd = mkdtempSync(path.join(os.tmpdir(), 'agent-relay-bun-bundler-cwd-'));
       execFileSync(
         'bash',
         [path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), distEntrypoint, bundle, 'test'],
         {
-          cwd: repoRoot,
+          cwd: unrelatedCwd,
           stdio: 'pipe',
         }
       );
@@ -48,6 +51,29 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
       for (const provider of optionalSandboxProviders) {
         expect(bundleSource).toContain(`import("${provider}")`);
       }
+
+      // External providers are resolved from the workflow project's normal
+      // node_modules layout at runtime, not from the CLI install directory.
+      // Keep one real fixture installed under that documented layout so this
+      // test catches a bundle that preserves the string but breaks resolution.
+      const providerRoot = path.join(tempRoot, 'provider-runtime');
+      const providerPackage = path.join(providerRoot, 'node_modules', 'e2b');
+      mkdirSync(providerPackage, { recursive: true });
+      writeFileSync(
+        path.join(providerPackage, 'package.json'),
+        JSON.stringify({ name: 'e2b', version: '0.0.0-fixture', type: 'module', exports: './index.js' })
+      );
+      writeFileSync(
+        path.join(providerPackage, 'index.js'),
+        'export const fixture = "e2b-runtime-fixture";\n'
+      );
+      const providerProbe = path.join(providerRoot, 'provider-probe.mjs');
+      writeFileSync(
+        providerProbe,
+        'const provider = await import("e2b");\n' +
+          'if (provider.fixture !== "e2b-runtime-fixture") process.exit(1);\n'
+      );
+      execFileSync('bun', [providerProbe], { cwd: providerRoot, stdio: 'pipe' });
       execFileSync(
         'bun',
         [
@@ -67,6 +93,7 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
       execFileSync('bash', [smokeScript, binary], { cwd: repoRoot, stdio: 'pipe' });
       expect(existsSync(binary)).toBe(true);
     } finally {
+      if (unrelatedCwd) rmSync(unrelatedCwd, { recursive: true, force: true });
       rmSync(tempRoot, { recursive: true, force: true });
     }
   }, 120_000);
