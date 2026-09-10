@@ -47,6 +47,18 @@
             "reasoning": "Regenerating the full lock rewrote hundreds of unrelated records. The exact root override plus the smol-toml 1.8.0 lock entry passes npm ci and removes GHSA-7w5x-hrqm-74c2 without broad candidate dependency churn. The separate Relayfile SDK/Bun incompatibility remains independently tracked."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789008100532,
+          "type": "decision",
+          "content": "Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion: Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion",
+          "raw": {
+            "question": "Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion",
+            "chosen": "Require validated checkpointed ownership intents before exact-name Daytona recovery and persist each recovered ID before deletion",
+            "alternatives": [],
+            "reasoning": "A lost CLI response can leave a remote sandbox after only the pre-create name intent is durable; exact name/workspace/nonce/newness/baseline validation plus a private checkpoint closes the crash window without ambient scans, while invalid attempt evidence remains fail-closed and independent."
+          },
+          "significance": "high"
         }
       ]
     }
