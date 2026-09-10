@@ -131,9 +131,9 @@ async function poll(probe, description) {
   }
   throw new Error(`Missing published signal: ${description}`);
 }
-async function request(route, body) {
+async function request(route, body, method = body ? 'POST' : 'GET') {
   const response = await fetch(`${url}${route}`, {
-    method: body ? 'POST' : 'GET',
+    method,
     headers: { 'x-api-key': env.RELAY_BROKER_API_KEY, 'content-type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(10_000),
@@ -194,6 +194,38 @@ try {
     assert.equal(session.operation_mode, 'local_only');
     assert.equal(session.workspace_key, null);
     assert.equal(session.node_token, null);
+    const exiting = await request('/api/spawn', {
+      name: 'local-exit-worker',
+      cli: 'sh',
+      cwd: dir,
+      args: ['-c', 'read -r line'],
+      channels: [],
+    });
+    assert(exiting.response.ok);
+    assert((await request('/api/input/local-exit-worker', { data: 'EXIT_LOCAL_WORKER\r' })).response.ok);
+    await poll(async () => {
+      const { data } = await request('/api/spawned');
+      return !data.agents.some((agent) => agent.name === 'local-exit-worker');
+    }, 'exited local worker reaped');
+    const respawned = await request('/api/spawn', {
+      name: 'local-exit-worker',
+      cli: 'cat',
+      cwd: dir,
+      args: [],
+      channels: [],
+    });
+    assert(respawned.response.ok, 'Local exit must not reserve a name for remote identity cleanup');
+    const deletion = await request(
+      '/api/spawned/local-exit-worker',
+      { expected_generation: respawned.data.generation, delete_identity: true },
+      'DELETE'
+    );
+    assert(!deletion.response.ok, 'Local generations cannot claim ownership of a remote identity');
+    assert.match(JSON.stringify(deletion.data), /identity was not created by this worker generation/);
+    assert(
+      (await request('/api/spawned')).data.agents.some((agent) => agent.name === 'local-exit-worker'),
+      'Rejected remote identity deletion preserves the local worker'
+    );
     const spawned = await request('/api/spawn', {
       name: 'local-worker',
       cli: 'cat',

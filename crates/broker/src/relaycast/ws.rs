@@ -1977,7 +1977,7 @@ mod tests {
         let result = retry_agent_registration_with_budget(
             "worker-a",
             Duration::from_millis(10),
-            || std::future::pending::<Result<String, AgentRegistrationError>>(),
+            std::future::pending::<Result<String, AgentRegistrationError>>,
             |_| std::future::ready(()),
         )
         .await;

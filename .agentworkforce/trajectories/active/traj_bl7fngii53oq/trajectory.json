@@ -43,6 +43,18 @@
           "tags": [
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1789038628279,
+          "type": "decision",
+          "content": "Preserve roster and identity safety across the main rebase: Preserve roster and identity safety across the main rebase",
+          "raw": {
+            "question": "Preserve roster and identity safety across the main rebase",
+            "chosen": "Preserve roster and identity safety across the main rebase",
+            "alternatives": [],
+            "reasoning": "Read merged software-garden#510 and relaycast#401 diffs. Stale roster snapshots are dispatch-only evidence; offline owners and all durable node associations remain protected. Combined upstream status timeout warnings and startup/cleanup tests with local degraded behavior. Local workers create no Relaycast identity, so exclude them from remote owned-generation cleanup and prove exited names can respawn during an outage."
+          },
+          "significance": "high"
         }
       ]
     }
