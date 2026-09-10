@@ -408,47 +408,62 @@ describe('Cloud fleet sandbox client', () => {
     }
   );
 
-  it.each([undefined, 'not-a-daytona-uuid'])(
-    'marks a matched provisioned Daytona response with an invalid providerSandboxId safe for exact-ID cleanup',
-    async (providerSandboxId) => {
-      mocks.authorizedApiFetch
-        .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
-        .mockResolvedValueOnce({
-          response: Response.json(
-            {
-              outcome: 'provisioned',
-              nodeId: 'node-daytona',
-              nodeName: SANDBOX_NAME,
-              sandboxId: SANDBOX_ID,
-              providerSandboxId,
-              relayWorkspaceId: 'rw_abc',
-              relayfileMounted: true,
-              providerId: 'daytona',
-            },
-            { status: 201 }
-          ),
-          auth,
+  it.each([
+    ['provisioned', 201],
+    ['provisioning_timeout', 202],
+  ] as const)(
+    'marks a matched %s Daytona response with an invalid providerSandboxId safe for exact-ID cleanup',
+    async (outcome, status) => {
+      for (const providerSandboxId of [undefined, 'not-a-daytona-uuid']) {
+        mocks.authorizedApiFetch
+          .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+          .mockResolvedValueOnce({
+            response: Response.json(
+              outcome === 'provisioned'
+                ? {
+                    outcome,
+                    nodeId: 'node-daytona',
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    relayfileMounted: true,
+                    providerId: 'daytona',
+                  }
+                : {
+                    outcome,
+                    nodeName: SANDBOX_NAME,
+                    sandboxId: SANDBOX_ID,
+                    providerSandboxId,
+                    relayWorkspaceId: 'rw_abc',
+                    waitedMs: 90_000,
+                    providerId: 'daytona',
+                  },
+              { status }
+            ),
+            auth,
+          });
+
+        const error = await ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:codex',
+          sandboxId: SANDBOX_ID,
+          name: SANDBOX_NAME,
+          forceProvision: true,
+          providerId: 'daytona',
+          workloadProfile: 'long-running-agent',
+        }).catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+        expect(error).toMatchObject({
+          cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+          sandboxId: SANDBOX_ID,
+          nodeName: SANDBOX_NAME,
+          providerId: 'daytona',
+          confirmedProvisioned: true,
+          outcomeUnknown: false,
         });
-
-      const error = await ensureCloudFleetSandbox({
-        workspaceId: 'rw_abc',
-        requiredCapability: 'spawn:codex',
-        sandboxId: SANDBOX_ID,
-        name: SANDBOX_NAME,
-        forceProvision: true,
-        providerId: 'daytona',
-        workloadProfile: 'long-running-agent',
-      }).catch((caught: unknown) => caught);
-
-      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
-      expect(error).toMatchObject({
-        cloudWorkspaceId: CLOUD_WORKSPACE_ID,
-        sandboxId: SANDBOX_ID,
-        nodeName: SANDBOX_NAME,
-        providerId: 'daytona',
-        confirmedProvisioned: true,
-        outcomeUnknown: false,
-      });
+      }
     }
   );
 

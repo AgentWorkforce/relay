@@ -462,7 +462,10 @@ function confirmsProvisionedSandboxIdentity(
 ): boolean {
   if (!isObject(payload) || expectedSandboxId === undefined || requestedProviderId !== 'daytona')
     return false;
-  if (readString(payload, 'outcome') !== 'provisioned') return false;
+  // A timeout is also a response from an accepted provision request. When it
+  // echoes the exact caller-checkpointed public identity, Cloud can safely
+  // delete that one sandbox even if the provider UUID is malformed or absent.
+  if (!['provisioned', 'provisioning_timeout'].includes(readString(payload, 'outcome') ?? '')) return false;
   if (readString(payload, 'sandboxId') !== expectedSandboxId) return false;
   if (expectedNodeName !== undefined && readString(payload, 'nodeName') !== expectedNodeName) return false;
   return readString(payload, 'providerId') === requestedProviderId;
