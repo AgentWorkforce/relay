@@ -45,9 +45,13 @@ if [[ "$method" = POST && "$url" = */v1/workspaces ]]; then
   printf '%s' '{"data":{"api_key":"rk_live_fake_smoke_key","workspace_id":"rw_fake_smoke"}}' > "\$output"
   echo 201
 elif [[ "$method" = DELETE && "$url" = */v1/workspace ]]; then
-  echo 204
+  delete_status="\${FAKE_DELETE_STATUS:-204}"
+  if [ "$delete_status" != 200 ] && [ "$delete_status" != 204 ]; then
+    printf '%s' '{"error":{"code":"internal_error","message":"rk_live_delete_body_must_not_print"}}' > "\$output"
+  fi
+  echo "$delete_status"
 elif [[ "$method" = GET && "$url" = */v1/workspace ]]; then
-  echo 401
+  echo "\${FAKE_VERIFY_STATUS:-401}"
 else
   echo 500
 fi
@@ -64,6 +68,8 @@ elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *api_key* ]]; then
   echo 'rk_live_fake_smoke_key'
 elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *workspace_id* ]]; then
   echo 'rw_fake_smoke'
+elif [ "\${1:-}" = "-er" ] && [[ "\${2:-}" = *error.code* ]] && [ -n "\${FAKE_DELETE_ERROR_CODE:-}" ]; then
+  echo "\$FAKE_DELETE_ERROR_CODE"
 else
   exit 1
 fi
@@ -239,6 +245,74 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const ordinaryOutput = result.stdout.replace(/::add-mask::[^\n]*\n/g, '');
     expect(ordinaryOutput).not.toContain('rk_live_fake_smoke_key');
     expect(result.stderr).not.toContain('rk_live_fake_smoke_key');
+  });
+
+  it('accepts an ambiguous delete response only when the follow-up proves absence', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUS: '401',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      'Ephemeral workspace deletion verified after ambiguous DELETE HTTP 500, error code internal_error'
+    );
+    expect(result.stdout).not.toContain('rk_live_delete_body_must_not_print');
+    expect(result.stderr).not.toContain('rk_live_delete_body_must_not_print');
+  });
+
+  it('classifies an unsafe delete error code instead of logging it', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'rk_live_untrusted_code',
+        FAKE_VERIFY_STATUS: '401',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('ambiguous DELETE HTTP 500, error code other');
+    expect(result.stdout).not.toContain('rk_live_untrusted_code');
+    expect(result.stderr).not.toContain('rk_live_untrusted_code');
+  });
+
+  it('fails closed when an ambiguous delete leaves the workspace readable', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUS: '200',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'ephemeral workspace cleanup returned HTTP 500, error code internal_error'
+    );
+    expect(result.stderr).toContain('ephemeral workspace deletion was not proved (follow-up HTTP 200)');
+    expect(result.stdout).not.toContain('rk_live_delete_body_must_not_print');
+    expect(result.stderr).not.toContain('rk_live_delete_body_must_not_print');
   });
 
   it('passes the shared key through the isolated lifecycle and joins its workspace', () => {

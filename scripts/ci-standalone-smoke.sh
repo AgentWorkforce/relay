@@ -80,6 +80,7 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-standalone-smoke.XXXXXX")"
 HOME_DIR="$TMP_ROOT/home"
 PROJECT_DIR="$TMP_ROOT/project"
 WORKSPACE_RESPONSE="$TMP_ROOT/workspace-response.json"
+DELETE_RESPONSE="$TMP_ROOT/delete-response.json"
 
 mkdir -p "$HOME_DIR" "$PROJECT_DIR"
 
@@ -107,29 +108,42 @@ cleanup() {
       "$CLI_BIN" node down --force --timeout 5000 >/dev/null 2>&1 || true
   )
   if [ -n "$WORKSPACE_KEY" ]; then
-    local delete_status verify_status
-    delete_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    local delete_status delete_error_code delete_error_code_raw verify_status
+    delete_status="$(curl --silent --show-error --output "$DELETE_RESPONSE" --write-out '%{http_code}' \
       --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
       --request DELETE \
       --header "Authorization: Bearer $WORKSPACE_KEY" \
       "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
-    if [ "$delete_status" != "200" ] && [ "$delete_status" != "204" ]; then
-      echo "ERROR: ephemeral workspace cleanup returned HTTP ${delete_status:-unknown}." >&2
+    delete_error_code_raw="$(jq -er '.error.code // .code // empty' "$DELETE_RESPONSE" 2>/dev/null || true)"
+    delete_error_code=""
+    case "$delete_error_code_raw" in
+      internal_error|workspace_storage_unavailable|database_overloaded|file_storage_delete_unsupported)
+        delete_error_code="$delete_error_code_raw"
+        ;;
+      ?*) delete_error_code="other" ;;
+    esac
+    verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+      --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
+      --request GET \
+      --header "Authorization: Bearer $WORKSPACE_KEY" \
+      "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
+    # A 5xx response can be lost after the database commit. The workspace key
+    # was proven valid by the lifecycle above, so 401 from the same key is the
+    # authoritative absence check. Any readable or unverifiable state remains
+    # a hard failure.
+    if [ "$verify_status" = "401" ]; then
+      if [ "$delete_status" = "200" ] || [ "$delete_status" = "204" ]; then
+        echo "Ephemeral workspace deletion verified"
+      else
+        echo "Ephemeral workspace deletion verified after ambiguous DELETE HTTP ${delete_status:-unknown}${delete_error_code:+, error code $delete_error_code}"
+      fi
+    else
+      if [ "$delete_status" != "200" ] && [ "$delete_status" != "204" ]; then
+        echo "ERROR: ephemeral workspace cleanup returned HTTP ${delete_status:-unknown}${delete_error_code:+, error code $delete_error_code}." >&2
+      fi
+      echo "ERROR: ephemeral workspace deletion was not proved (follow-up HTTP ${verify_status:-unknown})." >&2
       echo "The workspace id is ${WORKSPACE_ID:-unknown}; remove it manually from the trusted smoke shard." >&2
       cleanup_status=1
-    else
-      verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-        --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
-        --request GET \
-        --header "Authorization: Bearer $WORKSPACE_KEY" \
-        "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
-      if [ "$verify_status" != "401" ]; then
-        echo "ERROR: ephemeral workspace deletion was not proved (follow-up HTTP ${verify_status:-unknown})." >&2
-        echo "The workspace id is ${WORKSPACE_ID:-unknown}; remove it manually from the trusted smoke shard." >&2
-        cleanup_status=1
-      else
-        echo "Ephemeral workspace deletion verified"
-      fi
     fi
   fi
   rm -rf "$TMP_ROOT"
