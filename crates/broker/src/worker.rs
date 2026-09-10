@@ -1256,6 +1256,10 @@ impl WorkerRegistry {
         // Local-only workers must not bootstrap a separate Relaycast session.
         if self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
             for key in [
+                "AGENT_RELAY_ORIGIN_ACTOR",
+                "RELAY_AGENT_NAME",
+                "RELAY_AGENT_TYPE",
+                "RELAY_STRICT_AGENT_NAME",
                 "AGENT_RELAY_WORKSPACE_KEY",
                 "RELAY_WORKSPACE_KEY",
                 "RELAY_API_KEY",

@@ -9,8 +9,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             cmd.persist || cmd.state_dir.is_some(),
             "local-only mode requires --persist or --state-dir for durable delivery state"
         );
-        let bind: IpAddr = cmd
-            .api_bind
+        let bind: IpAddr = unbracket_ipv6(cmd.api_bind.trim())
             .parse()
             .context("local-only mode requires a loopback IP bind address")?;
         anyhow::ensure!(

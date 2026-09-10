@@ -6426,3 +6426,25 @@ async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restar
     assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES + 1);
     assert_eq!(pending[&id].failed_attempts, 0);
 }
+
+#[tokio::test]
+async fn local_only_restored_exhausted_delivery_replays_to_already_registered_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pending.json");
+    let id = DeliveryId::new("del_local_present_on_restart");
+    let mut entry = pending_delivery("local-worker", id.as_str(), "local_present_on_restart");
+    entry.attempts = MAX_DELIVERY_RETRIES;
+    entry.failed_attempts = MAX_DELIVERY_RETRIES;
+    let expected_delivery = entry.delivery.clone();
+    super::save_pending_deliveries(&path, &HashMap::from([(id.clone(), entry)])).unwrap();
+    let mut pending = load_pending_deliveries(&path);
+    let mut workers = make_worker_registry_with_worker("local-worker").await;
+    let outcome = retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_secs(1))
+        .await
+        .unwrap();
+    cleanup_worker_registry(workers).await;
+    assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
+    assert_eq!(pending[&id].delivery, expected_delivery);
+    assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES + 1);
+    assert_eq!(pending[&id].failed_attempts, 0);
+}

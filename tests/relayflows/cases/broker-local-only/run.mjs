@@ -88,6 +88,10 @@ const env = {
   AGENT_RELAY_TELEMETRY_DISABLED: '1',
   DO_NOT_TRACK: '1',
   AGENT_RELAY_NO_DEBUG_FILES: '1',
+  AGENT_RELAY_ORIGIN_ACTOR: 'local-proof-parent',
+  RELAY_AGENT_NAME: 'local-proof-parent',
+  RELAY_AGENT_TYPE: 'agent',
+  RELAY_STRICT_AGENT_NAME: '1',
 };
 let child;
 let logs = '';
@@ -181,7 +185,7 @@ try {
     assert.match(logs, /failed to initialize relaycast session|failed registering agent/);
     result = { outcome: 'absent', signature: 'relaycast_outage_blocks_local_runtime' };
   } else {
-    await start(true, '::1');
+    await start(true, '[::1]');
     await ready();
     assert.equal(new URL(url).hostname, '[::1]', 'IPv6 API discovery URL is bracketed');
     const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
@@ -194,6 +198,25 @@ try {
     assert.equal(session.operation_mode, 'local_only');
     assert.equal(session.workspace_key, null);
     assert.equal(session.node_token, null);
+    const isolated = await request('/api/spawn', {
+      name: 'local-env-worker',
+      cli: 'sh',
+      cwd: dir,
+      args: [
+        '-c',
+        'for key in AGENT_RELAY_ORIGIN_ACTOR RELAY_AGENT_NAME RELAY_AGENT_TYPE RELAY_STRICT_AGENT_NAME AGENT_RELAY_WORKSPACE_KEY RELAY_WORKSPACE_KEY RELAY_API_KEY RELAY_AGENT_TOKEN RELAY_NODE_TOKEN; do if printenv "$key" >/dev/null; then exit 9; fi; done; printf clean > local-env-proof; read -r line',
+      ],
+      channels: [],
+    });
+    assert(isolated.response.ok);
+    await poll(async () => {
+      try {
+        return (await readFile(path.join(dir, 'local-env-proof'), 'utf8')) === 'clean';
+      } catch (error) {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    }, 'local child has no Relaycast credentials or identity variables');
     const exiting = await request('/api/spawn', {
       name: 'local-exit-worker',
       cli: 'sh',

@@ -258,13 +258,20 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
         .into_iter()
         .map(|p| {
             let id = p.delivery.delivery_id.clone();
+            // A restarted local recipient gets a fresh transport budget even
+            // if it registers before maintenance first retries this snapshot.
+            let failed_attempts = if p.delivery.event_id.as_str().starts_with("local_") {
+                0
+            } else {
+                p.failed_attempts
+            };
             (
                 id,
                 PendingDelivery {
                     worker_name: p.worker_name,
                     delivery: p.delivery,
                     attempts: p.attempts,
-                    failed_attempts: p.failed_attempts,
+                    failed_attempts,
                     next_retry_at: Instant::now(), // retry immediately on restart
                     queued_at_ms: if p.queued_at_ms == 0 {
                         unix_timestamp_millis()

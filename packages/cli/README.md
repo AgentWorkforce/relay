@@ -70,8 +70,10 @@ remain available. `POST /api/send` accepts only a worker currently running on
 this broker; channel, cross-workspace, and remote destinations are rejected.
 It reports `delivery_status: "queued_local"`, `local: true`, and
 `relaycast_published: false`. Acceptance means the work was saved, not that an
-agent has read it. Pending work uses the broker's normal retry, acknowledgement,
-and dead-letter lifecycle, including restart recovery. Manual-flush mode is
+agent has read it. Pending work survives restart and waits for an absent local
+recipient to respawn without exhausting retries. A restarted recipient gets a
+fresh transport retry budget. Explicit release and exhausted transport failures
+while the recipient is present still use the dead-letter lifecycle. Manual-flush mode is
 unavailable and returns `capability_disabled` explicitly.
 
 Fleet routing, worker presence, remote terminal attachment, node capability
@@ -104,7 +106,8 @@ being discarded. Preserve the state directory until reconciliation completes.
 
 Recovery never silently enables fleet capabilities. Stop the broker and start
 normally (without the flag or environment opt-in) to enable them; a normal
-restart also drains any retained audit backlog. Restart local workers as needed
+restart drains retained audit backlog only when its configured destination and
+digest match; an unscoped backlog remains on disk. Restart local workers as needed
 to give them Relaycast messaging tools and registered identities.
 
 ### Workspace binding and recovery
