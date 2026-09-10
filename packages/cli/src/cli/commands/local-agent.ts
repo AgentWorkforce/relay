@@ -24,7 +24,7 @@ import {
 } from '../lib/broker-connection.js';
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
 import { describeError } from '../lib/describe-error.js';
-import { defaultExit } from '../lib/exit.js';
+import { CliExit, defaultExit } from '../lib/exit.js';
 import { redeemJoinTicket } from '../lib/join-ticket.js';
 import { describeClearedEnrollment, persistWorkspaceSession } from '../lib/workspace-session.js';
 
@@ -499,6 +499,10 @@ async function run(
     client = await deps.connect(deps.cwd());
     await fn(client);
   } catch (err) {
+    // `deps.exit()` deliberately throws `CliExit` so the top-level CLI can
+    // flush telemetry and stdio. Do not turn that control-flow signal into a
+    // second "cli-exit:1" error (especially in --json mode).
+    if (err instanceof CliExit) throw err;
     deps.error(err instanceof Error ? err.message : String(err));
     deps.exit(1);
   } finally {
