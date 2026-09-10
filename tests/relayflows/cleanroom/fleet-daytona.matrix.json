@@ -8,7 +8,7 @@
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
-  "inventorySha256": "b0b1d49f70185706e41b34655f7c60e6349525d226d7660a9c81544ea4bf58c5",
+  "inventorySha256": "cfd3a0debf0a7b4f318f2f462d5404b4101474f004655256b985b280519b9fd0",
   "commandSurface": {
     "fleet agent list": [
       "fleet-agent-list-json",
@@ -445,12 +445,7 @@
         "operationId": "fleet-spawn-sandbox-scoped-mount"
       },
       {
-        "option": "--sandbox-snapshot",
-        "status": "supported",
-        "operationId": "fleet-spawn-sandbox-root-mount"
-      },
-      {
-        "option": "--sandbox-snapshot-manifest-sha256",
+        "option": "--sandbox-id",
         "status": "supported",
         "operationId": "fleet-spawn-sandbox-root-mount"
       },
@@ -463,6 +458,11 @@
         "option": "--target-node",
         "status": "supported",
         "operationId": "fleet-spawn-target-node-alias"
+      },
+      {
+        "option": "--workspace-id",
+        "status": "supported",
+        "operationId": "fleet-spawn-sandbox-root-mount"
       },
       {
         "option": "--task",
@@ -513,6 +513,11 @@
       }
     ],
     "node agent attach": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound broker endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
       {
         "option": "--api-key",
         "status": "supported",
@@ -1125,7 +1130,8 @@
           "The node reaches the exact requested running/stopped state and preserves identity where idempotency requires it."
         ],
         "negativeAssertions": [
-          "A host process, wrong node name, PID replacement on repeated up, or unstopped broker fails."
+          "A host process, wrong node name, PID replacement on repeated up, or unstopped broker fails.",
+          "When a peer worker/broker shares the sandbox, isolated cleanup must not terminate the peer; any unowned process match fails closed."
         ],
         "lifecycleAssertion": "Before/after state and PID are read within bounded timeouts.",
         "teardownAssertion": "The final down-all leaves the owned sandbox broker stopped before sandbox deletion.",
@@ -1421,8 +1427,8 @@
         "--sandbox",
         "--sandbox-provider",
         "daytona",
-        "--sandbox-snapshot",
-        "--sandbox-snapshot-manifest-sha256"
+        "--sandbox-id",
+        "--workspace-id"
       ]
     },
     {

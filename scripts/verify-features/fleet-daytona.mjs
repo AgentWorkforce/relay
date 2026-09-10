@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
@@ -761,14 +761,15 @@ export function buildFleetSpawnArgs(options, qualification = {}) {
     options.task,
     ...(options.node ? [options.nodeFlag ?? '--node', options.node] : []),
     ...(options.sandbox ? ['--sandbox', '--sandbox-provider', sandboxProvider] : []),
-    ...(options.sandbox && sandboxProvider === 'daytona' && snapshotRequired
-      ? [
-          '--sandbox-snapshot',
-          qualification.expectedSnapshotId,
-          '--sandbox-snapshot-manifest-sha256',
-          qualification.expectedSnapshotManifestSha256,
-        ]
+    // Current Fleet CLI binds sandbox provisioning to the explicitly selected
+    // Relay workspace. Snapshot selection is a Cloud/provider concern now:
+    // the board proves it independently from the returned sandbox identity and
+    // in-image manifest, rather than passing removed snapshot flags through
+    // the CLI argv.
+    ...(options.sandbox && qualification.expectedWorkspaceId
+      ? ['--workspace-id', qualification.expectedWorkspaceId]
       : []),
+    ...(options.sandboxId ? ['--sandbox-id', options.sandboxId] : []),
     ...(options.sandboxName ? ['--sandbox-name', options.sandboxName] : []),
     ...(options.noMount ? ['--no-sandbox-relayfile'] : []),
     ...(options.mountPaths ? ['--sandbox-relayfile-path', ...options.mountPaths] : []),
@@ -5422,7 +5423,8 @@ class FleetBoard {
     const cases = [
       {
         id: 'fleet-spawn-sandbox-root-mount',
-        name: `relay-fleetboard-root-${this.short}`,
+        sandboxId: `sbx_${randomUUID()}`,
+        name: undefined,
         paths: undefined,
         noMount: false,
         snapshotRequired: true,
@@ -5444,6 +5446,8 @@ class FleetBoard {
       },
     ];
     for (const scenario of cases) {
+      const scenarioName =
+        scenario.name ?? `fleet-sandbox-${scenario.sandboxId.slice('sbx_'.length)}`;
       const agentName = `${scenario.id}-${this.short}`;
       const sentinel = `${scenario.id.replace(/-/g, '_').toUpperCase()}_${this.short.toUpperCase()}_READY`;
       await this.runFleetSpawn(scenario.id, {
@@ -5451,7 +5455,8 @@ class FleetBoard {
         agentName,
         task: `Use Agent Relay MCP to post the exact text ${sentinel} to channel general, then remain idle.`,
         sandbox: true,
-        sandboxName: scenario.name,
+        sandboxName: scenarioName,
+        sandboxId: scenario.sandboxId,
         sandboxRole: scenario.id.replace('fleet-spawn-sandbox-', '') + '-probe',
         mountPaths: scenario.paths,
         noMount: scenario.noMount,
@@ -5463,7 +5468,7 @@ class FleetBoard {
         timeoutMs: 600_000,
       });
       const resource = await this.captureSandboxByExactName(
-        scenario.name,
+        scenarioName,
         scenario.id.replace('fleet-spawn-sandbox-', '') + '-probe'
       );
       if (resource) {

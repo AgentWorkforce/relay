@@ -124,7 +124,11 @@ export function assessQualificationCapabilities(executions, effects = {}) {
     {
       id: 'candidate-snapshot-selector',
       command: ['fleet', 'spawn', '--help'],
-      options: ['--sandbox-snapshot', '--sandbox-snapshot-manifest-sha256'],
+      // Snapshot selection is bound to the candidate Cloud workspace. The
+      // current CLI exposes the workspace/sandbox identity controls; the
+      // runner independently attests the returned provider snapshot and
+      // in-image manifest instead of relying on removed snapshot argv flags.
+      options: ['--sandbox', '--sandbox-provider', '--workspace-id'],
     },
     {
       id: 'ephemeral-cloud-workspace-create',

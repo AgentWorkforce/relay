@@ -77,7 +77,7 @@ describe('release qualification capability gate', () => {
             args: commands.selector,
             status: 0,
             output:
-              '--sandbox --sandbox-snapshot <id> --sandbox-snapshot-manifest-sha256 <sha256> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
+              '--sandbox --sandbox-provider daytona --workspace-id <id> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
           },
           {
             args: commands.create,
@@ -97,7 +97,7 @@ describe('release qualification capability gate', () => {
         args: commands.selector,
         status: 0,
         output:
-          '--sandbox --sandbox-snapshot <id> --sandbox-snapshot-manifest-sha256 <sha256> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
+          '--sandbox --sandbox-provider daytona --workspace-id <id> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
       },
       {
         args: commands.create,
@@ -128,7 +128,7 @@ describe('release qualification capability gate', () => {
           args: commands.selector,
           status: 0,
           output:
-            '--sandbox --sandbox-snapshot <id> --sandbox-snapshot-manifest-sha256 <sha256> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
+            '--sandbox --sandbox-provider daytona --workspace-id <id> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
         },
         {
           args: commands.create,
@@ -161,7 +161,7 @@ describe('release qualification capability gate', () => {
           args: commands.selector,
           status: 0,
           output:
-            '--no-sandbox-relayfile, --sandbox-relayfile-path=<path> --sandbox-snapshot-manifest-sha256=<sha256> --sandbox-snapshot=<id> --sandbox',
+            '--no-sandbox-relayfile, --sandbox-relayfile-path=<path> --workspace-id=<id> --sandbox-provider=daytona --sandbox',
         },
         {
           args: commands.create,
@@ -179,7 +179,7 @@ describe('release qualification capability gate', () => {
         args: ['spawn', 'fleet', '--help'],
         status: 0,
         output:
-          '--sandbox --sandbox-snapshot <id> --sandbox-snapshot-manifest-sha256 <sha256> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
+          '--sandbox --sandbox-provider daytona --workspace-id <id> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
       },
     ]);
     expect(wrongCommand.availabilityReady).toBe(false);
@@ -224,7 +224,7 @@ describe('release qualification capability gate', () => {
           args: commands.selector,
           status: 0,
           output:
-            '--sandbox --sandbox-snapshot <id> --sandbox-snapshot-manifest-sha256 <sha256> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
+            '--sandbox --sandbox-provider daytona --workspace-id <id> --sandbox-relayfile-path <path> --no-sandbox-relayfile',
         },
         {
           args: commands.create,

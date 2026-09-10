@@ -97,12 +97,14 @@ Daytona, Relayfile, Relaycast, registry, and agent resources are gone. The board
 must run twice in separate ephemeral workspaces and prove the operator's
 default workspace/store is unchanged.
 
-Release qualification also has no end-to-end candidate selector today. The
-Fleet CLI and Cloud ensure path select the production snapshot; a verifier-side
-`--sandbox-snapshot` argument is intentionally fail-closed until a tightly
-authorized, non-production selector is implemented. Do not make arbitrary
-production snapshot names user-selectable. Bind the selector to a candidate
-manifest digest and a dedicated qualification credential or stage.
+Release qualification must bind a candidate Cloud workspace to its immutable
+snapshot before the Fleet board starts. Current Fleet CLI provisioning uses the
+explicit `--workspace-id` (and, for replay, `--sandbox-id`) identity controls;
+snapshot ID/name/manifest attestation is independently verified from Cloud's
+returned sandbox identity and the in-image manifest. Do not reintroduce the
+removed `--sandbox-snapshot` argv flags or make arbitrary production snapshot
+names user-selectable. Bind the candidate workspace to a manifest digest and a
+dedicated qualification credential or stage.
 
 Relayfile Cloud has an independent provenance blocker. Cloud currently routes
 every workspace through one stage-global `RELAYFILE_URL`; its canonical and
@@ -378,7 +380,12 @@ on the operator host. Use
 `tests/relayflows/cleanroom/FLEET_DAYTONA_MANUAL_2026-09-04.md` as the durable,
 redacted summary. Never commit raw credentials or unredacted provider output.
 
-At one inventory point there were 212 retained sandboxes: 125 started, 87 stopped, and exactly 250 started CPUs in use. This made a normal two-CPU provision fail at the account ceiling. Many retained `fleet-ensure-*` and verification nodes were still started long after their work should have ended.
+At one ambient provider inventory point there were 212 retained sandboxes: 125
+started, 87 stopped, and exactly 250 started CPUs in use. The 125 figure was a
+live provider inventory count, not a fixture or qualification-board count; do
+not report it as “125 fixtures.” This made a normal two-CPU provision fail at
+the account ceiling. Many retained `fleet-ensure-*` and verification nodes
+were still started long after their work should have ended.
 
 A fresh 2026-09-05 Relay fleet inventory returned 3,290 node records: 145
 reported live, 3,145 offline, 354 named `fleet-ensure-*`, and 110 of those

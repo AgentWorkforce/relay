@@ -1115,10 +1115,10 @@ describe('complete Daytona Fleet board', () => {
             '--sandbox',
             '--sandbox-provider',
             'e2b',
-            '--sandbox-snapshot',
-            'fixture',
-            '--sandbox-snapshot-manifest-sha256',
-            'a'.repeat(64),
+            '--sandbox-id',
+            'sbx_11111111-1111-4111-8111-111111111111',
+            '--workspace-id',
+            '11111111-1111-4111-8111-111111111111',
           ],
         },
         variantDefinition,
@@ -1867,19 +1867,21 @@ describe('complete Daytona Fleet board', () => {
         task: 'task',
         sandbox: true,
         snapshotRequired: true,
+        sandboxId: 'sbx_11111111-1111-4111-8111-111111111111',
       },
       {
         expectedSnapshotId: 'snap_candidate_1666',
         expectedSnapshotManifestSha256: 'a'.repeat(64),
+        expectedWorkspaceId: '11111111-1111-4111-8111-111111111111',
       }
     );
     validate('fleet-spawn-sandbox-root-mount', rootMountArgs);
     expect(rootMountArgs).toEqual(
       expect.arrayContaining([
-        '--sandbox-snapshot',
-        'snap_candidate_1666',
-        '--sandbox-snapshot-manifest-sha256',
-        'a'.repeat(64),
+        '--sandbox-id',
+        'sbx_11111111-1111-4111-8111-111111111111',
+        '--workspace-id',
+        '11111111-1111-4111-8111-111111111111',
       ])
     );
     expect(() =>
