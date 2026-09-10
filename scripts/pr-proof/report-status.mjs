@@ -63,6 +63,23 @@ export async function resolvePullRequest({ payload, repository, apiUrl, token, f
   return { number, headSha };
 }
 
+/**
+ * A GitHub Actions rerun retains the original event payload and workflow SHA.
+ * Manual proof dispatches therefore carry the caller's observed current head
+ * and refuse to publish a pending status if that head has moved meanwhile.
+ */
+export function assertExpectedHeadSha(expectedHeadSha, actualHeadSha) {
+  if (!expectedHeadSha) return;
+  if (!SHA_RE.test(expectedHeadSha)) {
+    throw new Error('Expected PR proof head SHA must be a full lowercase SHA');
+  }
+  if (expectedHeadSha !== actualHeadSha) {
+    throw new Error(
+      `PR head changed before proof dispatch: expected ${expectedHeadSha}, resolved ${actualHeadSha}; dispatch a fresh proof for the resolved head`
+    );
+  }
+}
+
 function targetUrl(env) {
   const server = env.GITHUB_SERVER_URL?.replace(/\/$/, '');
   const repository = env.GITHUB_REPOSITORY;
@@ -148,12 +165,14 @@ export async function main() {
   if (command === 'start') {
     const eventPath = option('--event', env.GITHUB_EVENT_PATH);
     const outputPath = option('--github-output', env.GITHUB_OUTPUT);
+    const expectedHeadSha = option('--expected-head-sha');
     const repository = validateRepository(env.GITHUB_REPOSITORY?.trim());
     const token = env.GITHUB_TOKEN?.trim();
     const apiUrl = (env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '');
     if (!eventPath || !token) throw new Error('GITHUB_EVENT_PATH and GITHUB_TOKEN are required');
     const payload = JSON.parse(await readFile(eventPath, 'utf8'));
     const resolved = await resolvePullRequest({ payload, repository, apiUrl, token, fetchImpl: fetch });
+    assertExpectedHeadSha(expectedHeadSha, resolved.headSha);
     await publishCommitStatus({
       sha: resolved.headSha,
       state: 'pending',
