@@ -1074,23 +1074,33 @@ async function processCwdMatchesProjectRoot(
 async function processRuntimeStateDirectory(
   processInfo: ProcessInfo,
   deps: CoreDependencies
-): Promise<string | null | undefined> {
+): Promise<{ directory: string; lockName: string } | null | undefined> {
   try {
     const details = await deps.execCommand(`lsof -nP -a -p ${processInfo.pid} -Ffn`);
-    const directories = new Set<string>();
+    const locks = new Set<string>();
     let descriptor = false;
     for (const line of details.stdout.split('\n')) {
       if (line.startsWith('f')) descriptor = /^f\d/.test(line);
       if (!descriptor || !line.startsWith('n')) continue;
       const filename = line.slice(1);
       if (path.isAbsolute(filename) && /^broker-.+\.lock$/.test(path.basename(filename))) {
-        directories.add(path.dirname(path.resolve(filename)));
+        locks.add(path.resolve(filename));
       }
     }
-    if (directories.size === 0) return undefined;
-    return directories.size === 1 ? [...directories][0] : null;
+    if (locks.size === 0) return undefined;
+    if (locks.size !== 1) return null;
+    const filename = [...locks][0];
+    return { directory: path.dirname(filename), lockName: path.basename(filename) };
   } catch {
     return undefined;
+  }
+}
+
+function canonicalDirectory(directory: string, deps: CoreDependencies): string {
+  try {
+    return deps.fs.realpathSync?.(directory) ?? path.resolve(directory);
+  } catch {
+    return path.resolve(directory);
   }
 }
 
@@ -1117,13 +1127,14 @@ async function terminateProcess(pid: number, deps: CoreDependencies, force: bool
 async function killOrphanedBrokerProcesses(
   paths: CoreProjectPaths,
   deps: CoreDependencies,
-  options?: { force?: boolean; brokerName?: string }
+  options?: { force?: boolean; brokerName?: string; matchBrokerName?: boolean }
 ): Promise<{ matchedCount: number; killedCount: number }> {
   let matchedCount = 0;
   let killedCount = 0;
   try {
     const resolvedProjectRoot = path.resolve(paths.projectRoot);
     const stateDirectory = path.resolve(paths.dataDir);
+    const canonicalStateDirectory = canonicalDirectory(stateDirectory, deps);
     const usesDefaultStateDirectory =
       stateDirectory === path.join(resolvedProjectRoot, '.agentworkforce/relay');
     const brokerName =
@@ -1141,11 +1152,19 @@ async function killOrphanedBrokerProcesses(
 
       for (const processInfo of relayProcesses) {
         if (isBrokerExecutableCommand(processInfo.command)) {
-          const runtimeDirectory = await processRuntimeStateDirectory(processInfo, deps);
-          if (runtimeDirectory !== undefined) {
-            if (runtimeDirectory === stateDirectory) candidates.push(processInfo);
+          const runtime = await processRuntimeStateDirectory(processInfo, deps);
+          if (runtime !== undefined) {
+            // Startup recovers only its named broker. Explicit forced shutdown
+            // owns the selected directory, including a custom-named orphan.
+            const expectedLock = `broker-${brokerName.replace(/[^\p{Alphabetic}\p{Number}-]/gu, '-')}.lock`;
+            if (
+              runtime?.directory === canonicalStateDirectory &&
+              (!options?.matchBrokerName || runtime.lockName === expectedLock)
+            )
+              candidates.push(processInfo);
             continue;
           }
+          if (options?.matchBrokerName && !commandHasBrokerName(processInfo.command, brokerName)) continue;
         }
         const declaredStateDirectory = commandStateDirectory(processInfo.command);
         if (declaredStateDirectory !== undefined) {
@@ -1244,7 +1263,11 @@ async function recoverHalfStartedBroker(
     return 'recovered';
   }
 
-  const orphanCleanup = await killOrphanedBrokerProcesses(paths, deps, { force: true, brokerName });
+  const orphanCleanup = await killOrphanedBrokerProcesses(paths, deps, {
+    force: true,
+    brokerName,
+    matchBrokerName: true,
+  });
   if (orphanCleanup.matchedCount > 0) {
     if (orphanCleanup.killedCount < orphanCleanup.matchedCount) {
       deps.error(
@@ -1953,7 +1976,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // Kill any orphaned broker processes for this project that lost their PID
     // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
-    await killOrphanedBrokerProcesses(paths, deps, { brokerName: options.brokerName });
+    await killOrphanedBrokerProcesses(paths, deps, { brokerName: options.brokerName, matchBrokerName: true });
 
     const started = await startBrokerWithPortFallback(
       paths,

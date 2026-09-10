@@ -68,6 +68,7 @@ export interface CoreRelay {
 }
 
 export interface CoreFileSystem {
+  realpathSync?: (path: string) => string;
   existsSync: (path: string) => boolean;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   writeFileSync: (path: string, data: string, encoding?: BufferEncoding) => void;
@@ -206,6 +207,7 @@ async function createDefaultRelay(
 
 export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
+    realpathSync: fs.realpathSync,
     existsSync: fs.existsSync,
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
     writeFileSync: (filePath, data, encoding) => fs.writeFileSync(filePath, data, encoding),

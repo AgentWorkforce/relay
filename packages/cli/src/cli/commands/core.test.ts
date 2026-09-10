@@ -980,23 +980,37 @@ describe('registerCoreCommands', () => {
     }
   );
 
-  it.each(['/tmp/project/relay  state', '/tmp/project/.agentworkforce/relay'])(
+  it.each(['/tmp/project/relay  state', '/tmp/project/.agentworkforce/relay', '/tmp/project/symlink state'])(
     'force cleanup identifies a custom-named broker by its open runtime lock in %s',
     async (stateDir) => {
-      const running = new Set([222, 333]);
+      const running = new Set([222, 333, 444, 555]);
+      const fs = createFsMock();
+      fs.realpathSync = (p) => (stateDir.includes('symlink') ? `/private${p}` : p);
       const execCommand = vi.fn(async (command: string) => {
         if (command === 'ps aux')
           return {
             stdout: [
               `user 222 0 0 1 1 ?? S 1:00 0:00 /opt/bin/agent-relay-broker init --instance-name custom-node --persist${stateDir.includes('  ') ? ` --state-dir ${stateDir}` : ''}`,
               'user 333 0 0 1 1 ?? S 1:00 0:00 /opt/bin/agent-relay-broker init --instance-name custom-node --persist --state-dir /tmp/project/peer',
+              `user 444 0 0 1 1 ?? S 1:00 0:00 /opt/bin/agent-relay-broker init --state-dir ${stateDir}`,
+              'user 555 0 0 1 1 ?? S 1:00 0:00 /opt/bin/agent-relay-broker init --state-dir /tmp/project/peer',
             ].join('\n'),
+            stderr: '',
+          };
+        if (command.includes('-Ffn') && command.includes('-p 444 '))
+          return {
+            stdout: `f10\nn${stateDir}/broker-a.lock\nf11\nn/tmp/project/peer/broker-b.lock\n`,
+            stderr: '',
+          };
+        if (command.includes('-Ffn') && command.includes('-p 555 '))
+          return {
+            stdout: `fcwd\nn${stateDir}/broker-a.lock\nftxt\nn${stateDir}/broker-b.lock\n`,
             stderr: '',
           };
         if (command.includes('-Ffn'))
           return {
             stdout: command.includes('-p 222 ')
-              ? `p222\nf10\nn${stateDir}/broker-custom-node.lock\n`
+              ? `p222\nf10\nn${fs.realpathSync!(stateDir)}/broker-custom-node.lock\n`
               : 'p333\nf10\nn/tmp/project/peer/broker-custom-node.lock\n',
             stderr: '',
           };
@@ -1009,16 +1023,16 @@ describe('registerCoreCommands', () => {
         }
         running.delete(pid);
       });
-      const { program } = createHarness({ execCommand, killImpl });
+      const { program } = createHarness({ fs, execCommand, killImpl });
       await runCommand(program, ['down', '--force', '--state-dir', stateDir]);
       expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
-      expect([...running]).toEqual([333]);
+      expect([...running]).toEqual([333, 444, 555]);
     }
   );
 
   it('up with an isolated state directory never kills brokers or workers from an ancestor project', async () => {
     const fs = createFsMock();
-    const runningPids = new Set([222, 333, 444, 555, 666, 777, 9001, 4242]);
+    const runningPids = new Set([222, 333, 444, 555, 666, 777, 888, 9001, 4242]);
     let now = 0;
     const execCommand = vi.fn(async (command: string) => {
       if (command === 'ps aux') {
@@ -1031,10 +1045,13 @@ describe('registerCoreCommands', () => {
             'user 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay node up --state-dir /tmp/project/peer-state',
             'user 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -c agent-relay up --state-dir /tmp/project/candidate-state',
             'user 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/candidate-state --state-dir',
+            'user 888 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --instance-name peer --state-dir /tmp/project/candidate-state',
           ].join('\n'),
           stderr: '',
         };
       }
+      if (command.includes('-Ffn') && command.includes('-p 888 '))
+        return { stdout: 'f10\nn/tmp/project/candidate-state/broker-peer.lock\n', stderr: '' };
       return { stdout: 'fcwd\nn/tmp/project\n', stderr: '' };
     });
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
@@ -1063,7 +1080,7 @@ describe('registerCoreCommands', () => {
     ]);
     expect(exitCode).toBe(0);
     expect(killImpl.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
-    expect([...runningPids]).toEqual([222, 333, 444, 555, 666, 777, 9001, 4242]);
+    expect([...runningPids]).toEqual([222, 333, 444, 555, 666, 777, 888, 9001, 4242]);
   });
 
   it('down --force with an isolated state directory kills only its broker and fails closed on ambiguity', async () => {
