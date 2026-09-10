@@ -85,7 +85,15 @@ const mountBinary = path.join(out, 'relayfile-mount-linux-amd64');
 await withTemporaryGoModuleCache(async (goModCache) => {
   await execFileAsync(
     'go',
-    ['build', '-trimpath', '-buildvcs=false', '-ldflags=-buildid=', '-o', mountBinary, './cmd/relayfile-mount'],
+    [
+      'build',
+      '-trimpath',
+      '-buildvcs=false',
+      '-ldflags=-buildid=',
+      '-o',
+      mountBinary,
+      './cmd/relayfile-mount',
+    ],
     {
       cwd: candidates.relayfile,
       env: {

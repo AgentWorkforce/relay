@@ -123,9 +123,7 @@ if (
 
 let daytonaMemoryGiB;
 try {
-  daytonaMemoryGiB = daytonaMemoryGiBFromMiB(
-    process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096'
-  );
+  daytonaMemoryGiB = daytonaMemoryGiBFromMiB(process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096');
 } catch (error) {
   await writeBlocked(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -203,15 +201,28 @@ async function issue490Evidence(id) {
   // Run the published package's platform binary, never the source checkout.
   // The probe owns a delayed/429 websocket fake server and emits only its
   // structured counters (no token-bearing process output).
-  const runProbe = (entrypoint) => runDaytona([
-    'exec', id, '--cwd', '/qualification/relayfile-npm', '--', 'node',
-    '/qualification/relayfile-npm/issue-490-probe.mjs', entrypoint,
-  ], { timeoutMs: 300_000 });
-  const [cliResult, standaloneResult] = await Promise.all([
-    runProbe('cli'),
-    runProbe('standalone'),
-  ]);
-  const parse = (result) => { try { return JSON.parse(result.stdout.trim()); } catch { return {}; } };
+  const runProbe = (entrypoint) =>
+    runDaytona(
+      [
+        'exec',
+        id,
+        '--cwd',
+        '/qualification/relayfile-npm',
+        '--',
+        'node',
+        '/qualification/relayfile-npm/issue-490-probe.mjs',
+        entrypoint,
+      ],
+      { timeoutMs: 300_000 }
+    );
+  const [cliResult, standaloneResult] = await Promise.all([runProbe('cli'), runProbe('standalone')]);
+  const parse = (result) => {
+    try {
+      return JSON.parse(result.stdout.trim());
+    } catch {
+      return {};
+    }
+  };
   const cli = parse(cliResult);
   const standalone = parse(standaloneResult);
   const summarize = (result, parsed) => ({
@@ -226,9 +237,10 @@ async function issue490Evidence(id) {
     secondOutputBytes: parsed.secondOutputBytes ?? 0,
     firstOutputTruncated: parsed.firstOutputTruncated === true,
     secondOutputTruncated: parsed.secondOutputTruncated === true,
-    runnerDiagnostic: Object.keys(parsed).length > 0
-      ? 'structured_output'
-      : classifyProbeOutput(`${result.stdout}\n${result.stderr}`),
+    runnerDiagnostic:
+      Object.keys(parsed).length > 0
+        ? 'structured_output'
+        : classifyProbeOutput(`${result.stdout}\n${result.stderr}`),
     cursorSeeded: parsed.cursorSeeded === true,
     realtimeDialCount: parsed.realtimeDialCount ?? 99,
     pollingUpdateApplied: parsed.pollingUpdateApplied === true,
@@ -472,7 +484,10 @@ async function main() {
     if ((await sha256(mountDestination)) !== manifest.relayfileMount.sha256)
       throw new Error('copied relayfile-mount binary hash does not match bundle manifest');
     await cp(new URL('./issue-490-probe.mjs', import.meta.url), path.join(context, 'issue-490-probe.mjs'));
-    await cp(new URL('./probe-diagnostics.mjs', import.meta.url), path.join(context, 'probe-diagnostics.mjs'));
+    await cp(
+      new URL('./probe-diagnostics.mjs', import.meta.url),
+      path.join(context, 'probe-diagnostics.mjs')
+    );
     const artifactHashes = Object.fromEntries(
       Object.entries(artifacts).map(([name, value]) => [name, value.sha256])
     );
@@ -484,11 +499,10 @@ async function main() {
     const dockerfile = path.join(context, 'Dockerfile');
     await writeFile(
       dockerfile,
-      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /tmp/mount-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY issue-490-probe.mjs probe-diagnostics.mjs /qualification/relayfile-npm/\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && npm pack @relayfile/mount-linux-x64@${npmVersion} --pack-destination /tmp/mount-npm >/dev/null && test \"$(sha256sum /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${mountTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && test -x /qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount\n`
-        .replace(
-          '&& cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud',
-          '&& cd /qualification/cloud && npm ci --no-audit --no-fund && npm run build:platform && npm run build:core && cd /qualification/relayfile-cloud'
-        )
+      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /tmp/mount-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY issue-490-probe.mjs probe-diagnostics.mjs /qualification/relayfile-npm/\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && npm pack @relayfile/mount-linux-x64@${npmVersion} --pack-destination /tmp/mount-npm >/dev/null && test \"$(sha256sum /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${mountTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz /tmp/mount-npm/relayfile-mount-linux-x64-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && test -x /qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount\n`.replace(
+        '&& cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud',
+        '&& cd /qualification/cloud && npm ci --no-audit --no-fund && npm run build:platform && npm run build:core && cd /qualification/relayfile-cloud'
+      )
     );
     createAttempted = true;
     const create = await run(
@@ -550,7 +564,16 @@ async function main() {
       artifactHashes,
       artifacts,
       candidateProvenance,
-      publishedRelayfile: { package: 'relayfile', mountPackage: '@relayfile/mount-linux-x64', version: npmVersion, tarballSha256: npmTarballSha256, mountTarballSha256, sourceSha: npmSourceSha, releaseAttestationSha256, installed: true },
+      publishedRelayfile: {
+        package: 'relayfile',
+        mountPackage: '@relayfile/mount-linux-x64',
+        version: npmVersion,
+        tarballSha256: npmTarballSha256,
+        mountTarballSha256,
+        sourceSha: npmSourceSha,
+        releaseAttestationSha256,
+        installed: true,
+      },
       legs: { coldMount, acl, issue490 },
       cleanup: cleanupEvidence,
       checkpoints,

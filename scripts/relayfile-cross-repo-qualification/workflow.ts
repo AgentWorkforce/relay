@@ -19,7 +19,28 @@ const relayfileCloudPath = process.env.RELAYFILE_CLOUD_REPO ?? '../relayfile-clo
 // Explicitly forward only qualification inputs. RelayFlow does not inherit the
 // workflow module's process.env into deterministic child steps automatically.
 const CONFIG_PATH = `${ARTIFACT_DIR}/qualification-config.json`;
-const config = { version: 1, runId: RUN_ID, artifactDir: ARTIFACT_DIR, bundleDir: `${ARTIFACT_DIR}/bundle`, createSandboxes: process.env.RELAYFILE_QUALIFICATION_CREATE_SANDBOXES === '1', candidates: { cloud: cloudPath, relayfile: relayfilePath, 'relayfile-cloud': relayfileCloudPath }, npm: { version: process.env.RELAYFILE_QUALIFICATION_NPM_VERSION ?? '', tarballSha256: process.env.RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256 ?? '', sourceSha: process.env.RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA ?? '', releaseAttestationSha256: process.env.RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256 ?? '', mountTarballSha256: process.env.RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256 ?? '' }, daytona: { image: process.env.RELAYFILE_QUALIFICATION_DAYTONA_IMAGE ?? '', cpu: process.env.RELAYFILE_DAYTONA_CPU ?? '2', memoryMb: process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096', diskGib: process.env.RELAYFILE_DAYTONA_DISK_GIB ?? '10', ttlMinutes: process.env.RELAYFILE_DAYTONA_TTL_MINUTES ?? '90' } };
+const config = {
+  version: 1,
+  runId: RUN_ID,
+  artifactDir: ARTIFACT_DIR,
+  bundleDir: `${ARTIFACT_DIR}/bundle`,
+  createSandboxes: process.env.RELAYFILE_QUALIFICATION_CREATE_SANDBOXES === '1',
+  candidates: { cloud: cloudPath, relayfile: relayfilePath, 'relayfile-cloud': relayfileCloudPath },
+  npm: {
+    version: process.env.RELAYFILE_QUALIFICATION_NPM_VERSION ?? '',
+    tarballSha256: process.env.RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256 ?? '',
+    sourceSha: process.env.RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA ?? '',
+    releaseAttestationSha256: process.env.RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256 ?? '',
+    mountTarballSha256: process.env.RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256 ?? '',
+  },
+  daytona: {
+    image: process.env.RELAYFILE_QUALIFICATION_DAYTONA_IMAGE ?? '',
+    cpu: process.env.RELAYFILE_DAYTONA_CPU ?? '2',
+    memoryMb: process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096',
+    diskGib: process.env.RELAYFILE_DAYTONA_DISK_GIB ?? '10',
+    ttlMinutes: process.env.RELAYFILE_DAYTONA_TTL_MINUTES ?? '90',
+  },
+};
 // Pass the generated run identity through the child process environment. Keep it
 // out of shell command text so an unsafe caller-supplied value can never become
 // shell syntax.
@@ -29,7 +50,13 @@ process.env.RELAYFILE_QUALIFICATION_RUN_ID = RUN_ID;
 process.env.RELAYFILE_QUALIFICATION_ARTIFACT_DIR = ARTIFACT_DIR;
 process.env.RELAYFILE_QUALIFICATION_BUNDLE_DIR = `${ARTIFACT_DIR}/bundle`;
 function command(script: string, ...args: string[]): string {
-    return ['node', `scripts/relayfile-cross-repo-qualification/${script}`, ...args, '--config', CONFIG_PATH].join(' ');
+  return [
+    'node',
+    `scripts/relayfile-cross-repo-qualification/${script}`,
+    ...args,
+    '--config',
+    CONFIG_PATH,
+  ].join(' ');
 }
 function reviewTask(provider: 'Claude' | 'Codex', phase: string): string {
   const name = provider.toLowerCase();

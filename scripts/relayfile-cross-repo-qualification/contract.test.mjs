@@ -55,15 +55,12 @@ test('Daytona retries only proven pre-execution sandbox lookup transport failure
 });
 
 test('Vitest parser ignores terminal color sequences in the summary', () => {
-  assert.deepEqual(
-    parseVitestVerboseOutput('\u001b[32m Tests\u001b[0m  \u001b[1m8 passed\u001b[0m (8)'),
-    {
-      ok: true,
-      passed: 8,
-      failed: 0,
-      lines: [' Tests  8 passed (8)'],
-    }
-  );
+  assert.deepEqual(parseVitestVerboseOutput('\u001b[32m Tests\u001b[0m  \u001b[1m8 passed\u001b[0m (8)'), {
+    ok: true,
+    passed: 8,
+    failed: 0,
+    lines: [' Tests  8 passed (8)'],
+  });
 });
 
 test('persisted vitest evidence excludes raw secret-bearing output', () => {
@@ -279,8 +276,23 @@ function armReport(arm) {
         cursorPersisted: true,
         daemonRealtimePreserved: true,
         daemon: { realtimeDialCount: 1 },
-        cli: { exitCode: 0, testsPassed: 2, testsFailed: 0, realtimeDialCount: 0, pollingUpdateApplied: true, cursorPersisted: true },
-        standalone: { exitCode: 0, testsPassed: 2, testsFailed: 0, realtimeDialCount: 0, pollingUpdateApplied: true, cursorPersisted: true, daemonRealtimeDialCount: 1 },
+        cli: {
+          exitCode: 0,
+          testsPassed: 2,
+          testsFailed: 0,
+          realtimeDialCount: 0,
+          pollingUpdateApplied: true,
+          cursorPersisted: true,
+        },
+        standalone: {
+          exitCode: 0,
+          testsPassed: 2,
+          testsFailed: 0,
+          realtimeDialCount: 0,
+          pollingUpdateApplied: true,
+          cursorPersisted: true,
+          daemonRealtimeDialCount: 1,
+        },
       },
     },
     cleanup: {

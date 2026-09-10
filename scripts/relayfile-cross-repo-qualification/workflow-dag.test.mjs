@@ -15,5 +15,8 @@ test('capture-integrity is a hard prerequisite for the first Claude review', () 
 
 test('verify-integrity receives the captured digest before the config flag', () => {
   assert.match(source, /command\('verify-integrity\.mjs', '\{\{steps\.capture-integrity\.output\}\}'\)/);
-  assert.doesNotMatch(source, /command\('verify-integrity\.mjs'\)\}\s+"\{\{steps\.capture-integrity\.output\}\}"/);
+  assert.doesNotMatch(
+    source,
+    /command\('verify-integrity\.mjs'\)\}\s+"\{\{steps\.capture-integrity\.output\}\}"/
+  );
 });
