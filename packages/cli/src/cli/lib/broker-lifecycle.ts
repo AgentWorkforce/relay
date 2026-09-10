@@ -7,6 +7,14 @@ import { createLogger } from '@agent-relay/utils';
 import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
+import {
+  brokerIdentityPath,
+  matchesBrokerIdentity,
+  persistBrokerIdentity,
+  readBrokerIdentities,
+  type BrokerProcessIdentity,
+  removeBrokerIdentity,
+} from './broker-process-identity.js';
 import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand, isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
@@ -972,135 +980,9 @@ function isProcessRunning(pid: number, deps: CoreDependencies): boolean {
   try {
     deps.killProcess(pid, 0);
     return true;
-  } catch {
-    return false;
-  }
-}
-
-type ProcessInfo = {
-  pid: number;
-  command: string;
-};
-
-function parsePsAuxLine(line: string): ProcessInfo | null {
-  const fields = line.trim().split(/\s+/);
-  if (fields.length < 11 || fields[0] === 'USER') {
-    return null;
-  }
-  const pid = Number.parseInt(fields[1], 10);
-  if (Number.isNaN(pid) || pid <= 0) {
-    return null;
-  }
-  return {
-    pid,
-    command: fields.slice(10).join(' '),
-  };
-}
-
-function commandExecutableBasename(command: string): string {
-  const executable = command.trim().split(/\s+/)[0] ?? '';
-  return path.basename(executable.replace(/^["']|["']$/g, ''));
-}
-
-function isBrokerExecutableCommand(command: string): boolean {
-  const basename = commandExecutableBasename(command);
-  return basename === 'agent-relay-broker' || basename.startsWith('agent-relay-broker-');
-}
-
-function isAttachedBrokerCliCommand(command: string): boolean {
-  if (command.includes('agent-relay-mcp')) {
-    return false;
-  }
-  // The attached `up` process holds the broker. Skip the transient
-  // `up --background` launcher, which exits as soon as the child is ready.
-  if (!/(?:^|\s)up(?:\s|$)/.test(command) || /(?:^|\s)--background(?:\s|=|$)/.test(command)) {
-    return false;
-  }
-  const words = command.trim().split(/\s+/);
-  const executable = commandExecutableBasename(command);
-  // A shell or worker prompt mentioning `agent-relay up` is not the CLI.
-  const cli = ['node', 'bun'].includes(executable) ? path.basename(words[1] ?? '') : executable;
-  return /^(?:agent-relay(?:\.js)?|agent-relay-(?:darwin|linux|win32)[\w.-]*)$/.test(cli);
-}
-
-function isBrokerProcessCommand(command: string): boolean {
-  // PTY workers use the same executable as their broker. They are never
-  // orphan broker candidates, even when their executable lives in this project.
-  if (isBrokerExecutableCommand(command)) return command.trim().split(/\s+/)[1] === 'init';
-  return isAttachedBrokerCliCommand(command);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function commandHasBrokerName(command: string, brokerName: string): boolean {
-  const escapedName = escapeRegExp(brokerName);
-  return new RegExp(`(?:^|\\s)--(?:name|broker-name|instance-name)(?:\\s+|=)${escapedName}(?:\\s|$)`).test(
-    command
-  );
-}
-
-function commandStateDirectory(command: string): string | null | undefined {
-  const flags = [...command.matchAll(/(?:^|\s)--state-dir(?=\s|=|$)/g)];
-  if (flags.length === 0) return undefined;
-  if (flags.length !== 1) return null;
-  const matches = [...command.matchAll(/(?:^|\s)--state-dir(?:\s+|=)(?:"([^"]+)"|'([^']+)'|(\S+))/g)];
-  // Ambiguous or incomplete process listings cannot establish ownership.
-  if (matches.length !== 1) return null;
-  return matches[0][1] ?? matches[0][2] ?? matches[0][3] ?? null;
-}
-
-async function processCwdMatchesProjectRoot(
-  processInfo: ProcessInfo,
-  projectRoot: string,
-  deps: CoreDependencies
-): Promise<string | null> {
-  try {
-    const cwdDetails = await deps.execCommand(`lsof -nP -a -p ${processInfo.pid} -d cwd -Fn`);
-    const matchingCwd = cwdDetails.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('n'))
-      .map((line) => path.resolve(line.slice(1)))
-      .find((cwd) => cwd === projectRoot || cwd.startsWith(`${projectRoot}${path.sep}`));
-    return matchingCwd ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Native brokers keep one runtime lock descriptor open for their lifetime.
- * lsof field output preserves spaces in its path, unlike a rendered argv. */
-async function processRuntimeStateDirectory(
-  processInfo: ProcessInfo,
-  deps: CoreDependencies
-): Promise<{ directory: string; lockName: string } | null | undefined> {
-  try {
-    const details = await deps.execCommand(`lsof -nP -a -p ${processInfo.pid} -Ffn`);
-    const locks = new Set<string>();
-    let descriptor = false;
-    for (const line of details.stdout.split('\n')) {
-      if (line.startsWith('f')) descriptor = /^f\d/.test(line);
-      if (!descriptor || !line.startsWith('n')) continue;
-      const filename = line.slice(1);
-      if (path.isAbsolute(filename) && /^broker-.+\.lock$/.test(path.basename(filename))) {
-        locks.add(path.resolve(filename));
-      }
-    }
-    if (locks.size === 0) return undefined;
-    if (locks.size !== 1) return null;
-    const filename = [...locks][0];
-    return { directory: path.dirname(filename), lockName: path.basename(filename) };
-  } catch {
-    return undefined;
-  }
-}
-
-function canonicalDirectory(directory: string, deps: CoreDependencies): string {
-  try {
-    return deps.fs.realpathSync?.(directory) ?? path.resolve(directory);
-  } catch {
-    return path.resolve(directory);
+  } catch (error) {
+    // Permission denial proves no exit and must never authorize record deletion.
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
   }
 }
 
@@ -1129,89 +1011,67 @@ async function killOrphanedBrokerProcesses(
   deps: CoreDependencies,
   options?: { force?: boolean; brokerName?: string; matchBrokerName?: boolean }
 ): Promise<{ matchedCount: number; killedCount: number }> {
-  let matchedCount = 0;
-  let killedCount = 0;
-  try {
-    const resolvedProjectRoot = path.resolve(paths.projectRoot);
-    const stateDirectory = path.resolve(paths.dataDir);
-    const canonicalStateDirectory = canonicalDirectory(stateDirectory, deps);
-    const usesDefaultStateDirectory =
-      stateDirectory === path.join(resolvedProjectRoot, '.agentworkforce/relay');
-    const brokerName =
-      options?.brokerName ??
-      deps.env.AGENT_RELAY_BROKER_NAME ??
-      (path.basename(resolvedProjectRoot) || 'project');
-    const candidates: ProcessInfo[] = [];
-    try {
-      const processList = await deps.execCommand('ps aux');
-      const relayProcesses = processList.stdout
-        .split('\n')
-        .map(parsePsAuxLine)
-        .filter((process): process is ProcessInfo => process !== null)
-        .filter((process) => isBrokerProcessCommand(process.command));
-
-      for (const processInfo of relayProcesses) {
-        if (isBrokerExecutableCommand(processInfo.command)) {
-          const runtime = await processRuntimeStateDirectory(processInfo, deps);
-          if (runtime !== undefined) {
-            // Startup recovers only its named broker. Explicit forced shutdown
-            // owns the selected directory, including a custom-named orphan.
-            const expectedLock = `broker-${brokerName.replace(/[^\p{Alphabetic}\p{Number}-]/gu, '-')}.lock`;
-            if (
-              runtime?.directory === canonicalStateDirectory &&
-              (!options?.matchBrokerName || runtime.lockName === expectedLock)
-            )
-              candidates.push(processInfo);
-            continue;
-          }
-          if (options?.matchBrokerName && !commandHasBrokerName(processInfo.command, brokerName)) continue;
-        }
-        const declaredStateDirectory = commandStateDirectory(processInfo.command);
-        if (declaredStateDirectory !== undefined) {
-          if (declaredStateDirectory === null) continue;
-          if (path.isAbsolute(declaredStateDirectory)) {
-            if (path.resolve(declaredStateDirectory) === stateDirectory) candidates.push(processInfo);
-          } else {
-            const processCwd = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
-            if (processCwd && path.resolve(processCwd, declaredStateDirectory) === stateDirectory)
-              candidates.push(processInfo);
-          }
-          continue;
-        }
-        // A custom state directory must never adopt a process using the default
-        // directory. An executable or arbitrary argument under an ancestor
-        // project (including the user's home directory) proves no ownership.
-        if (!usesDefaultStateDirectory) continue;
-        const processCwd = await processCwdMatchesProjectRoot(processInfo, resolvedProjectRoot, deps);
-        if (processCwd !== resolvedProjectRoot) continue;
-        if (
-          isBrokerExecutableCommand(processInfo.command) &&
-          !commandHasBrokerName(processInfo.command, brokerName)
-        ) {
-          continue;
-        }
-        candidates.push(processInfo);
+  const identities = readBrokerIdentities(paths, deps);
+  if (!identities) {
+    deps.warn(
+      `Broker identities could not be read in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}. State retained; inspect the records and verify process ownership before manual recovery.`
+    );
+    return { matchedCount: 1, killedCount: 0 };
+  }
+  const brokerName =
+    options?.brokerName?.trim() ||
+    deps.env.AGENT_RELAY_BROKER_NAME?.trim() ||
+    path.basename(paths.projectRoot) ||
+    'project';
+  const result = { matchedCount: 0, killedCount: 0 };
+  for (const identity of identities) {
+    if (options?.matchBrokerName && identity.brokerName !== brokerName) continue;
+    if (!isProcessRunning(identity.pid, deps)) {
+      if (options?.matchBrokerName) {
+        result.matchedCount++;
+        deps.warn(
+          `Recorded broker has already exited; its identity was retained because no matched exit was observed. Verify ownership before removing ${brokerIdentityPath(paths, deps, identity.brokerName)} and restarting.`
+        );
       }
-    } catch {
-      // Expected if ps is unavailable; fall through to no matches.
+      continue;
     }
-    for (const { pid } of candidates) {
-      if (pid === deps.pid) {
-        continue;
-      }
-      matchedCount += 1;
-      deps.warn(`Killing orphaned broker process (pid: ${pid})`);
-      const killed = await terminateProcess(pid, deps, options?.force === true);
-      if (killed) {
-        killedCount += 1;
-      } else if (options?.force === true) {
-        deps.warn(`Broker orphan process may still be running (pid: ${pid})`);
-      }
+    result.matchedCount++;
+    if (await stopRecordedBroker(paths, identity, deps, options?.force === true)) result.killedCount++;
+  }
+  return result;
+}
+
+async function stopRecordedBroker(
+  paths: CoreProjectPaths,
+  identity: BrokerProcessIdentity,
+  deps: CoreDependencies,
+  force: boolean
+): Promise<boolean> {
+  // Check the persisted instance immediately before EVERY signal, including
+  // escalation after a wait. Never rediscover ownership from rendered argv.
+  if (!(await matchesBrokerIdentity(identity, paths, deps))) {
+    deps.warn(
+      `Broker identity could not be verified (pid: ${identity.pid}). State retained; verify process ownership before stopping it manually. If the recorded broker has exited, remove its stale identity file: ${brokerIdentityPath(paths, deps, identity.brokerName)}`
+    );
+    return false;
+  }
+  deps.warn(`Killing orphaned broker process (pid: ${identity.pid})`);
+  try {
+    deps.killProcess(identity.pid, 'SIGTERM');
+    let exited = await waitForProcessExit(identity.pid, force ? 500 : 300, deps);
+    if (!exited && force && (await matchesBrokerIdentity(identity, paths, deps))) {
+      deps.killProcess(identity.pid, 'SIGKILL');
+      exited = await waitForProcessExit(identity.pid, 500, deps);
+    }
+    if (exited) {
+      removeBrokerIdentity(paths, identity, deps);
+      return true;
     }
   } catch {
-    // Best-effort orphan cleanup.
+    // Retain the record when a matched exit was not observed.
   }
-  return { matchedCount, killedCount };
+  deps.warn(`Broker orphan process may still be running (pid: ${identity.pid})`);
+  return false;
 }
 
 function ensureBundledAgentRelayMcpCommand(deps: CoreDependencies): void {
@@ -1249,13 +1109,15 @@ async function recoverHalfStartedBroker(
 
   if (readiness.state === 'starting') {
     deps.warn(
-      `Broker process is running but the API is not ready; killing half-started broker (pid: ${readiness.conn.pid}).`
+      `Broker process is running but the API is not ready; verifying half-started broker ownership (pid: ${readiness.conn.pid}).`
     );
-    const stopped = await terminateProcess(readiness.conn.pid, deps, true);
+    const identities = readBrokerIdentities(paths, deps);
+    const identity = identities?.find((record) => record.pid === readiness.conn.pid);
+    const stopped = identity && (await stopRecordedBroker(paths, identity, deps, true));
     if (!stopped) {
       deps.error(
         `Failed to stop half-started broker process (pid: ${readiness.conn.pid}). ` +
-          'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
+          `Verify process ownership manually before stopping it; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}. Connection metadata alone cannot authorize a signal.`
       );
       return 'blocked';
     }
@@ -1280,11 +1142,16 @@ async function recoverHalfStartedBroker(
     return 'recovered';
   }
 
-  cleanupBrokerFiles(paths, deps);
   return 'clear';
 }
 
 function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): void {
+  // A concurrent replacement or another named broker still owns discovery
+  // state. Unreadable records are likewise not permission to remove it.
+  if (readBrokerIdentities(paths, deps)?.length !== 0) return;
+  // A replacement can publish connection.json before its identity is captured.
+  const connection = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
+  if (connection?.pid && isProcessRunning(connection.pid, deps)) return;
   const runtimePath = path.join(paths.dataDir, 'runtime.json');
   const relaySockPath = path.join(paths.dataDir, 'relay.sock');
 
@@ -1293,10 +1160,12 @@ function cleanupBrokerFiles(paths: CoreProjectPaths, deps: CoreDependencies): vo
   safeUnlink(runtimePath, deps);
   safeUnlink(backgroundStartErrorPath(paths.dataDir), deps);
 
-  // Clean up lock files and legacy pid files
+  // A lock pathname may still belong to an unverifiable or differently named
+  // live broker. Reusing the existing inode preserves its flock protection.
+  // Only legacy pid files are disposable here.
   try {
     for (const file of deps.fs.readdirSync(paths.dataDir)) {
-      if (file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.pid'))) {
+      if (file.startsWith('broker-') && file.endsWith('.pid')) {
         safeUnlink(path.join(paths.dataDir, file), deps);
         continue;
       }
@@ -1531,9 +1400,18 @@ export async function waitForNodeDelivery(
   }
 }
 
-async function shutdownUpResources(relay: CoreRelay, dataDir: string, deps: CoreDependencies): Promise<void> {
+async function shutdownUpResources(
+  relay: CoreRelay,
+  paths: CoreProjectPaths,
+  deps: CoreDependencies
+): Promise<void> {
+  const identity = readBrokerIdentities(paths, deps)?.find((record) => record.pid === relay.brokerPid);
+  const owned = identity !== undefined && (await matchesBrokerIdentity(identity, paths, deps));
   await relay.shutdown().catch(() => undefined);
-  safeUnlink(path.join(dataDir, CONNECTION_FILENAME), deps);
+  if (identity && owned && !isProcessRunning(identity.pid, deps)) removeBrokerIdentity(paths, identity, deps);
+  if (!relay.brokerPid || readBrokerPid(paths.dataDir, deps) === relay.brokerPid) {
+    safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
+  }
 }
 
 // eslint-disable-next-line complexity
@@ -1823,11 +1701,15 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       }
       for (const cleanupPid of cleanupPids) {
         deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
-        const stopped = await terminateProcess(cleanupPid, deps, true);
+        const identity = readBrokerIdentities(paths, deps)?.find((record) => record.pid === cleanupPid);
+        const stopped =
+          cleanupPid === child.pid
+            ? await terminateProcess(cleanupPid, deps, true)
+            : identity && (await stopRecordedBroker(paths, identity, deps, true));
         if (!stopped) {
           deps.error(
             `Failed to stop half-started broker process (pid: ${cleanupPid}). ` +
-              'Run `agent-relay down --force` to retry cleanup, or remove `.agentworkforce/relay/` after stopping the process.'
+              `Verify process ownership before stopping it manually; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}.`
           );
         }
       }
@@ -1865,12 +1747,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       let allStopped = true;
       for (const cleanupPid of cleanupPids) {
         deps.warn(`Cleaning up failed broker start (pid: ${cleanupPid})`);
-        const stopped = await terminateProcess(cleanupPid, deps, true);
+        const identity = readBrokerIdentities(paths, deps)?.find((record) => record.pid === cleanupPid);
+        const stopped =
+          cleanupPid === child.pid
+            ? await terminateProcess(cleanupPid, deps, true)
+            : identity && (await stopRecordedBroker(paths, identity, deps, true));
         if (!stopped) {
           allStopped = false;
           deps.error(
             `Failed to stop broker process after Cloud enrollment startup failed (pid: ${cleanupPid}). ` +
-              'Run `agent-relay down --force` to retry cleanup.'
+              `Verify process ownership before stopping it manually; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}.`
           );
         }
       }
@@ -1898,6 +1784,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let shuttingDown = false;
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
+  let stopWatchingBrokerExit: (() => void) | undefined;
+  let rejectBrokerExit: (reason: Error) => void;
+  const brokerExit = new Promise<never>((_resolve, reject) => {
+    rejectBrokerExit = reject;
+  });
+  // The child can exit during startup before holdOpen begins racing this promise.
+  void brokerExit.catch(() => undefined);
   const shutdownOnce = async (): Promise<void> => {
     if (!shutdownPromise) {
       shuttingDown = true;
@@ -1907,7 +1800,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         shutdownPromise = (async () => {
           await reflexCapture?.stop();
           await nodeProviders?.stop();
-          await shutdownUpResources(relay, paths.dataDir, deps);
+          await shutdownUpResources(relay, paths, deps);
         })();
       }
     }
@@ -1973,10 +1866,16 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       planCapacitySource(nodePlan)
     );
 
-    // Kill any orphaned broker processes for this project that lost their PID
-    // files (e.g. user deleted .agentworkforce/relay/ while broker was running).
+    // Recover a broker whose discovery files were lost only while its persisted
+    // process identity and original runtime lock still prove ownership.
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
-    await killOrphanedBrokerProcesses(paths, deps, { brokerName: options.brokerName, matchBrokerName: true });
+    const orphanCleanup = await killOrphanedBrokerProcesses(paths, deps, {
+      brokerName: options.brokerName,
+      matchBrokerName: true,
+    });
+    if (orphanCleanup.matchedCount > orphanCleanup.killedCount) {
+      throw new Error('Could not verify orphan broker exit; retained its state for a later cleanup.');
+    }
 
     const started = await startBrokerWithPortFallback(
       paths,
@@ -2001,6 +1900,19 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       throw err;
     });
     relay = started.relay;
+    stopWatchingBrokerExit = relay.onBrokerExit?.(() => {
+      if (!shuttingDown) rejectBrokerExit(new Error('Broker exited; stopping the node supervisor.'));
+    });
+    if (relay.brokerPid)
+      await persistBrokerIdentity(
+        paths,
+        relay.brokerPid,
+        options.brokerName?.trim() ||
+          deps.env.AGENT_RELAY_BROKER_NAME?.trim() ||
+          path.basename(paths.projectRoot) ||
+          'project',
+        deps
+      );
 
     try {
       writeBrokerBindingSource(paths.dataDir, workspaceBindingSource, deps);
@@ -2094,7 +2006,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.warn('Warning: --spawn specified but no teams.json found');
     }
 
-    const holdOpen = deps.holdOpen();
+    const holdOpen = Promise.race([deps.holdOpen(), brokerExit]);
     if (nodeProviders?.done) {
       await Promise.race([holdOpen, nodeProviders.done]);
     } else {
@@ -2118,6 +2030,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     reportBrokerStartFailure(err, deps, paths, options);
     deps.exit(1);
   } finally {
+    stopWatchingBrokerExit?.();
     crashGuard.dispose();
   }
 }
@@ -2182,7 +2095,16 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
   const conn = readBrokerConnectionFromFs(deps.fs, paths.dataDir);
   if (!conn) {
     if (options.force) {
-      await killOrphanedBrokerProcesses(paths, deps, { force: true });
+      const result = await killOrphanedBrokerProcesses(paths, deps, { force: true });
+      if (result.matchedCount > result.killedCount) {
+        deps.error('Could not verify broker exit; retained its state for a later cleanup.');
+        deps.exit(1);
+        return;
+      }
+      if (result.matchedCount === 0) {
+        deps.log('No verified orphan broker found; retained existing state.');
+        return;
+      }
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {
@@ -2204,30 +2126,42 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     return;
   }
 
+  const identities = readBrokerIdentities(paths, deps);
+  const identity = identities?.find((record) => record.pid === pid);
+  if (!identity || !(await matchesBrokerIdentity(identity, paths, deps))) {
+    deps.error(
+      `Broker identity could not be verified (pid: ${pid}); retained its state. Verify ownership before stopping the process manually; inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}. Connection metadata alone cannot authorize a signal.`
+    );
+    deps.exit(1);
+    return;
+  }
   try {
     deps.log(`Stopping broker (pid: ${pid})...`);
     deps.killProcess(pid, 'SIGTERM');
 
-    const exited = await waitForProcessExit(pid, timeout, deps);
+    let exited = await waitForProcessExit(pid, timeout, deps);
     if (!exited) {
       // eslint-disable-next-line max-depth
       if (options.force) {
         deps.log('Graceful shutdown timed out, forcing...');
-        // eslint-disable-next-line max-depth
-        try {
-          deps.killProcess(pid, 'SIGKILL');
-          await waitForProcessExit(pid, 2000, deps);
-        } catch {
-          // Ignore kill errors.
+        if (identity && !(await matchesBrokerIdentity(identity, paths, deps))) {
+          throw new Error('Broker identity changed before escalation; retained its state.');
         }
+        deps.killProcess(pid, 'SIGKILL');
+        exited = await waitForProcessExit(pid, 2000, deps);
       } else {
         deps.log(`Graceful shutdown timed out after ${timeout}ms. Use --force to kill.`);
         return;
       }
     }
 
+    if (!exited) {
+      throw new Error('Could not verify broker exit; retained its state for a later cleanup.');
+    }
+    if (identity) removeBrokerIdentity(paths, identity, deps);
     cleanupBrokerFiles(paths, deps);
     deps.log('Stopped');
+    return;
   } catch (err: unknown) {
     const withCode = err as { code?: string };
     if (withCode.code === 'ESRCH') {
@@ -2237,6 +2171,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     }
     deps.error(`Error stopping broker: ${toErrorMessage(err)}`);
   }
+  deps.exit(1);
 }
 
 export async function runStatusCommand(

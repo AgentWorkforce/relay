@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
 
-- Node startup and forced shutdown restrict orphan broker cleanup to the selected state directory and exclude PTY workers, preventing an isolated node from stopping other projects' agents.
+- Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents. Legacy brokers without a verifiable identity now require manually verified shutdown.
 
 ## [12.0.0] - 2026-09-10
 

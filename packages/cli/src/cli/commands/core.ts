@@ -63,11 +63,17 @@ export interface CoreRelay {
   workspaceId?: string;
   /** PID of the underlying broker process, when available. */
   brokerPid?: number;
+  /** Notify the owning CLI when its broker child exits. */
+  onBrokerExit?: (listener: () => void) => () => void;
   /** Actual HTTP API port bound by the broker, including OS-assigned ports. */
   apiPort?: number;
 }
 
 export interface CoreFileSystem {
+  statSync?: (
+    path: string,
+    options: { bigint: true }
+  ) => Pick<fs.BigIntStats, 'dev' | 'ino' | 'ctimeNs' | 'mtimeNs'>;
   realpathSync?: (path: string) => string;
   existsSync: (path: string) => boolean;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
@@ -188,6 +194,7 @@ async function createDefaultRelay(
       return status;
     },
     shutdown: () => client.shutdown(),
+    onBrokerExit: (listener) => client.onBrokerExit(listener),
     get workspaceKey() {
       return client.workspaceKey;
     },
@@ -209,6 +216,7 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     realpathSync: fs.realpathSync,
     existsSync: fs.existsSync,
+    statSync: (filePath, options) => fs.statSync(filePath, options),
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),
     writeFileSync: (filePath, data, encoding) => fs.writeFileSync(filePath, data, encoding),
     renameSync: (oldPath, newPath) => fs.renameSync(oldPath, newPath),

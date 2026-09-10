@@ -1,10 +1,12 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const CASE_ID = '1736-scoped-orphan-cleanup';
+const identityProof = process.argv.includes('--persisted-identity');
+const CASE_ID = identityProof ? '1736-persisted-broker-identity' : '1736-scoped-orphan-cleanup';
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -35,6 +37,7 @@ const candidateState = path.join(fixtureRoot, 'candidate  state');
 const peerState = path.join(fixtureRoot, 'peer-state');
 const projectName = path.basename(targetDir);
 const children = [];
+let identityPath;
 
 try {
   run('npm', ['ci', '--ignore-scripts'], targetDir, 'workspace dependency installation');
@@ -67,8 +70,34 @@ try {
   children.push(spawnShellMention());
   await waitForFixtureProcesses();
 
+  // Seed through the actual target implementation when it supports persisted
+  // ownership. The old base has no record support and uses process discovery.
+  const identityModule = path.join(targetDir, 'packages/cli/dist/cli/lib/broker-process-identity.js');
+  if (fs.existsSync(identityModule)) {
+    const { persistBrokerIdentity, brokerIdentityPath, readBrokerProcessIdentity } = await import(
+      pathToFileURL(identityModule).href
+    );
+    const paths = { projectRoot: targetDir, dataDir: candidateState };
+    await persistBrokerIdentity(paths, children[0].pid, 'fixture', {
+      fs,
+      pid: process.pid,
+      execCommand: fixedIdentityCommand,
+    });
+    identityPath = brokerIdentityPath(paths, undefined, 'fixture');
+    if (!fs.existsSync(identityPath))
+      throw new Error(
+        `The live fixture did not produce a verified broker identity: ${JSON.stringify({ process: await readBrokerProcessIdentity(children[0].pid, { fs, pid: process.pid, execCommand: fixedIdentityCommand }), descriptors: fixedIdentityCommand(`lsof -nP -a -p ${children[0].pid} -FfnDi`).stdout })}`
+      );
+  }
+  if (identityProof) {
+    // Simulate a second broker launch reusing the runtime lock. Even the same
+    // PID/start-second/executable must no longer match the persisted instance.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    fs.closeSync(fs.openSync(path.join(candidateState, 'broker-fixture.lock'), 'w'));
+  }
+
   const cliPath = path.join(targetDir, 'packages/cli/dist/cli/index.js');
-  const down = spawnSync(
+  const down = await runCli(
     process.execPath,
     [cliPath, 'node', 'down', '--force', '--state-dir', candidateState],
     {
@@ -84,7 +113,8 @@ try {
     }
   );
   if (down.error) throw new Error(`node down could not start: ${down.error.message}`);
-  if (down.status !== 0) {
+  const expectedExit = identityProof && arm === 'head' ? 1 : 0;
+  if (down.status !== expectedExit) {
     throw new Error(`node down failed with ${down.status}: ${down.stderr}`);
   }
 
@@ -92,11 +122,17 @@ try {
   const selectedStopped = !isAlive(children[0]);
   const survivors = children.slice(1).filter(isAlive);
   const nonSelectedStopped = children.slice(1).some((child) => !isAlive(child));
-  const headObserved = selectedStopped && survivors.length === children.length - 1;
-  const baseObserved = selectedStopped && nonSelectedStopped;
+  const headObserved =
+    (identityProof ? !selectedStopped : selectedStopped) && survivors.length === children.length - 1;
+  const baseObserved = identityProof ? selectedStopped : selectedStopped && nonSelectedStopped;
   const outcome = arm === 'base' ? (baseObserved ? 'bug' : null) : headObserved ? 'fixed' : null;
-  const signature =
-    arm === 'base' ? 'isolated_cleanup_kills_peer_or_worker' : 'isolated_cleanup_preserves_peer_and_worker';
+  const signature = identityProof
+    ? arm === 'base'
+      ? 'unverified_orphan_is_killed'
+      : 'unverified_orphan_is_preserved'
+    : arm === 'base'
+      ? 'isolated_cleanup_kills_peer_or_worker'
+      : 'isolated_cleanup_preserves_peer_and_worker';
   if (!outcome) {
     throw new Error(
       `Unexpected scoped cleanup observation: ${JSON.stringify({
@@ -118,8 +154,9 @@ try {
       arm,
       outcome,
       signature,
-      details:
-        arm === 'base'
+      details: identityProof
+        ? 'The runtime lock was reopened after identity capture; cleanup must preserve that unverified process and every peer.'
+        : arm === 'base'
           ? 'The base cleanup matched project-root paths rather than the selected state directory and signalled an unrelated peer, default broker, PTY worker, shell mention, or ambiguous process.'
           : 'The head cleanup stopped only the broker declaring the selected state directory and preserved the peer broker, default broker, PTY worker, shell mention, and ambiguous process.',
     })}\n`,
@@ -127,7 +164,48 @@ try {
   );
 } finally {
   for (const child of children) stopFixture(child);
+  if (identityPath) await rm(identityPath, { force: true });
   await rm(fixtureRoot, { recursive: true, force: true });
+}
+
+function fixedIdentityCommand(command) {
+  const ps = /^LC_ALL=C TZ=UTC ps -p ([1-9]\d*) -o lstart=$/.exec(command);
+  if (ps)
+    return {
+      stdout: execFileSync('ps', ['-p', ps[1], '-o', 'lstart='], {
+        encoding: 'utf8',
+        env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+      }),
+      stderr: '',
+    };
+  const lsof = /^lsof -nP -a -p ([1-9]\d*) (?:-d txt -FDi|-FfnDi)$/.exec(command);
+  if (!lsof) throw new Error('Unexpected process identity command');
+  const fields = command.endsWith('-FDi') ? ['-d', 'txt', '-FDi'] : ['-FfnDi'];
+  return {
+    stdout: execFileSync('lsof', ['-nP', '-a', '-p', lsof[1], ...fields], { encoding: 'utf8' }),
+    stderr: '',
+  };
+}
+
+function runCli(command, args, options) {
+  // Keep the event loop free to reap fixture children when cleanup signals
+  // them. A synchronous CLI invocation leaves zombies visible to kill(pid, 0)
+  // and cannot prove the matched broker actually exited.
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 function compileHelper() {
@@ -196,7 +274,12 @@ async function waitForFixtureProcesses() {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const listing = spawnSync('ps', ['aux'], { encoding: 'utf8' }).stdout ?? '';
-    if (children.every((child) => isAlive(child) && listing.includes(childCommandMarker(child)))) return;
+    if (
+      children.every((child) => isAlive(child) && listing.includes(childCommandMarker(child))) &&
+      fs.existsSync(path.join(candidateState, 'broker-fixture.lock')) &&
+      fs.existsSync(path.join(peerState, 'broker-fixture.lock'))
+    )
+      return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error('fixture processes did not all appear in ps aux');

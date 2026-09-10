@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "1736-persisted-broker-identity",
+  "kind": "bugfix",
+  "title": "Preserve brokers whose persisted runtime identity no longer matches",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1736-persisted-broker-identity/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "unverified_orphan_is_killed" },
+    "head": { "outcome": "fixed", "signature": "unverified_orphan_is_preserved" }
+  }
+}
