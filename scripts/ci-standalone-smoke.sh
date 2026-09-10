@@ -28,6 +28,9 @@ WORKSPACE_LEASE_SECONDS=300
 MAX_STARTUP_TIMEOUT_SECONDS=240
 CURL_CONNECT_TIMEOUT_SECONDS=10
 CURL_MAX_TIME_SECONDS=60
+CLEANUP_VERIFY_MAX_ATTEMPTS=3
+CLEANUP_VERIFY_MAX_TIME_SECONDS=10
+CLEANUP_VERIFY_FALLBACK_DELAY_SECONDS=2
 STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-60}"
 if ! [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,4}$ ]]; then
   echo "ERROR: AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS must be a base-10 integer between ${MIN_STARTUP_TIMEOUT_SECONDS}s and ${MAX_STARTUP_TIMEOUT_SECONDS}s without leading zeros." >&2
@@ -81,6 +84,7 @@ HOME_DIR="$TMP_ROOT/home"
 PROJECT_DIR="$TMP_ROOT/project"
 WORKSPACE_RESPONSE="$TMP_ROOT/workspace-response.json"
 DELETE_RESPONSE="$TMP_ROOT/delete-response.json"
+VERIFY_HEADERS="$TMP_ROOT/verify-headers.txt"
 
 mkdir -p "$HOME_DIR" "$PROJECT_DIR"
 
@@ -108,7 +112,7 @@ cleanup() {
       "$CLI_BIN" node down --force --timeout 5000 >/dev/null 2>&1 || true
   )
   if [ -n "$WORKSPACE_KEY" ]; then
-    local delete_status delete_error_code delete_error_code_raw verify_status
+    local delete_status delete_error_code delete_error_code_raw verify_status verify_attempt verify_delay
     delete_status="$(curl --silent --show-error --output "$DELETE_RESPONSE" --write-out '%{http_code}' \
       --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
       --request DELETE \
@@ -127,15 +131,47 @@ cleanup() {
       # A second database read would add an unrelated availability dependency.
       echo "Ephemeral workspace deletion verified"
     else
-      verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-        --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
-        --request GET \
-        --header "Authorization: Bearer $WORKSPACE_KEY" \
-        "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
+      verify_attempt=1
+      while [ "$verify_attempt" -le "$CLEANUP_VERIFY_MAX_ATTEMPTS" ]; do
+        verify_status="$(curl --silent --show-error --output /dev/null --dump-header "$VERIFY_HEADERS" \
+          --write-out '%{http_code}' \
+          --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CLEANUP_VERIFY_MAX_TIME_SECONDS" \
+          --request GET \
+          --header "Authorization: Bearer $WORKSPACE_KEY" \
+          "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
+        case "$verify_status" in
+          401) break ;;
+          000|429|5??)
+            if [ "$verify_attempt" -lt "$CLEANUP_VERIFY_MAX_ATTEMPTS" ]; then
+              # Relaycast advertises integer Retry-After values from 2–8s for
+              # database overload. Accept only that bounded vocabulary; a
+              # malformed, date-form, or excessive value falls back to 2s.
+              verify_delay="$(awk '
+                BEGIN { IGNORECASE = 1 }
+                /^Retry-After:[[:space:]]*/ {
+                  gsub(/\r/, "")
+                  sub(/^[^:]*:[[:space:]]*/, "")
+                  value = $0
+                }
+                END { print value }
+              ' "$VERIFY_HEADERS" 2>/dev/null || true)"
+              case "$verify_delay" in
+                0|1|2|3|4|5|6|7|8) ;;
+                *) verify_delay="$CLEANUP_VERIFY_FALLBACK_DELAY_SECONDS" ;;
+              esac
+              sleep "$verify_delay"
+              verify_attempt=$((verify_attempt + 1))
+              continue
+            fi
+            ;;
+        esac
+        break
+      done
       # A 5xx response can be lost after the database commit. The workspace key
       # was proven valid by the lifecycle above, so 401 from the same key is the
-      # authoritative absence check. Any readable or unverifiable state remains
-      # a hard failure.
+      # authoritative absence check. Transient verification reads get a bounded
+      # retry window; any readable or still-unverifiable state remains a hard
+      # failure.
       if [ "$verify_status" = "401" ]; then
         echo "Ephemeral workspace deletion verified after ambiguous DELETE HTTP ${delete_status:-unknown}${delete_error_code:+, error code $delete_error_code}"
       else

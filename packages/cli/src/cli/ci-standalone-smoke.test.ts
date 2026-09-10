@@ -29,11 +29,13 @@ function createFakeBinaries(): { cli: string; broker: string; invocationLog: str
     `#!/usr/bin/env bash
 set -euo pipefail
 output=/dev/null
+headers=/dev/null
 method=GET
 url=
 while [ "\$#" -gt 0 ]; do
   case "\$1" in
     --output) output="\$2"; shift 2 ;;
+    --dump-header) headers="\$2"; shift 2 ;;
     --connect-timeout|--max-time) shift 2 ;;
     --request) method="\$2"; shift 2 ;;
     --write-out) shift 2 ;;
@@ -51,10 +53,35 @@ elif [[ "$method" = DELETE && "$url" = */v1/workspace ]]; then
   fi
   echo "$delete_status"
 elif [[ "$method" = GET && "$url" = */v1/workspace ]]; then
-  echo "\${FAKE_VERIFY_STATUS:-401}"
+  verify_status="\${FAKE_VERIFY_STATUS:-401}"
+  if [ -n "\${FAKE_VERIFY_STATUSES:-}" ]; then
+    verify_count_file="\${INVOCATION_LOG}.verify-count"
+    verify_count=0
+    if [ -f "\$verify_count_file" ]; then
+      verify_count="\$(<"\$verify_count_file")"
+    fi
+    IFS=',' read -r -a verify_statuses <<< "\$FAKE_VERIFY_STATUSES"
+    verify_index="\$verify_count"
+    if [ "\$verify_index" -ge "\${#verify_statuses[@]}" ]; then
+      verify_index="\$((\${#verify_statuses[@]} - 1))"
+    fi
+    verify_status="\${verify_statuses[\$verify_index]}"
+    printf '%s\n' "\$((verify_count + 1))" > "\$verify_count_file"
+  fi
+  if [ -n "\${FAKE_VERIFY_RETRY_AFTER:-}" ]; then
+    printf 'HTTP/2 %s\r\nRetry-After: %s\r\n\r\n' "\$verify_status" "\$FAKE_VERIFY_RETRY_AFTER" > "\$headers"
+  fi
+  echo "\$verify_status"
 else
   echo 500
 fi
+`
+  );
+  makeExecutable(
+    toolsPath,
+    'sleep',
+    `#!/usr/bin/env bash
+printf 'sleep %s\n' "\${1:-}" >> "$INVOCATION_LOG"
 `
   );
   makeExecutable(
@@ -287,6 +314,29 @@ describe('ci-standalone-smoke workspace reuse', () => {
     );
     expect(result.stdout).not.toContain('rk_live_delete_body_must_not_print');
     expect(result.stderr).not.toContain('rk_live_delete_body_must_not_print');
+  });
+
+  it('retries a transient verification read and honors bounded Retry-After', () => {
+    const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+    const result = spawnSync('bash', [smokeScript, cli, broker], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+        INVOCATION_LOG: invocationLog,
+        FAKE_DELETE_STATUS: '500',
+        FAKE_DELETE_ERROR_CODE: 'internal_error',
+        FAKE_VERIFY_STATUSES: '503,401',
+        FAKE_VERIFY_RETRY_AFTER: '3',
+      },
+      timeout: 10_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      'Ephemeral workspace deletion verified after ambiguous DELETE HTTP 500, error code internal_error'
+    );
+    expect(readFileSync(invocationLog, 'utf8')).toContain('sleep 3');
   });
 
   it('classifies an unsafe delete error code instead of logging it', () => {
