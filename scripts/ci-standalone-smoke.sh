@@ -26,6 +26,8 @@ MIN_STARTUP_TIMEOUT_SECONDS=50
 # with a full minute left for shutdown and deletion verification.
 WORKSPACE_LEASE_SECONDS=300
 MAX_STARTUP_TIMEOUT_SECONDS=240
+CURL_CONNECT_TIMEOUT_SECONDS=10
+CURL_MAX_TIME_SECONDS=60
 STARTUP_TIMEOUT_SECONDS="${AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-60}"
 if ! [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,4}$ ]]; then
   echo "ERROR: AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS must be a base-10 integer between ${MIN_STARTUP_TIMEOUT_SECONDS}s and ${MAX_STARTUP_TIMEOUT_SECONDS}s without leading zeros." >&2
@@ -107,6 +109,7 @@ cleanup() {
   if [ -n "$WORKSPACE_KEY" ]; then
     local delete_status verify_status
     delete_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+      --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
       --request DELETE \
       --header "Authorization: Bearer $WORKSPACE_KEY" \
       "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
@@ -116,6 +119,7 @@ cleanup() {
       cleanup_status=1
     else
       verify_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+        --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
         --request GET \
         --header "Authorization: Bearer $WORKSPACE_KEY" \
         "$TRUSTED_RELAY_BASE_URL/v1/workspace" 2>/dev/null || true)"
@@ -159,6 +163,7 @@ fi
 
 WORKSPACE_NAME="relay-standalone-smoke-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
 CREATE_STATUS="$(curl --silent --show-error --output "$WORKSPACE_RESPONSE" --write-out '%{http_code}' \
+  --connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS" --max-time "$CURL_MAX_TIME_SECONDS" \
   --request POST \
   --header 'Content-Type: application/json' \
   --data "$(jq -cn --arg name "$WORKSPACE_NAME" --argjson expires "$WORKSPACE_LEASE_SECONDS" '{name: $name, expires_in_seconds: $expires}')" \
@@ -166,11 +171,12 @@ CREATE_STATUS="$(curl --silent --show-error --output "$WORKSPACE_RESPONSE" --wri
 # Mask the key before extracting or using any other response field. Never log
 # the response body: it contains the administrative workspace credential.
 WORKSPACE_KEY="$(jq -er '.data.api_key // .api_key // empty' "$WORKSPACE_RESPONSE" 2>/dev/null || true)"
+CREATE_ERROR_CODE="$(jq -er '.error.code // .code // empty' "$WORKSPACE_RESPONSE" 2>/dev/null || true)"
 if [ -n "$WORKSPACE_KEY" ]; then
   printf '::add-mask::%s\n' "$WORKSPACE_KEY"
 fi
 if [ -z "$WORKSPACE_KEY" ]; then
-  echo "ERROR: ephemeral smoke workspace response did not contain an API key." >&2
+  echo "ERROR: ephemeral smoke workspace response did not contain an API key (HTTP ${CREATE_STATUS:-unknown}${CREATE_ERROR_CODE:+, error code ${CREATE_ERROR_CODE}})." >&2
   exit 1
 fi
 if [[ ! "$WORKSPACE_KEY" =~ ^rk_live_[A-Za-z0-9_-]+$ ]]; then

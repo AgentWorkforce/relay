@@ -272,19 +272,24 @@ export function registerFleetCommands(
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
+      let legacyWorkspaceClientOptions = clientOptions;
       if (useSandbox) {
         // Cloud must be the first network authority for a sandbox invocation.
         // A canonical Relaycast info call would both leak the workspace key and
         // make it impossible to prove that Cloud's isolated target is the one
         // subsequently used for registration and dispatch.
         const workspaceSelection = deps.resolveWorkspaceSelection(clientOptions);
+        legacyWorkspaceClientOptions = {
+          ...clientOptions,
+          ...(sandboxProvider === 'agent37' ? {} : { ignorePersistedRelaycastTarget: true }),
+        };
         let relayWorkspaceId = explicitWorkspaceId ?? workspaceSelection?.workspaceId?.trim();
         // Legacy providers remain backward compatible: they may resolve the
         // workspace from canonical Relaycast. Agent37 may not, because even a
         // read there mutates rate-limit/presence accounting on the shared
         // service and defeats the zero-shared-traffic canary proof.
         if (!relayWorkspaceId && sandboxProvider !== 'agent37') {
-          workspaceRelay = deps.sdk.createWorkspaceRelay(clientOptions);
+          workspaceRelay = deps.sdk.createWorkspaceRelay(legacyWorkspaceClientOptions);
           const workspaceInfo = await workspaceRelay.workspace.info();
           relayWorkspaceId = workspaceInfo.id?.trim();
         }
@@ -413,6 +418,12 @@ export function registerFleetCommands(
             }
             throw error;
           }
+        } else if (sandbox.outcome !== 'provisioning_timeout') {
+          // Older non-Agent37 Cloud responses can omit a target. In that
+          // compatibility case, keep every subsequent client on the canonical
+          // workspace selection; a stale persisted Agent37 target must not
+          // leak into registration, dispatch, or launcher release.
+          relaycastClientOptions = legacyWorkspaceClientOptions;
         }
         if (sandbox.outcome === 'provisioning_timeout') {
           await deps
@@ -465,13 +476,15 @@ export function registerFleetCommands(
           // Agent tokens are scoped to a Relaycast deployment. Never replay a
           // canonical token after Cloud has selected the isolated shard; mint
           // a temporary launcher on the validated target instead.
-          let agentToken =
-            sandbox?.outcome === 'provisioned' ||
-            (sandbox?.outcome === 'reused' && sandbox.providerId === 'agent37')
-              ? undefined
-              : resolveAgentToken(clientOptions);
+          // A sandbox dispatch always mints a launcher on the transport Cloud
+          // selected (or the canonical compatibility transport when an older
+          // non-Agent37 response omitted the target). Ambient agent tokens do
+          // not carry enough provenance to prove they belong to that transport.
+          let agentToken = sandbox ? undefined : resolveAgentToken(clientOptions);
           if (!agentToken) {
-            workspaceRelay ??= deps.sdk.createWorkspaceRelay(clientOptions);
+            workspaceRelay ??= deps.sdk.createWorkspaceRelay(
+              sandbox?.relaycastTarget ? relaycastClientOptions : legacyWorkspaceClientOptions
+            );
             const pendingLauncherName = `fleet-spawn-launcher-${randomUUID().slice(0, 8)}`;
             const launcher = await workspaceRelay.workspace.register(
               {

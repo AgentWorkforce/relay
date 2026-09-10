@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   projectWorkspaceKeyPath,
@@ -34,6 +34,51 @@ describe('project workspace key resolution', () => {
     writeProjectWorkspaceKey(dataDir, '  rk_project  ');
     expect(readProjectWorkspaceKey(dataDir)).toBe('rk_project');
     expect(fs.statSync(projectWorkspaceKeyPath(dataDir)).mode & 0o777).toBe(0o600);
+  });
+
+  it('does not remove a replacement lock when the original holder finishes', () => {
+    const lockDir = `${projectWorkspaceKeyPath(dataDir)}.lock`;
+    let replaced = false;
+    const originalRename = fs.renameSync.bind(fs);
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+      originalRename(source, destination);
+      if (!replaced && destination === projectWorkspaceKeyPath(dataDir)) {
+        replaced = true;
+        fs.rmSync(lockDir, { recursive: true, force: true });
+        fs.mkdirSync(lockDir, { mode: 0o700 });
+        fs.writeFileSync(path.join(lockDir, 'replacement-owner'), '', { mode: 0o600, flag: 'wx' });
+      }
+    });
+
+    try {
+      writeProjectWorkspaceKey(dataDir, 'rk_project');
+    } finally {
+      rename.mockRestore();
+    }
+
+    expect(fs.existsSync(path.join(lockDir, 'replacement-owner'))).toBe(true);
+  });
+
+  it('does not reclaim a stale lock whose recorded owner is still alive', () => {
+    const lockDir = `${projectWorkspaceKeyPath(dataDir)}.lock`;
+    const token = 'live-owner-token';
+    fs.mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(lockDir, token), JSON.stringify({ version: 1, pid: process.pid, token }), {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    const staleAt = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockDir, staleAt, staleAt);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    try {
+      expect(() => writeProjectWorkspaceKey(dataDir, 'rk_project')).toThrow(/Timed out waiting/);
+      expect(fs.existsSync(path.join(lockDir, token))).toBe(true);
+      expect(kill).toHaveBeenCalledWith(process.pid, 0);
+    } finally {
+      kill.mockRestore();
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    }
   });
 
   it('round-trips an enrolled Fleet identity and clears it on an explicit workspace change', () => {

@@ -34,6 +34,7 @@ url=
 while [ "\$#" -gt 0 ]; do
   case "\$1" in
     --output) output="\$2"; shift 2 ;;
+    --connect-timeout|--max-time) shift 2 ;;
     --request) method="\$2"; shift 2 ;;
     --write-out) shift 2 ;;
     --data|--header) shift 2 ;;
@@ -154,6 +155,10 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const script = readFileSync(smokeScript, 'utf8');
     expect(script).toContain('TRUSTED_RELAY_BASE_URL="https://cast.agentrelay.com"');
     expect(script).toContain('WORKSPACE_LEASE_SECONDS=300');
+    expect(script).toContain('CURL_CONNECT_TIMEOUT_SECONDS=10');
+    expect(script).toContain('CURL_MAX_TIME_SECONDS=60');
+    expect(script).toContain('--connect-timeout "$CURL_CONNECT_TIMEOUT_SECONDS"');
+    expect(script).toContain('--max-time "$CURL_MAX_TIME_SECONDS"');
     expect(script).toContain('expires_in_seconds: $expires');
     expect(script).toContain('printf \'::add-mask::%s\\n\' "$WORKSPACE_KEY"');
     expect(script).toContain('--request DELETE');
@@ -161,6 +166,14 @@ describe('ci-standalone-smoke workspace reuse', () => {
     for (const workflow of ['.github/workflows/package-validation.yml', '.github/workflows/publish.yml']) {
       expect(readFileSync(resolve(workflow), 'utf8')).not.toContain('RELAY_CI_WORKSPACE_KEY');
     }
+  });
+
+  it('reports the create HTTP status and sanitized error code when no key is returned', () => {
+    const script = readFileSync(smokeScript, 'utf8');
+    expect(script).toContain('CREATE_ERROR_CODE=');
+    expect(script).toContain('did not contain an API key (HTTP ${CREATE_STATUS:-unknown}');
+    expect(script).toContain('error code ${CREATE_ERROR_CODE}');
+    expect(script).not.toContain('cat "$WORKSPACE_RESPONSE"');
   });
 
   it('keeps the outer startup deadline above the broker aggregate handshake budget', () => {

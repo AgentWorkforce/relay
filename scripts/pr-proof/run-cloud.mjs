@@ -65,12 +65,11 @@ const STATUS_FAILURE_DIAGNOSTIC_FIELDS = ['phase', 'code', 'dispatchType', 'sand
 
 async function run(command, args, options = {}) {
   const diagnosticSecretValues = options.diagnosticSecretValues ?? [];
-  // One ordering-aware redactor covers both pipes. If the OS reports the two
-  // streams in the opposite order, conservatively mask any trailing fragment
-  // that could begin a credential instead of releasing it at finalization.
-  const outputRedactor = createCredentialRedactor(diagnosticSecretValues, {
-    maskPendingOnFinal: true,
-  });
+  // Keep a redaction boundary per pipe. A partial credential suffix from
+  // stdout must never be prepended to the next stderr chunk (or vice versa).
+  // Each pipe is finalized independently, so an actually benign suffix can be
+  // released once that originating stream closes.
+  const outputRedactors = createCommandOutputRedactors(diagnosticSecretValues);
   const result = await runBoundedProcess(command, args, {
     env: options.env,
     echo: !options.quiet,
@@ -80,24 +79,34 @@ async function run(command, args, options = {}) {
     signal: options.signal,
     onStdout: options.onStdout,
     onStderr: options.onStderr,
-    transformChunk: (text, _stream, final) => outputRedactor.push(text, final),
+    transformChunk: (text, stream, final) => outputRedactors[stream].push(text, final),
   });
 
-  // A trailing fragment means the other half may already have been captured
-  // from the other pipe in an order that cannot be reconstructed safely.
-  // Fail closed by replacing every non-empty captured stream wholesale.
-  return maskCapturedCommandOutput(result, outputRedactor);
+  return maskCapturedCommandOutput(result, outputRedactors);
+}
+
+/** Create independent streaming redactors for subprocess stdout and stderr. */
+export function createCommandOutputRedactors(secretValues = []) {
+  return {
+    stdout: createCredentialRedactor(secretValues),
+    stderr: createCredentialRedactor(secretValues),
+  };
 }
 
 export function maskCapturedCommandOutput(result, outputRedactor) {
-  if (outputRedactor.requiresCapturedOutputMask()) {
-    return {
-      ...result,
-      stdout: result.stdout ? '[redacted]' : '',
-      stderr: result.stderr ? '[redacted]' : '',
-    };
+  if (outputRedactor && typeof outputRedactor.requiresCapturedOutputMask === 'function') {
+    return outputRedactor.requiresCapturedOutputMask()
+      ? { ...result, stdout: result.stdout ? '[redacted]' : '', stderr: result.stderr ? '[redacted]' : '' }
+      : result;
   }
-  return result;
+  const maskedStreams = Object.entries(outputRedactor ?? {})
+    .filter(([, redactor]) => redactor?.requiresCapturedOutputMask?.())
+    .map(([stream]) => stream);
+  if (maskedStreams.length === 0) return result;
+  return {
+    ...result,
+    ...Object.fromEntries(maskedStreams.map((stream) => [stream, result[stream] ? '[redacted]' : ''])),
+  };
 }
 
 export function boundedDuration(value, { fallback, minimum, maximum, label }) {

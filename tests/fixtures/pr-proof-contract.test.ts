@@ -46,6 +46,7 @@ import {
 import {
   boundedDiagnostic,
   boundedDuration,
+  createCommandOutputRedactors,
   createPreparedRunProgressParser,
   createCredentialRedactor,
   createCliApiKeyEnvironment,
@@ -623,14 +624,14 @@ describe('Cloud dispatcher API key lifecycle', () => {
     expect(prefixedArtifact).not.toContain('rk_live_token');
   });
 
-  it('never releases cross-stream credential fragments in captures or artifacts', async () => {
+  it('keeps credential fragments attached to their originating output stream', async () => {
     const captureWithRedaction = async (code: string, secretValues: string[]) => {
-      const redactor = createCredentialRedactor(secretValues, { maskPendingOnFinal: true });
+      const redactors = createCommandOutputRedactors(secretValues);
       const capture = await runBoundedProcess(process.execPath, ['-e', code], {
         echo: false,
-        transformChunk: (text, _stream, final) => redactor.push(text, final),
+        transformChunk: (text, stream, final) => redactors[stream].push(text, final),
       });
-      return maskCapturedCommandOutput(capture, redactor);
+      return maskCapturedCommandOutput(capture, redactors);
     };
 
     const configuredCapture = await captureWithRedaction(
@@ -646,13 +647,9 @@ describe('Cloud dispatcher API key lifecycle', () => {
       diagnosticSecretValues: ['split-secret'],
     });
 
-    for (const value of [configuredCapture.stdout, configuredCapture.stderr, configuredArtifact]) {
-      expect(value).not.toContain('secret');
-      expect(value).not.toContain('split-');
-      expect(value).not.toContain('split-secret');
-    }
-    expect(configuredCapture.stdout + configuredCapture.stderr).toContain('[redacted]');
-    expect(configuredArtifact).toContain('[redacted]');
+    expect(configuredCapture.stdout).toBe('secret');
+    expect(configuredCapture.stderr).toBe('split-');
+    expect(configuredArtifact).not.toContain('split-secret');
 
     const prefixCapture = await captureWithRedaction(
       "process.stdout.write('live_token'); setTimeout(() => process.stderr.write('rk_'), 25)",
@@ -667,13 +664,14 @@ describe('Cloud dispatcher API key lifecycle', () => {
       diagnosticSecretValues: [],
     });
 
-    for (const value of [prefixCapture.stdout, prefixCapture.stderr, prefixArtifact]) {
-      expect(value).not.toContain('live_token');
-      expect(value).not.toContain('rk_');
-      expect(value).not.toContain('rk_live_token');
-    }
-    expect(prefixCapture.stdout + prefixCapture.stderr).toContain('[redacted]');
-    expect(prefixArtifact).toContain('[redacted]');
+    expect(prefixCapture.stdout).toBe('live_token');
+    expect(prefixCapture.stderr).toBe('rk_');
+    expect(prefixArtifact).not.toContain('rk_live_token');
+
+    const benignTrailingPrefix = createCommandOutputRedactors();
+    expect(
+      benignTrailingPrefix.stdout.push('finished with br', false) + benignTrailingPrefix.stdout.push('', true)
+    ).toBe('finished with br');
   });
 
   it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {

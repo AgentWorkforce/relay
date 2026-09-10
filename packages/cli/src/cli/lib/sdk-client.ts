@@ -15,6 +15,8 @@ export interface SdkClientOptions {
   token?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
+  /** Use the canonical gateway instead of a persisted server-selected route. */
+  ignorePersistedRelaycastTarget?: boolean;
 }
 
 function env(options: SdkClientOptions): NodeJS.ProcessEnv {
@@ -64,8 +66,20 @@ export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
 }
 
 export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {
-  const selection = resolveWorkspaceSelection(options);
+  const selection = selectionForTransport(options);
   return resolveBaseUrlForSelection(selection, options);
+}
+
+function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | undefined {
+  const selection = resolveWorkspaceSelection(options);
+  if (!selection || !options.ignorePersistedRelaycastTarget) return selection;
+  const {
+    relaycastRoute: _relaycastRoute,
+    relaycastBaseUrl: _relaycastBaseUrl,
+    relaycastApiKey: _relaycastApiKey,
+    ...canonicalSelection
+  } = selection;
+  return canonicalSelection;
 }
 
 function resolveBaseUrlForSelection(
@@ -104,7 +118,7 @@ function resolveBaseUrlForSelection(
 
 /** Resolve one credential/origin pair from one workspace selection. */
 export function resolveWorkspaceTransport(options: SdkClientOptions = {}): WorkspaceTransport {
-  const selection = resolveWorkspaceSelection(options);
+  const selection = selectionForTransport(options);
   if (!selection) {
     throw new Error(
       'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'

@@ -12,6 +12,13 @@ const PROJECT_WORKSPACE_LOCK_TIMEOUT_MS = 2_000;
 const PROJECT_WORKSPACE_LOCK_STALE_MS = 30_000;
 const PROJECT_WORKSPACE_LOCK_RETRY_MS = 10;
 const PROJECT_WORKSPACE_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
+const PROJECT_WORKSPACE_LOCK_OWNER_VERSION = 1;
+
+interface ProjectWorkspaceLockOwner {
+  version: number;
+  pid: number;
+  token: string;
+}
 
 /** Workspace-key environment aliases, highest precedence first. */
 const WORKSPACE_KEY_ENV_VARS = ['RELAY_WORKSPACE_KEY', 'AGENT_RELAY_WORKSPACE_KEY', 'RELAY_API_KEY'] as const;
@@ -194,18 +201,62 @@ function writeProjectWorkspaceKeyUnlocked(
 function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const lockDir = `${projectWorkspaceKeyPath(dataDir)}${PROJECT_WORKSPACE_LOCK_SUFFIX}`;
+  const ownerToken = randomUUID();
+  const ownerPath = path.join(lockDir, ownerToken);
   const startedAt = Date.now();
   while (true) {
     try {
       fs.mkdirSync(lockDir, { mode: 0o700 });
+      try {
+        // The token is a child of this lock directory, so a stale holder can
+        // release only its own marker even if another writer has already
+        // removed and reacquired the directory.
+        fs.writeFileSync(
+          ownerPath,
+          JSON.stringify({
+            version: PROJECT_WORKSPACE_LOCK_OWNER_VERSION,
+            pid: process.pid,
+            token: ownerToken,
+          }),
+          { mode: 0o600, flag: 'wx' }
+        );
+      } catch (error) {
+        // mkdir succeeded, but this invocation never acquired a usable lock.
+        // Clean up only the directory it just created before propagating.
+        fs.rmSync(ownerPath, { force: true });
+        try {
+          fs.rmdirSync(lockDir);
+        } catch (cleanupError) {
+          if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') throw cleanupError;
+        }
+        throw error;
+      }
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
     try {
       if (Date.now() - fs.statSync(lockDir).mtimeMs >= PROJECT_WORKSPACE_LOCK_STALE_MS) {
-        fs.rmSync(lockDir, { recursive: true, force: true });
-        continue;
+        const observedLock = inspectProjectWorkspaceLock(lockDir);
+        if (!observedLock.ownerIsAlive) {
+          // Reclaim only the exact marker entries observed in this lock. A
+          // replacement writer can add a different marker concurrently; the
+          // non-recursive rmdir then leaves that replacement lock untouched.
+          for (const entry of observedLock.entries) {
+            fs.rmSync(path.join(lockDir, entry), { force: true });
+          }
+          try {
+            fs.rmdirSync(lockDir);
+          } catch (error) {
+            if (
+              (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+              (error as NodeJS.ErrnoException).code !== 'ENOTEMPTY'
+            ) {
+              throw error;
+            }
+          }
+          continue;
+        }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
@@ -219,8 +270,62 @@ function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
   try {
     return callback();
   } finally {
-    fs.rmSync(lockDir, { recursive: true, force: true });
+    // Remove our marker first. If the lock was declared stale and replaced
+    // while the callback was running, the replacement marker is different;
+    // rmdir then safely leaves the replacement lock in place.
+    if (fs.existsSync(ownerPath)) {
+      fs.rmSync(ownerPath, { force: true });
+      try {
+        fs.rmdirSync(lockDir);
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+          (error as NodeJS.ErrnoException).code !== 'ENOTEMPTY'
+        ) {
+          throw error;
+        }
+      }
+    }
   }
+}
+
+function inspectProjectWorkspaceLock(lockDir: string): {
+  entries: string[];
+  ownerIsAlive: boolean;
+} {
+  const entries = fs.readdirSync(lockDir);
+  let sawLiveOwner = false;
+  for (const entry of entries) {
+    let owner: Partial<ProjectWorkspaceLockOwner>;
+    try {
+      owner = JSON.parse(
+        fs.readFileSync(path.join(lockDir, entry), 'utf8')
+      ) as Partial<ProjectWorkspaceLockOwner>;
+    } catch {
+      continue;
+    }
+    const pid = owner.pid;
+    if (
+      owner.version !== PROJECT_WORKSPACE_LOCK_OWNER_VERSION ||
+      typeof pid !== 'number' ||
+      !Number.isInteger(pid) ||
+      pid <= 0 ||
+      typeof owner.token !== 'string' ||
+      owner.token !== entry
+    ) {
+      continue;
+    }
+    try {
+      process.kill(pid, 0);
+      sawLiveOwner = true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // EPERM means the process exists but is not signalable. Treat all
+      // errors other than ESRCH conservatively as alive.
+      if (code !== 'ESRCH') sawLiveOwner = true;
+    }
+  }
+  return { entries, ownerIsAlive: sawLiveOwner };
 }
 
 /** Atomically persist a Relaycast target only if the captured project selection is still current. */
