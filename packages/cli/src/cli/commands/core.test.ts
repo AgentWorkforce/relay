@@ -1030,6 +1030,58 @@ describe('registerCoreCommands', () => {
     expect([...runningPids]).toEqual([222, 333, 444, 555, 666, 777, 9001, 4242]);
   });
 
+  it('down --force with an isolated state directory kills only its broker and fails closed on ambiguity', async () => {
+    const runningPids = new Set([222, 333, 444, 555, 666]);
+    const execCommand = vi.fn(async (command: string) => {
+      if (command === 'ps aux') {
+        return {
+          stdout: [
+            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
+            'user 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/candidate-state --persist',
+            'user 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/peer-state --persist',
+            'user 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /tmp/project/bin/agent-relay-broker pty --agent-name chief -- claude',
+            'user 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/candidate-state --state-dir /tmp/project/peer-state',
+            'user 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -c agent-relay up --state-dir /tmp/project/candidate-state',
+          ].join('\n'),
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (runningPids.has(pid)) return;
+        throw new Error('not running');
+      }
+      runningPids.delete(pid);
+    });
+    let now = 0;
+    const { program, deps } = createHarness({
+      execCommand,
+      killImpl,
+      nowImpl: vi.fn(() => now),
+      sleepImpl: vi.fn(async (ms: number) => {
+        now += ms;
+      }),
+    });
+
+    const exitCode = await runCommand(program, [
+      'down',
+      '--force',
+      '--state-dir',
+      '/tmp/project/candidate-state',
+    ]);
+
+    expect(exitCode).toBeUndefined();
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(444, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(555, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(666, 'SIGTERM');
+    expect([...runningPids]).toEqual([333, 444, 555, 666]);
+    expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
+  });
+
   it('down --force only kills actual orphaned broker executables for the project', async () => {
     const runningPids = new Set([222, 444, 666]);
     const execCommand = vi.fn(async (command: string) => {
