@@ -181,6 +181,28 @@ describe('workspace session persistence', () => {
     expect(result.clearedEnrolledNodeId).toBeUndefined();
   });
 
+  it('persists a validated Relaycast route for later workspace selection', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const env = isolatedEnv(root);
+
+    persistWorkspaceSession({
+      workspaceKey: 'rk_live_agent37',
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      projectDataDir,
+      env,
+    });
+
+    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
+      workspaceKey: 'rk_live_agent37',
+      workspaceId: 'rw_agent37',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+    });
+  });
+
   it('clears the enrolled Fleet node id when moving to a different workspace', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');

@@ -19,6 +19,20 @@ describe('cloud command output redaction', () => {
     assert.equal(redactors.stdout.push('', true), 'br');
   });
 
+  for (let boundary = 1; boundary < 'custom-secret-value'.length; boundary += 1) {
+    it(`redacts a configured secret split at boundary ${boundary}`, () => {
+      const secret = 'custom-secret-value';
+      const redactors = createCommandOutputRedactors([secret], {
+        maskPendingOnFinal: true,
+      });
+
+      assert.equal(redactors.stdout.push(secret.slice(0, boundary), false), '');
+      const tail = redactors.stdout.push(secret.slice(boundary), true);
+      assert.equal(tail, '[redacted]');
+      assert.equal(redactors.stdout.requiresCapturedOutputMask(), false);
+    });
+  }
+
   for (const fragment of ['e', 'ue', 'lue']) {
     it(`does not wipe a stream for the benign ${fragment.length}-character secret fragment`, async () => {
       const output = `finished with ${fragment}`;

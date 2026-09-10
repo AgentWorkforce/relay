@@ -288,14 +288,12 @@ export function registerFleetCommands(
         // workspace from canonical Relaycast. Agent37 may not, because even a
         // read there mutates rate-limit/presence accounting on the shared
         // service and defeats the zero-shared-traffic canary proof.
-        if (
-          explicitWorkspaceId !== undefined &&
-          workspaceSelection?.workspaceId !== undefined &&
-          explicitWorkspaceId !== workspaceSelection.workspaceId.trim()
-        ) {
-          throw new Error('--workspace-id does not match the captured workspace identity.');
+        if (!relayWorkspaceId && sandboxProvider === undefined) {
+          throw new Error(
+            'Sandbox provisioning without --sandbox-provider requires a persisted Relay workspace identity; run `relay workspace pin` or pass --workspace-id.'
+          );
         }
-        if (!relayWorkspaceId && sandboxProvider !== 'agent37') {
+        if (!relayWorkspaceId && sandboxProvider !== undefined && sandboxProvider !== 'agent37') {
           workspaceRelay = deps.sdk.createWorkspaceRelay(legacyWorkspaceClientOptions);
           const workspaceInfo = await workspaceRelay.workspace.info();
           relayWorkspaceId = workspaceInfo.id?.trim();
@@ -320,6 +318,13 @@ export function registerFleetCommands(
           );
         }
         const effectiveSandboxName = deterministicSandboxName ?? sandboxName;
+        if (
+          explicitWorkspaceId !== undefined &&
+          workspaceSelection?.workspaceId !== undefined &&
+          explicitWorkspaceId !== workspaceSelection.workspaceId.trim()
+        ) {
+          throw new Error('--workspace-id does not match the captured workspace identity.');
+        }
         try {
           sandbox = await deps.ensureCloudFleetSandbox({
             workspaceId: relayWorkspaceId,

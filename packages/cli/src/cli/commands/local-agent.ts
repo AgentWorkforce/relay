@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 
+import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import type { InboundDeliveryMode, ListAgent, PendingRelayMessage } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
@@ -12,7 +13,7 @@ import type { AttachMode } from '../lib/attach-mode.js';
 import { attachNative, isNativeHarness, type NativeAttachOptions } from '../lib/attach-native.js';
 import { attachPassthrough } from '../lib/attach-passthrough.js';
 import { attachRemoteNode, type RemoteNodeAttachOptions } from '../lib/attach-remote-node.js';
-import { startFleetNodeAttachProxy } from '../lib/attach-fleet-node.js';
+import { startFleetNodeAttachProxy, validateFleetAttachBaseUrl } from '../lib/attach-fleet-node.js';
 import { attachView } from '../lib/attach-view.js';
 import { createBackpressureAwareWriter } from '../lib/attach.js';
 import {
@@ -294,6 +295,12 @@ async function redeemAndPersistAttachCredential(
   const persisted = deps.persistWorkspaceSession({
     workspaceKey: redeemed.workspaceKey,
     workspaceId: redeemed.workspaceId,
+    ...(options.baseUrl
+      ? {
+          relaycastRoute: options.baseUrl === AGENT37_RELAYCAST_ORIGIN ? 'agent37-isolated' : 'canonical',
+          relaycastBaseUrl: options.baseUrl,
+        }
+      : {}),
     projectRoot: deps.cwd(),
   });
   const warning = describeClearedEnrollment(persisted);
@@ -914,6 +921,10 @@ export function registerLocalAgentCommands(
         }
         try {
           let attachWorkspaceKey = credential.workspaceKey;
+          const validatedBaseUrl =
+            credential.joinTicket && typeof options.baseUrl === 'string'
+              ? validateFleetAttachBaseUrl(options.baseUrl)
+              : undefined;
           if (credential.joinTicket) {
             // Pass the redeemed key explicitly into the first attach. Merely
             // writing the project pin would leave this process vulnerable to
@@ -923,7 +934,7 @@ export function registerLocalAgentCommands(
               node,
               agent: name,
               mode,
-              baseUrl: options.baseUrl as string | undefined,
+              baseUrl: validatedBaseUrl,
             });
           }
           const code = await deps.attachNode(name, mode, node, {

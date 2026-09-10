@@ -117,7 +117,7 @@ export class FleetNodeAttachError extends Error {
 
 const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
 
-function validateFleetAttachBaseUrl(value: string): string {
+export function validateFleetAttachBaseUrl(value: string): string {
   let parsed: URL;
   try {
     parsed = new URL(value);

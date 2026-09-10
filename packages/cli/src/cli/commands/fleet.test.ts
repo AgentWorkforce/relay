@@ -1414,18 +1414,45 @@ describe('fleet command support', () => {
 
   it('generates a stable identity and matching name when neither option is supplied', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
-    const ensureCloudFleetSandbox = vi.fn(async () => ({
-      outcome: 'provisioned' as const,
-      cloudWorkspaceId: 'cloud-workspace',
-      nodeId: 'node-generated',
-      nodeName: 'generated-node',
-      sandboxId: 'generated-public-sandbox',
-      providerSandboxId: 'generated-provider-sandbox',
-      relayWorkspaceId: 'rw_abc',
-      relaycastTarget: AGENT37_RELAYCAST_TARGET,
-      relayfileMounted: true,
-      relayfileMountPath: '/workspace',
-    }));
+    const events: string[] = [];
+    const ensureCloudFleetSandbox = vi
+      .fn(async () => ({
+        outcome: 'provisioned' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-generated',
+        nodeName: 'generated-node',
+        sandboxId: 'generated-public-sandbox',
+        providerSandboxId: 'generated-provider-sandbox',
+        relayWorkspaceId: 'rw_abc',
+        relaycastTarget: AGENT37_RELAYCAST_TARGET,
+        relayfileMounted: true,
+        relayfileMountPath: '/workspace',
+      }))
+      .mockImplementationOnce(async () => {
+        events.push('ensure');
+        return {
+          outcome: 'provisioned' as const,
+          cloudWorkspaceId: 'cloud-workspace',
+          nodeId: 'node-generated',
+          nodeName: 'generated-node',
+          sandboxId: 'generated-public-sandbox',
+          providerSandboxId: 'generated-provider-sandbox',
+          relayWorkspaceId: 'rw_abc',
+          relaycastTarget: AGENT37_RELAYCAST_TARGET,
+          relayfileMounted: true,
+          relayfileMountPath: '/workspace',
+        };
+      });
+    const createWorkspaceRelay = vi.fn(() => {
+      events.push('workspace-relay');
+      return {
+        workspace: {
+          info: vi.fn(async () => ({ id: 'rw_abc' })),
+          register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+          release: vi.fn(async () => ({ released: true, deleted: true })),
+        },
+      };
+    });
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
@@ -1433,13 +1460,7 @@ describe('fleet command support', () => {
         createAgentRelay: vi.fn(() => ({
           messaging: { placement: { spawn: vi.fn(async () => ({ invocationId: 'inv_generated' })) } },
         })) as never,
-        createWorkspaceRelay: vi.fn(() => ({
-          workspace: {
-            info: vi.fn(async () => ({ id: 'rw_abc' })),
-            register: vi.fn(async () => ({ token: 'at_live_launcher' })),
-            release: vi.fn(async () => ({ released: true, deleted: true })),
-          },
-        })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
         createWorkspace: vi.fn() as never,
         log: vi.fn(),
         error: vi.fn(),
@@ -1477,6 +1498,10 @@ describe('fleet command support', () => {
     );
 
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
+    expect(events.slice(0, 2)).toEqual(['ensure', 'workspace-relay']);
+    expect(createWorkspaceRelay).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ignorePersistedRelaycastTarget: true })
+    );
     expect(ensureInput?.sandboxId).toMatch(
       /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     );
@@ -1520,6 +1545,8 @@ describe('fleet command support', () => {
           REPLAY_SANDBOX_ID,
           '--sandbox-name',
           'custom-node',
+          '--workspace-id',
+          'rw_abc',
           '--name',
           'sandbox-worker',
           '--task',
@@ -1634,6 +1661,8 @@ describe('fleet command support', () => {
           REPLAY_SANDBOX_ID,
           '--sandbox-name',
           REPLAY_SANDBOX_NAME,
+          '--workspace-id',
+          'rw_abc',
           '--name',
           'sandbox-worker',
           '--task',

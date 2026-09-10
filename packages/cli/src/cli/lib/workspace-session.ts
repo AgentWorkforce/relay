@@ -18,6 +18,8 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   workspaceKey: string;
   /** Canonical Relaycast workspace id, when the credential issuer supplies it. */
   workspaceId?: string;
+  relaycastRoute?: 'canonical' | 'agent37-isolated';
+  relaycastBaseUrl?: string;
   /** Named sessions are also stored and selected in the machine-global workspace store. */
   name?: string;
 }
@@ -107,10 +109,14 @@ export function persistWorkspaceSession(
     writeProjectWorkspaceKeyPreservingSession(projectDataDir, workspaceKey, {
       ...(enrolledNodeId ? { enrolledNodeId } : {}),
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
+      ...(options.relaycastBaseUrl ? { relaycastBaseUrl: options.relaycastBaseUrl } : {}),
     });
   } else {
     writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
+      ...(options.relaycastBaseUrl ? { relaycastBaseUrl: options.relaycastBaseUrl } : {}),
     });
   }
 
