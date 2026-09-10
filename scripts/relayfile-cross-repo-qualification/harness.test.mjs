@@ -86,6 +86,10 @@ test('fan-out depends on the single bundle step and fresh phase identities', () 
   assert.match(workflow, /capture-integrity\.mjs/);
   assert.match(workflow, /verify-integrity\.mjs/);
   assert.match(workflow, /steps\.capture-integrity\.output/);
+  assert.match(workflow, /const qualificationEnv = Object\.fromEntries/);
+  assert.match(workflow, /envSecrets: qualificationEnv/);
+  assert.match(workflow, /RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256/);
+  assert.doesNotMatch(workflow, /RELAYFILE_QUALIFICATION_NPM_VERSION=\$\{/);
 });
 
 test('real-run preflight probes reviewer auth and model with bounded exact commands', async () => {

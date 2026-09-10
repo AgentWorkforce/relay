@@ -14,6 +14,24 @@ const ARTIFACT_DIR = `.workflow-artifacts/relayfile-cross-repo-qualification/${R
 const cloudPath = process.env.RELAY_CLOUD_REPO ?? process.env.RELAYFILE_CLOUD_CANDIDATE ?? '../cloud';
 const relayfilePath = process.env.RELAYFILE_REPO ?? '../relayfile';
 const relayfileCloudPath = process.env.RELAYFILE_CLOUD_REPO ?? '../relayfile-cloud';
+// Explicitly forward only qualification inputs. RelayFlow does not inherit the
+// workflow module's process.env into deterministic child steps automatically.
+const qualificationEnv = Object.fromEntries(
+  [
+    'RELAYFILE_QUALIFICATION_RUN_ID', 'RELAYFILE_QUALIFICATION_ARTIFACT_DIR',
+    'RELAYFILE_QUALIFICATION_BUNDLE_DIR', 'RELAYFILE_QUALIFICATION_CREATE_SANDBOXES',
+    'RELAYFILE_QUALIFICATION_NPM_VERSION', 'RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256',
+    'RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA', 'RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256',
+    'RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256', 'RELAYFILE_QUALIFICATION_DAYTONA_IMAGE',
+    'RELAYFILE_DAYTONA_CPU', 'RELAYFILE_DAYTONA_MEMORY_MB', 'RELAYFILE_DAYTONA_DISK_GIB',
+    'RELAYFILE_DAYTONA_TTL_MINUTES',
+  ].map((key) => [key, key === 'RELAYFILE_QUALIFICATION_RUN_ID' ? RUN_ID : key === 'RELAYFILE_QUALIFICATION_ARTIFACT_DIR' ? ARTIFACT_DIR : key === 'RELAYFILE_QUALIFICATION_BUNDLE_DIR' ? `${ARTIFACT_DIR}/bundle` : process.env[key] ?? ''])
+);
+Object.assign(qualificationEnv, {
+  RELAY_CLOUD_REPO: cloudPath,
+  RELAYFILE_REPO: relayfilePath,
+  RELAYFILE_CLOUD_REPO: relayfileCloudPath,
+});
 // Pass the generated run identity through the child process environment. Keep it
 // out of shell command text so an unsafe caller-supplied value can never become
 // shell syntax.
@@ -220,7 +238,7 @@ export function buildQualificationWorkflow() {
 async function main() {
   if (!process.argv[1]?.endsWith('relayfile-cross-repo-qualification/workflow.ts')) return;
   const dryRun = process.env.DRY_RUN === '1' || process.env.RELAYFILE_QUALIFICATION_DRY_RUN === '1';
-  const result = await buildQualificationWorkflow().run({ cwd: process.cwd(), dryRun });
+  const result = await buildQualificationWorkflow().run({ cwd: process.cwd(), dryRun, envSecrets: qualificationEnv });
   if (dryRun) await writeDryRunReport();
   if ('status' in result && result.status !== 'completed' && !dryRun) process.exitCode = 1;
 }

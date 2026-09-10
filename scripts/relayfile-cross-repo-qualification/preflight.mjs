@@ -129,4 +129,6 @@ const result = {
 await writeFile(path.join(artifactDir, 'preflight.json'), `${JSON.stringify(result, null, 2)}\n`);
 console.log(`QUALIFICATION_PREFLIGHT ${result.status}`);
 for (const failure of failures) console.log(`QUALIFICATION_PREFLIGHT_FAILURE ${failure}`);
-process.exitCode = 0;
+// A real run must stop before bundle/arm allocation when required inputs are
+// missing. Dry runs remain intentionally non-failing and allocate nothing.
+process.exitCode = gate && failures.length > 0 ? 1 : 0;
