@@ -200,10 +200,7 @@ try {
 } finally {
   if (broker && broker.exitCode === null) {
     broker.kill('SIGTERM');
-    await Promise.race([
-      onceExit(broker),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
+    await Promise.race([onceExit(broker), new Promise((resolve) => setTimeout(resolve, 5_000))]);
     if (broker.exitCode === null) broker.kill('SIGKILL');
   }
   await relay?.close();
@@ -227,10 +224,15 @@ async function startRelayProbe() {
     if (request.method === 'POST' && pathname === '/v1/agents') {
       if (body?.name !== BROKER_NAME) {
         state.workerRegistrations += 1;
-        sendJson(response, ERROR_STATUS, {
-          ok: false,
-          error: { code: ERROR_CODE, message: ERROR_MESSAGE },
-        }, { 'x-request-id': REQUEST_ID });
+        sendJson(
+          response,
+          ERROR_STATUS,
+          {
+            ok: false,
+            error: { code: ERROR_CODE, message: ERROR_MESSAGE },
+          },
+          { 'x-request-id': REQUEST_ID }
+        );
         return;
       }
       sendJson(response, 200, {
@@ -359,5 +361,8 @@ async function requiredExecutable(name) {
 
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
 }
