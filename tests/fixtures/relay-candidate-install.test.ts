@@ -477,7 +477,7 @@ describe('Relay candidate clean-install attestation', () => {
           path.join(substitutedTransitive, 'package.json'),
           '{"name":"substituted-transitive","version":"1.0.0"}\n'
         );
-        await expect(verifyCandidateInstall(attestationPath)).rejects.toThrow(
+        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
           'complete installed closure changed'
         );
         await rm(substitutedTransitive, { recursive: true });
@@ -494,7 +494,7 @@ describe('Relay candidate clean-install attestation', () => {
 
         await chmod(broker, 0o644);
         await syncBrokerAttestation();
-        await expect(verifyCandidateInstall(attestationPath)).rejects.toThrow(
+        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
           'broker mode is not exactly 0755'
         );
         await chmod(broker, 0o755);
@@ -503,14 +503,16 @@ describe('Relay candidate clean-install attestation', () => {
         await writeFile(broker, "#!/bin/sh\nprintf 'agent-relay-broker 0.0.0-wrong\\n'\n");
         await chmod(broker, 0o755);
         await syncBrokerAttestation();
-        await expect(verifyCandidateInstall(attestationPath)).rejects.toThrow(
+        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
           'broker reported a different version'
         );
 
         await writeFile(broker, `#!/bin/sh\nprintf 'agent-relay-broker ${input.packageVersion}\\n'\n`);
         await chmod(broker, 0o755);
         await syncBrokerAttestation();
-        await expect(verifyCandidateInstall(attestationPath)).resolves.toBeTruthy();
+        await expect(
+          verifyCandidateInstall(attestationPath, { executeCandidate: true })
+        ).resolves.toBeTruthy();
 
         const nonEntrypoint = path.join(
           root,
@@ -521,13 +523,13 @@ describe('Relay candidate clean-install attestation', () => {
           'runtime.js'
         );
         await writeFile(nonEntrypoint, 'export const tampered = true;\n');
-        await expect(verifyCandidateInstall(attestationPath)).rejects.toThrow(
+        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
           'complete installed closure changed'
         );
 
         await writeFile(nonEntrypoint, `export const packageName = "@agent-relay/cloud";\n`);
         await writeFile(cliEntrypoint, `${cli}// tampered\n`);
-        await expect(verifyCandidateInstall(attestationPath)).rejects.toThrow(
+        await expect(verifyCandidateInstall(attestationPath, { executeCandidate: true })).rejects.toThrow(
           /(?:CLI digest|complete installed closure) changed/
         );
       } finally {
