@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import * as ts from 'typescript';
+import { parse } from 'yaml';
 
 // Dependency-free ESM is also used by the local Relayflow runner.
 // @ts-expect-error JavaScript module intentionally has no declaration file.
@@ -682,6 +683,41 @@ describe('complete Daytona Fleet board', () => {
     expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
     expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
     expect(source).toContain('VERIFY_FLEET_CLI=');
+  });
+
+  it('keeps independent Fleet attempts inside the consumer job deadline', async () => {
+    const [source, consumerSource] = await Promise.all([
+      readFile('workflows/verify-fleet-daytona.ts', 'utf8'),
+      readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8'),
+    ]);
+    const consumer = parse(consumerSource) as any;
+    const qualification = consumer.jobs.qualification;
+    const steps = workflowStepDeclarations(source);
+    const attemptA = steps.get('run-daytona-board-attempt-a');
+    const attemptB = steps.get('run-daytona-board-attempt-b');
+    const materialize = steps.get('materialize-trusted-fleet-evidence');
+
+    expect(qualification['timeout-minutes']).toBe(360);
+    expect(source).toContain('const ATTEMPT_TIMEOUT_MS = 5_100_000');
+    expect(source).toContain('const OUTER_JOB_TIMEOUT_MS = 21_600_000');
+    expect(source).toContain('const CONSUMER_SETUP_RESERVE_MS = 1_800_000');
+    expect(source).toContain('const WORKFLOW_GUARD_MS = 300_000');
+    expect(source).toContain('const workflowTimeoutMs = workflowBudgetMs + WORKFLOW_GUARD_MS');
+    expect(source).toContain('if (workflowTimeoutMs > innerWorkflowBudgetMs)');
+    expect(source).toContain('wf.timeout(workflowTimeoutMs)');
+    expect(attemptA?.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
+    expect(attemptB?.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
+    expect(materialize?.dependsOn).toEqual(['gate-attempt-a-evidence', 'gate-attempt-b-evidence']);
+    expect(source).not.toContain("dependsOn: ['gate-attempt-a-evidence']");
+
+    // Two 85-minute attempts are concurrent; setup reserve, the 5-minute
+    // guard, and the runtime check leave the six-hour outer job as a hard
+    // upper bound.
+    const outerJobBudgetMs = qualification['timeout-minutes'] * 60_000;
+    const attemptBudgetMs = 2 * 5_100_000;
+    const setupReserveMs = 1_800_000;
+    const guardMs = 300_000;
+    expect(attemptBudgetMs + setupReserveMs + guardMs).toBeLessThan(outerJobBudgetMs);
   });
 
   it('uses the exact effective Codex model for preflight and both reviewers', async () => {
