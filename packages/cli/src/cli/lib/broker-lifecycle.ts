@@ -1952,6 +1952,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           'project',
         deps
       );
+    if (!managedIdentity) {
+      throw new Error(
+        'Could not persist a verified broker process identity. Startup was stopped; ensure ps and lsof are available, process inspection is permitted, and the project identity directory is writable.'
+      );
+    }
 
     try {
       writeBrokerBindingSource(paths.dataDir, workspaceBindingSource, deps);

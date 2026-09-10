@@ -164,7 +164,8 @@ sleep 1
 # Start broker in background, redirect output to log file
 DAEMON_LOG="$PROJECT_DIR/.agentworkforce/relay/e2e-daemon.log"
 mkdir -p "$(dirname "$DAEMON_LOG")"
-AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" node up > "$DAEMON_LOG" 2>&1 &
+# This suite tests broker lifecycle, independently of repository team configuration.
+AGENT_RELAY_BROKER_PORT="$BROKER_PORT" "$CLI_CMD" node up --no-spawn > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 log_info "Daemon started (PID: $DAEMON_PID)"
 log_info "Daemon log: $DAEMON_LOG"

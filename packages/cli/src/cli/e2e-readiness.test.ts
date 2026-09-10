@@ -9,6 +9,9 @@ const directories: string[] = [];
 it('does not kill listeners based only on port ownership', () => {
   expect(script).not.toMatch(/lsof[^\n]*\|[^\n]*kill/);
 });
+it('starts the lifecycle fixture without auto-spawning repository teams', () => {
+  expect(script).toMatch(/"\$CLI_CMD" node up --no-spawn > "\$DAEMON_LOG"/);
+});
 afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });

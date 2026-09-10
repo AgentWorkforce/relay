@@ -118,6 +118,7 @@ function createRelayMock(overrides: Partial<CoreRelay> = {}): CoreRelay {
     spawn: vi.fn(async () => undefined),
     getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
     shutdown: vi.fn(async () => undefined),
+    brokerPid: 222,
     workspaceKey: 'rk_live_defaultkey01',
     ...overrides,
   };
@@ -204,7 +205,24 @@ function createHarness(options?: {
     createRelay: options?.createRelay ?? vi.fn(() => relay),
     spawnProcess:
       options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
-    execCommand: options?.execCommand ?? vi.fn(async () => ({ stdout: '', stderr: '' })),
+    execCommand:
+      options?.execCommand ??
+      vi.fn(async (command) => {
+        const pid = relay.brokerPid;
+        const name =
+          vi.mocked(deps.createRelay).mock.calls.at(-1)?.[2]?.trim() ||
+          deps.env.AGENT_RELAY_BROKER_NAME?.trim() ||
+          'project';
+        const state = deps.env.AGENT_RELAY_STATE_DIR || dataDir;
+        const lock = `${state}/broker-${name.replace(/[^\p{Alphabetic}\p{Number}-]/gu, '-')}.lock`;
+        if (command === `LC_ALL=C TZ=UTC ps -p ${pid} -o lstart=`)
+          return { stdout: 'Thu Sep 10 18:00:00 2026\n', stderr: '' };
+        if (command === `lsof -nP -a -p ${pid} -d txt -FfDi`)
+          return { stdout: `p${pid}\nftxt\nD0x100\ni1234\n`, stderr: '' };
+        if (command === `lsof -nP -a -p ${pid} -FfnDi`)
+          return { stdout: `p${pid}\nf10\nD0x100\ni9876\nn${lock}\n`, stderr: '' };
+        return { stdout: '', stderr: '' };
+      }),
     killProcess: options?.killImpl ?? vi.fn(() => undefined),
     fs,
     generateAgentName: vi.fn(() => 'AutoAgent'),
@@ -1199,6 +1217,52 @@ describe('registerCoreCommands', () => {
     }
   );
 
+  it.each(
+    [false, true].flatMap((backgroundChild) =>
+      ['missing-tools', 'uninspectable-lock', 'write-denied', 'missing-pid'].map((failure) => ({
+        backgroundChild,
+        failure,
+      }))
+    )
+  )(
+    'supported startup rejects failed identity capture ($backgroundChild, $failure)',
+    async ({ backgroundChild, failure }) => {
+      const relay = createRelayMock(failure === 'missing-pid' ? { brokerPid: undefined } : {});
+      const { program, deps } = createHarness({
+        relay,
+        configureDependencies: (configured) => {
+          if (failure === 'missing-tools')
+            configured.execCommand = vi.fn(async () => {
+              throw new Error('lsof unavailable');
+            });
+          if (failure === 'uninspectable-lock')
+            configured.fs.statSync = vi.fn(() => {
+              throw new Error('permission denied');
+            });
+          if (failure === 'write-denied')
+            configured.fs.renameSync = vi.fn(() => {
+              throw new Error('read only directory');
+            });
+        },
+      });
+      const exitCode = await runCommand(program, backgroundChild ? ['up', '--background-child'] : ['up']);
+      expect(exitCode).toBe(1);
+      expect(relay.shutdown).toHaveBeenCalledExactlyOnceWith();
+      expect(relay.spawn).not.toHaveBeenCalled();
+      expect(deps.holdOpen).not.toHaveBeenCalled();
+      expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+      expect(deps.error).toHaveBeenCalledWith(
+        expect.stringContaining('Could not persist a verified broker process identity')
+      );
+      expect(readBrokerIdentities(deps.getProjectPaths(), deps)).toEqual([]);
+      if (backgroundChild)
+        expect(
+          deps.fs.readFileSync(`${deps.getProjectPaths().dataDir}/background-start-error.log`, 'utf-8')
+        ).toContain('Could not persist a verified broker process identity');
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    }
+  );
+
   it.each([false, true].flatMap((connected) => [false, true].map((replace) => ({ connected, replace }))))(
     'verified ESRCH removes only its unchanged record (connected=$connected, replace=$replace)',
     async ({ connected, replace }) => {
@@ -1646,7 +1710,10 @@ describe('registerCoreCommands', () => {
     let now = 0;
     let stopping = false;
     const { program, deps } = createHarness({
-      execCommand: identityCommand(),
+      relay: createRelayMock({ brokerPid: 333 }),
+      execCommand: vi.fn(async (command: string) =>
+        identityCommand(command.includes('-p 222') ? 222 : 333)(command)
+      ),
       nowImpl: () => now,
       sleepImpl: async (ms) => {
         now += ms;
@@ -1657,9 +1724,15 @@ describe('registerCoreCommands', () => {
       }),
     });
     await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    const createRelay = vi.mocked(deps.createRelay);
+    const createStartedRelay = createRelay.getMockImplementation()!;
+    createRelay.mockImplementationOnce(async (...args) => {
+      expect(readBrokerIdentities(deps.getProjectPaths(), deps)).toEqual([]);
+      return createStartedRelay(...args);
+    });
     expect(await runCommand(program, ['up'])).not.toBe(1);
     expect(now).toBeGreaterThanOrEqual(3500);
-    expect(deps.fs.existsSync(brokerIdentityPath(deps.getProjectPaths(), deps))).toBe(false);
+    expect(readBrokerIdentities(deps.getProjectPaths(), deps).map((identity) => identity.pid)).toEqual([333]);
     expect(deps.killProcess).not.toHaveBeenCalledWith(222, 'SIGKILL');
   });
 
@@ -1951,16 +2024,7 @@ describe('registerCoreCommands', () => {
     // signal arriving during startup is handled gracefully too), so
     // registration alone no longer implies `relay` is set. Wait for the
     // broker to actually be up before firing the signal.
-    for (
-      let i = 0;
-      i < 20 &&
-      !(deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
-        (call) => call[0] === 'Broker started.'
-      );
-      i += 1
-    ) {
-      await Promise.resolve();
-    }
+    await vi.waitFor(() => expect(deps.log).toHaveBeenCalledWith('Broker started.'));
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
@@ -1970,7 +2034,7 @@ describe('registerCoreCommands', () => {
     const sigint = sigintHandler as () => Promise<void>;
 
     void sigint();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(relay.shutdown).toHaveBeenCalledTimes(1));
     await expect(sigint()).rejects.toMatchObject({ code: 130 });
 
     expect(relay.shutdown).toHaveBeenCalledTimes(1);
