@@ -897,6 +897,17 @@ describe('fleet command support', () => {
     const createWorkspaceRelay = vi.fn(() => ({
       workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
     }));
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'reused' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-e2b',
+      nodeName: 'e2b-codex',
+      status: 'online',
+      activeAgents: 0,
+      maxAgents: 1,
+      providerId: 'e2b' as const,
+      relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+    }));
     const persistWorkspaceRelaycastTarget = vi.fn(() => true);
     const program = new Command();
     program.exitOverride();
@@ -909,17 +920,7 @@ describe('fleet command support', () => {
         error: vi.fn(),
         exit: vi.fn() as never,
       },
-      ensureCloudFleetSandbox: vi.fn(async () => ({
-        outcome: 'reused' as const,
-        cloudWorkspaceId: 'cloud-workspace',
-        nodeId: 'node-e2b',
-        nodeName: 'e2b-codex',
-        status: 'online',
-        activeAgents: 0,
-        maxAgents: 1,
-        providerId: 'e2b' as const,
-        relaycastTarget: CANONICAL_RELAYCAST_TARGET,
-      })),
+      ensureCloudFleetSandbox,
       resolveWorkspaceSelection: () => ({
         key: 'rk_live_test',
         source: 'project',
@@ -971,6 +972,12 @@ describe('fleet command support', () => {
     expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(
       expect.objectContaining({ key: 'rk_live_test' }),
       CANONICAL_RELAYCAST_TARGET
+    );
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'e2b',
+        workloadProfile: 'standard-long-running-agent',
+      })
     );
   });
 
@@ -1691,6 +1698,15 @@ describe('fleet command support', () => {
     const warnings: string[] = [];
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const createWorkspaceRelay = vi.fn();
+    const ensureCloudFleetSandbox = vi.fn(async () => {
+      throw new CloudFleetSandboxProvisionError('missing valid Daytona providerSandboxId', {
+        cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+        sandboxId: REPLAY_SANDBOX_ID,
+        nodeName: REPLAY_SANDBOX_NAME,
+        providerId: 'daytona',
+        confirmedProvisioned: true,
+      });
+    });
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
@@ -1704,15 +1720,7 @@ describe('fleet command support', () => {
           throw new Error('__exit__');
         }) as never,
       },
-      ensureCloudFleetSandbox: vi.fn(async () => {
-        throw new CloudFleetSandboxProvisionError('missing valid Daytona providerSandboxId', {
-          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
-          sandboxId: REPLAY_SANDBOX_ID,
-          nodeName: REPLAY_SANDBOX_NAME,
-          providerId: 'daytona',
-          confirmedProvisioned: true,
-        });
-      }),
+      ensureCloudFleetSandbox,
       deleteCloudFleetSandbox,
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
@@ -1755,6 +1763,12 @@ describe('fleet command support', () => {
       providerId: 'daytona',
     });
     expect(createWorkspaceRelay).not.toHaveBeenCalled();
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: 'daytona',
+        workloadProfile: 'standard-long-running-agent',
+      })
+    );
     expect(warnings).toEqual([]);
   });
 
