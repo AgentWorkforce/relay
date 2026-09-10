@@ -3,8 +3,12 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import {
+  createWorkspace,
+  deleteAndVerify,
+} from '../../scripts/verify-features/cleanup-qualification-workspaces.mjs';
 import { composeQualificationEffects } from '../../scripts/verify-features/qualification-effect-evidence.mjs';
 import { relayfileCloudEndpointIdentitySha256 } from '../../scripts/verify-features/qualification-manifest.mjs';
 import { CLOUD_SNAPSHOT_ACCEPTANCE_PRODUCER } from '../../scripts/verify-features/qualification-producer-artifacts.mjs';
@@ -267,6 +271,130 @@ function fixture() {
 }
 
 describe('qualification runtime effect composer', () => {
+  it('composes the exact create/delete shapes emitted by the trusted cleanup helper', async () => {
+    const base = fixture();
+    const root = await fs.promises.mkdtemp('/tmp/qualification-helper-composer-');
+    const auth = {
+      apiUrl: 'https://cloud.example.test',
+      accessToken: 'access-token-fixture',
+      refreshToken: 'refresh-token-fixture',
+      accessTokenExpiresAt: '2099-01-01T00:00:00.000Z',
+      refreshTokenExpiresAt: '2099-01-02T00:00:00.000Z',
+    };
+    const attestationSha256 = base.workspaceCreates[0]!.result.relayfileCloudAttestationSha256;
+    const responses: Response[] = [];
+    const makeCreate = (index: number) => {
+      const workspaceId = workspaceIds[index]!;
+      const relayWorkspaceId = relayWorkspaceIds[index]!;
+      const credential = {
+        version: 1,
+        workspaceId,
+        relayWorkspaceId,
+        cloud: { accessToken: 'secret', refreshToken: 'secret' },
+        relay: { baseUrl: 'https://relay.example', workspaceKey: 'secret' },
+      };
+      responses.push(
+        new Response(
+          JSON.stringify({
+            workspaceId,
+            relayWorkspaceId,
+            ephemeral: true,
+            ttlSeconds: 86_400,
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            state: 'active',
+            requestedRelayfileCloudDeploymentId: deploymentId,
+            observedRelayfileCloudDeploymentId: deploymentId,
+            relayfileCloudAttestationSha256: attestationSha256,
+            credential,
+          }),
+          { status: 200 }
+        )
+      );
+      return { credential, workspaceId, relayWorkspaceId };
+    };
+    const makeDelete = (index: number) => {
+      const workspaceId = workspaceIds[index]!;
+      const relayWorkspaceId = relayWorkspaceIds[index]!;
+      responses.push(
+        new Response(
+          JSON.stringify({
+            workspaceId,
+            relayWorkspaceId,
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            state: 'deleted',
+            deleted: true,
+            idempotent: false,
+            operationId: `delete-${workspaceId}`,
+            verifiedAt: '2026-09-05T12:00:30.000Z',
+            proof: {
+              daytona: { workspaceId, relayWorkspaceId, remaining: 0 },
+              cloud: {
+                workspaceId,
+                relayWorkspaceId,
+                appWorkspaceRowsRemaining: 0,
+                workflowLaunchesInProgress: 0,
+              },
+              credentials: { workspaceId, relayWorkspaceId, activeSessionsRemaining: 0 },
+              relaycast: {
+                workspaceId,
+                relayWorkspaceId,
+                deleted: true,
+                agentsAndNodesDeletedByWorkspaceCascade: true,
+              },
+              relayfile: { workspaceId, relayWorkspaceId, deleted: true },
+              registry: { workspaceId, relayWorkspaceId, deleted: true },
+            },
+          }),
+          { status: 200 }
+        )
+      );
+      responses.push(new Response(JSON.stringify({ code: 'workspace_not_found' }), { status: 404 }));
+    };
+    const createMetadata = [];
+    for (let index = 0; index < 2; index += 1) createMetadata.push(makeCreate(index));
+    for (let index = 0; index < 2; index += 1) makeDelete(index);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => responses.shift()!);
+    try {
+      const creates = [];
+      for (let index = 0; index < 2; index += 1) {
+        const created = await createWorkspace({
+          auth,
+          idempotencyKey: `relay-qualification:run:attempt:${index}`,
+          name: `relay-qualification-run-attempt-${index}`,
+          deploymentId,
+          credentialFile: path.join(root, `credential-${index}.json`),
+        });
+        creates.push({
+          label: index === 0 ? 'a' : 'b',
+          result: created,
+          credential: createMetadata[index]!.credential,
+          credentialPath: path.join(root, `credential-${index}.json`),
+          mode: '0600',
+        });
+      }
+      const deletes = [];
+      for (let index = 0; index < 2; index += 1) {
+        const deleted = await deleteAndVerify({ auth, workspaceId: workspaceIds[index]! });
+        deletes.push({
+          label: index === 0 ? 'a' : 'b',
+          result: deleted,
+          elapsedSeconds: 1,
+          timingWorkspaceId: workspaceIds[index],
+          timingOperationId: deleted.operationId,
+        });
+      }
+      base.workspaceCreates = creates;
+      base.workspaceDeletes = deletes;
+      const effects = composeQualificationEffects(base);
+      expect(effects['ephemeral-cloud-workspace-create']).toMatchObject({ status: 'PASS', workspaceIds });
+      expect(effects['ephemeral-cloud-workspace-delete']).toMatchObject({ status: 'PASS', workspaceIds });
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    } finally {
+      fetchMock.mockRestore();
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('is an invoked release gate after both timed cleanup operations', () => {
     const workflow = fs.readFileSync(
       path.join(repositoryRoot, '.github/workflows/relay-cleanroom-qualification-consumer.yml'),

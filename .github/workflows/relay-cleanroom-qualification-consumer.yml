@@ -344,7 +344,11 @@ jobs:
       - name: Seal trusted verifier and candidate inputs before execution
         run: |
           set -euo pipefail
+          mkdir -p relay-verifier/.workflow-artifacts/verify-fleet-daytona
           chmod -R a-w relay-verifier "$RUNNER_TEMP/relay-candidate-install"
+          # Candidate execution may append evidence, but cannot rewrite the
+          # sealed verifier sources or installed candidate tree.
+          chmod -R u+w relay-verifier/.workflow-artifacts
           test ! -w relay-verifier/package.json
           test ! -w "$RUNNER_TEMP/relay-candidate-install"
 
@@ -564,9 +568,9 @@ jobs:
             --fleet-matrix tests/relayflows/cleanroom/fleet-daytona.matrix.json \
             --fleet-artifact-root .workflow-artifacts/verify-fleet-daytona \
             --fleet-nonce "qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --delete-a ../qualification/workspace-delete-a.json \
+            --delete-a ../qualification-cleanup/delete-a.json \
             --delete-a-timing ../qualification/workspace-delete-a-timing.json \
-            --delete-b ../qualification/workspace-delete-b.json \
+            --delete-b ../qualification-cleanup/delete-b.json \
             --delete-b-timing ../qualification/workspace-delete-b-timing.json \
             --output ../qualification/runtime-effects.json
           node scripts/verify-features/qualification-capabilities.mjs \
@@ -589,7 +593,7 @@ jobs:
             qualification/cloud-acceptance/candidate-acceptance.json
             qualification/relay-candidate-install-attestation.json
             qualification/runtime-effects.json
-            qualification/workspace-delete-*.json
+            qualification-cleanup/delete-*.json
             relay-verifier/.workflow-artifacts/verify-fleet-daytona/
           if-no-files-found: error
           retention-days: 90

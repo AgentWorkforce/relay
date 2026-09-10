@@ -73,10 +73,13 @@ describe('trusted qualification workspace cleanup', () => {
         JSON.stringify({
           workspaceId: '11111111-1111-4111-8111-111111111111',
           relayWorkspaceId: 'rw_7ccfea89',
+          ephemeral: true,
+          ttlSeconds: 86_400,
           expiresAt: '2099-01-01T00:00:00.000Z',
           state: 'active',
           requestedRelayfileCloudDeploymentId: 'relayfile-cloud-preview-1',
           observedRelayfileCloudDeploymentId: 'relayfile-cloud-preview-1',
+          relayfileCloudAttestationSha256: 'a'.repeat(64),
           credential: {
             version: 1,
             workspaceId: '11111111-1111-4111-8111-111111111111',
@@ -96,7 +99,13 @@ describe('trusted qualification workspace cleanup', () => {
       deploymentId: 'relayfile-cloud-preview-1',
       credentialFile: credentialPath,
     });
-    expect(result).toMatchObject({ workspaceId: '11111111-1111-4111-8111-111111111111', state: 'active' });
+    expect(result).toMatchObject({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      state: 'active',
+      ephemeral: true,
+      ttlSeconds: 86_400,
+      relayfileCloudAttestationSha256: 'a'.repeat(64),
+    });
     await expect(fs.readFile(credentialPath, 'utf8')).resolves.toContain('secret-key');
     await fs.rm(credentialPath, { force: true });
   });
@@ -109,9 +118,31 @@ describe('trusted qualification workspace cleanup', () => {
         new Response(
           JSON.stringify({
             workspaceId,
+            relayWorkspaceId: 'rw_7ccfea89',
+            expiresAt: '2099-01-01T00:00:00.000Z',
             deleted: true,
             state: 'deleted',
+            idempotent: false,
+            verifiedAt: '2026-09-05T12:00:30.000Z',
             operationId: 'op-qualification-a',
+            proof: {
+              daytona: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', remaining: 0 },
+              cloud: {
+                workspaceId,
+                relayWorkspaceId: 'rw_7ccfea89',
+                appWorkspaceRowsRemaining: 0,
+                workflowLaunchesInProgress: 0,
+              },
+              credentials: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', activeSessionsRemaining: 0 },
+              relaycast: {
+                workspaceId,
+                relayWorkspaceId: 'rw_7ccfea89',
+                deleted: true,
+                agentsAndNodesDeletedByWorkspaceCascade: true,
+              },
+              relayfile: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', deleted: true },
+              registry: { workspaceId, relayWorkspaceId: 'rw_7ccfea89', deleted: true },
+            },
           }),
           { status: 200 }
         )

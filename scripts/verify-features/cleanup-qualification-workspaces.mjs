@@ -161,8 +161,14 @@ export async function createWorkspace({
     value.state === 'active' && typeof value.expiresAt === 'string',
     'created workspace state is invalid'
   );
+  assert(value.ephemeral === true, 'created workspace is not ephemeral');
+  assert(value.ttlSeconds === 86_400, 'created workspace TTL is not 24 hours');
   assert(value.requestedRelayfileCloudDeploymentId === deploymentId);
   assert(value.observedRelayfileCloudDeploymentId === deploymentId);
+  assert(
+    /^[0-9a-f]{64}$/i.test(String(value.relayfileCloudAttestationSha256 ?? '')),
+    'Relayfile Cloud attestation digest is invalid'
+  );
   const credential = jsonObject(value.credential, 'workspace credential');
   assert(credential.version === 1 && credential.workspaceId === value.workspaceId);
   assert(jsonObject(credential.cloud, 'cloud credential').accessToken);
@@ -174,8 +180,11 @@ export async function createWorkspace({
     relayWorkspaceId: value.relayWorkspaceId,
     expiresAt: value.expiresAt,
     state: value.state,
+    ephemeral: value.ephemeral,
+    ttlSeconds: value.ttlSeconds,
     requestedRelayfileCloudDeploymentId: value.requestedRelayfileCloudDeploymentId,
     observedRelayfileCloudDeploymentId: value.observedRelayfileCloudDeploymentId,
+    relayfileCloudAttestationSha256: value.relayfileCloudAttestationSha256,
     credentialFile,
   };
 }
@@ -196,7 +205,28 @@ export async function deleteAndVerify({ auth, workspaceId }) {
   assert.equal(deleted.workspaceId, workspaceId);
   assert.equal(deleted.deleted, true);
   assert.equal(deleted.state, 'deleted');
+  assert(typeof deleted.idempotent === 'boolean');
+  assert(typeof deleted.expiresAt === 'string' && Number.isFinite(Date.parse(deleted.expiresAt)));
+  assert(typeof deleted.verifiedAt === 'string' && Number.isFinite(Date.parse(deleted.verifiedAt)));
   assert(typeof deleted.operationId === 'string' && deleted.operationId.length > 0);
+  const proof = jsonObject(deleted.proof, 'delete proof');
+  for (const [name, fields] of Object.entries({
+    daytona: ['workspaceId', 'relayWorkspaceId', 'remaining'],
+    cloud: ['workspaceId', 'relayWorkspaceId', 'appWorkspaceRowsRemaining', 'workflowLaunchesInProgress'],
+    credentials: ['workspaceId', 'relayWorkspaceId', 'activeSessionsRemaining'],
+    relaycast: ['workspaceId', 'relayWorkspaceId', 'deleted', 'agentsAndNodesDeletedByWorkspaceCascade'],
+    relayfile: ['workspaceId', 'relayWorkspaceId', 'deleted'],
+    registry: ['workspaceId', 'relayWorkspaceId', 'deleted'],
+  })) {
+    const section = jsonObject(proof[name], `delete proof.${name}`);
+    assert.equal(section.workspaceId, workspaceId, `delete proof.${name} workspace mismatch`);
+    assert.equal(
+      section.relayWorkspaceId,
+      deleted.relayWorkspaceId,
+      `delete proof.${name} Relay workspace mismatch`
+    );
+    for (const field of fields) assert(field in section, `delete proof.${name}.${field} is required`);
+  }
   const { response: absence } = await authorizedApiFetch(
     refreshedAuth,
     `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,

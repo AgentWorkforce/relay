@@ -134,6 +134,8 @@ describe('Relay candidate clean-install attestation', () => {
         workflow.indexOf('relay-candidate-install.mjs')
       );
     }
+    expect(hydration).toContain('mkdir -p relay-verifier/.workflow-artifacts/verify-fleet-daytona');
+    expect(hydration).toContain('chmod -R u+w relay-verifier/.workflow-artifacts');
   });
 
   it('runs npm from the parent descriptor on Linux without using --prefix', () => {
