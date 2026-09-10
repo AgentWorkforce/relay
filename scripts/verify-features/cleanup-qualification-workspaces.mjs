@@ -171,6 +171,8 @@ export async function createWorkspace({
   );
   const credential = jsonObject(value.credential, 'workspace credential');
   assert(credential.version === 1 && credential.workspaceId === value.workspaceId);
+  assert.equal(credential.relayWorkspaceId, value.relayWorkspaceId);
+  assert.equal(credential.expiresAt, value.expiresAt);
   assert(jsonObject(credential.cloud, 'cloud credential').accessToken);
   assert(jsonObject(credential.relay, 'Relay credential').workspaceKey);
   await writeFile(credentialFile, `${JSON.stringify(credential, null, 2)}\n`, { mode: 0o600, flag: 'wx' });

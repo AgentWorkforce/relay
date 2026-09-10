@@ -341,6 +341,8 @@ async function githubScope(repo) {
         cwd: RELAY_ROOT,
         maxBuffer: 2 * 1024 * 1024,
         env: process.env,
+        timeout: DEFAULT_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
       });
       const value = JSON.parse(stdout);
       if (!Array.isArray(value)) throw new Error(`${repo} ${label} collection returned invalid JSON`);

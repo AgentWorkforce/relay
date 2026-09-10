@@ -163,6 +163,49 @@ describe('trusted qualification workspace cleanup', () => {
     expect(absenceInit).toMatchObject({ method: 'GET' });
   });
 
+  it.each([
+    ['relayWorkspaceId', 'rw_mismatch1'],
+    ['expiresAt', '2099-02-01T00:00:00.000Z'],
+  ])('rejects a credential whose %s does not match workspace metadata', async (field, mismatch) => {
+    const credentialPath = `/tmp/relay-qualification-mismatch-${field}.json`;
+    const fs = await import('node:fs/promises');
+    await fs.rm(credentialPath, { force: true });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          workspaceId: '11111111-1111-4111-8111-111111111111',
+          relayWorkspaceId: 'rw_7ccfea89',
+          ephemeral: true,
+          ttlSeconds: 86_400,
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          state: 'active',
+          requestedRelayfileCloudDeploymentId: 'relayfile-cloud-preview-1',
+          observedRelayfileCloudDeploymentId: 'relayfile-cloud-preview-1',
+          relayfileCloudAttestationSha256: 'a'.repeat(64),
+          credential: {
+            version: 1,
+            workspaceId: '11111111-1111-4111-8111-111111111111',
+            relayWorkspaceId: field === 'relayWorkspaceId' ? mismatch : 'rw_7ccfea89',
+            expiresAt: field === 'expiresAt' ? mismatch : '2099-01-01T00:00:00.000Z',
+            cloud: { accessToken: 'secret', refreshToken: 'refresh' },
+            relay: { baseUrl: 'https://relay.example.test', workspaceKey: 'secret-key' },
+          },
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(
+      createWorkspace({
+        auth,
+        idempotencyKey: `relay-qualification:run:attempt:${field}`,
+        name: `relay-qualification-mismatch-${field}`,
+        deploymentId: 'relayfile-cloud-preview-1',
+        credentialFile: credentialPath,
+      })
+    ).rejects.toThrow();
+    await expect(fs.access(credentialPath)).rejects.toThrow();
+  });
+
   it('rejects malformed or non-owned workspace identifiers before a request', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     await expect(deleteAndVerify({ auth, workspaceId: 'not-a-uuid' })).rejects.toThrow(

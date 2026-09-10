@@ -21,6 +21,12 @@ afterEach(async () => {
 });
 
 describe('diagnosis source provenance', () => {
+  it('bounds GitHub CLI collection subprocesses', async () => {
+    const source = await readFile('scripts/verify-features/relay-orchestration-diagnostic-gates.mjs', 'utf8');
+    expect(source).toContain('timeout: DEFAULT_TIMEOUT_MS');
+    expect(source).toContain("killSignal: 'SIGKILL'");
+  });
+
   it('derives coverage rows from the inventories and executable Fleet matrix', async () => {
     const matrix = JSON.parse(await readFile('tests/relayflows/cleanroom/fleet-daytona.matrix.json', 'utf8'));
     const original = expectedCoverageRowCount(matrix);
