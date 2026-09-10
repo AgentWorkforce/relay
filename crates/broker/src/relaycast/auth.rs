@@ -922,13 +922,20 @@ fn is_rate_limited(err: &anyhow::Error) -> bool {
     auth_http_status(err).is_some_and(|status| status == StatusCode::TOO_MANY_REQUESTS)
 }
 
+/// `anyhow::Error`-flavored counterpart to `is_workspace_busy_error`. Uses an
+/// exact, case-sensitive comparison against `WORKSPACE_BUSY_CODE` — no
+/// `trim()`/case normalization — because this classifier gates a replay of
+/// an unkeyed `POST /v1/agents`. Retrying on a whitespace-padded or
+/// otherwise near-match code would replay on an unverified admission signal,
+/// risking the AR-448 duplicate-workspace shape; near-matches must stay
+/// terminal after a single attempt.
 fn is_workspace_busy_anyhow(err: &anyhow::Error) -> bool {
     err.downcast_ref::<AuthHttpError>().is_some_and(|error| {
         error.status == StatusCode::TOO_MANY_REQUESTS
             && error
                 .code
                 .as_deref()
-                .is_some_and(|code| code.trim() == WORKSPACE_BUSY_CODE)
+                .is_some_and(|code| code == WORKSPACE_BUSY_CODE)
     })
 }
 
@@ -992,6 +999,11 @@ fn is_transient_server_error(error: &RelayError) -> bool {
     ) || is_workspace_busy_error(error)
 }
 
+/// Exact, case-sensitive match against the typed wire code — replay safety
+/// for this unkeyed POST depends on the code being the literal
+/// `workspace_busy` contract, not a whitespace-padded, differently-cased, or
+/// otherwise near-match string. See `is_workspace_busy_anyhow` for the
+/// rationale.
 fn is_workspace_busy_error(error: &RelayError) -> bool {
     matches!(
         error,
@@ -999,7 +1011,7 @@ fn is_workspace_busy_error(error: &RelayError) -> bool {
             code,
             status: 429,
             ..
-        } if code.trim() == WORKSPACE_BUSY_CODE
+        } if code == WORKSPACE_BUSY_CODE
     )
 }
 
@@ -1127,11 +1139,15 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
             code: {
-                let trimmed = code.trim();
-                if trimmed.is_empty() {
+                // Only whitespace-only/empty codes collapse to `None`; a
+                // non-empty code is preserved verbatim (not trimmed) so
+                // that exact-match classifiers such as
+                // `is_workspace_busy_anyhow` see the literal wire value and
+                // correctly reject whitespace-padded near-matches.
+                if code.trim().is_empty() {
                     None
                 } else {
-                    Some(trimmed.to_string())
+                    Some(code.clone())
                 }
             },
             request_id: request_id.clone(),
@@ -1665,20 +1681,28 @@ mod tests {
             "Workspace_Busy",
             "workspace_busy_extra",
             "workspace-busy",
+            " workspace_busy",
+            "workspace_busy ",
+            " workspace_busy ",
+            "\tworkspace_busy\n",
+            "workspace_busy\u{a0}",
         ] {
             let error = RelayError::api(code, "not the workspace admission contract", 429);
             assert!(
                 !is_workspace_busy_error(&error),
-                "unexpected match for {code}"
+                "unexpected match for {code:?}"
             );
             let anyhow_error = relay_error_to_anyhow(error);
             assert!(
                 !is_workspace_busy_anyhow(&anyhow_error),
-                "unexpected anyhow match for {code}"
+                "unexpected anyhow match for {code:?}"
             );
         }
 
-        assert!(is_workspace_busy_error(&RelayError::api(
+        // Whitespace padding must remain terminal, not retried: replaying an
+        // unkeyed POST on a near-match code (rather than the exact typed
+        // wire contract) risks the AR-448 duplicate-workspace shape.
+        assert!(!is_workspace_busy_error(&RelayError::api(
             " workspace_busy ",
             "workspace admission is busy",
             429,
@@ -2272,6 +2296,59 @@ mod tests {
         workspace.assert_hits(0);
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    /// A whitespace-padded (or otherwise near-match) `workspace_busy` code is
+    /// not the typed wire contract, so `retry_transient_relay_error` — the
+    /// bounded-retry layer `admit_agent_registration` uses for the unkeyed
+    /// `POST /v1/agents` — must treat it as terminal after exactly one
+    /// attempt, the same as any other non-workspace-busy 429. Replaying on a
+    /// near-match code would replay an unkeyed POST on an unverified
+    /// admission signal, risking the AR-448 duplicate-workspace shape.
+    #[tokio::test]
+    async fn workspace_busy_near_match_code_stays_terminal_after_one_attempt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for near_match in [
+            "WORKSPACE_BUSY",
+            "Workspace_Busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+            " workspace_busy",
+            "workspace_busy ",
+            " workspace_busy ",
+            "\tworkspace_busy\n",
+            "workspace_busy\u{a0}",
+        ] {
+            let calls = AtomicUsize::new(0);
+            let error = retry_transient_relay_error("registering the broker agent", || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<(), _>(RelayError::api(
+                        near_match,
+                        "workspace admission is busy",
+                        429,
+                    ))
+                }
+            })
+            .await
+            .expect_err("a near-match code must remain terminal, not be treated as workspace_busy");
+
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "near-match code {near_match:?} must not be retried"
+            );
+            assert!(
+                !is_workspace_busy_error(&error),
+                "near-match code {near_match:?} must not classify as workspace_busy"
+            );
+            let anyhow_error = relay_error_to_anyhow(error);
+            assert!(
+                !is_workspace_busy_anyhow(&anyhow_error),
+                "near-match code {near_match:?} must not classify as workspace_busy via anyhow"
+            );
         }
     }
 
