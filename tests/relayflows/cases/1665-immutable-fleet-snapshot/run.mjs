@@ -102,17 +102,7 @@ function runNode(args, cwd, env, timeout) {
 
 function buildEnvironment() {
   return Object.fromEntries(
-    [
-      'PATH',
-      'HOME',
-      'USER',
-      'LOGNAME',
-      'SHELL',
-      'TMPDIR',
-      'LANG',
-      'LC_ALL',
-      'CI',
-    ]
+    ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'CI']
       .filter((key) => process.env[key])
       .map((key) => [key, process.env[key]])
   );

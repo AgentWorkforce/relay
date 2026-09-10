@@ -711,9 +711,7 @@ export function registerCloudWorkspaceCommands(
             relayWorkspaceId: reconciliation.workspace?.relayWorkspaceId ?? null,
             state: reconciliation.workspace?.state ?? 'absent',
             credentialRevealed: reconciliation.workspace?.credentialRevealed ?? false,
-            ...(reconciliation.workspace === null
-              ? { absenceStatus: reconciliation.absenceStatus }
-              : {}),
+            ...(reconciliation.workspace === null ? { absenceStatus: reconciliation.absenceStatus } : {}),
             reconciledAt: new Date().toISOString(),
           };
           deps.log(JSON.stringify(result, null, 2));
