@@ -4,9 +4,10 @@ import { stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// This hosted case is deterministic and non-credentialed. The trusted
-// qualification campaign performs live provider/node/agent rereads; this
-// red/green proof only exercises exact candidate CLI semantics.
+// This hosted case is deterministic and non-credentialed. It proves the
+// candidate's exact ephemeral-workspace reconciliation CLI contract; the
+// trusted qualification campaign separately performs live provider/node/agent
+// rereads and mounts.
 const CASE_ID = '1665-immutable-fleet-snapshot';
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CLI_TIMEOUT_MS = 120_000;

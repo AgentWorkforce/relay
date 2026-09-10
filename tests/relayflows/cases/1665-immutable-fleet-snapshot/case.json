@@ -2,7 +2,7 @@
   "version": 1,
   "id": "1665-immutable-fleet-snapshot",
   "kind": "feature",
-  "title": "Bind Fleet identity proofs to the current CLI and independent provider rereads",
+  "title": "Expose the exact ephemeral workspace reconciliation CLI contract",
   "runner": {
     "command": ["node", "tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs"]
   },
