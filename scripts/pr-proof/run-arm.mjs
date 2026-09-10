@@ -41,6 +41,15 @@ const CASE_ENVIRONMENT_KEYS = [
   'RELAY_PR_PROOF_HARNESS_DIR',
   'RELAY_PR_PROOF_RESULT_PATH',
   'RELAY_PR_PROOF_BROKER_BINARY',
+  // These values are supplied by the isolated Cloud step. They are passed
+  // only to the case process; they are never rendered in proof diagnostics.
+  'SANDBOX_ID',
+  'RELAY_BASE_URL',
+  'RELAYCAST_BASE_URL',
+  'RELAY_WORKSPACE_KEY',
+  'AGENT_RELAY_WORKSPACE_KEY',
+  'RELAY_AGENT_TOKEN',
+  'RELAY_AGENT_NAME',
 ];
 const LANDLOCK_CASE_LAUNCHER = String.raw`
 import ctypes
@@ -584,6 +593,21 @@ function sanitizedCaseEnvironment({
     RELAY_PR_PROOF_HARNESS_DIR: harnessDir,
     RELAY_PR_PROOF_RESULT_PATH: resultPath,
     ...(brokerPath ? { RELAY_PR_PROOF_BROKER_BINARY: brokerPath } : {}),
+    ...(arm === 'head'
+      ? Object.fromEntries(
+          [
+            'SANDBOX_ID',
+            'RELAY_BASE_URL',
+            'RELAYCAST_BASE_URL',
+            'RELAY_WORKSPACE_KEY',
+            'AGENT_RELAY_WORKSPACE_KEY',
+            'RELAY_AGENT_TOKEN',
+            'RELAY_AGENT_NAME',
+          ]
+            .map((key) => [key, process.env[key]])
+            .filter(([, value]) => typeof value === 'string' && value.trim())
+        )
+      : {}),
   };
 }
 

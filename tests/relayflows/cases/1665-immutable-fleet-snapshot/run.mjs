@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 const CASE_ID = '1665-immutable-fleet-snapshot';
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const CLI_TIMEOUT_MS = 120_000;
-const SAFE_ID = /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Cloud's SANDBOX_ID is the provider's raw Daytona UUID. It is a trusted
+// per-step input, not the Relay logical `sbx_...` workspace identifier.
+const DAYTONA_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -67,10 +69,11 @@ if (arm === 'base') {
 }
 
 async function runIndependentCandidateRereads() {
-  const sandboxId = requiredValue('RELAY_PR_PROOF_EXPECTED_SANDBOX_ID');
-  const nodeName = requiredValue('RELAY_PR_PROOF_EXPECTED_NODE_NAME');
-  const agentName = requiredValue('RELAY_PR_PROOF_EXPECTED_AGENT_NAME');
-  if (!SAFE_ID.test(sandboxId)) throw new Error('RELAY_PR_PROOF_EXPECTED_SANDBOX_ID is not an sbx_<UUID>.');
+  // SANDBOX_ID is injected by the Cloud executor for this exact step. Do not
+  // accept a case-specific override: that would let the proof attest a
+  // different sandbox than the one that actually ran it.
+  const sandboxId = requiredValue('SANDBOX_ID');
+  if (!DAYTONA_ID.test(sandboxId)) throw new Error('SANDBOX_ID is not a Daytona UUID.');
   if (!process.env.RELAY_WORKSPACE_KEY?.trim() || !process.env.RELAY_AGENT_TOKEN?.trim()) {
     throw new Error(
       'head identity rereads require candidate-bound RELAY_WORKSPACE_KEY and RELAY_AGENT_TOKEN.'
@@ -91,34 +94,41 @@ async function runIndependentCandidateRereads() {
     buildEnvironment(),
     CLI_TIMEOUT_MS
   );
+  const provider = parseJson(daytona.stdout, 'Daytona sandbox info');
+  const nodes = parseJson(fleetNodes.stdout, 'Fleet nodes');
+  if (!providerIdentityMatches(provider, sandboxId)) {
+    throw new Error('Daytona reread did not independently prove the expected sandbox/provider identity.');
+  }
+  const nodeMatches = findNodesForSandbox(nodes, sandboxId);
+  if (nodeMatches.length !== 1) {
+    throw new Error(
+      `Fleet node reread found ${nodeMatches.length} exact Daytona node matches; refusing ambiguity.`
+    );
+  }
+  const node = nodeMatches[0];
+  const nodeName = node.name ?? node.nodeName;
+  if (!nodeName) throw new Error('Fleet node reread has no stable node name.');
+
   const fleetAgents = runNode(
     [cliPath, 'fleet', 'agent', 'list', '--all', '--node', nodeName, '--json'],
     targetDir,
     buildEnvironment(),
     CLI_TIMEOUT_MS
   );
-  for (const [label, result] of [
-    ['Fleet node', fleetNodes],
-    ['Fleet agent', fleetAgents],
-  ]) {
-    if (result.status !== 0)
-      throw new Error(`${label} reread failed: ${tail(result.stderr || result.stdout)}`);
+  if (fleetAgents.status !== 0) {
+    throw new Error(`Fleet agent reread failed: ${tail(fleetAgents.stderr || fleetAgents.stdout)}`);
   }
-
-  const provider = parseJson(daytona.stdout, 'Daytona sandbox info');
-  const nodes = parseJson(fleetNodes.stdout, 'Fleet nodes');
   const agents = parseJson(fleetAgents.stdout, 'Fleet agents');
-  const node = findIdentity(nodes, nodeName, ['name', 'nodeName']);
-  const agent = findIdentity(agents, agentName, ['name', 'agentName', 'id']);
-  if (!providerIdentityMatches(provider, sandboxId)) {
-    throw new Error('Daytona reread did not independently prove the expected sandbox/provider identity.');
+  const agentMatches = findAgentsForNode(agents, nodeName, sandboxId);
+  const requestedAgent = process.env.RELAY_AGENT_NAME?.trim();
+  const agent = requestedAgent
+    ? agentMatches.filter((candidate) => agentIdentityMatches(candidate, requestedAgent, nodeName, sandboxId))
+    : agentMatches;
+  if (agent.length !== 1) {
+    throw new Error(`Fleet agent reread found ${agent.length} exact node/agent matches; refusing ambiguity.`);
   }
-  if (!node || !nodeIdentityMatches(node, nodeName, sandboxId)) {
-    throw new Error('Fleet node reread did not independently prove the expected node/sandbox identity.');
-  }
-  if (!agent || !agentIdentityMatches(agent, agentName, nodeName, sandboxId)) {
-    throw new Error('Fleet agent reread did not independently prove the expected agent/node identity.');
-  }
+  const agentIdentity = agent[0];
+  const agentName = agentIdentity.name ?? agentIdentity.agentName ?? agentIdentity.id;
 
   const raw = [
     rawDigest('daytona-sandbox-info', daytona.stdout),
@@ -128,7 +138,7 @@ async function runIndependentCandidateRereads() {
   await writeObservation(
     'fixed',
     'fleet_identity_attestation_reread',
-    `Independent provider/node/agent rereads matched sandbox=${sandboxId}, node=${nodeName}, agent=${agentName}; raw output hashes=${JSON.stringify(raw)}.`
+    `Independent provider/node/agent rereads matched Daytona sandbox=${sandboxId}, node=${nodeName}, agent=${agentName}; raw output hashes=${JSON.stringify(raw)}.`
   );
 }
 
@@ -140,13 +150,52 @@ function providerIdentityMatches(value, sandboxId) {
   );
 }
 
-function nodeIdentityMatches(node, nodeName, sandboxId) {
-  const text = JSON.stringify(node);
-  return (
-    (node.name === nodeName || node.nodeName === nodeName) &&
-    text.includes(sandboxId) &&
-    text.includes('daytona')
+function findNodesForSandbox(value, sandboxId, matches = []) {
+  if (Array.isArray(value)) {
+    for (const entry of value) findNodesForSandbox(entry, sandboxId, matches);
+    return dedupeIdentityMatches(matches);
+  }
+  if (!value || typeof value !== 'object') return dedupeIdentityMatches(matches);
+  const name = value.name ?? value.nodeName;
+  const text = JSON.stringify(value);
+  if (typeof name === 'string' && name && text.includes(sandboxId) && /daytona/i.test(text)) {
+    matches.push(value);
+  }
+  for (const child of Object.values(value)) findNodesForSandbox(child, sandboxId, matches);
+  return dedupeIdentityMatches(matches);
+}
+
+function findAgentsForNode(value, nodeName, sandboxId, matches = []) {
+  if (Array.isArray(value)) {
+    for (const entry of value) findAgentsForNode(entry, nodeName, sandboxId, matches);
+    return dedupeIdentityMatches(matches);
+  }
+  if (!value || typeof value !== 'object') return dedupeIdentityMatches(matches);
+  const name = value.name ?? value.agentName ?? value.id;
+  const text = JSON.stringify(value);
+  const declaredSandbox = [value.sandboxId, value.sandbox_id, value.sandbox].find(
+    (candidate) => typeof candidate === 'string'
   );
+  if (
+    typeof name === 'string' &&
+    name &&
+    text.includes(nodeName) &&
+    (!declaredSandbox || declaredSandbox === sandboxId)
+  ) {
+    matches.push(value);
+  }
+  for (const child of Object.values(value)) findAgentsForNode(child, nodeName, sandboxId, matches);
+  return dedupeIdentityMatches(matches);
+}
+
+function dedupeIdentityMatches(matches) {
+  const seen = new Set();
+  return matches.filter((entry) => {
+    const identity = entry.name ?? entry.nodeName ?? entry.agentName ?? entry.id;
+    if (typeof identity !== 'string' || seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
 }
 
 function agentIdentityMatches(agent, agentName, nodeName, sandboxId) {
@@ -233,6 +282,7 @@ function buildEnvironment() {
       'RELAY_BASE_URL',
       'RELAY_WORKSPACE_KEY',
       'RELAY_AGENT_TOKEN',
+      'RELAY_AGENT_NAME',
     ]
       .filter((key) => process.env[key])
       .map((key) => [key, process.env[key]])
