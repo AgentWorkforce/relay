@@ -168,13 +168,38 @@ try {
     targetDir,
     'Cloud workspace dependency installation'
   );
+  run(
+    'npm',
+    [
+      'install',
+      '--no-save',
+      '--ignore-scripts',
+      '--workspace',
+      'packages/cloud',
+      '--include-workspace-root=false',
+      'typescript@5.9.3',
+    ],
+    targetDir,
+    'Cloud workspace TypeScript installation'
+  );
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
   await writeFile(probePath, probeSource, { encoding: 'utf8', flag: 'wx' });
   await writeFile(probeConfigPath, probeConfigSource, { encoding: 'utf8', flag: 'wx' });
   run(
     'npm',
-    ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, probeConfigPath)],
+    [
+      'exec',
+      '--workspace',
+      'packages/cloud',
+      '--',
+      'vitest',
+      'run',
+      '--root',
+      targetDir,
+      '--config',
+      probeConfigPath,
+    ],
     targetDir,
     'Daytona provider identity probe',
     { RELAY_PR1732_OBSERVATION_PATH: probeObservationPath }
