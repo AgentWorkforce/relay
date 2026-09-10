@@ -203,10 +203,7 @@ try {
 } finally {
   if (broker && broker.exitCode === null) {
     broker.kill('SIGTERM');
-    await Promise.race([
-      onceExit(broker),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
+    await Promise.race([onceExit(broker), new Promise((resolve) => setTimeout(resolve, 5_000))]);
     if (broker.exitCode === null) broker.kill('SIGKILL');
   }
   await relay?.close();
