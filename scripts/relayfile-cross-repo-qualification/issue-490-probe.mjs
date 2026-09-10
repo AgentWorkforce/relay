@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 const entrypoint = process.argv[2];
 if (!['cli', 'standalone'].includes(entrypoint)) process.exit(2);
 let changed = false, wsUpgradeCount = 0;
 const server = createServer((req, res) => {
-  if (req.url?.includes('/fs/tree')) return res.end(JSON.stringify({ entries: [{ path: '/issue-490.txt', type: 'file', revision: changed ? 'r2' : 'r1' }] }));
-  if (req.url?.includes('/fs/file')) return res.end(JSON.stringify({ path: '/issue-490.txt', revision: changed ? 'r2' : 'r1', content: changed ? 'healthy polling update' : 'initial' }));
-  if (req.url?.includes('/fs/events')) return res.end(JSON.stringify({ events: changed ? [{ eventId: 'evt_001', type: 'file.updated', path: '/issue-490.txt', revision: 'r2' }] : [] }));
+  if (req.url?.includes('/fs/tree')) return res.end(JSON.stringify({ path: '/', entries: [{ path: '/issue-490.txt', type: 'file', revision: changed ? 'r2' : 'r1', size: changed ? 22 : 7 }], nextCursor: null }));
+  if (req.url?.includes('/fs/file')) return res.end(JSON.stringify({ path: '/issue-490.txt', revision: changed ? 'r2' : 'r1', contentType: 'text/plain', content: changed ? 'healthy polling update' : 'initial' }));
+  if (req.url?.includes('/fs/events')) return res.end(JSON.stringify({ events: changed ? [{ eventId: 'evt_001', type: 'file.updated', path: '/issue-490.txt', revision: 'r2' }] : [], nextCursor: changed ? 'evt_001' : null }));
   if (req.url?.includes('/fs/bulk-read')) { res.statusCode = 501; return res.end('unsupported'); }
   if (req.url?.includes('/sync/status')) return res.end(JSON.stringify({ workspaceId: 'issue-490', providers: [] }));
   res.statusCode = 404; res.end();
@@ -28,6 +28,15 @@ const runOnce = () => new Promise((resolve) => {
   child.once('exit', (code) => resolve(code ?? 1));
 });
 const firstExit = await runOnce();
+let cursorSeeded = false;
+if (firstExit === 0) {
+  try {
+    const state = JSON.parse(await readFile(stateFile, 'utf8'));
+    state.eventsCursor = 'evt_000';
+    await writeFile(stateFile, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+    cursorSeeded = true;
+  } catch {}
+}
 changed = true;
 const secondExit = await runOnce();
 const onceWsUpgradeCount = wsUpgradeCount;
@@ -45,6 +54,6 @@ if (entrypoint === 'standalone') {
   await daemonExit;
 }
 server.close();
-const success = firstExit === 0 && secondExit === 0 && fileUpdated && cursorPersisted && onceWsUpgradeCount === 0 && (entrypoint !== 'standalone' || daemonRealtimeDialCount > 0);
-console.log(JSON.stringify({ exitCode: success ? 0 : 1, testsPassed: success ? 1 : 0, testsFailed: success ? 0 : 1, realtimeDialCount: onceWsUpgradeCount, onceWsUpgradeCount, daemonRealtimeDialCount, pollingUpdateApplied: fileUpdated, cursorPersisted }));
+const success = firstExit === 0 && cursorSeeded && secondExit === 0 && fileUpdated && cursorPersisted && onceWsUpgradeCount === 0 && (entrypoint !== 'standalone' || daemonRealtimeDialCount > 0);
+console.log(JSON.stringify({ exitCode: success ? 0 : 1, testsPassed: success ? 1 : 0, testsFailed: success ? 0 : 1, firstExit, secondExit, cursorSeeded, realtimeDialCount: onceWsUpgradeCount, onceWsUpgradeCount, daemonRealtimeDialCount, pollingUpdateApplied: fileUpdated, cursorPersisted }));
 process.exitCode = success ? 0 : 1;

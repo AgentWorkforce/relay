@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   daytonaMemoryGiBFromMiB,
+  isRetryableDaytonaSandboxLookupFailure,
   ACTUAL_CPU_LIMIT_MS,
   COLD_MOUNT_FILE_COUNT,
   COLD_MOUNT_MANIFEST_SHA256,
@@ -15,6 +16,7 @@ import {
   SUITE_WALL_LIMIT_MS,
   aggregateVerdict,
   buildSandboxName,
+  parseVitestVerboseOutput,
   toVitestEvidenceSummary,
   validateAclEvidence,
   validateArmReport,
@@ -28,6 +30,40 @@ test('Daytona memory converts exact MiB to GiB without rounding', () => {
   assert.throws(() => daytonaMemoryGiBFromMiB('8193'), /whole number of GiB/);
   assert.throws(() => daytonaMemoryGiBFromMiB('0'), /positive integer/);
   assert.throws(() => daytonaMemoryGiBFromMiB('not-a-number'), /positive integer/);
+});
+
+test('Daytona retries only proven pre-execution sandbox lookup transport failures', () => {
+  assert.equal(
+    isRetryableDaytonaSandboxLookupFailure({
+      exitCode: 1,
+      stderr:
+        'Get "https://app.daytona.io/api/sandbox/28377185-83cc-49dd-bfad-05876326b184": read tcp: connection reset by peer',
+    }),
+    true
+  );
+  assert.equal(
+    isRetryableDaytonaSandboxLookupFailure({ exitCode: 1, stderr: 'remote command exited 1' }),
+    false
+  );
+  assert.equal(
+    isRetryableDaytonaSandboxLookupFailure({
+      exitCode: 1,
+      stderr: 'POST https://app.daytona.io/api/sandbox: connection reset by peer',
+    }),
+    false
+  );
+});
+
+test('Vitest parser ignores terminal color sequences in the summary', () => {
+  assert.deepEqual(
+    parseVitestVerboseOutput('\u001b[32m Tests\u001b[0m  \u001b[1m8 passed\u001b[0m (8)'),
+    {
+      ok: true,
+      passed: 8,
+      failed: 0,
+      lines: [' Tests  8 passed (8)'],
+    }
+  );
 });
 
 test('persisted vitest evidence excludes raw secret-bearing output', () => {

@@ -7,11 +7,13 @@ import { createHash } from 'node:crypto';
 import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { pollUntilAbsent } from './absence.mjs';
 import {
   buildSandboxName,
   daytonaMemoryGiBFromMiB,
+  isRetryableDaytonaSandboxLookupFailure,
   parseVitestVerboseOutput,
   redactEnvAssignments,
   toVitestEvidenceSummary,
@@ -162,6 +164,15 @@ async function run(command, args, options = {}) {
     };
   }
 }
+async function runDaytona(args, options = {}) {
+  let result;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    result = await run('daytona', args, options);
+    if (!isRetryableDaytonaSandboxLookupFailure(result) || attempt === 3) return result;
+    await sleep(attempt * 500);
+  }
+  return result;
+}
 async function sha256(file) {
   return createHash('sha256')
     .update(await readFile(file))
@@ -175,7 +186,7 @@ async function verifyAbsent(target) {
   return pollUntilAbsent(target, { run });
 }
 async function parseInfo(target) {
-  const result = await run('daytona', ['info', target, '--format', 'json']);
+  const result = await runDaytona(['info', target, '--format', 'json']);
   if (result.exitCode !== 0) throw new Error(`Daytona info failed for ${target}`);
   let value;
   try {
@@ -191,7 +202,7 @@ async function issue490Evidence(id) {
   // Run the published package's platform binary, never the source checkout.
   // The probe owns a delayed/429 websocket fake server and emits only its
   // structured counters (no token-bearing process output).
-  const runProbe = (entrypoint) => run('daytona', [
+  const runProbe = (entrypoint) => runDaytona([
     'exec', id, '--cwd', '/qualification/relayfile-npm', '--', 'node',
     '/qualification/relayfile-npm/issue-490-probe.mjs', entrypoint,
   ], { timeoutMs: 300_000 });
@@ -210,8 +221,8 @@ async function issue490Evidence(id) {
     cursorPersisted: ok,
     daemonRealtimePreserved: ok,
     daemon: { realtimeDialCount: standalone.daemonRealtimeDialCount ?? 0 },
-    cli: { exitCode: cliResult.exitCode, testsPassed: cli.testsPassed ?? 0, testsFailed: cli.testsFailed ?? 1, realtimeDialCount: cli.realtimeDialCount ?? 99, pollingUpdateApplied: cli.pollingUpdateApplied === true, cursorPersisted: cli.cursorPersisted === true },
-    standalone: { exitCode: standaloneResult.exitCode, testsPassed: standalone.testsPassed ?? 0, testsFailed: standalone.testsFailed ?? 1, realtimeDialCount: standalone.realtimeDialCount ?? 99, pollingUpdateApplied: standalone.pollingUpdateApplied === true, cursorPersisted: standalone.cursorPersisted === true },
+    cli: { exitCode: cliResult.exitCode, testsPassed: cli.testsPassed ?? 0, testsFailed: cli.testsFailed ?? 1, firstExit: cli.firstExit, secondExit: cli.secondExit, cursorSeeded: cli.cursorSeeded === true, realtimeDialCount: cli.realtimeDialCount ?? 99, pollingUpdateApplied: cli.pollingUpdateApplied === true, cursorPersisted: cli.cursorPersisted === true },
+    standalone: { exitCode: standaloneResult.exitCode, testsPassed: standalone.testsPassed ?? 0, testsFailed: standalone.testsFailed ?? 1, firstExit: standalone.firstExit, secondExit: standalone.secondExit, cursorSeeded: standalone.cursorSeeded === true, realtimeDialCount: standalone.realtimeDialCount ?? 99, pollingUpdateApplied: standalone.pollingUpdateApplied === true, cursorPersisted: standalone.cursorPersisted === true },
   };
 }
 async function aclEvidence(id) {
@@ -219,8 +230,7 @@ async function aclEvidence(id) {
   const relayTest = 'packages/relayfile/test/acl-control-admission.test.ts';
   const exactCase = 'tests/relayflows/cases/workspace-acl-provisioning-admission/run.mjs';
   const runTest = (cwd, file, extra = []) =>
-    run(
-      'daytona',
+    runDaytona(
       [
         'exec',
         id,
@@ -258,8 +268,7 @@ async function aclEvidence(id) {
       { timeoutMs: 300_000 }
     );
   const runExactCase = async () => {
-    const execution = await run(
-      'daytona',
+    const execution = await runDaytona(
       [
         'exec',
         id,
@@ -275,8 +284,7 @@ async function aclEvidence(id) {
       { timeoutMs: 300_000 }
     );
     if (execution.exitCode !== 0) return execution;
-    const resultFile = await run(
-      'daytona',
+    const resultFile = await runDaytona(
       ['exec', id, '--', 'cat', '/tmp/workspace-acl-provisioning-admission.json'],
       { timeoutMs: 30_000 }
     );
@@ -485,8 +493,7 @@ async function main() {
     checkpoint(
       `DAYTONA_CHECKPOINT run_id=${runId} id=${sandboxId} name=${sandboxName} cloud_sha256=${artifacts.cloud.sha256} relayfile_sha256=${artifacts.relayfile.sha256} relayfile_cloud_sha256=${artifacts['relayfile-cloud'].sha256}`
     );
-    const cold = await run(
-      'daytona',
+    const cold = await runDaytona(
       [
         'exec',
         sandboxId,
@@ -504,7 +511,7 @@ async function main() {
       { timeoutMs: 900_000 }
     );
     if (cold.exitCode !== 0) throw new Error(`cold-mount-scale failed: ${redactEnvAssignments(cold.stderr)}`);
-    const coldRead = await run('daytona', ['exec', sandboxId, '--', 'cat', '/tmp/cold-mount-evidence.json']);
+    const coldRead = await runDaytona(['exec', sandboxId, '--', 'cat', '/tmp/cold-mount-evidence.json']);
     if (coldRead.exitCode !== 0) throw new Error('cold-mount evidence could not be read back');
     const coldMount = JSON.parse(coldRead.stdout);
     const acl = await aclEvidence(sandboxId);

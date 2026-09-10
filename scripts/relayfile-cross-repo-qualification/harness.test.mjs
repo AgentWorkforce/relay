@@ -64,6 +64,10 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(issue490Probe, /Date\.now\(\) \+ 10_000/);
   assert.match(issue490Probe, /workspaceId: 'issue-490', providers: \[\]/);
   assert.match(issue490Probe, /aud: 'relayfile', agent_name/);
+  assert.match(issue490Probe, /state\.eventsCursor = 'evt_000'/);
+  assert.match(issue490Probe, /cursorSeeded/);
+  assert.match(arm, /isRetryableDaytonaSandboxLookupFailure/);
+  assert.match(arm, /async function runDaytona/);
   assert.match(arm, /legs: \{ coldMount, acl, issue490 \}/);
 });
 

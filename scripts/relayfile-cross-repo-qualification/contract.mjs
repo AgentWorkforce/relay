@@ -121,6 +121,16 @@ export function daytonaMemoryGiBFromMiB(raw = '4096') {
   return String(memoryMiB / 1024);
 }
 
+/** Retry only a Daytona CLI failure that proves the command never got past its sandbox lookup. */
+export function isRetryableDaytonaSandboxLookupFailure(result) {
+  if (!result || result.exitCode === 0) return false;
+  const text = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  return (
+    /Get "https:\/\/app\.daytona\.io\/api\/sandbox\/[^"?]+"/i.test(text) &&
+    /(connection reset by peer|unexpected EOF|i\/o timeout|context deadline exceeded)/i.test(text)
+  );
+}
+
 /** Strip credential-looking env assignments before anything is logged. */
 export function redactEnvAssignments(text) {
   return String(text).replace(
@@ -590,7 +600,10 @@ function verifyNetworkBounds(label, snapshot, mounts, fail) {
  * line, is never a pass.
  */
 export function parseVitestVerboseOutput(output) {
-  const text = typeof output === 'string' ? output : '';
+  const text =
+    typeof output === 'string'
+      ? output.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '')
+      : '';
   const lines = text.split(/\r?\n/);
   const summary = /Tests\s+([\d,]+)\s+passed(?:\s*\|\s*([\d,]+)\s+failed)?/.exec(text);
   if (!summary) {
