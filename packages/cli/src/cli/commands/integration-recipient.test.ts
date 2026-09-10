@@ -156,6 +156,20 @@ describe('subscription recipient launch', () => {
     expect(mocks.directConnect).toHaveBeenCalledWith({ connectionPath: '/tmp/owned-broker/connection.json' });
     expect(client.spawnCli).not.toHaveBeenCalled();
   });
+  it('checks live isolation before reusing an existing ready worker', async () => {
+    client.listAgents.mockResolvedValue([{ name: 'fresh', cli: 'claude', pid: 123, ready: true }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ data: { channels: [{ name: 'general' }] } }), { status: 200 })
+      )
+    );
+    await expect(launchSubscriptionRecipient(input)).rejects.toThrow('live channel isolation');
+    expect(client.spawnCli).not.toHaveBeenCalled();
+    expect(handle.release).not.toHaveBeenCalled();
+    expect(client.disconnect).toHaveBeenCalledOnce();
+  });
   it('does not release an existing live worker on a later setup failure', async () => {
     client.listAgents.mockResolvedValue([{ name: 'fresh', cli: 'claude', pid: 123, ready: true }]);
     const launched = await launchSubscriptionRecipient(input);

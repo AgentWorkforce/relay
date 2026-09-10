@@ -22,6 +22,27 @@ export interface RecipientLaunchInput {
   options: SdkClientOptions;
 }
 
+async function verifyRecipientIsolation(input: RecipientLaunchInput): Promise<void> {
+  const membership = await fetch(
+    new URL(
+      `/v1/agents/${encodeURIComponent(input.name)}`,
+      resolveBaseUrl(input.options) ?? 'https://cast.agentrelay.com'
+    ),
+    {
+      headers: { authorization: `Bearer ${resolveWorkspaceKey(input.options)}` },
+      signal: AbortSignal.timeout(15_000),
+    }
+  );
+  const detail = membership.ok
+    ? ((await membership.json()) as { data?: { channels?: unknown[] } })
+    : undefined;
+  if (!Array.isArray(detail?.data?.channels) || detail.data.channels.length !== 0) {
+    throw new Error(
+      `Recipient ${input.name} live channel isolation did not verify (HTTP ${membership.status}); no subscription resources were created.`
+    );
+  }
+}
+
 /** A registry row is not proof that a harness exists. Create no subscriptions until this resolves. */
 export async function launchSubscriptionRecipient(input: RecipientLaunchInput): Promise<RecipientLaunch> {
   const workerCwd = input.cwd ? resolve(input.cwd) : undefined;
@@ -49,6 +70,7 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
         throw new Error(`Existing ${input.name} is not a confirmed live ${input.cli} worker.`);
       }
       process.kill(existing.pid, 0);
+      await verifyRecipientIsolation(input);
       return { rollback: async () => {}, close: () => client.disconnect() };
     }
     if (
@@ -81,24 +103,7 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
       );
     }
     process.kill(ready.pid, 0);
-    const membership = await fetch(
-      new URL(
-        `/v1/agents/${encodeURIComponent(input.name)}`,
-        resolveBaseUrl(input.options) ?? 'https://cast.agentrelay.com'
-      ),
-      {
-        headers: { authorization: `Bearer ${resolveWorkspaceKey(input.options)}` },
-        signal: AbortSignal.timeout(15_000),
-      }
-    );
-    const detail = membership.ok
-      ? ((await membership.json()) as { data?: { channels?: unknown[] } })
-      : undefined;
-    if (!Array.isArray(detail?.data?.channels) || detail.data.channels.length !== 0) {
-      throw new Error(
-        `Recipient ${input.name} live channel isolation did not verify (HTTP ${membership.status}); no subscription resources were created.`
-      );
-    }
+    await verifyRecipientIsolation(input);
 
     return {
       rollback: async () => {

@@ -340,7 +340,7 @@ impl BrokerRuntime {
                 replay_buffer,
                 reply,
             } => {
-                // Both tokenless registration paths below are create-only;
+                // Tokenless HTTP registration below is create-only;
                 // only their successful new identity may be deleted on failure.
                 // A supplied credential never grants cleanup ownership.
                 if workers.identity_cleanups.contains_key(&name) {
@@ -391,14 +391,9 @@ impl BrokerRuntime {
                 // was minted by the node control connection, and the worker must
                 // receive that exact token before its harness starts.
                 //
-                // Otherwise bind the agent to this node via node-control
-                // `agent.register` — the same step the engine `action.invoke`
-                // spawn converges on — so the agent is born `via_node`-bound and
-                // delivery flows over /v1/node/ws. The minted token is injected
-                // as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP) so
-                // the worker MCP never re-registers over HTTP. If node binding is
-                // unavailable, fall back to HTTP pre-registration so a tokenless
-                // node (e.g. mint failure) still spawns a working agent.
+                // Otherwise create a fresh identity over HTTP, then bind it to
+                // this node. The minted token is injected as RELAY_AGENT_TOKEN
+                // so the worker MCP never re-registers over HTTP.
                 let mut fleet_registration = None;
                 let session_ref = super::fleet::fleet_initial_session_ref(&spec);
                 let worker_relay_key = if let Some(token) = agent_token {
@@ -424,106 +419,66 @@ impl BrokerRuntime {
                     }
                     Some(token)
                 } else {
-                    // Derive the session ref from the resolved spec the same way
-                    // the fleet/sidecar paths do, so an HTTP spawn carrying a
-                    // `harnessConfig.session_id` registers as a resumable session
-                    // rather than a fresh spawn. No invocation id exists on the
-                    // HTTP path.
-                    match super::fleet::register_node_agent_token(
-                        fleet_control_tx,
-                        fleet_delivery_book,
-                        name.as_str(),
-                        &effective_channels,
-                        None,
-                        session_ref.clone(),
-                    )
-                    .await
-                    {
+                    // Node agent.register may resume an existing identity. Establish
+                    // create-only ownership over HTTP first, then bind that exact
+                    // new identity to the node for normal delivery/inventory.
+                    match register_new_spawn_identity(relaycast_http, &name, Some(&cli)).await {
                         Ok(token) => {
-                            tracing::info!(
-                                worker = %name,
-                                "bound agent to node via agent.register for HTTP spawn"
-                            );
                             super::fleet::spawn_declared_metadata_publish(
                                 relaycast_http,
                                 name.as_str(),
                                 registration_metadata,
                             );
-                            let relay_key = token.token.clone();
-                            fleet_registration = Some((token, None, session_ref));
-                            Some(relay_key)
-                        }
-                        Err(node_error) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %node_error,
-                                "node agent.register unavailable; falling back to HTTP pre-registration"
-                            );
-                            // Only an atomic create-only registration can establish
-                            // ownership for cleanup. Never reuse a cached identity
-                            // when this request did not supply its credential.
-                            match register_new_spawn_identity(relaycast_http, &name, Some(&cli))
+                            // HTTP registration alone leaves the agent
+                            // without a node binding; the engine only
+                            // delivers to `via_node` agents in node-only
+                            // delivery. Bind it to this node so it is
+                            // deliverable, surfacing a loud warning if the
+                            // bind fails.
+                            let bind_warning =
+                                super::relaycast_events::bind_http_registered_agent_to_node(
+                                    relaycast_http,
+                                    fleet_node_name,
+                                    &name,
+                                )
+                                .await;
+                            if let Some(warning) = bind_warning {
+                                preregistration_warning = Some(warning);
+                            } else {
+                                match super::fleet::resolve_fleet_agent_token_identity(
+                                    relaycast_http,
+                                    fleet_delivery_book,
+                                    &name,
+                                    &token,
+                                )
                                 .await
-                            {
-                                Ok(token) => {
-                                    super::fleet::spawn_declared_metadata_publish(
-                                        relaycast_http,
-                                        name.as_str(),
-                                        registration_metadata,
-                                    );
-                                    // HTTP registration alone leaves the agent
-                                    // without a node binding; the engine only
-                                    // delivers to `via_node` agents in node-only
-                                    // delivery. Bind it to this node so it is
-                                    // deliverable, surfacing a loud warning if the
-                                    // bind fails.
-                                    let bind_warning = super::relaycast_events::bind_http_registered_agent_to_node(
-                                        relaycast_http,
-                                        fleet_node_name,
-                                        &name,
-                                    )
-                                    .await;
-                                    if let Some(warning) = bind_warning {
-                                        preregistration_warning = Some(warning);
-                                    } else {
-                                        match super::fleet::resolve_fleet_agent_token_identity(
-                                            relaycast_http,
-                                            fleet_delivery_book,
-                                            &name,
-                                            &token,
-                                        )
-                                        .await
-                                        {
-                                            Ok(registration) => {
-                                                fleet_registration =
-                                                    Some((registration, None, session_ref.clone()));
-                                            }
-                                            Err(error) => {
-                                                tracing::warn!(
-                                                    worker = %name,
-                                                    error = %error,
-                                                    "could not resolve HTTP-registered agent for reconnect inventory"
-                                                );
-                                            }
-                                        }
+                                {
+                                    Ok(registration) => {
+                                        fleet_registration =
+                                            Some((registration, None, session_ref.clone()));
                                     }
-                                    Some(token)
-                                }
-                                Err(RegRetryOutcome::RetryableExhausted(error)) => {
-                                    let message =
-                                        format_worker_preregistration_error(&name, &error);
-                                    // Do not launch a tokenless process that could create
-                                    // an identity later without broker cleanup ownership.
-                                    let _ = reply.send(Err(message));
-                                    return;
-                                }
-                                Err(RegRetryOutcome::Fatal(error)) => {
-                                    let _ = reply.send(Err(format_worker_preregistration_error(
-                                        &name, &error,
-                                    )));
-                                    return;
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "could not resolve HTTP-registered agent for reconnect inventory"
+                                        );
+                                    }
                                 }
                             }
+                            Some(token)
+                        }
+                        Err(RegRetryOutcome::RetryableExhausted(error)) => {
+                            let message = format_worker_preregistration_error(&name, &error);
+                            // Do not launch a tokenless process that could create
+                            // an identity later without broker cleanup ownership.
+                            let _ = reply.send(Err(message));
+                            return;
+                        }
+                        Err(RegRetryOutcome::Fatal(error)) => {
+                            let _ =
+                                reply.send(Err(format_worker_preregistration_error(&name, &error)));
+                            return;
                         }
                     }
                 };

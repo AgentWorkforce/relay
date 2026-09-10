@@ -3,6 +3,7 @@ use crate::fleet_wire::{
     ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, BrokerToRelaycast,
     FLEET_WIRE_VERSION,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::{sync::oneshot, task::JoinHandle};
 
 const CLEANUP_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -24,6 +25,7 @@ pub(crate) struct PendingIdentityCleanup {
     pub(super) delete_identity: bool,
     agent_id: Option<String>,
     expected_token_hash: Result<String, String>,
+    deregistered: Arc<AtomicBool>,
     pub(super) attempts: u8,
     task: Option<JoinHandle<Result<(), String>>>,
     pub(super) retry_at: Instant,
@@ -41,9 +43,13 @@ fn start_attempt(
     name: WorkerName,
     delete_identity: bool,
     expected_token_hash: Result<String, String>,
+    deregistered: Arc<AtomicBool>,
 ) -> JoinHandle<Result<(), String>> {
     inventory.remove(&name);
     let acknowledgement = (|| {
+        if deregistered.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         tx.try_send(FleetControlCommand::UpdateInventory(
             inventory.values().cloned().collect(),
         ))
@@ -73,6 +79,8 @@ fn start_attempt(
                     "fleet deregistration connection closed before acknowledgement".to_string()
                 })??;
         }
+        // Preserve confirmed progress across a failed identity-delete retry.
+        deregistered.store(true, Ordering::Release);
         // Only delete an identity created by this generation. A supplied token
         // can request binding teardown, but never grants deletion ownership.
         if delete_identity {
@@ -122,6 +130,7 @@ pub(super) fn schedule_identity_cleanup(
         .owned_identity_token_hash(name)
         .map_err(|error| error.to_string());
     let agent_id = book.active_agent_id(name.as_str()).map(ToString::to_string);
+    let deregistered = Arc::new(AtomicBool::new(false));
     let task = start_attempt(
         tx,
         agent_id.clone(),
@@ -130,6 +139,7 @@ pub(super) fn schedule_identity_cleanup(
         name.clone(),
         delete_identity,
         expected_token_hash.clone(),
+        deregistered.clone(),
     );
     workers.identity_cleanups.insert(
         name.clone(),
@@ -139,6 +149,7 @@ pub(super) fn schedule_identity_cleanup(
             delete_identity,
             agent_id,
             expected_token_hash,
+            deregistered,
             attempts: 1,
             task: Some(task),
             retry_at: Instant::now(),
@@ -190,6 +201,7 @@ impl BrokerRuntime {
                         name.clone(),
                         pending.delete_identity,
                         pending.expected_token_hash.clone(),
+                        pending.deregistered.clone(),
                     ));
                 }
                 continue;
