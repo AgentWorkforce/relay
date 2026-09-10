@@ -5,9 +5,25 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay node up` no longer exposes runtime-backed API routes before the broker can service them, preventing slow channel setup from timing out an otherwise healthy startup.
+
+### Security
+
+- Cleanroom qualification now validates only the trusted `workflow_run` consumer, isolates candidate CLI inventory discovery from verifier secrets, and retains bounded qualification evidence for failed runtime gates.
 
 ## [11.10.4] - 2026-09-08
+
+### Added
+
+- `agent-relay cloud workspace create` creates candidate-bound, time-limited disposable workspaces and saves their credential for later Fleet qualification.
+- `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
+- `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
+- `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
+- Relayflow agents can now write a write-once output file before it exists when its parent directory is present.
 
 ### Changed
 
@@ -20,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
 - Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
 - PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
+- `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
+- Relayflow agents can create permitted new files inside an existing Relayfile mount without a permission failure.
+
+### Security
+
+- Compiled Relayflow agent permissions deny project symlinks that could grant access outside the project.
+- Updated published Relayflow and Pi adapter dependencies prevent unbounded brace expansion and private-cache cross-user disclosure.
+- Cloud API clients require HTTPS endpoints and reject redirects, keeping credentialed requests on the configured origin.
 
 ## [11.10.3] - 2026-09-05
 

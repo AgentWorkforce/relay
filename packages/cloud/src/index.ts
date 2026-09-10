@@ -90,6 +90,8 @@ export {
   type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
+  SNAPSHOT_ID_PATTERN,
+  SHA256_PATTERN,
 } from './fleet-sandbox.js';
 
 export {

@@ -1,0 +1,898 @@
+{
+  "version": 1,
+  "product": "relay",
+  "provider": "daytona",
+  "minimumBoardNodes": 2,
+  "minimumCriticalLifecycleTrials": 5,
+  "requiredSnapshotRelayVersion": "11.10.3",
+  "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
+  "inventoryFile": "fleet-cli-inventory.json",
+  "inventorySha256": "66ff1fbbb7b89e9c5807a40f41e62bf08342397bc8592b24d2faf0bcc11648a9",
+  "commandSurface": {
+    "fleet agent list": [
+      "fleet-agent-list-json",
+      "fleet-agent-list-pretty",
+      "fleet-agent-list-node",
+      "fleet-agent-list-all"
+    ],
+    "fleet config": ["fleet-config"],
+    "fleet disable": ["fleet-disable"],
+    "fleet enable": ["fleet-enable"],
+    "fleet inherit": ["fleet-inherit"],
+    "fleet nodes": ["fleet-nodes-default", "fleet-nodes-name", "fleet-nodes-capability", "fleet-nodes-all"],
+    "fleet release": ["fleet-release", "fleet-release-delete-agent", "fleet-release-reclaims-owned-sandbox"],
+    "fleet serve": ["fleet-serve-migration"],
+    "fleet spawn": [
+      "fleet-spawn-node",
+      "fleet-spawn-target-node-alias",
+      "fleet-spawn-automatic-owned-placement",
+      "fleet-spawn-session-ref",
+      "fleet-spawn-no-confirm-readiness",
+      "fleet-spawn-metadata-channel-model-cwd",
+      "fleet-spawn-provider-claude",
+      "fleet-spawn-provider-codex",
+      "fleet-spawn-provider-gemini",
+      "fleet-spawn-provider-aider",
+      "fleet-spawn-provider-goose",
+      "fleet-spawn-provider-grok",
+      "fleet-spawn-provider-opencode",
+      "fleet-spawn-reject-droid",
+      "fleet-spawn-sandbox-root-mount",
+      "fleet-spawn-sandbox-scoped-mount",
+      "fleet-spawn-sandbox-no-mount"
+    ],
+    "fleet status": ["fleet-status"],
+    "node up": ["node-up-already-running", "node-up-after-down"],
+    "node down": ["node-down-graceful", "node-down-all"],
+    "node status": ["node-status", "node-status-wait"],
+    "node metrics": ["node-metrics", "node-metrics-agent"],
+    "node deadletters": ["node-deadletters", "node-deadletters-json"],
+    "node redeliver": ["node-redeliver-all", "node-redeliver-requires-id"],
+    "node tail": ["node-tail-agent"],
+    "node agent list": ["node-agent-list", "node-agent-list-pretty", "node-agent-list-status"],
+    "node agent spawn": [
+      "node-agent-spawn-codex-auto-a",
+      "node-agent-spawn-codex-auto-b",
+      "node-agent-spawn-codex-pty",
+      "node-agent-spawn-codex-native",
+      "node-agent-spawn-task-exit",
+      "node-agent-spawn-exit-after-task",
+      "node-agent-spawn-provider-claude",
+      "node-agent-spawn-provider-gemini",
+      "node-agent-spawn-provider-droid",
+      "node-agent-spawn-provider-aider",
+      "node-agent-spawn-provider-goose",
+      "node-agent-spawn-provider-grok",
+      "node-agent-spawn-provider-opencode",
+      "node-agent-spawn-provider-claude-native",
+      "node-agent-spawn-provider-opencode-native",
+      "node-agent-spawn-provider-cursor",
+      "node-agent-spawn-provider-pi-native",
+      "node-agent-spawn-provider-deepagents-native"
+    ],
+    "node agent new": ["node-agent-new-view"],
+    "node agent release": ["node-agent-release", "node-agent-same-name-reclaim"],
+    "node agent attach": [
+      "node-agent-attach-view-json",
+      "node-agent-attach-drive-json",
+      "node-agent-attach-passthrough-json"
+    ],
+    "node agent message flush": ["node-agent-message-flush"],
+    "node agent message hold": ["node-agent-message-hold"],
+    "node agent message auto": ["node-agent-message-auto"],
+    "node workflow run": ["node-workflow-run"],
+    "node workflow logs": ["node-workflow-logs", "node-workflow-logs-follow"],
+    "node workflow sync": ["node-workflow-sync-dry-run", "node-workflow-sync"]
+  },
+  "deferredCommandSurface": ["node agent set-model"],
+  "acceptance": {
+    "version": 1,
+    "profiles": {
+      "clean-baseline": {
+        "candidateSurface": "operator-candidate",
+        "executionScope": "ephemeral-workspace",
+        "effectAssertions": [
+          "The exact disposable workspace has zero total and online agent identities plus zero total and live Fleet node records before allocation."
+        ],
+        "negativeAssertions": [
+          "Ambient Daytona resources and pre-existing Relay identities cannot be claimed or deleted by this run."
+        ],
+        "lifecycleAssertion": "Baseline inventory is captured before the first ownership intent.",
+        "teardownAssertion": "The same baseline identities and exact owned-resource absence are checked after cleanup.",
+        "retryAssertion": "Malformed or truncated inventory is a failure, never an empty baseline."
+      },
+      "board-provision": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "distinct-daytona-node",
+        "effectAssertions": [
+          "An exact named Daytona sandbox, Fleet node, worker, initial MCP sentinel, placement, and runtime binary attestation are observed."
+        ],
+        "negativeAssertions": [
+          "No production/fallback snapshot, pre-existing sandbox, wrong node, or unconfirmed worker can pass."
+        ],
+        "lifecycleAssertion": "Provisioning, readiness, and initial response use monotonic timing and bounded timeouts.",
+        "teardownAssertion": "The worker identity and exact sandbox ID are owned and must be absent at campaign cleanup.",
+        "retryAssertion": "An uncertain create is reconciled by exact nonce-bound name before cleanup; duplicate ownership is rejected."
+      },
+      "distinct-topology": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "cross-daytona-node",
+        "effectAssertions": [
+          "Both board sandboxes, Fleet node IDs, creation times, snapshot IDs, manifests, and runtime binaries are distinct/current as required."
+        ],
+        "negativeAssertions": [
+          "Reused sandbox IDs, reused node IDs, stale creation times, mutable snapshots, and runtime digest drift fail."
+        ],
+        "lifecycleAssertion": "Topology is checked after both nodes are ready and before board commands execute.",
+        "teardownAssertion": "Both exact sandbox IDs remain in the owned-resource ledger for final absence checks.",
+        "retryAssertion": "A partial topology remains failed or blocked; one node cannot stand in for two."
+      },
+      "initial-injection": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "distinct-daytona-node",
+        "effectAssertions": [
+          "The initially spawned worker posts its unique MCP sentinel from the requested node."
+        ],
+        "negativeAssertions": [
+          "Dispatch text without the exact sender-bound sentinel is not readiness proof."
+        ],
+        "lifecycleAssertion": "The response is bounded by the provision sentinel deadline.",
+        "teardownAssertion": "The initial worker is released and its identity is reconciled later in the same attempt.",
+        "retryAssertion": "A missing sentinel stays failed; the other node cannot satisfy it."
+      },
+      "fleet-read": {
+        "candidateSurface": "operator-candidate",
+        "executionScope": "cross-daytona-node",
+        "effectAssertions": [
+          "The public Fleet leaf returns parseable state containing the exact owned nodes or agents requested by its filter.",
+          "A targeted --node --pretty read is reconciled against the same node's heartbeat live-name metadata, activeAgents count, unfiltered Fleet placement, direct node process inventory, and workspace roster."
+        ],
+        "negativeAssertions": [
+          "An empty, malformed, truncated, degraded, wrong-node, or cross-view contradictory result cannot pass."
+        ],
+        "lifecycleAssertion": "The read is monotonic-timed and bounded.",
+        "teardownAssertion": "Read-only; owned resources are covered by campaign cleanup.",
+        "retryAssertion": "Any internal command retry must still return one complete authoritative result."
+      },
+      "targeted-fleet-spawn": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "cross-daytona-node",
+        "effectAssertions": [
+          "The exact worker is observed in live Fleet placement on the requested node, posts its sender-bound sentinel, and preserves supplied invocation metadata."
+        ],
+        "negativeAssertions": [
+          "Echoing the requested node, dispatch acknowledgement, or a sentinel from a differently placed identity cannot pass."
+        ],
+        "lifecycleAssertion": "Dispatch, placement confirmation, sentinel response, release, and absence are bounded and timed.",
+        "teardownAssertion": "Each worker process is absent and its nonce-owned identity is deleted before its node is reused.",
+        "retryAssertion": "Same-name or ambiguous dispatch cannot create a second live worker; exact placement is re-read after dispatch."
+      },
+      "automatic-fleet-spawn": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "cross-daytona-node",
+        "effectAssertions": [
+          "Automatic placement selects one of the two owned candidate nodes and the exact worker posts its sentinel."
+        ],
+        "negativeAssertions": [
+          "Placement on an ambient workspace node or an unplaced roster identity fails."
+        ],
+        "lifecycleAssertion": "Placement and response are confirmed before support cleanup.",
+        "teardownAssertion": "The exact automatically placed identity is released and removed.",
+        "retryAssertion": "The owned-node allowlist is authoritative across placement retries."
+      },
+      "provider-spawn": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "alternating-daytona-node",
+        "effectAssertions": [
+          "The named provider launches on its requested candidate node and the exact worker posts a sender-bound MCP sentinel."
+        ],
+        "negativeAssertions": [
+          "Capability advertisement or dispatch alone is insufficient; wrong-provider, wrong-node, and immediate-exit workers fail."
+        ],
+        "lifecycleAssertion": "Readiness and response use bounded timeouts and monotonic timing.",
+        "teardownAssertion": "Every provider worker is released and its identity reconciled before node reuse.",
+        "retryAssertion": "Transient confirmation may retry inside the product, but the board records one final exact outcome."
+      },
+      "expected-rejection": {
+        "candidateSurface": "operator-candidate",
+        "executionScope": "no-resource",
+        "effectAssertions": [
+          "The public command rejects the invalid invocation with the required stable diagnostic."
+        ],
+        "negativeAssertions": ["The rejected request creates no owned agent, node, or sandbox."],
+        "lifecycleAssertion": "Rejection is local and bounded.",
+        "teardownAssertion": "No resource cleanup is necessary because creation must not start.",
+        "retryAssertion": "Retrying the same invalid input remains side-effect free."
+      },
+      "sandbox-root-mount": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "fresh-daytona-sandbox",
+        "effectAssertions": [
+          "Root Relayfile mounting reaches readiness, materializes both exact marker hashes, launches the worker, and returns its sentinel."
+        ],
+        "negativeAssertions": [
+          "HTTP/CPU timeout, partial materialization, unknown outcome, wrong data plane, and stranded sandbox all fail."
+        ],
+        "lifecycleAssertion": "Provision, mount readiness, worker confirmation, and response are bounded and timed.",
+        "teardownAssertion": "The root-probe worker and exact sandbox must be absent after cleanup.",
+        "retryAssertion": "Checkpoint/retry may resume but cannot duplicate the sandbox or silently omit files."
+      },
+      "sandbox-scoped-mount": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "fresh-daytona-sandbox",
+        "effectAssertions": [
+          "The included marker hash exists, the excluded root-only marker is absent, and the worker responds from the scoped mount."
+        ],
+        "negativeAssertions": [
+          "A root mount, excluded-file leak, partial mount, or wrong candidate/data plane fails."
+        ],
+        "lifecycleAssertion": "Scoped readiness and response are bounded and timed.",
+        "teardownAssertion": "Releasing the final worker must reclaim the exact owned sandbox within the release SLO.",
+        "retryAssertion": "Repeated scope reconciliation cannot widen the requested path set."
+      },
+      "sandbox-no-mount": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "fresh-daytona-sandbox",
+        "effectAssertions": [
+          "A no-mount sandbox launches the worker and both Relayfile marker paths remain absent."
+        ],
+        "negativeAssertions": ["Implicit Relayfile provisioning or materialization fails the control."],
+        "lifecycleAssertion": "Sandbox and worker readiness are bounded and timed.",
+        "teardownAssertion": "The no-mount worker and exact sandbox must be absent after cleanup.",
+        "retryAssertion": "Provision retries preserve the explicit no-mount contract."
+      },
+      "release-process": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "Release stops the exact worker process and preserves or deletes its identity according to the selected flag.",
+          "The same nonce-owned identity is reconciled across targeted Fleet output, node heartbeat metadata/counts, unfiltered placement, the direct node process list, and the roster before release and after each requested transition."
+        ],
+        "negativeAssertions": [
+          "Acknowledgement without process absence, incorrect identity semantics, or node contamination fails."
+        ],
+        "lifecycleAssertion": "Release and exact process/identity reconciliation are bounded and timed.",
+        "teardownAssertion": "Support cleanup removes any identity intentionally preserved by the command under test.",
+        "retryAssertion": "Repeated cleanup is idempotent and cannot target a non-owned identity."
+      },
+      "release-sandbox": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "owned-daytona-sandbox",
+        "effectAssertions": [
+          "Releasing the final sandbox worker deletes or reclaims its exact sandbox within the bounded poll."
+        ],
+        "negativeAssertions": [
+          "A zero-agent sandbox left started or merely scheduled for 24-hour deletion fails."
+        ],
+        "lifecycleAssertion": "Release-to-sandbox-absence duration is measured against the short reclaim window.",
+        "teardownAssertion": "Final cleanup re-verifies the exact sandbox remains absent.",
+        "retryAssertion": "Reconciliation is exact-name/id based and repeated deletion is idempotent."
+      },
+      "fleet-policy-read": {
+        "candidateSurface": "operator-candidate",
+        "executionScope": "ephemeral-workspace",
+        "effectAssertions": [
+          "Fleet policy returns an explicit nullable override and boolean effective value."
+        ],
+        "negativeAssertions": [
+          "Missing SDK support, malformed schema, or an unknown initial override fails."
+        ],
+        "lifecycleAssertion": "The policy read is bounded and timed.",
+        "teardownAssertion": "Read-only; the captured value becomes the exact restoration target for mutation probes.",
+        "retryAssertion": "A retry must converge on the same authoritative override."
+      },
+      "fleet-policy-mutation": {
+        "candidateSurface": "operator-candidate",
+        "executionScope": "ephemeral-workspace",
+        "effectAssertions": ["The authorized disposable workspace reads back the exact requested override."],
+        "negativeAssertions": [
+          "Wrong workspace identity, missing authorization, failed readback, or failed exact restoration cannot pass."
+        ],
+        "lifecycleAssertion": "Each mutation/readback and final restoration is bounded and timed.",
+        "teardownAssertion": "The original nullable override is restored in finally and independently verified.",
+        "retryAssertion": "Read-after-write makes repeated mutation idempotent and observable."
+      },
+      "node-read": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "The node-local public leaf returns parseable, exact state for the owned node or worker requested."
+        ],
+        "negativeAssertions": [
+          "Host fallback, Daytona warning-only output, malformed JSON, or wrong-agent data cannot pass."
+        ],
+        "lifecycleAssertion": "The read is bounded and monotonic-timed.",
+        "teardownAssertion": "Read-only; owned resources are handled by campaign cleanup.",
+        "retryAssertion": "A retried read must remain bound to the same exact sandbox ID."
+      },
+      "node-stream": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "The exact broker stream emits bytes containing the unique triggered sentinel for the named worker."
+        ],
+        "negativeAssertions": [
+          "Timeout, stderr warnings, unrelated worker bytes, or an empty stream cannot pass."
+        ],
+        "lifecycleAssertion": "Subscription, trigger, and bounded stream termination are timed.",
+        "teardownAssertion": "The stream process group is terminated and the worker remains under owned cleanup.",
+        "retryAssertion": "Reconnect behavior cannot substitute cached or unrelated output."
+      },
+      "direct-node-spawn": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "alternating-daytona-node",
+        "effectAssertions": [
+          "The requested provider/runtime/model/channel configuration appears in node inventory and the exact worker posts its MCP sentinel."
+        ],
+        "negativeAssertions": ["CLI exit zero without sustained inventory plus sentinel evidence fails."],
+        "lifecycleAssertion": "Spawn, inventory, response, release, and absence are bounded and timed.",
+        "teardownAssertion": "Each worker process and Relay identity are reconciled before node reuse.",
+        "retryAssertion": "A failed or ambiguous spawn is reconciled through exact identity lookup, never assumed absent."
+      },
+      "task-exit-spawn": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "alternating-daytona-node",
+        "effectAssertions": [
+          "The task worker posts its exact sentinel and then exits without an explicit release."
+        ],
+        "negativeAssertions": ["Sentinel without exit, exit without sentinel, or a lingering process fails."],
+        "lifecycleAssertion": "Task completion and process absence are bounded and timed.",
+        "teardownAssertion": "The remaining Relay identity is removed exactly.",
+        "retryAssertion": "The same lifecycle cannot leave duplicate or reusable live processes."
+      },
+      "agent-control": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "The control command reports and demonstrates its requested model, terminal, or delivery-mode effect against the exact worker."
+        ],
+        "negativeAssertions": [
+          "Accepted/pending-only receipts, wrong streams, premature injection, or unread messages fail."
+        ],
+        "lifecycleAssertion": "Control, readback, injection, and response are bounded and timed.",
+        "teardownAssertion": "The controlled worker is released and reconciled after all controls.",
+        "retryAssertion": "Readback and message-reader receipts make retries observable and duplicate-safe."
+      },
+      "node-release-reclaim": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "Direct release proves process absence and the exact same name can subsequently launch and respond once."
+        ],
+        "negativeAssertions": [
+          "Release acknowledgement with a lingering process or duplicate same-name workers fails."
+        ],
+        "lifecycleAssertion": "Release, absence, reclaim spawn, response, and second release are bounded and timed.",
+        "teardownAssertion": "The reclaimed worker and identity are absent before leaving the control sequence.",
+        "retryAssertion": "Same-name reuse is the explicit idempotency/reclaim proof."
+      },
+      "node-workflow": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "The workflow creates the exact marker effect; logs contain its sentinel; sync reports the same completed run without changing the marker."
+        ],
+        "negativeAssertions": [
+          "A returned run ID without file effect, complete logs, or immutable sync state fails."
+        ],
+        "lifecycleAssertion": "Run, log polling/follow, and sync are each bounded and timed.",
+        "teardownAssertion": "The workflow executes only in an owned disposable sandbox removed by campaign cleanup.",
+        "retryAssertion": "Run ID binds all read/sync retries to one execution."
+      },
+      "node-lifecycle": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "owned-daytona-node",
+        "effectAssertions": [
+          "The node reaches the exact requested running/stopped state and preserves identity where idempotency requires it."
+        ],
+        "negativeAssertions": [
+          "A host process, wrong node name, PID replacement on repeated up, or unstopped broker fails."
+        ],
+        "lifecycleAssertion": "Before/after state and PID are read within bounded timeouts.",
+        "teardownAssertion": "The final down-all leaves the owned sandbox broker stopped before sandbox deletion.",
+        "retryAssertion": "Already-running up is the explicit idempotent no-restart proof."
+      },
+      "cleanup-agent": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "ephemeral-workspace",
+        "effectAssertions": ["Every nonce-owned Relay identity is absent by bounded exact lookup."],
+        "negativeAssertions": [
+          "Unknown lookup, leaked identity, baseline identity mutation, or unauthorized target fails cleanup."
+        ],
+        "lifecycleAssertion": "Serial release/remove attempts and final reconciliation are timed and bounded.",
+        "teardownAssertion": "Absence is the terminal state.",
+        "retryAssertion": "Cleanup retries are exact-name, ownership-gated, and idempotent."
+      },
+      "cleanup-sandbox": {
+        "candidateSurface": "daytona-candidate",
+        "executionScope": "all-owned-daytona-sandboxes",
+        "effectAssertions": [
+          "Every exact owned Daytona sandbox ID and nonce-prefixed name is absent after deletion."
+        ],
+        "negativeAssertions": [
+          "Unknown ownership, refused delete, remaining ID/name, or a deleted baseline resource fails cleanup."
+        ],
+        "lifecycleAssertion": "Each exact deletion has bounded retries/backoff and final inventory reconciliation.",
+        "teardownAssertion": "Absence is the terminal state.",
+        "retryAssertion": "Delete is retried only for exact ledger-owned IDs and accepts already-absent as converged."
+      },
+      "cleanup-baseline": {
+        "candidateSurface": "operator-and-daytona-candidate",
+        "executionScope": "operator-and-ephemeral-workspace",
+        "effectAssertions": [
+          "All baseline sandbox/agent identities still exist and no nonce-owned resource remains."
+        ],
+        "negativeAssertions": [
+          "Any missing baseline resource, exact-prefix leak, or unavailable reconciliation fails."
+        ],
+        "lifecycleAssertion": "Final inventories are captured only after exact cleanup attempts finish.",
+        "teardownAssertion": "The attempt ends only with restored baseline or INFRA_BLOCKED.",
+        "retryAssertion": "Final reconciliation is authoritative after bounded deletion retries."
+      }
+    },
+    "operationProfiles": {
+      "daytona-baseline": "clean-baseline",
+      "provision-node-a": "board-provision",
+      "provision-node-b": "board-provision",
+      "prove-distinct-fresh-daytona-nodes": "distinct-topology",
+      "initial-task-sentinel-a": "initial-injection",
+      "initial-task-sentinel-b": "initial-injection",
+      "fleet-nodes-default": "fleet-read",
+      "fleet-nodes-name": "fleet-read",
+      "fleet-nodes-capability": "fleet-read",
+      "fleet-nodes-all": "fleet-read",
+      "fleet-agent-list-json": "fleet-read",
+      "fleet-agent-list-pretty": "fleet-read",
+      "fleet-agent-list-node": "fleet-read",
+      "fleet-agent-list-all": "fleet-read",
+      "fleet-spawn-node": "targeted-fleet-spawn",
+      "fleet-spawn-target-node-alias": "targeted-fleet-spawn",
+      "fleet-spawn-automatic-owned-placement": "automatic-fleet-spawn",
+      "fleet-spawn-session-ref": "targeted-fleet-spawn",
+      "fleet-spawn-no-confirm-readiness": "targeted-fleet-spawn",
+      "fleet-spawn-metadata-channel-model-cwd": "targeted-fleet-spawn",
+      "fleet-spawn-provider-claude": "provider-spawn",
+      "fleet-spawn-provider-codex": "provider-spawn",
+      "fleet-spawn-provider-gemini": "provider-spawn",
+      "fleet-spawn-provider-aider": "provider-spawn",
+      "fleet-spawn-provider-goose": "provider-spawn",
+      "fleet-spawn-provider-grok": "provider-spawn",
+      "fleet-spawn-provider-opencode": "provider-spawn",
+      "fleet-spawn-reject-droid": "expected-rejection",
+      "fleet-spawn-sandbox-root-mount": "sandbox-root-mount",
+      "fleet-spawn-sandbox-scoped-mount": "sandbox-scoped-mount",
+      "fleet-spawn-sandbox-no-mount": "sandbox-no-mount",
+      "fleet-release": "release-process",
+      "fleet-release-delete-agent": "release-process",
+      "fleet-release-reclaims-owned-sandbox": "release-sandbox",
+      "fleet-config": "fleet-policy-read",
+      "fleet-enable": "fleet-policy-mutation",
+      "fleet-disable": "fleet-policy-mutation",
+      "fleet-inherit": "fleet-policy-mutation",
+      "fleet-status": "node-read",
+      "fleet-serve-migration": "expected-rejection",
+      "post-ready-steer-a": "agent-control",
+      "post-ready-steer-b": "agent-control",
+      "post-ready-reader-ack": "agent-control",
+      "node-up-already-running": "node-lifecycle",
+      "node-down-graceful": "node-lifecycle",
+      "node-up-after-down": "node-lifecycle",
+      "node-down-all": "node-lifecycle",
+      "node-status": "node-read",
+      "node-status-wait": "node-read",
+      "node-metrics": "node-read",
+      "node-metrics-agent": "node-read",
+      "node-deadletters": "node-read",
+      "node-deadletters-json": "node-read",
+      "node-redeliver-all": "node-read",
+      "node-redeliver-requires-id": "expected-rejection",
+      "node-tail-agent": "node-stream",
+      "node-agent-list": "node-read",
+      "node-agent-list-pretty": "node-read",
+      "node-agent-list-status": "node-read",
+      "node-agent-spawn-codex-auto-a": "direct-node-spawn",
+      "node-agent-spawn-codex-auto-b": "direct-node-spawn",
+      "node-agent-spawn-codex-pty": "direct-node-spawn",
+      "node-agent-spawn-codex-native": "direct-node-spawn",
+      "node-agent-spawn-task-exit": "task-exit-spawn",
+      "node-agent-spawn-exit-after-task": "task-exit-spawn",
+      "node-agent-spawn-provider-claude": "direct-node-spawn",
+      "node-agent-spawn-provider-gemini": "direct-node-spawn",
+      "node-agent-spawn-provider-droid": "direct-node-spawn",
+      "node-agent-spawn-provider-aider": "direct-node-spawn",
+      "node-agent-spawn-provider-goose": "direct-node-spawn",
+      "node-agent-spawn-provider-grok": "direct-node-spawn",
+      "node-agent-spawn-provider-opencode": "direct-node-spawn",
+      "node-agent-spawn-provider-claude-native": "direct-node-spawn",
+      "node-agent-spawn-provider-opencode-native": "direct-node-spawn",
+      "node-agent-spawn-provider-cursor": "direct-node-spawn",
+      "node-agent-spawn-provider-pi-native": "direct-node-spawn",
+      "node-agent-spawn-provider-deepagents-native": "direct-node-spawn",
+      "node-agent-new-view": "direct-node-spawn",
+      "node-agent-attach-view-json": "agent-control",
+      "node-agent-attach-drive-json": "agent-control",
+      "node-agent-attach-passthrough-json": "agent-control",
+      "node-agent-message-hold": "agent-control",
+      "node-agent-message-flush": "agent-control",
+      "node-agent-message-auto": "agent-control",
+      "node-agent-release": "node-release-reclaim",
+      "node-agent-same-name-reclaim": "node-release-reclaim",
+      "node-workflow-run": "node-workflow",
+      "node-workflow-logs": "node-workflow",
+      "node-workflow-logs-follow": "node-workflow",
+      "node-workflow-sync-dry-run": "node-workflow",
+      "node-workflow-sync": "node-workflow",
+      "agent-identity-reconciliation": "cleanup-agent",
+      "owned-sandbox-cleanup": "cleanup-sandbox",
+      "daytona-baseline-restored": "cleanup-baseline"
+    }
+  },
+  "operations": [
+    { "id": "daytona-baseline", "group": "topology", "expect": "success" },
+    { "id": "provision-node-a", "group": "topology", "expect": "success" },
+    { "id": "provision-node-b", "group": "topology", "expect": "success" },
+    { "id": "prove-distinct-fresh-daytona-nodes", "group": "topology", "expect": "success" },
+    { "id": "initial-task-sentinel-a", "group": "injection", "expect": "sentinel" },
+    { "id": "initial-task-sentinel-b", "group": "injection", "expect": "sentinel" },
+
+    { "id": "fleet-nodes-default", "group": "fleet", "expect": "success" },
+    { "id": "fleet-nodes-name", "group": "fleet", "expect": "success", "argvMustContain": ["--name"] },
+    {
+      "id": "fleet-nodes-capability",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--capability"]
+    },
+    { "id": "fleet-nodes-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
+    { "id": "fleet-agent-list-json", "group": "fleet", "expect": "success", "argvMustContain": ["--json"] },
+    {
+      "id": "fleet-agent-list-pretty",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--pretty"]
+    },
+    {
+      "id": "fleet-agent-list-node",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["--node", "--pretty"]
+    },
+    { "id": "fleet-agent-list-all", "group": "fleet", "expect": "success", "argvMustContain": ["--all"] },
+    { "id": "fleet-spawn-node", "group": "fleet-spawn", "expect": "sentinel", "argvMustContain": ["--node"] },
+    {
+      "id": "fleet-spawn-target-node-alias",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--target-node"]
+    },
+    { "id": "fleet-spawn-automatic-owned-placement", "group": "fleet-spawn", "expect": "sentinel" },
+    {
+      "id": "fleet-spawn-session-ref",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--session-ref"]
+    },
+    {
+      "id": "fleet-spawn-no-confirm-readiness",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--no-confirm"]
+    },
+    {
+      "id": "fleet-spawn-metadata-channel-model-cwd",
+      "group": "fleet-spawn",
+      "expect": "sentinel",
+      "argvMustContain": [
+        "--channel",
+        "--model",
+        "--cwd",
+        "--persona",
+        "--organization",
+        "--project",
+        "--workstream",
+        "--role",
+        "--objective"
+      ]
+    },
+    {
+      "id": "fleet-spawn-provider-claude",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["claude"]
+    },
+    {
+      "id": "fleet-spawn-provider-codex",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["codex"]
+    },
+    {
+      "id": "fleet-spawn-provider-gemini",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["gemini"]
+    },
+    {
+      "id": "fleet-spawn-provider-aider",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["aider"]
+    },
+    {
+      "id": "fleet-spawn-provider-goose",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["goose"]
+    },
+    {
+      "id": "fleet-spawn-provider-grok",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["grok"]
+    },
+    {
+      "id": "fleet-spawn-provider-opencode",
+      "group": "fleet-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["opencode"]
+    },
+    {
+      "id": "fleet-spawn-reject-droid",
+      "group": "fleet-provider",
+      "expect": "expected-failure",
+      "mustContain": "unsupported CLI",
+      "argvMustContain": ["droid"]
+    },
+    {
+      "id": "fleet-spawn-sandbox-root-mount",
+      "group": "fleet-sandbox",
+      "expect": "sentinel",
+      "argvMustContain": ["--sandbox"]
+    },
+    {
+      "id": "fleet-spawn-sandbox-scoped-mount",
+      "group": "fleet-sandbox",
+      "expect": "sentinel",
+      "argvMustContain": ["--sandbox", "--sandbox-relayfile-path"]
+    },
+    {
+      "id": "fleet-spawn-sandbox-no-mount",
+      "group": "fleet-sandbox",
+      "expect": "sentinel",
+      "argvMustContain": ["--sandbox", "--no-sandbox-relayfile"]
+    },
+    { "id": "fleet-release", "group": "fleet", "expect": "success" },
+    { "id": "fleet-release-delete-agent", "group": "fleet", "expect": "success" },
+    { "id": "fleet-release-reclaims-owned-sandbox", "group": "fleet", "expect": "success" },
+    { "id": "fleet-config", "group": "fleet-policy", "expect": "success" },
+    {
+      "id": "fleet-enable",
+      "group": "fleet-policy",
+      "expect": "success",
+      "destructiveScope": "workspace-policy"
+    },
+    {
+      "id": "fleet-disable",
+      "group": "fleet-policy",
+      "expect": "success",
+      "destructiveScope": "workspace-policy"
+    },
+    {
+      "id": "fleet-inherit",
+      "group": "fleet-policy",
+      "expect": "success",
+      "destructiveScope": "workspace-policy"
+    },
+    { "id": "fleet-status", "group": "fleet", "expect": "success" },
+    {
+      "id": "fleet-serve-migration",
+      "group": "fleet",
+      "expect": "expected-failure",
+      "mustContain": "node up"
+    },
+
+    { "id": "post-ready-steer-a", "group": "injection", "expect": "sentinel" },
+    { "id": "post-ready-steer-b", "group": "injection", "expect": "sentinel" },
+    { "id": "post-ready-reader-ack", "group": "injection", "expect": "success" },
+
+    {
+      "id": "node-up-already-running",
+      "group": "node",
+      "expect": "success"
+    },
+    { "id": "node-down-graceful", "group": "node", "expect": "success" },
+    { "id": "node-up-after-down", "group": "node", "expect": "success" },
+    {
+      "id": "node-down-all",
+      "group": "node",
+      "expect": "success",
+      "destructiveScope": "sandbox-processes",
+      "argvMustContain": ["--all"]
+    },
+    { "id": "node-status", "group": "node", "expect": "success" },
+    { "id": "node-status-wait", "group": "node", "expect": "success", "argvMustContain": ["--wait-for"] },
+    { "id": "node-metrics", "group": "node", "expect": "success" },
+    { "id": "node-metrics-agent", "group": "node", "expect": "success", "argvMustContain": ["--agent"] },
+    { "id": "node-deadletters", "group": "node", "expect": "success" },
+    { "id": "node-deadletters-json", "group": "node", "expect": "success", "argvMustContain": ["--json"] },
+    { "id": "node-redeliver-all", "group": "node", "expect": "success", "argvMustContain": ["--all"] },
+    {
+      "id": "node-redeliver-requires-id",
+      "group": "node",
+      "expect": "expected-failure",
+      "mustContain": "Provide exactly one"
+    },
+    {
+      "id": "node-tail-agent",
+      "group": "node",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--agent"]
+    },
+
+    { "id": "node-agent-list", "group": "node-agent", "expect": "success" },
+    {
+      "id": "node-agent-list-pretty",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--pretty"]
+    },
+    {
+      "id": "node-agent-list-status",
+      "group": "node-agent",
+      "expect": "success",
+      "argvMustContain": ["--status"]
+    },
+    { "id": "node-agent-spawn-codex-auto-a", "group": "node-agent-spawn", "expect": "sentinel" },
+    { "id": "node-agent-spawn-codex-auto-b", "group": "node-agent-spawn", "expect": "sentinel" },
+    {
+      "id": "node-agent-spawn-codex-pty",
+      "group": "node-agent-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--runtime", "pty"]
+    },
+    {
+      "id": "node-agent-spawn-codex-native",
+      "group": "node-agent-spawn",
+      "expect": "sentinel",
+      "argvMustContain": ["--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-task-exit",
+      "group": "node-agent-spawn",
+      "expect": "sentinel-and-exit",
+      "argvMustContain": ["--spawn-mode", "task-exit"]
+    },
+    {
+      "id": "node-agent-spawn-exit-after-task",
+      "group": "node-agent-spawn",
+      "expect": "sentinel-and-exit",
+      "argvMustContain": ["--exit-after-task"]
+    },
+    {
+      "id": "node-agent-spawn-provider-claude",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["claude"]
+    },
+    {
+      "id": "node-agent-spawn-provider-gemini",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["gemini"]
+    },
+    {
+      "id": "node-agent-spawn-provider-droid",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["droid"]
+    },
+    {
+      "id": "node-agent-spawn-provider-aider",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["aider"]
+    },
+    {
+      "id": "node-agent-spawn-provider-goose",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["goose"]
+    },
+    {
+      "id": "node-agent-spawn-provider-grok",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["grok"]
+    },
+    {
+      "id": "node-agent-spawn-provider-opencode",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["opencode"]
+    },
+    {
+      "id": "node-agent-spawn-provider-claude-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["claude", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-provider-opencode-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["opencode", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-provider-cursor",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["cursor"]
+    },
+    {
+      "id": "node-agent-spawn-provider-pi-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["pi", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-spawn-provider-deepagents-native",
+      "group": "node-agent-provider",
+      "expect": "sentinel",
+      "argvMustContain": ["deepagents", "--runtime", "native"]
+    },
+    {
+      "id": "node-agent-new-view",
+      "group": "node-agent",
+      "expect": "sentinel",
+      "allowTimeout": true,
+      "argvMustContain": ["--mode", "view"]
+    },
+    {
+      "id": "node-agent-attach-view-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-attach-drive-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--json"]
+    },
+    {
+      "id": "node-agent-attach-passthrough-json",
+      "group": "node-agent",
+      "expect": "stream",
+      "allowTimeout": true,
+      "argvMustContain": ["--json"]
+    },
+    { "id": "node-agent-message-hold", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-message-flush", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-message-auto", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-release", "group": "node-agent", "expect": "success" },
+    { "id": "node-agent-same-name-reclaim", "group": "node-agent", "expect": "sentinel" },
+
+    { "id": "node-workflow-run", "group": "node-workflow", "expect": "success" },
+    { "id": "node-workflow-logs", "group": "node-workflow", "expect": "success" },
+    {
+      "id": "node-workflow-logs-follow",
+      "group": "node-workflow",
+      "expect": "success",
+      "argvMustContain": ["--follow"]
+    },
+    {
+      "id": "node-workflow-sync-dry-run",
+      "group": "node-workflow",
+      "expect": "success",
+      "argvMustContain": ["--dry-run"]
+    },
+    { "id": "node-workflow-sync", "group": "node-workflow", "expect": "success" },
+
+    { "id": "agent-identity-reconciliation", "group": "cleanup", "expect": "success" },
+    { "id": "owned-sandbox-cleanup", "group": "cleanup", "expect": "success" },
+    { "id": "daytona-baseline-restored", "group": "cleanup", "expect": "success" }
+  ]
+}

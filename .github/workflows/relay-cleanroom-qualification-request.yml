@@ -1,0 +1,69 @@
+name: Relay cleanroom qualification request
+
+on:
+  repository_dispatch:
+    types:
+      - relay_candidate_qualification
+  workflow_dispatch:
+    inputs:
+      qualification_manifest_json:
+        description: Exact immutable qualification manifest JSON
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  emit-request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Materialize the no-secret qualification request
+        env:
+          REQUEST_MANIFEST_JSON: ${{ github.event.client_payload.qualification_manifest_json || inputs.qualification_manifest_json }}
+          REQUEST_EVENT: ${{ github.event_name }}
+          REQUEST_RUN_ID: ${{ github.run_id }}
+          REQUEST_RUN_ATTEMPT: ${{ github.run_attempt }}
+          REQUEST_HEAD_BRANCH: ${{ github.ref_name }}
+          REQUEST_HEAD_SHA: ${{ github.sha }}
+          REQUEST_ACTOR: ${{ github.actor }}
+          REQUEST_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "${RUNNER_TEMP}/relay-cleanroom-qualification-request"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(process.env.REQUEST_MANIFEST_JSON || '');
+          const request = {
+            schemaVersion: 1,
+            kind: 'relayCleanroomQualificationRequest',
+            producer: {
+              repository: process.env.GITHUB_REPOSITORY,
+              workflow: 'Relay cleanroom qualification request',
+              workflowPath: '.github/workflows/relay-cleanroom-qualification-request.yml',
+              event: process.env.REQUEST_EVENT,
+              runId: Number(process.env.REQUEST_RUN_ID),
+              runAttempt: Number(process.env.REQUEST_RUN_ATTEMPT),
+              headBranch: process.env.REQUEST_HEAD_BRANCH,
+              headSha: process.env.REQUEST_HEAD_SHA,
+              actor: process.env.REQUEST_ACTOR,
+              triggeringActor: process.env.REQUEST_TRIGGERING_ACTOR,
+            },
+            qualificationManifest: manifest,
+          };
+          fs.writeFileSync(
+            `${process.env.RUNNER_TEMP}/relay-cleanroom-qualification-request/relay-cleanroom-qualification-request.json`,
+            `${JSON.stringify(request)}\n`,
+            { encoding: 'utf8', mode: 0o600, flag: 'wx' }
+          );
+          NODE
+
+      - name: Upload only the bounded qualification request
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: relay-cleanroom-qualification-request
+          path: ${{ runner.temp }}/relay-cleanroom-qualification-request/relay-cleanroom-qualification-request.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

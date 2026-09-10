@@ -35,13 +35,17 @@ function boundedInteger(value, { fallback, minimum, label }) {
   return candidate;
 }
 
-function signalProcessTree(child, signal) {
+export function signalProcessTree(child, signal, signalGroup = process.kill) {
   if (process.platform !== 'win32' && child.pid) {
     try {
-      process.kill(-child.pid, signal);
+      signalGroup(-child.pid, signal);
       return;
     } catch (error) {
-      if (error?.code !== 'ESRCH') throw error;
+      if (error?.code !== 'ESRCH' && error?.code !== 'EPERM') throw error;
+      // Darwin can report EPERM after the owned process group is no longer
+      // signalable. An exited group leader needs no fallback signal; a live
+      // leader can still be terminated through its ChildProcess handle.
+      if (error?.code === 'EPERM' && (child.exitCode !== null || child.signalCode !== null)) return;
     }
   }
   try {

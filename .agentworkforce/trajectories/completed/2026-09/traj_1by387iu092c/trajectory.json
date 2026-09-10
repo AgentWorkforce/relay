@@ -1,0 +1,87 @@
+{
+  "id": "traj_1by387iu092c",
+  "version": 1,
+  "task": {
+    "title": "Consolidate trusted cleanroom proof into PR 1665 single RelayFlow case",
+    "source": {
+      "system": "plain",
+      "id": "relay#1665"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-08T19:13:18.436Z",
+  "completedAt": "2026-09-08T19:25:26.898Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T19:13:18.979Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3l3t6ky2v8jx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T19:13:18.979Z",
+      "endedAt": "2026-09-08T19:25:26.898Z",
+      "events": [
+        {
+          "ts": 1788894798980,
+          "type": "decision",
+          "content": "Keep one declared RelayFlow case and run issue 1682 trust assertions as auxiliary checks inside it: Keep one declared RelayFlow case and run issue 1682 trust assertions as auxiliary checks inside it",
+          "raw": {
+            "question": "Keep one declared RelayFlow case and run issue 1682 trust assertions as auxiliary checks inside it",
+            "chosen": "Keep one declared RelayFlow case and run issue 1682 trust assertions as auxiliary checks inside it",
+            "alternatives": [],
+            "reasoning": "The PR proof dispatcher fails closed when more than one case directory changes; issue 1682 is a security correction to the still-unmerged 1665 feature, so both behaviors must be proven atomically without weakening the one-case contract."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788895526388,
+          "type": "reflection",
+          "content": "PR 1665 now carries both immutable Fleet snapshot and trusted cleanroom security proof in one declared RelayFlow case; exact clean base/head red-green passed.",
+          "raw": {
+            "focalPoints": [
+              "single-case proof",
+              "exact SHA",
+              "clean checkout"
+            ],
+            "adjustments": "Retained auxiliary adversarial assertions under case 1665 so the dispatcher remains fail-closed.",
+            "confidence": 0.93
+          },
+          "significance": "high",
+          "tags": [
+            "focal:single-case proof",
+            "focal:exact SHA",
+            "focal:clean checkout",
+            "confidence:0.93"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Consolidated the trusted cleanroom runner security regression into PR 1665's immutable Fleet snapshot RelayFlow and proved exact base absent/head fixed in clean detached checkouts.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "be9cbeaf8"
+  ],
+  "filesChanged": [
+    "tests/fixtures/strict-workflow-yaml.test.ts",
+    "tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs",
+    "tests/relayflows/cases/1665-immutable-fleet-snapshot/strict-yaml-subset.mjs",
+    "tests/relayflows/cases/1665-immutable-fleet-snapshot/trusted-cleanroom-runner.mjs",
+    "tests/relayflows/cases/1682-trusted-cleanroom-runner/case.json"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e5aba4f6c19a32a2474146ac09a5e754af2b10f4",
+    "endRef": "be9cbeaf88075f06837c28631cacf654d5b756e6",
+    "traceId": "75779746-66ad-4591-9434-e86aec5d1092"
+  }
+}

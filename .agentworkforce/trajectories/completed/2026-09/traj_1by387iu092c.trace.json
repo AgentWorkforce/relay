@@ -1,0 +1,101 @@
+{
+  "version": "1.0.0",
+  "id": "75779746-66ad-4591-9434-e86aec5d1092",
+  "timestamp": "2026-09-08T19:25:26.970Z",
+  "trajectory": "traj_1by387iu092c",
+  "files": [
+    {
+      "path": "tests/fixtures/strict-workflow-yaml.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 225,
+              "end_line": 273,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            },
+            {
+              "start_line": 404,
+              "end_line": 410,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            },
+            {
+              "start_line": 499,
+              "end_line": 505,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1665-immutable-fleet-snapshot/strict-yaml-subset.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1665-immutable-fleet-snapshot/trusted-cleanroom-runner.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            },
+            {
+              "start_line": 176,
+              "end_line": 182,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            },
+            {
+              "start_line": 192,
+              "end_line": 198,
+              "revision": "be9cbeaf88075f06837c28631cacf654d5b756e6"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1682-trusted-cleanroom-runner/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    }
+  ]
+}
