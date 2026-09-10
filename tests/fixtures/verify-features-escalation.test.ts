@@ -116,44 +116,48 @@ describe('verify-features escalation status', () => {
     expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit-channel', ARTIFACTS, 'posthog', '1', '0']");
   });
 
-  it('registers every delivery step and terminal leaf gate in the executable workflow graph', async () => {
-    const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', workflowPath], {
-      cwd: repositoryRoot,
-      env: { ...process.env, DRY_RUN: '1' },
-      timeout: 15_000,
-    });
+  it(
+    'registers every delivery step and terminal leaf gate in the executable workflow graph',
+    { timeout: 20_000 },
+    async () => {
+      const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', workflowPath], {
+        cwd: repositoryRoot,
+        env: { ...process.env, DRY_RUN: '1' },
+        timeout: 15_000,
+      });
 
-    for (const step of [
-      'emit-posthog',
-      'escalate-infra',
-      'file-issue',
-      'slack-alert',
-      'open-pr',
-      'slack-followup',
-      'enforce-infra-delivery',
-      'enforce-posthog-delivery',
-      'enforce-github-issue-delivery',
-      'enforce-draft-pr-delivery',
-      'enforce-slack-primary-delivery',
-      'enforce-slack-followup-delivery',
-      'enforce-escalations',
-      'enforce-verdict',
-    ]) {
-      expect(stdout).toContain(step);
+      for (const step of [
+        'emit-posthog',
+        'escalate-infra',
+        'file-issue',
+        'slack-alert',
+        'open-pr',
+        'slack-followup',
+        'enforce-infra-delivery',
+        'enforce-posthog-delivery',
+        'enforce-github-issue-delivery',
+        'enforce-draft-pr-delivery',
+        'enforce-slack-primary-delivery',
+        'enforce-slack-followup-delivery',
+        'enforce-escalations',
+        'enforce-verdict',
+      ]) {
+        expect(stdout).toContain(step);
+      }
+      for (const [delivery, gate] of [
+        ['escalate-infra', 'enforce-infra-delivery'],
+        ['emit-posthog', 'enforce-posthog-delivery'],
+        ['file-issue', 'enforce-github-issue-delivery'],
+        ['slack-alert', 'enforce-slack-primary-delivery'],
+        ['open-pr', 'enforce-draft-pr-delivery'],
+        ['slack-followup', 'enforce-slack-followup-delivery'],
+        ['slack-followup', 'enforce-escalations'],
+      ]) {
+        expect(plannedWave(stdout, gate)).toBeGreaterThan(plannedWave(stdout, delivery));
+      }
+      expect(stdout).toContain('Validation: PASS');
     }
-    for (const [delivery, gate] of [
-      ['escalate-infra', 'enforce-infra-delivery'],
-      ['emit-posthog', 'enforce-posthog-delivery'],
-      ['file-issue', 'enforce-github-issue-delivery'],
-      ['slack-alert', 'enforce-slack-primary-delivery'],
-      ['open-pr', 'enforce-draft-pr-delivery'],
-      ['slack-followup', 'enforce-slack-followup-delivery'],
-      ['slack-followup', 'enforce-escalations'],
-    ]) {
-      expect(plannedWave(stdout, gate)).toBeGreaterThan(plannedWave(stdout, delivery));
-    }
-    expect(stdout).toContain('Validation: PASS');
-  });
+  );
 
   it('records explicit failed receipts for every delivery primitive', async () => {
     const source = await workflowSourcePromise;
@@ -328,14 +332,17 @@ describe('verify-features escalation status', () => {
     expect(stdout).not.toContain('C0AEKNLDNKW');
   });
 
-  it('records non-2xx HTTP responses from the production infra step and emits valid JSON', async () => {
-    const directory = await artifacts();
-    const bin = path.join(directory, 'bin');
-    const capturedBody = path.join(directory, 'captured-body.json');
-    await mkdir(bin);
-    await writeFile(
-      path.join(bin, 'curl'),
-      `#!/bin/sh
+  it(
+    'records non-2xx HTTP responses from the production infra step and emits valid JSON',
+    { timeout: 20_000 },
+    async () => {
+      const directory = await artifacts();
+      const bin = path.join(directory, 'bin');
+      const capturedBody = path.join(directory, 'captured-body.json');
+      await mkdir(bin);
+      await writeFile(
+        path.join(bin, 'curl'),
+        `#!/bin/sh
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-d" ]; then shift; printf '%s' "$1" > "$INFRA_CAPTURE"; fi
   shift
@@ -343,113 +350,114 @@ done
 printf '%s' "$FAKE_CURL_HTTP_STATUS"
 exit "$FAKE_CURL_EXIT_STATUS"
 `,
-      { mode: 0o755 }
-    );
-    await writeFile(path.join(directory, 'provenance.env'), 'VERIFY_CLI_VERSION=proof\n');
-    await writeFile(path.join(directory, 'caps.env'), 'provider_any=0\n');
-    await writeFile(path.join(directory, 'verdict.json'), '{"tiersNotRun":[]}\n');
+        { mode: 0o755 }
+      );
+      await writeFile(path.join(directory, 'provenance.env'), 'VERIFY_CLI_VERSION=proof\n');
+      await writeFile(path.join(directory, 'caps.env'), 'provider_any=0\n');
+      await writeFile(path.join(directory, 'verdict.json'), '{"tiersNotRun":[]}\n');
 
-    const { stdout } = await execFileAsync('bash', [infraEscalationPath], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        INFRA_CAPTURE: capturedBody,
-        FAKE_CURL_HTTP_STATUS: '302',
-        FAKE_CURL_EXIT_STATUS: '0',
-        VERIFY_ARTIFACTS: directory,
-        VERIFY_RUN_ID: 'verify-infra-http-failure',
-        VERIFY_ENVIRONMENT: 'sandbox "quoted"',
-        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
-        NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
-      },
-      timeout: 10_000,
-    });
-    const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-infra.json'), 'utf8'));
-    const payload = JSON.parse(await readFile(capturedBody, 'utf8'));
+      const { stdout } = await execFileAsync('bash', [infraEscalationPath], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          INFRA_CAPTURE: capturedBody,
+          FAKE_CURL_HTTP_STATUS: '302',
+          FAKE_CURL_EXIT_STATUS: '0',
+          VERIFY_ARTIFACTS: directory,
+          VERIFY_RUN_ID: 'verify-infra-http-failure',
+          VERIFY_ENVIRONMENT: 'sandbox "quoted"',
+          NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+          NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
+        },
+        timeout: 10_000,
+      });
+      const receipt = JSON.parse(await readFile(path.join(directory, 'escalation-infra.json'), 'utf8'));
+      const payload = JSON.parse(await readFile(capturedBody, 'utf8'));
 
-    expect(receipt).toMatchObject({ channel: 'infra', state: 'failed' });
-    expect(stdout).toContain('DELIVERY_FAILED: POST returned HTTP 302');
-    expect(stdout).toContain('INFRA_ESCALATION_FAILED: no_provider_cli');
-    expect(payload).toMatchObject({
-      environment: 'sandbox "quoted"',
-      requestId: 'verify-infra-http-failure',
-      errorCode: 'no_provider_cli',
-    });
+      expect(receipt).toMatchObject({ channel: 'infra', state: 'failed' });
+      expect(stdout).toContain('DELIVERY_FAILED: POST returned HTTP 302');
+      expect(stdout).toContain('INFRA_ESCALATION_FAILED: no_provider_cli');
+      expect(payload).toMatchObject({
+        environment: 'sandbox "quoted"',
+        requestId: 'verify-infra-http-failure',
+        errorCode: 'no_provider_cli',
+      });
 
-    const { stdout: transportStdout } = await execFileAsync('bash', [infraEscalationPath], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        INFRA_CAPTURE: capturedBody,
-        FAKE_CURL_HTTP_STATUS: '000',
-        FAKE_CURL_EXIT_STATUS: '7',
-        VERIFY_ARTIFACTS: directory,
-        VERIFY_RUN_ID: 'verify-infra-transport-failure',
-        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
-        NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
-      },
-      timeout: 10_000,
-    });
-    expect(transportStdout).toContain('DELIVERY_FAILED: POST transport failed (curl exit 7)');
+      const { stdout: transportStdout } = await execFileAsync('bash', [infraEscalationPath], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          INFRA_CAPTURE: capturedBody,
+          FAKE_CURL_HTTP_STATUS: '000',
+          FAKE_CURL_EXIT_STATUS: '7',
+          VERIFY_ARTIFACTS: directory,
+          VERIFY_RUN_ID: 'verify-infra-transport-failure',
+          NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+          NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
+        },
+        timeout: 10_000,
+      });
+      expect(transportStdout).toContain('DELIVERY_FAILED: POST transport failed (curl exit 7)');
 
-    const blockedCapture = path.join(directory, 'non-https-body.json');
-    const { stdout: nonHttpsStdout } = await execFileAsync('bash', [infraEscalationPath], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        INFRA_CAPTURE: blockedCapture,
-        FAKE_CURL_HTTP_STATUS: '204',
-        FAKE_CURL_EXIT_STATUS: '0',
-        VERIFY_ARTIFACTS: directory,
-        VERIFY_RUN_ID: 'verify-infra-non-https',
-        NIGHTCTO_EVIDENCE_URL: 'http://nightcto.invalid/evidence',
-        NIGHTCTO_EVIDENCE_TOKEN: 'must-not-be-sent',
-      },
-      timeout: 10_000,
-    });
-    expect(nonHttpsStdout).toContain('NIGHTCTO_EVIDENCE_URL must use HTTPS');
-    await expect(stat(blockedCapture)).rejects.toMatchObject({ code: 'ENOENT' });
+      const blockedCapture = path.join(directory, 'non-https-body.json');
+      const { stdout: nonHttpsStdout } = await execFileAsync('bash', [infraEscalationPath], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          INFRA_CAPTURE: blockedCapture,
+          FAKE_CURL_HTTP_STATUS: '204',
+          FAKE_CURL_EXIT_STATUS: '0',
+          VERIFY_ARTIFACTS: directory,
+          VERIFY_RUN_ID: 'verify-infra-non-https',
+          NIGHTCTO_EVIDENCE_URL: 'http://nightcto.invalid/evidence',
+          NIGHTCTO_EVIDENCE_TOKEN: 'must-not-be-sent',
+        },
+        timeout: 10_000,
+      });
+      expect(nonHttpsStdout).toContain('NIGHTCTO_EVIDENCE_URL must use HTTPS');
+      await expect(stat(blockedCapture)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    const missingTokenCapture = path.join(directory, 'missing-token-body.json');
-    const { stdout: missingTokenStdout } = await execFileAsync('bash', [infraEscalationPath], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        INFRA_CAPTURE: missingTokenCapture,
-        FAKE_CURL_HTTP_STATUS: '204',
-        FAKE_CURL_EXIT_STATUS: '0',
-        VERIFY_ARTIFACTS: directory,
-        VERIFY_RUN_ID: 'verify-infra-missing-token',
-        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
-        NIGHTCTO_EVIDENCE_TOKEN: '',
-      },
-      timeout: 10_000,
-    });
-    expect(missingTokenStdout).toContain('NIGHTCTO_EVIDENCE_TOKEN unset');
-    await expect(stat(missingTokenCapture)).rejects.toMatchObject({ code: 'ENOENT' });
+      const missingTokenCapture = path.join(directory, 'missing-token-body.json');
+      const { stdout: missingTokenStdout } = await execFileAsync('bash', [infraEscalationPath], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          INFRA_CAPTURE: missingTokenCapture,
+          FAKE_CURL_HTTP_STATUS: '204',
+          FAKE_CURL_EXIT_STATUS: '0',
+          VERIFY_ARTIFACTS: directory,
+          VERIFY_RUN_ID: 'verify-infra-missing-token',
+          NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+          NIGHTCTO_EVIDENCE_TOKEN: '',
+        },
+        timeout: 10_000,
+      });
+      expect(missingTokenStdout).toContain('NIGHTCTO_EVIDENCE_TOKEN unset');
+      await expect(stat(missingTokenCapture)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    await writeFile(path.join(directory, 'verdict.json'), '{"tiersNotRun":null}\n');
-    const { stdout: malformedVerdictStdout } = await execFileAsync('bash', [infraEscalationPath], {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH ?? ''}`,
-        INFRA_CAPTURE: path.join(directory, 'malformed-verdict-body.json'),
-        FAKE_CURL_HTTP_STATUS: '503',
-        FAKE_CURL_EXIT_STATUS: '0',
-        VERIFY_ARTIFACTS: directory,
-        VERIFY_RUN_ID: 'verify-infra-malformed-verdict',
-        NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
-        NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
-      },
-      timeout: 10_000,
-    });
-    const malformedVerdictReceipt = JSON.parse(
-      await readFile(path.join(directory, 'escalation-infra.json'), 'utf8')
-    );
-    expect(malformedVerdictStdout).toContain('verdict_missing');
-    expect(malformedVerdictReceipt).toMatchObject({ channel: 'infra', state: 'failed' });
-    expect(malformedVerdictReceipt.detail).toContain('verdict_missing');
-  });
+      await writeFile(path.join(directory, 'verdict.json'), '{"tiersNotRun":null}\n');
+      const { stdout: malformedVerdictStdout } = await execFileAsync('bash', [infraEscalationPath], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          INFRA_CAPTURE: path.join(directory, 'malformed-verdict-body.json'),
+          FAKE_CURL_HTTP_STATUS: '503',
+          FAKE_CURL_EXIT_STATUS: '0',
+          VERIFY_ARTIFACTS: directory,
+          VERIFY_RUN_ID: 'verify-infra-malformed-verdict',
+          NIGHTCTO_EVIDENCE_URL: 'https://nightcto.invalid/evidence',
+          NIGHTCTO_EVIDENCE_TOKEN: 'test-token',
+        },
+        timeout: 10_000,
+      });
+      const malformedVerdictReceipt = JSON.parse(
+        await readFile(path.join(directory, 'escalation-infra.json'), 'utf8')
+      );
+      expect(malformedVerdictStdout).toContain('verdict_missing');
+      expect(malformedVerdictReceipt).toMatchObject({ channel: 'infra', state: 'failed' });
+      expect(malformedVerdictReceipt.detail).toContain('verdict_missing');
+    }
+  );
 
   it('isolates artifacts and all mutating fix steps per invocation', async () => {
     const source = await workflowSourcePromise;
@@ -483,7 +491,7 @@ exit "$FAKE_CURL_EXIT_STATUS"
     const source = await workflowSourcePromise;
 
     expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
-    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
+    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true'");
     expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
   });
 
@@ -839,6 +847,25 @@ exit "$FAKE_CURL_EXIT_STATUS"
     pruneRunArtifacts(root, { keepCompleted: 1 });
 
     await expect(stat(canonical)).resolves.toBeDefined();
+  });
+
+  it('fails pruning closed when the canonical pointer is temporarily not a symlink', async () => {
+    const root = await artifacts();
+    const runs = path.join(root, 'runs');
+    await mkdir(runs);
+    await mkdir(path.join(root, 'current'));
+    for (let index = 0; index < 3; index += 1) {
+      const directory = path.join(runs, `verify-preserved-${index}`);
+      await mkdir(directory);
+      markRunArtifactsComplete(directory, `verify-preserved-${index}`);
+    }
+
+    expect(pruneRunArtifacts(root, { keepCompleted: 1 })).toEqual([]);
+    expect((await readdir(runs)).sort()).toEqual([
+      'verify-preserved-0',
+      'verify-preserved-1',
+      'verify-preserved-2',
+    ]);
   });
 
   it('rejects invalid incomplete-run retention windows', async () => {

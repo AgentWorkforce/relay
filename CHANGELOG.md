@@ -5,9 +5,31 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `node agent spawn` can attach to existing headless sessions so model changes report provider-confirmed results.
+- `agent-relay cloud workspace create` creates candidate-bound, time-limited disposable workspaces and saves their credential for later Fleet qualification.
+- `agent-relay cloud workspace delete` refuses success until Cloud confirms the workspace and its resources are absent.
+- `agent-relay agent get <name>` distinguishes confirmed absence from authentication and transport failures.
+- `agent-relay fleet spawn --sandbox` can select an immutable Daytona candidate and refuses to dispatch an agent when Cloud reports a different snapshot.
+- Relayflow agents can now write a write-once output file before it exists when its parent directory is present.
 
 ### Fixed
+
+- `agent-relay node up` no longer exposes runtime-backed API routes before the broker can service them, preventing slow channel setup from timing out an otherwise healthy startup.
+- `node agent set-model` returns correlated model-change receipts, preserves uncertain outcomes, and exposes the last confirmed effective model.
+- Fleet Daytona cleanup now rejects lingering offline or stale Fleet node records and redacts configured credentials of any nonempty length.
+- Fleet Daytona evidence capture now redacts credentials split across output chunks and the bounded evidence boundary before retaining stdout or stderr.
+- Fleet Daytona live verification now fails early unless immutable candidate snapshot qualification inputs are explicit.
+
+### Security
+
+- Cleanroom qualification now validates only the trusted `workflow_run` consumer, isolates candidate CLI inventory discovery from verifier secrets, and retains bounded qualification evidence for failed runtime gates.
+- Compiled Relayflow agent permissions now deny a symlink in the project directory instead of granting it by its in-project path. A rule matching the link's path said nothing about where it resolved, so a link could hand an agent read or write access to a file outside the project, and writing through a dangling link created its target.
+- Patched `brace-expansion` prevents unbounded expansion, and the Pi and Relayfile adapters use patched `undici` releases that prevent private-cache cross-user disclosure.
+- Standalone Bun workflow runs execute relayflows and detached monitors with a real Node.js runtime resolved from the workflow project, including Cloud archives that omit node_modules; daemon restarts and monitor failures remain actionable.
 
 - Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
 
@@ -20,11 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Worker startup queues the initial task before incoming events without consuming delivery retry attempts while waiting.
-
 - Codex startup requires its cursor in the composer, no loading or busy indicator, and one second of quiet output. It no longer depends on transient MCP server labels or historical prompt glyphs; timeout fallback remains unverified.
-
 - `node status` bounds local API probes and reports unavailable details, so a stalled broker cannot hang the command for the default 30-second request timeout.
-
 - Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
 - Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
 - Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
@@ -75,6 +94,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
 - Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
 - PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
+- `agent-relay node status` no longer hangs a liveness probe when the broker's session endpoint is unresponsive.
+- Relayflow agents can create permitted new files inside an existing Relayfile mount without a permission failure.
+
+### Security
+
+- Compiled Relayflow agent permissions deny project symlinks that could grant access outside the project.
+- Updated published Relayflow and Pi adapter dependencies prevent unbounded brace expansion and private-cache cross-user disclosure.
+- Cloud API clients require HTTPS endpoints and reject redirects, keeping credentialed requests on the configured origin.
 
 ## [11.10.3] - 2026-09-05
 

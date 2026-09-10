@@ -2102,7 +2102,7 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
     expect(source).toContain('--source cloud');
     expect(source).toContain("result.status !== 'completed'");
-    expect(source).toContain('.timeout(2_700_000)');
+    expect(source).toContain('.timeout(3_300_000)');
     expect(source).not.toContain('.timeout(3_600_000)');
   });
 
@@ -2136,12 +2136,30 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('await handle.close();\n    await chmod(privateDirectory, 0o500);');
     expect(source).toContain('writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir]');
     expect(source).not.toContain('writableRoots: [temporaryRoot');
+    expect(source).not.toContain("'RELAY_WORKSPACE_KEY'");
+    expect(source).not.toContain("'RELAY_AGENT_TOKEN'");
+    expect(source).not.toContain("'RELAY_BASE_URL'");
     expect(source).not.toContain('memfd_create');
     expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
     expect(source).toContain("access('/usr/bin/sudo', fsConstants.X_OK)");
     expect(source).toContain('CASE_ENVIRONMENT_KEYS.includes(key)');
     expect(source).toContain('{ ...options, env: caseEnvironment }');
     expect(source).not.toContain('options.env ?? process.env');
+  });
+
+  it('keeps the hosted immutable Fleet case non-credentialed', async () => {
+    const source = await readFile('tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs', 'utf8');
+    expect(source).toContain('workspace_reconcile_command');
+    expect(source).toContain('workspace_reconcile_command_missing');
+    expect(source).toContain("hasReconcileCommand ? 'fixed' : 'absent'");
+    expect(source).not.toContain("if (arm === 'base') {");
+    expect(source).toContain('raw help hash=');
+    expect(source).not.toContain('process.env.RELAY_WORKSPACE_KEY');
+    expect(source).not.toContain('process.env.RELAY_AGENT_TOKEN');
+    expect(source).not.toContain('process.env.RELAY_BASE_URL');
+    expect(source).not.toContain('RELAY_PR_PROOF_EXPECTED_SANDBOX_ID');
+    expect(source).not.toContain('RELAY_PR_PROOF_EXPECTED_NODE_NAME');
+    expect(source).not.toContain('RELAY_PR_PROOF_EXPECTED_AGENT_NAME');
   });
 
   it('uses one non-refreshing API key and cancels remote work on termination', async () => {

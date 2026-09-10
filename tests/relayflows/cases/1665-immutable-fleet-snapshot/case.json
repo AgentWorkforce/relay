@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1665-immutable-fleet-snapshot",
+  "kind": "feature",
+  "title": "Expose the exact ephemeral workspace reconciliation CLI contract",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 1500,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "workspace_reconcile_command_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "workspace_reconcile_command"
+    }
+  }
+}

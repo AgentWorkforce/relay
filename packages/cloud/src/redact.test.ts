@@ -27,6 +27,16 @@ describe('redactCredentialValues', () => {
     ).toBe('denied for at_live_…cdef with session cld_at_…cdef and join rjt_live_…cdef');
   });
 
+  it('masks classic and fine-grained GitHub token families', () => {
+    const bodies = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_'];
+    for (const prefix of bodies) {
+      const credential = `${prefix}0123456789abcdefghijklmnop`;
+      const redacted = redactCredentialValues(`rejected ${credential}`);
+      expect(redacted).not.toContain(credential);
+      expect(redacted).toContain(`${prefix}…mnop`);
+    }
+  });
+
   it('masks a short-bodied credential entirely instead of leaking most of it', () => {
     expect(redactCredentialValues('bad key rk_live_abcd rejected')).toBe('bad key rk_live_… rejected');
     expect(redactCredentialValues('bad key rk_live_abcde rejected')).toBe('bad key rk_live_… rejected');

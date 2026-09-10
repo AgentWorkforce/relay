@@ -265,15 +265,34 @@ jobs:
           AGENT_RELAY_POSTHOG_KEY: ${{ vars.POSTHOG_PROJECT_KEY }}
         run: |
           mkdir -p release-binaries
-          # Exclude native modules - bun runtime has built-in bun:sqlite
+          VERSION="${{ needs.build.outputs.new_version }}"
+          # Prebundle first so the shipped image relocates Relayfile metadata
+          # and keeps optional sandbox providers runtime-optional.  The
+          # helper executes esbuild's package bin directly: npm may install a
+          # native ELF at that path on Linux.
+          scripts/bundle-cli-for-bun.sh \
+            ./packages/cli/dist/cli/index.js \
+            "release-binaries/cli-bundle.mjs" \
+            "$VERSION"
+          # Exclude native modules - bun runtime has built-in bun:sqlite.
+          # Optional sandbox providers remain dynamic imports in the bundle.
           bun build \
             --compile \
             --minify \
             --target=${{ matrix.target }} \
             --external=better-sqlite3 \
-            --define="process.env.AGENT_RELAY_VERSION=\"${{ needs.build.outputs.new_version }}\"" \
+            --external=cpu-features \
+            --external=node-pty \
+            --external=e2b \
+            --external=modal \
+            --external=freestyle \
+            --external=microsandbox \
+            --external=@vercel/sandbox \
+            --external=@aws-sdk/client-bedrock-agentcore-control \
+            --external=@aws-sdk/client-bedrock-agentcore \
+            --define="process.env.AGENT_RELAY_VERSION=\"$VERSION\"" \
             --define="process.env.AGENT_RELAY_POSTHOG_KEY=\"${AGENT_RELAY_POSTHOG_KEY:-}\"" \
-            ./packages/cli/dist/cli/index.js \
+            release-binaries/cli-bundle.mjs \
             --outfile release-binaries/${{ matrix.binary_name }}
 
       - name: Verify ssh2 is bundled into binary

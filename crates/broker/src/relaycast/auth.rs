@@ -975,6 +975,7 @@ fn with_total_attempts(error: RelayError, total_attempts: u32) -> RelayError {
             message,
             status,
             request_id,
+            retry_after_ms,
             ..
         } => RelayError::Api {
             code,
@@ -982,6 +983,7 @@ fn with_total_attempts(error: RelayError, total_attempts: u32) -> RelayError {
             status,
             request_id,
             attempts: total_attempts,
+            retry_after_ms,
         },
         other => other,
     }
@@ -1076,6 +1078,7 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
             code,
             request_id,
             attempts,
+            ..
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
@@ -1249,6 +1252,7 @@ async fn admit_agent_registration(
                     // requests.
                     request_id: conflict_request_id,
                     attempts: conflict_attempts,
+                    retry_after_ms: None,
                 }));
             }
 
@@ -1329,6 +1333,7 @@ async fn admit_agent_registration(
             message,
             request_id,
             attempts,
+            retry_after_ms,
         }) if is_agent_token_invalid_code(&code)
             || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
         {
@@ -1341,6 +1346,7 @@ async fn admit_agent_registration(
                 message,
                 request_id,
                 attempts,
+                retry_after_ms,
             }))
         }
         Err(error) => Err(relay_error_to_anyhow(error)),
@@ -1600,6 +1606,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
     }
@@ -1612,6 +1619,7 @@ mod tests {
             message: "deterministic registration failure".to_string(),
             request_id: Some("auth-374-request".to_string()),
             attempts: 3,
+            retry_after_ms: None,
         });
 
         let auth_error = err
@@ -1645,6 +1653,7 @@ mod tests {
             message: "anything".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         };
         assert!(is_agent_token_invalid(&typed));
 
@@ -1654,6 +1663,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         };
         assert!(is_agent_token_invalid(&legacy));
 
@@ -1663,6 +1673,7 @@ mod tests {
             message: "bad workspace key".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         };
         assert!(!is_agent_token_invalid(&unrelated));
     }
@@ -1675,6 +1686,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
 
@@ -1684,6 +1696,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(is_agent_token_invalid_anyhow(&legacy));
 
@@ -1693,6 +1706,7 @@ mod tests {
             message: "name taken".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(!is_agent_token_invalid_anyhow(&unrelated));
     }

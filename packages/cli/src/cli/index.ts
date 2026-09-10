@@ -23,7 +23,14 @@ function isEntrypoint(): boolean {
 }
 
 if (isEntrypoint()) {
-  const main = process.argv[2] === '__ai-sdk-sidecar' ? runAiSdkSidecarMain(process.argv.slice(3)) : runCli();
+  const main =
+    process.argv[2] === '__ai-sdk-sidecar'
+      ? runAiSdkSidecarMain(process.argv.slice(3))
+      : process.argv[2] === '__bundled-workflow'
+        ? import('./lib/bundled-workflow-runner.js').then(({ runBundledWorkflowCli }) =>
+            runBundledWorkflowCli(process.argv.slice(3))
+          )
+        : runCli();
   main.catch(async (err) => {
     // Commander will have already printed a helpful message for parse errors.
     // For other top-level failures, surface them to stderr and exit non-zero.

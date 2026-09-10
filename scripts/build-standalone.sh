@@ -36,22 +36,11 @@ fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
-# Use esbuild to bundle everything into a single file
-# Externalize native modules that can't be bundled
+# Use the shared esbuild bundle step. It externalizes optional providers and
+# relocates Relayfile's package metadata lookup for compiled Bun images.
 info "Bundling with esbuild..."
 
-npx esbuild "$DIST_DIR/cli/index.js" \
-    --bundle \
-    --platform=node \
-    --target=node18 \
-    --format=esm \
-    --outfile="$BUILD_DIR/cli-bundle.mjs" \
-    --external:better-sqlite3 \
-    --external:cpu-features \
-    --external:node-pty \
-    --define:process.env.AGENT_RELAY_VERSION="\"$VERSION\"" \
-    --minify \
-    2>&1
+scripts/bundle-cli-for-bun.sh "$DIST_DIR/cli/index.js" "$BUILD_DIR/cli-bundle.mjs" "$VERSION"
 
 # Create a wrapper that handles the version
 cat > "$BUILD_DIR/standalone.mjs" << EOF
@@ -79,6 +68,16 @@ mkdir -p "$BIN_DIR"
 
 if bun build "$BUILD_DIR/standalone.mjs" \
     --compile \
+    --external=better-sqlite3 \
+    --external=cpu-features \
+    --external=node-pty \
+    --external=e2b \
+    --external=modal \
+    --external=freestyle \
+    --external=microsandbox \
+    --external=@vercel/sandbox \
+    --external=@aws-sdk/client-bedrock-agentcore-control \
+    --external=@aws-sdk/client-bedrock-agentcore \
     --outfile "$BIN_DIR/agent-relay-standalone" \
     2>&1; then
 

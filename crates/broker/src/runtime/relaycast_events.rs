@@ -358,6 +358,9 @@ pub(super) async fn release_worker_locally(
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     dead_letters: &mut DeadLetterStore,
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
+    _pending_model_requests: &mut HashMap<String, PendingModelRequest>,
+    model_receipts: &mut HashMap<WorkerName, ModelReceipt>,
+    _model_receipts_by_request: &mut HashMap<String, ModelReceipt>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
     resize_owners: &mut HashMap<WorkerName, ResizeOwner>,
@@ -457,6 +460,9 @@ pub(super) async fn release_worker_locally(
         }
     };
     if outcome == ReleaseOutcome::Released {
+        // Keep request-keyed terminal receipts for correlated polling, but do
+        // not expose a released worker's last receipt as current state.
+        model_receipts.remove(&name);
         // Worker disappearance invalidates every resize lease for that target,
         // including a stale lease whose session was already pruned.
         resize_owners.remove(&name);
@@ -1064,6 +1070,50 @@ mod tests {
         let mut pending_deliveries = HashMap::new();
         let mut dead_letters = DeadLetterStore::default();
         let mut pending_requests = HashMap::new();
+        let mut pending_model_requests = HashMap::new();
+        let mut model_receipts = HashMap::new();
+        let mut model_receipts_by_request = HashMap::new();
+        let release_generation = workers
+            .workers
+            .get(&released_agent)
+            .expect("release target should be registered")
+            .generation;
+        pending_model_requests.insert(
+            "release-model-request".to_string(),
+            PendingModelRequest {
+                worker_name: released_agent.clone(),
+                generation: release_generation,
+                requested_model: "openai/gpt-5.4".to_string(),
+                revision: 1,
+                deadline: Instant::now() + Duration::from_secs(30),
+                provider_deadline: None,
+                confirmation_pending: false,
+                provider_timeout: Duration::from_secs(65),
+            },
+        );
+        model_receipts.insert(
+            released_agent.clone(),
+            ModelReceipt {
+                name: released_agent.clone(),
+                requested_model: "openai/gpt-5.4".to_string(),
+                effective_model: None,
+                applied: false,
+                status: "accepted_pending".to_string(),
+                request_id: "release-model-request".to_string(),
+                generation: release_generation,
+                revision: 1,
+                effective_revision: 0,
+                accepted: true,
+                pending: true,
+                success: false,
+                error: None,
+                updated_at: Instant::now(),
+            },
+        );
+        model_receipts_by_request.insert(
+            "release-model-request".to_string(),
+            model_receipts[&released_agent].clone(),
+        );
         let mut delivery_states = HashMap::new();
         let mut agent_result_tokens = HashMap::new();
         let released_session_id = "released-view-session".to_string();
@@ -1144,6 +1194,9 @@ mod tests {
             &mut pending_deliveries,
             &mut dead_letters,
             &mut pending_requests,
+            &mut pending_model_requests,
+            &mut model_receipts,
+            &mut model_receipts_by_request,
             &mut delivery_states,
             &mut agent_result_tokens,
             &mut resize_owners,
@@ -1155,6 +1208,16 @@ mod tests {
         .await;
 
         assert_eq!(outcome, ReleaseOutcome::Released);
+        let released_receipt = model_receipts_by_request
+            .get("release-model-request")
+            .expect("release should retain the correlated model receipt");
+        // Release must not manufacture provider rejection: a response for
+        // this generation may already be queued and will be drained by the
+        // runtime. Maintenance terminalizes an orphan only after that drain.
+        assert_eq!(released_receipt.status, "accepted_pending");
+        assert!(released_receipt.pending);
+        assert!(!released_receipt.applied);
+        assert!(released_receipt.error.is_none());
         // MUST FIRE: releasing the target through the same lifecycle function
         // used by the fleet action emits a final code and reason for its view.
         let terminal_messages: Vec<TerminalControlCommand> =

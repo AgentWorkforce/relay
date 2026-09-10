@@ -78,6 +78,10 @@ const CONNECTION_FILENAME = 'connection.json';
 const BACKGROUND_START_ERROR_FILENAME = 'background-start-error.log';
 export const WORKSPACE_BINDING_SOURCE_ENV = 'AGENT_RELAY_WORKSPACE_SOURCE';
 const STATUS_POLL_INTERVAL_MS = 500;
+// `node status` is also used as a short liveness probe. Optional detail reads
+// must finish well inside that command's 10-second E2E budget instead of
+// inheriting the harness driver's 30-second transport default.
+const STATUS_DETAILS_REQUEST_TIMEOUT_MS = 2_000;
 const DETACHED_START_READY_TIMEOUT_MS = 10_000;
 const NODE_DELIVERY_READY_TIMEOUT_MS = 10_000;
 // Bounded wait for the broker's background-minted node token to surface on

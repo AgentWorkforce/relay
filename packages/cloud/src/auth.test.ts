@@ -163,6 +163,8 @@ describe('readStoredAuth', () => {
 
   it.each([
     ['apiUrl', { apiUrl: 'not-a-url' }],
+    ['insecureApiUrl', { apiUrl: 'http://cloud.example.test' }],
+    ['credentialApiUrl', { apiUrl: 'https://user:secret@cloud.example.test' }],
     ['accessExpiresAt', { accessTokenExpiresAt: 'not-a-date' }],
   ])('falls through to file auth when env %s is malformed', async (_label, override) => {
     const env = createEnvAuth(override);
@@ -185,6 +187,11 @@ describe('readStoredAuth', () => {
 
     await expect(readStoredAuth({})).resolves.toEqual(FILE_AUTH);
     expect(fsMocks.readFile).toHaveBeenCalledOnce();
+  });
+
+  it('rejects insecure API URLs loaded from the auth file', async () => {
+    fsMocks.readFile.mockResolvedValue(JSON.stringify({ ...FILE_AUTH, apiUrl: 'http://cloud.example.test' }));
+    await expect(readStoredAuth({})).resolves.toBeNull();
   });
 
   it('prefers env auth over file auth when both are available', async () => {
@@ -401,6 +408,32 @@ describe('ensureAuthenticated', () => {
     logSpy.mockRestore();
   });
 
+  it('rejects an invalid callback API URL without crashing the callback server', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const authPromise = ensureAuthenticated('https://example.com/cloud', { force: true });
+    const authRejection = expect(authPromise).rejects.toThrow('invalid Cloud API URL');
+
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Opening browser for cloud login: '));
+    });
+    const loginLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.startsWith('Opening browser for cloud login: '));
+    const loginUrl = new URL(String(loginLine).slice('Opening browser for cloud login: '.length));
+    const callbackUrl = new URL(String(loginUrl.searchParams.get('redirect_uri')));
+    callbackUrl.searchParams.set('state', String(loginUrl.searchParams.get('state')));
+    callbackUrl.searchParams.set('access_token', 'access-token');
+    callbackUrl.searchParams.set('refresh_token', 'refresh-token');
+    callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('api_url', 'http://attacker.example/cloud');
+
+    const response = await fetch(callbackUrl, { redirect: 'manual' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('https://example.com/cloud/cli/auth-result');
+    await authRejection;
+    logSpy.mockRestore();
+  });
+
   it('falls back to the device flow on a host that cannot open a browser', async () => {
     // barry over ssh: no browser here, so the loopback callback the browser
     // flow depends on is unreachable and would only hang until it timed out.
@@ -479,6 +512,13 @@ describe('ensureAuthenticated', () => {
       code: 'AUTH_BROWSER_REQUIRED',
     });
 
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects an insecure configured API URL before authentication', async () => {
+    await expect(
+      ensureCloudSession({ apiUrl: 'http://cloud.example.test', interactive: false })
+    ).rejects.toThrow(/HTTPS/);
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
   });
 

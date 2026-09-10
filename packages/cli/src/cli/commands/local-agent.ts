@@ -24,7 +24,7 @@ import {
 } from '../lib/broker-connection.js';
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
 import { describeError } from '../lib/describe-error.js';
-import { defaultExit } from '../lib/exit.js';
+import { CliExit, defaultExit } from '../lib/exit.js';
 import { redeemJoinTicket } from '../lib/join-ticket.js';
 import { describeClearedEnrollment, persistWorkspaceSession } from '../lib/workspace-session.js';
 
@@ -36,6 +36,12 @@ const CLAUDE_MODEL_IDS: Record<'haiku' | 'sonnet' | 'opus', string> = {
   sonnet: 'claude-sonnet-4-6',
   opus: 'claude-opus-4-8',
 };
+
+// Model receipts have bounded queue-admission and provider-confirmation
+// phases; allow the CLI to observe either terminal state before falling back
+// to the initial admission snapshot.
+const MODEL_RECEIPT_POLL_TIMEOUT_MS = 135_000;
+const MODEL_RECEIPT_POLL_INTERVAL_MS = 100;
 
 /**
  * If `model === 'auto'`, run the task classifier → team composer → Director
@@ -493,6 +499,10 @@ async function run(
     client = await deps.connect(deps.cwd());
     await fn(client);
   } catch (err) {
+    // `deps.exit()` deliberately throws `CliExit` so the top-level CLI can
+    // flush telemetry and stdio. Do not turn that control-flow signal into a
+    // second "cli-exit:1" error (especially in --json mode).
+    if (err instanceof CliExit) throw err;
     deps.error(err instanceof Error ? err.message : String(err));
     deps.exit(1);
   } finally {
@@ -508,6 +518,10 @@ async function runLocalBroker(
   try {
     await fn(await deps.connectLocal(deps.cwd(), options));
   } catch (err) {
+    // Match the main broker runner: defaultExit throws CliExit so the
+    // top-level CLI can flush telemetry and stdio. It must not be rendered as
+    // a second "cli-exit:1" connection error.
+    if (err instanceof CliExit) throw err;
     deps.error(err instanceof Error ? err.message : String(err));
     deps.exit(1);
   }
@@ -528,10 +542,13 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
-function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): HarnessRuntime | undefined {
+type CliSpawnRuntime = HarnessRuntime | 'headless';
+
+function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): CliSpawnRuntime | undefined {
   const runtime = (value ?? 'auto') as string;
-  if (runtime === 'auto' || runtime === 'native' || runtime === 'pty') return runtime;
-  deps.error(`Unknown runtime "${runtime}". Expected one of: auto, native, pty.`);
+  if (runtime === 'auto' || runtime === 'native' || runtime === 'pty' || runtime === 'headless')
+    return runtime;
+  deps.error(`Unknown runtime "${runtime}". Expected one of: auto, native, pty, headless.`);
   deps.exit(1);
   return undefined;
 }
@@ -540,9 +557,12 @@ function resolveRuntimeOption(
   deps: LocalAgentDependencies,
   provider: string,
   value: unknown
-): { requested: HarnessRuntime; selected: ReturnType<typeof resolvedSpawnRuntime> } | undefined {
+):
+  | { requested: CliSpawnRuntime; selected: ReturnType<typeof resolvedSpawnRuntime> | 'headless' }
+  | undefined {
   const requested = parseRuntimeOption(deps, value);
   if (!requested) return undefined;
+  if (requested === 'headless') return { requested, selected: 'headless' };
   try {
     return { requested, selected: resolvedSpawnRuntime({ cli: provider, runtime: requested }) };
   } catch (error) {
@@ -550,6 +570,55 @@ function resolveRuntimeOption(
     deps.exit(1);
     return undefined;
   }
+}
+
+function appServerHarnessConfig(
+  deps: LocalAgentDependencies,
+  runtime: CliSpawnRuntime,
+  options: Record<string, unknown>
+):
+  | {
+      runtime: 'headless';
+      driver: 'app_server';
+      protocol: string;
+      endpoint: string;
+      sessionId: string;
+      release: 'abort' | 'detach' | 'delete';
+    }
+  | undefined {
+  const values = {
+    protocol: options.protocol as string | undefined,
+    endpoint: options.endpoint as string | undefined,
+    sessionId: options.sessionId as string | undefined,
+    release: options.release as string | undefined,
+  };
+  const hasConfig = Object.values(values).some((value) => value !== undefined);
+  if (runtime !== 'headless') {
+    if (hasConfig) {
+      deps.error('AppServer options require --runtime headless.');
+      deps.exit(1);
+    }
+    return undefined;
+  }
+  if (!values.protocol || !values.endpoint || !values.sessionId) {
+    deps.error('Headless runtime requires --protocol, --endpoint, and --session-id.');
+    deps.exit(1);
+    return undefined;
+  }
+  const release = values.release ?? 'delete';
+  if (release !== 'abort' && release !== 'detach' && release !== 'delete') {
+    deps.error(`Unknown AppServer release policy "${release}". Expected one of: abort, detach, delete.`);
+    deps.exit(1);
+    return undefined;
+  }
+  return {
+    runtime: 'headless',
+    driver: 'app_server',
+    protocol: values.protocol,
+    endpoint: values.endpoint,
+    sessionId: values.sessionId,
+    release,
+  };
 }
 
 function parseSpawnModeOption(
@@ -567,12 +636,32 @@ function parseSpawnModeOption(
 function validateNativeOptions(
   deps: LocalAgentDependencies,
   options: {
-    runtime: ReturnType<typeof resolvedSpawnRuntime>;
+    runtime: ReturnType<typeof resolvedSpawnRuntime> | 'headless';
     spawnMode: 'interactive' | 'task_exit';
     exitAfterTask: boolean;
     attachMode?: AttachMode;
   }
 ): boolean {
+  if (options.runtime === 'headless') {
+    // Task-exit is signalled by appending an instruction to output `/exit`,
+    // but the AppServer wrapper only forwards text to the provider session:
+    // it never observes provider output or task completion, so the worker
+    // would stay registered forever while `new`/`spawn` report success.
+    if (options.spawnMode !== 'interactive') {
+      deps.error(
+        'Headless AppServer workers do not support --spawn-mode task-exit: the wrapper cannot observe provider task completion.'
+      );
+      deps.exit(1);
+      return false;
+    }
+    if (options.exitAfterTask) {
+      deps.error(
+        'Headless AppServer workers do not support --exit-after-task: the wrapper cannot observe provider task completion.'
+      );
+      deps.exit(1);
+      return false;
+    }
+  }
   if (options.runtime !== 'native') return true;
   if (options.attachMode === 'passthrough') {
     deps.error('Native harnesses do not support passthrough attach mode; use drive or view.');
@@ -720,7 +809,11 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
+    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty | headless', 'auto')
+    .option('--protocol <protocol>', 'Attached headless AppServer protocol (with --runtime headless)')
+    .option('--endpoint <url>', 'Attached headless AppServer endpoint (with --runtime headless)')
+    .option('--session-id <id>', 'Attached headless AppServer session (with --runtime headless)')
+    .option('--release <policy>', 'AppServer release policy: abort | detach | delete')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
@@ -728,6 +821,19 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, opts.runtime);
       const spawnMode = parseSpawnModeOption(deps, opts.spawnMode);
       if (!runtime || !spawnMode) return;
+      const harnessConfig = appServerHarnessConfig(deps, runtime.requested, opts);
+      if (runtime.requested === 'headless' && !harnessConfig) return;
+      if (runtime.requested === 'headless' && opts.model !== undefined) {
+        // The headless lane attaches to an existing provider session; a
+        // `--model` value would be advertised without ever being applied to
+        // that session. Model changes must go through `set-model`, which
+        // mutates the provider and reports the confirmed receipt.
+        deps.error(
+          'Headless AppServer workers keep the provider session model; --model is not applied. Use `agent set-model` for a provider-confirmed model change.'
+        );
+        deps.exit(1);
+        return;
+      }
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -754,6 +860,7 @@ export function registerLocalAgentCommands(
           spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
+          harnessConfig,
         });
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
@@ -772,7 +879,11 @@ export function registerLocalAgentCommands(
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
     .option('--model <model>', 'Model override')
-    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
+    .option('--runtime <runtime>', 'Harness runtime: auto | native | pty | headless', 'auto')
+    .option('--protocol <protocol>', 'Attached headless AppServer protocol (with --runtime headless)')
+    .option('--endpoint <url>', 'Attached headless AppServer endpoint (with --runtime headless)')
+    .option('--session-id <id>', 'Attached headless AppServer session (with --runtime headless)')
+    .option('--release <policy>', 'AppServer release policy: abort | detach | delete')
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
@@ -786,6 +897,19 @@ export function registerLocalAgentCommands(
       const runtime = resolveRuntimeOption(deps, provider, options.runtime);
       const spawnMode = parseSpawnModeOption(deps, options.spawnMode);
       if (!runtime || !spawnMode) return;
+      if (runtime.requested === 'headless') {
+        // `new` spawns and then attaches through a PTY session, but headless
+        // AppServer workers have no PTY: the attach would fail after the
+        // worker is already running and leave it registered. Spawn headless
+        // workers through `agent spawn` instead.
+        deps.error(
+          '`agent new` cannot attach to headless AppServer workers (no PTY session). Use `agent spawn --runtime headless` and `agent set-model` instead.'
+        );
+        deps.exit(1);
+        return;
+      }
+      // `runtime.requested` cannot be 'headless' here: the guard above already
+      // rejected it for `new`, so no AppServer harness config applies.
       if (
         !validateNativeOptions(deps, {
           runtime: runtime.selected,
@@ -840,13 +964,81 @@ export function registerLocalAgentCommands(
 
   agent
     .command('set-model')
-    .description("Switch a running agent's model (sends `/model` to its TUI; best-effort)")
+    .description("Request a running agent's model change and report provider confirmation")
     .argument('<name>', 'Agent name')
     .argument('<model>', 'Model identifier to switch to')
-    .action(async (name: string, model: string) => {
+    .option('--json', 'Emit the correlated model mutation receipt as JSON')
+    .action(async (name: string, model: string, options: { json?: boolean }) => {
       await run(deps, async (client) => {
-        await client.setModel(name, model);
-        deps.log(`Sent \`/model ${model}\` to ${name} (best-effort — the agent's TUI applies it).`);
+        let receipt = await client.setModel(name, model);
+        const requestId = receipt.request_id?.trim() ? receipt.request_id : undefined;
+        if (receipt.status === 'accepted_pending' && requestId !== undefined) {
+          const deadline = Date.now() + MODEL_RECEIPT_POLL_TIMEOUT_MS;
+          let intervalMs = MODEL_RECEIPT_POLL_INTERVAL_MS;
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            intervalMs = Math.min(intervalMs * 2, 2_000);
+            try {
+              const latest = await client.getModel(name, requestId);
+              // A newer request replaced this worker's receipt. Stop rather than
+              // spending the full timeout budget polling a receipt that cannot match.
+              if (latest.request_id !== requestId) break;
+              receipt = latest;
+              if (receipt.status !== 'accepted_pending') break;
+            } catch {
+              // Admission already succeeded; preserve that correlated pending
+              // receipt when confirmation transport is temporarily unavailable.
+              break;
+            }
+          }
+        }
+        const receiptStatus = receipt.status ?? 'unknown';
+        const modelApplied = receiptStatus === 'applied' && receipt.applied === true;
+        const modelPending = receiptStatus === 'accepted_pending';
+        const terminalFailure = !modelApplied && !modelPending;
+        if (options.json) {
+          // The broker wire contract is snake_case; the CLI's JSON contract
+          // uses the same camelCase style as the other machine-readable CLI
+          // surfaces and names the correlation key `receiptId` explicitly.
+          deps.log(
+            JSON.stringify(
+              {
+                name: receipt.name ?? name,
+                requestedModel: receipt.requested_model ?? receipt.model ?? model,
+                effectiveModel: receipt.effective_model ?? null,
+                applied: receipt.applied === true,
+                status: receipt.status ?? 'unknown',
+                requestId: receipt.request_id ?? null,
+                receiptId: receipt.receipt_id ?? receipt.request_id ?? null,
+                generation: receipt.generation ?? null,
+                revision: receipt.revision ?? null,
+                effectiveRevision: receipt.effective_revision ?? null,
+                success: receipt.success === true,
+                accepted: receipt.accepted === true,
+                pending: receipt.pending === true,
+                ...(receipt.error ? { error: receipt.error } : {}),
+              },
+              null,
+              2
+            )
+          );
+          if (terminalFailure) deps.exit(1);
+          return;
+        }
+        if (modelApplied) {
+          deps.log(
+            `Applied model ${receipt.effective_model ?? model} to ${name} (request ${receipt.request_id ?? 'unknown'}).`
+          );
+        } else if (modelPending) {
+          deps.log(
+            `Model request for ${name} was accepted_pending (request ${receipt.request_id ?? 'unknown'}); provider confirmation is not available yet.`
+          );
+        } else {
+          deps.log(
+            `Model request for ${name} was ${receiptStatus}; applied=false (request ${receipt.request_id ?? 'unknown'})${receipt.error ? `: ${receipt.error}` : ''}.`
+          );
+          deps.exit(1);
+        }
       });
     });
 

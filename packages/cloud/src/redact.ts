@@ -9,7 +9,7 @@
  * a usable secret.
  */
 const LIVE_CREDENTIAL =
-  /(rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
+  /(github_pat_|ghp_|gho_|ghu_|ghs_|ghr_|rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)([A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*)/g;
 
 /**
  * Replace every embedded live credential in `text` with its masked form —

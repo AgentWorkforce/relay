@@ -1,0 +1,91 @@
+{
+  "id": "traj_gex2anp05d8q",
+  "version": 1,
+  "task": {
+    "title": "Repair PR 1666 truthful set-model execution proof",
+    "source": {
+      "system": "plain",
+      "id": "relay#1666"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T04:13:12.160Z",
+  "completedAt": "2026-09-09T04:44:54.334Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T04:43:43.912Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_4mculjdvn2tq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T04:43:43.912Z",
+      "endedAt": "2026-09-09T04:44:54.334Z",
+      "events": [
+        {
+          "ts": 1788929023913,
+          "type": "decision",
+          "content": "Use one exact compiled CLI path for spawn, model mutation, rejection, and release: Use one exact compiled CLI path for spawn, model mutation, rejection, and release",
+          "raw": {
+            "question": "Use one exact compiled CLI path for spawn, model mutation, rejection, and release",
+            "chosen": "Use one exact compiled CLI path for spawn, model mutation, rejection, and release",
+            "alternatives": [],
+            "reasoning": "The old proof split raw-broker real-provider validation from a mock compiled-CLI receipt, so neither path proved the public command actually changed worker provider state."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788929024397,
+          "type": "decision",
+          "content": "Run the proof against a deterministic local Relaycast transport: Run the proof against a deterministic local Relaycast transport",
+          "raw": {
+            "question": "Run the proof against a deterministic local Relaycast transport",
+            "chosen": "Run the proof against a deterministic local Relaycast transport",
+            "alternatives": [],
+            "reasoning": "Production Relaycast returned workspace_storage_unavailable during a clean proof; Relaycast is transport setup, not the set-model behavior under test, and must not make this release proof flaky."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788929093641,
+          "type": "reflection",
+          "content": "The truthful path now passes end to end with real OpenCode state; Node 22 full and focused suites plus broker model tests are green, and Veto reports no findings.",
+          "raw": {
+            "focalPoints": [
+              "public-cli",
+              "provider-state",
+              "cleanup",
+              "determinism"
+            ],
+            "confidence": 0.96
+          },
+          "significance": "high",
+          "tags": [
+            "focal:public-cli",
+            "focal:provider-state",
+            "focal:cleanup",
+            "focal:determinism",
+            "confidence:0.96"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Replaced PR 1666's split raw-broker/mock-CLI proof with a deterministic compiled CLI to real OpenCode lifecycle proof, including correlated applied/rejected receipts and release-owned session deletion.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "0c34492f30eec86b0cb629b63570e680d62c9d91",
+    "endRef": "0c34492f30eec86b0cb629b63570e680d62c9d91"
+  }
+}
