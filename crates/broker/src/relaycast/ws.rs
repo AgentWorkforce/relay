@@ -1455,6 +1455,14 @@ fn is_transient_registration_api_error(error: &RelaycastRegistrationError) -> bo
     matches!(error, RelaycastRegistrationError::Api { status: 503, .. })
 }
 
+fn registration_client_unavailable(error: &RelaycastRegistrationError) -> bool {
+    matches!(
+        error,
+        RelaycastRegistrationError::Transport { detail, .. }
+            if detail == "SDK relay client not initialized"
+    )
+}
+
 /// Keep the terminal registration diagnostics truthful after broker-owned
 /// retries. The SDK includes the number of HTTP attempts in the opaque API
 /// detail string; each call here represents one POST because unkeyed agent
@@ -1542,6 +1550,16 @@ pub async fn retry_agent_registration(
             Ok(token) => return Ok(token),
             Err(error) => {
                 total_attempts = total_attempts.saturating_add(registration_attempt_count(&error));
+                // A missing SDK client is a configuration/authentication
+                // failure, not a transient transport outage. In particular,
+                // do not let the Transport variant reach the retryable
+                // classifier and delay a fail-closed spawn.
+                if registration_client_unavailable(&error) {
+                    return Err(RegRetryOutcome::Fatal(with_registration_attempts(
+                        error,
+                        total_attempts,
+                    )));
+                }
                 let retryable = registration_is_retryable(&error)
                     || is_transient_registration_api_error(&error);
                 if retryable {
@@ -1837,6 +1855,25 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn uninitialized_registration_fails_closed_without_retry_delay() {
+        let mut client = RelaycastHttpClient::new(None, "rk_live_test", "broker", "codex");
+        client.registration = Arc::new(None);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            super::retry_agent_registration(&client, "worker-uninitialized", Some("codex")),
+        )
+        .await
+        .expect("missing SDK client must fail without retry sleeps");
+        assert!(matches!(
+            result,
+            Err(relaycast::AgentRegistrationRetryOutcome::Fatal(
+                AgentRegistrationError::Transport { detail, .. }
+            )) if detail == "SDK relay client not initialized"
+        ));
     }
 
     #[test]
