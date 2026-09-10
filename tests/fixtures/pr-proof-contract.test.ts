@@ -2136,9 +2136,9 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain('await handle.close();\n    await chmod(privateDirectory, 0o500);');
     expect(source).toContain('writableRoots: [temporaryHome, harnessDir, targetDir, resultDir, scratchDir]');
     expect(source).not.toContain('writableRoots: [temporaryRoot');
-    expect(source).toContain("'SANDBOX_ID'");
-    expect(source).toContain("'RELAY_WORKSPACE_KEY'");
-    expect(source).toContain("'RELAY_AGENT_TOKEN'");
+    expect(source).not.toContain("'RELAY_WORKSPACE_KEY'");
+    expect(source).not.toContain("'RELAY_AGENT_TOKEN'");
+    expect(source).not.toContain("'RELAY_BASE_URL'");
     expect(source).not.toContain('memfd_create');
     expect(source).toContain("access('/usr/bin/python3', fsConstants.X_OK)");
     expect(source).toContain("access('/usr/bin/sudo', fsConstants.X_OK)");
@@ -2147,12 +2147,13 @@ describe('trusted dispatcher source contract', () => {
     expect(source).not.toContain('options.env ?? process.env');
   });
 
-  it('binds the immutable Fleet proof to trusted raw Cloud identity and rejects guessed overrides', async () => {
+  it('keeps the hosted immutable Fleet case non-credentialed', async () => {
     const source = await readFile('tests/relayflows/cases/1665-immutable-fleet-snapshot/run.mjs', 'utf8');
-    expect(source).toContain("requiredValue('SANDBOX_ID')");
-    expect(source).toContain('DAYTONA_ID.test(sandboxId)');
-    expect(source).toContain('findNodesForSandbox(nodes, sandboxId)');
-    expect(source).toContain('findAgentsForNode(agents, nodeName, sandboxId)');
+    expect(source).toContain('fleet_cli_identity_controls');
+    expect(source).toContain('raw help output hash=');
+    expect(source).not.toContain('process.env.RELAY_WORKSPACE_KEY');
+    expect(source).not.toContain('process.env.RELAY_AGENT_TOKEN');
+    expect(source).not.toContain('process.env.RELAY_BASE_URL');
     expect(source).not.toContain('RELAY_PR_PROOF_EXPECTED_SANDBOX_ID');
     expect(source).not.toContain('RELAY_PR_PROOF_EXPECTED_NODE_NAME');
     expect(source).not.toContain('RELAY_PR_PROOF_EXPECTED_AGENT_NAME');

@@ -653,7 +653,7 @@ jobs:
               throw new Error(`invalid ${suffix} reconciliation identity`);
             }
             if (value.absent === true) {
-              if (value.workspaceId !== null) {
+              if (value.workspaceId !== null || value.absenceStatus !== 404) {
                 throw new Error(`reconciled ${suffix} absence returned an unexpected workspace ID`);
               }
               if (uuid.test(prior)) {
@@ -666,7 +666,7 @@ jobs:
                   `${JSON.stringify({
                     source: 'reconcile',
                     workspaceId: prior,
-                    absence: { workspaceId: prior, status: 404 },
+                    absence: { workspaceId: prior, status: value.absenceStatus },
                     reconcile: value,
                   })}\n`,
                   { mode: 0o600, flag: 'wx' }

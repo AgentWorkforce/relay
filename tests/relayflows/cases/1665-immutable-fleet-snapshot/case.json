@@ -15,7 +15,7 @@
     },
     "head": {
       "outcome": "fixed",
-      "signature": "fleet_identity_attestation_reread"
+      "signature": "fleet_cli_identity_controls"
     }
   }
 }

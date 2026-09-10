@@ -173,6 +173,30 @@ describe('cloud workspace lifecycle commands', () => {
     expect(workspace.commands.map((command) => command.name())).toEqual(['create', 'delete', 'reconcile']);
   });
 
+  it('preserves the observed 404 status in reconciliation JSON', async () => {
+    const { program, deps } = harness();
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'workspace',
+      'reconcile',
+      '--idempotency-key',
+      IDEMPOTENCY_KEY,
+      '--name',
+      'Missing workspace',
+      '--relayfile-cloud-deployment',
+      RELAYFILE_CLOUD_DEPLOYMENT_ID,
+      '--json',
+    ]);
+
+    expect(JSON.parse(String(vi.mocked(deps.log).mock.calls[0]?.[0]))).toMatchObject({
+      absent: true,
+      workspaceId: null,
+      absenceStatus: 404,
+    });
+  });
+
   it('writes the reveal-once credential to a new 0600 file and prints only safe JSON', async () => {
     const { program, deps } = harness();
     const credentialFile = tempCredentialPath();

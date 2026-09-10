@@ -404,6 +404,7 @@ async function reconcileAmbiguousCreate(
   expectedName?: string
 ): Promise<{
   workspace: EphemeralWorkspaceReconciliationResponse | null;
+  absenceStatus?: number;
   auth: AuthorizedApiAuth;
 }> {
   const query = new URLSearchParams({ ephemeral: 'true', idempotencyKey });
@@ -422,7 +423,7 @@ async function reconcileAmbiguousCreate(
     if (!isObject(missing) || missing.code !== 'workspace_not_found') {
       throw new Error('Cloud returned an invalid workspace reconciliation absence response.');
     }
-    return { workspace: null, auth: refreshedAuth };
+    return { workspace: null, absenceStatus: response.status, auth: refreshedAuth };
   }
   if (!response.ok) {
     throw new Error(`Cloud could not reconcile the workspace create request (HTTP ${response.status}).`);
@@ -710,6 +711,9 @@ export function registerCloudWorkspaceCommands(
             relayWorkspaceId: reconciliation.workspace?.relayWorkspaceId ?? null,
             state: reconciliation.workspace?.state ?? 'absent',
             credentialRevealed: reconciliation.workspace?.credentialRevealed ?? false,
+            ...(reconciliation.workspace === null
+              ? { absenceStatus: reconciliation.absenceStatus }
+              : {}),
             reconciledAt: new Date().toISOString(),
           };
           deps.log(JSON.stringify(result, null, 2));
