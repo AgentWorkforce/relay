@@ -21,19 +21,27 @@ const server = createServer((req, res) => {
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
-const binary = '/qualification/relayfile-npm/node_modules/relayfile/bin/relayfile';
-const args = ['mount', 'issue-490', '--server', base, '--token', 'test-token', '--once', '--timeout=250ms', '--local-dir', '/tmp/issue-490-mirror'];
+const binary = entrypoint === 'cli'
+  ? '/qualification/relayfile-npm/node_modules/.bin/relayfile'
+  : '/qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount';
+const outputDir = `/tmp/issue-490-${entrypoint}-once`;
+const args = entrypoint === 'cli'
+  ? ['mount', 'issue-490', '--server', base, '--token', 'test-token', '--once', '--timeout=250ms', '--local-dir', outputDir]
+  : ['--workspace-id', 'issue-490', '--server', base, '--token', 'test-token', '--once', '--timeout=250ms', '--local-dir', outputDir];
 const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
 const exitCode = await new Promise((resolve) => child.once('exit', (code) => resolve(code ?? 1)));
 let daemonRealtimeDialCount = 0;
 if (entrypoint === 'standalone') {
-  const daemon = spawn(binary, ['mount', 'issue-490', '--server', base, '--token', 'test-token', '--local-dir', '/tmp/issue-490-daemon'], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
+  const daemon = spawn(binary, ['--workspace-id', 'issue-490', '--server', base, '--token', 'test-token', '--local-dir', '/tmp/issue-490-daemon'], { stdio: 'ignore', env: { ...process.env, RELAYFILE_MOUNT_WEBSOCKET: 'true' } });
   await new Promise((resolve) => setTimeout(resolve, 1800));
   daemon.kill('SIGKILL');
   daemonRealtimeDialCount = realtimeDialCount;
 }
 server.close();
 let cursorPersisted = false;
-try { cursorPersisted = (await readFile('/tmp/issue-490-mirror/.relayfile-mount-state.json', 'utf8')).includes('evt-490'); } catch {}
-console.log(JSON.stringify({ exitCode, testsPassed: exitCode === 0 ? 1 : 0, testsFailed: exitCode === 0 ? 0 : 1, realtimeDialCount: entrypoint === 'standalone' ? 0 : realtimeDialCount, daemonRealtimeDialCount, pollingUpdateApplied: exitCode === 0, cursorPersisted }));
+let fileUpdated = false;
+try { fileUpdated = (await readFile(`${outputDir}/issue-490.txt`, 'utf8')) === 'healthy polling update'; } catch {}
+try { cursorPersisted = (await readFile(`${outputDir}/.relayfile-mount-state.json`, 'utf8')).includes('evt-490'); } catch {}
+const pollingUpdateApplied = fileUpdated && cursorPersisted;
+console.log(JSON.stringify({ exitCode, testsPassed: exitCode === 0 && pollingUpdateApplied ? 1 : 0, testsFailed: exitCode === 0 && pollingUpdateApplied ? 0 : 1, realtimeDialCount: entrypoint === 'standalone' ? 0 : realtimeDialCount, daemonRealtimeDialCount, pollingUpdateApplied, cursorPersisted }));
 process.exitCode = exitCode === 0 ? 0 : 1;

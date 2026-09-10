@@ -35,6 +35,7 @@ const npmVersion = process.env.RELAYFILE_QUALIFICATION_NPM_VERSION?.trim() ?? ''
 const npmTarballSha256 = process.env.RELAYFILE_QUALIFICATION_NPM_TARBALL_SHA256?.trim() ?? '';
 const npmSourceSha = process.env.RELAYFILE_QUALIFICATION_NPM_SOURCE_SHA?.trim() ?? '';
 const releaseAttestationSha256 = process.env.RELAYFILE_QUALIFICATION_RELEASE_ATTESTATION_SHA256?.trim() ?? '';
+const mountTarballSha256 = process.env.RELAYFILE_QUALIFICATION_MOUNT_TARBALL_SHA256?.trim() ?? '';
 
 async function writeReport(value) {
   await mkdir(artifactDir, { recursive: true });
@@ -78,9 +79,11 @@ if (
 }
 if (
   preflight.publishedRelayfile?.package !== 'relayfile' ||
+  preflight.publishedRelayfile.mountPackage !== '@relayfile/mount-linux-x64' ||
   preflight.publishedRelayfile.version !== npmVersion ||
   preflight.publishedRelayfile.tarballSha256 !== npmTarballSha256 ||
   preflight.publishedRelayfile.sourceSha !== npmSourceSha ||
+  preflight.publishedRelayfile.mountTarballSha256 !== mountTarballSha256 ||
   preflight.publishedRelayfile.releaseAttestationSha256 !== releaseAttestationSha256 ||
   preflight.publishedRelayfile.installed !== false
 ) {
@@ -439,7 +442,7 @@ async function main() {
     const dockerfile = path.join(context, 'Dockerfile');
     await writeFile(
       dockerfile,
-      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY relayfile-mount-linux-amd64 /qualification/bin/relayfile-mount\nCOPY issue-490-probe.mjs /qualification/relayfile-npm/issue-490-probe.mjs\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && chmod +x /qualification/bin/relayfile-mount\n`
+      `FROM ${image}\nUSER root\nRUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends procps ca-certificates curl && rm -rf /var/lib/apt/lists/*\nRUN mkdir -p /qualification/cloud /qualification/relayfile /qualification/relayfile-cloud /qualification/relayfile-npm /tmp/relayfile-npm /tmp/mount-npm /qualification/bin\nCOPY cloud.tgz relayfile.tgz relayfile-cloud.tgz /tmp/\nCOPY issue-490-probe.mjs /qualification/relayfile-npm/issue-490-probe.mjs\nRUN tar -xzf /tmp/cloud.tgz -C /qualification/cloud && tar -xzf /tmp/relayfile.tgz -C /qualification/relayfile && tar -xzf /tmp/relayfile-cloud.tgz -C /qualification/relayfile-cloud && cd /qualification/cloud && npm ci --no-audit --no-fund && cd /qualification/relayfile-cloud && npm ci --no-audit --no-fund && npm pack relayfile@${npmVersion} --pack-destination /tmp/relayfile-npm >/dev/null && test \"$(sha256sum /tmp/relayfile-npm/relayfile-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${npmTarballSha256}\" && npm pack @relayfile/mount-linux-x64@${npmVersion} --pack-destination /tmp/mount-npm >/dev/null && test \"$(sha256sum /tmp/mount-npm/mount-linux-x64-${npmVersion}.tgz | cut -d' ' -f1)\" = \"${mountTarballSha256}\" && curl -fsSL https://github.com/AgentWorkforce/relayfile/releases/download/v${npmVersion}/release-attestation.json -o /tmp/release-attestation.json && test \"$(sha256sum /tmp/release-attestation.json | cut -d' ' -f1)\" = \"${releaseAttestationSha256}\" && node -e \"if (require('/tmp/release-attestation.json').sourceSha !== '${npmSourceSha}') process.exit(1)\" && npm install --prefix /qualification/relayfile-npm --ignore-scripts --no-audit --no-fund /tmp/relayfile-npm/relayfile-${npmVersion}.tgz /tmp/mount-npm/mount-linux-x64-${npmVersion}.tgz && test \"$(node -p \"require('/qualification/relayfile-npm/node_modules/relayfile/package.json').version\")\" = \"${npmVersion}\" && test -x /qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount\n`
     );
     createAttempted = true;
     const create = await run(
@@ -481,7 +484,7 @@ async function main() {
         'env',
         'RELAYFILE_QUALIFICATION_MODE=candidate',
         'RELAYFILE_CLOUD_REPO=/qualification/relayfile-cloud',
-        'RELAYFILE_MOUNT_BINARY=/qualification/relayfile-npm/node_modules/relayfile/bin/relayfile',
+        'RELAYFILE_MOUNT_BINARY=/qualification/relayfile-npm/node_modules/@relayfile/mount-linux-x64/bin/relayfile-mount',
         'RELAYFILE_EVIDENCE_PATH=/tmp/cold-mount-evidence.json',
         'node_modules/.bin/tsx',
         'local/cold-mount-scale.ts',
@@ -502,7 +505,7 @@ async function main() {
       artifactHashes,
       artifacts,
       candidateProvenance,
-      publishedRelayfile: { package: 'relayfile', version: npmVersion, tarballSha256: npmTarballSha256, sourceSha: npmSourceSha, releaseAttestationSha256, installed: true },
+      publishedRelayfile: { package: 'relayfile', mountPackage: '@relayfile/mount-linux-x64', version: npmVersion, tarballSha256: npmTarballSha256, mountTarballSha256, sourceSha: npmSourceSha, releaseAttestationSha256, installed: true },
       legs: { coldMount, acl, issue490 },
       cleanup: cleanupEvidence,
       checkpoints,

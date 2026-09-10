@@ -215,8 +215,10 @@ function armReport(arm) {
     },
     publishedRelayfile: {
       package: 'relayfile',
+      mountPackage: '@relayfile/mount-linux-x64',
       version: '0.10.57-qualification.1',
       tarballSha256: 'd'.repeat(64),
+      mountTarballSha256: 'f'.repeat(64),
       sourceSha: '4'.repeat(40),
       releaseAttestationSha256: 'e'.repeat(64),
       installed: true,

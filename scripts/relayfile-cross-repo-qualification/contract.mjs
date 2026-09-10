@@ -344,9 +344,11 @@ export function validatePublishedRelayfileAttestation(attestation) {
   const fail = (message) => failures.push(`npm-attestation: ${message}`);
   if (!isPlainObject(attestation)) return { ok: false, failures: ['npm-attestation: attestation is not an object'] };
   if (attestation.package !== RELAYFILE_NPM_PACKAGE) fail(`package is ${JSON.stringify(attestation.package)}`);
+  if (attestation.mountPackage !== '@relayfile/mount-linux-x64') fail('mountPackage is not @relayfile/mount-linux-x64');
   if (typeof attestation.version !== 'string' || !RELAYFILE_NPM_VERSION_PATTERN.test(attestation.version))
     fail('version is not an exact prerelease semver');
   if (!isHex64(attestation.tarballSha256)) fail('tarballSha256 is not a 64-hex digest');
+  if (!isHex64(attestation.mountTarballSha256)) fail('mountTarballSha256 is not a 64-hex digest');
   if (!HEX40.test(attestation.sourceSha ?? '')) fail('sourceSha is not a full 40-hex commit');
   if (!isHex64(attestation.releaseAttestationSha256)) fail('releaseAttestationSha256 is not a 64-hex digest');
   if (attestation.registry !== undefined && (typeof attestation.registry !== 'string' || !/^https:\/\//.test(attestation.registry)))
