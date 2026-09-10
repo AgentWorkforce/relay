@@ -2667,7 +2667,7 @@ exit 1
 `,
   });
 
-  const dryRun = process.env.DRY_RUN === '1';
+  const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
   let workflowLifecycleCompleted = false;
   if (!dryRun) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
   try {
