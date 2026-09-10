@@ -12,14 +12,16 @@ beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn(
-      async () =>
+      async (url: string | URL) =>
         new Response(
           JSON.stringify({
             ok: true,
-            data: {
-              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
-              secret: 'inbound-secret',
-            },
+            data: String(url).endsWith('/agents/slackbot/subscription-channel')
+              ? { name: 'agent-events-a1', members: [{ agent_name: 'slackbot' }] }
+              : {
+                  url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+                  secret: 'inbound-secret',
+                },
           }),
           {
             status: 201,
@@ -554,8 +556,12 @@ describe('SDK-backed CLI groups', () => {
       { from: 'user' }
     );
 
+    expect(fetch).toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: '/v1/agents/slackbot/subscription-channel' }),
+      expect.objectContaining({ method: 'POST', headers: { authorization: 'Bearer rk_live_local' } })
+    );
     expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
-      channel: 'slackbot',
+      channel: 'agent-events-a1',
       name: expect.stringMatching(/^relayfile:slack:.+-[0-9a-f]{10}:[0-9a-f]{10}$/),
     });
     expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
@@ -567,7 +573,7 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
       event: 'message.created',
       events: ['message.created', 'thread.reply'],
-      filter: { channel: 'slackbot' },
+      filter: { channel: 'agent-events-a1' },
       // The per-attempt marker uniquely identifies this subscription for
       // crash recovery without changing delivery (query is ignored).
       url: expect.stringMatching(/^https:\/\/bridge\.test\/writeback\?relaySubscribeAttempt=[0-9a-f]{16}$/),
@@ -576,7 +582,7 @@ describe('SDK-backed CLI groups', () => {
     expect(relayfile.bind).toHaveBeenCalledWith({
       provider: 'slack',
       resource: '#acme',
-      channel: 'slackbot',
+      channel: 'agent-events-a1',
       webhookId: 'in1',
       webhookToken: 'tok_once',
       subscriptionId: 'sub1',
@@ -623,7 +629,7 @@ describe('SDK-backed CLI groups', () => {
       { from: 'user' }
     );
 
-    expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('slackbot');
+    expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('agent-events-a1');
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
       expect.objectContaining({
         url: expect.stringMatching(
@@ -739,9 +745,7 @@ describe('SDK-backed CLI groups', () => {
       from: 'user',
     });
 
-    expect(error).toHaveBeenCalledWith(
-      'Recipient agent @ghost does not exist. Run: agent-relay integration subscribe slack --to @ghost --spawn <cli>'
-    );
+    expect(error).toHaveBeenCalledWith('Recipient @ghost does not exist; use --spawn <cli> to launch it.');
     expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });

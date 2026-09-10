@@ -96,6 +96,18 @@ await serveNode({ definition, connection });
 
 ### AgentWorkforce personas
 
+Served `spawn(...)` handlers request verified readiness and finish only after the
+delegated broker reports a ready worker. Launch failure propagates to the caller.
+The engine must support node-owned spawn invocation status reads; confirmation
+is bounded at 130 seconds. If confirmation is interrupted, reconcile the reported
+child invocation before retrying, since the broker may still be finishing setup.
+Release the compatible engine before publishing/upgrading the fleet package against
+the hosted service. For legacy placement-only handlers, an operator may explicitly
+set `spawn(harness, { verifyReady: false })` or `ctx.spawnAgent({ agent, verifyReady: false })`.
+This skips readiness polling and returns `{ placement, ready: false, readiness: 'unverified' }`;
+it cannot be used as confirmed startup or authorize subscription creation. Verified
+readiness remains the default and must stay enabled for subscription recipients.
+
 The built-in `spawn:<harness>` capabilities launch raw harnesses. An
 AgentWorkforce persona also carries its standing instructions, installed skills,
 MCP servers, harness, model, and harness settings, so it must be resolved and

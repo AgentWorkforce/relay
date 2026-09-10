@@ -2203,6 +2203,9 @@ export async function runStatusCommand(
   // Query the running broker for additional status info
   const statusDetails =
     readiness.statusDetails ?? (waitMs > 0 ? null : await readBrokerStatusDetails(readiness.conn));
+  if (!statusDetails || statusDetails.session === null) {
+    deps.warn('Broker API details unavailable (request failed or exceeded the 2s limit).');
+  }
   if (statusDetails) {
     const { status, session } = statusDetails;
     if (typeof status.agent_count === 'number') {
@@ -2233,7 +2236,13 @@ function parseWaitForMs(rawValue: string | undefined, deps: CoreDependencies): n
 }
 
 async function readBrokerStatusDetails(conn: BrokerConnection): Promise<BrokerStatusDetails | null> {
-  const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+  // Status is a local liveness probe. The driver's 30s mutation timeout would
+  // make a live but stalled broker hang CLI status and readiness polling.
+  const client = new HarnessDriverClient({
+    baseUrl: conn.url,
+    apiKey: conn.api_key,
+    requestTimeoutMs: 2000,
+  });
   try {
     const status = await client.getStatus();
     const session = await client.getSession().catch(() => null);

@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { action, defineNode, spawn } from './index.js';
-import { startServeNode, type FleetLogger, type FleetTriggerSyncClient } from './serve-node.js';
+import * as publicFleet from './index.js';
+import {
+  startServeNode,
+  waitForDelegatedSpawn,
+  type FleetLogger,
+  type FleetTriggerSyncClient,
+} from './serve-node.js';
 
 /**
  * A fake node-ws server: captures frames the client sends and lets the test
@@ -89,9 +95,146 @@ describe('serveNode', () => {
     vi.stubGlobal('WebSocket', MockWebSocket);
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+
+  async function delegateForConfirmation(verifyReady = true, signal?: AbortSignal) {
+    const definition = defineNode({
+      name: 'p',
+      capabilities: {
+        'spawn:pool': spawn({ runtime: 'pty', command: 'node' }, { verifyReady }),
+      },
+    });
+    const running = startServeNode({ definition, connection, reconnect: false, signal });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+    sock.emit({
+      v: 1,
+      type: 'action.invoke',
+      invocation_id: 'outer',
+      action: 'spawn:pool',
+      input: { name: 'worker' },
+    });
+    await flush();
+    const [delegation] = sock.sentOfType('node.spawn');
+    return { running, sock, delegation };
+  }
+
+  it.each([true, false])('requires confirmation only when verifyReady=%s', async (verifyReady) => {
+    const fetchMock = vi.fn(async () => Response.json({}, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { running, sock, delegation } = await delegateForConfirmation(verifyReady);
+    sock.emit({
+      v: 1,
+      id: delegation.id,
+      type: 'reply',
+      ok: true,
+      data: { invocation_id: 'child', status: 'dispatched' },
+    });
+    await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+    const result = sock.sentOfType('action.result')[0]!;
+    if (verifyReady) expect(result.error).toContain('engine must support node-owned spawn status reads');
+    else {
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.output).toMatchObject({
+        placement: { invocation_id: 'child' },
+        ready: false,
+        readiness: 'unverified',
+      });
+      expect(delegation.input).toMatchObject({ verify_ready: false });
+    }
+    await running.stop();
+  });
+
+  it.each(['pending', 'dispatched', 'invoked', 'running', 'read-timeout'])(
+    'keeps confirming through %s without dispatching another child',
+    async (state) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          if (state === 'read-timeout') throw new DOMException('read timed out', 'TimeoutError');
+          return Response.json({ data: { status: state } });
+        })
+        .mockResolvedValueOnce(
+          Response.json({ data: { status: 'completed', output: { spawned: true, ready: true } } })
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      const { running, sock, delegation } = await delegateForConfirmation();
+      sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(sock.sentOfType('node.spawn')).toHaveLength(1);
+      expect(sock.sentOfType('action.result')[0]?.output).toMatchObject({ spawned: true, ready: true });
+      await running.stop();
+    }
+  );
+
+  it.each([429, 503])('releases HTTP %s response bodies before retrying confirmation', async (status) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const overload = new Response('retry later', { status });
+    const cancel = vi.spyOn(overload.body!, 'cancel');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(overload)
+      .mockResolvedValueOnce(
+        Response.json({ data: { status: 'completed', output: { spawned: true, ready: true } } })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const { running, sock, delegation } = await delegateForConfirmation();
+    sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sock.sentOfType('action.result')[0]?.output).toMatchObject({ ready: true });
+    await running.stop();
+  });
+
+  it('rejects a missing delegated invocation ID without polling', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { running, sock, delegation } = await delegateForConfirmation();
+    sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: {} });
+    await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+    expect(sock.sentOfType('action.result')[0]?.error).toContain('spawn_confirmation_missing');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await running.stop();
+  });
+
+  it.each(['external', 'deadline'])(
+    'reports actionable child context after %s interruption',
+    async (kind) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const controller = new AbortController();
+      const nativeTimeout = AbortSignal.timeout;
+      vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+        if (ms !== 130000) return nativeTimeout(ms);
+        if (kind === 'deadline') setTimeout(() => controller.abort(), ms);
+        return controller.signal;
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => Response.json({ data: { status: 'dispatched' } }))
+      );
+      const result = waitForDelegatedSpawn(
+        {
+          definition: defineNode({ name: 'p', capabilities: { ping: action({}, async () => 'ok') } }),
+          connection,
+          signal: kind === 'external' ? controller.signal : undefined,
+        },
+        { invocation_id: 'child' }
+      );
+      const rejected = expect(result).rejects.toThrow('spawn_confirmation_interrupted: child');
+      await vi.advanceTimersByTimeAsync(0);
+      if (kind === 'external') controller.abort();
+      await vi.advanceTimersByTimeAsync(kind === 'deadline' ? 130000 : 0);
+      await rejected;
+    }
+  );
 
   function socket(): MockWebSocket {
     return MockWebSocket.instances.at(-1)!;
@@ -241,7 +384,112 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it.each(['completed', 'failed'] as const)(
+    'waits for the delegated broker result before reporting %s',
+    async (status) => {
+      let respond!: (response: Response) => void;
+      const fetchMock = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            respond = resolve;
+          })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const definition = defineNode({
+        name: 'p',
+        capabilities: { 'spawn:pool': spawn({ runtime: 'pty', command: 'node' }) },
+      });
+      const running = startServeNode({ definition, connection, reconnect: false });
+      const sock = socket();
+      sock.open();
+      sock.emit(acceptAll(sock.lastRegister()));
+      await flush();
+      sock.emit({
+        v: 1,
+        type: 'action.invoke',
+        invocation_id: 'outer',
+        action: 'spawn:pool',
+        input: { name: 'worker' },
+      });
+      await flush();
+      const [delegation] = sock.sentOfType('node.spawn');
+      sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+      await flush();
+      expect(sock.sentOfType('action.result')).toHaveLength(0);
+      expect(delegation.input).toMatchObject({ verify_ready: true });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://engine.test/v1/actions/spawn/invocations/child',
+        expect.objectContaining({
+          headers: { authorization: 'Bearer nt_live_test' },
+          signal: expect.any(AbortSignal),
+        })
+      );
+      respond(
+        Response.json({
+          ok: true,
+          data: {
+            status,
+            output: status === 'completed' ? { spawned: true, ready: true, name: 'worker' } : null,
+            error: status === 'failed' ? 'spawn_failed: unsupported session resume' : null,
+          },
+        })
+      );
+      await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+      const [result] = sock.sentOfType('action.result');
+      if (status === 'completed')
+        expect(result.output).toMatchObject({ spawned: true, ready: true, name: 'worker' });
+      else expect(result.error).toContain('unsupported session resume');
+      await running.stop();
+    }
+  );
+
+  it.each([
+    {
+      data: { status: 'completed', output: { spawned: true } },
+      http: 200,
+      error: 'spawn_readiness_unconfirmed',
+    },
+    { data: { status: 'cancelled' }, http: 200, error: 'cancelled' },
+    { data: { status: 'unknown' }, http: 200, error: 'spawn_confirmation_invalid' },
+    { data: {}, http: 403, error: 'engine must support node-owned spawn status reads' },
+  ])('rejects an unproven delegated result: $error', async ({ data, http, error }) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ data }, { status: http }))
+    );
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:pool': spawn({ runtime: 'pty', command: 'node' }) },
+    });
+    const running = startServeNode({ definition, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+    sock.emit({
+      v: 1,
+      type: 'action.invoke',
+      invocation_id: 'outer',
+      action: 'spawn:pool',
+      input: { name: 'worker' },
+    });
+    await flush();
+    const [delegation] = sock.sentOfType('node.spawn');
+    sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+    await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+    expect(sock.sentOfType('action.result')[0]?.error).toContain(error);
+    await running.stop();
+  });
+
   it('delegates a spawn shadow to node.spawn with the harness flattened to top-level cli', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          data: { status: 'completed', output: { spawned: true, ready: true, name: 'worker-a' } },
+        })
+      )
+    );
     const node = defineNode({
       name: 'p',
       capabilities: {
@@ -292,12 +540,22 @@ describe('serveNode', () => {
       },
     });
     // Reply so the delegating handler resolves and the invocation completes.
-    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'worker-a' } });
-    await flush();
+    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { invocation_id: 'child-a' } });
+    await vi.waitFor(() =>
+      expect(sock.sentOfType('action.result')[0]?.output).toMatchObject({ ready: true })
+    );
     await running.stop();
   });
 
   it('delegates with the shadow harness as capability even when the executable differs', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          data: { status: 'completed', output: { spawned: true, ready: true, name: 'worker-c' } },
+        })
+      )
+    );
     // A `spawn:claude` shadow whose harness command is an arbitrary executable
     // (here `node`, as the E2E stub uses) must still delegate to `spawn:claude`
     // capacity — the capacity key comes from the shadow name, not the command.
@@ -325,12 +583,22 @@ describe('serveNode', () => {
     const [nodeSpawn] = sock.sentOfType('node.spawn');
     expect(nodeSpawn).toBeTruthy();
     expect(nodeSpawn.input).toMatchObject({ name: 'worker-c', cli: 'node', capability: 'claude' });
-    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'worker-c' } });
-    await flush();
+    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { invocation_id: 'child-c' } });
+    await vi.waitFor(() =>
+      expect(sock.sentOfType('action.result')[0]?.output).toMatchObject({ ready: true })
+    );
     await running.stop();
   });
 
   it('lets a spawn-prefixed action delegate to its resolved runtime instead of a shadow harness', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          data: { status: 'completed', output: { spawned: true, ready: true, name: 'persona-worker' } },
+        })
+      )
+    );
     const node = defineNode({
       name: 'p',
       capabilities: {
@@ -369,8 +637,10 @@ describe('serveNode', () => {
       model: 'persona-model',
     });
     expect(nodeSpawn.input).not.toHaveProperty('capability');
-    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { name: 'persona-worker' } });
-    await flush();
+    sock.emit({ v: 1, id: nodeSpawn.id, type: 'reply', ok: true, data: { invocation_id: 'child-persona' } });
+    await vi.waitFor(() =>
+      expect(sock.sentOfType('action.result')[0]?.output).toMatchObject({ ready: true })
+    );
     await running.stop();
   });
 
@@ -502,4 +772,10 @@ describe('serveNode', () => {
       await running.stop();
     });
   });
+});
+
+it('keeps delegated confirmation internal to the fleet package', () => {
+  expect(publicFleet).not.toHaveProperty('waitForDelegatedSpawn');
+  expect(publicFleet).toHaveProperty('startServeNode');
+  expect(publicFleet).toHaveProperty('serveNode');
 });

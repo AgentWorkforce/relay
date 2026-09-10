@@ -208,6 +208,14 @@ export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay
  * workspace-scoped client is returned.
  */
 export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgent {
+  if (trimOrUndefined(options.workspaceKey)) {
+    if (trimOrUndefined(options.token)) {
+      throw new Error('Pass either --workspace-key or --token, not both.');
+    }
+    // A deliberate workspace credential wins over an ambient participant token.
+    // Inferred project/store credentials must still never elevate a participant.
+    return createWorkspaceRelay(options);
+  }
   const token = resolveAgentToken(options);
   // Agent tokens are valid Relaycast transport credentials and already bind
   // the caller to exactly one workspace. Prefer the scoped token itself over

@@ -1,0 +1,130 @@
+{
+  "id": "traj_jdx9303jp3ky",
+  "version": 1,
+  "task": {
+    "title": "Implement and prove all nine GitHub subscription demo gates"
+  },
+  "status": "active",
+  "startedAt": "2026-09-08T10:53:01.139Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-08T12:25:49.567Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vyfds5ougg3w",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-08T12:25:49.567Z",
+      "events": [
+        {
+          "ts": 1788870349573,
+          "type": "decision",
+          "content": "Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure: Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure",
+          "raw": {
+            "question": "Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure",
+            "chosen": "Require live harness readiness before subscriptions; use identity-bound channels and atomic mailbox backpressure",
+            "alternatives": [],
+            "reasoning": "Registry presence and channel arrival cannot prove an agent can act. Keep unique events retryable, preserve exact recipient identity and require correlated GitHub-to-actor evidence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788874450499,
+          "type": "decision",
+          "content": "Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup: Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup",
+          "raw": {
+            "question": "Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup",
+            "chosen": "Keep readiness fail-closed and restrict identity deletion to owned generation-authorized cleanup",
+            "alternatives": [],
+            "reasoning": "Independent Claude review exposed empty-channel defaulting, absent-generation cleanup and raw-hook overflow gaps. Repaired them, added actual D1 concurrent overflow/retry and real command startup cleanup proofs. Unverified acknowledgements and undeployed source do not satisfy the nine live gates."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788876103263,
+          "type": "decision",
+          "content": "Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion: Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion",
+          "raw": {
+            "question": "Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion",
+            "chosen": "Require create-only identity ownership and acknowledged fleet deregistration before failed-spawn deletion",
+            "alternatives": [],
+            "reasoning": "Round2 review exposed cached identity provenance and enqueue-versus-completion races; fail closed on older brokers lacking empty-channel confirmation."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788881024561,
+          "type": "decision",
+          "content": "Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions: Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions",
+          "raw": {
+            "question": "Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions",
+            "chosen": "Round3 live process tests exposed cached isolation, retired identity cleanup and inventory falsely completing verified spawns; fixed contracts and captured red/green regressions",
+            "alternatives": [],
+            "reasoning": "Live DB membership and delayed process exit revealed gaps hidden by successful request echoes and immediate-exit mocks. Production capacity boundary remains preserved."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788883689149,
+          "type": "decision",
+          "content": "Require stable Claude trust selection and explicit proof-worker tool restrictions: Require stable Claude trust selection and explicit proof-worker tool restrictions",
+          "raw": {
+            "question": "Require stable Claude trust selection and explicit proof-worker tool restrictions",
+            "chosen": "Require stable Claude trust selection and explicit proof-worker tool restrictions",
+            "alternatives": [],
+            "reasoning": "Real Claude tests exposed a transient Yes-to-No repaint and receiver inbox polling despite its task. A delayed-reset regression fails before the stable-grid repair. The proof worker disables history tools and uses the recorded zero-delay input setting; two synthetic pushed events now have correlated actor digest replies. Real GitHub and chief evidence remain pending."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788884625629,
+          "type": "reflection",
+          "content": "Synthetic Claude push proof passed two idle actions, ten-minute idle, ten unique burst events and a real node reconnect. Source and deployed readiness remain separate; engine bot races are repaired and final review is pending.",
+          "raw": {
+            "confidence": 0.85
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.85"
+          ]
+        },
+        {
+          "ts": 1788887953597,
+          "type": "reflection",
+          "content": "Review4 repairs now pass 1343 Rust tests and full JavaScript validation plus nine optional Bun cases. Owned cleanup no longer waits on remote ACKs inside the runtime; a parent-behavior red control proves the old stall. Token hashes and generations remain guarded through retries. Native startup rehearsal passes fifteen checks. Committed portable ten-minute proof and fresh review5 remain pending; all intended-environment gates still require coordinated release and capacity clearance.",
+          "raw": {
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.86"
+          ]
+        },
+        {
+          "ts": 1788890747648,
+          "type": "decision",
+          "content": "Wait for delegated broker readiness in served fleet actions: Wait for delegated broker readiness in served fleet actions",
+          "raw": {
+            "question": "Wait for delegated broker readiness in served fleet actions",
+            "chosen": "Wait for delegated broker readiness in served fleet actions",
+            "alternatives": [],
+            "reasoning": "The native fleet matrix exposed placement-only false success hiding rejected launches. Keep SDK placement semantics and add a bounded served-provider wait using least-privilege node-owned invocation reads; use a genuine Codex-shaped native resume fixture and confirm both launch and release."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d",
+    "endRef": "d754fff143c464c367ac743ccc3c8085bf5ef04d"
+  }
+}

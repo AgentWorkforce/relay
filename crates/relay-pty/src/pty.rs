@@ -641,6 +641,7 @@ fn drain_write_queue<W: Write>(
     while let Ok(msg) = write_rx.recv() {
         match msg {
             WriteMsg::Reply(bytes) => {
+                tracing::debug!(target: "relay_pty::startup_input", length = bytes.len(), "terminal query reply queued");
                 if bytes.is_empty() {
                     continue;
                 }
@@ -660,6 +661,11 @@ fn drain_write_queue<W: Write>(
                 if bytes.is_empty() && followup.as_ref().is_none_or(|part| part.bytes.is_empty()) {
                     let _ = ack.send(Ok(()));
                     continue;
+                }
+                if matches!(bytes.as_slice(), b"\x1b[B" | b"\x1b[A" | b"\r" | b"\n") {
+                    tracing::debug!(target: "relay_pty::startup_input", control = ?bytes,
+                        followup_length = followup.as_ref().map(|part| part.bytes.len()),
+                        "writing terminal control input");
                 }
                 let primary_result = if bytes.is_empty() {
                     Ok(())

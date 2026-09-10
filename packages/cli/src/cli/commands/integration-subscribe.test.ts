@@ -157,6 +157,7 @@ function attemptEntry(overrides: Partial<PendingCleanupEntry> = {}): PendingClea
 
 function harness(
   opts: {
+    recipientDeps?: Partial<Pick<IntegrationCommandDependencies, 'launchRecipient' | 'resolveAgentChannel'>>;
     relay?: ReturnType<typeof createRelayMock>;
     relayfile?: ReturnType<typeof createRelayfileMock>;
     journal?: ReturnType<typeof memoryJournal>;
@@ -191,6 +192,7 @@ function harness(
   const program = new Command();
   program.exitOverride();
   registerIntegrationCommands(program, {
+    ...opts.recipientDeps,
     createAgentRelay: () => relay as never,
     relayfile: relayfile as never,
     cleanupJournal: journal,
@@ -266,7 +268,22 @@ describe('integration subscribe', () => {
     });
   });
 
-  it('does not send inbound-target provisioning to the locally stored broker base URL', async () => {
+  it('does not treat a legacy loopback broker HTTP API as the inbound gateway', async () => {
+    const { program, error } = harness({
+      resolveLocalRelayOptions: async () => ({
+        workspaceKey: 'rk_live_local',
+        baseUrl: 'http://127.0.0.1:3889',
+      }),
+    });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://cast.agentrelay.com'),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }) })
+    );
+  });
+
+  it('keeps the session Relaycast URL paired with its workspace key for inbound provisioning', async () => {
     const { program } = harness({
       resolveLocalRelayOptions: async () => ({
         workspaceKey: 'rk_live_local',
@@ -277,7 +294,7 @@ describe('integration subscribe', () => {
     await program.parseAsync(ARGS(), { from: 'user' });
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL('/v1/integrations/relayfile/inbound-target', 'https://cast.agentrelay.com'),
+      new URL('/v1/integrations/relayfile/inbound-target', 'https://local-broker-session.example'),
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }),
       })
@@ -1687,5 +1704,118 @@ describe('integration unsubscribe', () => {
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
     expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
+  });
+});
+
+describe('confirmed agent subscription setup', () => {
+  it('creates no subscription, webhook or binding when launch fails', async () => {
+    const launchRecipient = vi.fn(async () => {
+      throw new Error('invalid cwd or harness exited before ready');
+    });
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const h = harness({ recipientDeps: { launchRecipient, resolveAgentChannel } });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('invalid cwd'));
+    expect(resolveAgentChannel).not.toHaveBeenCalled();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(h.relayfile.bind).not.toHaveBeenCalled();
+  });
+
+  it('reports an undeployed routing endpoint before resource creation and rolls back its owned worker', async () => {
+    const rollback = vi.fn(async () => {});
+    const h = harness({ recipientDeps: { launchRecipient: async () => ({ rollback, close: vi.fn() }) } });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not found', { status: 404 }))
+    );
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('HTTP 404'));
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('relaycast PR #387'));
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(h.relay.integrations.subscriptions.create).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    expect(h.relayfile.bind).not.toHaveBeenCalled();
+  });
+
+  it('keeps recipient channel provisioning on the session Relaycast deployment', async () => {
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-custom');
+    const h = harness({
+      resolveLocalRelayOptions: async () => ({
+        workspaceKey: 'rk_live_custom',
+        baseUrl: 'https://custom-relaycast.example',
+      }),
+      recipientDeps: {
+        launchRecipient: async () => ({ rollback: vi.fn(), close: vi.fn() }),
+        resolveAgentChannel,
+      },
+    });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).not.toHaveBeenCalled();
+    expect(resolveAgentChannel).toHaveBeenCalledWith(
+      'new-worker',
+      expect.objectContaining({
+        workspaceKey: 'rk_live_custom',
+        baseUrl: 'https://custom-relaycast.example/',
+      })
+    );
+  });
+
+  it('confirms the worker and exact membership before creating resources', async () => {
+    const rollback = vi.fn(async () => {});
+    const close = vi.fn();
+    const launchRecipient = vi.fn(async () => ({ rollback, close }));
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const h = harness({ recipientDeps: { launchRecipient, resolveAgentChannel } });
+    await h.program.parseAsync(
+      ARGS([
+        '--to',
+        '@new-worker',
+        '--spawn',
+        'claude',
+        '--spawn-arg=--disallowedTools',
+        '--spawn-arg=mcp__agent-relay__check_inbox',
+      ]),
+      { from: 'user' }
+    );
+    expect(h.error).not.toHaveBeenCalled();
+    expect(launchRecipient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'new-worker',
+        cli: 'claude',
+        resource: RESOURCE,
+        args: ['--disallowedTools', 'mcp__agent-relay__check_inbox'],
+      })
+    );
+    expect(launchRecipient.mock.invocationCallOrder[0]).toBeLessThan(
+      resolveAgentChannel.mock.invocationCallOrder[0]
+    );
+    expect(resolveAgentChannel.mock.invocationCallOrder[0]).toBeLessThan(
+      h.relay.webhooks.createInbound.mock.invocationCallOrder[0]
+    );
+    expect(h.relayfile.bind).toHaveBeenCalledWith(expect.objectContaining({ channel: 'agent-events-a1' }));
+    expect(h.relay.agents.register).not.toHaveBeenCalled();
+    expect(rollback).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('releases only the newly owned worker if membership cannot be verified', async () => {
+    const rollback = vi.fn(async () => {});
+    const close = vi.fn();
+    const h = harness({
+      recipientDeps: {
+        launchRecipient: async () => ({ rollback, close }),
+        resolveAgentChannel: async () => {
+          throw new Error('membership mismatch');
+        },
+      },
+    });
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('membership mismatch'));
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.relayfile.bind).not.toHaveBeenCalled();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
 });

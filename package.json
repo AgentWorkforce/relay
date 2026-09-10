@@ -102,7 +102,8 @@
     "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
     "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs"
+    "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
+    "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",
@@ -120,6 +121,7 @@
     "@agentworkforce/runtime": "^4.1.23",
     "@eslint/js": "^10.0.1",
     "@relaycast/sdk": "^8.0.7",
+    "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/better-sqlite3": "^7.6.13",

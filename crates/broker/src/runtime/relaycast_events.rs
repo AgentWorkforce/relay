@@ -196,12 +196,82 @@ fn harness_metadata_flag(config: &ResolvedHarnessConfig, snake: &str, camel: &st
         .unwrap_or(false)
 }
 
+/// Resolve the channel contract for both fleet action and firehose spawn payloads.
+pub(super) fn relaycast_spawn_channels(
+    value: &Value,
+    channel: Option<&str>,
+) -> Result<Vec<ChannelName>> {
+    relaycast_spawn_channels_with_defaults(value, channel, default_spawn_channels())
+}
+
+fn relaycast_spawn_channels_with_defaults(
+    value: &Value,
+    channel: Option<&str>,
+    defaults: Vec<ChannelName>,
+) -> Result<Vec<ChannelName>> {
+    if let Some(requested) = value
+        .get("channels")
+        .or_else(|| value.pointer("/agent/channels"))
+    {
+        let requested = requested
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("channels must be an array of channel names"))?;
+        let mut channels = Vec::new();
+        for item in requested {
+            let raw = item
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("each channels entry must be a string"))?;
+            let name = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+            if name.is_empty()
+                || !name.as_bytes()[0].is_ascii_alphanumeric()
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            {
+                anyhow::bail!(
+                    "invalid channel name: expected lowercase letters, digits or hyphens"
+                );
+            }
+            let candidate = ChannelName::from(name);
+            if !channels.contains(&candidate) {
+                channels.push(candidate);
+            }
+        }
+        return Ok(channels);
+    }
+    let mut channels = defaults;
+    if let Some(channel) = channel {
+        let candidate = ChannelName::from(channel);
+        if !channels.contains(&candidate) {
+            channels.push(candidate);
+        }
+    }
+    relaycast_spawn_channels(&serde_json::json!({"channels": channels}), None)
+}
+
 pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
-    relaycast_harness_config(value)
-        .ok()
-        .flatten()
-        .as_ref()
-        .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
+    let request_flag = value
+        .get("verify_ready")
+        .or_else(|| value.get("verifyReady"))
+        .or_else(|| {
+            value
+                .get("agent")
+                .and_then(|agent| agent.get("verify_ready"))
+        })
+        .or_else(|| {
+            value
+                .get("agent")
+                .and_then(|agent| agent.get("verifyReady"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    request_flag
+        || relaycast_harness_config(value)
+            .ok()
+            .flatten()
+            .as_ref()
+            .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
 }
 
 /// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
@@ -313,7 +383,9 @@ pub(super) async fn release_worker_locally(
     workers.metrics.on_release(&name);
     let outcome = match workers.release(&name).await {
         Ok(()) => {
-            workspace_http.forget_agent_registration(&name);
+            if !workers.owned_spawn_generations.contains_key(&name) {
+                workspace_http.forget_agent_registration(&name);
+            }
             let dropped = take_pending_for_worker(pending_deliveries, &name);
             if !dropped.is_empty() {
                 let _ = send_event(
@@ -358,7 +430,9 @@ pub(super) async fn release_worker_locally(
         Err(error) => {
             let message = error.to_string();
             if is_unknown_worker_error_message(&message) {
-                workspace_http.forget_agent_registration(&name);
+                if !workers.owned_spawn_generations.contains_key(&name) {
+                    workspace_http.forget_agent_registration(&name);
+                }
                 state.agents.remove(&name);
                 if paths.persist {
                     if let Err(save_error) = state.save(&paths.state) {
@@ -441,6 +515,10 @@ pub(super) async fn spawn_worker_from_request(
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
 ) -> Result<()> {
+    if workers.identity_cleanups.contains_key(&name) {
+        anyhow::bail!("worker name has pending owned cleanup; complete it before reuse");
+    }
+    anyhow::ensure!(!workers.has_worker(&name), "agent '{name}' already exists");
     let workspace_http = &workspace_state.http_client;
     eprintln!(
         "[agent-relay] received spawn request for '{}' (cli: {})",
@@ -535,17 +613,7 @@ pub(super) async fn spawn_worker_from_request(
     );
 
     tracing::info!(name = %name, cli = %cli, task = ?task, channel = ?channel, "handling spawn request from relaycast WS");
-    let channels = channel
-        .as_deref()
-        .map(|ch| {
-            let mut chs = default_spawn_channels();
-            let candidate = ChannelName::from(ch);
-            if !chs.contains(&candidate) {
-                chs.push(candidate);
-            }
-            chs
-        })
-        .unwrap_or_else(default_spawn_channels);
+    let channels = relaycast_spawn_channels(ws_value, channel.as_deref())?;
     let spec = AgentSpec {
         name: name.clone(),
         runtime: runtime.clone(),
@@ -587,12 +655,14 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let mut fleet_registration = None;
+    let mut owns_identity = true;
     let registration_metadata =
         crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
     let worker_relay_key = {
         if let Some(token) = relaycast_ws_spawn_token(ws_value)
             .filter(|_| !require_node_registration && !relaycast_spawn_verifies_ready(ws_value))
         {
+            owns_identity = false;
             seed_supplied_agent_token(workspace_http, &name, &token);
             match super::fleet::resolve_fleet_agent_token_identity(
                 workspace_http,
@@ -620,6 +690,7 @@ pub(super) async fn spawn_worker_from_request(
                 fleet_control_tx,
                 fleet_delivery_book,
                 name.as_str(),
+                &channels,
                 invocation_id.clone(),
                 session_ref.clone(),
             )
@@ -655,14 +726,14 @@ pub(super) async fn spawn_worker_from_request(
                         error = %node_error,
                         "node agent.register unavailable; falling back to HTTP pre-registration"
                     );
-                    const REG_TIMEOUT: Duration = Duration::from_secs(3);
-                    match tokio::time::timeout(
-                        REG_TIMEOUT,
-                        workspace_http.register_agent_token(&name, Some(cli.as_str())),
+                    match crate::relaycast::register_new_spawn_identity(
+                        workspace_http,
+                        &name,
+                        Some(cli.as_str()),
                     )
                     .await
                     {
-                        Ok(Ok(token)) => {
+                        Ok(token) => {
                             // Declared metadata is published over the agent API
                             // exactly as on the node path; registration itself
                             // stays on the cache- and rate-limit-aware call.
@@ -712,47 +783,56 @@ pub(super) async fn spawn_worker_from_request(
                             }
                             Some(token)
                         }
-                        Ok(Err(error)) => {
-                            tracing::warn!(
-                                worker = %name,
-                                error = %error,
-                                "WS spawn pre-registration failed; agent will self-register"
-                            );
-                            None
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                worker = %name,
-                                "WS spawn pre-registration timed out (3s); agent will self-register"
-                            );
-                            None
-                        }
+                        Err(error) => anyhow::bail!("WS spawn registration failed: {error:?}"),
                     }
                 }
             }
         }
     };
-    let channel_membership_warning = if let Some(token) = worker_relay_key.as_deref() {
-        seed_supplied_agent_token(workspace_http, &name, token);
-        if let Err(error) = workspace_http
-            .ensure_agent_channels(&name, Some(&cli), &channels)
+    if owns_identity {
+        workers.owned_spawn_generations.remove(&name);
+    }
+    let channel_membership_warning: Option<String> =
+        if let Some(token) = worker_relay_key.as_deref() {
+            seed_supplied_agent_token(workspace_http, &name, token);
+            if let Err(error) = async {
+                workspace_http
+                    .ensure_agent_channels(&name, Some(&cli), &channels)
+                    .await?;
+                if owns_identity {
+                    workspace_http
+                        .verify_agent_channel_scope(&name, &channels)
+                        .await?;
+                }
+                anyhow::Ok(())
+            }
             .await
-        {
-            tracing::error!(
-                worker = %name,
-                channels = ?channels,
-                error = %error,
-                "worker channel membership reconciliation failed for Relaycast spawn"
-            );
-            Some(format!(
-                "worker channel membership was not fully reconciled: {error}"
-            ))
+            {
+                tracing::error!(
+                    worker = %name,
+                    channels = ?channels,
+                    error = %error,
+                    "worker channel membership reconciliation failed for Relaycast spawn"
+                );
+                if owns_identity {
+                    super::identity_cleanup::schedule_identity_cleanup(
+                        workers,
+                        fleet_control_tx,
+                        fleet_delivery_book,
+                        fleet_inventory,
+                        workspace_http,
+                        &name,
+                        true,
+                        None,
+                    );
+                }
+                anyhow::bail!("worker channel membership was not fully reconciled: {error}");
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
 
     match workers
         .spawn(
@@ -768,6 +848,13 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            if owns_identity {
+                if let Some(worker) = workers.workers.get(&name) {
+                    workers
+                        .owned_spawn_generations
+                        .insert(name.clone(), (worker.generation, workspace_http.clone()));
+                }
+            }
             if let Some((token, invocation_id, session_ref)) = fleet_registration.take() {
                 super::fleet::record_fleet_inventory_agent(
                     fleet_control_tx,
@@ -864,6 +951,19 @@ pub(super) async fn spawn_worker_from_request(
             Ok(())
         }
         Err(e) => {
+            if owns_identity {
+                super::identity_cleanup::schedule_identity_cleanup(
+                    workers,
+                    fleet_control_tx,
+                    fleet_delivery_book,
+                    fleet_inventory,
+                    workspace_http,
+                    &name,
+                    true,
+                    None,
+                );
+            }
+
             let msg = e.to_string();
             if msg.contains("already exists") {
                 tracing::debug!(child = %name, "agent already spawned via SDK, skipping duplicate relaycast WS spawn");
@@ -1131,6 +1231,7 @@ mod tests {
         let name = WorkerName::from("failed-native-worker-1430");
         let ws_value = json!({
             "token": "at_live_test_worker",
+            "channels": [],
             "agent": {
                 "harnessConfig": {
                     "runtime": "native",
@@ -1199,6 +1300,60 @@ mod tests {
         assert!(!workers.has_worker(&name));
         assert_eq!(agent_spawn_count, 0);
         assert!(!state.agents.contains_key(&name));
+    }
+
+    #[test]
+    fn plural_spawn_channels_are_exact_and_deduplicated() {
+        let value = json!({"channels": ["#demo-pr", "demo-ci", "demo-pr"]});
+        let got = relaycast_spawn_channels(&value, Some("ignored")).unwrap();
+        assert_eq!(
+            got,
+            vec![ChannelName::from("demo-pr"), ChannelName::from("demo-ci")]
+        );
+        assert!(
+            relaycast_spawn_channels(&json!({"agent": {"channels": []}}), None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            relaycast_spawn_channels(&json!({}), None).unwrap(),
+            default_spawn_channels()
+        );
+    }
+
+    #[test]
+    fn implicit_and_legacy_channels_use_the_same_validation() {
+        assert!(relaycast_spawn_channels(&json!({}), Some("Eng Team")).is_err());
+        assert!(relaycast_spawn_channels_with_defaults(
+            &json!({}),
+            None,
+            vec![ChannelName::from("General")]
+        )
+        .is_err());
+        assert!(relaycast_spawn_channels_with_defaults(
+            &json!({"channels": []}),
+            None,
+            vec![ChannelName::from("General")]
+        )
+        .unwrap()
+        .is_empty());
+        let names = relaycast_spawn_channels(&json!({}), Some("#demo-events")).unwrap();
+        assert!(names.contains(&ChannelName::from("demo-events")));
+    }
+
+    #[test]
+    fn plural_spawn_channels_reject_malformed_members_before_registration() {
+        for value in [
+            json!({"channels": "demo"}),
+            json!({"channels": ["demo", 3]}),
+            json!({"channels": ["#"]}),
+            json!({"channels": ["bad name"]}),
+        ] {
+            assert!(
+                relaycast_spawn_channels(&value, None).is_err(),
+                "accepted {value}"
+            );
+        }
     }
 
     #[test]
@@ -1318,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_spawn_contract_is_read_from_harness_metadata() {
+    fn verified_spawn_contract_is_read_from_request_or_harness_metadata() {
         let verified = json!({
             "harness_config": {
                 "runtime": "pty",
@@ -1337,8 +1492,12 @@ mod tests {
                 "args": []
             }
         });
+        let flattened = json!({ "verify_ready": true });
+        let nested_camel = json!({ "agent": { "verifyReady": true } });
 
         assert!(relaycast_spawn_verifies_ready(&verified));
+        assert!(relaycast_spawn_verifies_ready(&flattened));
+        assert!(relaycast_spawn_verifies_ready(&nested_camel));
         assert!(!relaycast_spawn_verifies_ready(&ordinary));
     }
 

@@ -24,6 +24,11 @@ const stub = definePtyHarness({
     RELAY_INJECT_RATE_MS: '0',
   },
 });
+const resumableStub = definePtyHarness({
+  runtime: 'pty',
+  command: fileURLToPath(new URL('./codex', import.meta.url)),
+  env: { RELAY_E2E_NODE_NAME: 'node-b', RELAY_INJECT_RATE_MS: '0' },
+});
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default defineNode({
@@ -31,7 +36,7 @@ export default defineNode({
   maxAgents: 8,
   capabilities: {
     'spawn:codex': spawn(stub),
-    'spawn:pool': spawn(stub),
+    'spawn:pool': spawn(resumableStub),
     ping: action({ input: z.object({ nonce: z.string() }) }, async (input, ctx) => ({
       pong: input.nonce,
       node: ctx.node.name,
