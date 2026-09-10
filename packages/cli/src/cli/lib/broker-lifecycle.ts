@@ -1058,7 +1058,8 @@ async function stopRecordedBroker(
   deps.warn(`Killing orphaned broker process (pid: ${identity.pid})`);
   try {
     deps.killProcess(identity.pid, 'SIGTERM');
-    let exited = await waitForProcessExit(identity.pid, force ? 500 : 300, deps);
+    // Native graceful shutdown may drain identity/presence work for 3.5s.
+    let exited = await waitForProcessExit(identity.pid, force ? 500 : 5000, deps);
     if (!exited && force && (await matchesBrokerIdentity(identity, paths, deps))) {
       deps.killProcess(identity.pid, 'SIGKILL');
       exited = await waitForProcessExit(identity.pid, 500, deps);
@@ -1403,13 +1404,19 @@ export async function waitForNodeDelivery(
 async function shutdownUpResources(
   relay: CoreRelay,
   paths: CoreProjectPaths,
-  deps: CoreDependencies
+  deps: CoreDependencies,
+  observedChildExit?: BrokerProcessIdentity
 ): Promise<void> {
-  const identity = readBrokerIdentities(paths, deps)?.find((record) => record.pid === relay.brokerPid);
+  // The SDK clears its child handle on exit/shutdown, so preserve the owned
+  // PID before awaiting shutdown or use the exact observed-child snapshot.
+  const brokerPid = observedChildExit?.pid ?? relay.brokerPid;
+  const identity = readBrokerIdentities(paths, deps)?.find((record) => record.pid === brokerPid);
   const owned = identity !== undefined && (await matchesBrokerIdentity(identity, paths, deps));
   await relay.shutdown().catch(() => undefined);
+  if (observedChildExit && observedChildExit.pid === brokerPid)
+    removeBrokerIdentity(paths, observedChildExit, deps);
   if (identity && owned && !isProcessRunning(identity.pid, deps)) removeBrokerIdentity(paths, identity, deps);
-  if (!relay.brokerPid || readBrokerPid(paths.dataDir, deps) === relay.brokerPid) {
+  if (brokerPid && readBrokerPid(paths.dataDir, deps) === brokerPid) {
     safeUnlink(path.join(paths.dataDir, CONNECTION_FILENAME), deps);
   }
 }
@@ -1766,6 +1773,23 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(1);
       return;
     }
+    const identityDeadline = deps.now() + DETACHED_START_READY_TIMEOUT_MS;
+    let identityReady = false;
+    while (deps.now() < identityDeadline && isProcessRunning(readiness.conn.pid, deps)) {
+      const record = readBrokerIdentities(paths, deps)?.find((entry) => entry.pid === readiness.conn.pid);
+      if (record && (await matchesBrokerIdentity(record, paths, deps))) {
+        identityReady = true;
+        break;
+      }
+      await deps.sleep(100);
+    }
+    if (!identityReady) {
+      deps.error(
+        `Broker API is ready but process identity was not confirmed (pid: ${readiness.conn.pid}). State retained; verify ownership manually and inspect identities in ${path.join(paths.projectRoot, '.agentworkforce', 'relay')}.`
+      );
+      deps.exit(1);
+      return;
+    }
     deps.log('Broker started.');
     deps.log(`Broker PID: ${readiness.conn.pid}`);
     deps.log('Stop with: agent-relay down');
@@ -1785,6 +1809,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let sigintCount = 0;
   let shutdownPromise: Promise<void> | undefined;
   let stopWatchingBrokerExit: (() => void) | undefined;
+  let managedIdentity: BrokerProcessIdentity | undefined;
+  let ownedBrokerExited = false;
   let rejectBrokerExit: (reason: Error) => void;
   const brokerExit = new Promise<never>((_resolve, reject) => {
     rejectBrokerExit = reject;
@@ -1800,7 +1826,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         shutdownPromise = (async () => {
           await reflexCapture?.stop();
           await nodeProviders?.stop();
-          await shutdownUpResources(relay, paths, deps);
+          await shutdownUpResources(relay, paths, deps, ownedBrokerExited ? managedIdentity : undefined);
         })();
       }
     }
@@ -1901,10 +1927,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     });
     relay = started.relay;
     stopWatchingBrokerExit = relay.onBrokerExit?.(() => {
+      ownedBrokerExited = true;
       if (!shuttingDown) rejectBrokerExit(new Error('Broker exited; stopping the node supervisor.'));
     });
     if (relay.brokerPid)
-      await persistBrokerIdentity(
+      managedIdentity = await persistBrokerIdentity(
         paths,
         relay.brokerPid,
         options.brokerName?.trim() ||

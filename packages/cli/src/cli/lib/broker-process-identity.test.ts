@@ -33,50 +33,98 @@ describe.skipIf(!['linux', 'darwin'].includes(process.platform))('native broker 
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it.each(['matched', 'reopened'])('handles a real %s broker with spaces and a custom name', async (mode) => {
-    const projectRoot = path.join(root, mode);
-    const stateDir = path.join(projectRoot, 'nested', 'custom  state');
-    fs.mkdirSync(stateDir, { recursive: true });
-    const lockPath = path.join(stateDir, 'broker-custom-node.lock');
-    const child = spawn(executable, [lockPath], { stdio: 'ignore' });
-    children.push(child);
-    const peerPath = path.join(stateDir, 'broker-peer.lock');
-    const peer = spawn(executable, [peerPath], { stdio: 'ignore' });
-    children.push(peer);
-    for (let attempt = 0; attempt < 50 && !fs.existsSync(peerPath); attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    const paths = {
-      projectRoot,
-      dataDir: stateDir,
-      teamDir: stateDir,
-      dbPath: path.join(stateDir, 'messages.db'),
-      projectId: 'fixture',
-    };
-    const deps = withDefaults({
-      getProjectPaths: () => ({ ...paths }),
-      log: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    });
-    await persistBrokerIdentity(paths, child.pid!, 'custom-node', deps);
-    const filename = brokerIdentityPath(paths, deps, 'custom-node');
-    expect(fs.existsSync(filename)).toBe(true);
-    expect(path.dirname(filename)).toBe(path.join(projectRoot, '.agentworkforce', 'relay'));
-    const recorded = fs.readFileSync(filename, 'utf8');
-    if (mode === 'reopened') {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      fs.closeSync(fs.openSync(lockPath, 'w'));
-    }
-    if (mode === 'reopened')
-      await expect(runDownCommand({ force: true, stateDir }, deps)).rejects.toMatchObject({ code: 1 });
-    else await runDownCommand({ force: true, stateDir }, deps);
-    expect(() => process.kill(peer.pid!, 0)).not.toThrow();
-    if (mode === 'matched') {
-      expect(() => process.kill(child.pid!, 0)).toThrow();
-      expect(fs.existsSync(filename)).toBe(false);
-    } else {
-      expect(() => process.kill(child.pid!, 0)).not.toThrow();
-      expect(fs.readFileSync(filename, 'utf8')).toBe(recorded);
-    }
-  });
+  it.each(['matched', 'reopened'])(
+    'handles a real %s broker with spaces and a custom name',
+    async (mode) => {
+      const projectRoot = path.join(root, mode);
+      const stateDir = path.join(projectRoot, 'nested', 'custom  state');
+      fs.mkdirSync(stateDir, { recursive: true });
+      const lockPath = path.join(stateDir, 'broker-custom-node.lock');
+      const child = spawn(executable, [lockPath], { stdio: 'ignore' });
+      children.push(child);
+      const peerPath = path.join(stateDir, 'broker-peer.lock');
+      const peer = spawn(executable, [peerPath], { stdio: 'ignore' });
+      children.push(peer);
+      const fixtureDeadline = Date.now() + 10_000;
+      while (!(fs.existsSync(peerPath) && fs.existsSync(lockPath))) {
+        if (Date.now() >= fixtureDeadline || child.exitCode !== null || peer.exitCode !== null)
+          throw new Error(
+            `Native fixture did not become ready: ${JSON.stringify({
+              lockPath,
+              peerPath,
+              lockExists: fs.existsSync(lockPath),
+              peerExists: fs.existsSync(peerPath),
+              childExit: child.exitCode,
+              peerExit: peer.exitCode,
+              childSignal: child.signalCode,
+              peerSignal: peer.signalCode,
+            })}`
+          );
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const paths = {
+        projectRoot,
+        dataDir: stateDir,
+        teamDir: stateDir,
+        dbPath: path.join(stateDir, 'messages.db'),
+        projectId: 'fixture',
+      };
+      const deps = withDefaults({
+        getProjectPaths: () => ({ ...paths }),
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      });
+      const probes: Array<{ command: string; stdout?: string; stderr?: string; error?: string }> = [];
+      const exec = deps.execCommand;
+      deps.execCommand = async (command) => {
+        try {
+          const result = await exec(command);
+          probes.push({ command, ...result });
+          return result;
+        } catch (error) {
+          probes.push({ command, error: String(error) });
+          throw error;
+        }
+      };
+      const captured = await persistBrokerIdentity(paths, child.pid!, 'custom-node', deps);
+      if (!captured) {
+        const stat = fs.statSync(lockPath, { bigint: true });
+        throw new Error(
+          `Native identity capture failed: ${JSON.stringify({
+            pid: child.pid,
+            childExit: child.exitCode,
+            childSignal: child.signalCode,
+            lock: {
+              device: String(stat.dev),
+              inode: String(stat.ino),
+              ctimeNs: String(stat.ctimeNs),
+              mtimeNs: String(stat.mtimeNs),
+            },
+            probes,
+          })}`
+        );
+      }
+      const filename = brokerIdentityPath(paths, deps, 'custom-node');
+      expect(fs.existsSync(filename)).toBe(true);
+      expect(path.dirname(filename)).toBe(path.join(projectRoot, '.agentworkforce', 'relay'));
+      const recorded = fs.readFileSync(filename, 'utf8');
+      if (mode === 'reopened') {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        fs.closeSync(fs.openSync(lockPath, 'w'));
+      }
+      if (mode === 'reopened')
+        await expect(runDownCommand({ force: true, stateDir }, deps)).rejects.toMatchObject({ code: 1 });
+      else await runDownCommand({ force: true, stateDir }, deps);
+      expect(() => process.kill(peer.pid!, 0)).not.toThrow();
+      if (mode === 'matched') {
+        expect(() => process.kill(child.pid!, 0)).toThrow();
+        expect(fs.existsSync(filename)).toBe(false);
+      } else {
+        expect(() => process.kill(child.pid!, 0)).not.toThrow();
+        expect(fs.readFileSync(filename, 'utf8')).toBe(recorded);
+      }
+    },
+    20_000
+  );
 });

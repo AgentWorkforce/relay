@@ -134,7 +134,7 @@ case "\${2:-}" in
         sleep 0.01
       done
     fi
-    echo "Cleaned up (was not running)"
+    echo "No verified orphan broker found; retained existing state."
     ;;
   up)
     if [ "\${RELAY_BASE_URL:-}" != "https://cast.agentrelay.com" ]; then

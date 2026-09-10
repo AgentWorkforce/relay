@@ -5,8 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const identityProof = process.argv.includes('--persisted-identity');
-const CASE_ID = identityProof ? '1736-persisted-broker-identity' : '1736-scoped-orphan-cleanup';
+const CASE_ID = '1736-scoped-orphan-cleanup';
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
@@ -73,34 +72,28 @@ try {
   // Seed through the actual target implementation when it supports persisted
   // ownership. The old base has no record support and uses process discovery.
   const identityModule = path.join(targetDir, 'packages/cli/dist/cli/lib/broker-process-identity.js');
+  let captureIdentity;
   if (fs.existsSync(identityModule)) {
     const { persistBrokerIdentity, brokerIdentityPath, readBrokerProcessIdentity } = await import(
       pathToFileURL(identityModule).href
     );
     const paths = { projectRoot: targetDir, dataDir: candidateState };
-    await persistBrokerIdentity(paths, children[0].pid, 'fixture', {
-      fs,
-      pid: process.pid,
-      execCommand: fixedIdentityCommand,
-    });
+    captureIdentity = () =>
+      persistBrokerIdentity(paths, children[0].pid, 'fixture', {
+        fs,
+        pid: process.pid,
+        execCommand: fixedIdentityCommand,
+      });
+    await captureIdentity();
     identityPath = brokerIdentityPath(paths, undefined, 'fixture');
     if (!fs.existsSync(identityPath))
       throw new Error(
         `The live fixture did not produce a verified broker identity: ${JSON.stringify({ process: await readBrokerProcessIdentity(children[0].pid, { fs, pid: process.pid, execCommand: fixedIdentityCommand }), descriptors: fixedIdentityCommand(`lsof -nP -a -p ${children[0].pid} -FfnDi`).stdout })}`
       );
   }
-  if (identityProof) {
-    // Simulate a second broker launch reusing the runtime lock. Even the same
-    // PID/start-second/executable must no longer match the persisted instance.
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    fs.closeSync(fs.openSync(path.join(candidateState, 'broker-fixture.lock'), 'w'));
-  }
-
   const cliPath = path.join(targetDir, 'packages/cli/dist/cli/index.js');
-  const down = await runCli(
-    process.execPath,
-    [cliPath, 'node', 'down', '--force', '--state-dir', candidateState],
-    {
+  const invokeDown = () =>
+    runCli(process.execPath, [cliPath, 'node', 'down', '--force', '--state-dir', candidateState], {
       cwd: targetDir,
       env: {
         ...process.env,
@@ -110,11 +103,29 @@ try {
       },
       encoding: 'utf8',
       timeout: 30_000,
-    }
-  );
+    });
+  if (arm === 'head') {
+    if (!captureIdentity) throw new Error('Head must support persisted broker identity');
+    // One registered case proves both refusal and exact cleanup. Reopening the
+    // held lock changes its generation even with identical PID/start/binary.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    fs.closeSync(fs.openSync(path.join(candidateState, 'broker-fixture.lock'), 'w'));
+    const before = fs.readFileSync(identityPath, 'utf8');
+    const refused = await invokeDown();
+    // Let delayed signals/reaping settle before proving preservation; an exit-1
+    // CLI result alone must not hide a broker that is already dying.
+    await waitForExit(children[0]);
+    if (refused.status !== 1 || !children.every(isAlive) || fs.readFileSync(identityPath, 'utf8') !== before)
+      throw new Error(
+        `Unverified runtime generation was not preserved: ${JSON.stringify({ status: refused.status, stdout: refused.stdout, stderr: refused.stderr })}`
+      );
+    // Test-only recapture via the actual implementation establishes the current
+    // live fixture generation for the successful cleanup arm below.
+    await captureIdentity();
+  }
+  const down = await invokeDown();
   if (down.error) throw new Error(`node down could not start: ${down.error.message}`);
-  const expectedExit = identityProof && arm === 'head' ? 1 : 0;
-  if (down.status !== expectedExit) {
+  if (down.status !== 0) {
     throw new Error(`node down failed with ${down.status}: ${down.stderr}`);
   }
 
@@ -122,17 +133,11 @@ try {
   const selectedStopped = !isAlive(children[0]);
   const survivors = children.slice(1).filter(isAlive);
   const nonSelectedStopped = children.slice(1).some((child) => !isAlive(child));
-  const headObserved =
-    (identityProof ? !selectedStopped : selectedStopped) && survivors.length === children.length - 1;
-  const baseObserved = identityProof ? selectedStopped : selectedStopped && nonSelectedStopped;
+  const headObserved = selectedStopped && survivors.length === children.length - 1;
+  const baseObserved = selectedStopped && nonSelectedStopped;
   const outcome = arm === 'base' ? (baseObserved ? 'bug' : null) : headObserved ? 'fixed' : null;
-  const signature = identityProof
-    ? arm === 'base'
-      ? 'unverified_orphan_is_killed'
-      : 'unverified_orphan_is_preserved'
-    : arm === 'base'
-      ? 'isolated_cleanup_kills_peer_or_worker'
-      : 'isolated_cleanup_preserves_peer_and_worker';
+  const signature =
+    arm === 'base' ? 'isolated_cleanup_kills_peer_or_worker' : 'isolated_cleanup_preserves_peer_and_worker';
   if (!outcome) {
     throw new Error(
       `Unexpected scoped cleanup observation: ${JSON.stringify({
@@ -154,11 +159,10 @@ try {
       arm,
       outcome,
       signature,
-      details: identityProof
-        ? 'The runtime lock was reopened after identity capture; cleanup must preserve that unverified process and every peer.'
-        : arm === 'base'
+      details:
+        arm === 'base'
           ? 'The base cleanup matched project-root paths rather than the selected state directory and signalled an unrelated peer, default broker, PTY worker, shell mention, or ambiguous process.'
-          : 'The head cleanup stopped only the broker declaring the selected state directory and preserved the peer broker, default broker, PTY worker, shell mention, and ambiguous process.',
+          : 'The head refused a reopened runtime lock without changing the record or stopping any process, then recaptured the fixture identity and stopped only the selected broker while preserving every peer and worker.',
     })}\n`,
     'utf8'
   );
@@ -178,9 +182,9 @@ function fixedIdentityCommand(command) {
       }),
       stderr: '',
     };
-  const lsof = /^lsof -nP -a -p ([1-9]\d*) (?:-d txt -FDi|-FfnDi)$/.exec(command);
+  const lsof = /^lsof -nP -a -p ([1-9]\d*) (?:-d txt -FfDi|-FfnDi)$/.exec(command);
   if (!lsof) throw new Error('Unexpected process identity command');
-  const fields = command.endsWith('-FDi') ? ['-d', 'txt', '-FDi'] : ['-FfnDi'];
+  const fields = command.endsWith('-FfDi') ? ['-d', 'txt', '-FfDi'] : ['-FfnDi'];
   return {
     stdout: execFileSync('lsof', ['-nP', '-a', '-p', lsof[1], ...fields], { encoding: 'utf8' }),
     stderr: '',

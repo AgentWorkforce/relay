@@ -289,8 +289,8 @@ STATUS_OUTPUT="$(run_cli node status 2>&1 || true)"
 assert_exact_count "$STATUS_OUTPUT" '^Status: STOPPED$' 1 'status line'
 
 echo "=== Smoke: standalone down --force ==="
-DOWN_OUTPUT="$(run_cli node down --force 2>&1 || true)"
-assert_exact_count "$DOWN_OUTPUT" '^Cleaned up \(was not running\)$' 1 'down cleanup line'
+DOWN_OUTPUT="$(run_cli node down --force 2>&1)"
+assert_exact_count "$DOWN_OUTPUT" '^No verified orphan broker found; retained existing state\.$' 1 'down preservation line'
 
 echo "=== Smoke: standalone up ==="
 UP_LOG="$TMP_ROOT/up.log"

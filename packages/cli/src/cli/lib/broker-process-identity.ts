@@ -67,7 +67,8 @@ export async function readBrokerProcessIdentity(
     const startCommand = `LC_ALL=C TZ=UTC ps -p ${pid} -o lstart=`;
     const startedAt = normalizedStart((await deps.execCommand(startCommand)).stdout);
     if (!startedAt) return null;
-    const details = (await deps.execCommand(`lsof -nP -a -p ${pid} -d txt -FDi`)).stdout;
+    // Linux omits descriptor fields unless explicitly selected, unlike macOS.
+    const details = (await deps.execCommand(`lsof -nP -a -p ${pid} -d txt -FfDi`)).stdout;
     const fields = details.trim().split('\n');
     if (fields.shift() !== `p${pid}`) return null;
     const objects: string[] = [];
@@ -160,7 +161,7 @@ export async function persistBrokerIdentity(
   pid: number,
   brokerName: string,
   deps: IdentityDependencies
-): Promise<void> {
+): Promise<BrokerProcessIdentity | undefined> {
   const identity = await readBrokerProcessIdentity(pid, deps);
   if (!identity) return;
   const lock = await readHeldRuntimeLock(paths, pid, brokerName, deps);
@@ -174,14 +175,19 @@ export async function persistBrokerIdentity(
     return;
   const filename = brokerIdentityPath(paths, deps, brokerName);
   const temporary = path.join(path.dirname(filename), `.${path.basename(filename)}.${randomUUID()}.tmp`);
+  const record = {
+    version: 1,
+    pid,
+    stateDirectory: stateDirectory(paths, deps),
+    brokerName,
+    ...identity,
+    lock,
+  } satisfies BrokerProcessIdentity;
   try {
     deps.fs.mkdirSync(path.dirname(filename), { recursive: true });
-    deps.fs.writeFileSync(
-      temporary,
-      `${JSON.stringify({ version: 1, pid, stateDirectory: stateDirectory(paths, deps), brokerName, ...identity, lock } satisfies BrokerProcessIdentity)}\n`,
-      'utf-8'
-    );
+    deps.fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, 'utf-8');
     deps.fs.renameSync(temporary, filename);
+    return record;
   } catch {
     // A failed write never grants fallback ownership of an unrecorded process.
   } finally {
@@ -198,11 +204,19 @@ export async function matchesBrokerIdentity(
   paths: CoreProjectPaths,
   deps: IdentityDependencies
 ): Promise<boolean> {
+  // Persisted authorization can be revoked while shutdown waits or OS probes
+  // run. A cached snapshot alone must never authorize another signal.
+  const recorded = () => readBrokerIdentity(paths, deps, identity.brokerName);
+  if (JSON.stringify(recorded()) !== JSON.stringify(identity)) return false;
   const current = await readBrokerProcessIdentity(identity.pid, deps);
   if (!current || current.startedAt !== identity.startedAt || current.executable !== identity.executable)
     return false;
   const lock = await readHeldRuntimeLock(paths, identity.pid, identity.brokerName, deps);
-  return lock !== null && JSON.stringify(lock) === JSON.stringify(identity.lock);
+  return (
+    lock !== null &&
+    JSON.stringify(lock) === JSON.stringify(identity.lock) &&
+    JSON.stringify(recorded()) === JSON.stringify(identity)
+  );
 }
 
 /** A second-resolution ps birth alone cannot distinguish a rapid restart.
