@@ -1,0 +1,65 @@
+{
+  "id": "traj_avvi3k22dse8",
+  "version": 1,
+  "task": {
+    "title": "Fix required Daytona provider sandbox identity contract for Relay issue #1732",
+    "source": {
+      "system": "plain",
+      "id": "relay#1732"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-10T10:14:09.874Z",
+  "completedAt": "2026-09-10T10:16:35.995Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-10T10:16:35.391Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_224ewa1jd3e2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-10T10:16:35.391Z",
+      "endedAt": "2026-09-10T10:16:35.995Z",
+      "events": [
+        {
+          "ts": 1789035395392,
+          "type": "decision",
+          "content": "Require Daytona provider UUID in normalized Cloud responses: Require Daytona provider UUID in normalized Cloud responses",
+          "raw": {
+            "question": "Require Daytona provider UUID in normalized Cloud responses",
+            "chosen": "Require Daytona provider UUID in normalized Cloud responses",
+            "alternatives": [],
+            "reasoning": "The stable Cloud sbx identity cannot be inspected or deleted by Daytona tooling; accepting a missing or malformed provider UUID makes ID-bound snapshot attestation and recovery impossible."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Required validated Daytona provider sandbox IDs in Cloud results and covered Fleet output.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "87358176f"
+  ],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "packages/cloud/src/fleet-sandbox.test.ts",
+    "packages/cloud/src/fleet-sandbox.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e404d2fd59d93565b6b1bd5ba3d84c0efe7d5fff",
+    "endRef": "87358176f363f9283318cb13cb75755665e67e5b",
+    "traceId": "9f3a87ec-2cbf-4343-b03b-106108dcf21b"
+  }
+}

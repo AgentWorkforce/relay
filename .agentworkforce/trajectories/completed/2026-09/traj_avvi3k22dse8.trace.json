@@ -1,0 +1,121 @@
+{
+  "version": "1.0.0",
+  "id": "9f3a87ec-2cbf-4343-b03b-106108dcf21b",
+  "timestamp": "2026-09-10T10:16:36.073Z",
+  "trajectory": "traj_avvi3k22dse8",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 795,
+              "end_line": 807,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/fleet-sandbox.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 28,
+              "end_line": 34,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 360,
+              "end_line": 459,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 963,
+              "end_line": 970,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 1017,
+              "end_line": 1024,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 1067,
+              "end_line": 1074,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 1522,
+              "end_line": 1528,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 1563,
+              "end_line": 1569,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cloud/src/fleet-sandbox.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 14,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 411,
+              "end_line": 429,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 459,
+              "end_line": 465,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            },
+            {
+              "start_line": 503,
+              "end_line": 509,
+              "revision": "87358176f363f9283318cb13cb75755665e67e5b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
