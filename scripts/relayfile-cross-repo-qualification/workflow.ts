@@ -190,7 +190,7 @@ export function buildQualificationWorkflow() {
   wf.step('verify-integrity', {
     type: 'deterministic',
     dependsOn: [codexFinalReview, 'capture-integrity'],
-    command: `${command('verify-integrity.mjs')} "{{steps.capture-integrity.output}}"`,
+    command: command('verify-integrity.mjs', '{{steps.capture-integrity.output}}'),
     captureOutput: true,
     failOnError: false,
   });
