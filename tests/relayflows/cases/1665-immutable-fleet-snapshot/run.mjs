@@ -123,15 +123,18 @@ function providerIdentityMatches(value, sandboxId) {
 
 function nodeIdentityMatches(node, nodeName, sandboxId) {
   const text = JSON.stringify(node);
-  return node.name === nodeName && text.includes(sandboxId) && text.includes('daytona');
+  return (node.name === nodeName || node.nodeName === nodeName) && text.includes(sandboxId) && text.includes('daytona');
 }
 
 function agentIdentityMatches(agent, agentName, nodeName, sandboxId) {
   const text = JSON.stringify(agent);
+  const declaredSandbox = [agent.sandboxId, agent.sandbox_id, agent.sandbox]?.find(
+    (value) => typeof value === 'string'
+  );
   return (
     (agent.name === agentName || agent.agentName === agentName || agent.id === agentName) &&
     text.includes(nodeName) &&
-    (!sandboxId || text.includes(sandboxId))
+    (!declaredSandbox || declaredSandbox === sandboxId)
   );
 }
 
