@@ -149,7 +149,9 @@ export function buildQualificationWorkflow() {
     dependsOn: ['verify-arm-a', 'verify-arm-b'],
     command: command('aggregate-evidence.mjs'),
     captureOutput: true,
-    failOnError: false,
+    // Persist both arm reports first, then stop before paid reviewers when the
+    // deterministic evidence cannot possibly qualify.
+    failOnError: true,
   });
   const chain = (provider: 'claude' | 'codex', previous: string | undefined) => {
     const cap = provider[0].toUpperCase() + provider.slice(1);

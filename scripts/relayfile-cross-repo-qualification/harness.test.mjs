@@ -155,3 +155,11 @@ test('evidence aggregation is independent from final signoff aggregation', () =>
   assert.match(aggregate, /COMPREHENSIVELY_SATISFIED/);
   assert.match(signoff, /finalReview\?\.value\?\.verdict !== 'COMPREHENSIVELY_SATISFIED'/);
 });
+
+test('blocked deterministic evidence stops before paid reviewers', () => {
+  assert.match(evidenceAggregate, /if \(result\.ok !== true\) process\.exitCode = 1/);
+  assert.match(
+    workflow,
+    /wf\.step\('aggregate-evidence',[\s\S]*?failOnError: true,[\s\S]*?wf\.step\(`\$\{provider\}-review`/
+  );
+});

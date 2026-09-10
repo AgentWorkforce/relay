@@ -41,3 +41,4 @@ if (preflight?.status !== 'READY' || preflight.runId !== runId) {
 await writeFile(path.join(artifactDir, 'aggregate-evidence.json'), `${JSON.stringify(result, null, 2)}\n`);
 console.log(`QUALIFICATION_EVIDENCE_VERDICT ${result.verdict}`);
 for (const failure of result.failures ?? []) console.log(`QUALIFICATION_FAILURE ${failure}`);
+if (result.ok !== true) process.exitCode = 1;
