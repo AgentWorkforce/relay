@@ -63,6 +63,7 @@ import {
   fleetReviewerNetwork,
   MODEL_TRANSPORT_HOSTS,
   preflightPermissions,
+  validateStrictHostPort,
 } from '../../scripts/verify-features/fleet-permissions.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
@@ -565,6 +566,11 @@ function completeEvidence(matrix: {
 }
 
 describe('complete Daytona Fleet board', () => {
+  it('accepts all valid TCP ports through 65535', () => {
+    expect(validateStrictHostPort('agentrelay.com:10000')).toBe('agentrelay.com:10000');
+    expect(validateStrictHostPort('agentrelay.com:65535')).toBe('agentrelay.com:65535');
+    expect(() => validateStrictHostPort('agentrelay.com:65536')).toThrow(/1 and 65535/);
+  });
   it('parses the pretty-printed CLI receipt amid unrelated JSON logs', () => {
     const receipt = parseCliJson(
       '[info] {"level":"debug"}\n' +
@@ -2118,7 +2124,7 @@ describe('complete Daytona Fleet board', () => {
     if (!address || typeof address === 'string') throw new Error('broker test server did not bind');
     const brokerUrl = `http://127.0.0.1:${address.port}`;
     try {
-      await execFileAsync(process.execPath, ['-e', "await fetch('https://cloud.example.test/api/v1/ping')"], {
+      await execFileAsync(process.execPath, ['-e', "await fetch('https://cloud.example.test/api/v1/fleet/ping')"], {
         env: {
           PATH: process.env.PATH,
           NODE_OPTIONS: `--import=${path.resolve('scripts/verify-features/candidate-credential-broker-client.mjs')}`,
@@ -2126,10 +2132,13 @@ describe('complete Daytona Fleet board', () => {
           RELAY_FLEET_BROKER_CAPABILITY: 'test-capability',
           RELAY_FLEET_CLOUD_ORIGIN: 'https://cloud.example.test',
           RELAY_FLEET_RELAY_ORIGIN: 'https://relay.example.test',
+          RELAY_FLEET_BROKER_TASK_ID: 'qualification-test-a',
+          RELAY_FLEET_BROKER_WORKSPACE_ID: 'rw_7ccfea89',
+          RELAY_FLEET_BROKER_CLOUD_WORKSPACE_ID: '11111111-1111-4111-8111-111111111111',
         },
       });
       const forwarded = JSON.parse(requestBody);
-      expect(forwarded.target).toBe('https://cloud.example.test/api/v1/ping');
+      expect(forwarded.target).toBe('https://cloud.example.test/api/v1/fleet/ping');
       expect(forwarded.headers.authorization).toBeUndefined();
       expect(forwarded.headers.cookie).toBeUndefined();
     } finally {
