@@ -9,9 +9,12 @@ const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
-const expectedSha = arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!['base', 'head'].includes(arm) || !expectedSha) throw new Error('Invalid RelayFlow arm identity.');
-if (execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== expectedSha) {
+if (
+  execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== expectedSha
+) {
   throw new Error('Target checkout is not bound to the declared RelayFlow arm SHA.');
 }
 if (!isWithin(harnessDir, fileURLToPath(import.meta.url))) {
@@ -83,5 +86,8 @@ function requiredDirectory(name) {
 
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
 }
