@@ -283,8 +283,8 @@ two complete boards, each in a separate clean workspace, bound to the exact
 candidate manifest and Relayfile deployment, followed by exact absence checks
 and two fresh signoffs.
 
-Relay now contains a candidate two-artifact package producer contract: a manual,
-main-only workflow requires a unique unpublished prerelease and creates a
+Relay now contains a candidate two-artifact package producer contract: a manual
+workflow from an immutable `qualification/<nonce>` ref requires a unique unpublished prerelease and creates a
 payload attestation for the seven exact Relay protocol/source packages plus a
 separate envelope bound to the platform artifact digest and payload-file
 SHA-256. Relay issue #1663 records why this must not run on every ordinary main
