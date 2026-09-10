@@ -768,7 +768,6 @@ describe('fleet command support', () => {
       { strict: true }
     );
     expect(createAgentRelay).toHaveBeenCalledWith({
-      workspaceKey: 'rk_live_agent37_target',
       token: 'at_live_launcher',
       baseUrl: 'https://agent37-cast.agentrelay.com',
     });
@@ -965,7 +964,6 @@ describe('fleet command support', () => {
       { strict: true }
     );
     expect(createAgentRelay).toHaveBeenCalledWith({
-      workspaceKey: CANONICAL_RELAYCAST_TARGET.relaycastApiKey,
       token: 'at_live_launcher',
       baseUrl: CANONICAL_RELAYCAST_TARGET.baseUrl,
     });
@@ -1059,10 +1057,8 @@ describe('fleet command support', () => {
       ignorePersistedRelaycastTarget: true,
     });
     expect(createAgentRelay).toHaveBeenCalledWith({
-      workspaceKey: 'rk_live_test',
       token: 'at_live_legacy_launcher',
       baseUrl: undefined,
-      ignorePersistedRelaycastTarget: true,
     });
   });
 

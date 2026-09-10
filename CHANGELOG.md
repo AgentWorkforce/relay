@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
+- `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
 
 - `fleet spawn --sandbox` uses the provider-neutral durable profile for explicit Daytona and E2B sandboxes, so their measured resource envelopes are routable while Agent37 retains its heavy profile.
 
