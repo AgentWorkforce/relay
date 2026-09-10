@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1732-daytona-provider-sandbox-identity",
+  "kind": "bugfix",
+  "title": "Reject malformed Daytona success responses while retaining exact cleanup authority",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1732-daytona-provider-sandbox-identity/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "daytona_success_without_provider_identity_is_accepted"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "daytona_success_without_provider_identity_is_rejected_for_exact_cleanup"
+    }
+  }
+}
