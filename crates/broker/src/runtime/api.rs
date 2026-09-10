@@ -1,6 +1,6 @@
 use super::*;
 use crate::protocol::HeadlessHarnessDriver;
-use crate::relaycast::{register_new_spawn_identity, retry_agent_registration};
+use crate::relaycast::register_new_spawn_identity;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
