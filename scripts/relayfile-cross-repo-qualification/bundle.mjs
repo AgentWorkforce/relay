@@ -94,6 +94,7 @@ await withTemporaryGoModuleCache(async (goModCache) => {
         GOARCH: 'amd64',
         CGO_ENABLED: '0',
         GOMODCACHE: goModCache,
+        GOFLAGS: `${process.env.GOFLAGS ?? ''} -modcacherw`.trim(),
       },
       timeout: BUNDLE_TIMEOUT_MS,
       killSignal: 'SIGKILL',

@@ -36,6 +36,7 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /\[0-9a-f\]\{40\}/);
   assert.match(bundle, /withTemporaryGoModuleCache/);
   assert.match(bundle, /GOMODCACHE: goModCache/);
+  assert.match(bundle, /-modcacherw/);
   assert.match(arm, /apt-get install -y --no-install-recommends procps ca-certificates/);
   assert.match(arm, /rm -rf \/var\/lib\/apt\/lists\/\*/);
   assert.match(arm, /RELAY_PR_PROOF_RESULT_PATH=\/tmp\/workspace-acl-provisioning-admission\.json/);

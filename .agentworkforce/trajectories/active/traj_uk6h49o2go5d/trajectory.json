@@ -71,6 +71,18 @@
             "reasoning": "The operator default GOMODCACHE can be unavailable or a broken external-volume symlink. Candidate bundling must be reproducible without host cache assumptions, must remove its temporary cache, and must stop before Daytona allocation when provenance or the Linux mount binary cannot be built."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789024008981,
+          "type": "decision",
+          "content": "Normalize Go module-cache directory permissions before deleting the task-owned cache: Normalize Go module-cache directory permissions before deleting the task-owned cache",
+          "raw": {
+            "question": "Normalize Go module-cache directory permissions before deleting the task-owned cache",
+            "chosen": "Normalize Go module-cache directory permissions before deleting the task-owned cache",
+            "alternatives": [],
+            "reasoning": "Go downloads are read-only by default and caused deterministic EACCES cleanup failure. Recursive chmod is restricted to directories beneath the mkdtemp-owned cache, skips symlinks, and is paired with -modcacherw plus a behavioral 0500-directory regression."
+          },
+          "significance": "high"
         }
       ]
     }
