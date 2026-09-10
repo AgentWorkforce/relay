@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -28,28 +29,48 @@ try {
   await access(validator);
   if (arm === 'base') throw new Error('base unexpectedly contains the qualification request validator');
   const module = await import(`${pathToFileURL(validator).href}?proof=${Date.now()}`);
-  const context = module.validateQualificationRequestEvent(
-    {
-      repository: { full_name: 'AgentWorkforce/relay' },
-      workflow_run: {
-        id: 901,
-        run_attempt: 1,
-        name: 'Relay cleanroom qualification request',
-        path: '.github/workflows/relay-cleanroom-qualification-request.yml',
-        event: 'workflow_dispatch',
-        status: 'completed',
-        conclusion: 'success',
-        head_branch: 'qualification/proof-candidate',
-        head_sha: 'a'.repeat(40),
-        head_repository: { full_name: 'AgentWorkforce/relay' },
-        actor: { login: 'qualification-app[bot]' },
-        triggering_actor: { login: 'qualification-app[bot]' },
-      },
+  const validEvent = {
+    repository: { full_name: 'AgentWorkforce/relay' },
+    workflow_run: {
+      id: 901,
+      run_attempt: 1,
+      name: 'Relay cleanroom qualification request',
+      path: '.github/workflows/relay-cleanroom-qualification-request.yml',
+      event: 'workflow_dispatch',
+      status: 'completed',
+      conclusion: 'success',
+      head_branch: 'qualification/proof-candidate',
+      head_sha: 'a'.repeat(40),
+      head_repository: { full_name: 'AgentWorkforce/relay' },
+      actor: { login: 'qualification-app[bot]' },
+      triggering_actor: { login: 'qualification-app[bot]' },
     },
-    '["qualification-app[bot]"]'
-  );
+  };
+  const context = module.validateQualificationRequestEvent(validEvent, '["qualification-app[bot]"]');
   if (context.headBranch !== 'qualification/proof-candidate' || context.headSha !== 'a'.repeat(40)) {
     throw new Error('validator did not preserve the exact trusted request identity');
+  }
+  const rejectionCases = [
+    ['repository', (event) => (event.repository.full_name = 'evil/example')],
+    ['workflow name', (event) => (event.workflow_run.name = 'other workflow')],
+    ['workflow path', (event) => (event.workflow_run.path = '.github/workflows/other.yml')],
+    ['event type', (event) => (event.workflow_run.event = 'repository_dispatch')],
+    ['status', (event) => (event.workflow_run.status = 'in_progress')],
+    ['conclusion', (event) => (event.workflow_run.conclusion = 'failure')],
+    ['actor', (event) => (event.workflow_run.actor.login = 'unapproved[bot]')],
+    ['triggering actor', (event) => (event.workflow_run.triggering_actor.login = 'unapproved[bot]')],
+    ['branch', (event) => (event.workflow_run.head_branch = 'main')],
+    ['head SHA', (event) => (event.workflow_run.head_sha = 'b'.repeat(39))],
+    ['head repository', (event) => (event.workflow_run.head_repository.full_name = 'evil/example')],
+  ];
+  for (const [label, mutate] of rejectionCases) {
+    const invalid = structuredClone(validEvent);
+    mutate(invalid);
+    assert.throws(
+      () => module.validateQualificationRequestEvent(invalid, '["qualification-app[bot]"]'),
+      undefined,
+      `validator accepted a mismatched ${label}`
+    );
   }
   outcome = 'fixed';
   signature = 'trusted_qualification_request_validated';
