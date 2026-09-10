@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  daytonaMemoryGiBFromMiB,
   ACTUAL_CPU_LIMIT_MS,
   COLD_MOUNT_FILE_COUNT,
   COLD_MOUNT_MANIFEST_SHA256,
@@ -20,6 +21,14 @@ import {
   validateColdMountEvidence,
   validateCheckpointSeries,
 } from './contract.mjs';
+
+test('Daytona memory converts exact MiB to GiB without rounding', () => {
+  assert.equal(daytonaMemoryGiBFromMiB('8192'), '8');
+  assert.equal(daytonaMemoryGiBFromMiB('4096'), '4');
+  assert.throws(() => daytonaMemoryGiBFromMiB('8193'), /whole number of GiB/);
+  assert.throws(() => daytonaMemoryGiBFromMiB('0'), /positive integer/);
+  assert.throws(() => daytonaMemoryGiBFromMiB('not-a-number'), /positive integer/);
+});
 
 test('persisted vitest evidence excludes raw secret-bearing output', () => {
   const result = toVitestEvidenceSummary({

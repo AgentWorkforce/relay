@@ -43,6 +43,9 @@ test('arm uses one immutable bundle, deterministic installs, and the relayfile-c
   assert.match(arm, /cleanupEvidence\.attempted = createAttempted/);
   assert.match(arm, /const runTest[\s\S]*timeoutMs: 300_000/);
   assert.match(createBlock, /timeoutMs: 900_000/);
+  assert.match(createBlock, /'--memory',[\s\S]*daytonaMemoryGiB/);
+  assert.doesNotMatch(createBlock, /RELAYFILE_DAYTONA_MEMORY_MB/);
+  assert.doesNotMatch(arm, /process\.exit\(0\)/);
   assert.match(arm, /Always probe the generated[\s\S]*name after the delete attempt/);
   assert.match(arm, /cleanupEvidence\.sandboxAbsent = await verifyAbsent\(target\)/);
   assert.match(arm, /npm pack relayfile@\$\{npmVersion\}/);

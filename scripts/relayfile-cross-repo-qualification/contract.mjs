@@ -108,6 +108,19 @@ export function buildSandboxName({ arm, now = new Date(), pid = process.pid }) {
   return `relayfile-cross-repo-qual-${stamp}-${pid}-arm-${arm}`;
 }
 
+/** Convert the public MiB setting to Daytona CLI's GiB unit without rounding. */
+export function daytonaMemoryGiBFromMiB(raw = '4096') {
+  const text = String(raw).trim();
+  if (!/^[1-9][0-9]*$/.test(text)) {
+    throw new Error('RELAYFILE_DAYTONA_MEMORY_MB must be a positive integer');
+  }
+  const memoryMiB = Number(text);
+  if (!Number.isSafeInteger(memoryMiB) || memoryMiB % 1024 !== 0) {
+    throw new Error('RELAYFILE_DAYTONA_MEMORY_MB must be a safe whole number of GiB in MiB');
+  }
+  return String(memoryMiB / 1024);
+}
+
 /** Strip credential-looking env assignments before anything is logged. */
 export function redactEnvAssignments(text) {
   return String(text).replace(

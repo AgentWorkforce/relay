@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { pollUntilAbsent } from './absence.mjs';
 import {
   buildSandboxName,
+  daytonaMemoryGiBFromMiB,
   parseVitestVerboseOutput,
   redactEnvAssignments,
   toVitestEvidenceSummary,
@@ -48,18 +49,18 @@ async function writeBlocked(reason, extra = {}) {
 }
 if (!RUN_ID_PATTERN.test(runId)) {
   await writeBlocked('RELAYFILE_QUALIFICATION_RUN_ID is missing or unsafe');
-  process.exit(0);
+  process.exit(1);
 }
 if (process.env.RELAYFILE_QUALIFICATION_CREATE_SANDBOXES !== '1') {
   await writeBlocked('RELAYFILE_QUALIFICATION_CREATE_SANDBOXES is not 1; no Daytona sandbox was created');
-  process.exit(0);
+  process.exit(1);
 }
 let preflight;
 try {
   preflight = JSON.parse(await readFile(path.join(artifactDir, 'preflight.json'), 'utf8'));
 } catch {
   await writeBlocked('qualification preflight is missing; no Daytona sandbox was created');
-  process.exit(0);
+  process.exit(1);
 }
 if (
   preflight.runId !== runId ||
@@ -76,7 +77,7 @@ if (
       },
     }
   );
-  process.exit(0);
+  process.exit(1);
 }
 if (
   preflight.publishedRelayfile?.package !== 'relayfile' ||
@@ -89,18 +90,18 @@ if (
   preflight.publishedRelayfile.installed !== false
 ) {
   await writeBlocked('preflight npm prerelease attestation does not match the requested immutable install');
-  process.exit(0);
+  process.exit(1);
 }
 const requiredProbeModels = { codex: 'gpt-5.6-luna', claude: 'sonnet' };
 if (!Array.isArray(preflight.modelProbes) || preflight.modelProbes.length !== 2) {
   await writeBlocked('qualification preflight model probe proof is missing; no Daytona sandbox was created');
-  process.exit(0);
+  process.exit(1);
 }
 for (const [name, model] of Object.entries(requiredProbeModels)) {
   const probe = preflight.modelProbes.find((value) => value?.name === name);
   if (!probe || probe.model !== model || probe.timeoutMs !== PROBE_TIMEOUT_MS || probe.ok !== true) {
     await writeBlocked(`${name} model probe did not pass; no Daytona sandbox was created`);
-    process.exit(0);
+    process.exit(1);
   }
 }
 const image = process.env.RELAYFILE_QUALIFICATION_DAYTONA_IMAGE?.trim();
@@ -114,7 +115,17 @@ if (
   await writeBlocked(
     'all three candidate paths and a digest-pinned RELAYFILE_QUALIFICATION_DAYTONA_IMAGE are required'
   );
-  process.exit(0);
+  process.exit(1);
+}
+
+let daytonaMemoryGiB;
+try {
+  daytonaMemoryGiB = daytonaMemoryGiBFromMiB(
+    process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096'
+  );
+} catch (error) {
+  await writeBlocked(error instanceof Error ? error.message : String(error));
+  process.exit(1);
 }
 
 const sandboxName = buildSandboxName({ arm });
@@ -459,7 +470,7 @@ async function main() {
         '--cpu',
         process.env.RELAYFILE_DAYTONA_CPU ?? '2',
         '--memory',
-        process.env.RELAYFILE_DAYTONA_MEMORY_MB ?? '4096',
+        daytonaMemoryGiB,
         '--disk',
         process.env.RELAYFILE_DAYTONA_DISK_GIB ?? '10',
         '--ttl',
