@@ -33,7 +33,19 @@ const CLI_INVENTORY_RUNNER = path.join(TRUSTED_ROOT, 'scripts/verify-features/fl
 const RUNNER = path.join(TRUSTED_ROOT, 'scripts/verify-features/fleet-daytona.mjs');
 const NONCE = process.env.VERIFY_FLEET_NONCE ?? randomBytes(16).toString('hex');
 const ATTEMPT_NONCES = [`${NONCE}-a`, `${NONCE}-b`];
-const STEP_TIMEOUT = 14_400_000;
+// The consumer job has a hard six-hour GitHub Actions deadline. Both board
+// attempts are independent (they use different workspaces and nonces), so run
+// them concurrently and give each a bounded 85-minute slice of that envelope.
+// The final workflow timeout is derived from the configured DAG below; these
+// constants are intentionally finite so a future step cannot silently restore
+// the old eight-hour sequential attempt budget.
+const ATTEMPT_TIMEOUT_MS = 5_100_000;
+const OUTER_JOB_TIMEOUT_MS = 21_600_000;
+// The consumer job spends time checking out trusted sources, downloading and
+// validating producer artifacts, and allocating the two Cloud workspaces
+// before this nested workflow starts.
+const CONSUMER_SETUP_RESERVE_MS = 1_800_000;
+const WORKFLOW_GUARD_MS = 300_000;
 const INSTALL_ROOT = path.resolve(
   process.env.VERIFY_FLEET_INSTALL_ROOT ??
     path.join(process.env.RUNNER_TEMP ?? TRUSTED_ROOT, 'relay-candidate-install')
@@ -257,7 +269,6 @@ async function main() {
     .channel(`relay-fleet-daytona-${NONCE.slice(0, 8)}`)
     .maxConcurrency(3)
     .onError('continue')
-    .timeout(43_200_000)
     .idleNudge({ nudgeAfterMs: 300_000, escalateAfterMs: 300_000, maxNudges: 2 });
 
   wf.agent('cheap-supervisor', {
@@ -423,7 +434,7 @@ test ! -w ${shellQuote(CANDIDATE_INSTALL_ROOT)}`,
     ),
     captureOutput: true,
     failOnError: false,
-    timeoutMs: STEP_TIMEOUT,
+    timeoutMs: ATTEMPT_TIMEOUT_MS,
   });
   wf.step('gate-attempt-a-evidence', {
     type: 'deterministic',
@@ -435,7 +446,9 @@ test ! -w ${shellQuote(CANDIDATE_INSTALL_ROOT)}`,
   });
   wf.step('run-daytona-board-attempt-b', {
     type: 'deterministic',
-    dependsOn: ['gate-attempt-a-evidence'],
+    // Attempt B has its own Cloud workspace and nonce. Keeping it independent
+    // from attempt A removes the impossible two-by-four-hour serial budget.
+    dependsOn: ['seal-trusted-fleet-inputs'],
     command: candidateCommand(
       'run',
       ' --workspace-credential-env VERIFY_FLEET_WORKSPACE_KEY_FILE_B',
@@ -443,7 +456,7 @@ test ! -w ${shellQuote(CANDIDATE_INSTALL_ROOT)}`,
     ),
     captureOutput: true,
     failOnError: false,
-    timeoutMs: STEP_TIMEOUT,
+    timeoutMs: ATTEMPT_TIMEOUT_MS,
   });
   wf.step('gate-attempt-b-evidence', {
     type: 'deterministic',
@@ -455,7 +468,7 @@ test ! -w ${shellQuote(CANDIDATE_INSTALL_ROOT)}`,
   });
   wf.step('materialize-trusted-fleet-evidence', {
     type: 'deterministic',
-    dependsOn: ['gate-attempt-b-evidence'],
+    dependsOn: ['gate-attempt-a-evidence', 'gate-attempt-b-evidence'],
     command: `chmod -R u+w ${shellQuote(path.join(TRUSTED_ROOT, '.workflow-artifacts'))} 2>/dev/null || true
 node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-fleet-evidence.mjs'))} --source ${shellQuote(CANDIDATE_ARTIFACT_ROOT)} --destination ${shellQuote(TRUSTED_ARTIFACT_ROOT)}`,
     captureOutput: true,
@@ -559,6 +572,51 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
     failOnError: true,
     timeoutMs: 120_000,
   });
+
+  // Derive the inner workflow deadline from the finalized DAG, counting each
+  // configured retry. A critical-path bound reflects the concurrent attempts
+  // while still remaining conservative for serialized runner scheduling. The
+  // guard leaves the outer job time to report a clean failure and start the
+  // independent cleanup job instead of being hard-killed at the same instant.
+  const timeoutPlan = wf.toConfig();
+  const timeoutAgents = new Map(timeoutPlan.agents.map((agent) => [agent.name, agent]));
+  const definitions = timeoutPlan.workflows.flatMap((definition) => definition.steps);
+  const stepsByName = new Map(definitions.map((step) => [step.name, step]));
+  const pathMemo = new Map<string, number>();
+  const pathStack = new Set<string>();
+  const criticalPathMs = (name: string): number => {
+    const cached = pathMemo.get(name);
+    if (cached !== undefined) return cached;
+    if (pathStack.has(name)) throw new Error(`Fleet workflow timeout dependency cycle at ${name}`);
+    const step = stepsByName.get(name);
+    if (!step) throw new Error(`Fleet workflow timeout dependency is missing step ${name}`);
+    if (!Number.isSafeInteger(step.timeoutMs) || Number(step.timeoutMs) < 1) {
+      throw new Error(`Fleet step ${name} has no positive timeout`);
+    }
+    pathStack.add(name);
+    const agentRetries = step.agent ? timeoutAgents.get(step.agent)?.constraints?.retries : undefined;
+    const retries = step.retries ?? agentRetries ?? timeoutPlan.errorHandling?.maxRetries ?? 0;
+    if (!Number.isSafeInteger(retries) || retries < 0)
+      throw new Error(`Fleet step ${name} has invalid retries`);
+    const ownBudget = Number(step.timeoutMs) * (retries + 1);
+    const dependencyBudget = (step.dependsOn ?? []).reduce(
+      (max, dependency) => Math.max(max, criticalPathMs(dependency)),
+      0
+    );
+    pathStack.delete(name);
+    const total = ownBudget + dependencyBudget;
+    pathMemo.set(name, total);
+    return total;
+  };
+  const workflowBudgetMs = definitions.reduce((max, step) => Math.max(max, criticalPathMs(step.name)), 0);
+  const workflowTimeoutMs = workflowBudgetMs + WORKFLOW_GUARD_MS;
+  const innerWorkflowBudgetMs = OUTER_JOB_TIMEOUT_MS - CONSUMER_SETUP_RESERVE_MS;
+  if (workflowTimeoutMs > innerWorkflowBudgetMs) {
+    throw new Error(
+      `Fleet workflow timeout ${workflowTimeoutMs}ms exceeds inner qualification budget ${innerWorkflowBudgetMs}ms`
+    );
+  }
+  wf.timeout(workflowTimeoutMs);
 
   // Keep permissions attached to the finalized config object so the dry-run can
   // audit the exact runtime policy before allowing this workflow to run live.
