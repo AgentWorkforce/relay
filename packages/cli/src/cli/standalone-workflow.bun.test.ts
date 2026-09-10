@@ -32,6 +32,8 @@ describe.skipIf(!bunAvailable || !existsSync(distEntrypoint))('compiled Bun work
     try {
       const bundler = readFileSync(path.join(repoRoot, 'scripts/bundle-cli-for-bun.sh'), 'utf8');
       expect(bundler).toContain('node_modules/esbuild/bin/esbuild "$INPUT"');
+      expect(bundler).toContain('--loader:.node=empty');
+      expect(bundler).not.toContain('--external:ssh2');
       expect(bundler).not.toContain('bun node_modules/esbuild/bin/esbuild');
       expect(bundler).not.toContain('node node_modules/esbuild/bin/esbuild');
       execFileSync(

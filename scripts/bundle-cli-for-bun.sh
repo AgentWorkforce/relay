@@ -13,7 +13,10 @@ VERSION="${3:?usage: $0 <entrypoint> <output> <version>}"
 # npm's esbuild install script may replace bin/esbuild with the platform
 # native executable on Linux, while macOS retains the Node shebang wrapper.
 # Execute that package bin directly so both layouts choose their own launcher;
-# passing it through Bun or Node would parse a Linux ELF as JavaScript.
+# passing it through Bun or Node would parse a Linux ELF as JavaScript. The
+# ssh2 crypto accelerator is optional (ssh2 has a portable crypto fallback),
+# so let esbuild bundle ssh2 while treating its optional native addon as empty;
+# Bun then embeds the portable protocol implementation in the standalone.
 node_modules/esbuild/bin/esbuild "$INPUT" \
   --bundle \
   --platform=node \
@@ -23,6 +26,7 @@ node_modules/esbuild/bin/esbuild "$INPUT" \
   --external:better-sqlite3 \
   --external:cpu-features \
   --external:node-pty \
+  --loader:.node=empty \
   --external:e2b \
   --external:modal \
   --external:freestyle \
