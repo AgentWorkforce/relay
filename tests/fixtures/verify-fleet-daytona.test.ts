@@ -21,6 +21,7 @@ import {
   deriveFleetVerdict,
   evaluateFleetIdentityReconciliation,
   executeFleetCommand,
+  expectedOwnedSandboxNames,
   findExactSentinelMessage,
   findFleetAgentNode,
   loadFleetMatrix,
@@ -682,62 +683,80 @@ describe('complete Daytona Fleet board', () => {
     ).toThrow(/exceeds inner qualification budget/);
   });
 
-  it('reconciles only checkpointed Daytona IDs after external timeout/failure and records absence', async () => {
+  it('reconciles exact checkpointed/recovered Daytona IDs after external timeout/failure', async () => {
     const reconciliationSource = await readFile(
       'scripts/verify-features/reconcile-fleet-daytona.mjs',
       'utf8'
     );
     expect(reconciliationSource).not.toContain("sandbox', 'list");
     expect(reconciliationSource).toContain("sandbox', 'info', id");
+    expect(reconciliationSource).toContain("sandbox', 'info', name");
+    expect(reconciliationSource).toContain('isDaytonaDeletionAccepted(observed)');
     const consumerSource = await readFile(
       '.github/workflows/relay-cleanroom-qualification-consumer.yml',
       'utf8'
     );
     expect(consumerSource).toMatch(/Reconcile exact Fleet Daytona sandboxes[\s\S]*?if: always\(\)/);
+    expect(consumerSource).toContain('--output ../qualification/fleet-daytona-external-reconciliation.json');
+    expect(
+      path.posix.normalize(
+        path.posix.join('relay-verifier', '../qualification/fleet-daytona-external-reconciliation.json')
+      )
+    ).toBe('qualification/fleet-daytona-external-reconciliation.json');
+    expect(consumerSource).toMatch(/path:\s*\|[\s\S]*qualification\/\*\.json/);
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
     const attempts = ['reconcile-timeout-a', 'reconcile-failure-b'];
-    const evidenceFor = (nonce: string, id: string, nodeName: string) => ({
-      version: 1,
-      kind: 'fleet-daytona-board',
-      product: 'relay',
-      provider: 'daytona',
-      nonce,
-      baseline: {
-        sandboxIdHashes: [],
-        sandboxNameHashes: [],
-        agentNameHashes: [],
-        fleetNodeNameHashes: [],
-      },
-      ownershipIntents: [
-        {
+    const allSandboxIds = [
+      '11111111-1111-4111-8111-111111111111',
+      '11111111-1111-4111-8111-111111111112',
+      '11111111-1111-4111-8111-111111111113',
+      '11111111-1111-4111-8111-111111111114',
+      '11111111-1111-4111-8111-111111111115',
+      '22222222-2222-4222-8222-222222222221',
+      '22222222-2222-4222-8222-222222222222',
+      '22222222-2222-4222-8222-222222222223',
+      '22222222-2222-4222-8222-222222222224',
+      '22222222-2222-4222-8222-222222222225',
+    ];
+    const evidenceFor = (nonce: string, workspaceId: string, ids = allSandboxIds.slice(0, 5)) => {
+      const names = [...expectedOwnedSandboxNames(nonce)];
+      const resources = names
+        .map((nodeName, index) => ({
           type: 'daytona-sandbox',
-          name: nodeName,
+          id: ids[index],
+          nodeName,
+          provider: 'daytona',
+          ownership: 'created-by-run',
+        }))
+        .filter(({ id }) => id);
+      return {
+        version: 1,
+        kind: 'fleet-daytona-board',
+        product: 'relay',
+        provider: 'daytona',
+        nonce,
+        startedAt: '2026-09-10T00:00:00.000Z',
+        environment: { expectedWorkspaceId: workspaceId },
+        baseline: {
+          sandboxIdHashes: [],
+          sandboxNameHashes: [],
+          agentNameHashes: [],
+          fleetNodeNameHashes: [],
+        },
+        ownershipIntents: names.map((name) => ({
+          type: 'daytona-sandbox',
+          name,
           nonce,
           assertedAbsentAtBaseline: true,
           checkpointedAt: '2026-09-10T00:00:00.000Z',
-        },
-      ],
-      resources: [
-        { type: 'daytona-sandbox', id, nodeName, provider: 'daytona', ownership: 'created-by-run' },
-      ],
-    });
+        })),
+        resources,
+      };
+    };
+    const workspaceIds = { [attempts[0]]: 'cloud-workspace-a', [attempts[1]]: 'cloud-workspace-b' };
     const checkpointed = new Map([
-      [
-        attempts[0],
-        evidenceFor(
-          attempts[0],
-          '11111111-1111-4111-8111-111111111111',
-          `relay-fleetboard-a-${attempts[0].slice(0, 16)}`
-        ),
-      ],
-      [
-        attempts[1],
-        evidenceFor(
-          attempts[1],
-          '22222222-2222-4222-8222-222222222222',
-          `relay-fleetboard-b-${attempts[1].slice(0, 16)}`
-        ),
-      ],
+      [attempts[0], evidenceFor(attempts[0], workspaceIds[attempts[0]])],
+      [attempts[1], evidenceFor(attempts[1], workspaceIds[attempts[1]], allSandboxIds.slice(5))],
     ]);
     const deletes: string[] = [];
     const inspected = new Set<string>();
@@ -745,6 +764,7 @@ describe('complete Daytona Fleet board', () => {
       attempts,
       matrix,
       readAttemptEvidence: async (nonce) => checkpointed.get(nonce),
+      workspaceIds,
       issueDelete: async (id) => {
         deletes.push(id);
         return { exitCode: id.startsWith('2') ? 1 : null, timedOut: id.startsWith('2') };
@@ -758,35 +778,122 @@ describe('complete Daytona Fleet board', () => {
     });
     expect(result).toMatchObject({
       kind: 'fleet-daytona-external-reconciliation',
-      source: 'checkpointed-created-by-run-evidence',
+      source: 'checkpointed-or-exact-recovered-created-by-run-evidence',
       status: 'pass',
       targetIds: [...deletes].sort(),
     });
-    expect(deletes).toEqual(['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222']);
+    expect(deletes).toHaveLength(10);
     expect(inspected).toEqual(new Set(deletes));
     expect(result.sandboxes).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: deletes[0], absent: true }),
-        expect.objectContaining({ id: deletes[1], absent: true, deleteTimedOut: true }),
+        expect.objectContaining({ id: allSandboxIds[0], absent: true }),
+        expect.objectContaining({ id: allSandboxIds[5], absent: true, deleteTimedOut: true }),
       ])
     );
 
-    await expect(
-      reconcileExactDaytonaSandboxes({
-        attempts: [attempts[0]],
-        matrix,
-        readAttemptEvidence: async () =>
-          evidenceFor(
-            attempts[0],
-            '33333333-3333-4333-8333-333333333333',
-            `relay-fleetboard-a-${attempts[0].slice(0, 16)}`
-          ),
-        issueDelete: async () => ({ exitCode: 0 }),
-        inspectExact: async (id) => ({ id, state: 'started' }),
-        slaMs: 0,
-        sleep: async () => undefined,
-      })
-    ).resolves.toMatchObject({ status: 'fail' });
+    const lostResponseNonce = 'lost-response-a';
+    const lostResponseWorkspace = 'cloud-workspace-lost';
+    const lostResponseId = '33333333-3333-4333-8333-333333333333';
+    const lostResponseEvidence = evidenceFor(lostResponseNonce, lostResponseWorkspace, [
+      lostResponseId,
+      '33333333-3333-4333-8333-333333333334',
+      '33333333-3333-4333-8333-333333333335',
+      '33333333-3333-4333-8333-333333333336',
+      '33333333-3333-4333-8333-333333333337',
+    ]);
+    const missingName = [...expectedOwnedSandboxNames(lostResponseNonce)][1];
+    const recoveredId = '44444444-4444-4444-8444-444444444444';
+    const recoveryQueries: Array<Record<string, string>> = [];
+    const recoveryEvents: string[] = [];
+    const recovered = await reconcileExactDaytonaSandboxes({
+      attempts: [lostResponseNonce],
+      matrix,
+      workspaceIds: { [lostResponseNonce]: lostResponseWorkspace },
+      readAttemptEvidence: async () => ({
+        ...lostResponseEvidence,
+        resources: lostResponseEvidence.resources.filter(({ nodeName }) => nodeName !== missingName),
+      }),
+      resolveExactName: async (query) => {
+        recoveryQueries.push(query);
+        return query.name === missingName
+          ? [
+              {
+                id: recoveredId,
+                name: query.name,
+                provider: 'daytona',
+                cloudWorkspaceId: lostResponseWorkspace,
+                createdAt: '2026-09-10T00:00:01.000Z',
+              },
+            ]
+          : [];
+      },
+      checkpointRecoveredTarget: async ({ nonce, target }) => {
+        expect(nonce).toBe(lostResponseNonce);
+        expect(target).toMatchObject({ id: recoveredId, nodeName: missingName });
+        recoveryEvents.push(`checkpoint:${target.id}`);
+      },
+      issueDelete: async (id) => {
+        recoveryEvents.push(`delete:${id}`);
+        return { exitCode: 0 };
+      },
+      inspectExact: async () => undefined,
+      sleep: async () => undefined,
+      now: () => '2026-09-10T00:00:00.000Z',
+    });
+    expect(recovered.status).toBe('pass');
+    expect(recovered.targetIds).toContain(recoveredId);
+    expect(recoveryEvents.indexOf(`checkpoint:${recoveredId}`)).toBeLessThan(
+      recoveryEvents.indexOf(`delete:${recoveredId}`)
+    );
+    expect(recoveryQueries).toEqual([
+      {
+        name: missingName,
+        nonce: lostResponseNonce,
+        workspaceId: lostResponseWorkspace,
+        startedAt: '2026-09-10T00:00:00.000Z',
+      },
+    ]);
+
+    const deletedBeforeCorruptAttempt: string[] = [];
+    const partial = await reconcileExactDaytonaSandboxes({
+      attempts: [attempts[0], 'corrupt-b'],
+      matrix,
+      workspaceIds: { [attempts[0]]: workspaceIds[attempts[0]], 'corrupt-b': 'cloud-workspace-b' },
+      readAttemptEvidence: async (nonce) => {
+        if (nonce === 'corrupt-b') throw new Error('evidence missing after external cancellation');
+        return checkpointed.get(nonce);
+      },
+      resolveExactName: async () => [],
+      issueDelete: async (id) => {
+        deletedBeforeCorruptAttempt.push(id);
+        return { exitCode: 0 };
+      },
+      inspectExact: async () => undefined,
+      sleep: async () => undefined,
+      now: () => '2026-09-10T00:00:00.000Z',
+    });
+    expect(partial.status).toBe('fail');
+    expect(deletedBeforeCorruptAttempt).toHaveLength(5);
+    expect(partial.failures).toEqual(
+      expect.arrayContaining([expect.objectContaining({ nonce: 'corrupt-b', phase: 'evidence' })])
+    );
+
+    const tombstone = await reconcileExactDaytonaSandboxes({
+      attempts: [attempts[0]],
+      matrix,
+      readAttemptEvidence: async () => checkpointed.get(attempts[0]),
+      issueDelete: async () => ({ exitCode: 0 }),
+      inspectExact: async (id) => ({
+        id,
+        state: id === allSandboxIds[0] ? 'destroying' : 'destroyed',
+        desiredState: 'destroyed',
+      }),
+      slaMs: 10,
+      sleep: async () => undefined,
+      now: () => '2026-09-10T00:00:00.000Z',
+    });
+    expect(tombstone.status).toBe('pass');
+    expect(tombstone.sandboxes.every(({ acceptedTombstone }) => acceptedTombstone)).toBe(true);
   });
 
   it('uses the exact effective Codex model for preflight and both reviewers', async () => {

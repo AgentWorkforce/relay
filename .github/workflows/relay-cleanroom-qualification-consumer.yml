@@ -397,6 +397,9 @@ jobs:
           VERIFY_FLEET_EXPECTED_RELAY_VERSION="$(cat "$RUNNER_TEMP/relay-version")"
           export VERIFY_FLEET_EXPECTED_RELAY_VERSION
           export VERIFY_FLEET_EXPECTED_RELAY_SHA="${{ steps.manifest.outputs.relay_sha }}"
+          FLEET_ATTEMPT_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+          export FLEET_ATTEMPT_STARTED_AT
+          echo "FLEET_ATTEMPT_STARTED_AT=$FLEET_ATTEMPT_STARTED_AT" >> "$GITHUB_ENV"
           npx relayflows run workflows/verify-fleet-daytona.ts
 
       - name: Reconcile exact Fleet Daytona sandboxes after candidate stop
@@ -411,7 +414,10 @@ jobs:
             --matrix tests/relayflows/cleanroom/fleet-daytona.matrix.json \
             --artifact-root "$RUNNER_TEMP/relay-fleet-untrusted-qualification-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/.workflow-artifacts/verify-fleet-daytona" \
             --attempts "$FLEET_ATTEMPTS" \
-            --output qualification/fleet-daytona-external-reconciliation.json
+            --workspace-id-a "${{ steps.workspace_a.outputs.cloud_workspace_id }}" \
+            --workspace-id-b "${{ steps.workspace_b.outputs.cloud_workspace_id }}" \
+            --started-at "$FLEET_ATTEMPT_STARTED_AT" \
+            --output ../qualification/fleet-daytona-external-reconciliation.json
 
       - name: Verify candidate execution remained outside trusted inputs
         if: always()

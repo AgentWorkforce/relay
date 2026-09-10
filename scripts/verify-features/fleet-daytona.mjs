@@ -1083,7 +1083,7 @@ function expectedOwnedAgentNames(matrix, nonce) {
   ]);
 }
 
-function expectedOwnedSandboxNames(nonce) {
+export function expectedOwnedSandboxNames(nonce) {
   const short = nonce.slice(0, 16);
   return new Set(['a', 'b', 'root', 'scoped', 'nomount'].map((role) => `relay-fleetboard-${role}-${short}`));
 }
