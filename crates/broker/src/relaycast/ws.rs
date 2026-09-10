@@ -1515,8 +1515,9 @@ fn registration_attempt_count(error: &RelaycastRegistrationError) -> u32 {
 /// errors. The delay is deliberately bounded: the SDK does not expose the
 /// `Retry-After` header on 503 errors, so use the documented short retry
 /// budget rather than sleeping on an untrusted/unbounded server value. For
-/// SDK errors that do carry a retry-after duration (429 cooldowns), honor it
-/// up to the same five-second per-sleep cap.
+/// SDK errors that do carry a retry-after duration are capped at one second;
+/// 429 cooldowns are returned immediately because the SDK blocks the name
+/// locally and another attempt cannot issue a POST until that cooldown ends.
 pub async fn retry_agent_registration(
     http: &RelaycastHttpClient,
     name: &str,

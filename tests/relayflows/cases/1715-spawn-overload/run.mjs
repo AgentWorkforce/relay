@@ -119,7 +119,7 @@ try {
     task: 'run the local task',
     harnessConfig: {
       runtime: 'native',
-      command: 'cat',
+      command: "sh -c 'sleep 1; read -r _; exit 0'",
       sessionId: 'session-safe',
     },
   });
@@ -130,6 +130,10 @@ try {
   const safeNoWorker = spawnedList.every((agent) => agent?.name !== SAFE_AGENT);
   const safeWarning = typeof safe.body?.warning === 'string' ? safe.body.warning : '';
   const safeWorkerPid = spawnedList.find((agent) => agent?.name === SAFE_AGENT)?.workerPid;
+  const safeTaskExitCleaned = await waitFor(async () => {
+    const agents = (await api('GET', '/api/spawned')).body?.agents ?? [];
+    return agents.every((agent) => agent?.name !== SAFE_AGENT);
+  }, 'safe task-exit cleanup');
   const markers = (text, attempts) =>
     text.includes(`(${ERROR_STATUS})`) &&
     text.includes(ERROR_CODE) &&
@@ -144,6 +148,7 @@ try {
     markers(typeof safe.body?.error === 'string' ? safe.body.error : '', 1) &&
     unsafeNoWorker === true &&
     safeNoWorker === true &&
+    safeTaskExitCleaned === true &&
     relay.workerRegistrations === 2 &&
     !safe.body?.success;
   const headObserved =
@@ -159,6 +164,7 @@ try {
     markers(safeWarning, 3) &&
     Number.isInteger(safeWorkerPid) &&
     safeWorkerPid > 0 &&
+    safeTaskExitCleaned === true &&
     relay.workerRegistrations === 6;
 
   let outcome;
@@ -182,6 +188,7 @@ try {
         unsafeNoWorker,
         safeNoWorker,
         safeWorkerPid,
+        safeTaskExitCleaned,
         checks: {
           unsafeStatus: unsafe.status === 500,
           unsafeMarkers: markers(unsafeError, 3),
@@ -193,6 +200,7 @@ try {
           safePid: Number.isInteger(safe.body?.pid),
           safeWarning: markers(safeWarning, 3),
           livePid: Number.isInteger(safeWorkerPid) && safeWorkerPid > 0,
+          safeTaskExitCleaned,
           count: relay.workerRegistrations === 6,
         },
         stderr: brokerStderr.slice(-4_000),
