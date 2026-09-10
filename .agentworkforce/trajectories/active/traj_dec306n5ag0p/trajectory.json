@@ -67,6 +67,18 @@
             "reasoning": "PR #1725 review reproduced empty discovery publishing fixed. Require exactly one positive stderr count; real subprocess regressions reject successful-empty results and preserve skip/error guards. GitHub authentication still blocks live thread updates and smoke log access."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789067819756,
+          "type": "decision",
+          "content": "Rebase PR 1725 onto current main and retain fail-closed safety proof: Rebase PR 1725 onto current main and retain fail-closed safety proof",
+          "raw": {
+            "question": "Rebase PR 1725 onto current main and retain fail-closed safety proof",
+            "chosen": "Rebase PR 1725 onto current main and retain fail-closed safety proof",
+            "alternatives": [],
+            "reasoning": "Both review threads are already resolved. The prior dispatcher failed during Relaycast registration with database_overloaded before proof execution. Rebase also requires moving the pending feature changelog entry out of the newly released 12.0.0 section."
+          },
+          "significance": "high"
         }
       ]
     }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Added
+
+- `scripts/fleet/disk_reaper.py` reports and reclaims stale lane dependencies, caches, and merged worktrees with dry-run defaults and Git/activity safety checks.
+
 ### Fixed
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
@@ -36,7 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `scripts/fleet/disk_reaper.py` reports and reclaims stale lane dependencies, caches, and merged worktrees with dry-run defaults and Git/activity safety checks.
 - `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails. Repeatable `--spawn-arg` forwards literal harness options.
 
 ### Fixed
