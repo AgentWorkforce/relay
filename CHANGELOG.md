@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy non-Agent37 Cloud sandbox responses remain usable when they omit the newer Relaycast target, while any target Cloud does return is verified and persisted for both newly provisioned and reused providers.
 - Standalone package smoke workspaces remain valid for five minutes, and startup overrides are capped at four minutes so shutdown and cleanup verification always retain a full-minute lease margin.
 - Startup retries now require Relaycast's typed pre-commit storage-admission codes instead of replaying every 5xx response from an unkeyed workspace or agent-registration request.
+- Agent registration retries now honor Relaycast's typed cooldown (capped at one minute) instead of immediately retrying through the same write-capacity window, while a three-minute aggregate deadline prevents hung requests from stranding callers.
 
 ## [11.10.4] - 2026-09-08
 
