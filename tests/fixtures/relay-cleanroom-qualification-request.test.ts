@@ -355,6 +355,14 @@ describe('trusted cleanroom qualification request', () => {
     expect(consumer.jobs.qualification_cleanup.permissions).toEqual({ contents: 'read' });
     expect(cleanupSource).toContain('relay-cleanup/packages/cli/dist/cli/index.js');
     expect(cleanupSource).not.toContain('relay-candidate-install.mjs hydrate');
+    const fallbackWorkspaceDeletes = consumer.jobs.qualification_cleanup.steps.filter((step: any) =>
+      /^Delete exact fallback workspace [AB] and verify cascade$/.test(step.name ?? '')
+    );
+    expect(fallbackWorkspaceDeletes).toHaveLength(2);
+    expect(fallbackWorkspaceDeletes.map((step: any) => step.if)).toEqual([
+      "always() && steps.resolve.outputs.workspace_b != ''",
+      "always() && steps.resolve.outputs.workspace_a != ''",
+    ]);
     expect(consumerSource).toContain('--source-sha "$RELAY_SHA"');
     expect(consumerSource).toContain('--package-version "$version"');
     expect(consumerSource).toContain('VERIFY_FLEET_EXPECTED_RELAY_SHA');

@@ -2315,11 +2315,12 @@ export function summarizeFleetCampaign(attempts, matrix) {
 }
 
 class FleetBoard {
-  constructor(matrix, nonce, artifactDir) {
+  constructor(matrix, nonce, artifactDir, { executeCommand = execute } = {}) {
     this.matrix = matrix;
     this.nonce = nonce;
     this.short = nonce.slice(0, 16);
     this.artifactDir = artifactDir;
+    this.executeCommand = executeCommand;
     this.cli = process.env.VERIFY_FLEET_CLI ? path.resolve(process.env.VERIFY_FLEET_CLI) : DEFAULT_CLI;
     this.operationsById = new Map(matrix.operations.map((operation) => [operation.id, operation]));
     this.evidence = {
@@ -5147,7 +5148,7 @@ class FleetBoard {
     const markerBytes = `RELAY_NODE_WORKFLOW_EFFECT_${this.short.toUpperCase()}\n`;
     const markerSha256 = sha256(markerBytes);
     const inspectMarker = async () => {
-      const inspection = await execute(
+      const inspection = await this.executeCommand(
         this.daytonaArgv(
           'sandbox',
           'exec',
@@ -5165,7 +5166,7 @@ class FleetBoard {
       return { inspection, payload: tryParseJson(inspection._rawStdout) };
     };
     const beforeMarker = await inspectMarker();
-    const setup = await execute(
+    const setup = await this.executeCommand(
       this.daytonaArgv(
         'sandbox',
         'exec',
@@ -5183,7 +5184,7 @@ class FleetBoard {
     );
     let rawRun;
     await this.record('node-workflow-run', async () => {
-      rawRun = await execute(
+      rawRun = await this.executeCommand(
         this.inside(node.id, 'node', 'workflow', 'run', workflowPath, '--file-type', 'sh', '--json'),
         { timeoutMs: 60_000 }
       );
@@ -5212,7 +5213,7 @@ class FleetBoard {
     const payload = rawRun ? tryParseJson(rawRun._rawStdout) : undefined;
     const runId = findStringDeep(payload, ['runId', 'id']);
     if (!runId) {
-      for (const id of ids.slice(1))
+      for (const id of NODE_WORKFLOW_OPERATION_IDS.slice(1))
         await this.derived(id, { blockedReason: 'workflow run did not return a run id' });
       return;
     }

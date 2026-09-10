@@ -23,6 +23,7 @@ import {
   expectedFailureExitCode,
   exactModelReadback,
   exactWorkerStreamMarkers,
+  FleetBoard,
   findExactSentinelMessage,
   findFleetAgentNode,
   isChangedWorkflowSyncResult,
@@ -699,6 +700,52 @@ describe('complete Daytona Fleet board', () => {
       'node-down-all',
       'fleet-nodes-history',
     ]);
+  });
+
+  it('records every remaining workflow operation when a run omits its ID', async () => {
+    const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
+    const artifactDir = await mkdtemp(path.join(os.tmpdir(), 'relay-fleet-missing-workflow-id-'));
+    const commandResult = (rawStdout = '') => ({
+      argv: [],
+      exitCode: 0,
+      timedOut: false,
+      stdout: '',
+      stderr: '',
+      _rawStdout: rawStdout,
+      _rawStderr: '',
+    });
+    const responses = [
+      commandResult(JSON.stringify({ exists: false })),
+      commandResult(),
+      commandResult(JSON.stringify({ workflowPath: '/tmp/relay-fleet-workflow.sh', fileType: 'sh' })),
+    ];
+    try {
+      const board = new FleetBoard(matrix, NONCE, artifactDir, {
+        executeCommand: async () => {
+          const response = responses.shift();
+          if (!response) throw new Error('unexpected workflow command');
+          return response;
+        },
+      });
+      board.nodeB = { id: 'workflow-node', nodeName: 'workflow-node' };
+
+      await board.nodeWorkflows();
+
+      expect(responses).toEqual([]);
+      expect(board.evidence.operations.map(({ id }) => id)).toEqual(NODE_WORKFLOW_OPERATION_IDS);
+      expect(board.evidence.operations[0]).toMatchObject({ id: 'node-workflow-run', status: 'fail' });
+      expect(board.evidence.operations.slice(1)).toEqual(
+        NODE_WORKFLOW_OPERATION_IDS.slice(1).map((id) =>
+          expect.objectContaining({
+            id,
+            status: 'blocked',
+            blockedReason: 'workflow run did not return a run id',
+          })
+        )
+      );
+    } finally {
+      await rm(artifactDir, { recursive: true, force: true });
+    }
   });
 
   it('binds every operation record to an executable acceptance profile', async () => {

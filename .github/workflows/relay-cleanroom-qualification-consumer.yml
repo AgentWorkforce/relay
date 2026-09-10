@@ -637,7 +637,7 @@ jobs:
           NODE
 
       - name: Delete exact fallback workspace B and verify cascade
-        if: steps.resolve.outputs.workspace_b != ''
+        if: always() && steps.resolve.outputs.workspace_b != ''
         working-directory: relay-cleanup
         env:
           CLOUD_API_URL: https://agentrelay.com/cloud
