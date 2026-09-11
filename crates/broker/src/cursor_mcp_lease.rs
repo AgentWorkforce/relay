@@ -30,6 +30,8 @@ struct LeaseState {
     cursor_dir: Option<fs::File>,
     #[cfg(windows)]
     cursor_identity: (u32, u64),
+    #[cfg(windows)]
+    generated_identity: std::sync::Mutex<Option<(u32, u64)>>,
 }
 
 /// A kernel-held lock on the requested cwd. Locking the existing cwd rather
@@ -362,6 +364,37 @@ fn windows_handle_identity(file: &fs::File) -> io::Result<(u32, u64)> {
 }
 
 #[cfg(windows)]
+fn windows_delete_file(file: fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct Disposition {
+        delete: i32,
+    }
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn SetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            class: u32,
+            info: *const Disposition,
+            size: u32,
+        ) -> i32;
+    }
+    let disposition = Disposition { delete: 1 };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            4,
+            &disposition,
+            std::mem::size_of::<Disposition>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
     use std::os::windows::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path)?;
@@ -523,6 +556,9 @@ struct Journal {
 struct JournalEntry {
     path: PathBuf,
     pre_existing: JournalPreExisting,
+    #[cfg(windows)]
+    #[serde(default)]
+    generated_identity: Option<(u32, u64)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1219,9 +1255,21 @@ impl CursorMcpLeaseRegistry {
                     Err(error) => return Err(error),
                 },
             };
+            #[cfg(windows)]
+            let _cursor_identity = windows_directory_identity(&cursor)?;
             let pre_existing = if validate_target(&key)? {
                 PreExisting::Present {
-                    contents: fs::read(&key)?,
+                    contents: {
+                        #[cfg(windows)]
+                        {
+                            let mut file = windows_child_file(&key, false)?;
+                            let mut contents = Vec::new();
+                            file.read_to_end(&mut contents)?;
+                            contents
+                        }
+                        #[cfg(not(windows))]
+                        fs::read(&key)?
+                    },
                     mode: 0o600,
                 }
             } else {
@@ -1244,6 +1292,8 @@ impl CursorMcpLeaseRegistry {
                 cursor_dir,
                 #[cfg(windows)]
                 cursor_identity,
+                #[cfg(windows)]
+                generated_identity: std::sync::Mutex::new(None),
             },
         );
         self.path_by_worker.insert(worker.clone(), key.clone());
@@ -1361,7 +1411,16 @@ impl CursorMcpLeaseRegistry {
             )?;
             #[cfg(windows)]
             validate_windows_cursor_identity(&state.lock, path, state.cursor_identity)?;
-            write_credential_file(path, contents)
+            write_credential_file(path, contents)?;
+            #[cfg(windows)]
+            *state
+                .generated_identity
+                .lock()
+                .map_err(|_| io::Error::other("Cursor MCP generated identity lock poisoned"))? =
+                Some(windows_handle_identity(&windows_child_file(path, false)?)?);
+            #[cfg(windows)]
+            self.persist_journal()?;
+            Ok(())
         }
     }
 
@@ -1425,6 +1484,11 @@ impl CursorMcpLeaseRegistry {
             state.cursor_dir.as_ref(),
             #[cfg(windows)]
             Some(state.cursor_identity),
+            #[cfg(windows)]
+            *state
+                .generated_identity
+                .lock()
+                .map_err(|_| io::Error::other("Cursor MCP generated identity lock poisoned"))?,
         )?;
         let state = self.leases.remove(path).expect("lease checked above");
         self.path_by_worker.remove(worker);
@@ -1446,6 +1510,7 @@ impl CursorMcpLeaseRegistry {
         lock: &LeaseLock,
         pinned_cursor: Option<&fs::File>,
         #[cfg(windows)] expected_cursor_identity: Option<(u32, u64)>,
+        #[cfg(windows)] generated_identity: Option<(u32, u64)>,
     ) -> io::Result<()> {
         #[cfg(unix)]
         {
@@ -1493,6 +1558,22 @@ impl CursorMcpLeaseRegistry {
             validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             match pre_existing {
                 PreExisting::Absent { created_dir } => {
+                    #[cfg(windows)]
+                    let generated_identity = generated_identity.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "legacy Cursor MCP journal lacks generated identity",
+                        )
+                    })?;
+                    #[cfg(windows)]
+                    let generated = windows_child_file(_path, true)?;
+                    #[cfg(windows)]
+                    if windows_handle_identity(&generated)? != generated_identity {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "generated Cursor MCP file was replaced",
+                        ));
+                    }
                     match fs::symlink_metadata(_path) {
                         Ok(metadata) if metadata.file_type().is_symlink() => {
                             return Err(invalid_path(
@@ -1508,6 +1589,12 @@ impl CursorMcpLeaseRegistry {
                         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                         Err(error) => return Err(error),
                     }
+                    #[cfg(windows)]
+                    let removed = {
+                        windows_delete_file(generated)?;
+                        true
+                    };
+                    #[cfg(not(windows))]
                     let removed = match fs::remove_file(_path) {
                         Ok(()) => true,
                         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
@@ -1539,6 +1626,10 @@ impl CursorMcpLeaseRegistry {
                 Ok(JournalEntry {
                     path: path.clone(),
                     pre_existing: state.pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity: *state.generated_identity.lock().map_err(|_| {
+                        io::Error::other("Cursor MCP generated identity lock poisoned")
+                    })?,
                 })
             })
             .collect()
@@ -1695,6 +1786,8 @@ impl CursorMcpLeaseRegistry {
                 cursor_dir.as_ref(),
                 #[cfg(windows)]
                 Some(windows_directory_identity(path.parent().unwrap_or(root))?),
+                #[cfg(windows)]
+                entry.generated_identity,
             ) {
                 tracing::warn!(path = %path.display(), error = %error, "Cursor MCP lease recovery deferred");
                 remaining.push(JournalEntry {
