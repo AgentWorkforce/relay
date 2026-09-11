@@ -1,18 +1,3 @@
-// Note (PR #1750 review follow-up): issue #1603 also covers the broker's
-// hosted `agent_exited` durable-outbox delivery timing (a worker's exit must
-// not be marked `Delivered` before Relaycast's real HTTP emit succeeds).
-// This case's harness only exercises the actions-mocked MCP `spawn` path — it
-// never boots a real local broker/worker/Relaycast loop, so it cannot itself
-// exercise that code path. That fix and its deterministic base/head proof
-// (fake Relaycast timeout/5xx leaves the record `Pending`; a bounded
-// in-process retry or a simulated broker-restart replay is required to reach
-// `Delivered`) live as Rust regression tests instead:
-// `crates/broker/src/runtime/event_loop.rs`
-// (`publisher_reports_failure_after_exhausting_retries_on_persistent_5xx`,
-// `publisher_recovers_and_reports_success_after_transient_5xx`) and
-// `crates/broker/src/runtime/tests.rs`
-// (`delivered_dedupe_key_is_excluded_from_replay`,
-// `restart_before_drain_replays_pending_delivery_from_disk`).
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
