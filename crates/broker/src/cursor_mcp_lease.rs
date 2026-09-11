@@ -1479,20 +1479,20 @@ impl CursorMcpLeaseRegistry {
             validate_windows_cursor_identity(&state.lock, path, state.cursor_identity)?;
             let generated_identity = write_credential_file_with_identity(path, contents)?;
             #[cfg(windows)]
-            *state
-                .generated_identity
-                .lock()
-                .map_err(|_| io::Error::other("Cursor MCP generated identity lock poisoned"))? =
-                generated_identity;
-            // Persist the journal immediately so the generated identity is
-            // durable before any crash can occur.  Without this, a crash
-            // between identity capture and journal write would orphan the
-            // credential file with no recoverable identity for cleanup.
-            if let Err(error) = self.persist_journal() {
-                // Journal persistence failed — remove the credential file to
-                // avoid leaving a secret on disk with no recoverable identity.
-                let _ = fs::remove_file(path);
-                return Err(error);
+            {
+                *state.generated_identity.lock().map_err(|_| {
+                    io::Error::other("Cursor MCP generated identity lock poisoned")
+                })? = generated_identity;
+                // Persist the journal immediately so the generated identity is
+                // durable before any crash can occur.  Without this, a crash
+                // between identity capture and journal write would orphan the
+                // credential file with no recoverable identity for cleanup.
+                if let Err(error) = self.persist_journal() {
+                    // Journal persistence failed — remove the credential file to
+                    // avoid leaving a secret on disk with no recoverable identity.
+                    let _ = fs::remove_file(path);
+                    return Err(error);
+                }
             }
             Ok(())
         }

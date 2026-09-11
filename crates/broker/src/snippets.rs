@@ -1982,6 +1982,9 @@ fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
 mod tests {
     use std::{env, ffi::OsString, fs};
 
+    #[cfg(windows)]
+    use std::path::Path;
+
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
