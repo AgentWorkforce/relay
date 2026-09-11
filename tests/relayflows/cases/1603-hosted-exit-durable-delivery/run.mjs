@@ -1,467 +1,415 @@
-// This case supersedes `1603-raw-spawn-readiness` as issue #1603's declared
-// RelayFlow proof (see PR #1750). That case proved a *different*,
-// already-fixed bug — raw CLI spawn readiness — via the MCP `spawn` tool
-// against a mocked HTTP actions API. On current `main` the readiness-wait
-// behavior it asserted against `base` is already present, so its `base` arm
-// no longer reproduces anything, and it never touched a real
-// broker/Relaycast boundary at all, so it could not stand in as proof of
-// issue #1603's actual fix here: durable, restart-safe delivery of the
-// hosted `agent_exited` event.
+// Proves #1603 through the real public fleet-control path. The local fake is
+// deliberately transport-only: HTTP registration/events plus /v1/node/ws.
+// It drives action.invoke, launches a real disposable child, holds the first
+// event request open after persistence, kills the broker, then enables HTTP
+// success for the restarted broker's replay.
 //
-// `1603-raw-spawn-readiness` itself is left in place, unmodified, rather
-// than deleted: it predates this branch (merged to `main` in #1708, well
-// before this PR's base), the RelayFlow PR-proof dispatcher requires a PR to
-// touch exactly its one declared case
-// (`scripts/pr-proof/prepare.mjs`/`contract.mjs`), and it is still an
-// accurate (if now redundant) regression case for the readiness-wait
-// behavior it covers. Retiring it — if still wanted once it no longer
-// carries the #1603 proof — is a separate, standalone change.
-//
-// This case is an honest, binary-boundary proof of exactly that restart
-// durability, scoped to what it can truthfully drive without a real
-// Relaycast fleet-control WebSocket (spawning a worker through the real
-// spawn/fleet protocol end-to-end is out of scope for a RelayFlow case —
-// that requires the full Relaycast WS control-plane, which is faked at the
-// HTTP layer only in local e2e, not something this harness fakes at the
-// WS layer). Instead of driving a live worker exit, it seeds the exact
-// on-disk `crash-insights.json` format `CrashInsights::save` writes with one
-// `Pending` hosted-delivery record — the durable outbox's own on-disk
-// contract — and starts the *real compiled* `agent-relay-broker` binary
-// against it, pointed at a fake local Relaycast HTTP server:
-//
-//   - `base` (pre-fix): `run_init` loads `crash-insights.json` but has no
-//     concept of replaying a pending hosted delivery on restart at all (the
-//     durable outbox — `HostedDeliveryState`, `reload_pending_hosted_agent_exit_backlog`
-//     — does not exist in this crate yet). The seeded record is inert:
-//     zero HTTP calls are ever made to Relaycast for it.
-//   - `head` (post-fix): `run_init` calls
-//     `reload_pending_hosted_agent_exit_backlog`, which reconstructs the
-//     pending delivery from the seeded record and hands it to
-//     `run_hosted_agent_event_publisher`. That publisher POSTs a real HTTP
-//     request to this case's fake Relaycast server's
-//     `POST /v1/agents/:name/events` endpoint (see `emit_agent_event` /
-//     `HOSTED_PUBLISH_MAX_ATTEMPTS` in `crates/broker/src/runtime/event_loop.rs`),
-//     which answers the first attempt with a transient 503 and the retry
-//     with 200 — exercising the exact in-process retry-then-succeed path
-//     covered by `publisher_recovers_and_reports_success_after_transient_5xx`,
-//     but through the real compiled binary and a real (locally faked) HTTP
-//     boundary rather than an in-process Rust unit test.
-//
-// The narrower Rust-level regression tests remain the authoritative, more
-// exhaustive coverage for this feature (in-process retry exhaustion,
-// dedupe-on-replay, `>256`-record backlog draining without duplicates, and
-// retention-pressure eviction policy for the durable outbox itself):
-// `crates/broker/src/runtime/event_loop.rs`
-// (`publisher_reports_failure_after_exhausting_retries_on_persistent_5xx`,
-// `publisher_recovers_and_reports_success_after_transient_5xx`) and
-// `crates/broker/src/runtime/tests.rs`
-// (`delivered_dedupe_key_is_excluded_from_replay`,
-// `restart_before_drain_replays_pending_delivery_from_disk`,
-// `replenish_backlog_drains_a_large_pending_backlog_without_restart_or_duplicates`).
-// This case does not re-test those; it only proves the one thing they cannot
-// prove on their own — that the real compiled broker binary actually wires
-// this behavior together end to end at process startup against a real HTTP
-// transport.
+// >256 backlog replenishment and retention pressure remain unit-level proof in
+// runtime/tests.rs and crash_insights.rs; this live case does not claim them.
+import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
+import http from 'node:http';
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1603-hosted-exit-durable-delivery';
-const TRANSIENT_STATUS = 503;
-const AGENT_NAME = 'relayflow-1603-crashed-worker';
-const GENERATION = 'relayflow-1603-generation';
-const DEDUPE_KEY = `${AGENT_NAME}::${GENERATION}`;
-const INSTANCE_NAME = 'relayflow-1603-broker';
-// The whole startup + replay + retry-through-transient-failure sequence must
-// land far inside this.
-const STARTUP_WINDOW_MS = 60_000;
-// Emitted by connect_relay once registration and the workspace session are
-// established, on both arms.
-const HANDSHAKE_MARKER = 'connect_relay completed';
-// Once the handshake completes, this is how long we wait to see whether the
-// seeded pending delivery is ever replayed. The real retry-then-succeed path
-// (200ms base delay, one retry) completes in well under a second; this bound
-// only needs to be long enough that a `base` binary's true, permanent
-// absence of the replay mechanism is not mistaken for a slow `head`.
-const REPLAY_OBSERVATION_WINDOW_MS = 8_000;
-
+const AGENT_NAME = 'relayflow-1603-live-child';
+const INSTANCE_NAME = 'relayflow-1603-live-broker';
+const INVOCATION_ID = 'relayflow-1603-live-invocation';
+const DEDUPE_PREFIX = `${AGENT_NAME}::`;
+const EXIT_WINDOW_MS = 15_000;
+const REPLAY_WINDOW_MS = 15_000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
 
-if (arm !== 'base' && arm !== 'head') {
-  throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
-}
-
+if (!['base', 'head'].includes(arm)) throw new Error(`Unexpected proof arm ${JSON.stringify(arm)}.`);
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
-const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
-  encoding: 'utf8',
-}).trim();
-if (targetSha !== expectedSha) {
+const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+if (targetSha !== expectedSha)
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
-}
+if (!isWithin(harnessDir, fileURLToPath(import.meta.url)))
+  throw new Error('Runner must execute from the exact-head harness checkout.');
 
-const runnerPath = fileURLToPath(import.meta.url);
-if (!isWithin(harnessDir, runnerPath)) {
-  throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
-}
-
-const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1603-'));
+const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1603-live-'));
 const stateDir = path.join(probeDir, 'state');
-const serverPath = path.join(probeDir, 'fake-relaycast.mjs');
-// Fake Relaycast: accepts the registration handshake exactly like
-// `1700-broker-startup-transient-relaycast-retry`'s probe server, and adds a
-// `/v1/agents/:name/events` route (the real hosted-delivery publish
-// endpoint — see `RelaycastHttpClient::emit_agent_event`) that fails the
-// first delivery attempt with a transient 503 and succeeds on the retry.
-const serverSource = String.raw`import http from 'node:http';
-
-let registrationCount = 0;
-let eventAttempts = 0;
-const eventBodies = [];
-const server = http.createServer((request, response) => {
-  if (request.method === 'GET' && request.url === '/observations') {
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ registrationCount, eventAttempts, eventBodies }));
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/v1/agents') {
-    request.resume();
-    request.once('end', () => {
-      registrationCount += 1;
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({
-        ok: true,
-        data: {
-          id: 'a_relayflow_1603',
-          workspace_id: 'ws_relayflow_1603',
-          name: '${INSTANCE_NAME}',
-          token: 'at_live_relayflow_1603',
-          status: 'online',
-          created_at: '2025-01-01T00:00:00Z',
-        },
-      }));
-    });
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/v1/agents/${AGENT_NAME}/events') {
-    const chunks = [];
-    request.on('data', (chunk) => chunks.push(chunk));
-    request.once('end', () => {
-      eventAttempts += 1;
-      const attempt = eventAttempts;
-      let parsed;
-      try {
-        parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      } catch {
-        parsed = null;
-      }
-      eventBodies.push(parsed);
-      if (attempt === 1) {
-        response.writeHead(${TRANSIENT_STATUS}, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({
-          ok: false,
-          error: { code: 'database_overloaded', message: 'The database is temporarily overloaded.' },
-        }));
-        return;
-      }
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({
-        ok: true,
-        data: { id: 'evt_relayflow_1603', agent_id: 'a_relayflow_1603', type: 'agent_exited', payload: parsed?.payload ?? {}, created_at: '2025-01-01T00:00:01Z' },
-      }));
-    });
-    return;
-  }
-  response.writeHead(404, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({ ok: false, error: { code: 'not_found', message: request.url } }));
-});
-
-server.listen(0, '127.0.0.1', () => {
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Expected a TCP address.');
-  process.stdout.write(JSON.stringify({ port: address.port }) + '\n');
-});
-process.once('SIGTERM', () => server.close(() => process.exit(0)));
-`;
-
-let server;
+let relaycast;
+let firstBroker;
+let replayBroker;
 try {
-  await mkdir(stateDir, { recursive: true });
-  await seedCrashInsights(stateDir);
-  await writeFile(serverPath, serverSource, { encoding: 'utf8', mode: 0o600 });
-  server = spawn(process.execPath, [serverPath], {
-    cwd: probeDir,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const { port, stderr: serverStderr } = await waitForServerReady(server);
-
-  const startedAt = Date.now();
-  const observed = await runBrokerAgainstSeededOutbox({
-    binaryPath,
-    cwd: probeDir,
-    stateDir,
-    env: {
-      PATH: process.env.PATH ?? '/usr/bin:/bin',
-      HOME: probeDir,
-      TMPDIR: probeDir,
-      NO_COLOR: '1',
-      RELAYCAST_BASE_URL: `http://127.0.0.1:${port}`,
-      AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_1603',
-      AGENT_RELAY_STARTUP_DEBUG: '1',
-      AGENT_RELAY_TELEMETRY_DISABLED: '1',
-    },
-  });
-  const elapsedMs = Date.now() - startedAt;
-  const stderr = observed.stderr;
-
-  if (!stderr.includes(HANDSHAKE_MARKER)) {
-    throw new Error(
-      `Unexpected compiled startup observation: handshake never completed. ${JSON.stringify({
-        arm,
-        timedOut: observed.timedOut,
-        elapsedMs,
-        stdout: observed.stdout.slice(-2_000),
-        stderr: `${serverStderr}${stderr}`.slice(-2_000),
-      })}.`
-    );
-  }
-
-  const final = await readObservations(port);
-
-  let outcome;
-  let signature;
-  let details;
-  if (final.eventAttempts === 0) {
-    // Base has no `reload_pending_hosted_agent_exit_backlog` (the durable
-    // outbox does not exist in this crate at all) — the seeded pending
-    // record is inert, so no HTTP delivery is ever attempted.
-    outcome = 'bug';
-    signature = 'restart_never_replays_pending_hosted_exit';
-    details = `The base broker completed the Relaycast handshake but never issued an HTTP request to Relaycast for the seeded Pending hosted agent_exited record after ${elapsedMs}ms; the durable-outbox restart replay mechanism does not exist on this arm.`;
-  } else if (
-    final.eventAttempts === 2 &&
-    final.eventBodies[0]?.payload?.dedupe_key === DEDUPE_KEY &&
-    final.eventBodies[1]?.payload?.dedupe_key === DEDUPE_KEY
+  relaycast = await startFakeRelaycast();
+  const env = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: probeDir,
+    TMPDIR: probeDir,
+    NO_COLOR: '1',
+    RELAYCAST_BASE_URL: relaycast.baseUrl,
+    RELAY_NODE_TOKEN: 'nt_relayflow_1603',
+    RELAY_NODE_ID: 'node_relayflow_1603',
+    AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_1603',
+    AGENT_RELAY_STARTUP_DEBUG: '1',
+    AGENT_RELAY_TELEMETRY_DISABLED: '1',
+  };
+  firstBroker = startBroker({ binaryPath, cwd: probeDir, stateDir, env });
+  await waitFor(
+    () => relaycast.observations().spawnRequests === 1,
+    EXIT_WINDOW_MS,
+    'fleet action.invoke was not sent'
+  );
+  await waitFor(
+    () => relaycast.observations().eventAttempts === 1,
+    EXIT_WINDOW_MS,
+    'real child exit never reached Relaycast publication'
+  );
+  const beforeRestart = await crashInsights(stateDir);
+  const pending = beforeRestart.records.find((record) => record.agent_name === AGENT_NAME);
+  if (
+    !pending ||
+    pending.hosted_delivery !== 'pending' ||
+    pending.spawn_invocation_id !== INVOCATION_ID ||
+    !pending.generation
   ) {
-    // Head replays the seeded Pending record on startup, the first delivery
-    // attempt hits the transient 503, and the in-process retry (see
-    // HOSTED_PUBLISH_MAX_ATTEMPTS / HOSTED_PUBLISH_RETRY_BASE_DELAY) succeeds
-    // without a second broker restart.
-    outcome = 'fixed';
-    signature = 'restart_replays_pending_hosted_exit_through_transient_failure';
-    details = `The head broker replayed the seeded Pending hosted agent_exited record on startup, retried through one transient ${TRANSIENT_STATUS} from Relaycast, and delivered it successfully in ${elapsedMs}ms (2 POST attempts to /v1/agents/${AGENT_NAME}/events, both carrying dedupe_key ${DEDUPE_KEY}).`;
-  } else {
-    throw new Error(
-      `Unexpected compiled replay observation: ${JSON.stringify({
-        arm,
-        elapsedMs,
-        final,
-        stdout: observed.stdout.slice(-2_000),
-        stderr: `${serverStderr}${stderr}`.slice(-2_000),
-      })}.`
-    );
+    throw diagnostic('The real pre-restart exit was not durably Pending.', {
+      beforeRestart,
+      pending,
+      relaycast: relaycast.observations(),
+      firstBroker,
+    });
   }
 
+  // The first request is deliberately unanswered: persistence has happened,
+  // but no HTTP success exists. Cross a real process restart boundary now.
+  await stopBroker(firstBroker, 'SIGKILL');
+  firstBroker = undefined;
+  await relaycast.enableDelivery();
+  replayBroker = startBroker({ binaryPath, cwd: probeDir, stateDir, env });
+  await waitFor(
+    () => relaycast.observations().eventAttempts === 2,
+    REPLAY_WINDOW_MS,
+    'restart did not replay the pending hosted exit'
+  );
+  await waitFor(
+    async () => {
+      const state = await crashInsights(stateDir);
+      return (
+        state.records.find((record) => record.agent_name === AGENT_NAME)?.hosted_delivery === 'delivered'
+      );
+    },
+    REPLAY_WINDOW_MS,
+    'HTTP 200 did not mark the real exit Delivered'
+  );
+  const final = relaycast.observations();
+  const afterRestart = await crashInsights(stateDir);
+  const dedupeKeys = final.eventBodies.map((body) => body?.payload?.dedupe_key);
+  if (
+    final.spawnRequests !== 1 ||
+    final.eventAttempts !== 2 ||
+    !dedupeKeys.every(
+      (key) => typeof key === 'string' && key === dedupeKeys[0] && key.startsWith(DEDUPE_PREFIX)
+    )
+  ) {
+    throw diagnostic('Unexpected live fleet-control replay observation.', {
+      final,
+      beforeRestart,
+      afterRestart,
+      firstBroker,
+      replayBroker,
+    });
+  }
+  await writeResult(
+    'fixed',
+    'live_fleet_child_exit_persists_then_replays_once_after_restart',
+    `A public /v1/node/ws action.invoke launched a real disposable child; its real nonzero exit persisted as Pending before Relaycast HTTP was available. After killing and restarting the exact broker on the same state, it replayed agent_exited once with stable dedupe_key ${dedupeKeys[0]} and became Delivered only after a fake Relaycast HTTP 200.`
+  );
+} catch (error) {
+  // Pre-fix binaries legitimately lack the durable-outbox code, so they do
+  // not make the first event request. Keep the base arm a specific regression.
+  if (
+    arm === 'base' &&
+    relaycast?.observations().eventAttempts === 0 &&
+    relaycast.observations().spawnRequests === 1
+  ) {
+    await writeResult(
+      'bug',
+      'live_exit_never_enters_durable_hosted_outbox',
+      'The base broker accepted the public fleet spawn but never published a hosted exit for the real disposable child.'
+    );
+  } else {
+    throw diagnostic(error.message, {
+      relaycast: relaycast?.observations(),
+      firstBroker: firstBroker?.logs(),
+      replayBroker: replayBroker?.logs(),
+    });
+  }
+} finally {
+  await stopBroker(firstBroker, 'SIGKILL');
+  await stopBroker(replayBroker, 'SIGKILL');
+  await relaycast?.close();
+  await rm(probeDir, { recursive: true, force: true });
+}
+
+function startBroker({ binaryPath, cwd, stateDir, env }) {
+  const child = spawn(
+    binaryPath,
+    ['init', '--instance-name', INSTANCE_NAME, '--channels', 'general', '--persist', '--state-dir', stateDir],
+    { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  return { child, logs: () => ({ stdout: stdout.slice(-4_000), stderr: stderr.slice(-4_000) }) };
+}
+async function stopBroker(broker, signal) {
+  if (!broker?.child || broker.child.exitCode !== null) return;
+  broker.child.kill(signal);
+  await Promise.race([new Promise((resolve) => broker.child.once('exit', resolve)), sleep(5_000)]);
+  if (broker.child.exitCode === null) broker.child.kill('SIGKILL');
+}
+async function crashInsights(directory) {
+  return JSON.parse(await readFile(path.join(directory, 'crash-insights.json'), 'utf8'));
+}
+async function writeResult(outcome, signature, details) {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
     `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`,
     'utf8'
   );
-} finally {
-  if (server && server.exitCode === null) {
-    server.kill('SIGTERM');
-    await Promise.race([
-      new Promise((resolve) => server.once('exit', resolve)),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
-    if (server.exitCode === null) server.kill('SIGKILL');
-  }
-  await rm(probeDir, { recursive: true, force: true });
 }
 
-/**
- * Write `crash-insights.json` in the exact on-disk shape
- * `CrashInsights::save` produces (see `crates/relay-pty/src/crash_insights.rs`),
- * seeded with one record whose hosted delivery is `Pending`. Written to the
- * same path `run_init` loads from (`{state_dir}/crash-insights.json`).
- * Deliberately written before the broker ever starts, so the "restart" this
- * case exercises is really this process's first startup finding durable
- * state a previous (unmodeled) session already left behind.
- */
-async function seedCrashInsights(directory) {
-  const record = {
-    agent_name: AGENT_NAME,
-    exit_code: 1,
-    signal: null,
-    timestamp: 1_700_000_000,
-    uptime_secs: 42,
-    category: 'error',
-    description: 'Nonzero exit code (application error)',
-    workspace_id: null,
-    spawn_invocation_id: null,
-    generation: GENERATION,
-    became_ready: true,
-    spawned_at: 1_699_999_950,
-    ready_at: 1_699_999_955,
-    exited_at: 1_699_999_992,
-    exit_reason: 'nonzero exit',
-    fleet_node_name: null,
-    hosted_delivery: 'pending',
+/** Minimal Relaycast HTTP plus raw WebSocket fake; no production test hooks. */
+async function startFakeRelaycast() {
+  let spawnRequests = 0;
+  let actionSent = false;
+  let deliveryAvailable = false;
+  let heldResponse;
+  const eventBodies = [];
+  const controlMessages = [];
+  const sockets = new Set();
+  const server = http.createServer(async (request, response) => {
+    const body = await requestBody(request);
+    if (request.method === 'POST' && request.url === '/v1/agents') {
+      return json(response, 200, {
+        ok: true,
+        data: {
+          id: 'a_relayflow_broker',
+          workspace_id: 'ws_relayflow_1603',
+          name: INSTANCE_NAME,
+          token: 'at_relayflow_broker',
+          status: 'online',
+          created_at: '2025-01-01T00:00:00Z',
+        },
+      });
+    }
+    if (request.method === 'GET' && request.url === `/v1/agents/${AGENT_NAME}`) {
+      return json(response, 200, {
+        ok: true,
+        data: { id: 'a_relayflow_live_child', name: AGENT_NAME, channels: [] },
+      });
+    }
+    if (request.method === 'POST' && request.url === `/v1/agents/${AGENT_NAME}/events`) {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        parsed = null;
+      }
+      eventBodies.push(parsed);
+      if (!deliveryAvailable) {
+        heldResponse = response;
+        return;
+      }
+      return json(response, 200, {
+        ok: true,
+        data: {
+          id: 'evt_relayflow_1603',
+          agent_id: 'a_relayflow_live_child',
+          type: 'agent_exited',
+          payload: parsed?.payload ?? {},
+          created_at: '2025-01-01T00:00:01Z',
+        },
+      });
+    }
+    return json(response, 404, { ok: false, error: { code: 'not_found', message: request.url } });
+  });
+  server.on('upgrade', (request, socket) => {
+    if (!request.url?.startsWith('/v1/node/ws')) return socket.destroy();
+    const key = request.headers['sec-websocket-key'];
+    if (typeof key !== 'string') return socket.destroy();
+    const accept = createHash('sha1').update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+    socket.write(
+      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
+    );
+    sockets.add(socket);
+    let buffer = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      let frame;
+      while ((frame = takeFrame(buffer))) {
+        buffer = buffer.subarray(frame.consumed);
+        if (frame.opcode === 8) return socket.end();
+        if (frame.opcode === 9) {
+          socket.write(serverFrame(10, frame.payload));
+          continue;
+        }
+        if (frame.opcode !== 1) continue;
+        let message;
+        try {
+          message = JSON.parse(frame.payload.toString('utf8'));
+        } catch {
+          continue;
+        }
+        controlMessages.push(message);
+        if (message.type === 'agent.register')
+          sendJson(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: {
+              agent_id: 'a_relayflow_live_child',
+              token: 'at_relayflow_live_child',
+              name: AGENT_NAME,
+              delivery_ack_seq: 0,
+            },
+          });
+        if (message.type === 'agent.deregister')
+          sendJson(socket, { type: 'reply', v: 1, id: message.id, ok: true, data: {} });
+        if (message.type === 'node.register' && !actionSent) {
+          actionSent = true;
+          spawnRequests += 1;
+          sendJson(socket, {
+            type: 'action.invoke',
+            v: 1,
+            invocation_id: INVOCATION_ID,
+            action: 'spawn',
+            agent_name: AGENT_NAME,
+            input: {
+              name: AGENT_NAME,
+              cli: 'claude',
+              channels: [],
+              harnessConfig: {
+                runtime: 'native',
+                command: '/bin/sh',
+                args: ['-c', 'sleep 2; exit 23'],
+                sessionId: 'relayflow-1603-live-session',
+              },
+            },
+          });
+        }
+      }
+    });
+    socket.once('close', () => sockets.delete(socket));
+    socket.once('error', () => sockets.delete(socket));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    observations: () => ({
+      spawnRequests,
+      eventAttempts: eventBodies.length,
+      eventBodies,
+      actionSent,
+      deliveryAvailable,
+      controlMessages,
+    }),
+    enableDelivery: async () => {
+      deliveryAvailable = true;
+      if (heldResponse && !heldResponse.destroyed) heldResponse.destroy();
+      heldResponse = undefined;
+    },
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    },
   };
-  const crashInsights = { records: [record], max_records: 500 };
-  await writeFile(
-    path.join(directory, 'crash-insights.json'),
-    `${JSON.stringify(crashInsights, null, 2)}\n`,
-    'utf8'
-  );
 }
-
-/**
- * `init` is a long-lived server: on the fixed arm it keeps running once the
- * pending delivery is either replayed to completion or (on base) never
- * replayed at all. Settle once the handshake marker appears AND the
- * observation window has elapsed with a stable result, or the process
- * exits, so neither arm has to wait out the full wall-clock timeout.
- */
-function runBrokerAgainstSeededOutbox({ binaryPath, cwd, stateDir, env }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      binaryPath,
-      [
-        'init',
-        '--instance-name',
-        INSTANCE_NAME,
-        '--channels',
-        'general',
-        '--persist',
-        '--state-dir',
-        stateDir,
-      ],
-      { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }
-    );
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let settleTimer;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearTimeout(settleTimer);
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      resolve(result);
-    };
-    const timer = setTimeout(
-      () => finish({ stdout, stderr, status: null, signal: null, timedOut: true }),
-      STARTUP_WINDOW_MS
-    );
-    const armSettleTimer = () => {
-      clearTimeout(settleTimer);
-      settleTimer = setTimeout(
-        () => finish({ stdout, stderr, status: null, signal: null, timedOut: false }),
-        REPLAY_OBSERVATION_WINDOW_MS
-      );
-    };
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.includes(HANDSHAKE_MARKER)) armSettleTimer();
-    });
-    child.once('error', (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearTimeout(settleTimer);
-      reject(new Error(`compiled broker probe could not start: ${error.message}`));
-    });
-    child.once('exit', (code, signal) => {
-      finish({ stdout, stderr, status: code, signal, timedOut: false });
-    });
+function sendJson(socket, value) {
+  socket.write(serverFrame(1, Buffer.from(JSON.stringify(value))));
+}
+function serverFrame(opcode, payload) {
+  const length = payload.length;
+  if (length < 126) return Buffer.concat([Buffer.from([0x80 | opcode, length]), payload]);
+  if (length <= 0xffff) {
+    const header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+    return Buffer.concat([header, payload]);
+  }
+  throw new Error('RelayFlow fake frame unexpectedly exceeds 64KiB.');
+}
+function takeFrame(buffer) {
+  if (buffer.length < 2) return null;
+  const masked = Boolean(buffer[1] & 0x80);
+  let length = buffer[1] & 0x7f;
+  let offset = 2;
+  if (length === 126) {
+    if (buffer.length < 4) return null;
+    length = buffer.readUInt16BE(2);
+    offset = 4;
+  }
+  if (length === 127 || !masked || buffer.length < offset + 4 + length) return null;
+  const key = buffer.subarray(offset, offset + 4);
+  const payload = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
+  for (let index = 0; index < payload.length; index += 1) payload[index] ^= key[index % 4];
+  return { opcode: buffer[0] & 0x0f, payload, consumed: offset + 4 + length };
+}
+function requestBody(request) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.once('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
   });
 }
-
+function json(response, status, value) {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(value));
+}
+async function waitFor(check, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await sleep(25);
+  }
+  throw new Error(message);
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function diagnostic(message, extra) {
+  return new Error(
+    `${message} ${JSON.stringify(extra, (_, value) => (typeof value === 'function' ? value() : value)).slice(-12_000)}`
+  );
+}
 function requiredValue(name) {
   const value = process.env[name]?.trim();
-  if (!value) throw new Error(`Missing required environment variable ${name}.`);
+  if (!value) throw new Error(`Missing ${name}.`);
   return value;
 }
-
 function requiredDirectory(name) {
   return path.resolve(requiredValue(name));
 }
-
 async function requiredExecutable(name) {
-  const candidate = path.resolve(requiredValue(name));
-  try {
-    await access(candidate, fsConstants.R_OK | fsConstants.X_OK);
-  } catch {
-    throw new Error(`${name} must name a readable executable file.`);
-  }
-  return candidate;
+  const value = path.resolve(requiredValue(name));
+  await access(value, fsConstants.X_OK);
+  return value;
 }
-
-function isWithin(directory, candidate) {
-  const relative = path.relative(directory, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
-}
-
-async function readObservations(port) {
-  const response = await fetch(`http://127.0.0.1:${port}/observations`, {
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!response.ok) {
-    throw new Error(`startup probe observation endpoint returned ${response.status}`);
-  }
-  const observation = await response.json();
-  if (!Number.isInteger(observation?.eventAttempts) || observation.eventAttempts < 0) {
-    throw new Error(`startup probe returned an invalid observation ${JSON.stringify(observation)}`);
-  }
-  return observation;
-}
-
-function waitForServerReady(child) {
-  return new Promise((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => reject(new Error('startup probe server did not start')), 10_000);
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      const newline = stdout.indexOf('\n');
-      if (newline < 0) return;
-      clearTimeout(timer);
-      try {
-        const ready = JSON.parse(stdout.slice(0, newline));
-        if (!Number.isInteger(ready.port) || ready.port <= 0) {
-          throw new Error(`invalid port ${JSON.stringify(ready.port)}`);
-        }
-        resolve({ port: ready.port, stderr });
-      } catch (error) {
-        reject(new Error(`startup probe server emitted invalid readiness: ${error.message}`));
-      }
-    });
-    child.once('exit', (code, signal) => {
-      clearTimeout(timer);
-      reject(
-        new Error(`startup probe server exited before readiness (${signal ?? code ?? 'unknown'}): ${stderr}`)
-      );
-    });
-  });
+function isWithin(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
 }
