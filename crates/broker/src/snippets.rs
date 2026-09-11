@@ -1378,6 +1378,16 @@ pub async fn configure_agent_relay_mcp_with_result(
     Ok(args)
 }
 
+/// True when `cli` resolves to Cursor's headless binary — the same detection
+/// [`configure_agent_relay_mcp_with_result`] uses to decide whether it writes
+/// `.cursor/mcp.json`. Exposed so callers (the worker registry's cursor MCP
+/// lease) can decide whether to acquire/release a lease without duplicating
+/// the CLI-name detection logic.
+pub(crate) fn is_cursor_cli_name(cli: &str) -> bool {
+    let cli_lower = detect_cli_name(cli).to_lowercase();
+    cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"
+}
+
 fn detect_cli_name(cli: &str) -> String {
     let command = shlex::split(cli)
         .and_then(|parts| parts.first().cloned())

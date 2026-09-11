@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents.
 
+- Spawning a Cursor worker no longer leaves plaintext Agent Relay credentials in `<cwd>/.cursor/mcp.json` after release. The broker leases that file per-cwd across concurrent workers and restores the pre-existing config or absence on every cleanup path; Unix files remain `0600`, while Windows secures new files and preserves existing ACLs.
+
 ### Breaking Changes
 
 - `up` and `node up` refuse startup outside macOS and Linux because broker ownership cannot be verified on other platforms. Legacy brokers without a verifiable identity no longer support automatic shutdown or recovery.

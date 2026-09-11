@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    cursor_mcp_lease::CursorMcpLeaseRegistry,
     ids::{RequestId, WorkerName},
     metrics::MetricsCollector,
     protocol::{
@@ -13,7 +14,7 @@ use crate::{
         HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
-    relaycast::configure_agent_relay_mcp_with_result,
+    relaycast::{configure_agent_relay_mcp_with_result, is_cursor_cli_name},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -261,6 +262,12 @@ pub(crate) struct WorkerRegistry {
     pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+    /// Lease over any `.cursor/mcp.json` files this registry has injected
+    /// Agent Relay credentials into (relay#1753). Every worker-removal path
+    /// (`release`, `cleanup_rejected_spawn`, `reap_exited`) must call
+    /// `cursor_mcp_leases.release_worker(name)` so a generated credential
+    /// file never outlives every worker that shares its cwd.
+    pub(crate) cursor_mcp_leases: CursorMcpLeaseRegistry,
 }
 
 fn encode_worker_frame(
@@ -369,6 +376,7 @@ impl WorkerRegistry {
             identity_cleanups: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+            cursor_mcp_leases: CursorMcpLeaseRegistry::new(),
         }
     }
 
@@ -442,9 +450,9 @@ impl WorkerRegistry {
 
     #[allow(clippy::too_many_arguments)]
     async fn build_mcp_args(
-        &self,
+        &mut self,
         cli_name: &str,
-        agent_name: &str,
+        agent_name: &WorkerName,
         existing_args: &[String],
         cwd: &Path,
         worker_relay_api_key: Option<&str>,
@@ -459,9 +467,29 @@ impl WorkerRegistry {
         if skip_relay_prompt || self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
             return Ok(Vec::new());
         }
-        configure_agent_relay_mcp_with_result(
+
+        // relay#1753: `configure_agent_relay_mcp_with_result` writes
+        // credentials into `<cwd>/.cursor/mcp.json` for Cursor workers. Claim
+        // the lease *before* that write so the pre-existing file (a real user
+        // config, or nothing) is captured before this generation's
+        // credentials land — never a sibling worker's already-injected
+        // config. `spawn`'s caller (`cleanup_rejected_spawn`, `release`,
+        // `reap_exited`) releases this same lease on every exit path.
+        let is_cursor = is_cursor_cli_name(cli_name);
+        if is_cursor {
+            if let Err(error) = self.cursor_mcp_leases.acquire(cwd, agent_name) {
+                tracing::warn!(
+                    worker = %agent_name,
+                    cwd = %cwd.display(),
+                    %error,
+                    "failed to capture pre-existing .cursor/mcp.json before injecting Agent Relay MCP config"
+                );
+            }
+        }
+
+        let result = configure_agent_relay_mcp_with_result(
             cli_name,
-            agent_name,
+            agent_name.as_str(),
             self.env_value("RELAY_API_KEY"),
             self.env_value("RELAY_BASE_URL"),
             existing_args,
@@ -471,7 +499,19 @@ impl WorkerRegistry {
             self.env_value("RELAY_DEFAULT_WORKSPACE"),
             agent_result,
         )
-        .await
+        .await;
+
+        if is_cursor && result.is_err() {
+            // The write never landed (or failed partway); nothing generated
+            // survives this worker, so drop the lease immediately rather than
+            // waiting for a removal path that may never run (spawn fails
+            // before the handle is even registered).
+            if let Err(error) = self.cursor_mcp_leases.release_worker(agent_name) {
+                tracing::warn!(worker = %agent_name, %error, "failed to release .cursor/mcp.json lease after failed MCP config write");
+            }
+        }
+
+        result
     }
 
     pub(crate) fn has_worker(&self, name: &str) -> bool {
@@ -570,6 +610,9 @@ impl WorkerRegistry {
         self.workers.remove(name);
         self.initial_tasks.remove(name);
         self.supervisor.unregister(name);
+        if let Err(error) = self.cursor_mcp_leases.release_worker(name) {
+            tracing::warn!(worker = %name, %error, "failed to release .cursor/mcp.json lease after rejected spawn");
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1519,6 +1562,17 @@ impl WorkerRegistry {
             .workers
             .remove(name)
             .with_context(|| format!("unknown worker '{name}'"))?;
+        // relay#1753: restore/remove any leased .cursor/mcp.json before the
+        // rest of the release proceeds, so an explicit release, a broker
+        // shutdown sweep (`shutdown_all`), and ambiguous-timeout recovery
+        // (which reuses this same path via `release_worker_locally`) all
+        // converge on the same cleanup.
+        if let Err(error) = self
+            .cursor_mcp_leases
+            .release_worker(&WorkerName::new(name))
+        {
+            tracing::warn!(worker = %name, %error, "failed to release .cursor/mcp.json lease on explicit release");
+        }
         let release_grace = release_grace_for_spec(&handle.spec);
 
         let shutdown_frame = ProtocolEnvelope {
@@ -1686,6 +1740,9 @@ impl WorkerRegistry {
                 }
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                if let Err(error) = self.cursor_mcp_leases.release_worker(&name) {
+                    tracing::warn!(worker = %name, %error, "failed to release .cursor/mcp.json lease for orphaned wrapper");
+                }
                 exited.push((name, generation, None, None, reason));
                 continue;
             }
@@ -1709,6 +1766,9 @@ impl WorkerRegistry {
                     .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                if let Err(error) = self.cursor_mcp_leases.release_worker(&name) {
+                    tracing::warn!(worker = %name, %error, "failed to release .cursor/mcp.json lease on task exit");
+                }
                 exited.push((name, generation, code, signal, reason));
             } else if gone_via_kill0 {
                 let generation = self
@@ -1722,6 +1782,9 @@ impl WorkerRegistry {
                     .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                if let Err(error) = self.cursor_mcp_leases.release_worker(&name) {
+                    tracing::warn!(worker = %name, %error, "failed to release .cursor/mcp.json lease after process disappeared");
+                }
                 exited.push((name, generation, None, None, reason));
             }
         }
