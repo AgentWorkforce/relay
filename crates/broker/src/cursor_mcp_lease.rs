@@ -1870,14 +1870,19 @@ impl CursorMcpLeaseRegistry {
         }
         #[cfg(not(unix))]
         {
+            let parent = _path
+                .parent()
+                .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?;
             #[cfg(windows)]
-            let _parent_guard = windows_directory_guard(
-                _path
-                    .parent()
-                    .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?,
-            )?;
+            let parent_guard = match windows_directory_guard(parent) {
+                Ok(guard) => Some(guard),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e),
+            };
             #[cfg(windows)]
-            validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
+            if parent_guard.is_some() {
+                validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
+            }
             match pre_existing {
                 PreExisting::Absent { created_dir } => {
                     #[cfg(windows)]
@@ -1940,6 +1945,10 @@ impl CursorMcpLeaseRegistry {
                         sync_entry_parent(_path)?;
                     }
                     if *created_dir {
+                        // Drop the directory guard before attempting removal so
+                        // Windows does not block the delete with an open handle.
+                        #[cfg(windows)]
+                        drop(parent_guard);
                         if let Some(dir) = _path.parent() {
                             if fs::remove_dir(dir).is_ok() {
                                 sync_entry_parent(dir)?;
