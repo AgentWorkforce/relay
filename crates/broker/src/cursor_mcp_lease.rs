@@ -1163,9 +1163,10 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
     let mut psid: *mut u8 = std::ptr::null_mut();
     let ok = unsafe { ConvertStringSidToSidW(wide_sid.as_ptr(), &mut psid) };
     if ok == 0 || psid.is_null() {
+        let err = io::Error::last_os_error();
         tracing::error!(
             sid = %sid,
-            last_os_error = io::Error::last_os_error(),
+            error = %err,
             "ConvertStringSidToSidW failed for Cursor config ACL"
         );
         return Err(io::Error::new(
@@ -1269,11 +1270,12 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
     };
 
     if status != 0 {
+        let err = io::Error::last_os_error();
         tracing::error!(
             path = %path.display(),
             sid = %sid,
             status = status,
-            last_os_error = io::Error::last_os_error(),
+            error = %err,
             "SetNamedSecurityInfoW failed to secure generated Cursor config"
         );
         return Err(io::Error::new(
