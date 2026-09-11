@@ -954,14 +954,27 @@ impl CursorMcpLeaseRegistry {
                     "Cursor MCP lease journal path is not canonical",
                 ));
             }
-            let (lock, cursor_dir, _) = match LeaseLock::acquire_with_cursor(root, false) {
-                Ok(value) => value,
+            let lock = match LeaseLock::acquire(root) {
+                Ok(lock) => lock,
                 Err(error) => {
                     tracing::warn!(path = %entry.path.display(), %error, "Cursor MCP lease recovery deferred because another broker owns the cwd");
                     remaining.push(JournalEntry {
                         path: entry.path,
                         pre_existing: pre_existing.journal(),
                     });
+                    continue;
+                }
+            };
+            let cursor_dir = match lock.open_cursor_dir(false) {
+                Ok((cursor, _)) => Some(cursor),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    tracing::warn!(path = %entry.path.display(), %error, "Cursor MCP lease recovery deferred because .cursor could not be opened safely");
+                    remaining.push(JournalEntry {
+                        path: entry.path,
+                        pre_existing: pre_existing.journal(),
+                    });
+                    held_locks.push(lock);
                     continue;
                 }
             };
@@ -1352,5 +1365,58 @@ mod tests {
             })
             .unwrap();
         assert!(journal.exists(), "failed restore remains journaled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovery_defers_invalid_cursor_and_keeps_root_locked_until_finalize() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().canonicalize().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("mcp.json");
+        fs::write(&outside_file, b"outside bytes").unwrap();
+        fs::create_dir_all(root.join(".cursor")).unwrap();
+        let path = root.join(".cursor/mcp.json");
+        fs::write(&path, b"original").unwrap();
+        let body = serde_json::to_vec(&Journal {
+            entries: vec![JournalEntry {
+                path: path.clone(),
+                pre_existing: JournalPreExisting::Present {
+                    contents_base64: base64::engine::general_purpose::STANDARD.encode(b"original"),
+                    mode: 0o600,
+                },
+            }],
+        })
+        .unwrap();
+        fs::write(&journal, body).unwrap();
+
+        let mut recovery = CursorMcpLeaseRegistry {
+            leases: HashMap::new(),
+            path_by_worker: HashMap::new(),
+            journal_path: Some(journal.clone()),
+        };
+        let cursor_path = root.join(".cursor");
+        fs::remove_dir_all(&cursor_path).unwrap();
+        symlink(outside.path(), &cursor_path).unwrap();
+
+        recovery
+            .recover_journal_with_hook(|| {
+                match LeaseLock::acquire(&root) {
+                    Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+                    Ok(_) => panic!("root lock should stay held until journal finalization"),
+                }
+                assert_eq!(read(&outside_file), b"outside bytes");
+            })
+            .unwrap();
+
+        assert!(
+            journal.exists(),
+            "invalid cursor entry must remain journaled"
+        );
+        assert_eq!(read(&path), b"outside bytes");
+        assert_eq!(read(&outside_file), b"outside bytes");
     }
 }
