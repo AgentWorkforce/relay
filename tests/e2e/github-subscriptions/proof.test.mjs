@@ -10,6 +10,7 @@ import {
   semanticMatches,
   hasContinuousCoverage,
   standaloneControlsAfter,
+  collectUnseenMessages,
 } from './proof.mjs';
 
 test('no-poke audit catches background Enter after idle and excludes initial submission', () => {
@@ -25,6 +26,37 @@ test('no-poke audit catches background Enter after idle and excludes initial sub
   assert.throws(
     () => standaloneControlsAfter('writing terminal control input unknown format', '2026-09-08T20:28:29Z'),
     /Unrecognized/
+  );
+});
+
+test('history collector crosses full pages and rejects a stalled cursor', async () => {
+  const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
+  const pages = [
+    [message('4'), message('3')],
+    [message('2'), message('1')],
+  ];
+  const cursors = [];
+  const result = await collectUnseenMessages(
+    async (before) => {
+      cursors.push(before);
+      return pages.shift();
+    },
+    new Set(['1']),
+    0,
+    2
+  );
+  assert.deepEqual(
+    result.map((m) => m.id),
+    ['4', '3', '2']
+  );
+  assert.deepEqual(cursors, [undefined, '3']);
+  await assert.rejects(
+    collectUnseenMessages(async () => [message('4'), message('3')], new Set(), 0, 2),
+    /did not advance/
+  );
+  await assert.rejects(
+    collectUnseenMessages(async () => [{ id: '1' }], new Set(), 0),
+    /timestamp/
   );
 });
 
@@ -180,4 +212,143 @@ test('startup failure retains sanitized diagnostics without inventing an idle au
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+for (const [name, mutate] of [
+  [
+    'action before injection',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T12:00:02Z';
+    },
+  ],
+  [
+    'action after deadline',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T13:00:05Z';
+    },
+  ],
+  [
+    'unaccepted producer intent',
+    (f) => {
+      f.stimulus.accepted = false;
+    },
+  ],
+  [
+    'receiver exited after idle',
+    (f) => {
+      f.events.push({ kind: 'agent_exited', name: f.actor, observedAt: '2026-09-08T12:00:00.500Z' });
+    },
+  ],
+  [
+    'nonce acknowledged before terminal event',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T11:59:59Z';
+    },
+  ],
+])
+  test(`rejects ${name}`, () => {
+    const f = fixture();
+    mutate(f);
+    assert.equal(correlate(f).pass, false);
+  });
+
+test('exact fixture matching rejects another GitHub object and unsafe numeric IDs', () => {
+  const f = fixture();
+  f.stimulus.expected = {
+    path: '/github/repos/owner/repo/comments/9007199254740993.json',
+    record: { id: '9007199254740993', user: { login: 'fixture-author' } },
+  };
+  f.messages[0].metadata.path = f.stimulus.expected.path;
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  assert.equal(correlate(f).pass, true);
+  f.messages[0].metadata.record.id = 9007199254740993;
+  assert.equal(correlate(f).pass, false);
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  f.messages[0].metadata.record.user.login = 'other-author';
+  assert.equal(correlate(f).pass, false);
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  f.messages[0].metadata.path = '/github/repos/owner/other/comments/9007199254740993.json';
+  assert.equal(correlate(f).pass, false);
+});
+
+test('strict live fixture mode cannot accept an unbound rehearsal trace', () => {
+  assert.equal(correlate({ ...fixture(), strictFixture: true }).pass, false);
+});
+
+test('strict fixture assertion rejects incomplete external schemas and mismatched stimulus bindings', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  for (const kind of ['comment', 'review', 'thread', 'merge', 'ci']) {
+    const f = fixture();
+    Object.assign(f.stimulus, {
+      kind,
+      accepted: true,
+      repo: 'AgentWorkforce/relay',
+      pr: 123,
+      providerId: '456',
+      headSha: 'a'.repeat(40),
+      base: 'owned-base',
+      mergeSha: 'b'.repeat(40),
+      file: 'owned.txt',
+      line: 2,
+      side: 'RIGHT',
+    });
+    f.strictFixture = true;
+    f.stimulus.expected = fixtureExpected(
+      f.stimulus,
+      {
+        id: '456',
+        user: { login: 'owner' },
+        submitted_at: '2026-09-11T12:00:00Z',
+        pull_request_review_id: '789',
+        merge_commit_sha: 'b'.repeat(40),
+        name: 'owned-check',
+      },
+      'test'
+    );
+    Object.assign(f.messages[0].metadata, {
+      path: f.stimulus.expected.path,
+      record: structuredClone(f.stimulus.expected.record),
+      provider_event_type: {
+        comment: 'issue_comment.created',
+        review: 'pull_request_review.submitted',
+        thread: 'pull_request_review_comment.created',
+        merge: 'pull_request.closed',
+        ci: 'check_run.completed',
+      }[kind],
+    });
+    assert.equal(correlate(f).pass, true, kind);
+    for (const key of Object.keys(f.stimulus.expected.record)) {
+      const adverse = structuredClone(f);
+      delete adverse.stimulus.expected.record[key];
+      assert.equal(correlate(adverse).pass, false, kind + ' missing ' + key);
+    }
+    for (const patch of [{ providerId: '999' }, { repo: 'AgentWorkforce/other' }, { headSha: 'bad' }]) {
+      if (kind === 'comment' && patch.headSha) continue;
+      const adverse = structuredClone(f);
+      Object.assign(adverse.stimulus, patch);
+      assert.equal(correlate(adverse).pass, false, kind + JSON.stringify(patch));
+    }
+  }
+});
+
+for (const kind of ['agent_exited', 'delivery_failed'])
+  test(`rejects ${kind} after ACK within response deadline`, () => {
+    const f = fixture();
+    f.events.push({ kind, name: f.actor, observedAt: '2026-09-08T12:00:06Z' });
+    assert.equal(correlate(f).pass, false);
+    f.events.at(-1).observedAt = '2026-09-08T12:03:00Z';
+    assert.equal(correlate(f).pass, true);
+  });
+
+test('history collector stops within a page at the first known boundary', async () => {
+  const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
+  const pages = [
+    ['4', '3'],
+    ['2', '1'],
+  ];
+  const records = await collectUnseenMessages(async () => pages.shift().map(message), new Set(['2']), 0, 2);
+  assert.deepEqual(
+    records.map((m) => m.id),
+    ['4', '3']
+  );
 });
