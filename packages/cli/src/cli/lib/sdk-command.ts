@@ -1,9 +1,15 @@
 import type { Command } from 'commander';
 
-import { AgentRelay, safeRelayErrorMessage, type AgentRelayAgent } from '@agent-relay/sdk';
+import {
+  AgentRelay,
+  RelayPlacementError,
+  safeRelayErrorMessage,
+  type AgentRelayAgent,
+} from '@agent-relay/sdk';
 
 import { defaultExit } from './exit.js';
 import { createAgentRelay, createWorkspaceRelay, type SdkClientOptions } from './sdk-client.js';
+import { sanitizedSpawnReceipt } from './spawn-lifecycle.js';
 
 type ExitFn = (code: number) => never;
 
@@ -70,7 +76,23 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
   try {
     await fn();
   } catch (err) {
-    deps.error(safeRelayErrorMessage(err));
+    const message = safeRelayErrorMessage(err);
+    if (err instanceof RelayPlacementError) {
+      const structured = {
+        error: {
+          code: err.code,
+          state: err.state ?? 'unknown',
+          ...(err.invocationId ? { invocationId: err.invocationId } : {}),
+          ...(err.node ? { node: err.node } : {}),
+          ...(err.dispatchState ? { dispatchState: err.dispatchState } : {}),
+          ...(err.receipt ? { receipt: sanitizedSpawnReceipt(err.receipt) } : {}),
+          message,
+        },
+      };
+      deps.error(`${message}\n${JSON.stringify(structured)}`);
+    } else {
+      deps.error(message);
+    }
     deps.exit(1);
   }
 }

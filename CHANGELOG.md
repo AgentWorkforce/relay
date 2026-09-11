@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 - `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
 
+- SDK fleet spawn placement receipts preserve invocation correlation and distinguish accepted, ready, unconfirmed, and terminal-failed outcomes.
+
+- CLI and MCP fleet spawns require explicit launch/readiness proof, preserve dispatch evidence, and surface terminal failures with correlated receipts.
+
+- `fleet agent list` reports control-plane reachability separately from hosted-worker liveness in JSON and pretty output, including offline local nodes.
+
 - `fleet spawn --sandbox` uses the provider-neutral durable profile for explicit Daytona and E2B sandboxes, so their measured resource envelopes are routable while Agent37 retains its heavy profile.
 
 - Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.

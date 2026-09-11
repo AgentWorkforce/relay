@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1563-spawn-lifecycle-truth",
+  "kind": "bugfix",
+  "title": "Spawn invocation lifecycle and fleet liveness truth",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1563-spawn-lifecycle-truth/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "invocation_state_lifecycle_gaps"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "invocation_state_lifecycle_closed"
+    }
+  }
+}
