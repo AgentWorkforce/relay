@@ -259,6 +259,7 @@ pub enum ListenApiRequest {
 /// so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryRouteError {
+    CapabilityDisabled,
     /// No worker with that name is currently registered with the broker.
     WorkerNotFound(WorkerName),
 }
@@ -266,6 +267,7 @@ pub enum DeliveryRouteError {
 impl std::fmt::Display for DeliveryRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DeliveryRouteError::CapabilityDisabled => write!(f, "DEGRADED: manual flush is unavailable in local-only mode; local deliveries use the durable automatic queue"),
             DeliveryRouteError::WorkerNotFound(name) => {
                 write!(f, "agent_not_found: no worker named '{name}'")
             }
@@ -363,6 +365,7 @@ impl SnapshotFormat {
 
 #[derive(Clone)]
 struct ListenApiState {
+    local_only: bool,
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
@@ -412,6 +415,7 @@ impl ListenReplayQuery {
 // ---------------------------------------------------------------------------
 
 pub struct ListenApiConfig {
+    pub local_only: bool,
     pub tx: mpsc::Sender<ListenApiRequest>,
     pub events_tx: broadcast::Sender<String>,
     pub replay_buffer: ReplayBuffer,
@@ -443,6 +447,7 @@ fn listen_api_router_with_auth(
     use axum::{middleware, routing, Router};
 
     let state = ListenApiState {
+        local_only: config.local_only,
         tx: config.tx,
         events_tx: config.events_tx,
         broker_api_key: broker_api_key
@@ -611,7 +616,13 @@ pub(crate) fn listen_api_health_payload(
 async fn listen_api_health(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
+    let local_only = state.local_only;
     let mut payload = listen_api_health_payload(state.default_workspace_id, state.memberships);
+    if local_only {
+        payload["status"] = json!("degraded");
+        payload["mode"] = json!("local_only");
+        payload["relaycastConnected"] = json!(false);
+    }
     if let Some(status) = fetch_status_for_health(&state.tx).await {
         merge_status_into_health_payload(&mut payload, &status);
     }
@@ -633,6 +644,12 @@ fn merge_status_into_health_payload(payload: &mut Value, status: &Value) {
     let Some(object) = payload.as_object_mut() else {
         return;
     };
+    if status.get("mode").and_then(Value::as_str) == Some("local_only") {
+        object.insert("status".into(), json!("degraded"));
+        object.insert("mode".into(), json!("local_only"));
+        object.insert("relaycastConnected".into(), json!(false));
+        object.insert("degraded".into(), status["degraded"].clone());
+    }
     if let Some(agent_count) = status.get("agent_count").and_then(Value::as_u64) {
         object.insert("agentCount".to_string(), json!(agent_count));
     }
@@ -681,6 +698,8 @@ async fn listen_api_session(
         "broker_version": state.broker_version,
         "spawn_capabilities": {"explicit_empty_channels": true, "create_only_identity": true},
         "protocol_version": 2,
+        "operation_mode": if state.local_only { "local_only" } else { "normal" },
+        "degraded": state.local_only,
         "workspace_key": state.workspace_key,
         "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
@@ -2610,6 +2629,11 @@ fn delivery_route_error_to_response(
     err: &DeliveryRouteError,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     match err {
+        DeliveryRouteError::CapabilityDisabled => api_error(
+            axum::http::StatusCode::CONFLICT,
+            "capability_disabled",
+            err.to_string(),
+        ),
         DeliveryRouteError::WorkerNotFound(_) => api_error(
             axum::http::StatusCode::NOT_FOUND,
             "agent_not_found",
@@ -3876,12 +3900,20 @@ mod auth_tests {
     fn test_router(
         broker_api_key: Option<&str>,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        test_router_with_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
         (
             listen_api_router_with_auth(
                 ListenApiConfig {
+                    local_only,
                     tx,
                     events_tx,
                     replay_buffer,
@@ -3905,6 +3937,26 @@ mod auth_tests {
             .await
             .expect("response body should be readable");
         serde_json::from_slice(&body).expect("response body should be json")
+    }
+
+    #[tokio::test]
+    async fn local_only_health_stays_degraded_without_a_runtime_status_reply() {
+        let (router, rx) = test_router_with_mode(Some("test"), true);
+        drop(rx);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["mode"], "local_only");
+        assert_eq!(body["relaycastConnected"], false);
     }
 
     #[tokio::test]

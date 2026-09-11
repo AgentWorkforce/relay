@@ -1,0 +1,37 @@
+{
+  "id": "compact_kr0gviod7ik8",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-10T12:42:58.526Z",
+  "sourceTrajectories": [
+    "traj_4rcc69em81p7"
+  ],
+  "dateRange": {
+    "start": "2026-09-10T12:36:24.740Z",
+    "end": "2026-09-10T12:42:57.920Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Preserve privacy opt-outs and existing identity recovery; constrain audit transport and normalize effective persistence",
+          "chosen": "Preserve privacy opt-outs and existing identity recovery; constrain audit transport and normalize effective persistence",
+          "reasoning": "The delayed review correctly identified state-dir lease expiry and bind trimming. Privacy opt-outs must stay enabled rather than be removed. Audit payloads must never follow redirects; the existing registration SDK strips cross-origin Authorization, verified by a regression test. A separate trajectory data directory avoids modifying an unrelated active task.",
+          "fromTrajectory": "traj_4rcc69em81p7"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

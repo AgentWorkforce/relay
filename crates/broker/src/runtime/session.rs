@@ -31,6 +31,7 @@ pub(crate) struct RelayReadyState {
 pub(crate) async fn serve_startup_api_until_ready(
     listener: tokio::net::TcpListener,
     relay_ready: Arc<Notify>,
+    local_only: bool,
 ) -> tokio::net::TcpListener {
     loop {
         tokio::select! {
@@ -40,7 +41,7 @@ pub(crate) async fn serve_startup_api_until_ready(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        tokio::spawn(handle_startup_api_connection(stream));
+                        tokio::spawn(handle_startup_api_connection(stream, local_only));
                     }
                     Err(error) => {
                         tracing::warn!(error = %error, "startup API accept failed");
@@ -52,7 +53,10 @@ pub(crate) async fn serve_startup_api_until_ready(
     }
 }
 
-pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStream) {
+pub(crate) async fn handle_startup_api_connection(
+    mut stream: tokio::net::TcpStream,
+    local_only: bool,
+) {
     let mut buffer = [0_u8; 1024];
     let read = match timeout(Duration::from_secs(5), stream.read(&mut buffer)).await {
         Ok(Ok(read)) => read,
@@ -70,11 +74,15 @@ pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStr
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
     let (status, content_type, body) = if path == "/health" {
-        (
-            "200 OK",
-            "application/json",
-            listen_api::listen_api_health_payload(None, vec![]).to_string(),
-        )
+        ("200 OK", "application/json", {
+            let mut payload = listen_api::listen_api_health_payload(None, vec![]);
+            if local_only {
+                payload["status"] = json!("degraded");
+                payload["mode"] = json!("local_only");
+                payload["relaycastConnected"] = json!(false);
+            }
+            payload.to_string()
+        })
     } else {
         (
             "503 Service Unavailable",

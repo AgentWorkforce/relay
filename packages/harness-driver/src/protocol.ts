@@ -272,6 +272,12 @@ export interface FleetInventoryAgent {
 }
 
 export interface BrokerStatus {
+  mode?: 'normal' | 'local_only';
+  status?: 'running' | 'degraded';
+  degraded?: {
+    capabilities: Record<string, boolean>;
+    reconciliation: { configured: boolean; connected: boolean; pending_records: number };
+  } | null;
   agent_count: number;
   agents: ListAgent[];
   pending_delivery_count: number;

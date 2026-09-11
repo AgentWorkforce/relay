@@ -456,7 +456,7 @@ impl WorkerRegistry {
         // save tokens. We honor that even when `agent_result` is configured —
         // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
         // below, so a separately-configured Agent Relay MCP can pick them up.
-        if skip_relay_prompt {
+        if skip_relay_prompt || self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
             return Ok(Vec::new());
         }
         configure_agent_relay_mcp_with_result(
@@ -1253,8 +1253,27 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
-        // Remove CLAUDECODE from child env to prevent nested Claude Code instances
-        // from interfering with the parent's session management
+        // Local-only workers must not bootstrap a separate Relaycast session.
+        if self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
+            for key in [
+                "AGENT_RELAY_ORIGIN_ACTOR",
+                "RELAY_AGENT_NAME",
+                "RELAY_AGENT_TYPE",
+                "RELAY_STRICT_AGENT_NAME",
+                "AGENT_RELAY_WORKSPACE_KEY",
+                "RELAY_WORKSPACE_KEY",
+                "RELAY_API_KEY",
+                "RELAY_AGENT_TOKEN",
+                "RELAY_NODE_TOKEN",
+                "RELAY_WORKSPACES_JSON",
+                "RELAY_DEFAULT_WORKSPACE",
+                "RELAY_WORKSPACE_ID",
+            ] {
+                command.env_remove(key);
+            }
+            command.env("AGENT_RELAY_LOCAL_ONLY", "1");
+        }
+        // Prevent nested Claude Code instances from sharing the parent session.
         command.env_remove("CLAUDECODE");
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);

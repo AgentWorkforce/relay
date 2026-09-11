@@ -235,13 +235,7 @@ try {
 } finally {
   clearTimeout(calibrationTimer);
   await stopProcess(calibration);
-  if (broker && broker.exitCode === null) {
-    const exited = new Promise((resolve) => broker.once('exit', resolve));
-    broker.kill('SIGTERM');
-    const timer = setTimeout(() => broker.kill('SIGKILL'), 3000);
-    await exited;
-    clearTimeout(timer);
-  }
+  await stopProcess(broker);
   for (const socket of sockets) socket.destroy();
   await new Promise((resolve) => server.close(resolve));
   await rm(probe, { recursive: true, force: true });
