@@ -664,6 +664,18 @@ impl BrokerRuntime {
                 {
                     Ok(effective_spec) => {
                         fleet_load_changed = true;
+                        // A supervised tokenless worker owns the identity
+                        // across respawns, but each process is a new exact
+                        // generation. Refresh custody before any later
+                        // name-only release can infer the generation.
+                        if workers.owned_spawn_generations.contains_key(&name) {
+                            if let Some(worker) = workers.workers.get(&name) {
+                                workers.owned_spawn_generations.insert(
+                                    name.clone(),
+                                    (worker.generation, relaycast_http.clone()),
+                                );
+                            }
+                        }
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
                         let initial_task = rst.payload.initial_task.clone();

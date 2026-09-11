@@ -372,6 +372,8 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let cleanup_journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    fixture.runtime.workers.owned_cleanup_journal = Some(cleanup_journal.clone());
     let name = WorkerName::from("retired");
     let generation = Uuid::new_v4();
     let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
@@ -525,6 +527,11 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
             reply,
         })
         .await;
+    let journal =
+        std::fs::read_to_string(&cleanup_journal).expect("cleanup journal should persist");
+    assert!(journal.contains(&generation.to_string()));
+    assert!(journal.contains("bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"));
+    assert!(!journal.contains("owned-token"));
     fixture.runtime.reconcile_identity_cleanups().await;
     loop {
         if let FleetControlCommand::DeregisterAgent { request, reply } =
@@ -6399,7 +6406,9 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
         loop {
             fixture.runtime.reconcile_identity_cleanups().await;
             if let Ok(response) = result.try_recv() {
-                assert!(response.is_ok());
+                let response = response.expect("owned cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "deleted");
                 break;
             }
             tokio::task::yield_now().await;
@@ -6427,7 +6436,12 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
             reply,
         })
         .await;
-    assert!(repeated.await.unwrap().is_ok());
+    let repeated = repeated
+        .await
+        .unwrap()
+        .expect("repeat should be idempotent");
+    assert_eq!(repeated["process"], "stopped");
+    assert_eq!(repeated["identity"], "deleted");
     release.assert_hits(1);
     assert!(fixture.fleet_control_rx.try_recv().is_err());
     fixture.runtime.workers.release("unrelated").await.unwrap();
@@ -6465,5 +6479,60 @@ async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
         .workers
         .identity_cleanups
         .contains_key(&name));
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn owned_cleanup_journal_restores_generation_and_retries_without_plaintext_token() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(json!({
+                "delete_agent": true,
+                "expected_token_hash": "bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"
+            }).to_string());
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("restart-owned");
+    let generation = Uuid::new_v4();
+    let journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    std::fs::write(
+        &journal,
+        serde_json::to_vec(&json!({
+            name.to_string(): {
+                "generation": generation,
+                "expected_token_hash": "bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3",
+                "agent_id": null
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fixture.runtime.workers.owned_cleanup_journal = Some(journal.clone());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    super::identity_cleanup::restore_identity_cleanups(&mut fixture.runtime).unwrap();
+    assert_eq!(
+        fixture.runtime.workers.owned_spawn_generations[&name].0,
+        generation
+    );
+    while fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name)
+    {
+        fixture.runtime.reconcile_identity_cleanups().await;
+        tokio::task::yield_now().await;
+    }
+    release.assert_hits(1);
+    let persisted = std::fs::read_to_string(journal).unwrap();
+    assert!(!persisted.contains("restart-owned"));
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }

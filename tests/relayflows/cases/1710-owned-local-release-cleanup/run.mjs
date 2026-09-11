@@ -43,7 +43,7 @@ async fn ${probeTest}() {
     let release = server.mock(|when, then| {
         when.method(POST)
             .path("/v1/agents/release")
-            .json_body_partial(json!({"delete_agent":true}).to_string());
+            .json_body_partial(json!({"delete_agent":true,"expected_token_hash":"bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"}).to_string());
         then.status(200)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
@@ -122,6 +122,10 @@ try {
       [headTest, 'direct delete and repeat idempotence'],
       ['owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed', 'replacement custody'],
       [callerTest, 'caller-owned deletion refusal'],
+      [
+        'owned_cleanup_journal_restores_generation_and_retries_without_plaintext_token',
+        'restart journal recovery',
+      ],
     ]) {
       const result = runCargo(filter, cargoEnv);
       if (result.status !== 0 || !result.stdout.includes(`test runtime::tests::${filter} ... ok`)) {
