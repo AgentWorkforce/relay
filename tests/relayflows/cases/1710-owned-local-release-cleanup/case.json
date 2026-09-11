@@ -11,7 +11,7 @@
   "expected": {
     "base": {
       "outcome": "bug",
-      "signature": "name_only_release_routes_without_generation_custody"
+      "signature": "release_outcome_not_machine_readable"
     },
     "head": {
       "outcome": "fixed",

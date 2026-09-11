@@ -77,7 +77,12 @@ async fn ${probeTest}() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             fixture.runtime.reconcile_identity_cleanups().await;
-            if let Ok(response) = result.try_recv() { assert!(response.is_ok()); break; }
+            if let Ok(response) = result.try_recv() {
+                let response = response.expect("owned cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "deleted");
+                break;
+            }
             tokio::task::yield_now().await;
         }
     }).await.expect("owned cleanup should complete");
@@ -87,16 +92,14 @@ async fn ${probeTest}() {
     fixture.runtime.handle_api_request(ListenApiRequest::Release {
         name: name.clone(), reason: None, expected_generation: None, delete_identity: false, reply,
     }).await;
-    assert!(repeated.await.unwrap().is_ok());
+    let repeated = repeated.await.unwrap().expect("repeat should be idempotent");
+    assert_eq!(repeated["process"], "stopped");
+    assert_eq!(repeated["identity"], "deleted");
     release.assert_hits(1);
     assert!(fixture.fleet_control_rx.try_recv().is_err());
     fixture.runtime.workers.release("relayflow-1710-unrelated").await.unwrap();
 }
 `;
-
-if (arm === 'base') {
-  if (apiSource.includes(headMarker)) throw new Error('Base unexpectedly contains the head fix.');
-}
 
 const cargoEnv = sanitizedEnvironment();
 const originalTests = await readFile(testPath, 'utf8');
@@ -110,9 +113,9 @@ try {
     }
     await writeResult({
       outcome: 'bug',
-      signature: 'name_only_release_routes_without_generation_custody',
+      signature: 'release_outcome_not_machine_readable',
       details:
-        'The injected executable probe drove the base broker release actor with a retired broker-owned generation; the base routed name-only release through the legacy host path instead of direct token-hash-bound cleanup.',
+        'The injected executable probe drove the base broker release actor with a retired broker-owned generation and exact local Relaycast mock; process and identity outcomes were not separately machine-readable.',
     });
   } else {
     if (!apiSource.includes(headMarker) || !probePassed) {
