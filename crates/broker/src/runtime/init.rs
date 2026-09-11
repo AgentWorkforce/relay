@@ -219,6 +219,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
     let (hosted_agent_event_tx, hosted_agent_event_rx) = mpsc::channel::<HostedAgentEvent>(10_000);
+    // Delivery-result channel: the publisher task reports the real outcome
+    // of every Relaycast HTTP emit back here so `BrokerRuntime` — the sole
+    // owner of `CrashInsights` — is the only thing that ever marks a durable
+    // crash record `Delivered`. Sized generously relative to the event
+    // channel above; a full result channel would only cause a warning log in
+    // the publisher (see `run_hosted_agent_event_publisher`), never data loss
+    // for the durable record itself, since an unconfirmed record simply
+    // stays `Pending` and is replayed on restart.
+    let (hosted_delivery_result_tx, hosted_delivery_result_rx) =
+        mpsc::channel::<super::event_loop::HostedDeliveryOutcome>(10_000);
     let hosted_event_client = relaycast_http.clone();
     let hosted_event_clients = workspaces
         .iter()
@@ -233,6 +243,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         hosted_event_client,
         hosted_event_clients,
         hosted_agent_event_rx,
+        hosted_delivery_result_tx,
     ));
     let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
     let node_id = resolve_broker_node_id(&node_workspace_id);
@@ -689,6 +700,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         hosted_agent_event_tx,
         hosted_agent_exit_backlog,
         hosted_agent_exit_dropped_total,
+        hosted_delivery_result_rx,
+        hosted_delivery_result_open: true,
+        hosted_agent_exit_publish_failures_total: 0,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,

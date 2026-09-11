@@ -95,9 +95,6 @@ impl BrokerRuntime {
             hosted_agent_event_tx,
             hosted_agent_exit_backlog,
             hosted_agent_exit_dropped_total,
-            crash_insights,
-            crash_insights_path,
-            paths.persist,
         );
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
@@ -534,9 +531,6 @@ impl BrokerRuntime {
                 hosted_agent_event_tx,
                 hosted_agent_exit_backlog,
                 hosted_agent_exit_dropped_total,
-                crash_insights,
-                crash_insights_path,
-                paths.persist,
                 super::event_loop::hosted_agent_event_from_crash_record(&crash_record),
             );
 

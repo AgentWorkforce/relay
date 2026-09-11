@@ -316,6 +316,8 @@ impl BrokerRuntime {
         let crash_insights = &self.crash_insights;
         let hosted_agent_exit_backlog_len = self.hosted_agent_exit_backlog.len();
         let hosted_agent_exit_dropped_total = self.hosted_agent_exit_dropped_total;
+        let hosted_agent_exit_publish_failures_total =
+            self.hosted_agent_exit_publish_failures_total;
 
         match req {
             ListenApiRequest::Spawn {
@@ -2100,6 +2102,17 @@ impl BrokerRuntime {
                             "in_memory_backlog_len": hosted_agent_exit_backlog_len,
                             "in_memory_backlog_cap": super::event_loop::HOSTED_AGENT_EXIT_BACKLOG_CAP,
                             "dropped_total": hosted_agent_exit_dropped_total,
+                            // Truthful operator status: a record only ever
+                            // counts as `pending` above until Relaycast's
+                            // real HTTP emit is confirmed by
+                            // `run_hosted_agent_event_publisher` — never
+                            // merely because it reached that task's queue.
+                            // `publish_failures_total` counts hosted events
+                            // whose bounded in-process retries were
+                            // exhausted without success; those records
+                            // remain `pending` above and are candidates for
+                            // restart replay, not silently marked delivered.
+                            "publish_failures_total": hosted_agent_exit_publish_failures_total,
                         }),
                     );
                 }

@@ -625,6 +625,9 @@ fn worker_event_runtime_fixture(
         hosted_agent_event_tx,
         hosted_agent_exit_backlog: std::collections::VecDeque::new(),
         hosted_agent_exit_dropped_total: 0,
+        hosted_delivery_result_rx: mpsc::channel(4).1,
+        hosted_delivery_result_open: true,
+        hosted_agent_exit_publish_failures_total: 0,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
@@ -6472,11 +6475,6 @@ async fn maintenance_tick_attributes_old_generation_exit_to_old_invocation_id() 
 #[tokio::test]
 async fn hosted_agent_exit_event_survives_full_channel_and_reports_closed_channel() {
     use super::event_loop::{enqueue_hosted_agent_exit_event, HostedAgentEvent};
-    use crate::crash_insights::CrashInsights;
-
-    let dir = tempfile::tempdir().unwrap();
-    let crash_insights_path = dir.path().join("crashes.json");
-    let mut crash_insights = CrashInsights::new();
 
     // Full channel: the event must land in the backlog, not be dropped, and
     // must be delivered once capacity frees up.
@@ -6497,9 +6495,6 @@ async fn hosted_agent_exit_event_survives_full_channel_and_reports_closed_channe
         &tx,
         &mut backlog,
         &mut dropped_total,
-        &mut crash_insights,
-        &crash_insights_path,
-        true,
         HostedAgentEvent {
             name: "full-channel-victim".to_string(),
             event_type: "agent_exited".to_string(),
@@ -6519,14 +6514,7 @@ async fn hosted_agent_exit_event_survives_full_channel_and_reports_closed_channe
     // backlog drain — the held event must now be delivered.
     let occupant = rx.recv().await.expect("occupant should be received");
     assert_eq!(occupant.name, "occupant");
-    super::event_loop::drain_hosted_agent_exit_backlog(
-        &tx,
-        &mut backlog,
-        &mut dropped_total,
-        &mut crash_insights,
-        &crash_insights_path,
-        true,
-    );
+    super::event_loop::drain_hosted_agent_exit_backlog(&tx, &mut backlog, &mut dropped_total);
     assert!(backlog.is_empty(), "backlog must drain once capacity frees");
     let delivered = rx
         .recv()
@@ -6543,9 +6531,6 @@ async fn hosted_agent_exit_event_survives_full_channel_and_reports_closed_channe
         &tx,
         &mut backlog,
         &mut dropped_total,
-        &mut crash_insights,
-        &crash_insights_path,
-        true,
         HostedAgentEvent {
             name: "closed-channel-victim".to_string(),
             event_type: "agent_exited".to_string(),
@@ -6599,8 +6584,15 @@ async fn delivered_dedupe_key_is_excluded_from_replay() {
         hosted_delivery: HostedDeliveryState::Pending,
     };
     crash_insights.record(record.clone());
+    crash_insights.save(&crash_insights_path).unwrap();
 
-    // Room for one, so the send succeeds immediately and marks delivered.
+    // Room for one, so the handoff to the publisher's channel succeeds
+    // immediately — but a handoff is not delivery: the critical fix for
+    // #1750's review is that this must NOT mark the durable record
+    // delivered by itself. Only the publisher's real HTTP-success outcome
+    // (simulated here via `mark_hosted_delivered_and_persist`, the same
+    // call `BrokerRuntime::handle_hosted_delivery_outcome` makes) may do
+    // that.
     let (tx, mut rx) = mpsc::channel::<HostedAgentEvent>(1);
     let mut backlog = std::collections::VecDeque::new();
     let mut dropped_total = 0u64;
@@ -6608,17 +6600,40 @@ async fn delivered_dedupe_key_is_excluded_from_replay() {
         &tx,
         &mut backlog,
         &mut dropped_total,
+        hosted_agent_event_from_crash_record(&record),
+    );
+    let handed_off = rx.recv().await.expect("event should reach the publisher");
+    assert_eq!(handed_off.name, "delivered-agent");
+    assert_eq!(
+        crash_insights.pending_hosted_deliveries().len(),
+        1,
+        "a mere channel handoff must not mark the durable record delivered — \
+         only a confirmed Relaycast HTTP success may (critical fix for #1750 review)"
+    );
+
+    // Restart replay must still see this as pending, since the publisher
+    // has not yet confirmed Relaycast accepted it.
+    let reloaded_before_confirmation = CrashInsights::load(&crash_insights_path);
+    assert_eq!(
+        reloaded_before_confirmation
+            .pending_hosted_deliveries()
+            .len(),
+        1,
+        "on-disk record must remain pending until real delivery is confirmed"
+    );
+
+    // Now simulate the publisher confirming the real HTTP call succeeded —
+    // this is the only path that may flip the durable record to Delivered.
+    super::event_loop::mark_hosted_delivered_and_persist(
         &mut crash_insights,
         &crash_insights_path,
         true,
-        hosted_agent_event_from_crash_record(&record),
+        &record.dedupe_key(),
     );
-    let delivered = rx.recv().await.expect("event should be delivered");
-    assert_eq!(delivered.name, "delivered-agent");
     assert_eq!(
         crash_insights.pending_hosted_deliveries().len(),
         0,
-        "successful handoff must mark the durable record delivered"
+        "confirmed HTTP success must mark the durable record delivered"
     );
 
     let reloaded = CrashInsights::load(&crash_insights_path);
@@ -6861,6 +6876,28 @@ async fn restart_before_drain_replays_pending_delivery_from_disk() {
         .expect("restart replay must redeliver the event the crashed process never could");
     assert_eq!(redelivered.name, name.as_str());
     assert_eq!(redelivered.event_type, "agent_exited");
+
+    // Critical fix for #1750's review: reaching the publisher's queue again
+    // (a mere handoff) must NOT yet mark the durable record delivered — it
+    // stays `Pending` until the publisher's real Relaycast HTTP call is
+    // confirmed. Only then (simulated here exactly as
+    // `BrokerRuntime::handle_hosted_delivery_outcome` would on a real
+    // success outcome) does it flip to `Delivered`.
+    assert_eq!(
+        restarted
+            .runtime
+            .crash_insights
+            .pending_hosted_deliveries()
+            .len(),
+        1,
+        "replay handoff alone must not mark the record delivered before real hosted success"
+    );
+    super::event_loop::mark_hosted_delivered_and_persist(
+        &mut restarted.runtime.crash_insights,
+        &restarted.runtime.crash_insights_path,
+        true,
+        &redelivered.dedupe_key,
+    );
     assert_eq!(
         restarted
             .runtime
