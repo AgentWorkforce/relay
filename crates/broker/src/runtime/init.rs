@@ -631,7 +631,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         .expect("state path should always have a parent")
         .join("team")
         .join("worker-logs");
-    let workers = WorkerRegistry::new(worker_event_tx, worker_env, worker_logs_dir, broker_start);
+    let mut workers =
+        WorkerRegistry::new(worker_event_tx, worker_env, worker_logs_dir, broker_start);
+    workers.owned_cleanup_journal = paths
+        .state
+        .parent()
+        .map(|parent| parent.join("owned-cleanups.json"));
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
@@ -740,9 +745,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     #[cfg(windows)]
     let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
-    let runtime = BrokerRuntime {
+    let mut runtime = BrokerRuntime {
         degraded,
-        persist: paths.persist,
+        persist: cmd.persist,
         broker_start,
         agent_spawn_count,
         paths,
@@ -808,6 +813,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         obligation_store: crate::obligation::ObligationStore::default(),
     };
 
+    crate::runtime::identity_cleanup::restore_identity_cleanups(&mut runtime)?;
     runtime.run().await
 }
 

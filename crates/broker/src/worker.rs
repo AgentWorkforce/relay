@@ -259,6 +259,7 @@ pub(crate) struct WorkerRegistry {
         HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
     pub(crate) identity_cleanups: HashMap<WorkerName, crate::runtime::PendingIdentityCleanup>,
     pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
+    pub(crate) owned_cleanup_journal: Option<PathBuf>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
 }
@@ -367,6 +368,7 @@ impl WorkerRegistry {
             owned_spawn_generations: HashMap::new(),
             completed_owned_releases: VecDeque::new(),
             identity_cleanups: HashMap::new(),
+            owned_cleanup_journal: None,
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
         }

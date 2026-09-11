@@ -986,22 +986,23 @@ impl BrokerRuntime {
                     };
                 // Bounded tombstones make an acknowledged cleanup retry safe:
                 // no remote mutation, and never release a replacement worker.
-                if !workers.has_worker(&name)
-                    && ((delete_identity
-                        && expected_generation.as_deref().is_some_and(|expected| {
-                            workers.completed_owned_releases.iter().any(
-                                |(released_name, generation)| {
-                                    released_name == &name && generation.to_string() == expected
-                                },
-                            )
-                        }))
-                        || (name_only_release
-                            && workers
-                                .completed_owned_releases
-                                .iter()
-                                .any(|(released_name, _)| released_name == &name)))
+                if delete_identity
+                    && !workers.has_worker(&name)
+                    && expected_generation.as_deref().is_some_and(|expected| {
+                        workers.completed_owned_releases.iter().any(
+                            |(released_name, generation)| {
+                                released_name == &name && generation.to_string() == expected
+                            },
+                        )
+                    })
+                    || (name_only_release
+                        && !workers.has_worker(&name)
+                        && workers
+                            .completed_owned_releases
+                            .iter()
+                            .any(|(released_name, _)| released_name == &name))
                 {
-                    let _ = reply.send(Ok(json!({"success": true, "name": name})));
+                    let _ = reply.send(Ok(json!({"success": true, "name": name, "process": "stopped", "identity": "deleted"})));
                     return;
                 }
                 if let Some(pending) = workers.identity_cleanups.get_mut(&name) {
@@ -1014,7 +1015,7 @@ impl BrokerRuntime {
                             .completions
                             .push(super::identity_cleanup::CleanupCompletion::Api(
                                 reply,
-                                Ok(json!({"success":true,"name":name})),
+                                Ok(json!({"success":true,"name":name,"process":"stopped","identity":"deleted"})),
                             ));
                         pending.attempts = 0;
                         pending.retry_at = Instant::now();
@@ -1190,7 +1191,9 @@ impl BrokerRuntime {
                                 true,
                                 Some(super::identity_cleanup::CleanupCompletion::Api(
                                     reply,
-                                    Ok(json!({"success":true,"name":name})),
+                                    Ok(
+                                        json!({"success":true,"name":name,"process":"stopped","identity":"deleted"}),
+                                    ),
                                 )),
                             );
                             return;
@@ -1207,7 +1210,7 @@ impl BrokerRuntime {
                             (None, Some(error)) => Err(format!(
                                 "worker process was released, but its Relaycast identity could not be released ({error}); the seat may still be held and re-registration may rotate a live token"
                             )),
-                            (None, None) => Ok(json!({ "success": true, "name": name })),
+                            (None, None) => Ok(json!({ "success": true, "name": name, "process": "stopped", "identity": "retained" })),
                         };
                         let _ = reply.send(response);
                     }
@@ -1325,7 +1328,9 @@ impl BrokerRuntime {
                                     true,
                                     Some(super::identity_cleanup::CleanupCompletion::Api(
                                         reply,
-                                        Ok(json!({"success":true,"name":name})),
+                                        Ok(
+                                            json!({"success":true,"name":name,"process":"stopped","identity":"deleted"}),
+                                        ),
                                     )),
                                 );
                                 return;
@@ -1338,7 +1343,7 @@ impl BrokerRuntime {
                                 (None, Some(error)) => Err(format!(
                                     "worker was already gone locally, but its Relaycast identity could not be released ({error}); the seat may still be held"
                                 )),
-                                (None, None) => Ok(json!({ "success": true, "name": name })),
+                                (None, None) => Ok(json!({ "success": true, "name": name, "process": "stopped", "identity": "retained" })),
                             };
                             let _ = reply.send(response);
                         } else {
