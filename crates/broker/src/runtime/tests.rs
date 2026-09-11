@@ -3014,6 +3014,14 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             .expect("present worker handle");
         let _ = handle.child.start_kill();
         let _ = handle.child.wait().await;
+        // The child is gone, but its old writer task can still win a race with
+        // the retry loop and accept one final pipe write on macOS. Replace the
+        // transport with a closed queue so every retry observes the intended
+        // writer failure deterministically while the worker remains present in
+        // the registry.
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        handle.command_tx = closed_tx;
     }
     assert!(
         workers.has_worker(worker_name),
