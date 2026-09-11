@@ -1211,10 +1211,15 @@ impl CursorMcpLeaseRegistry {
         registry
     }
 
-    fn lock_path(&self, root: &Path) -> Option<PathBuf> {
-        let journal_dir = self.journal_path.as_ref()?.parent()?;
+    fn lock_path(&self, root: &Path) -> io::Result<PathBuf> {
+        let journal_dir = self
+            .journal_path
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| std::env::temp_dir().join("agent-relay-cursor-mcp"));
+        fs::create_dir_all(&journal_dir)?;
         let digest = Sha256::digest(root.as_os_str().to_string_lossy().as_bytes());
-        Some(journal_dir.join(format!(".cursor-mcp-lease-{:x}.lock", digest)))
+        Ok(journal_dir.join(format!(".cursor-mcp-lease-{:x}.lock", digest)))
     }
 
     pub(crate) fn acquire(&mut self, root: &Path, worker: &WorkerName) -> io::Result<PathBuf> {
@@ -1258,9 +1263,9 @@ impl CursorMcpLeaseRegistry {
         // operations. A hostile process can rename `.cursor` after a pathname
         // check, but it cannot redirect the descriptor captured here. Keep
         // that descriptor in LeaseState for the full lease lifetime.
-        let lock_path = self.lock_path(&canonical);
+        let lock_path = self.lock_path(&canonical)?;
         let (lock, cursor_dir, created_dir) =
-            match LeaseLock::acquire_with_cursor(&canonical, true, lock_path.as_deref()) {
+            match LeaseLock::acquire_with_cursor(&canonical, true, Some(&lock_path)) {
                 Ok(value) => value,
                 Err(CursorAcquireError::Lock(error))
                 | Err(CursorAcquireError::Cursor { error, .. }) => return Err(error),
@@ -1330,12 +1335,16 @@ impl CursorMcpLeaseRegistry {
             },
         );
         self.path_by_worker.insert(worker.clone(), key.clone());
+        let deferred = self.deferred_journal.remove(&key);
         let newly_owned = self.journal_owned_paths.insert(key.clone());
         if let Err(error) = self.persist_journal() {
             self.leases.remove(&key);
             self.path_by_worker.remove(worker);
             if newly_owned {
                 self.journal_owned_paths.remove(&key);
+            }
+            if let Some(entry) = deferred {
+                self.deferred_journal.insert(key, entry);
             }
             return Err(error);
         }
@@ -1662,7 +1671,39 @@ impl CursorMcpLeaseRegistry {
                         }
                     }
                 }
-                PreExisting::Present { contents, mode } => restore_file(_path, contents, *mode)?,
+                PreExisting::Present { contents, mode } => {
+                    #[cfg(windows)]
+                    {
+                        let expected = generated_identity.ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "legacy Cursor MCP journal lacks generated identity",
+                            )
+                        })?;
+                        let mut generated =
+                            windows_child_file(_path, true, false).map_err(|error| {
+                                if error.kind() == io::ErrorKind::NotFound {
+                                    io::Error::new(
+                                        io::ErrorKind::WouldBlock,
+                                        "generated Cursor MCP file disappeared before restore",
+                                    )
+                                } else {
+                                    error
+                                }
+                            })?;
+                        if windows_handle_identity(&generated)? != expected {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WouldBlock,
+                                "generated Cursor MCP file was replaced",
+                            ));
+                        }
+                        generated.set_len(0)?;
+                        generated.write_all(contents)?;
+                        generated.sync_all()?;
+                    }
+                    #[cfg(not(windows))]
+                    restore_file(_path, contents, *mode)?;
+                }
             }
             #[cfg(windows)]
             validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
@@ -1848,11 +1889,11 @@ impl CursorMcpLeaseRegistry {
                 });
                 continue;
             }
-            let lock_path = self.lock_path(root);
+            let lock_path = self.lock_path(root)?;
             let (lock, cursor_dir, _) = match LeaseLock::acquire_with_cursor(
                 root,
                 false,
-                lock_path.as_deref(),
+                Some(&lock_path),
             ) {
                 Ok(value) => value,
                 Err(CursorAcquireError::Lock(error)) => {
@@ -1961,6 +2002,10 @@ mod tests {
         registry.release_worker(&worker).unwrap();
         assert!(!path.exists());
         assert!(!path.parent().unwrap().exists());
+        assert!(
+            !dir.path().join(".cursor-mcp-lease.lock").exists(),
+            "one-shot registry must not leave a lock in the worker cwd"
+        );
         assert!(registry.is_empty());
     }
 
@@ -2410,6 +2455,45 @@ mod tests {
         let journal: Journal = serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
         assert_eq!(journal.entries.len(), 1);
         assert_eq!(journal.entries[0].path, deferred_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reacquiring_deferred_path_clears_stale_entry_after_release() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().join("reacquired");
+        fs::create_dir_all(root.join(".cursor")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let path = root.join(".cursor/mcp.json");
+        let stale = JournalEntry {
+            path: path.clone(),
+            pre_existing: JournalPreExisting::Absent { created_dir: false },
+        };
+        fs::write(
+            &journal,
+            serde_json::to_vec(&Journal {
+                entries: vec![stale.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+        // Model a deferred entry whose cwd is now available again.
+        registry.deferred_journal.insert(path.clone(), stale);
+        registry.journal_owned_paths.insert(path.clone());
+        let worker = WorkerName::new("reacquired");
+        registry.acquire(&root, &worker).unwrap();
+        registry
+            .write_worker_cursor_file(&worker, b"fresh placeholders")
+            .unwrap();
+        registry.release_worker(&worker).unwrap();
+        assert!(
+            !journal.exists(),
+            "stale entry must not replay after release: {:?}",
+            fs::read(&journal).ok()
+        );
+        assert!(!path.exists());
     }
 
     #[cfg(unix)]

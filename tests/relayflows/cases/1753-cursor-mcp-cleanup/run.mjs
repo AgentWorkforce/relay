@@ -257,6 +257,50 @@ try {
   const afterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
   const journalAfter = await readFile(journalPath, 'utf8').catch(() => null);
 
+  // Exercise the clean-cwd branch separately: there is no pre-existing file
+  // to restore, so successful cleanup must remove the generated config and
+  // release its journal entry completely.
+  await rm(cursorPath, { force: true });
+  const absentWorkerName = `${workerName}-absent`;
+  const absentSpawnResponse = await restartedApi('POST', '/api/spawn', {
+    name: absentWorkerName,
+    cli: 'cursor',
+    transport: 'pty',
+    cwd,
+    task: 'exercise Cursor MCP cleanup from an absent file',
+    args: [],
+  });
+  if (absentSpawnResponse.status >= 300) {
+    throw new Error(`absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`);
+  }
+  const absentGenerated = await waitFor(
+    async () => {
+      const contents = await readFile(cursorPath, 'utf8').catch(() => null);
+      if (!contents) return null;
+      const expected =
+        arm === 'base'
+          ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
+          : contents.includes('${env:RELAY_API_KEY}');
+      return expected ? contents : null;
+    },
+    20_000,
+    'Cursor MCP file to be generated from absent state'
+  );
+  if (arm === 'head' && [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => absentGenerated.includes(secret))) {
+    throw new Error('head absent-file phase leaked a relay credential');
+  }
+  const absentReleaseResponse = await restartedApi('DELETE', `/api/spawned/${absentWorkerName}`);
+  if (absentReleaseResponse.status >= 300) {
+    throw new Error(`absent-file release failed: ${JSON.stringify(absentReleaseResponse.body).slice(0, 500)}`);
+  }
+  const absentAfterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
+  const absentJournalAfter = await readFile(journalPath, 'utf8').catch(() => null);
+  if (absentAfterRelease || absentJournalAfter) {
+    throw new Error(
+      `Absent-file cleanup left state: ${JSON.stringify({ file: Boolean(absentAfterRelease), journal: Boolean(absentJournalAfter) })}`
+    );
+  }
+
   let outcome;
   let signature;
   let details;
@@ -284,7 +328,7 @@ try {
       'The head broker used environment placeholders, restored the original Cursor MCP file on release after restart, and removed the retained lease state.';
   } else {
     throw new Error(
-      `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalAfterCrash: Boolean(journalAfterCrash), journalAfterRelease: Boolean(journalAfter) })}`
+      `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalAfterCrash: Boolean(journalAfterCrash), journalAfterRelease: Boolean(journalAfter), absentCleanup: !absentAfterRelease && !absentJournalAfter })}`
     );
   }
 

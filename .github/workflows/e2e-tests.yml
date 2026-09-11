@@ -34,6 +34,20 @@ env:
   AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
+  windows-broker-check:
+    name: Windows broker Cursor lease check
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-broker-cursor-lease
+          cache-bin: false
+      - name: Compile and run Cursor MCP lease tests
+        run: cargo test -p agent-relay-broker cursor_mcp_lease --lib
+
   e2e-test:
     name: E2E Integration Test
     runs-on: ${{ matrix.os }}
