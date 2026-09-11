@@ -1256,6 +1256,8 @@ impl CursorMcpLeaseRegistry {
                 },
             };
             #[cfg(windows)]
+            let _cursor_guard = windows_directory_guard(&cursor)?;
+            #[cfg(windows)]
             let _cursor_identity = windows_directory_identity(&cursor)?;
             let pre_existing = if validate_target(&key)? {
                 PreExisting::Present {
