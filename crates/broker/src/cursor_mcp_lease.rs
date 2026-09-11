@@ -110,6 +110,9 @@ impl LeaseLock {
         #[cfg(not(unix))]
         {
             let lock_path = root.join(".cursor-mcp-lease.lock");
+            #[cfg(windows)]
+            let file = windows_lock_file(&lock_path)?;
+            #[cfg(not(windows))]
             let file = fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -157,6 +160,73 @@ impl LeaseLock {
             Ok((lock, None, false))
         }
     }
+}
+
+#[cfg(windows)]
+fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    let before = fs::symlink_metadata(path).ok();
+    if before
+        .as_ref()
+        .is_some_and(|m| m.file_type().is_symlink() || m.reparse_tag() != 0)
+    {
+        return Err(invalid_path(
+            "Cursor MCP lock file must not be a reparse point",
+        ));
+    }
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *const std::ffi::c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+    }
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_ALWAYS: u32 = 4;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_ALWAYS,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == (-1isize) as *mut std::ffi::c_void {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
+    let after = fs::symlink_metadata(path)?;
+    if after.file_type().is_symlink() || after.reparse_tag() != 0 {
+        return Err(invalid_path("Cursor MCP lock file became a reparse point"));
+    }
+    if let Some(before) = before {
+        if before.file_index() != after.file_index()
+            || before.volume_serial_number() != after.volume_serial_number()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Cursor MCP lock file was replaced",
+            ));
+        }
+    }
+    Ok(file)
 }
 
 #[cfg(windows)]
@@ -742,6 +812,20 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
     let _ = validate_target(path)?;
     #[cfg(windows)]
     let _parent_guard = windows_directory_guard(parent)?;
+    #[cfg(windows)]
+    if validate_target(path)? {
+        // Preserve the user's security descriptor for an existing config.
+        // Replacing it with a temporary file would silently change ACLs and
+        // make exact restoration impossible. The pinned parent handle prevents
+        // replacement while this in-place mutation is active.
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        return Ok(());
+    }
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
