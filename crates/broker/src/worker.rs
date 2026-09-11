@@ -477,6 +477,12 @@ impl WorkerRegistry {
         // `reap_exited`) releases this same lease on every exit path.
         let is_cursor = is_cursor_cli_name(cli_name);
         if is_cursor {
+            #[cfg(not(unix))]
+            {
+                return Err(anyhow::anyhow!(
+                    "Cursor workers are not supported on Windows; refuse to start before leasing .cursor/mcp.json"
+                ));
+            }
             self.cursor_mcp_leases
                 .acquire(cwd, agent_name)
                 .with_context(|| {
@@ -3108,6 +3114,41 @@ sleep 30
             .await;
         assert!(result.is_err());
         assert!(cursor_dir.join("mcp.json").is_dir());
+        assert!(registry.cursor_mcp_leases.is_empty());
+    }
+
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn cursor_worker_registry_refuses_windows_cursor_startup() {
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+
+        let error = registry
+            .build_mcp_args(
+                "cursor",
+                &WorkerName::from("cursor-windows-worker"),
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .expect_err("Cursor startup should be refused on Windows before leasing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Cursor workers are not supported on Windows"),
+            "unexpected refusal error: {error:#}"
+        );
         assert!(registry.cursor_mcp_leases.is_empty());
     }
 
