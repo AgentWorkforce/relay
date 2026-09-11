@@ -41,9 +41,16 @@ if (!isWithin(harnessDir, fileURLToPath(import.meta.url)))
 
 const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1603-live-'));
 const stateDir = path.join(probeDir, 'state');
+// The fixed child writes its actual shell exit status here from an EXIT trap.
+// This is base-only fallback evidence: the head arm still requires the broker's
+// real crash-insights record before it can observe/replay the hosted event.
+const childExitProofPath = path.join(probeDir, 'real-child-exit-code');
 let relaycast;
 let firstBroker;
 let replayBroker;
+let successfulSpawnActionResult;
+let realChildExit;
+let realChildExitProof;
 try {
   relaycast = await startFakeRelaycast();
   const env = {
@@ -54,6 +61,7 @@ try {
     RELAYCAST_BASE_URL: relaycast.baseUrl,
     RELAY_NODE_TOKEN: 'nt_relayflow_1603',
     RELAY_NODE_ID: 'node_relayflow_1603',
+    RELAYFLOW_EXIT_PROOF_PATH: childExitProofPath,
     AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_1603',
     AGENT_RELAY_STARTUP_DEBUG: '1',
     AGENT_RELAY_TELEMETRY_DISABLED: '1',
@@ -65,18 +73,28 @@ try {
     'fleet action.invoke was not sent'
   );
   await waitFor(
+    () => relaycast.successfulSpawnActionResult(),
+    EXIT_WINDOW_MS,
+    'fleet spawn never returned a successful action.result for the invocation'
+  );
+  successfulSpawnActionResult = relaycast.successfulSpawnActionResult();
+  await waitFor(
+    async () => {
+      realChildExit = await expectedChildExit(stateDir);
+      realChildExitProof = await childExitProof(childExitProofPath);
+      return Boolean(realChildExit || realChildExitProof);
+    },
+    EXIT_WINDOW_MS,
+    'the fleet-spawned child never recorded the expected exit code 23'
+  );
+  await waitFor(
     () => relaycast.observations().eventAttempts === 1,
     EXIT_WINDOW_MS,
     'real child exit never reached Relaycast publication'
   );
   const beforeRestart = await crashInsights(stateDir);
   const pending = beforeRestart.records.find((record) => record.agent_name === AGENT_NAME);
-  if (
-    !pending ||
-    pending.hosted_delivery !== 'pending' ||
-    pending.spawn_invocation_id !== INVOCATION_ID ||
-    !pending.generation
-  ) {
+  if (!expectedChildExitRecord(pending) || pending.hosted_delivery !== 'pending' || !pending.generation) {
     throw diagnostic('The real pre-restart exit was not durably Pending.', {
       beforeRestart,
       pending,
@@ -112,6 +130,8 @@ try {
   if (
     final.spawnRequests !== 1 ||
     final.eventAttempts !== 2 ||
+    !successfulSpawnActionResult ||
+    !final.eventBodies.every(expectedAgentExitedEvent) ||
     !dedupeKeys.every(
       (key) => typeof key === 'string' && key === dedupeKeys[0] && key.startsWith(DEDUPE_PREFIX)
     )
@@ -127,20 +147,24 @@ try {
   await writeResult(
     'fixed',
     'live_fleet_child_exit_persists_then_replays_once_after_restart',
-    `A public /v1/node/ws action.invoke launched a real disposable child; its real nonzero exit persisted as Pending before Relaycast HTTP was available. After killing and restarting the exact broker on the same state, it replayed agent_exited once with stable dedupe_key ${dedupeKeys[0]} and became Delivered only after a fake Relaycast HTTP 200.`
+    `A public /v1/node/ws action.invoke returned successful action.result, launched a real disposable child, and recorded its exit code 23 as Pending before Relaycast HTTP was available. After killing and restarting the exact broker on the same state, it replayed agent_exited once with stable dedupe_key ${dedupeKeys[0]} and became Delivered only after a fake Relaycast HTTP 200.`
   );
 } catch (error) {
   // Pre-fix binaries legitimately lack the durable-outbox code, so they do
-  // not make the first event request. Keep the base arm a specific regression.
+  // not make the first event request. They may also lack the durable crash
+  // record; in that arm only, accept the child-owned exit-status marker after
+  // the exact successful action.result. Keep the base arm a specific regression.
   if (
     arm === 'base' &&
     relaycast?.observations().eventAttempts === 0 &&
-    relaycast.observations().spawnRequests === 1
+    relaycast.observations().spawnRequests === 1 &&
+    successfulSpawnActionResult &&
+    (expectedChildExitRecord(realChildExit) || realChildExitProof)
   ) {
     await writeResult(
       'bug',
       'live_exit_never_enters_durable_hosted_outbox',
-      'The base broker accepted the public fleet spawn but never published a hosted exit for the real disposable child.'
+      'The base broker returned successful action.result for the public fleet spawn and the real disposable child proved exit code 23, but the broker never published its hosted exit.'
     );
   } else {
     throw diagnostic(error.message, {
@@ -181,6 +205,37 @@ async function stopBroker(broker, signal) {
 async function crashInsights(directory) {
   return JSON.parse(await readFile(path.join(directory, 'crash-insights.json'), 'utf8'));
 }
+async function expectedChildExit(directory) {
+  try {
+    const insights = await crashInsights(directory);
+    return insights.records.find(expectedChildExitRecord);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+async function childExitProof(proofPath) {
+  try {
+    return (await readFile(proofPath, 'utf8')).trim() === '23';
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+function expectedChildExitRecord(record) {
+  return (
+    record?.agent_name === AGENT_NAME &&
+    record.spawn_invocation_id === INVOCATION_ID &&
+    record.exit_code === 23
+  );
+}
+function expectedAgentExitedEvent(body) {
+  return (
+    body?.type === 'agent_exited' &&
+    body.payload?.spawn_invocation_id === INVOCATION_ID &&
+    body.payload?.code === 23
+  );
+}
 async function writeResult(outcome, signature, details) {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
@@ -198,6 +253,7 @@ async function startFakeRelaycast() {
   let heldResponse;
   const eventBodies = [];
   const controlMessages = [];
+  const actionResults = [];
   const sockets = new Set();
   const server = http.createServer(async (request, response) => {
     const body = await requestBody(request);
@@ -273,6 +329,7 @@ async function startFakeRelaycast() {
           continue;
         }
         controlMessages.push(message);
+        if (message.type === 'action.result') actionResults.push(message);
         if (message.type === 'agent.register')
           sendJson(socket, {
             type: 'reply',
@@ -304,7 +361,10 @@ async function startFakeRelaycast() {
               harnessConfig: {
                 runtime: 'native',
                 command: '/bin/sh',
-                args: ['-c', 'sleep 2; exit 23'],
+                args: [
+                  '-c',
+                  'trap \'status=$?; printf %s "$status" > "$RELAYFLOW_EXIT_PROOF_PATH"\' 0; sleep 2; exit 23',
+                ],
                 sessionId: 'relayflow-1603-live-session',
               },
             },
@@ -326,13 +386,24 @@ async function startFakeRelaycast() {
       actionSent,
       deliveryAvailable,
       controlMessages,
+      actionResults,
     }),
+    successfulSpawnActionResult: () =>
+      actionResults.some(
+        (result) =>
+          result.invocation_id === INVOCATION_ID &&
+          result.output?.spawned === true &&
+          result.output?.name === AGENT_NAME &&
+          result.error === undefined
+      ),
     enableDelivery: async () => {
       deliveryAvailable = true;
       if (heldResponse && !heldResponse.destroyed) heldResponse.destroy();
       heldResponse = undefined;
     },
     close: async () => {
+      if (heldResponse && !heldResponse.destroyed) heldResponse.destroy();
+      heldResponse = undefined;
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
     },
