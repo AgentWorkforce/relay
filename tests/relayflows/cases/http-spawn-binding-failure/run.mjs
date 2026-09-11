@@ -31,7 +31,8 @@ const probe = await mkdtemp(path.join(tmpdir(), 'relayflow-binding-'));
 let broker,
   calibration,
   calibrationTimer,
-  stderr = '';
+  stderr = '',
+  stdout = '';
 const sockets = new Set();
 const observations = { registrations: 0, bindings: 0, scopeReads: 0, releases: [], metadataWrites: 0 };
 const server = http.createServer(async (request, response) => {
@@ -131,16 +132,19 @@ try {
         AGENT_RELAY_NO_DEBUG_FILES: '1',
         AGENT_RELAY_TELEMETRY_DISABLED: '1',
       },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
+  broker.stdout.on('data', (chunk) => {
+    stdout = (stdout + chunk).slice(-12000);
+  });
   broker.stderr.on('data', (chunk) => {
     stderr = (stderr + chunk).slice(-12000);
   });
   let apiPort;
   for (let i = 0; i < 200; i++) {
     if (broker.exitCode !== null) throw new Error(`Broker exited: ${stderr}`);
-    const announced = stderr.match(/API listening on http:\/\/127\.0\.0\.1:([1-9]\d{0,4})(?:\s|$)/);
+    const announced = stdout.match(/API listening on http:\/\/127\.0\.0\.1:([1-9]\d{0,4})(?:\s|$)/);
     if (announced) {
       const parsed = Number(announced[1]);
       assert(Number.isInteger(parsed) && parsed <= 65535, 'Invalid loopback API port');
