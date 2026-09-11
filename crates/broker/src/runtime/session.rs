@@ -197,15 +197,6 @@ fn handshake_max_attempts() -> u32 {
     )
 }
 
-/// Number of workspaces the broker will register during the handshake, used to
-/// scale the per-attempt deadline: `startup_session_set_with_options` registers
-/// each `RELAY_WORKSPACES_JSON` membership serially, so a healthy multi-workspace
-/// startup legitimately takes longer than a single-workspace one and must not be
-/// cut off by the single-request timeout. Falls back to 1 when unset/unparseable.
-fn configured_membership_count() -> u32 {
-    parse_membership_count(std::env::var("RELAY_WORKSPACES_JSON").ok().as_deref())
-}
-
 /// Parse the per-attempt timeout from an optional raw string (e.g. an env var),
 /// falling back to [`HANDSHAKE_ATTEMPT_TIMEOUT`] for missing/empty/invalid/zero
 /// values. Pure so it can be unit-tested without mutating process env.
@@ -255,36 +246,6 @@ fn format_handshake_timeout_error(
     )
 }
 
-/// Parse the number of configured memberships from an optional
-/// `RELAY_WORKSPACES_JSON` string, mirroring how `load_workspace_sources_from_env`
-/// (in `relaycast/auth.rs`) interprets the same value: a top-level JSON array, an
-/// object with a `memberships` array, or a bare single-membership object (count
-/// 1). The result is clamped to at least 1; anything absent/empty/unparseable
-/// also yields 1. Pure so it can be unit-tested without mutating process env.
-fn parse_membership_count(raw: Option<&str>) -> u32 {
-    let count = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
-        .map(|value| {
-            if let Some(entries) = value.as_array() {
-                entries.len()
-            } else if let Some(entries) = value
-                .get("memberships")
-                .and_then(serde_json::Value::as_array)
-            {
-                entries.len()
-            } else {
-                // A bare object is treated as a single membership, matching
-                // `load_workspace_sources_from_env`'s `vec![value]` fallback.
-                1
-            }
-        })
-        .and_then(|len| u32::try_from(len).ok())
-        .unwrap_or(1);
-    count.max(1)
-}
-
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
@@ -321,18 +282,15 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     // so returned errors surface immediately (preserving the pre-retry
     // behavior). The residual for a timeout retry is narrow (the backend both
     // completed the request AND failed to answer within the deadline); the
-    // per-attempt deadline is scaled by the configured workspace count so a
-    // healthy multi-workspace startup, which registers each membership serially,
-    // is not cut off mid-flight. The final attempt is shortened to whatever
-    // remains of HANDSHAKE_TOTAL_TIMEOUT so membership scaling and environment
-    // overrides cannot move exhaustion past the SDK startup deadline.
-    let membership_count = configured_membership_count();
+    // multi-workspace registration runs concurrently, so each membership can
+    // use the auth client's typed admission budget without serially consuming
+    // the broker's aggregate startup deadline. The final attempt is shortened
+    // to whatever remains of HANDSHAKE_TOTAL_TIMEOUT so environment overrides
+    // cannot move exhaustion past the SDK startup deadline.
     // Do not let a caller-provided legacy timeout override cancel the auth
     // client's longer typed admission retry contract. Larger values remain
     // harmless because the aggregate handshake ceiling below still applies.
-    let attempt_timeout = handshake_attempt_timeout()
-        .max(HANDSHAKE_ATTEMPT_TIMEOUT)
-        .saturating_mul(membership_count);
+    let attempt_timeout = handshake_attempt_timeout().max(HANDSHAKE_ATTEMPT_TIMEOUT);
     let max_attempts = handshake_max_attempts();
     let mut backoff = HANDSHAKE_BACKOFF_BASE;
     let handshake_started = Instant::now();
@@ -595,8 +553,10 @@ mod tests {
 
     #[test]
     fn multi_membership_default_budget_stays_inside_sdk_deadline() {
-        let membership_count = 2;
-        let attempt_timeout = parse_handshake_timeout(None).saturating_mul(membership_count);
+        // Membership registration is concurrent, so two typed 40-second
+        // admission budgets fit within one unchanged 44-second aggregate
+        // handshake attempt rather than being added serially.
+        let attempt_timeout = parse_handshake_timeout(None);
         let max_attempts = parse_handshake_attempts(None);
         let mut never_responds_budget = Duration::ZERO;
         let mut backoff = HANDSHAKE_BACKOFF_BASE;
@@ -626,7 +586,7 @@ mod tests {
         assert_eq!(never_responds_budget, HANDSHAKE_TOTAL_TIMEOUT);
         assert!(
             never_responds_budget < Duration::from_secs(45),
-            "membership-scaled retries must still exhaust before the SDK deadline"
+            "parallel membership retries must still exhaust before the SDK deadline"
         );
     }
 
@@ -672,34 +632,5 @@ mod tests {
             !message.contains("was unreachable"),
             "deadline exhaustion cannot prove that the backend was unreachable"
         );
-    }
-
-    #[test]
-    fn parse_membership_count_scales_with_configured_workspaces() {
-        // Absent / empty / empty-array / unparseable all fall back to a single
-        // workspace so the timeout is never scaled below the base.
-        assert_eq!(parse_membership_count(None), 1);
-        assert_eq!(parse_membership_count(Some("   ")), 1);
-        assert_eq!(parse_membership_count(Some("[]")), 1);
-        assert_eq!(parse_membership_count(Some("not json")), 1);
-        // A bare single-membership object counts as one (matching
-        // load_workspace_sources_from_env's `vec![value]` fallback).
-        assert_eq!(parse_membership_count(Some("{\"api_key\":\"rk_a\"}")), 1);
-        // Top-level array form scales by its length.
-        assert_eq!(
-            parse_membership_count(Some(
-                "[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"},{\"api_key\":\"rk_c\"}]"
-            )),
-            3
-        );
-        // Object-with-`memberships`-array form also scales by array length.
-        assert_eq!(
-            parse_membership_count(Some(
-                "{\"memberships\":[{\"api_key\":\"rk_a\"},{\"api_key\":\"rk_b\"}],\"default_workspace_id\":\"ws_a\"}"
-            )),
-            2
-        );
-        // An empty `memberships` array clamps to the single-workspace minimum.
-        assert_eq!(parse_membership_count(Some("{\"memberships\":[]}")), 1);
     }
 }

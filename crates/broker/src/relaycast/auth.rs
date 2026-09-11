@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 use relaycast::{
     CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, TakeOverAgentRequest,
     WorkspaceProvenance,
@@ -391,25 +392,53 @@ impl AuthClient {
     ) -> Result<AuthSessionSet> {
         if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
             let preferred_name = requested_name;
-            let mut memberships = Vec::with_capacity(sources.len());
+            // Validate every source before starting requests so malformed
+            // configuration keeps the old first-error behavior. Once the
+            // inputs are valid, register all memberships concurrently: each
+            // registration owns an independent 40-second workspace-busy
+            // admission budget, while the broker's outer handshake remains
+            // bounded by its unchanged 44-second aggregate ceiling.
+            let membership_count = sources.len();
+            let prepared_sources = sources
+                .into_iter()
+                .map(|source| {
+                    let api_key = normalize_workspace_key(&source.api_key)
+                        .context("RELAY_WORKSPACES_JSON contained an invalid workspace key")?;
+                    Ok::<_, anyhow::Error>((source, api_key))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            // `join_all` returns results in input order even when a later
+            // membership completes first. That preserves default selection,
+            // deterministic diagnostics, and the historical credential-set
+            // ordering while avoiding serial admission starvation.
+            let registrations = join_all(prepared_sources.into_iter().enumerate().map(
+                |(membership_index, (source, api_key))| {
+                    let membership_waiter_id =
+                        startup_membership_waiter_id(waiter_id, membership_index, membership_count);
+                    async move {
+                        let registration = self
+                            .register_agent_with_workspace_key(
+                                &api_key,
+                                preferred_name,
+                                strict_name,
+                                agent_type,
+                                identity_key,
+                                membership_waiter_id.as_deref(),
+                            )
+                            .await;
+                        (source, api_key, registration)
+                    }
+                },
+            ))
+            .await;
+
+            let mut memberships = Vec::with_capacity(membership_count);
             let mut auth_rejections = Vec::new();
             let mut workspace_busy_rejection: Option<anyhow::Error> = None;
 
-            for source in sources {
-                let Some(api_key) = normalize_workspace_key(&source.api_key) else {
-                    anyhow::bail!("RELAY_WORKSPACES_JSON contained an invalid workspace key");
-                };
-                match self
-                    .register_agent_with_workspace_key(
-                        &api_key,
-                        preferred_name,
-                        strict_name,
-                        agent_type,
-                        identity_key,
-                        waiter_id,
-                    )
-                    .await
-                {
+            for (source, api_key, registration) in registrations {
+                match registration {
                     Ok(registration) => {
                         let mut session = self.finish_session(
                             api_key,
@@ -918,6 +947,25 @@ fn resolve_default_workspace_id(
     } else {
         None
     }
+}
+
+/// Derive a stable admission waiter for one membership of a logical startup
+/// handshake. Keep the legacy single-workspace value unchanged; multi-
+/// workspace handshakes need distinct queue identities so one busy membership
+/// cannot collapse or starve another, while the deterministic index keeps each
+/// value stable across outer handshake retries.
+fn startup_membership_waiter_id(
+    outer_waiter_id: Option<&str>,
+    membership_index: usize,
+    membership_count: usize,
+) -> Option<String> {
+    outer_waiter_id.map(|outer| {
+        if membership_count == 1 {
+            outer.to_string()
+        } else {
+            format!("{outer}:membership-{membership_index}")
+        }
+    })
 }
 
 fn normalize_workspace_key(raw: &str) -> Option<String> {
@@ -1828,6 +1876,23 @@ mod tests {
             resolve_relaycast_base_url(Some("http://127.0.0.1:8787")),
             "http://127.0.0.1:8787"
         );
+    }
+
+    #[test]
+    fn startup_membership_waiter_preserves_single_format_and_indexes_multi() {
+        assert_eq!(
+            super::startup_membership_waiter_id(Some("relay-register:outer"), 0, 1),
+            Some("relay-register:outer".to_string())
+        );
+        assert_eq!(
+            super::startup_membership_waiter_id(Some("relay-register:outer"), 0, 2),
+            Some("relay-register:outer:membership-0".to_string())
+        );
+        assert_eq!(
+            super::startup_membership_waiter_id(Some("relay-register:outer"), 1, 2),
+            Some("relay-register:outer:membership-1".to_string())
+        );
+        assert_eq!(super::startup_membership_waiter_id(None, 0, 2), None);
     }
 
     #[tokio::test]
@@ -2764,6 +2829,183 @@ mod tests {
         auth_register.assert_hits(1);
 
         unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+        }
+    }
+
+    /// Multi-workspace admission must not serialize one busy membership in
+    /// front of later memberships. Each membership also gets a distinct queue
+    /// waiter derived from the caller's logical handshake waiter, while the
+    /// membership's own retry attempts retain that value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multi_workspace_registration_is_concurrent_and_waiters_are_stable() {
+        use std::collections::HashMap;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex,
+        };
+
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode as AxumStatusCode},
+            routing::post,
+            Json, Router,
+        };
+        use tokio::sync::Notify;
+
+        #[derive(Clone)]
+        struct RegistrationState {
+            first_a_attempts: Arc<AtomicUsize>,
+            b_seen: Arc<Notify>,
+            waiters: Arc<StdMutex<HashMap<String, Vec<String>>>>,
+        }
+
+        async fn register_agent(
+            State(state): State<RegistrationState>,
+            headers: HeaderMap,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let authorization = headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let waiter = headers
+                .get("x-workspace-write-waiter")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            state
+                .waiters
+                .lock()
+                .unwrap()
+                .entry(authorization.clone())
+                .or_default()
+                .push(waiter);
+
+            if authorization == "Bearer rk_live_a" {
+                if state.first_a_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // If registration were still serial, this await would
+                    // never complete because membership B could not start.
+                    state.b_seen.notified().await;
+                    return (
+                        AxumStatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "ok": false,
+                            "error": {
+                                "code": "database_overloaded",
+                                "message": "The database is temporarily overloaded."
+                            }
+                        })),
+                    );
+                }
+                return (
+                    AxumStatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "data": {
+                            "id": "agent-a",
+                            "workspace_id": "ws-a",
+                            "name": "lead",
+                            "token": "at_live_a",
+                            "status": "online",
+                            "created_at": "2025-01-01T00:00:00Z"
+                        }
+                    })),
+                );
+            }
+
+            // notify_one retains a permit if B arrives before A begins
+            // waiting, so scheduler order cannot make the test flaky.
+            state.b_seen.notify_one();
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent-b",
+                        "workspace_id": "ws-b",
+                        "name": "lead",
+                        "token": "at_live_b",
+                        "status": "online",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws-a","api_key":"rk_live_a"},{"workspace_id":"ws-b","api_key":"rk_live_b"}]"#,
+            );
+            std::env::set_var("RELAY_DEFAULT_WORKSPACE", "ws-b");
+        }
+
+        let state = RegistrationState {
+            first_a_attempts: Arc::new(AtomicUsize::new(0)),
+            b_seen: Arc::new(Notify::new()),
+            waiters: Arc::new(StdMutex::new(HashMap::new())),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn({
+            let state = state.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/v1/agents", post(register_agent))
+                        .with_state(state),
+                )
+                .await
+            }
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            AuthClient::new(Some(format!("http://{address}")))
+                .startup_session_set_with_identity_and_waiter(
+                    Some("lead"),
+                    false,
+                    None,
+                    None,
+                    Some("relay-register:logical-handshake"),
+                ),
+        )
+        .await
+        .expect("later memberships must not wait behind a busy first membership")
+        .expect("both memberships should register");
+
+        server.abort();
+        assert_eq!(
+            result
+                .memberships
+                .iter()
+                .map(|session| session.credentials.workspace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ws-a", "ws-b"],
+            "concurrent completion must not reorder membership results"
+        );
+        assert_eq!(result.default_workspace_id.as_deref(), Some("ws-b"));
+
+        let waiters = state.waiters.lock().unwrap();
+        let a_waiters = waiters.get("Bearer rk_live_a").unwrap();
+        let b_waiters = waiters.get("Bearer rk_live_b").unwrap();
+        assert_eq!(a_waiters.len(), 2, "A must retry once after its typed 503");
+        assert_eq!(a_waiters[0], a_waiters[1]);
+        assert_eq!(
+            a_waiters[0],
+            "relay-register:logical-handshake:membership-0"
+        );
+        assert_eq!(
+            b_waiters,
+            &["relay-register:logical-handshake:membership-1"]
+        );
+        assert_ne!(a_waiters[0], b_waiters[0]);
+
+        unsafe {
+            std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
             std::env::remove_var("RELAY_WORKSPACES_JSON");
         }
     }
