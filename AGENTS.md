@@ -26,6 +26,41 @@ git push origin main  # NO!
 
 This ensures the user maintains control over what goes into the main branch.
 
+## RelayFlow PR Proof
+
+Every feature or bug-fix PR body must declare its RelayFlow proof metadata, or
+the required `RelayFlow PR proof` check fails at classification with:
+
+```
+Pull request does not satisfy the RelayFlow proof contract
+ - PR body must declare a RelayFlow Proof change type
+ - PR body must declare a RelayFlow Proof case
+```
+
+Add exactly these two lines to the PR body — the HTML comments are load-bearing
+and the values must be in backticks:
+
+```
+- Change type: `<type>` <!-- relay-pr-proof:type -->
+- RelayFlow case: `<case-id>` <!-- relay-pr-proof:case -->
+```
+
+- `<type>` is one of `feature`, `bugfix`, or `non-functional` (see
+  `scripts/pr-proof/contract.mjs`). A runtime change cannot declare
+  `non-functional` regardless of title wording.
+- `<case-id>` names a directory under `tests/relayflows/cases/` (see
+  `tests/relayflows/cases/README.md` for how to add one). `feature`/`bugfix`
+  PRs must pick or add a case that actually exercises the changed behavior —
+  reusing a convenient existing case that doesn't cover the change defeats the
+  gate. `non-functional` PRs declare the case as `n/a`.
+- The PR title must still match `^(feat|fix)(\([^)]*\))?!?:` for the check to
+  run its title-based fallback classification when the diff can't be read.
+
+Regexes are multiline and case-insensitive but anchored, so a stray indent or a
+missing HTML comment fails the same way as omitting the line entirely. After
+editing the PR body, re-run the dispatcher and confirm it classifies — don't
+assume the edit parsed.
+
 ## Changelog
 
 Curate `[Unreleased]` in `CHANGELOG.md` as you land PRs. The root changelog is
