@@ -6,6 +6,7 @@
  * permissive test double cannot hide the SDK's dual-credential rejection.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -76,6 +77,7 @@ export default {
 const probeSource = String.raw`import { expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { Command } from 'commander';
+import { createHash } from 'node:crypto';
 
 vi.mock('./cli/lib/broker-lifecycle.js', () => ({
   readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
@@ -121,6 +123,7 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
     })),
   };
   let constructorOptions: Record<string, unknown> | undefined;
+  let createdWorkspaceRelay: typeof workspaceRelay | undefined;
   const createAgentRelay = vi.fn((options: Record<string, unknown>) => {
     constructorOptions = options;
     // Exercise the target checkout's real credential exclusivity guard. The
@@ -141,6 +144,7 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
   let workspaceRelayOptions: Record<string, unknown> | undefined;
   const createWorkspaceRelay = vi.fn((options: Record<string, unknown>) => {
     workspaceRelayOptions = options;
+    createdWorkspaceRelay = workspaceRelay;
     return workspaceRelay;
   });
   const cliErrors: string[] = [];
@@ -218,6 +222,14 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
   }
 
   expect(createAgentRelay).toHaveBeenCalledTimes(1);
+  expect(createWorkspaceRelay).toHaveBeenCalledTimes(1);
+  expect(createdWorkspaceRelay).toBe(workspaceRelay);
+  expect(workspaceRelay.workspace.register).toBe(register);
+  expect(workspaceRelay.workspace.release).toBe(release);
+  expect(hashValue(constructorOptions?.token)).toBe(hashValue('at_live_launcher'));
+  expect(hashValue(constructorOptions?.baseUrl)).toBe(hashValue('https://cast.agentrelay.com'));
+  expect(hashValue(workspaceRelayOptions?.workspaceKey)).toBe(hashValue('rk_live_cloud_target'));
+  expect(hashValue(workspaceRelayOptions?.baseUrl)).toBe(hashValue('https://cast.agentrelay.com'));
   await writeFile(
     output,
     JSON.stringify({
@@ -225,18 +237,23 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
       cliError: cliErrors.join('\n'),
       hasWorkspaceKey:
         typeof constructorOptions?.workspaceKey === 'string' && constructorOptions.workspaceKey.length > 0,
-      exactToken: constructorOptions?.token === 'at_live_launcher',
-      exactWorkspaceKey: workspaceRelayOptions?.workspaceKey === 'rk_live_cloud_target',
-      baseUrl: constructorOptions?.baseUrl ?? null,
+      tokenHash: hashValue(constructorOptions?.token),
+      workspaceKeyHash: hashValue(workspaceRelayOptions?.workspaceKey),
+      baseUrlHash: hashValue(constructorOptions?.baseUrl),
       placementCalls: placement.spawn.mock.calls.length,
       registerCalls: register.mock.calls.length,
       releaseCalls: release.mock.calls.length,
       workspaceRelayCalls: createWorkspaceRelay.mock.calls.length,
-      workspaceRelayBaseUrl: workspaceRelayOptions?.baseUrl ?? null,
+      workspaceRelayBaseUrlHash: hashValue(workspaceRelayOptions?.baseUrl),
+      sameWorkspaceRelayInstance: createdWorkspaceRelay === workspaceRelay,
     }),
     'utf8'
   );
 });
+
+function hashValue(value) {
+  return typeof value === 'string' ? 'sha256:' + createHash('sha256').update(value).digest('hex') : null;
+}
 `;
 
 try {
@@ -260,13 +277,14 @@ try {
 
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
   const sharedLifecycleObserved =
-    observation.exactToken === true &&
-    observation.baseUrl === 'https://cast.agentrelay.com' &&
+    observation.tokenHash === hashValue('at_live_launcher') &&
+    observation.baseUrlHash === hashValue('https://cast.agentrelay.com') &&
     observation.registerCalls === 1 &&
     observation.releaseCalls === 1 &&
     observation.workspaceRelayCalls === 1 &&
-    observation.exactWorkspaceKey === true &&
-    observation.workspaceRelayBaseUrl === 'https://cast.agentrelay.com';
+    observation.workspaceKeyHash === hashValue('rk_live_cloud_target') &&
+    observation.workspaceRelayBaseUrlHash === hashValue('https://cast.agentrelay.com') &&
+    observation.sameWorkspaceRelayInstance === true;
   const baseObserved =
     sharedLifecycleObserved &&
     observation.commandOutcome === 'error' &&
@@ -364,4 +382,8 @@ function run(command, args, cwd, label, timeoutMs, extraEnv = {}) {
       }.`
     );
   }
+}
+
+function hashValue(value) {
+  return typeof value === 'string' ? `sha256:${createHash('sha256').update(value).digest('hex')}` : null;
 }
