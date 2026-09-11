@@ -970,7 +970,7 @@ pub(crate) async fn retry_pending_delivery(
     {
         Ok(()) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
-                current.attempts = current.attempts.saturating_add(1);
+                current.attempts = current.attempts.saturating_add(1).min(MAX_DELIVERY_RETRIES);
                 current.failed_attempts = 0;
                 current.next_retry_at = Instant::now()
                     + delivery_ack_timeout(&current.delivery.injection_mode, retry_interval);
@@ -985,8 +985,11 @@ pub(crate) async fn retry_pending_delivery(
         }
         Err(error) => {
             let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
-                current.attempts = current.attempts.saturating_add(1);
-                current.failed_attempts = current.failed_attempts.saturating_add(1);
+                current.attempts = current.attempts.saturating_add(1).min(MAX_DELIVERY_RETRIES);
+                current.failed_attempts = current
+                    .failed_attempts
+                    .saturating_add(1)
+                    .min(MAX_DELIVERY_RETRIES);
                 current.next_retry_at = Instant::now() + retry_interval;
                 current.last_error = Some(error.to_string());
                 current.failed_attempts >= MAX_DELIVERY_RETRIES

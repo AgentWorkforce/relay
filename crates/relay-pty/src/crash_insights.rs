@@ -190,8 +190,27 @@ impl CrashInsights {
     pub fn record(&mut self, crash: CrashRecord) {
         self.records.push(crash);
         if self.records.len() > self.max_records {
-            let excess = self.records.len() - self.max_records;
-            self.records.drain(..excess);
+            let mut excess = self.records.len() - self.max_records;
+            // Preserve pending hosted exits first: these records are the
+            // durable outbox source and must survive long outages even when
+            // generic crash retention is under pressure.
+            while excess > 0 {
+                if let Some(index) = self
+                    .records
+                    .iter()
+                    .position(|record| record.hosted_delivery != HostedDeliveryState::Pending)
+                {
+                    self.records.remove(index);
+                    excess -= 1;
+                } else {
+                    tracing::error!(
+                        max_records = self.max_records,
+                        pending_hosted_deliveries = self.pending_hosted_deliveries().len(),
+                        "crash-insights retention is full of pending hosted exits; preserving durable outbox records above the generic cap"
+                    );
+                    break;
+                }
+            }
         }
     }
 
@@ -695,26 +714,35 @@ mod tests {
 
     #[test]
     fn retention_bounds_pending_hosted_delivery_backlog() {
-        // Explicit retention bound: if pending deliveries pile up past
-        // `max_records`, the oldest are evicted along with the rest of the
-        // ring buffer rather than growing the outbox file without limit.
+        // Explicit retention bound: once the generic crash history is full,
+        // delivered records are evicted before pending hosted exits so the
+        // durable outbox survives a prolonged outage.
         let mut ci = CrashInsights {
             records: Vec::new(),
             max_records: 3,
         };
+        let mut delivered = make_record("delivered", Some(1), None);
+        delivered.generation = "gen-delivered".to_string();
+        delivered.hosted_delivery = HostedDeliveryState::Delivered;
+        ci.record(delivered);
         for i in 0..5 {
             let mut record = make_record(&format!("w{}", i), Some(1), None);
             record.generation = format!("gen-{}", i);
             ci.record(record);
         }
 
-        assert_eq!(ci.pending_hosted_deliveries().len(), 3);
+        assert_eq!(ci.total(), 5);
+        assert_eq!(ci.pending_hosted_deliveries().len(), 5);
         let names: Vec<&str> = ci
             .pending_hosted_deliveries()
             .iter()
             .map(|r| r.agent_name.as_str())
             .collect();
-        assert_eq!(names, vec!["w2", "w3", "w4"]);
+        assert_eq!(names, vec!["w0", "w1", "w2", "w3", "w4"]);
+        assert!(ci
+            .recent(5)
+            .iter()
+            .all(|record| record.hosted_delivery == HostedDeliveryState::Pending));
     }
 
     #[test]
