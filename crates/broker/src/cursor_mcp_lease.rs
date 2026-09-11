@@ -171,18 +171,9 @@ impl LeaseLock {
 #[cfg(windows)]
 fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
-    let before = fs::symlink_metadata(path).ok();
-    if before
-        .as_ref()
-        .is_some_and(|m| m.file_type().is_symlink() || m.reparse_tag() != 0)
-    {
-        return Err(invalid_path(
-            "Cursor MCP lock file must not be a reparse point",
-        ));
-    }
+    let before = windows_path_identity(path).ok();
     #[link(name = "Kernel32")]
     unsafe extern "system" {
         fn CreateFileW(
@@ -218,34 +209,9 @@ fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
-    let after = fs::symlink_metadata(path)?;
-    if after.file_type().is_symlink() || after.reparse_tag() != 0 {
-        return Err(invalid_path("Cursor MCP lock file became a reparse point"));
-    }
+    let after = windows_handle_identity(&file)?;
     if let Some(before) = before {
-        let before_identity = (
-            before.volume_serial_number().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "lock file has no volume identity",
-                )
-            })?,
-            before.file_index().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "lock file has no file identity")
-            })?,
-        );
-        let after_identity = (
-            after.volume_serial_number().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "lock file has no volume identity",
-                )
-            })?,
-            after.file_index().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "lock file has no file identity")
-            })?,
-        );
-        if before_identity != after_identity {
+        if before != after {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "Cursor MCP lock file was replaced",
@@ -256,17 +222,53 @@ fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(windows)]
-fn windows_child_file(path: &Path, write: bool, delete: bool) -> io::Result<fs::File> {
+fn windows_path_identity(path: &Path) -> io::Result<(u32, u64)> {
     use std::os::windows::ffi::OsStrExt;
-    use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
-    let before = fs::symlink_metadata(path)?;
-    if before.file_type().is_symlink() || !before.is_file() || before.reparse_tag() != 0 {
-        return Err(invalid_path(
-            "Cursor MCP child must be a regular non-reparse file",
-        ));
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *const std::ffi::c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
     }
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == (-1isize) as *mut std::ffi::c_void {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
+    windows_handle_identity(&file)
+}
+
+#[cfg(windows)]
+fn windows_child_file(path: &Path, write: bool, delete: bool) -> io::Result<fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    let expected = windows_path_identity(path)?;
 
     #[link(name = "Kernel32")]
     unsafe extern "system" {
@@ -309,20 +311,6 @@ fn windows_child_file(path: &Path, write: bool, delete: bool) -> io::Result<fs::
     }
     let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
     let opened = windows_handle_identity(&file)?;
-    let expected = (
-        before.volume_serial_number().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Cursor MCP child has no volume identity",
-            )
-        })?,
-        before.file_index().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Cursor MCP child has no file identity",
-            )
-        })?,
-    );
     if opened != expected {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
@@ -334,6 +322,17 @@ fn windows_child_file(path: &Path, write: bool, delete: bool) -> io::Result<fs::
 
 #[cfg(windows)]
 fn windows_handle_identity(file: &fs::File) -> io::Result<(u32, u64)> {
+    let (identity, attributes) = windows_handle_metadata(file)?;
+    if attributes & 0x10 != 0 || attributes & 0x400 != 0 {
+        return Err(invalid_path(
+            "Cursor MCP child handle is not a regular non-reparse file",
+        ));
+    }
+    Ok(identity)
+}
+
+#[cfg(windows)]
+fn windows_handle_metadata(file: &fs::File) -> io::Result<((u32, u64), u32)> {
     use std::os::windows::io::AsRawHandle;
     #[repr(C)]
     struct Information {
@@ -357,14 +356,12 @@ fn windows_handle_identity(file: &fs::File) -> io::Result<(u32, u64)> {
         return Err(io::Error::last_os_error());
     }
     let info = unsafe { info.assume_init() };
-    if info.attributes & 0x10 != 0 || info.attributes & 0x400 != 0 {
-        return Err(invalid_path(
-            "Cursor MCP child handle is not a regular non-reparse file",
-        ));
-    }
     Ok((
-        info.volume,
-        (u64::from(info.index_high) << 32) | u64::from(info.index_low),
+        (
+            info.volume,
+            (u64::from(info.index_high) << 32) | u64::from(info.index_low),
+        ),
+        info.attributes,
     ))
 }
 
@@ -401,28 +398,51 @@ fn windows_delete_file(file: fs::File) -> io::Result<()> {
 
 #[cfg(windows)]
 fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
-    use std::os::windows::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.reparse_tag() != 0 {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *const std::ffi::c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+    }
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == (-1isize) as *mut std::ffi::c_void {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
+    let (identity, attributes) = windows_handle_metadata(&file)?;
+    if attributes & 0x10 == 0 || attributes & 0x400 != 0 {
         return Err(invalid_path(format!(
             "Cursor worker cwd is not a non-reparse directory: {}",
             path.display()
         )));
     }
-    Ok((
-        metadata.volume_serial_number().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Cursor directory has no volume identity",
-            )
-        })?,
-        metadata.file_index().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Cursor directory has no file identity",
-            )
-        })?,
-    ))
+    Ok(identity)
 }
 
 #[cfg(windows)]
@@ -1727,6 +1747,26 @@ impl CursorMcpLeaseRegistry {
             .collect()
     }
 
+    /// A deferred entry may have been resolved by another broker while this
+    /// registry was waiting on the cwd lock. Reconcile only when the exact
+    /// pre-existing state is now observable; otherwise retain the work.
+    fn deferred_entry_resolved(entry: &JournalEntry) -> io::Result<bool> {
+        let pre_existing = PreExisting::from_journal(entry.pre_existing.clone())?;
+        match pre_existing {
+            PreExisting::Absent { .. } => match fs::symlink_metadata(&entry.path) {
+                Ok(_) => Ok(false),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+                Err(error) => Err(error),
+            },
+            PreExisting::Present { contents, .. } => {
+                if !validate_target(&entry.path)? {
+                    return Ok(false);
+                }
+                Ok(fs::read(&entry.path).is_ok_and(|actual| actual == contents))
+            }
+        }
+    }
+
     fn persist_journal(&self) -> io::Result<()> {
         let Some(path) = &self.journal_path else {
             return Ok(());
@@ -1773,8 +1813,11 @@ impl CursorMcpLeaseRegistry {
                 merged.remove(owned);
             }
         }
-        for entry in &self.deferred_journal {
-            merged.insert(entry.0.clone(), entry.1.clone());
+        for entry in self.deferred_journal.values() {
+            if !merged.contains_key(&entry.path) && Self::deferred_entry_resolved(entry)? {
+                continue;
+            }
+            merged.insert(entry.path.clone(), entry.clone());
         }
         for entry in active {
             merged.insert(entry.path.clone(), entry);
@@ -2494,6 +2537,92 @@ mod tests {
             fs::read(&journal).ok()
         );
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn second_registry_does_not_resurrect_resolved_deferred_entry() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().join("resolved");
+        fs::create_dir_all(root.join(".cursor")).unwrap();
+        let path = root.canonicalize().unwrap().join(".cursor/mcp.json");
+        let entry = JournalEntry {
+            path: path.clone(),
+            pre_existing: JournalPreExisting::Absent { created_dir: false },
+        };
+        let mut first = CursorMcpLeaseRegistry {
+            journal_path: Some(journal.clone()),
+            ..Default::default()
+        };
+        first.deferred_journal.insert(path.clone(), entry.clone());
+        first.journal_owned_paths.insert(path.clone());
+        first.persist_journal().unwrap();
+
+        let mut second = CursorMcpLeaseRegistry {
+            journal_path: Some(journal.clone()),
+            ..Default::default()
+        };
+        second.deferred_journal.insert(path.clone(), entry);
+        second.journal_owned_paths.insert(path);
+
+        first.deferred_journal.clear();
+        first.persist_journal().unwrap();
+        second.persist_journal().unwrap();
+        assert!(!journal.exists(), "resolved work must not be resurrected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_persist_failure_keeps_deferred_work_for_later_acquire() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().join("blocked");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(".cursor"), b"not a directory").unwrap();
+        let path = root.join(".cursor/mcp.json");
+        fs::write(
+            &journal,
+            serde_json::to_vec(&Journal {
+                entries: vec![JournalEntry {
+                    path: path.clone(),
+                    pre_existing: JournalPreExisting::Absent { created_dir: false },
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let mut recovery = CursorMcpLeaseRegistry {
+            journal_path: Some(journal.clone()),
+            ..Default::default()
+        };
+        let lock_path = journal.with_file_name(".cursor-mcp-leases.lock");
+        let mut held_lock = None;
+        let error = recovery
+            .recover_journal_with_hook(|| {
+                let lock = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&lock_path)
+                    .unwrap();
+                lock.try_lock().unwrap();
+                held_lock = Some(lock);
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(recovery.deferred_journal.contains_key(&path));
+        drop(held_lock);
+
+        let unrelated = dir.path().join("unrelated");
+        fs::create_dir(&unrelated).unwrap();
+        let worker = WorkerName::new("unrelated");
+        recovery.acquire(&unrelated, &worker).unwrap();
+        recovery.release_worker(&worker).unwrap();
+        assert!(
+            journal.exists(),
+            "deferred work must survive later persistence"
+        );
     }
 
     #[cfg(unix)]

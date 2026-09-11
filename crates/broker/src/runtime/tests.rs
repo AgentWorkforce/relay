@@ -5156,6 +5156,7 @@ fn bypass_flag_codex_with_other_args() {
 // ==================== is_pid_alive ====================
 
 #[test]
+#[cfg(unix)]
 fn is_pid_alive_returns_true_for_self() {
     let pid = std::process::id();
     assert!(
@@ -5165,6 +5166,7 @@ fn is_pid_alive_returns_true_for_self() {
 }
 
 #[test]
+#[cfg(unix)]
 fn is_pid_alive_returns_false_for_dead_pid() {
     // Spawn a short-lived child, wait for it to exit, then verify it's dead
     let child = std::process::Command::new("true")
@@ -5182,6 +5184,7 @@ fn is_pid_alive_returns_false_for_dead_pid() {
 }
 
 #[test]
+#[cfg(unix)]
 fn is_pid_alive_returns_false_for_bogus_pid() {
     // PID 0 is the kernel scheduler — kill(0, 0) signals the entire process group,
     // not a real target. Use a very high PID that almost certainly doesn't exist.
@@ -5194,6 +5197,7 @@ fn is_pid_alive_returns_false_for_bogus_pid() {
 }
 
 #[test]
+#[cfg(unix)]
 fn is_pid_alive_eperm_means_alive() {
     // PID 1 (launchd/init) is owned by root. When run as a normal user,
     // kill(1, 0) returns EPERM — the process exists but we can't signal it.
