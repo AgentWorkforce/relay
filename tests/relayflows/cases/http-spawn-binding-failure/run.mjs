@@ -142,8 +142,25 @@ try {
       signal: AbortSignal.timeout(45000),
       redirect: 'error',
     });
-    return { status: response.status, body: await response.json() };
+    const raw = await response.text();
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = { raw };
+    }
+    return { status: response.status, body };
   };
+  let apiReady = false;
+  for (let i = 0; i < 200; i++) {
+    if (broker.exitCode !== null) throw new Error(`Broker exited before readiness: ${stderr}`);
+    if ((await api('/api/session')).status === 200) {
+      apiReady = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(apiReady, `Broker API did not become ready: ${stderr}`);
   const result = await api('/api/spawn', {
     method: 'POST',
     body: JSON.stringify({ name: NAME, cli, channels: [], cwd: probe }),
