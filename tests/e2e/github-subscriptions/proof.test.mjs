@@ -10,6 +10,7 @@ import {
   semanticMatches,
   hasContinuousCoverage,
   standaloneControlsAfter,
+  collectUnseenMessages,
 } from './proof.mjs';
 
 test('no-poke audit catches background Enter after idle and excludes initial submission', () => {
@@ -25,6 +26,37 @@ test('no-poke audit catches background Enter after idle and excludes initial sub
   assert.throws(
     () => standaloneControlsAfter('writing terminal control input unknown format', '2026-09-08T20:28:29Z'),
     /Unrecognized/
+  );
+});
+
+test('history collector crosses full pages and rejects a stalled cursor', async () => {
+  const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
+  const pages = [
+    [message('4'), message('3')],
+    [message('2'), message('1')],
+  ];
+  const cursors = [];
+  const result = await collectUnseenMessages(
+    async (before) => {
+      cursors.push(before);
+      return pages.shift();
+    },
+    new Set(['1']),
+    0,
+    2
+  );
+  assert.deepEqual(
+    result.map((m) => m.id),
+    ['4', '3', '2']
+  );
+  assert.deepEqual(cursors, [undefined, '3']);
+  await assert.rejects(
+    collectUnseenMessages(async () => [message('4'), message('3')], new Set(), 0, 2),
+    /did not advance/
+  );
+  await assert.rejects(
+    collectUnseenMessages(async () => [{ id: '1' }], new Set(), 0),
+    /timestamp/
   );
 });
 
@@ -180,4 +212,65 @@ test('startup failure retains sanitized diagnostics without inventing an idle au
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+for (const [name, mutate] of [
+  [
+    'action before injection',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T12:00:02Z';
+    },
+  ],
+  [
+    'action after deadline',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T13:00:05Z';
+    },
+  ],
+  [
+    'unaccepted producer intent',
+    (f) => {
+      f.stimulus.accepted = false;
+    },
+  ],
+  [
+    'receiver exited after idle',
+    (f) => {
+      f.events.push({ kind: 'agent_exited', name: f.actor, observedAt: '2026-09-08T12:00:00.500Z' });
+    },
+  ],
+  [
+    'nonce acknowledged before terminal event',
+    (f) => {
+      f.messages.push({ ...f.messages[1], id: 'early', created_at: '2026-09-08T11:59:59Z' });
+    },
+  ],
+])
+  test(`rejects ${name}`, () => {
+    const f = fixture();
+    mutate(f);
+    assert.equal(correlate(f).pass, false);
+  });
+
+test('exact fixture matching rejects another GitHub object and unsafe numeric IDs', () => {
+  const f = fixture();
+  f.stimulus.expected = {
+    path: '/github/repos/owner/repo/comments/9007199254740993.json',
+    record: { id: '9007199254740993', user: { login: 'fixture-author' } },
+  };
+  f.messages[0].metadata.path = f.stimulus.expected.path;
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  assert.equal(correlate(f).pass, true);
+  f.messages[0].metadata.record.id = 9007199254740993;
+  assert.equal(correlate(f).pass, false);
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  f.messages[0].metadata.record.user.login = 'other-author';
+  assert.equal(correlate(f).pass, false);
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  f.messages[0].metadata.path = '/github/repos/owner/other/comments/9007199254740993.json';
+  assert.equal(correlate(f).pass, false);
+});
+
+test('strict live fixture mode cannot accept an unbound rehearsal trace', () => {
+  assert.equal(correlate({ ...fixture(), strictFixture: true }).pass, false);
 });

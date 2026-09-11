@@ -69,3 +69,32 @@ test('selects the canonical comment even when a newer legacy copy has the same n
     undefined
   );
 });
+
+test('review, thread, and check scopes use exact adapter record paths outside PR directories', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  const stimulus = { repo: 'AgentWorkforce/relay', pr: 1714, headSha: 'a'.repeat(40), file: 'owned.txt' };
+  const review = { id: '9007199254740993', user: { login: 'owner' }, pull_request_review_id: '123' };
+  for (const [kind, directory] of [
+    ['review', 'reviews'],
+    ['thread', 'comments'],
+    ['ci', 'checks'],
+  ]) {
+    const expected = fixtureExpected({ ...stimulus, kind }, { ...review, name: 'owned-check' }, 'test-123');
+    assert.equal(expected.path, `/github/repos/AgentWorkforce/relay/${directory}/${review.id}.json`);
+    assert.equal(expected.record.id, review.id);
+    assert(!expected.path.startsWith(fixturePathGlob(stimulus, 'pr', 'test-123').slice(0, -2)));
+  }
+  assert.throws(
+    () => fixtureExpected({ ...stimulus, kind: 'review' }, { ...review, id: Number(review.id) }, 'test-123'),
+    /lossless/
+  );
+  assert.throws(
+    () =>
+      fixtureExpected(
+        { ...stimulus, kind: 'thread' },
+        { ...review, pull_request_review_id: undefined },
+        'test-123'
+      ),
+    /Incomplete/
+  );
+});
