@@ -6,7 +6,7 @@
 //
 // >256 backlog replenishment and retention pressure remain unit-level proof in
 // runtime/tests.rs and crash_insights.rs; this live case does not claim them.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import http from 'node:http';
 import { constants as fsConstants } from 'node:fs';
@@ -20,7 +20,6 @@ const CASE_ID = '1603-hosted-exit-durable-delivery';
 const AGENT_NAME = 'relayflow-1603-live-child';
 const INSTANCE_NAME = 'relayflow-1603-live-broker';
 const INVOCATION_ID = 'relayflow-1603-live-invocation';
-const DEDUPE_PREFIX = `${AGENT_NAME}::`;
 const EXIT_WINDOW_MS = 15_000;
 const REPLAY_WINDOW_MS = 15_000;
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
@@ -41,18 +40,22 @@ if (!isWithin(harnessDir, fileURLToPath(import.meta.url)))
 
 const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1603-live-'));
 const stateDir = path.join(probeDir, 'state');
-// The fixed child writes its actual shell exit status here from an EXIT trap.
-// This is base-only fallback evidence: the head arm still requires the broker's
-// real crash-insights record before it can observe/replay the hosted event.
 const childExitProofPath = path.join(probeDir, 'real-child-exit-code');
+const childProofNonce = randomUUID();
+const childSessionRef = `relayflow-1603-live-session-${childProofNonce}`;
 let relaycast;
 let firstBroker;
 let replayBroker;
 let successfulSpawnActionResult;
 let realChildExit;
 let realChildExitProof;
+let brokerChildLifecycle;
 try {
-  relaycast = await startFakeRelaycast();
+  relaycast = await startFakeRelaycast({
+    childExitProofPath,
+    childProofNonce,
+    childSessionRef,
+  });
   const env = {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     HOME: probeDir,
@@ -61,7 +64,6 @@ try {
     RELAYCAST_BASE_URL: relaycast.baseUrl,
     RELAY_NODE_TOKEN: 'nt_relayflow_1603',
     RELAY_NODE_ID: 'node_relayflow_1603',
-    RELAYFLOW_EXIT_PROOF_PATH: childExitProofPath,
     AGENT_RELAY_WORKSPACE_KEY: 'rk_relayflow_1603',
     AGENT_RELAY_STARTUP_DEBUG: '1',
     AGENT_RELAY_TELEMETRY_DISABLED: '1',
@@ -81,8 +83,9 @@ try {
   await waitFor(
     async () => {
       realChildExit = await expectedChildExit(stateDir);
-      realChildExitProof = await childExitProof(childExitProofPath);
-      return Boolean(realChildExit || realChildExitProof);
+      realChildExitProof = await childExitProof(childExitProofPath, childProofNonce, childSessionRef);
+      brokerChildLifecycle = relaycast.expectedChildLifecycle();
+      return Boolean(realChildExit || realChildExitProof) && brokerChildLifecycle;
     },
     EXIT_WINDOW_MS,
     'the fleet-spawned child never recorded the expected exit code 23'
@@ -117,8 +120,11 @@ try {
   await waitFor(
     async () => {
       const state = await crashInsights(stateDir);
-      return (
-        state.records.find((record) => record.agent_name === AGENT_NAME)?.hosted_delivery === 'delivered'
+      return state.records.some(
+        (record) =>
+          expectedChildExitRecord(record) &&
+          record.generation === pending.generation &&
+          record.hosted_delivery === 'delivered'
       );
     },
     REPLAY_WINDOW_MS,
@@ -126,15 +132,17 @@ try {
   );
   const final = relaycast.observations();
   const afterRestart = await crashInsights(stateDir);
+  const expectedDedupeKey = `${AGENT_NAME}::${pending.generation}`;
   const dedupeKeys = final.eventBodies.map((body) => body?.payload?.dedupe_key);
   if (
     final.spawnRequests !== 1 ||
     final.eventAttempts !== 2 ||
     !successfulSpawnActionResult ||
-    !final.eventBodies.every(expectedAgentExitedEvent) ||
-    !dedupeKeys.every(
-      (key) => typeof key === 'string' && key === dedupeKeys[0] && key.startsWith(DEDUPE_PREFIX)
-    )
+    !brokerChildLifecycle ||
+    !final.eventBodies.every((body) =>
+      expectedAgentExitedEvent(body, pending.generation, expectedDedupeKey)
+    ) ||
+    !dedupeKeys.every((key) => key === expectedDedupeKey)
   ) {
     throw diagnostic('Unexpected live fleet-control replay observation.', {
       final,
@@ -147,18 +155,19 @@ try {
   await writeResult(
     'fixed',
     'live_fleet_child_exit_persists_then_replays_once_after_restart',
-    `A public /v1/node/ws action.invoke returned successful action.result, launched a real disposable child, and recorded its exit code 23 as Pending before Relaycast HTTP was available. After killing and restarting the exact broker on the same state, it replayed agent_exited once with stable dedupe_key ${dedupeKeys[0]} and became Delivered only after a fake Relaycast HTTP 200.`
+    `A public /v1/node/ws action.invoke returned successful action.result, launched a real disposable child, and recorded its exit code 23 as Pending before Relaycast HTTP was available. After killing and restarting the exact broker on the same state, it replayed exactly the persisted generation as agent_exited with dedupe_key ${expectedDedupeKey} and became Delivered only after a fake Relaycast HTTP 200.`
   );
 } catch (error) {
   // Pre-fix binaries legitimately lack the durable-outbox code, so they do
   // not make the first event request. They may also lack the durable crash
-  // record; in that arm only, accept the child-owned exit-status marker after
-  // the exact successful action.result. Keep the base arm a specific regression.
+  // record; in that arm only, accept the nonce-bound, child-owned exit marker
+  // after the exact action result and broker lifecycle prove the same invocation.
   if (
     arm === 'base' &&
     relaycast?.observations().eventAttempts === 0 &&
     relaycast.observations().spawnRequests === 1 &&
     successfulSpawnActionResult &&
+    brokerChildLifecycle &&
     (expectedChildExitRecord(realChildExit) || realChildExitProof)
   ) {
     await writeResult(
@@ -214,9 +223,17 @@ async function expectedChildExit(directory) {
     throw error;
   }
 }
-async function childExitProof(proofPath) {
+async function childExitProof(proofPath, nonce, sessionRef) {
   try {
-    return (await readFile(proofPath, 'utf8')).trim() === '23';
+    const marker = JSON.parse(await readFile(proofPath, 'utf8'));
+    return (
+      marker?.nonce === nonce &&
+      marker.invocation_id === INVOCATION_ID &&
+      marker.session_ref === sessionRef &&
+      marker.status === 23 &&
+      Number.isSafeInteger(marker.pid) &&
+      marker.pid > 1
+    );
   } catch (error) {
     if (error?.code === 'ENOENT') return false;
     throw error;
@@ -229,11 +246,37 @@ function expectedChildExitRecord(record) {
     record.exit_code === 23
   );
 }
-function expectedAgentExitedEvent(body) {
+function expectedAgentExitedEvent(body, generation, dedupeKey) {
   return (
     body?.type === 'agent_exited' &&
+    hasExactKeys(body, ['type', 'payload']) &&
+    hasExactKeys(body.payload, [
+      'code',
+      'signal',
+      'reason',
+      'generation',
+      'workspace_id',
+      'spawn_invocation_id',
+      'fleet_node_name',
+      'became_ready',
+      'spawned_at',
+      'ready_at',
+      'exited_at',
+      'dedupe_key',
+    ]) &&
     body.payload?.spawn_invocation_id === INVOCATION_ID &&
-    body.payload?.code === 23
+    body.payload?.code === 23 &&
+    body.payload?.generation === generation &&
+    body.payload?.dedupe_key === dedupeKey
+  );
+}
+function hasExactKeys(value, expectedKeys) {
+  return (
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(value, key))
   );
 }
 async function writeResult(outcome, signature, details) {
@@ -246,11 +289,11 @@ async function writeResult(outcome, signature, details) {
 }
 
 /** Minimal Relaycast HTTP plus raw WebSocket fake; no production test hooks. */
-async function startFakeRelaycast() {
+async function startFakeRelaycast({ childExitProofPath, childProofNonce, childSessionRef }) {
   let spawnRequests = 0;
   let actionSent = false;
   let deliveryAvailable = false;
-  let heldResponse;
+  const heldResponses = new Set();
   const eventBodies = [];
   const controlMessages = [];
   const actionResults = [];
@@ -285,7 +328,8 @@ async function startFakeRelaycast() {
       }
       eventBodies.push(parsed);
       if (!deliveryAvailable) {
-        heldResponse = response;
+        heldResponses.add(response);
+        response.once('close', () => heldResponses.delete(response));
         return;
       }
       return json(response, 200, {
@@ -361,11 +405,8 @@ async function startFakeRelaycast() {
               harnessConfig: {
                 runtime: 'native',
                 command: '/bin/sh',
-                args: [
-                  '-c',
-                  'trap \'status=$?; printf %s "$status" > "$RELAYFLOW_EXIT_PROOF_PATH"\' 0; sleep 2; exit 23',
-                ],
-                sessionId: 'relayflow-1603-live-session',
+                args: ['-c', childExitCommand(childExitProofPath, childProofNonce, childSessionRef)],
+                sessionId: childSessionRef,
               },
             },
           });
@@ -387,6 +428,7 @@ async function startFakeRelaycast() {
       deliveryAvailable,
       controlMessages,
       actionResults,
+      heldResponseCount: heldResponses.size,
     }),
     successfulSpawnActionResult: () =>
       actionResults.some(
@@ -396,18 +438,55 @@ async function startFakeRelaycast() {
           result.output?.name === AGENT_NAME &&
           result.error === undefined
       ),
+    expectedChildLifecycle: () => {
+      const registrationIndex = controlMessages.findIndex(
+        (message) =>
+          message.type === 'agent.register' &&
+          message.name === AGENT_NAME &&
+          message.invocation_id === INVOCATION_ID &&
+          message.session_ref === childSessionRef
+      );
+      if (registrationIndex < 0) return false;
+      const lifecycle = controlMessages.slice(registrationIndex + 1);
+      const activeInventoryIndex = lifecycle.findIndex(
+        (message) =>
+          message.type === 'inventory.sync' &&
+          message.agents?.some(
+            (agent) =>
+              agent.name === AGENT_NAME &&
+              agent.invocation_id === INVOCATION_ID &&
+              agent.session_ref === childSessionRef
+          )
+      );
+      return (
+        activeInventoryIndex >= 0 &&
+        lifecycle
+          .slice(activeInventoryIndex + 1)
+          .some(
+            (message) =>
+              message.type === 'inventory.sync' && !message.agents?.some((agent) => agent.name === AGENT_NAME)
+          )
+      );
+    },
     enableDelivery: async () => {
       deliveryAvailable = true;
-      if (heldResponse && !heldResponse.destroyed) heldResponse.destroy();
-      heldResponse = undefined;
+      destroyHeldResponses(heldResponses);
     },
     close: async () => {
-      if (heldResponse && !heldResponse.destroyed) heldResponse.destroy();
-      heldResponse = undefined;
+      destroyHeldResponses(heldResponses);
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+function childExitCommand(markerPath, nonce, sessionRef) {
+  return `trap 'status=$?; printf "{\\"nonce\\":\\"${nonce}\\",\\"invocation_id\\":\\"${INVOCATION_ID}\\",\\"session_ref\\":\\"${sessionRef}\\",\\"status\\":%s,\\"pid\\":%s}\\n" "$status" "$$" > "${markerPath}"' 0; sleep 2; exit 23`;
+}
+function destroyHeldResponses(responses) {
+  for (const response of responses) {
+    if (!response.destroyed) response.destroy();
+  }
+  responses.clear();
 }
 function sendJson(socket, value) {
   socket.write(serverFrame(1, Buffer.from(JSON.stringify(value))));
